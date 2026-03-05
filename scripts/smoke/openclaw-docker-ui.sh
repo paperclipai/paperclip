@@ -36,6 +36,8 @@ OPENCLAW_OPEN_BROWSER="${OPENCLAW_OPEN_BROWSER:-0}"
 OPENCLAW_SECRETS_FILE="${OPENCLAW_SECRETS_FILE:-$HOME/.secrets}"
 # Keep default one-command UX: local smoke run should not require manual pairing.
 OPENCLAW_DISABLE_DEVICE_AUTH="${OPENCLAW_DISABLE_DEVICE_AUTH:-1}"
+OPENCLAW_MODEL_PRIMARY="${OPENCLAW_MODEL_PRIMARY:-openai/gpt-5.2}"
+OPENCLAW_MODEL_FALLBACK="${OPENCLAW_MODEL_FALLBACK:-openai/gpt-5.2-chat-latest}"
 
 case "$OPENCLAW_DISABLE_DEVICE_AUTH" in
   1|true|TRUE|True|yes|YES|Yes)
@@ -101,6 +103,12 @@ cat > "$OPENCLAW_CONFIG_DIR/openclaw.json" <<EOF
   },
   "agents": {
     "defaults": {
+      "model": {
+        "primary": "${OPENCLAW_MODEL_PRIMARY}",
+        "fallbacks": [
+          "${OPENCLAW_MODEL_FALLBACK}"
+        ]
+      },
       "workspace": "/home/node/.openclaw/workspace"
     }
   }
@@ -175,6 +183,8 @@ Pairing:
   Device pairing is disabled by default for this local smoke run.
   No extra env vars are required for the default path.
   (Security tradeoff: enable pairing with OPENCLAW_DISABLE_DEVICE_AUTH=0.)
+Model:
+  ${OPENCLAW_MODEL_PRIMARY} (fallback: ${OPENCLAW_MODEL_FALLBACK})
 
 Useful commands:
   docker compose -f "$OPENCLAW_DOCKER_DIR/docker-compose.yml" -f "$COMPOSE_OVERRIDE" logs -f openclaw-gateway
@@ -187,6 +197,8 @@ Pairing:
   If UI shows "pairing required", run:
     docker compose -f "$OPENCLAW_DOCKER_DIR/docker-compose.yml" -f "$COMPOSE_OVERRIDE" run --rm openclaw-cli devices list
     docker compose -f "$OPENCLAW_DOCKER_DIR/docker-compose.yml" -f "$COMPOSE_OVERRIDE" run --rm openclaw-cli devices approve --latest
+Model:
+  ${OPENCLAW_MODEL_PRIMARY} (fallback: ${OPENCLAW_MODEL_FALLBACK})
 
 Useful commands:
   docker compose -f "$OPENCLAW_DOCKER_DIR/docker-compose.yml" -f "$COMPOSE_OVERRIDE" logs -f openclaw-gateway

@@ -289,3 +289,7 @@ Pairing behavior for this smoke script:
 
 - default `OPENCLAW_DISABLE_DEVICE_AUTH=1` (no Control UI pairing prompt for local smoke; no extra pairing env vars required)
 - set `OPENCLAW_DISABLE_DEVICE_AUTH=0` to require standard device pairing
+
+Model behavior for this smoke script:
+
+- defaults to OpenAI models (`openai/gpt-5.2` + OpenAI fallback) so it does not require Anthropic auth by default

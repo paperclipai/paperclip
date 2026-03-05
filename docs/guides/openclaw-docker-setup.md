@@ -40,6 +40,7 @@ What this command does:
 - clones/updates `openclaw/openclaw` in `/tmp/openclaw-docker`
 - builds `openclaw:local` (unless `OPENCLAW_BUILD=0`)
 - writes `~/.openclaw/openclaw.json` and Docker `.env`
+- pins agent model defaults to OpenAI (`openai/gpt-5.2` with OpenAI fallback)
 - starts `openclaw-gateway` via Compose (with required `/tmp` tmpfs override)
 - waits for health and prints:
   - `http://127.0.0.1:18789/#token=...`
@@ -55,6 +56,8 @@ Environment knobs:
 - `OPENCLAW_OPEN_BROWSER=1` to auto-open the URL on macOS
 - `OPENCLAW_DISABLE_DEVICE_AUTH=1` (default) disables Control UI device pairing for local smoke
 - `OPENCLAW_DISABLE_DEVICE_AUTH=0` keeps pairing enabled (then approve browser with `devices` CLI commands)
+- `OPENCLAW_MODEL_PRIMARY` (default `openai/gpt-5.2`)
+- `OPENCLAW_MODEL_FALLBACK` (default `openai/gpt-5.2-chat-latest`)
 
 ### Authenticated mode
 
