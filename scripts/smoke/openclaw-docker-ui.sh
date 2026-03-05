@@ -24,7 +24,7 @@ require_cmd grep
 OPENCLAW_REPO_URL="${OPENCLAW_REPO_URL:-https://github.com/openclaw/openclaw.git}"
 OPENCLAW_DOCKER_DIR="${OPENCLAW_DOCKER_DIR:-/tmp/openclaw-docker}"
 OPENCLAW_IMAGE="${OPENCLAW_IMAGE:-openclaw:local}"
-OPENCLAW_CONFIG_DIR="${OPENCLAW_CONFIG_DIR:-$HOME/.openclaw}"
+OPENCLAW_CONFIG_DIR="${OPENCLAW_CONFIG_DIR:-$HOME/.openclaw-paperclip-smoke}"
 OPENCLAW_WORKSPACE_DIR="${OPENCLAW_WORKSPACE_DIR:-$OPENCLAW_CONFIG_DIR/workspace}"
 OPENCLAW_GATEWAY_PORT="${OPENCLAW_GATEWAY_PORT:-18789}"
 OPENCLAW_BRIDGE_PORT="${OPENCLAW_BRIDGE_PORT:-18790}"
@@ -38,6 +38,7 @@ OPENCLAW_SECRETS_FILE="${OPENCLAW_SECRETS_FILE:-$HOME/.secrets}"
 OPENCLAW_DISABLE_DEVICE_AUTH="${OPENCLAW_DISABLE_DEVICE_AUTH:-1}"
 OPENCLAW_MODEL_PRIMARY="${OPENCLAW_MODEL_PRIMARY:-openai/gpt-5.2}"
 OPENCLAW_MODEL_FALLBACK="${OPENCLAW_MODEL_FALLBACK:-openai/gpt-5.2-chat-latest}"
+OPENCLAW_RESET_STATE="${OPENCLAW_RESET_STATE:-1}"
 
 case "$OPENCLAW_DISABLE_DEVICE_AUTH" in
   1|true|TRUE|True|yes|YES|Yes)
@@ -76,6 +77,10 @@ if [[ "$OPENCLAW_BUILD" == "1" ]]; then
 fi
 
 log "writing OpenClaw config under $OPENCLAW_CONFIG_DIR"
+if [[ "$OPENCLAW_RESET_STATE" == "1" ]]; then
+  # Ensure deterministic smoke behavior across reruns by removing stale agent/auth state.
+  rm -rf "$OPENCLAW_CONFIG_DIR/agents"
+fi
 mkdir -p "$OPENCLAW_WORKSPACE_DIR" "$OPENCLAW_CONFIG_DIR/identity" "$OPENCLAW_CONFIG_DIR/credentials"
 chmod 700 "$OPENCLAW_CONFIG_DIR" "$OPENCLAW_CONFIG_DIR/credentials"
 
@@ -185,6 +190,8 @@ Pairing:
   (Security tradeoff: enable pairing with OPENCLAW_DISABLE_DEVICE_AUTH=0.)
 Model:
   ${OPENCLAW_MODEL_PRIMARY} (fallback: ${OPENCLAW_MODEL_FALLBACK})
+State:
+  OPENCLAW_RESET_STATE=$OPENCLAW_RESET_STATE
 
 Useful commands:
   docker compose -f "$OPENCLAW_DOCKER_DIR/docker-compose.yml" -f "$COMPOSE_OVERRIDE" logs -f openclaw-gateway
@@ -199,6 +206,8 @@ Pairing:
     docker compose -f "$OPENCLAW_DOCKER_DIR/docker-compose.yml" -f "$COMPOSE_OVERRIDE" run --rm openclaw-cli devices approve --latest
 Model:
   ${OPENCLAW_MODEL_PRIMARY} (fallback: ${OPENCLAW_MODEL_FALLBACK})
+State:
+  OPENCLAW_RESET_STATE=$OPENCLAW_RESET_STATE
 
 Useful commands:
   docker compose -f "$OPENCLAW_DOCKER_DIR/docker-compose.yml" -f "$COMPOSE_OVERRIDE" logs -f openclaw-gateway

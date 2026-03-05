@@ -293,3 +293,8 @@ Pairing behavior for this smoke script:
 Model behavior for this smoke script:
 
 - defaults to OpenAI models (`openai/gpt-5.2` + OpenAI fallback) so it does not require Anthropic auth by default
+
+State behavior for this smoke script:
+
+- defaults to isolated config dir `~/.openclaw-paperclip-smoke`
+- resets smoke agent state each run by default (`OPENCLAW_RESET_STATE=1`) to avoid stale provider/auth drift
