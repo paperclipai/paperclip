@@ -8,7 +8,7 @@ import type { DeploymentMode } from "@paperclipai/shared";
 import { WebSocket, WebSocketServer } from "ws";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "../middleware/logger.js";
-import { subscribeCompanyLiveEvents } from "../services/live-events.js";
+import { subscribeCompanyLiveEvents } from "../services/live-events-batched.js";
 
 interface UpgradeContext {
   companyId: string;

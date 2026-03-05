@@ -21,9 +21,13 @@
     "changeset": "changeset",
     "version-packages": "changeset version",
     "check:tokens": "node scripts/check-forbidden-tokens.mjs",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
     "docs:dev": "cd docs && npx mintlify dev"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.4.5",
     "@changesets/cli": "^2.30.0",
     "esbuild": "^0.27.3",
     "typescript": "^5.7.3",

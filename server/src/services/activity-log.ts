@@ -1,6 +1,6 @@
 import type { Db } from "@paperclipai/db";
 import { activityLog } from "@paperclipai/db";
-import { publishLiveEvent } from "./live-events.js";
+import { publishLiveEvent } from "./live-events-batched.js";
 import { sanitizeRecord } from "../redaction.js";
 
 export interface LogActivityInput {

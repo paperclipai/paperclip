@@ -23,6 +23,8 @@ import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import { heartbeatService } from "./services/index.js";
+import { createHeartbeatScheduler } from "./services/heartbeat-scheduler.js";
+import { flushPendingEvents } from "./services/live-events-batched.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
@@ -221,7 +223,9 @@ let startupDbInfo:
 if (config.databaseUrl) {
   migrationSummary = await ensureMigrations(config.databaseUrl, "PostgreSQL");
 
-  db = createDb(config.databaseUrl);
+  db = createDb(config.databaseUrl, {
+    maxConnections: parseInt(process.env.PAPERCLIP_DB_POOL_MAX ?? "", 10) || 20,
+  });
   logger.info("Using external PostgreSQL via DATABASE_URL/config");
   startupDbInfo = { mode: "external-postgres", connectionString: config.databaseUrl };
 } else {
@@ -357,7 +361,9 @@ if (config.databaseUrl) {
     autoApply: shouldAutoApplyFirstRunMigrations,
   });
 
-  db = createDb(embeddedConnectionString);
+  db = createDb(embeddedConnectionString, {
+    maxConnections: parseInt(process.env.PAPERCLIP_DB_POOL_MAX ?? "", 10) || 10,
+  });
   logger.info("Embedded PostgreSQL ready");
   startupDbInfo = { mode: "embedded-postgres", dataDir, port };
 }
@@ -449,6 +455,8 @@ setupLiveEventsWebSocketServer(server, db as any, {
   resolveSessionFromHeaders,
 });
 
+let heartbeatScheduler: ReturnType<typeof createHeartbeatScheduler> | null = null;
+
 if (config.heartbeatSchedulerEnabled) {
   const heartbeat = heartbeatService(db as any);
 
@@ -457,25 +465,13 @@ if (config.heartbeatSchedulerEnabled) {
     logger.error({ err }, "startup reap of orphaned heartbeat runs failed");
   });
 
-  setInterval(() => {
-    void heartbeat
-      .tickTimers(new Date())
-      .then((result) => {
-        if (result.enqueued > 0) {
-          logger.info({ ...result }, "heartbeat timer tick enqueued runs");
-        }
-      })
-      .catch((err) => {
-        logger.error({ err }, "heartbeat timer tick failed");
-      });
-
-    // Periodically reap orphaned runs (5-min staleness threshold)
-    void heartbeat
-      .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
-      .catch((err) => {
-        logger.error({ err }, "periodic reap of orphaned heartbeat runs failed");
-      });
-  }, config.heartbeatSchedulerIntervalMs);
+  heartbeatScheduler = createHeartbeatScheduler({
+    intervalMs: config.heartbeatSchedulerIntervalMs,
+    tickTimers: (now) => heartbeat.tickTimers(now),
+    reapOrphanedRuns: (opts) => heartbeat.reapOrphanedRuns(opts),
+    staleThresholdMs: 5 * 60 * 1000,
+  });
+  heartbeatScheduler.start();
 }
 
 server.listen(listenPort, config.host, () => {
@@ -523,16 +519,33 @@ server.listen(listenPort, config.host, () => {
   }
 });
 
-if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
+// Graceful shutdown: stop scheduler, flush events, then stop embedded Postgres.
+{
   const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
-    logger.info({ signal }, "Stopping embedded PostgreSQL");
-    try {
-      await embeddedPostgres?.stop();
-    } catch (err) {
-      logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
-    } finally {
-      process.exit(0);
+    logger.info({ signal }, "Graceful shutdown initiated");
+
+    // 1. Stop the heartbeat scheduler (waits for in-flight tick).
+    if (heartbeatScheduler) {
+      try {
+        await heartbeatScheduler.stop();
+      } catch (err) {
+        logger.error({ err }, "Failed to stop heartbeat scheduler cleanly");
+      }
     }
+
+    // 2. Flush any buffered WebSocket events.
+    flushPendingEvents();
+
+    // 3. Stop embedded Postgres if we started it.
+    if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
+      try {
+        await embeddedPostgres.stop();
+      } catch (err) {
+        logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
+      }
+    }
+
+    process.exit(0);
   };
 
   process.once("SIGINT", () => {

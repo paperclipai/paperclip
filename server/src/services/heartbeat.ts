@@ -14,7 +14,8 @@ import {
 } from "@paperclipai/db";
 import { conflict, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
-import { publishLiveEvent } from "./live-events.js";
+import { publishLiveEvent } from "./live-events-batched.js";
+import { withAgentAdvisoryLock } from "./advisory-lock.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, runningProcesses } from "../adapters/index.js";
 import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec } from "../adapters/index.js";
@@ -27,6 +28,9 @@ const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+// In-process fast-path lock to avoid redundant DB advisory lock calls
+// when the same process is already starting this agent. The authoritative
+// lock is the Postgres advisory lock (see withAgentStartLock below).
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 
@@ -40,9 +44,23 @@ function normalizeMaxConcurrentRuns(value: unknown) {
   return Math.max(HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT, Math.min(HEARTBEAT_MAX_CONCURRENT_RUNS_MAX, parsed));
 }
 
-async function withAgentStartLock<T>(agentId: string, fn: () => Promise<T>) {
+/**
+ * Two-layer locking for agent start operations:
+ *
+ * Layer 1 (in-process): Promise chain per agent to serialize starts
+ *   within this Node process. Avoids hitting Postgres for every lock.
+ *
+ * Layer 2 (cross-process): pg_advisory_xact_lock to coordinate across
+ *   multiple Paperclip server instances. This is what enables horizontal
+ *   scaling — two servers can't start the same agent simultaneously.
+ */
+async function withAgentStartLock<T>(db: Db, agentId: string, fn: () => Promise<T>) {
+  // Layer 1: in-process serialization.
   const previous = startLocksByAgent.get(agentId) ?? Promise.resolve();
-  const run = previous.then(fn);
+  const run = previous.then(() =>
+    // Layer 2: cross-process advisory lock.
+    withAgentAdvisoryLock(db, agentId, fn),
+  );
   const marker = run.then(
     () => undefined,
     () => undefined,
@@ -851,7 +869,7 @@ export function heartbeatService(db: Db) {
   }
 
   async function startNextQueuedRunForAgent(agentId: string) {
-    return withAgentStartLock(agentId, async () => {
+    return withAgentStartLock(db, agentId, async () => {
       const agent = await getAgent(agentId);
       if (!agent) return [];
       const policy = parseHeartbeatPolicy(agent);
