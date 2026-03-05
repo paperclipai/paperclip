@@ -169,6 +169,13 @@
       "when": 1772139727599,
       "tag": "0023_fair_lethal_legion",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1772697600000,
+      "tag": "0024_company_logo_asset",
+      "breakpoints": true
     }
   ]
 }

@@ -20,6 +20,8 @@ import { useCompany } from "../context/CompanyContext";
 import { sidebarBadgesApi } from "../api/sidebarBadges";
 import { heartbeatsApi } from "../api/heartbeats";
 import { queryKeys } from "../lib/queryKeys";
+import { getCompanyLogoPath } from "../lib/companyBranding";
+import { CompanyPatternIcon } from "./CompanyPatternIcon";
 import { Button } from "@/components/ui/button";
 
 export function Sidebar() {
@@ -46,10 +48,12 @@ export function Sidebar() {
     <aside className="w-60 h-full min-h-0 border-r border-border bg-background flex flex-col">
       {/* Top bar: Company name (bold) + Search — aligned with top sections (no visible border) */}
       <div className="flex items-center gap-1 px-3 h-12 shrink-0">
-        {selectedCompany?.brandColor && (
-          <div
-            className="w-4 h-4 rounded-sm shrink-0 ml-1"
-            style={{ backgroundColor: selectedCompany.brandColor }}
+        {selectedCompany && (
+          <CompanyPatternIcon
+            companyName={selectedCompany.name}
+            brandColor={selectedCompany.brandColor}
+            logoSrc={getCompanyLogoPath(selectedCompany.logoAssetId)}
+            className="h-5 w-5 rounded-md text-[10px] ml-1"
           />
         )}
         <span className="flex-1 text-sm font-bold text-foreground truncate pl-1">

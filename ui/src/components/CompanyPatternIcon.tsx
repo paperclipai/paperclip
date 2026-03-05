@@ -11,6 +11,7 @@ const BAYER_4X4 = [
 interface CompanyPatternIconProps {
   companyName: string;
   brandColor?: string | null;
+  logoSrc?: string | null;
   className?: string;
 }
 
@@ -159,7 +160,7 @@ function makeCompanyPatternDataUrl(seed: string, brandColor?: string | null, log
   return canvas.toDataURL("image/png");
 }
 
-export function CompanyPatternIcon({ companyName, brandColor, className }: CompanyPatternIconProps) {
+export function CompanyPatternIcon({ companyName, brandColor, logoSrc, className }: CompanyPatternIconProps) {
   const initial = companyName.trim().charAt(0).toUpperCase() || "?";
   const patternDataUrl = useMemo(
     () => makeCompanyPatternDataUrl(companyName.trim().toLowerCase(), brandColor),
@@ -173,7 +174,13 @@ export function CompanyPatternIcon({ companyName, brandColor, className }: Compa
         className,
       )}
     >
-      {patternDataUrl ? (
+      {logoSrc ? (
+        <img
+          src={logoSrc}
+          alt={`${companyName} logo`}
+          className="absolute inset-0 h-full w-full object-cover"
+        />
+      ) : patternDataUrl ? (
         <img
           src={patternDataUrl}
           alt=""
@@ -184,9 +191,11 @@ export function CompanyPatternIcon({ companyName, brandColor, className }: Compa
       ) : (
         <div className="absolute inset-0 bg-muted" />
       )}
-      <span className="relative z-10 drop-shadow-[0_1px_2px_rgba(0,0,0,0.65)]">
-        {initial}
-      </span>
+      {!logoSrc && (
+        <span className="relative z-10 drop-shadow-[0_1px_2px_rgba(0,0,0,0.65)]">
+          {initial}
+        </span>
+      )}
     </div>
   );
 }

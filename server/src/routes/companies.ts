@@ -9,7 +9,7 @@ import {
 } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
-import { accessService, companyPortabilityService, companyService, logActivity } from "../services/index.js";
+import { accessService, assetService, companyPortabilityService, companyService, logActivity } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 
 export function companyRoutes(db: Db) {
@@ -17,6 +17,7 @@ export function companyRoutes(db: Db) {
   const svc = companyService(db);
   const portability = companyPortabilityService(db);
   const access = accessService(db);
+  const assets = assetService(db);
 
   router.get("/", async (req, res) => {
     assertBoard(req);
@@ -122,6 +123,13 @@ export function companyRoutes(db: Db) {
     assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    if (req.body.logoAssetId) {
+      const logo = await assets.getById(req.body.logoAssetId);
+      if (!logo || logo.companyId !== companyId) {
+        res.status(422).json({ error: "Logo asset must belong to the selected company" });
+        return;
+      }
+    }
     const company = await svc.update(companyId, req.body);
     if (!company) {
       res.status(404).json({ error: "Company not found" });

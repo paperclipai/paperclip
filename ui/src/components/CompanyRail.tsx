@@ -22,6 +22,7 @@ import { cn } from "../lib/utils";
 import { queryKeys } from "../lib/queryKeys";
 import { sidebarBadgesApi } from "../api/sidebarBadges";
 import { heartbeatsApi } from "../api/heartbeats";
+import { getCompanyLogoPath } from "../lib/companyBranding";
 import {
   Tooltip,
   TooltipContent,
@@ -122,6 +123,7 @@ function SortableCompanyItem({
               <CompanyPatternIcon
                 companyName={company.name}
                 brandColor={company.brandColor}
+                logoSrc={getCompanyLogoPath(company.logoAssetId)}
                 className={cn(
                   isSelected
                     ? "rounded-[14px]"

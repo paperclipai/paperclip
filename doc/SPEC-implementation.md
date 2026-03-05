@@ -124,6 +124,8 @@ Human auth tables (`users`, `sessions`, and provider-specific auth artifacts) ar
 - `name` text not null
 - `description` text null
 - `status` enum: `active | paused | archived`
+- `brand_color` text null
+- `logo_asset_id` uuid null (references an uploaded image asset owned by the same company)
 
 Invariant: every business record belongs to exactly one company.
 
