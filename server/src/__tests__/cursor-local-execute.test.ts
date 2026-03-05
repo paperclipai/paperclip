@@ -133,7 +133,7 @@ describe("cursor execute", () => {
     const previousHome = process.env.HOME;
     process.env.HOME = root;
     try {
-      await execute({
+      const result = await execute({
         runId: "run-focused-1",
         agent: { id: "agent-1", companyId: "company-1", name: "Cursor Coder", adapterType: "cursor", adapterConfig: {} },
         runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
@@ -142,6 +142,8 @@ describe("cursor execute", () => {
         authToken: "run-jwt-token",
         onLog: async () => {},
       });
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
       expect(capture.paperclipEnvKeys).toContain("PAPERCLIP_TASK_ID");
       expect(capture.paperclipEnvKeys).toContain("PAPERCLIP_FOCUSED_TASK_MODE");
@@ -163,7 +165,7 @@ describe("cursor execute", () => {
     const previousHome = process.env.HOME;
     process.env.HOME = root;
     try {
-      await execute({
+      const result = await execute({
         runId: "run-no-focused-1",
         agent: { id: "agent-1", companyId: "company-1", name: "Cursor Coder", adapterType: "cursor", adapterConfig: {} },
         runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
@@ -172,6 +174,8 @@ describe("cursor execute", () => {
         authToken: "run-jwt-token",
         onLog: async () => {},
       });
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
       expect(capture.paperclipEnvKeys).not.toContain("PAPERCLIP_TASK_ID");
       expect(capture.paperclipEnvKeys).not.toContain("PAPERCLIP_FOCUSED_TASK_MODE");
@@ -193,7 +197,7 @@ describe("cursor execute", () => {
     const previousHome = process.env.HOME;
     process.env.HOME = root;
     try {
-      await execute({
+      const result = await execute({
         runId: "run-optout-1",
         agent: { id: "agent-1", companyId: "company-1", name: "Cursor Coder", adapterType: "cursor", adapterConfig: {} },
         runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
@@ -202,6 +206,8 @@ describe("cursor execute", () => {
         authToken: "run-jwt-token",
         onLog: async () => {},
       });
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
       expect(capture.paperclipEnvKeys).toContain("PAPERCLIP_TASK_ID");
       expect(capture.paperclipEnvKeys).not.toContain("PAPERCLIP_FOCUSED_TASK_MODE");
@@ -225,7 +231,7 @@ describe("cursor execute", () => {
     const previousHome = process.env.HOME;
     process.env.HOME = root;
     try {
-      await execute({
+      const result = await execute({
         runId: "run-mention-1",
         agent: { id: "agent-1", companyId: "company-1", name: "Cursor Coder", adapterType: "cursor", adapterConfig: {} },
         runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
@@ -234,9 +240,12 @@ describe("cursor execute", () => {
         authToken: "run-jwt-token",
         onLog: async () => {},
       });
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
       expect(capture.paperclipEnvKeys).toContain("PAPERCLIP_TASK_ID");
       expect(capture.paperclipEnvKeys).not.toContain("PAPERCLIP_FOCUSED_TASK_MODE");
+      expect(capture.paperclipEnv.PAPERCLIP_FOCUSED_TASK_MODE).toBeUndefined();
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
