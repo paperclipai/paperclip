@@ -476,11 +476,12 @@ export function IssueDetail() {
   });
 
   useEffect(() => {
+    const titleLabel = issue?.title ?? issueId ?? "Issue";
     setBreadcrumbs([
       { label: "Issues", href: "/issues" },
-      { label: issue?.title ?? issueId ?? "Issue" },
+      { label: hasLiveRuns ? `🔵 ${titleLabel}` : titleLabel },
     ]);
-  }, [setBreadcrumbs, issue, issueId]);
+  }, [setBreadcrumbs, issue, issueId, hasLiveRuns]);
 
   // Redirect to identifier-based URL if navigated via UUID
   useEffect(() => {
