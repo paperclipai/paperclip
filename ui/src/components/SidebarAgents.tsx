@@ -1,8 +1,9 @@
 import { useMemo, useState } from "react";
 import { NavLink, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, Plus } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
+import { useDialog } from "../context/DialogContext";
 import { useSidebar } from "../context/SidebarContext";
 import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
@@ -40,6 +41,7 @@ function sortByHierarchy(agents: Agent[]): Agent[] {
 export function SidebarAgents() {
   const [open, setOpen] = useState(true);
   const { selectedCompanyId } = useCompany();
+  const { openNewAgent } = useDialog();
   const { isMobile, setSidebarOpen } = useSidebar();
   const location = useLocation();
 
@@ -89,6 +91,16 @@ export function SidebarAgents() {
               Agents
             </span>
           </CollapsibleTrigger>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              openNewAgent();
+            }}
+            className="flex items-center justify-center h-4 w-4 rounded text-muted-foreground/60 hover:text-foreground hover:bg-accent/50 transition-colors"
+            aria-label="New agent"
+          >
+            <Plus className="h-3 w-3" />
+          </button>
         </div>
       </div>
 
