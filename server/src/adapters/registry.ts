@@ -33,6 +33,7 @@ import {
 } from "@paperclipai/adapter-openclaw";
 import { listCodexModels } from "./codex-models.js";
 import { listCursorModels } from "./cursor-models.js";
+import { listOpenCodeModels } from "./opencode-models.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
 
@@ -63,6 +64,7 @@ const opencodeLocalAdapter: ServerAdapterModule = {
   testEnvironment: opencodeTestEnvironment,
   sessionCodec: opencodeSessionCodec,
   models: opencodeModels,
+  listModels: listOpenCodeModels,
   supportsLocalAgentJwt: true,
   agentConfigurationDoc: opencodeAgentConfigurationDoc,
 };

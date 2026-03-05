@@ -149,7 +149,7 @@ export function OnboardingWizard() {
     if (step === 3) autoResizeTextarea();
   }, [step, taskDescription, autoResizeTextarea]);
 
-  const { data: adapterModels } = useQuery({
+  const { data: adapterModels, error: adapterModelsError } = useQuery({
     queryKey: ["adapter-models", adapterType],
     queryFn: () => agentsApi.adapterModels(adapterType),
     enabled: onboardingOpen && step === 2
@@ -707,36 +707,43 @@ export function OnboardingWizard() {
                             className="w-[var(--radix-popover-trigger-width)] p-1"
                             align="start"
                           >
-                            <button
-                              className={cn(
-                                "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
-                                !model && "bg-accent"
+                            <div className="max-h-[240px] overflow-y-auto">
+                              {adapterModelsError && (
+                                <div className="px-2 py-1.5 text-xs text-destructive">
+                                  Failed to load models. Check adapter setup and try again.
+                                </div>
                               )}
-                              onClick={() => {
-                                setModel("");
-                                setModelOpen(false);
-                              }}
-                            >
-                              Default
-                            </button>
-                            {(adapterModels ?? []).map((m) => (
                               <button
-                                key={m.id}
                                 className={cn(
-                                  "flex items-center justify-between w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
-                                  m.id === model && "bg-accent"
+                                  "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
+                                  !model && "bg-accent"
                                 )}
                                 onClick={() => {
-                                  setModel(m.id);
+                                  setModel("");
                                   setModelOpen(false);
                                 }}
                               >
-                                <span>{m.label}</span>
-                                <span className="text-xs text-muted-foreground font-mono">
-                                  {m.id}
-                                </span>
+                                Default
                               </button>
-                            ))}
+                              {(adapterModels ?? []).map((m) => (
+                                <button
+                                  key={m.id}
+                                  className={cn(
+                                    "flex items-center justify-between w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
+                                    m.id === model && "bg-accent"
+                                  )}
+                                  onClick={() => {
+                                    setModel(m.id);
+                                    setModelOpen(false);
+                                  }}
+                                >
+                                  <span>{m.label}</span>
+                                  <span className="text-xs text-muted-foreground font-mono">
+                                    {m.id}
+                                  </span>
+                                </button>
+                              ))}
+                            </div>
                           </PopoverContent>
                         </Popover>
                       </div>

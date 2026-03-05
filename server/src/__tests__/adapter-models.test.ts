@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local";
 import { models as cursorFallbackModels } from "@paperclipai/adapter-cursor-local";
+import { models as opencodeFallbackModels } from "@paperclipai/adapter-opencode-local";
 import { listAdapterModels } from "../adapters/index.js";
 import { resetCodexModelsCacheForTests } from "../adapters/codex-models.js";
 import { resetCursorModelsCacheForTests, setCursorModelsRunnerForTests } from "../adapters/cursor-models.js";
+import { resetOpenCodeModelsCacheForTests, setOpenCodeModelsRunnerForTests } from "../adapters/opencode-models.js";
 
 describe("adapter model listing", () => {
   beforeEach(() => {
@@ -11,6 +13,8 @@ describe("adapter model listing", () => {
     resetCodexModelsCacheForTests();
     resetCursorModelsCacheForTests();
     setCursorModelsRunnerForTests(null);
+    resetOpenCodeModelsCacheForTests();
+    setOpenCodeModelsRunnerForTests(null);
     vi.restoreAllMocks();
   });
 
@@ -89,5 +93,41 @@ describe("adapter model listing", () => {
     expect(first.some((model) => model.id === "auto")).toBe(true);
     expect(first.some((model) => model.id === "gpt-5.3-codex-high")).toBe(true);
     expect(first.some((model) => model.id === "composer-1")).toBe(true);
+  });
+
+  it("returns opencode fallback models when CLI discovery is unavailable", async () => {
+    setOpenCodeModelsRunnerForTests(async () => ({
+      status: null,
+      stdout: "",
+      stderr: "",
+    }));
+
+    const models = await listAdapterModels("opencode_local");
+    expect(models).toEqual(opencodeFallbackModels);
+  });
+
+  it("loads opencode models dynamically and caches them", async () => {
+    const runner = vi.fn(async () => ({
+      status: 0,
+      stdout: `opencode/minimax-m2.5-free
+opencode-go/glm-5
+opencode-go/kimi-k2.5
+opencode-go/minimax-m2.5
+github-copilot/claude-haiku-4.5
+github-copilot/claude-opus-4.5`,
+      stderr: "",
+    }));
+    setOpenCodeModelsRunnerForTests(runner);
+
+    const first = await listAdapterModels("opencode_local");
+    const second = await listAdapterModels("opencode_local");
+
+    expect(runner).toHaveBeenCalledTimes(1);
+    expect(first).toEqual(second);
+    expect(first.some((model) => model.id === "opencode-go/kimi-k2.5")).toBe(true);
+    expect(first.some((model) => model.id === "github-copilot/claude-opus-4.5")).toBe(true);
+    // Should include fallback models too
+    const fallbackIds = new Set(opencodeFallbackModels.map((m) => m.id));
+    expect(first.some((model) => fallbackIds.has(model.id))).toBe(true);
   });
 });
