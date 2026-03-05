@@ -107,9 +107,16 @@ export async function testEnvironment(
       "OPENAI_API_KEY",
       "ANTHROPIC_API_KEY",
       "GEMINI_API_KEY",
-      "OPENROUTER_API_KEY",
       "GROQ_API_KEY",
+      "CEREBRAS_API_KEY",
       "XAI_API_KEY",
+      "OPENROUTER_API_KEY",
+      "AI_GATEWAY_API_KEY",
+      "ZAI_API_KEY",
+      "MISTRAL_API_KEY",
+      "MINIMAX_API_KEY",
+      "OPENCODE_API_KEY",
+      "KIMI_API_KEY",
     ].some((key) => isNonEmpty(env[key]) || isNonEmpty(process.env[key]));
 
   if (anyApiKeySet) {

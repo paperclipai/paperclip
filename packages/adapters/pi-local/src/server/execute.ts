@@ -150,6 +150,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  const executionEnv: Record<string, string> = {};
+  for (const [key, value] of Object.entries(runtimeEnv)) {
+    if (typeof value === "string") executionEnv[key] = value;
+  }
   await ensureCommandResolvable(command, cwd, runtimeEnv);
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
@@ -259,7 +263,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const proc = await runChildProcess(runId, command, args, {
     cwd,
-    env,
+    env: executionEnv,
     timeoutSec,
     graceSec,
     onLog,
@@ -308,7 +312,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     sessionDisplayId: resolvedSessionId,
     provider: parsed.provider,
     model: parsed.model ?? model,
-    billingType: resolvePiBillingType(env),
+    billingType: resolvePiBillingType(executionEnv),
     costUsd: parsed.costUsd,
     resultJson: {
       stdout: proc.stdout,
