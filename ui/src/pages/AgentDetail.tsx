@@ -1504,6 +1504,7 @@ function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRun; agen
   const hasNonZeroExit = run.exitCode !== null && run.exitCode !== 0;
 
   const [summaryHeight, setSummaryHeight] = useState(() => Math.round((window.innerHeight - 12 * 16) * 0.5));
+  const splitContainerRef = useRef<HTMLDivElement>(null);
   const dragStartRef = useRef<{ y: number; h: number } | null>(null);
   const dragMoveRef = useRef<((ev: MouseEvent) => void) | null>(null);
   const dragUpRef = useRef<(() => void) | null>(null);
@@ -1518,7 +1519,9 @@ function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRun; agen
     dragStartRef.current = { y: e.clientY, h: summaryHeight };
     const onMove = (ev: MouseEvent) => {
       if (!dragStartRef.current) return;
-      setSummaryHeight(Math.max(120, Math.min(700, dragStartRef.current.h + ev.clientY - dragStartRef.current.y)));
+      // Cap summary to container height minus a small reserve for the transcript (no hardcoded pixel min).
+      const containerHeight = splitContainerRef.current?.clientHeight ?? window.innerHeight;
+      setSummaryHeight(Math.max(80, Math.min(containerHeight - 40, dragStartRef.current.h + ev.clientY - dragStartRef.current.y)));
     };
     const onUp = () => {
       dragStartRef.current = null;
@@ -1534,7 +1537,7 @@ function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRun; agen
   };
 
   return (
-    <div className="flex flex-col h-full min-w-0">
+    <div ref={splitContainerRef} className="flex flex-col h-full min-w-0">
       {/* Summary pane — fixed height when transcript open, flex-1 when collapsed */}
       <div
         className={cn("overflow-y-auto space-y-4", transcriptOpen ? "shrink-0" : "flex-1")}
