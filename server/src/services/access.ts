@@ -83,45 +83,53 @@ export function accessService(db: Db) {
       .orderBy(sql`${companyMemberships.createdAt} desc`);
   }
 
+  async function getMemberById(companyId: string, memberId: string) {
+    return db
+      .select()
+      .from(companyMemberships)
+      .where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.id, memberId)))
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function getGrantsForPrincipal(companyId: string, principalType: PrincipalType, principalId: string) {
+    return db
+      .select()
+      .from(principalPermissionGrants)
+      .where(
+        and(
+          eq(principalPermissionGrants.companyId, companyId),
+          eq(principalPermissionGrants.principalType, principalType),
+          eq(principalPermissionGrants.principalId, principalId),
+        ),
+      );
+  }
+
+  async function getMemberPermissions(companyId: string, memberId: string) {
+    const member = await getMemberById(companyId, memberId);
+    if (!member) return null;
+
+    const grants = await getGrantsForPrincipal(companyId, member.principalType as PrincipalType, member.principalId);
+    return { member, grants };
+  }
+
+  async function getAgentPermissions(companyId: string, agentId: string) {
+    const member = await getMembership(companyId, "agent", agentId);
+    if (!member) return null;
+
+    const grants = await getGrantsForPrincipal(companyId, member.principalType as PrincipalType, member.principalId);
+    return { member, grants };
+  }
+
   async function setMemberPermissions(
     companyId: string,
     memberId: string,
     grants: GrantInput[],
     grantedByUserId: string | null,
   ) {
-    const member = await db
-      .select()
-      .from(companyMemberships)
-      .where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.id, memberId)))
-      .then((rows) => rows[0] ?? null);
+    const member = await getMemberById(companyId, memberId);
     if (!member) return null;
 
-    await db.transaction(async (tx) => {
-      await tx
-        .delete(principalPermissionGrants)
-        .where(
-          and(
-            eq(principalPermissionGrants.companyId, companyId),
-            eq(principalPermissionGrants.principalType, member.principalType),
-            eq(principalPermissionGrants.principalId, member.principalId),
-          ),
-        );
-      if (grants.length > 0) {
-        await tx.insert(principalPermissionGrants).values(
-          grants.map((grant) => ({
-            companyId,
-            principalType: member.principalType,
-            principalId: member.principalId,
-            permissionKey: grant.permissionKey,
-            scope: grant.scope ?? null,
-            grantedByUserId,
-            createdAt: new Date(),
-            updatedAt: new Date(),
-          })),
-        );
-      }
-    });
-
+    await setPrincipalGrants(companyId, member.principalType as PrincipalType, member.principalId, grants, grantedByUserId);
     return member;
   }
 
@@ -258,6 +266,8 @@ export function accessService(db: Db) {
     getMembership,
     ensureMembership,
     listMembers,
+    getMemberPermissions,
+    getAgentPermissions,
     setMemberPermissions,
     promoteInstanceAdmin,
     demoteInstanceAdmin,

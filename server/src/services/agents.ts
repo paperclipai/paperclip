@@ -8,10 +8,12 @@ import {
   agentRuntimeState,
   agentTaskSessions,
   agentWakeupRequests,
+  companyMemberships,
+  principalPermissionGrants,
   heartbeatRunEvents,
   heartbeatRuns,
 } from "@paperclipai/db";
-import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
+import { isUuidLike, normalizeAgentUrlKey, PERMISSION_KEYS } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
@@ -192,7 +194,7 @@ export function agentService(db: Db) {
   function normalizeAgentRow(row: typeof agents.$inferSelect) {
     return withUrlKey({
       ...row,
-      permissions: normalizeAgentPermissions(row.permissions, row.role),
+      permissions: normalizeAgentPermissions(row.permissions),
     });
   }
 
@@ -288,8 +290,7 @@ export function agentService(db: Db) {
 
     const normalizedPatch = { ...data } as Partial<typeof agents.$inferInsert>;
     if (data.permissions !== undefined) {
-      const role = (data.role ?? existing.role) as string;
-      normalizedPatch.permissions = normalizeAgentPermissions(data.permissions, role);
+      normalizedPatch.permissions = normalizeAgentPermissions(data.permissions);
     }
 
     const shouldRecordRevision = Boolean(options?.recordRevision) && hasConfigPatchFields(normalizedPatch);
@@ -321,7 +322,39 @@ export function agentService(db: Db) {
       }
     }
 
+    if (normalizedUpdated && data.role === "ceo" && existing.role !== "ceo") {
+      await ensureAgentMembership(normalizedUpdated.companyId, normalizedUpdated.id);
+      await grantAllPermissions(normalizedUpdated.companyId, normalizedUpdated.id);
+    }
+
     return normalizedUpdated;
+  }
+
+  async function ensureAgentMembership(companyId: string, agentId: string) {
+    await db
+      .insert(companyMemberships)
+      .values({
+        companyId,
+        principalType: "agent",
+        principalId: agentId,
+        status: "active",
+        membershipRole: "member",
+      })
+      .onConflictDoNothing();
+  }
+
+  async function grantAllPermissions(companyId: string, agentId: string) {
+    await db
+      .insert(principalPermissionGrants)
+      .values(
+        PERMISSION_KEYS.map((pk) => ({
+          companyId,
+          principalType: "agent" as const,
+          principalId: agentId,
+          permissionKey: pk,
+        })),
+      )
+      .onConflictDoNothing();
   }
 
   return {
@@ -344,12 +377,17 @@ export function agentService(db: Db) {
       await assertCompanyShortnameAvailable(companyId, data.name);
 
       const role = data.role ?? "general";
-      const normalizedPermissions = normalizeAgentPermissions(data.permissions, role);
+      const normalizedPermissions = normalizeAgentPermissions(data.permissions);
       const created = await db
         .insert(agents)
         .values({ ...data, companyId, role, permissions: normalizedPermissions })
         .returning()
         .then((rows) => rows[0]);
+
+      await ensureAgentMembership(companyId, created.id);
+      if (role === "ceo") {
+        await grantAllPermissions(companyId, created.id);
+      }
 
       return normalizeAgentRow(created);
     },
@@ -433,23 +471,6 @@ export function agentService(db: Db) {
       const updated = await db
         .update(agents)
         .set({ status: "idle", updatedAt: new Date() })
-        .where(eq(agents.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
-
-      return updated ? normalizeAgentRow(updated) : null;
-    },
-
-    updatePermissions: async (id: string, permissions: { canCreateAgents: boolean }) => {
-      const existing = await getById(id);
-      if (!existing) return null;
-
-      const updated = await db
-        .update(agents)
-        .set({
-          permissions: normalizeAgentPermissions(permissions, existing.role),
-          updatedAt: new Date(),
-        })
         .where(eq(agents.id, id))
         .returning()
         .then((rows) => rows[0] ?? null);
