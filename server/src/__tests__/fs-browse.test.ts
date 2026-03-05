@@ -24,7 +24,7 @@ function createApp(actorType: "board" | "agent") {
         : { type: "agent", agentId: "agent-1", companyId: "co-1" };
     next();
   });
-  app.use(fsRoutes());
+  app.use("/api", fsRoutes());
   app.use(
     (
       err: { status?: number; message?: string },
@@ -45,7 +45,7 @@ describe("GET /fs/browse", () => {
 
   it("returns 403 for agent actors", async () => {
     const app = createApp("agent");
-    const res = await request(app).get("/fs/browse");
+    const res = await request(app).get("/api/fs/browse");
     expect(res.status).toBe(403);
   });
 
@@ -58,7 +58,7 @@ describe("GET /fs/browse", () => {
     ]);
 
     const app = createApp("board");
-    const res = await request(app).get("/fs/browse");
+    const res = await request(app).get("/api/fs/browse");
 
     expect(res.status).toBe(200);
     expect(res.body.path).toBe(home);
@@ -74,19 +74,23 @@ describe("GET /fs/browse", () => {
       { name: "README.md", isDirectory: () => false } as unknown as import("node:fs").Dirent,
     ]);
 
+    const expectedPath = path.join(path.sep, "Users", "foo", "project");
+    const expectedParent = path.dirname(expectedPath);
+    const expectedEntryPath = path.join(expectedPath, "src");
+
     const app = createApp("board");
-    const res = await request(app).get("/fs/browse?path=/Users/foo/project");
+    const res = await request(app).get(`/api/fs/browse?path=${expectedPath}`);
 
     expect(res.status).toBe(200);
-    expect(res.body.path).toBe("/Users/foo/project");
-    expect(res.body.parent).toBe("/Users/foo");
+    expect(res.body.path).toBe(expectedPath);
+    expect(res.body.parent).toBe(expectedParent);
     expect(res.body.entries).toHaveLength(1);
-    expect(res.body.entries[0]).toEqual({ name: "src", path: "/Users/foo/project/src" });
+    expect(res.body.entries[0]).toEqual({ name: "src", path: expectedEntryPath });
   });
 
   it("returns 400 for relative paths", async () => {
     const app = createApp("board");
-    const res = await request(app).get("/fs/browse?path=relative/path");
+    const res = await request(app).get("/api/fs/browse?path=relative/path");
     expect(res.status).toBe(400);
   });
 
@@ -94,7 +98,7 @@ describe("GET /fs/browse", () => {
     mockReaddir.mockResolvedValueOnce([]);
 
     const app = createApp("board");
-    const res = await request(app).get("/fs/browse?path=/");
+    const res = await request(app).get("/api/fs/browse?path=/");
 
     expect(res.status).toBe(200);
     expect(res.body.parent).toBeNull();
@@ -105,7 +109,7 @@ describe("GET /fs/browse", () => {
     mockReaddir.mockRejectedValueOnce(err);
 
     const app = createApp("board");
-    const res = await request(app).get("/fs/browse?path=/nonexistent");
+    const res = await request(app).get("/api/fs/browse?path=/nonexistent");
     expect(res.status).toBe(404);
   });
 
@@ -114,7 +118,7 @@ describe("GET /fs/browse", () => {
     mockReaddir.mockRejectedValueOnce(err);
 
     const app = createApp("board");
-    const res = await request(app).get("/fs/browse?path=/etc/hosts");
+    const res = await request(app).get("/api/fs/browse?path=/etc/hosts");
     expect(res.status).toBe(400);
   });
 
@@ -126,7 +130,7 @@ describe("GET /fs/browse", () => {
     ]);
 
     const app = createApp("board");
-    const res = await request(app).get("/fs/browse?path=/some/path");
+    const res = await request(app).get("/api/fs/browse?path=/some/path");
     expect(res.status).toBe(200);
     expect(res.body.entries.map((e: { name: string }) => e.name)).toEqual(["src"]);
   });
@@ -139,7 +143,7 @@ describe("GET /fs/browse", () => {
     ]);
 
     const app = createApp("board");
-    const res = await request(app).get("/fs/browse?path=/some/path&showHidden=true");
+    const res = await request(app).get("/api/fs/browse?path=/some/path&showHidden=true");
     expect(res.status).toBe(200);
     expect(res.body.entries.map((e: { name: string }) => e.name)).toEqual([".git", ".hidden", "src"]);
   });
@@ -152,7 +156,7 @@ describe("GET /fs/browse", () => {
     ]);
 
     const app = createApp("board");
-    const res = await request(app).get("/fs/browse?path=/some/path");
+    const res = await request(app).get("/api/fs/browse?path=/some/path");
     expect(res.status).toBe(200);
     expect(res.body.entries.map((e: { name: string }) => e.name)).toEqual(["aaa", "mmm", "zzz"]);
   });
