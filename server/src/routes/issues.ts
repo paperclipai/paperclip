@@ -56,6 +56,19 @@ export function resolveDoneTransitionEvidenceComment(
   return latestComment || null;
 }
 
+type CommentWakeActor = {
+  actorType: "agent" | "user";
+  agentId: string | null;
+};
+
+export function shouldWakeAgentForComment(
+  actor: CommentWakeActor,
+  targetAgentId: string | null | undefined,
+) {
+  if (!targetAgentId) return false;
+  return !(actor.actorType === "agent" && actor.agentId === targetAgentId);
+}
+
 const DONE_EVIDENCE_REQUIRED_ERROR =
   "Cannot mark issue done for code-labeled issues: latest completion comment must include a GitHub commit or pull request link " +
   "(https://github.com/<owner>/<repo>/commit/<sha> or /pull/<number>). If this was non-code work, remove the code label before closing. " +
@@ -123,6 +136,37 @@ export function issueRequiresDoneEvidence(input: {
     );
   }
   return (input.currentLabels ?? []).some((label) => isCodeLabelName(label.name));
+}
+
+type CommentWakeActor = {
+  actorType: "agent" | "user";
+  agentId: string | null;
+};
+
+const GITHUB_COMMIT_OR_PR_LINK_RE =
+  /https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/(?:commit\/[0-9a-fA-F]{7,40}|pull\/\d+)(?:[/?#][^\s<>)\]}]*)?/;
+
+export function shouldWakeAgentForComment(
+  actor: CommentWakeActor,
+  targetAgentId: string | null | undefined,
+) {
+  if (!targetAgentId) return false;
+  return !(actor.actorType === "agent" && actor.agentId === targetAgentId);
+}
+
+export function containsGitHubCommitOrPrLink(body: string | null | undefined) {
+  if (!body) return false;
+  return GITHUB_COMMIT_OR_PR_LINK_RE.test(body);
+}
+
+export function resolveDoneTransitionEvidenceComment(
+  commentBody: string | null | undefined,
+  latestExistingCommentBody: string | null | undefined,
+) {
+  const directComment = commentBody?.trim();
+  if (directComment) return directComment;
+  const latestComment = latestExistingCommentBody?.trim();
+  return latestComment || null;
 }
 
 export function issueRoutes(db: Db, storage: StorageService) {
@@ -1084,6 +1128,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
         }
 
         for (const mentionedId of mentionedIds) {
+          if (!shouldWakeAgentForComment(actor, mentionedId)) continue;
           if (wakeups.has(mentionedId)) continue;
           if (actor.actorType === "agent" && actor.actorId === mentionedId) continue;
           wakeups.set(mentionedId, {
@@ -1438,7 +1483,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
       const assigneeId = currentIssue.assigneeAgentId;
       const actorIsAgent = actor.actorType === "agent";
-      const selfComment = actorIsAgent && actor.actorId === assigneeId;
+      const selfComment = !shouldWakeAgentForComment(actor, assigneeId);
       const skipWake = selfComment || isClosed;
       if (assigneeId && (reopened || !skipWake)) {
         if (reopened) {
@@ -1498,6 +1543,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       }
 
       for (const mentionedId of mentionedIds) {
+        if (!shouldWakeAgentForComment(actor, mentionedId)) continue;
         if (wakeups.has(mentionedId)) continue;
         if (actorIsAgent && actor.actorId === mentionedId) continue;
         wakeups.set(mentionedId, {

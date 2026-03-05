@@ -480,6 +480,14 @@ export function IssueDetail() {
     onSuccess: () => {
       invalidateIssue();
     },
+    onError: (err) => {
+      pushToast({
+        dedupeKey: `activity:issue.update_failed:${issueId ?? "unknown"}`,
+        title: "Issue update failed",
+        body: err instanceof Error ? err.message : "Unable to update issue.",
+        tone: "error",
+      });
+    },
   });
 
   const addComment = useMutation({
