@@ -1126,6 +1126,7 @@ export function heartbeatService(db: Db) {
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
+      focusedTaskMode: asBoolean(heartbeat.focusedTaskMode, true),
     };
   }
 
@@ -1538,6 +1539,10 @@ export function heartbeatService(db: Db) {
       context.paperclipRuntimeServiceIntents = runtimeServiceIntents;
     } else {
       delete context.paperclipRuntimeServiceIntents;
+    }
+    const policy = parseHeartbeatPolicy(agent);
+    if (!policy.focusedTaskMode) {
+      context.focusedTaskMode = false;
     }
     if (executionWorkspace.projectId && !readNonEmptyString(context.projectId)) {
       context.projectId = executionWorkspace.projectId;
