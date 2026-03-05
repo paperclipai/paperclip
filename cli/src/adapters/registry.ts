@@ -27,13 +27,18 @@ const cursorLocalCLIAdapter: CLIAdapterModule = {
   formatStdoutEvent: printCursorStreamEvent,
 };
 
+const cursorCLIAdapter: CLIAdapterModule = {
+  type: "cursor",
+  formatStdoutEvent: printCursorStreamEvent,
+};
+
 const openclawCLIAdapter: CLIAdapterModule = {
   type: "openclaw",
   formatStdoutEvent: printOpenClawStreamEvent,
 };
 
 const adaptersByType = new Map<string, CLIAdapterModule>(
-  [claudeLocalCLIAdapter, codexLocalCLIAdapter, opencodeLocalCLIAdapter, cursorLocalCLIAdapter, openclawCLIAdapter, processCLIAdapter, httpCLIAdapter].map((a) => [a.type, a]),
+  [claudeLocalCLIAdapter, codexLocalCLIAdapter, opencodeLocalCLIAdapter, cursorLocalCLIAdapter, cursorCLIAdapter, openclawCLIAdapter, processCLIAdapter, httpCLIAdapter].map((a) => [a.type, a]),
 );
 
 export function getCLIAdapter(type: string): CLIAdapterModule {
