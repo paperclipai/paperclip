@@ -1395,6 +1395,38 @@ function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRun; agen
     },
   });
 
+  const canRetryRun = run.status === "failed" || run.status === "timed_out";
+  const retryPayload = useMemo(() => {
+    const payload: Record<string, unknown> = {};
+    const context = asRecord(run.contextSnapshot);
+    if (!context) return payload;
+    const issueId = asNonEmptyString(context.issueId);
+    const taskId = asNonEmptyString(context.taskId);
+    const taskKey = asNonEmptyString(context.taskKey);
+    if (issueId) payload.issueId = issueId;
+    if (taskId) payload.taskId = taskId;
+    if (taskKey) payload.taskKey = taskKey;
+    return payload;
+  }, [run.contextSnapshot]);
+  const retryRun = useMutation({
+    mutationFn: async () => {
+      const result = await agentsApi.wakeup(run.agentId, {
+        source: "on_demand",
+        triggerDetail: "manual",
+        reason: "retry_failed_run",
+        payload: retryPayload,
+      }, run.companyId);
+      if (!("id" in result)) {
+        throw new Error("Retry was skipped because the agent is not currently invokable.");
+      }
+      return result;
+    },
+    onSuccess: (newRun) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(run.companyId, run.agentId) });
+      navigate(`/agents/${agentRouteId}/runs/${newRun.id}`);
+    },
+  });
+
   const { data: touchedIssues } = useQuery({
     queryKey: queryKeys.runIssues(run.id),
     queryFn: () => activityApi.issuesForRun(run.id),
@@ -1485,10 +1517,27 @@ function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRun; agen
                   {resumeRun.isPending ? "Resuming…" : "Resume"}
                 </Button>
               )}
+              {canRetryRun && !canResumeLostRun && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-xs h-6 px-2"
+                  onClick={() => retryRun.mutate()}
+                  disabled={retryRun.isPending}
+                >
+                  <RotateCcw className="h-3.5 w-3.5 mr-1" />
+                  {retryRun.isPending ? "Retrying…" : "Retry"}
+                </Button>
+              )}
             </div>
             {resumeRun.isError && (
               <div className="text-xs text-destructive">
                 {resumeRun.error instanceof Error ? resumeRun.error.message : "Failed to resume run"}
+              </div>
+            )}
+            {retryRun.isError && (
+              <div className="text-xs text-destructive">
+                {retryRun.error instanceof Error ? retryRun.error.message : "Failed to retry run"}
               </div>
             )}
             {startTime && (

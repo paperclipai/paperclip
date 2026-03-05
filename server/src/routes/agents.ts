@@ -36,11 +36,15 @@ import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
 } from "@paperclipai/adapter-codex-local";
+import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
+import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
 
 export function agentRoutes(db: Db) {
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
     claude_local: "instructionsFilePath",
     codex_local: "instructionsFilePath",
+    opencode_local: "instructionsFilePath",
+    cursor: "instructionsFilePath",
   };
   const KNOWN_INSTRUCTIONS_PATH_KEYS = new Set(["instructionsFilePath", "agentsMdPath"]);
 
@@ -178,17 +182,24 @@ export function agentRoutes(db: Db) {
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
   ): Record<string, unknown> {
-    if (adapterType !== "codex_local") return adapterConfig;
-
     const next = { ...adapterConfig };
-    if (!asNonEmptyString(next.model)) {
-      next.model = DEFAULT_CODEX_LOCAL_MODEL;
+    if (adapterType === "codex_local") {
+      if (!asNonEmptyString(next.model)) {
+        next.model = DEFAULT_CODEX_LOCAL_MODEL;
+      }
+      const hasBypassFlag =
+        typeof next.dangerouslyBypassApprovalsAndSandbox === "boolean" ||
+        typeof next.dangerouslyBypassSandbox === "boolean";
+      if (!hasBypassFlag) {
+        next.dangerouslyBypassApprovalsAndSandbox = DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
+      }
+      return next;
     }
-    const hasBypassFlag =
-      typeof next.dangerouslyBypassApprovalsAndSandbox === "boolean" ||
-      typeof next.dangerouslyBypassSandbox === "boolean";
-    if (!hasBypassFlag) {
-      next.dangerouslyBypassApprovalsAndSandbox = DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
+    if (adapterType === "opencode_local" && !asNonEmptyString(next.model)) {
+      next.model = DEFAULT_OPENCODE_LOCAL_MODEL;
+    }
+    if (adapterType === "cursor" && !asNonEmptyString(next.model)) {
+      next.model = DEFAULT_CURSOR_LOCAL_MODEL;
     }
     return next;
   }
@@ -1355,7 +1366,12 @@ export function agentRoutes(db: Db) {
     }
 
     if (!run && issue.assigneeAgentId && issue.status === "in_progress") {
-      run = await heartbeat.getActiveRunForAgent(issue.assigneeAgentId);
+      const candidateRun = await heartbeat.getActiveRunForAgent(issue.assigneeAgentId);
+      const candidateContext = asRecord(candidateRun?.contextSnapshot);
+      const candidateIssueId = asNonEmptyString(candidateContext?.issueId);
+      if (candidateRun && candidateIssueId === issue.id) {
+        run = candidateRun;
+      }
     }
     if (!run) {
       res.json(null);

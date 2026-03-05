@@ -118,6 +118,8 @@ function collectEdges(nodes: LayoutNode[]): Array<{ parent: LayoutNode; child: L
 const adapterLabels: Record<string, string> = {
   claude_local: "Claude",
   codex_local: "Codex",
+  opencode_local: "OpenCode",
+  cursor: "Cursor",
   openclaw: "OpenClaw",
   process: "Process",
   http: "HTTP",

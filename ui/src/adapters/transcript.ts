@@ -2,6 +2,18 @@ import type { TranscriptEntry, StdoutLineParser } from "./types";
 
 type RunLogChunk = { ts: string; stream: "stdout" | "stderr" | "system"; chunk: string };
 
+function appendTranscriptEntry(entries: TranscriptEntry[], entry: TranscriptEntry) {
+  if (entry.kind === "thinking" && entry.delta) {
+    const last = entries[entries.length - 1];
+    if (last && last.kind === "thinking" && last.delta) {
+      last.text += entry.text;
+      last.ts = entry.ts;
+      return;
+    }
+  }
+  entries.push(entry);
+}
+
 export function buildTranscript(chunks: RunLogChunk[], parser: StdoutLineParser): TranscriptEntry[] {
   const entries: TranscriptEntry[] = [];
   let stdoutBuffer = "";
@@ -22,14 +34,18 @@ export function buildTranscript(chunks: RunLogChunk[], parser: StdoutLineParser)
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
-      entries.push(...parser(trimmed, chunk.ts));
+      for (const entry of parser(trimmed, chunk.ts)) {
+        appendTranscriptEntry(entries, entry);
+      }
     }
   }
 
   const trailing = stdoutBuffer.trim();
   if (trailing) {
     const ts = chunks.length > 0 ? chunks[chunks.length - 1]!.ts : new Date().toISOString();
-    entries.push(...parser(trailing, ts));
+    for (const entry of parser(trailing, ts)) {
+      appendTranscriptEntry(entries, entry);
+    }
   }
 
   return entries;

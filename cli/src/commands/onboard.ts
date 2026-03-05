@@ -12,6 +12,7 @@ import { defaultStorageConfig, promptStorage } from "../prompts/storage.js";
 import { promptServer } from "../prompts/server.js";
 import {
   describeLocalInstancePaths,
+  resolveDefaultBackupDir,
   resolveDefaultEmbeddedPostgresDir,
   resolveDefaultLogsDir,
   resolvePaperclipInstanceId,
@@ -35,6 +36,12 @@ function quickstartDefaults(): Pick<PaperclipConfig, "database" | "logging" | "s
       mode: "embedded-postgres",
       embeddedPostgresDataDir: resolveDefaultEmbeddedPostgresDir(instanceId),
       embeddedPostgresPort: 54329,
+      backup: {
+        enabled: true,
+        intervalMinutes: 60,
+        retentionDays: 30,
+        dir: resolveDefaultBackupDir(instanceId),
+      },
     },
     logging: {
       mode: "file",
@@ -120,7 +127,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
 
   if (setupMode === "advanced") {
     p.log.step(pc.bold("Database"));
-    database = await promptDatabase();
+    database = await promptDatabase(database);
 
     if (database.mode === "postgres" && database.connectionString) {
       const s = p.spinner();

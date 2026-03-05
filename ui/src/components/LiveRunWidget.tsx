@@ -108,6 +108,25 @@ function parseStdoutChunk(
   pendingByRun.set(pendingKey, split.pop() ?? "");
   const adapter = getUIAdapter(run.adapterType);
 
+  const summarized: Array<{ text: string; tone: FeedTone; thinkingDelta?: boolean }> = [];
+  const appendSummary = (entry: TranscriptEntry) => {
+    if (entry.kind === "thinking" && entry.delta) {
+      const text = entry.text;
+      if (!text.trim()) return;
+      const last = summarized[summarized.length - 1];
+      if (last && last.thinkingDelta) {
+        last.text += text;
+      } else {
+        summarized.push({ text: `[thinking] ${text}`, tone: "info", thinkingDelta: true });
+      }
+      return;
+    }
+
+    const summary = summarizeEntry(entry);
+    if (!summary) return;
+    summarized.push({ text: summary.text, tone: summary.tone });
+  };
+
   const items: FeedItem[] = [];
   for (const line of split.slice(-8)) {
     const trimmed = line.trim();
@@ -119,11 +138,13 @@ function parseStdoutChunk(
       continue;
     }
     for (const entry of parsed) {
-      const summary = summarizeEntry(entry);
-      if (!summary) continue;
-      const item = createFeedItem(run, ts, summary.text, summary.tone, nextIdRef.current++);
-      if (item) items.push(item);
+      appendSummary(entry);
     }
+  }
+
+  for (const summary of summarized) {
+    const item = createFeedItem(run, ts, summary.text, summary.tone, nextIdRef.current++);
+    if (item) items.push(item);
   }
 
   return items;

@@ -18,11 +18,24 @@ export const llmConfigSchema = z.object({
   apiKey: z.string().optional(),
 });
 
+export const databaseBackupConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  intervalMinutes: z.number().int().min(1).max(7 * 24 * 60).default(60),
+  retentionDays: z.number().int().min(1).max(3650).default(30),
+  dir: z.string().default("~/.paperclip/instances/default/data/backups"),
+});
+
 export const databaseConfigSchema = z.object({
   mode: z.enum(["embedded-postgres", "postgres"]).default("embedded-postgres"),
   connectionString: z.string().optional(),
   embeddedPostgresDataDir: z.string().default("~/.paperclip/instances/default/db"),
   embeddedPostgresPort: z.number().int().min(1).max(65535).default(54329),
+  backup: databaseBackupConfigSchema.default({
+    enabled: true,
+    intervalMinutes: 60,
+    retentionDays: 30,
+    dir: "~/.paperclip/instances/default/data/backups",
+  }),
 });
 
 export const loggingConfigSchema = z.object({
@@ -160,3 +173,4 @@ export type SecretsConfig = z.infer<typeof secretsConfigSchema>;
 export type SecretsLocalEncryptedConfig = z.infer<typeof secretsLocalEncryptedConfigSchema>;
 export type AuthConfig = z.infer<typeof authConfigSchema>;
 export type ConfigMeta = z.infer<typeof configMetaSchema>;
+export type DatabaseBackupConfig = z.infer<typeof databaseBackupConfigSchema>;

@@ -10,6 +10,7 @@ import { defaultSecretsConfig, promptSecrets } from "../prompts/secrets.js";
 import { defaultStorageConfig, promptStorage } from "../prompts/storage.js";
 import { promptServer } from "../prompts/server.js";
 import {
+  resolveDefaultBackupDir,
   resolveDefaultEmbeddedPostgresDir,
   resolveDefaultLogsDir,
   resolvePaperclipInstanceId,
@@ -39,6 +40,12 @@ function defaultConfig(): PaperclipConfig {
       mode: "embedded-postgres",
       embeddedPostgresDataDir: resolveDefaultEmbeddedPostgresDir(instanceId),
       embeddedPostgresPort: 54329,
+      backup: {
+        enabled: true,
+        intervalMinutes: 60,
+        retentionDays: 30,
+        dir: resolveDefaultBackupDir(instanceId),
+      },
     },
     logging: {
       mode: "file",
@@ -118,7 +125,7 @@ export async function configure(opts: {
 
     switch (section) {
       case "database":
-        config.database = await promptDatabase();
+        config.database = await promptDatabase(config.database);
         break;
       case "llm": {
         const llm = await promptLlm();

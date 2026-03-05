@@ -84,6 +84,15 @@ function isModuleNotFoundError(err: unknown): boolean {
   return err.message.includes("Cannot find module");
 }
 
+function getMissingModuleSpecifier(err: unknown): string | null {
+  if (!(err instanceof Error)) return null;
+  const packageMatch = err.message.match(/Cannot find package '([^']+)' imported from/);
+  if (packageMatch?.[1]) return packageMatch[1];
+  const moduleMatch = err.message.match(/Cannot find module '([^']+)'/);
+  if (moduleMatch?.[1]) return moduleMatch[1];
+  return null;
+}
+
 function maybeEnableUiDevMiddleware(entrypoint: string): void {
   if (process.env.PAPERCLIP_UI_DEV_MIDDLEWARE !== undefined) return;
   const normalized = entrypoint.replaceAll("\\", "/");
@@ -106,7 +115,9 @@ async function importServerEntry(): Promise<void> {
   try {
     await import("@paperclipai/server");
   } catch (err) {
-    if (isModuleNotFoundError(err)) {
+    const missingSpecifier = getMissingModuleSpecifier(err);
+    const missingServerEntrypoint = !missingSpecifier || missingSpecifier === "@paperclipai/server";
+    if (isModuleNotFoundError(err) && missingServerEntrypoint) {
       throw new Error(
         `Could not locate a Paperclip server entrypoint.\n` +
           `Tried: ${devEntry}, @paperclipai/server\n` +

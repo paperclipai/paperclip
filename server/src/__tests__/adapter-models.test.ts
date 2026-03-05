@@ -1,12 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local";
+import { models as cursorFallbackModels } from "@paperclipai/adapter-cursor-local";
 import { listAdapterModels } from "../adapters/index.js";
 import { resetCodexModelsCacheForTests } from "../adapters/codex-models.js";
+import { resetCursorModelsCacheForTests, setCursorModelsRunnerForTests } from "../adapters/cursor-models.js";
 
 describe("adapter model listing", () => {
   beforeEach(() => {
     delete process.env.OPENAI_API_KEY;
     resetCodexModelsCacheForTests();
+    resetCursorModelsCacheForTests();
+    setCursorModelsRunnerForTests(null);
     vi.restoreAllMocks();
   });
 
@@ -54,5 +58,36 @@ describe("adapter model listing", () => {
 
     const models = await listAdapterModels("codex_local");
     expect(models).toEqual(codexFallbackModels);
+  });
+
+  it("returns cursor fallback models when CLI discovery is unavailable", async () => {
+    setCursorModelsRunnerForTests(() => ({
+      status: null,
+      stdout: "",
+      stderr: "",
+      hasError: true,
+    }));
+
+    const models = await listAdapterModels("cursor");
+    expect(models).toEqual(cursorFallbackModels);
+  });
+
+  it("loads cursor models dynamically and caches them", async () => {
+    const runner = vi.fn(() => ({
+      status: 0,
+      stdout: "Available models: auto, composer-1.5, gpt-5.3-codex-high, sonnet-4.6",
+      stderr: "",
+      hasError: false,
+    }));
+    setCursorModelsRunnerForTests(runner);
+
+    const first = await listAdapterModels("cursor");
+    const second = await listAdapterModels("cursor");
+
+    expect(runner).toHaveBeenCalledTimes(1);
+    expect(first).toEqual(second);
+    expect(first.some((model) => model.id === "auto")).toBe(true);
+    expect(first.some((model) => model.id === "gpt-5.3-codex-high")).toBe(true);
+    expect(first.some((model) => model.id === "composer-1")).toBe(true);
   });
 });

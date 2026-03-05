@@ -23,6 +23,8 @@ import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL
 } from "@paperclipai/adapter-codex-local";
+import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
+import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { ChoosePathButton } from "./PathInstructionsModal";
 import { HintIcon } from "./agent-config-primitives";
@@ -49,6 +51,8 @@ type Step = 1 | 2 | 3 | 4;
 type AdapterType =
   | "claude_local"
   | "codex_local"
+  | "opencode_local"
+  | "cursor"
   | "process"
   | "http"
   | "openclaw";
@@ -89,6 +93,9 @@ export function OnboardingWizard() {
     useState<AdapterEnvironmentTestResult | null>(null);
   const [adapterEnvError, setAdapterEnvError] = useState<string | null>(null);
   const [adapterEnvLoading, setAdapterEnvLoading] = useState(false);
+  const [forceUnsetAnthropicApiKey, setForceUnsetAnthropicApiKey] =
+    useState(false);
+  const [unsetAnthropicLoading, setUnsetAnthropicLoading] = useState(false);
 
   // Step 3
   const [taskTitle, setTaskTitle] = useState("Create your CEO HEARTBEAT.md");
@@ -148,9 +155,16 @@ export function OnboardingWizard() {
     enabled: onboardingOpen && step === 2
   });
   const isLocalAdapter =
-    adapterType === "claude_local" || adapterType === "codex_local";
+    adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "opencode_local" || adapterType === "cursor";
   const effectiveAdapterCommand =
-    command.trim() || (adapterType === "codex_local" ? "codex" : "claude");
+    command.trim() ||
+    (adapterType === "codex_local"
+      ? "codex"
+      : adapterType === "cursor"
+        ? "agent"
+      : adapterType === "opencode_local"
+        ? "opencode"
+        : "claude");
 
   useEffect(() => {
     if (step !== 2) return;
@@ -159,6 +173,15 @@ export function OnboardingWizard() {
   }, [step, adapterType, cwd, model, command, args, url]);
 
   const selectedModel = (adapterModels ?? []).find((m) => m.id === model);
+  const hasAnthropicApiKeyOverrideCheck =
+    adapterEnvResult?.checks.some(
+      (check) =>
+        check.code === "claude_anthropic_api_key_overrides_subscription"
+    ) ?? false;
+  const shouldSuggestUnsetAnthropicApiKey =
+    adapterType === "claude_local" &&
+    adapterEnvResult?.status === "fail" &&
+    hasAnthropicApiKeyOverrideCheck;
 
   function reset() {
     setStep(1);
@@ -176,6 +199,8 @@ export function OnboardingWizard() {
     setAdapterEnvResult(null);
     setAdapterEnvError(null);
     setAdapterEnvLoading(false);
+    setForceUnsetAnthropicApiKey(false);
+    setUnsetAnthropicLoading(false);
     setTaskTitle("Create your CEO HEARTBEAT.md");
     setTaskDescription(DEFAULT_TASK_DESCRIPTION);
     setCreatedCompanyId(null);
@@ -191,13 +216,17 @@ export function OnboardingWizard() {
 
   function buildAdapterConfig(): Record<string, unknown> {
     const adapter = getUIAdapter(adapterType);
-    return adapter.buildAdapterConfig({
+    const config = adapter.buildAdapterConfig({
       ...defaultCreateValues,
       adapterType,
       cwd,
       model:
         adapterType === "codex_local"
           ? model || DEFAULT_CODEX_LOCAL_MODEL
+          : adapterType === "cursor"
+            ? model || DEFAULT_CURSOR_LOCAL_MODEL
+          : adapterType === "opencode_local"
+            ? model || DEFAULT_OPENCODE_LOCAL_MODEL
           : model,
       command,
       args,
@@ -208,9 +237,22 @@ export function OnboardingWizard() {
           ? DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX
           : defaultCreateValues.dangerouslyBypassSandbox
     });
+    if (adapterType === "claude_local" && forceUnsetAnthropicApiKey) {
+      const env =
+        typeof config.env === "object" &&
+        config.env !== null &&
+        !Array.isArray(config.env)
+          ? { ...(config.env as Record<string, unknown>) }
+          : {};
+      env.ANTHROPIC_API_KEY = { type: "plain", value: "" };
+      config.env = env;
+    }
+    return config;
   }
 
-  async function runAdapterEnvironmentTest(): Promise<AdapterEnvironmentTestResult | null> {
+  async function runAdapterEnvironmentTest(
+    adapterConfigOverride?: Record<string, unknown>
+  ): Promise<AdapterEnvironmentTestResult | null> {
     if (!createdCompanyId) {
       setAdapterEnvError(
         "Create or select a company before testing adapter environment."
@@ -224,7 +266,7 @@ export function OnboardingWizard() {
         createdCompanyId,
         adapterType,
         {
-          adapterConfig: buildAdapterConfig()
+          adapterConfig: adapterConfigOverride ?? buildAdapterConfig()
         }
       );
       setAdapterEnvResult(result);
@@ -276,12 +318,6 @@ export function OnboardingWizard() {
       if (isLocalAdapter) {
         const result = adapterEnvResult ?? (await runAdapterEnvironmentTest());
         if (!result) return;
-        if (result.status === "fail") {
-          setError(
-            "Adapter environment test failed. Fix the errors and test again before continuing."
-          );
-          return;
-        }
       }
 
       const agent = await agentsApi.create(createdCompanyId, {
@@ -308,6 +344,55 @@ export function OnboardingWizard() {
       setError(err instanceof Error ? err.message : "Failed to create agent");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleUnsetAnthropicApiKey() {
+    if (!createdCompanyId || unsetAnthropicLoading) return;
+    setUnsetAnthropicLoading(true);
+    setError(null);
+    setAdapterEnvError(null);
+    setForceUnsetAnthropicApiKey(true);
+
+    const configWithUnset = (() => {
+      const config = buildAdapterConfig();
+      const env =
+        typeof config.env === "object" &&
+        config.env !== null &&
+        !Array.isArray(config.env)
+          ? { ...(config.env as Record<string, unknown>) }
+          : {};
+      env.ANTHROPIC_API_KEY = { type: "plain", value: "" };
+      config.env = env;
+      return config;
+    })();
+
+    try {
+      if (createdAgentId) {
+        await agentsApi.update(
+          createdAgentId,
+          { adapterConfig: configWithUnset },
+          createdCompanyId
+        );
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.agents.list(createdCompanyId)
+        });
+      }
+
+      const result = await runAdapterEnvironmentTest(configWithUnset);
+      if (result?.status === "fail") {
+        setError(
+          "Retried with ANTHROPIC_API_KEY unset in adapter config, but the environment test is still failing."
+        );
+      }
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Failed to unset ANTHROPIC_API_KEY and retry."
+      );
+    } finally {
+      setUnsetAnthropicLoading(false);
     }
   }
 
@@ -492,13 +577,21 @@ export function OnboardingWizard() {
                           value: "claude_local" as const,
                           label: "Claude Code",
                           icon: Sparkles,
-                          desc: "Local Claude agent"
+                          desc: "Local Claude agent",
+                          recommended: true
                         },
                         {
                           value: "codex_local" as const,
                           label: "Codex",
                           icon: Code,
-                          desc: "Local Codex agent"
+                          desc: "Local Codex agent",
+                          recommended: true
+                        },
+                        {
+                          value: "opencode_local" as const,
+                          label: "OpenCode",
+                          icon: Code,
+                          desc: "Local OpenCode agent"
                         },
                         {
                           value: "openclaw" as const,
@@ -511,8 +604,7 @@ export function OnboardingWizard() {
                           value: "cursor" as const,
                           label: "Cursor",
                           icon: MousePointer2,
-                          desc: "Cursor AI agent",
-                          comingSoon: true
+                          desc: "Local Cursor agent"
                         },
                         {
                           value: "process" as const,
@@ -546,9 +638,18 @@ export function OnboardingWizard() {
                             setAdapterType(nextType);
                             if (nextType === "codex_local" && !model) {
                               setModel(DEFAULT_CODEX_LOCAL_MODEL);
+                            } else if (nextType === "cursor" && !model) {
+                              setModel(DEFAULT_CURSOR_LOCAL_MODEL);
+                            } else if (nextType === "opencode_local" && !model) {
+                              setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
                             }
                           }}
                         >
+                          {opt.recommended && (
+                            <span className="absolute -top-1.5 -right-1.5 bg-green-500 text-white text-[9px] font-semibold px-1.5 py-0.5 rounded-full leading-none">
+                              Recommended
+                            </span>
+                          )}
                           <opt.icon className="h-4 w-4" />
                           <span className="font-medium">{opt.label}</span>
                           <span className="text-muted-foreground text-[10px]">
@@ -561,7 +662,9 @@ export function OnboardingWizard() {
 
                   {/* Conditional adapter fields */}
                   {(adapterType === "claude_local" ||
-                    adapterType === "codex_local") && (
+                    adapterType === "codex_local" ||
+                    adapterType === "opencode_local" ||
+                    adapterType === "cursor") && (
                     <div className="space-y-3">
                       <div>
                         <div className="flex items-center gap-1.5 mb-1">
@@ -673,23 +776,54 @@ export function OnboardingWizard() {
                         <AdapterEnvironmentResult result={adapterEnvResult} />
                       )}
 
+                      {shouldSuggestUnsetAnthropicApiKey && (
+                        <div className="rounded-md border border-amber-300/60 bg-amber-50/40 px-2.5 py-2 space-y-2">
+                          <p className="text-[11px] text-amber-900/90 leading-relaxed">
+                            Claude failed while <span className="font-mono">ANTHROPIC_API_KEY</span> is set.
+                            You can clear it in this CEO adapter config and retry the probe.
+                          </p>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 px-2.5 text-xs"
+                            disabled={adapterEnvLoading || unsetAnthropicLoading}
+                            onClick={() => void handleUnsetAnthropicApiKey()}
+                          >
+                            {unsetAnthropicLoading ? "Retrying..." : "Unset ANTHROPIC_API_KEY"}
+                          </Button>
+                        </div>
+                      )}
+
                       <div className="rounded-md border border-border/70 bg-muted/20 px-2.5 py-2 text-[11px] space-y-1.5">
                         <p className="font-medium">Manual debug</p>
                         <p className="text-muted-foreground font-mono break-all">
-                          {adapterType === "codex_local"
+                          {adapterType === "cursor"
+                            ? `${effectiveAdapterCommand} -p --mode ask --output-format json \"Respond with hello.\"`
+                            : adapterType === "codex_local"
                             ? `${effectiveAdapterCommand} exec --json -`
+                            : adapterType === "opencode_local"
+                              ? `${effectiveAdapterCommand} run --format json \"Respond with hello.\"`
                             : `${effectiveAdapterCommand} --print - --output-format stream-json --verbose`}
                         </p>
                         <p className="text-muted-foreground">
                           Prompt:{" "}
                           <span className="font-mono">Respond with hello.</span>
                         </p>
-                        {adapterType === "codex_local" ? (
+                        {adapterType === "cursor" || adapterType === "codex_local" || adapterType === "opencode_local" ? (
                           <p className="text-muted-foreground">
                             If auth fails, set{" "}
-                            <span className="font-mono">OPENAI_API_KEY</span> in
+                            <span className="font-mono">
+                              {adapterType === "cursor" ? "CURSOR_API_KEY" : "OPENAI_API_KEY"}
+                            </span>{" "}
+                            in
                             env or run{" "}
-                            <span className="font-mono">codex login</span>.
+                            <span className="font-mono">
+                              {adapterType === "cursor"
+                                ? "agent login"
+                                : adapterType === "codex_local"
+                                  ? "codex login"
+                                  : "opencode auth login"}
+                            </span>.
                           </p>
                         ) : (
                           <p className="text-muted-foreground">

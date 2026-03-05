@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -251,8 +251,12 @@ export function agentService(db: Db) {
   }
 
   return {
-    list: async (companyId: string) => {
-      const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
+    list: async (companyId: string, options?: { includeTerminated?: boolean }) => {
+      const conditions = [eq(agents.companyId, companyId)];
+      if (!options?.includeTerminated) {
+        conditions.push(ne(agents.status, "terminated"));
+      }
+      const rows = await db.select().from(agents).where(and(...conditions));
       return rows.map(normalizeAgentRow);
     },
 
@@ -469,7 +473,10 @@ export function agentService(db: Db) {
     },
 
     orgForCompany: async (companyId: string) => {
-      const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
+      const rows = await db
+        .select()
+        .from(agents)
+        .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated")));
       const normalizedRows = rows.map(normalizeAgentRow);
       const byManager = new Map<string | null, typeof normalizedRows>();
       for (const row of normalizedRows) {

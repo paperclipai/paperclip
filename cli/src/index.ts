@@ -7,6 +7,7 @@ import { addAllowedHostname } from "./commands/allowed-hostname.js";
 import { heartbeatRun } from "./commands/heartbeat-run.js";
 import { runCommand } from "./commands/run.js";
 import { bootstrapCeoInvite } from "./commands/auth-bootstrap-ceo.js";
+import { dbBackupCommand } from "./commands/db-backup.js";
 import { registerContextCommands } from "./commands/client/context.js";
 import { registerCompanyCommands } from "./commands/client/company.js";
 import { registerIssueCommands } from "./commands/client/issue.js";
@@ -23,7 +24,7 @@ const DATA_DIR_OPTION_HELP =
 program
   .name("paperclipai")
   .description("Paperclip CLI — setup, diagnose, and configure your instance")
-  .version("0.2.5");
+  .version("0.2.7");
 
 program.hook("preAction", (_thisCommand, actionCommand) => {
   const options = actionCommand.optsWithGlobals() as DataDirOptionLike;
@@ -69,6 +70,19 @@ program
   .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
   .option("-s, --section <section>", "Section to configure (llm, database, logging, server, storage, secrets)")
   .action(configure);
+
+program
+  .command("db:backup")
+  .description("Create a one-off database backup using current config")
+  .option("-c, --config <path>", "Path to config file")
+  .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
+  .option("--dir <path>", "Backup output directory (overrides config)")
+  .option("--retention-days <days>", "Retention window used for pruning", (value) => Number(value))
+  .option("--filename-prefix <prefix>", "Backup filename prefix", "paperclip")
+  .option("--json", "Print backup metadata as JSON")
+  .action(async (opts) => {
+    await dbBackupCommand(opts);
+  });
 
 program
   .command("allowed-hostname")

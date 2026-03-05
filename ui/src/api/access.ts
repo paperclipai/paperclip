@@ -9,6 +9,8 @@ type InviteSummary = {
   expiresAt: string;
   onboardingPath?: string;
   onboardingUrl?: string;
+  onboardingTextPath?: string;
+  onboardingTextUrl?: string;
   skillIndexPath?: string;
   skillIndexUrl?: string;
 };

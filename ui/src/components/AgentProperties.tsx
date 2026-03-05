@@ -17,8 +17,9 @@ interface AgentPropertiesProps {
 const adapterLabels: Record<string, string> = {
   claude_local: "Claude (local)",
   codex_local: "Codex (local)",
+  opencode_local: "OpenCode (local)",
   openclaw: "OpenClaw",
-  cursor: "Cursor",
+  cursor: "Cursor (local)",
   process: "Process",
   http: "HTTP",
 };

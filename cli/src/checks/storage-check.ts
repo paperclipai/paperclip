@@ -7,16 +7,7 @@ export function storageCheck(config: PaperclipConfig, configPath?: string): Chec
   if (config.storage.provider === "local_disk") {
     const baseDir = resolveRuntimeLikePath(config.storage.localDisk.baseDir, configPath);
     if (!fs.existsSync(baseDir)) {
-      return {
-        name: "Storage",
-        status: "warn",
-        message: `Local storage directory does not exist: ${baseDir}`,
-        canRepair: true,
-        repair: () => {
-          fs.mkdirSync(baseDir, { recursive: true });
-        },
-        repairHint: "Run with --repair to create local storage directory",
-      };
+      fs.mkdirSync(baseDir, { recursive: true });
     }
 
     try {
