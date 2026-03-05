@@ -4,9 +4,7 @@ import type {
   AgentStatus,
 } from "../constants.js";
 
-export interface AgentPermissions {
-  canCreateAgents: boolean;
-}
+export type AgentPermissions = Record<string, unknown>;
 
 export interface Agent {
   id: string;
