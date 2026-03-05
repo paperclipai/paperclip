@@ -23,7 +23,7 @@ const opencodeLocalCLIAdapter: CLIAdapterModule = {
 };
 
 const cursorLocalCLIAdapter: CLIAdapterModule = {
-  type: "cursor",
+  type: "cursor_local",
   formatStdoutEvent: printCursorStreamEvent,
 };
 
