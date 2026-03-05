@@ -29,6 +29,8 @@ import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
 const MAX_ATTACHMENT_BYTES = Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
 const FANOUT_CRITICAL_COMMAND = /(^|\n)\s*\/fanout-critical\b/i;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const UNASSIGNED_FILTER_TOKENS = new Set(["null", "unassigned"]);
 const ALLOWED_ATTACHMENT_CONTENT_TYPES = new Set([
   "image/png",
   "image/jpeg",
@@ -127,6 +129,16 @@ export function issueRoutes(db: Db, storage: StorageService) {
     return false;
   }
 
+  function normalizeQueryToken(raw: unknown): string | undefined {
+    if (typeof raw !== "string") return undefined;
+    const trimmed = raw.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+
+  function isUnassignedFilterToken(value: string | undefined): boolean {
+    return Boolean(value && UNASSIGNED_FILTER_TOKENS.has(value.toLowerCase()));
+  }
+
   async function assertAgentRunCheckoutOwnership(
     req: Request,
     res: Response,
@@ -198,21 +210,39 @@ export function issueRoutes(db: Db, storage: StorageService) {
   router.get("/companies/:companyId/issues", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const assigneeUserFilterRaw = req.query.assigneeUserId as string | undefined;
+    const assigneeAgentFilterRaw = normalizeQueryToken(req.query.assigneeAgentId);
+    const assigneeAgentUnassigned = isUnassignedFilterToken(assigneeAgentFilterRaw);
+    const assigneeAgentId = assigneeAgentUnassigned ? undefined : assigneeAgentFilterRaw;
+    if (assigneeAgentId && !UUID_PATTERN.test(assigneeAgentId)) {
+      res.status(400).json({ error: "Invalid assigneeAgentId filter" });
+      return;
+    }
+
+    const assigneeUserFilterRaw = normalizeQueryToken(req.query.assigneeUserId);
+    const assigneeUserUnassigned = isUnassignedFilterToken(assigneeUserFilterRaw);
     const assigneeUserId =
       assigneeUserFilterRaw === "me" && req.actor.type === "board"
         ? req.actor.userId
-        : assigneeUserFilterRaw;
+        : assigneeUserUnassigned
+          ? undefined
+          : assigneeUserFilterRaw;
+
+    const unassigned = assigneeAgentUnassigned || assigneeUserUnassigned;
 
     if (assigneeUserFilterRaw === "me" && (!assigneeUserId || req.actor.type !== "board")) {
       res.status(403).json({ error: "assigneeUserId=me requires board authentication" });
       return;
     }
+    if (unassigned && (assigneeAgentId || assigneeUserId)) {
+      res.status(400).json({ error: "Cannot combine unassigned filter with assignee filters" });
+      return;
+    }
 
     const result = await svc.list(companyId, {
       status: req.query.status as string | undefined,
-      assigneeAgentId: req.query.assigneeAgentId as string | undefined,
+      assigneeAgentId,
       assigneeUserId,
+      unassigned,
       projectId: req.query.projectId as string | undefined,
       labelId: req.query.labelId as string | undefined,
       q: req.query.q as string | undefined,

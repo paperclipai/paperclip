@@ -19,6 +19,7 @@ import { extractProjectMentionIds } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
+const ASSIGNEE_REQUIRED_STATUSES = new Set(["todo", "in_progress"]);
 const ACTIVE_ISSUE_STATUSES_FOR_DEDUPE = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
 const WIP_CAP_OPEN_STATUSES = ["todo", "in_progress"] as const;
 const FOUNDING_ENGINEER_WIP_CAP = Math.max(
@@ -67,6 +68,7 @@ export interface IssueFilters {
   status?: string;
   assigneeAgentId?: string;
   assigneeUserId?: string;
+  unassigned?: boolean;
   projectId?: string;
   labelId?: string;
   q?: string;
@@ -104,6 +106,10 @@ function normalizeIssueTitle(value: string): string {
 
 function normalizeNameKey(value: string | null | undefined): string {
   return (value ?? "").trim().toLowerCase();
+}
+
+export function issueStatusRequiresAssignee(status: string | null | undefined): boolean {
+  return Boolean(status && ASSIGNEE_REQUIRED_STATUSES.has(status));
 }
 
 function missingAssignmentTemplateFields(description: string | null | undefined): string[] {
@@ -455,11 +461,16 @@ export function issueService(db: Db) {
         const statuses = filters.status.split(",").map((s) => s.trim());
         conditions.push(statuses.length === 1 ? eq(issues.status, statuses[0]) : inArray(issues.status, statuses));
       }
-      if (filters?.assigneeAgentId) {
-        conditions.push(eq(issues.assigneeAgentId, filters.assigneeAgentId));
-      }
-      if (filters?.assigneeUserId) {
-        conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
+      if (filters?.unassigned) {
+        conditions.push(isNull(issues.assigneeAgentId));
+        conditions.push(isNull(issues.assigneeUserId));
+      } else {
+        if (filters?.assigneeAgentId) {
+          conditions.push(eq(issues.assigneeAgentId, filters.assigneeAgentId));
+        }
+        if (filters?.assigneeUserId) {
+          conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
+        }
       }
       if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
       if (filters?.labelId) {
@@ -546,8 +557,9 @@ export function issueService(db: Db) {
         assigneeAgentId: data.assigneeAgentId,
         options,
       });
-      if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
-        throw unprocessable("in_progress issues require an assignee");
+      const targetStatus = data.status ?? "backlog";
+      if (issueStatusRequiresAssignee(targetStatus) && !data.assigneeAgentId && !data.assigneeUserId) {
+        throw unprocessable(`${targetStatus} issues require an assignee`);
       }
       assertAssignmentTemplateIfAssigned(
         {
@@ -632,12 +644,14 @@ export function issueService(db: Db) {
       const nextTitle = issueData.title ?? existing.title;
       const nextGoalId =
         issueData.goalId !== undefined ? issueData.goalId : existing.goalId;
+      const nextStatus =
+        issueData.status !== undefined ? issueData.status : existing.status;
 
       if (nextAssigneeAgentId && nextAssigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
       }
-      if (patch.status === "in_progress" && !nextAssigneeAgentId && !nextAssigneeUserId) {
-        throw unprocessable("in_progress issues require an assignee");
+      if (issueStatusRequiresAssignee(nextStatus) && !nextAssigneeAgentId && !nextAssigneeUserId) {
+        throw unprocessable(`${nextStatus} issues require an assignee`);
       }
       if (issueData.assigneeAgentId) {
         await assertAssignableAgent(existing.companyId, issueData.assigneeAgentId);
@@ -959,9 +973,12 @@ export function issueService(db: Db) {
       const updated = await db
         .update(issues)
         .set({
-          status: "todo",
+          status: "backlog",
           assigneeAgentId: null,
+          assigneeUserId: null,
           checkoutRunId: null,
+          executionRunId: null,
+          executionLockedAt: null,
           updatedAt: new Date(),
         })
         .where(eq(issues.id, id))
