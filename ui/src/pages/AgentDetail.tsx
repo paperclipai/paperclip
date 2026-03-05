@@ -1874,6 +1874,7 @@ function LogViewer({ run, adapterType, transcriptOpen, onToggleTranscript }: { r
   const pendingLogLineRef = useRef("");
   const scrollContainerRef = useRef<ScrollContainer | null>(null);
   const isFollowingRef = useRef(isLive);
+  const hasMountedRef = useRef(false);
   const lastMetricsRef = useRef<{ scrollHeight: number; distanceFromBottom: number }>({
     scrollHeight: 0,
     distanceFromBottom: Number.POSITIVE_INFINITY,
@@ -1950,6 +1951,14 @@ function LogViewer({ run, adapterType, transcriptOpen, onToggleTranscript }: { r
     if (!isLive) {
       isFollowingRef.current = false;
       setIsFollowing(false);
+      return;
+    }
+
+    // Skip the very first mount: terminalBodyRef isn't attached yet, so
+    // getScrollContainer() would fall back to window and cache it prematurely.
+    // isFollowing already defaults to isLive, so no state correction is needed.
+    if (!hasMountedRef.current) {
+      hasMountedRef.current = true;
       return;
     }
 
