@@ -21,12 +21,14 @@ import {
   issueService,
   logActivity,
   projectService,
+  workflowAutomationService,
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
 import { forbidden, HttpError, unauthorized } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
 const MAX_ATTACHMENT_BYTES = Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
+const FANOUT_CRITICAL_COMMAND = /(^|\n)\s*\/fanout-critical\b/i;
 const ALLOWED_ATTACHMENT_CONTENT_TYPES = new Set([
   "image/png",
   "image/jpeg",
@@ -40,6 +42,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
   const svc = issueService(db);
   const access = accessService(db);
   const heartbeat = heartbeatService(db);
+  const workflowAutomation = workflowAutomationService(db);
   const agentsSvc = agentService(db);
   const projectsSvc = projectService(db);
   const goalsSvc = goalService(db);
@@ -815,6 +818,86 @@ export function issueRoutes(db: Db, storage: StorageService) {
         ...(interruptedRunId ? { interruptedRunId } : {}),
       },
     });
+
+    if (FANOUT_CRITICAL_COMMAND.test(req.body.body)) {
+      try {
+        await assertCanAssignTasks(req, currentIssue.companyId);
+        const result = await workflowAutomation.fanoutCritical({
+          companyId: currentIssue.companyId,
+          parentIssueId: currentIssue.id,
+          requestedByAgentId: actor.agentId ?? null,
+          requestedByUserId: actor.actorType === "user" ? actor.actorId : null,
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+        });
+        const createdRefs = result.created
+          .slice(0, 12)
+          .map((createdIssue) => `[${createdIssue.identifier ?? createdIssue.id}](/issues/${createdIssue.identifier ?? createdIssue.id})`)
+          .join(", ");
+        const summary = [
+          "## Critical Fanout",
+          "",
+          "Executed `/fanout-critical` for this parent issue.",
+          "",
+          `- Created child issues: ${result.created.length}`,
+          `- Skipped as duplicates: ${result.duplicates.length}`,
+          `- Skipped with errors: ${result.skipped.length}`,
+          `- New issues: ${createdRefs || "none"}`,
+          result.duplicates.length > 0 ? `- Duplicate assignees: ${result.duplicates.join(", ")}` : null,
+          result.skipped.length > 0 ? `- Failed assignees: ${result.skipped.join(", ")}` : null,
+        ]
+          .filter((line): line is string => Boolean(line))
+          .join("\n");
+        const summaryComment = await svc.addComment(id, summary, {});
+        await logActivity(db, {
+          companyId: currentIssue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.comment_added",
+          entityType: "issue",
+          entityId: currentIssue.id,
+          details: {
+            commentId: summaryComment.id,
+            bodySnippet: summaryComment.body.slice(0, 120),
+            identifier: currentIssue.identifier,
+            issueTitle: currentIssue.title,
+            source: "fanout_critical",
+          },
+        });
+      } catch (err) {
+        logger.warn({ err, issueId: id }, "failed to execute /fanout-critical command");
+        const failureComment = await svc.addComment(
+          id,
+          [
+            "## Critical Fanout",
+            "",
+            "Tried to execute `/fanout-critical` but failed.",
+            "",
+            "- Check assignment permissions and issue template requirements.",
+          ].join("\n"),
+          {},
+        );
+        await logActivity(db, {
+          companyId: currentIssue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.comment_added",
+          entityType: "issue",
+          entityId: currentIssue.id,
+          details: {
+            commentId: failureComment.id,
+            bodySnippet: failureComment.body.slice(0, 120),
+            identifier: currentIssue.identifier,
+            issueTitle: currentIssue.title,
+            source: "fanout_critical_error",
+          },
+        });
+      }
+    }
 
     // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
     void (async () => {

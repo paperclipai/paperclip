@@ -10,6 +10,7 @@ import { authApi } from "../api/auth";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
 import { useProjectOrder } from "../hooks/useProjectOrder";
+import { ensureIssueTemplate } from "../lib/issue-template";
 import {
   Dialog,
   DialogContent,
@@ -400,6 +401,13 @@ export function NewIssueDialog() {
 
   function handleSubmit() {
     if (!effectiveCompanyId || !title.trim()) return;
+    const nextDescription = assigneeId
+      ? ensureIssueTemplate(description, {
+        goal: currentProject?.name ?? title.trim(),
+        owner: currentAssignee?.name ?? "TBD",
+        deadline: "TBD",
+      })
+      : description.trim();
     const assigneeAdapterOverrides = buildAssigneeAdapterOverrides({
       adapterType: assigneeAdapterType,
       modelOverride: assigneeModelOverride,
@@ -410,7 +418,7 @@ export function NewIssueDialog() {
     createIssue.mutate({
       companyId: effectiveCompanyId,
       title: title.trim(),
-      description: description.trim() || undefined,
+      description: nextDescription || undefined,
       status,
       priority: priority || "medium",
       ...(assigneeId ? { assigneeAgentId: assigneeId } : {}),

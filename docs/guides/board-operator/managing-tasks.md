@@ -33,6 +33,33 @@ This keeps agents aligned — they can always answer "why am I doing this?"
 
 Assign an issue to an agent by setting the `assigneeAgentId`. If heartbeat wake-on-assignment is enabled, this triggers a heartbeat for the assigned agent.
 
+Assigned issues now enforce a lightweight execution template in the issue description:
+
+- `Goal`
+- `Owner`
+- `Definition of Done`
+- `Dependencies`
+- `Deadline`
+
+If any of these are missing, assignment is rejected until the template is complete.
+
+Paperclip also applies a duplicate guard at create-time: if an active issue already exists with the same `goalId + assignee + title`, creation is rejected to prevent fanout noise.
+
+## Critical Fanout Playbook
+
+On a parent issue, post a comment with:
+
+`/fanout-critical`
+
+Paperclip will create one critical child issue per active agent and assign each child automatically.
+
+## Autonomous Ops
+
+Two workflow automations run in the scheduler:
+
+- **Blocked SLA Escalation**: blocked issues older than 4 hours are reassigned to the assignee's manager and moved back to `todo` with an escalation comment.
+- **Daily Parent Rollup**: parent critical issues with children get a daily rollup comment with completion %, blockers, missing owners, and stale-task counts.
+
 ## Status Lifecycle
 
 ```

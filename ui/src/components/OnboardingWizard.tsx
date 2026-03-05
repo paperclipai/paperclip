@@ -9,6 +9,7 @@ import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
+import { ensureIssueTemplate } from "../lib/issue-template";
 import { Dialog, DialogPortal } from "@/components/ui/dialog";
 import {
   Popover,
@@ -316,11 +317,14 @@ export function OnboardingWizard() {
     setLoading(true);
     setError(null);
     try {
+      const templatedDescription = ensureIssueTemplate(taskDescription, {
+        goal: taskTitle.trim(),
+        owner: agentName.trim() || "CEO",
+        deadline: "TBD",
+      });
       const issue = await issuesApi.create(createdCompanyId, {
         title: taskTitle.trim(),
-        ...(taskDescription.trim()
-          ? { description: taskDescription.trim() }
-          : {}),
+        description: templatedDescription,
         assigneeAgentId: createdAgentId,
         status: "todo"
       });

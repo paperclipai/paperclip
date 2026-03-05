@@ -19,6 +19,14 @@ import { extractProjectMentionIds } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
+const ACTIVE_ISSUE_STATUSES_FOR_DEDUPE = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
+const ASSIGNMENT_TEMPLATE_RULES = [
+  { label: "Goal", pattern: /(^|\n)\s*(?:#{1,6}\s*goal\b|goal\s*:)/i },
+  { label: "Owner", pattern: /(^|\n)\s*(?:#{1,6}\s*owner\b|owner\s*:)/i },
+  { label: "Definition of Done", pattern: /(^|\n)\s*(?:#{1,6}\s*(?:definition of done|dod)\b|(?:definition of done|dod)\s*:)/i },
+  { label: "Dependencies", pattern: /(^|\n)\s*(?:#{1,6}\s*dependencies\b|dependencies\s*:)/i },
+  { label: "Deadline", pattern: /(^|\n)\s*(?:#{1,6}\s*deadline\b|deadline\s*:)/i },
+];
 
 function assertTransition(from: string, to: string) {
   if (from === to) return;
@@ -79,6 +87,21 @@ const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancell
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
 }
+
+function normalizeIssueTitle(value: string): string {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function missingAssignmentTemplateFields(description: string | null | undefined): string[] {
+  const text = (description ?? "").trim();
+  return ASSIGNMENT_TEMPLATE_RULES
+    .filter((rule) => !rule.pattern.test(text))
+    .map((rule) => rule.label);
+}
+
+type IssueMutationOptions = {
+  skipAssignmentTemplateValidation?: boolean;
+};
 
 async function labelMapForIssues(dbOrTx: any, issueIds: string[]): Promise<Map<string, IssueLabelRow[]>> {
   const map = new Map<string, IssueLabelRow[]>();
@@ -162,6 +185,24 @@ function withActiveRuns(
 }
 
 export function issueService(db: Db) {
+  function assertAssignmentTemplateIfAssigned(
+    input: {
+      description: string | null | undefined;
+      assigneeAgentId: string | null | undefined;
+      assigneeUserId: string | null | undefined;
+    },
+    options?: IssueMutationOptions,
+  ) {
+    if (options?.skipAssignmentTemplateValidation) return;
+    if (!input.assigneeAgentId && !input.assigneeUserId) return;
+    const missingFields = missingAssignmentTemplateFields(input.description);
+    if (missingFields.length === 0) return;
+    throw unprocessable(
+      "Assigned issues require template fields in description: Goal, Owner, Definition of Done, Dependencies, Deadline",
+      { missingFields },
+    );
+  }
+
   async function assertAssignableAgent(companyId: string, agentId: string) {
     const assignee = await db
       .select({
@@ -230,6 +271,53 @@ export function issueService(db: Db) {
         labelId,
         companyId,
       })),
+    );
+  }
+
+  async function findDuplicateActiveIssue(input: {
+    companyId: string;
+    title: string;
+    goalId: string | null | undefined;
+    assigneeAgentId: string | null | undefined;
+    assigneeUserId: string | null | undefined;
+    excludeIssueId?: string;
+  }) {
+    if (!input.assigneeAgentId && !input.assigneeUserId) return null;
+    const conditions: any[] = [
+      eq(issues.companyId, input.companyId),
+      inArray(issues.status, [...ACTIVE_ISSUE_STATUSES_FOR_DEDUPE]),
+      isNull(issues.hiddenAt),
+    ];
+
+    if (input.goalId) conditions.push(eq(issues.goalId, input.goalId));
+    else conditions.push(isNull(issues.goalId));
+
+    if (input.assigneeAgentId) {
+      conditions.push(eq(issues.assigneeAgentId, input.assigneeAgentId));
+      conditions.push(isNull(issues.assigneeUserId));
+    } else if (input.assigneeUserId) {
+      conditions.push(eq(issues.assigneeUserId, input.assigneeUserId));
+      conditions.push(isNull(issues.assigneeAgentId));
+    }
+
+    if (input.excludeIssueId) {
+      conditions.push(sql`${issues.id} <> ${input.excludeIssueId}`);
+    }
+
+    const candidates = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        title: issues.title,
+      })
+      .from(issues)
+      .where(and(...conditions))
+      .orderBy(desc(issues.updatedAt));
+
+    const normalizedTarget = normalizeIssueTitle(input.title);
+    return (
+      candidates.find((candidate) => normalizeIssueTitle(candidate.title) === normalizedTarget) ??
+      null
     );
   }
 
@@ -381,6 +469,7 @@ export function issueService(db: Db) {
     create: async (
       companyId: string,
       data: Omit<typeof issues.$inferInsert, "companyId"> & { labelIds?: string[] },
+      options?: IssueMutationOptions,
     ) => {
       const { labelIds: inputLabelIds, ...issueData } = data;
       if (data.assigneeAgentId && data.assigneeUserId) {
@@ -394,6 +483,27 @@ export function issueService(db: Db) {
       }
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
+      }
+      assertAssignmentTemplateIfAssigned(
+        {
+          description: data.description,
+          assigneeAgentId: data.assigneeAgentId,
+          assigneeUserId: data.assigneeUserId,
+        },
+        options,
+      );
+      const duplicate = await findDuplicateActiveIssue({
+        companyId,
+        title: data.title,
+        goalId: data.goalId,
+        assigneeAgentId: data.assigneeAgentId,
+        assigneeUserId: data.assigneeUserId,
+      });
+      if (duplicate) {
+        throw conflict("Duplicate issue exists for the same goal, assignee, and title", {
+          issueId: duplicate.id,
+          issueIdentifier: duplicate.identifier,
+        });
       }
       return db.transaction(async (tx) => {
         const [company] = await tx
@@ -425,7 +535,11 @@ export function issueService(db: Db) {
       });
     },
 
-    update: async (id: string, data: Partial<typeof issues.$inferInsert> & { labelIds?: string[] }) => {
+    update: async (
+      id: string,
+      data: Partial<typeof issues.$inferInsert> & { labelIds?: string[] },
+      options?: IssueMutationOptions,
+    ) => {
       const existing = await db
         .select()
         .from(issues)
@@ -448,6 +562,11 @@ export function issueService(db: Db) {
         issueData.assigneeAgentId !== undefined ? issueData.assigneeAgentId : existing.assigneeAgentId;
       const nextAssigneeUserId =
         issueData.assigneeUserId !== undefined ? issueData.assigneeUserId : existing.assigneeUserId;
+      const nextDescription =
+        issueData.description !== undefined ? issueData.description : existing.description;
+      const nextTitle = issueData.title ?? existing.title;
+      const nextGoalId =
+        issueData.goalId !== undefined ? issueData.goalId : existing.goalId;
 
       if (nextAssigneeAgentId && nextAssigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
@@ -460,6 +579,28 @@ export function issueService(db: Db) {
       }
       if (issueData.assigneeUserId) {
         await assertAssignableUser(existing.companyId, issueData.assigneeUserId);
+      }
+      assertAssignmentTemplateIfAssigned(
+        {
+          description: nextDescription,
+          assigneeAgentId: nextAssigneeAgentId,
+          assigneeUserId: nextAssigneeUserId,
+        },
+        options,
+      );
+      const duplicate = await findDuplicateActiveIssue({
+        companyId: existing.companyId,
+        title: nextTitle,
+        goalId: nextGoalId,
+        assigneeAgentId: nextAssigneeAgentId,
+        assigneeUserId: nextAssigneeUserId,
+        excludeIssueId: id,
+      });
+      if (duplicate) {
+        throw conflict("Duplicate issue exists for the same goal, assignee, and title", {
+          issueId: duplicate.id,
+          issueIdentifier: duplicate.identifier,
+        });
       }
 
       applyStatusSideEffects(issueData.status, patch);
@@ -521,12 +662,24 @@ export function issueService(db: Db) {
 
     checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
       const issueCompany = await db
-        .select({ companyId: issues.companyId })
+        .select({
+          companyId: issues.companyId,
+          description: issues.description,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+        })
         .from(issues)
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
       if (!issueCompany) throw notFound("Issue not found");
       await assertAssignableAgent(issueCompany.companyId, agentId);
+      if (!issueCompany.assigneeAgentId && !issueCompany.assigneeUserId) {
+        assertAssignmentTemplateIfAssigned({
+          description: issueCompany.description,
+          assigneeAgentId: agentId,
+          assigneeUserId: null,
+        });
+      }
 
       const now = new Date();
       const sameRunAssigneeCondition = checkoutRunId
