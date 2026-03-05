@@ -54,7 +54,10 @@ export function FolderPickerDialog({
 
   // Reset to initial when dialog opens/closes
   function handleOpenChange(next: boolean) {
-    if (!next) setCurrentPath(initialPath);
+    if (!next) {
+      setCurrentPath(initialPath);
+      setShowHidden(false);
+    }
     onOpenChange(next);
   }
 
