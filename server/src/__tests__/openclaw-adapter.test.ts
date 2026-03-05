@@ -2,7 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { execute, testEnvironment } from "@paperclipai/adapter-openclaw/server";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 
-function buildContext(config: Record<string, unknown>): AdapterExecutionContext {
+function buildContext(
+  config: Record<string, unknown>,
+  overrides?: Partial<AdapterExecutionContext>,
+): AdapterExecutionContext {
   return {
     runId: "run-123",
     agent: {
@@ -26,7 +29,27 @@ function buildContext(config: Record<string, unknown>): AdapterExecutionContext 
       issueIds: ["issue-123"],
     },
     onLog: async () => {},
+    ...overrides,
   };
+}
+
+function sseResponse(lines: string[]) {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const line of lines) {
+        controller.enqueue(encoder.encode(line));
+      }
+      controller.close();
+    },
+  });
+  return new Response(stream, {
+    status: 200,
+    statusText: "OK",
+    headers: {
+      "content-type": "text/event-stream",
+    },
+  });
 }
 
 afterEach(() => {
@@ -35,29 +58,89 @@ afterEach(() => {
 });
 
 describe("openclaw adapter execute", () => {
-  it("sends structured paperclip payload to mapped endpoints", async () => {
+  it("uses SSE by default and streams into one run", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ ok: true }), { status: 200, statusText: "OK" }),
+      sseResponse([
+        'event: response.delta\n',
+        'data: {"type":"response.delta","delta":"hi"}\n\n',
+        'event: response.completed\n',
+        'data: {"type":"response.completed","status":"completed"}\n\n',
+      ]),
     );
     vi.stubGlobal("fetch", fetchMock);
 
+    const onLog = vi.fn<AdapterExecutionContext["onLog"]>().mockResolvedValue(undefined);
+
     const result = await execute(
-      buildContext({
-        url: "https://agent.example/hooks/paperclip",
-        method: "POST",
-        payloadTemplate: { foo: "bar" },
-      }),
+      buildContext(
+        {
+          url: "https://agent.example/gateway",
+          method: "POST",
+          payloadTemplate: { foo: "bar" },
+        },
+        { onLog },
+      ),
     );
 
     expect(result.exitCode).toBe(0);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body ?? "{}")) as Record<string, unknown>;
     expect(body.foo).toBe("bar");
-    expect(body.paperclip).toBeTypeOf("object");
+    expect(body.stream).toBe(true);
+    expect(body.sessionKey).toBe("paperclip");
     expect((body.paperclip as Record<string, unknown>).runId).toBe("run-123");
+    expect((body.paperclip as Record<string, unknown>).sessionKey).toBe("paperclip");
+    expect((body.paperclip as Record<string, unknown>).streamTransport).toBe("sse");
+    expect(onLog).toHaveBeenCalled();
   });
 
-  it("uses wake text payload for /hooks/wake endpoints", async () => {
+  it("derives issue session keys when configured", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      sseResponse([
+        'event: done\n',
+        'data: [DONE]\n\n',
+      ]),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(
+      buildContext({
+        url: "https://agent.example/gateway",
+        method: "POST",
+        sessionKeyStrategy: "issue",
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body ?? "{}")) as Record<string, unknown>;
+    expect(body.sessionKey).toBe("paperclip:issue:issue-123");
+    expect((body.paperclip as Record<string, unknown>).sessionKey).toBe("paperclip:issue:issue-123");
+  });
+
+  it("fails when SSE endpoint does not return text/event-stream", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        statusText: "OK",
+        headers: {
+          "content-type": "application/json",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(
+      buildContext({
+        url: "https://agent.example/gateway",
+        method: "POST",
+      }),
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("openclaw_sse_expected_event_stream");
+  });
+
+  it("uses wake text payload for /hooks/wake endpoints in webhook mode", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ ok: true }), { status: 200, statusText: "OK" }),
     );
@@ -67,6 +150,7 @@ describe("openclaw adapter execute", () => {
       buildContext({
         url: "https://agent.example/hooks/wake",
         method: "POST",
+        streamTransport: "webhook",
       }),
     );
 
@@ -78,7 +162,7 @@ describe("openclaw adapter execute", () => {
     expect(body.paperclip).toBeUndefined();
   });
 
-  it("retries with wake text payload when endpoint reports text required", async () => {
+  it("retries with wake text payload when endpoint reports text required in webhook mode", async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
@@ -96,6 +180,7 @@ describe("openclaw adapter execute", () => {
       buildContext({
         url: "https://agent.example/hooks/paperclip",
         method: "POST",
+        streamTransport: "webhook",
       }),
     );
 
@@ -114,7 +199,9 @@ describe("openclaw adapter execute", () => {
 
 describe("openclaw adapter environment checks", () => {
   it("reports compatibility mode info for /hooks/wake endpoints", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 405, statusText: "Method Not Allowed" }));
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 405, statusText: "Method Not Allowed" }));
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await testEnvironment({
@@ -131,7 +218,9 @@ describe("openclaw adapter environment checks", () => {
       },
     });
 
-    const compatibilityCheck = result.checks.find((check) => check.code === "openclaw_wake_endpoint_compat_mode");
+    const compatibilityCheck = result.checks.find(
+      (check) => check.code === "openclaw_wake_endpoint_compat_mode",
+    );
     expect(compatibilityCheck?.level).toBe("info");
   });
 });

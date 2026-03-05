@@ -5,5 +5,8 @@ export function buildOpenClawConfig(v: CreateConfigValues): Record<string, unkno
   if (v.url) ac.url = v.url;
   ac.method = "POST";
   ac.timeoutSec = 30;
+  ac.streamTransport = "sse";
+  ac.sessionKeyStrategy = "fixed";
+  ac.sessionKey = "paperclip";
   return ac;
 }
