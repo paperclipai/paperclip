@@ -5,16 +5,12 @@ import { createAssetImageMetadataSchema } from "@paperclipai/shared";
 import type { StorageService } from "../storage/types.js";
 import { assetService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import {
+  detectImageContentTypeBySignature,
+  normalizeDeclaredImageContentType,
+} from "../security/file-signatures.js";
 
 const MAX_ASSET_IMAGE_BYTES = Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
-const ALLOWED_IMAGE_CONTENT_TYPES = new Set([
-  "image/png",
-  "image/jpeg",
-  "image/jpg",
-  "image/webp",
-  "image/gif",
-]);
-
 export function assetRoutes(db: Db, storage: StorageService) {
   const router = Router();
   const svc = assetService(db);
@@ -56,13 +52,20 @@ export function assetRoutes(db: Db, storage: StorageService) {
       return;
     }
 
-    const contentType = (file.mimetype || "").toLowerCase();
-    if (!ALLOWED_IMAGE_CONTENT_TYPES.has(contentType)) {
-      res.status(422).json({ error: `Unsupported image type: ${contentType || "unknown"}` });
-      return;
-    }
     if (file.buffer.length <= 0) {
       res.status(422).json({ error: "Image is empty" });
+      return;
+    }
+    const declaredContentType = normalizeDeclaredImageContentType(file.mimetype);
+    const detectedContentType = detectImageContentTypeBySignature(file.buffer);
+    if (!detectedContentType) {
+      res.status(422).json({ error: "Unsupported image type: file signature is not a supported image format" });
+      return;
+    }
+    if (declaredContentType && declaredContentType !== detectedContentType) {
+      res.status(422).json({
+        error: `Image MIME mismatch: declared ${declaredContentType}, detected ${detectedContentType}`,
+      });
       return;
     }
 
@@ -78,7 +81,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
       companyId,
       namespace: `assets/${namespaceSuffix}`,
       originalFilename: file.originalname || null,
-      contentType,
+      contentType: detectedContentType,
       body: file.buffer,
     });
 
@@ -150,4 +153,3 @@ export function assetRoutes(db: Db, storage: StorageService) {
 
   return router;
 }
-

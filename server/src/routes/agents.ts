@@ -1060,6 +1060,17 @@ export function agentRoutes(db: Db) {
       res.status(404).json({ error: "Key not found" });
       return;
     }
+
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "agent.key_revoked",
+      entityType: "agent",
+      entityId: agent.id,
+      details: { keyId: revoked.id, name: revoked.name },
+    });
+
     res.json({ ok: true });
   });
 

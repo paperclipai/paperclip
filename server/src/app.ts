@@ -9,6 +9,8 @@ import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
+import { createCorsPolicyMiddleware } from "./middleware/cors-policy.js";
+import { buildRateLimitConfigFromEnv, createRateLimitMiddleware, resolveClientIp } from "./middleware/rate-limit.js";
 import { healthRoutes } from "./routes/health.js";
 import { companyRoutes } from "./routes/companies.js";
 import { agentRoutes } from "./routes/agents.js";
@@ -44,7 +46,36 @@ export async function createApp(
   },
 ) {
   const app = express();
+  const rateLimitConfig = buildRateLimitConfigFromEnv();
+  const globalRateLimiter = createRateLimitMiddleware({
+    name: "api_global",
+    windowMs: rateLimitConfig.globalWindowMs,
+    max: rateLimitConfig.globalMax,
+  });
+  const authRateLimiter = createRateLimitMiddleware({
+    name: "auth",
+    windowMs: rateLimitConfig.authWindowMs,
+    max: rateLimitConfig.authMax,
+    key: (req) => `ip:${resolveClientIp(req)}`,
+  });
+  const passwordResetRateLimiter = createRateLimitMiddleware({
+    name: "auth_password_reset",
+    windowMs: rateLimitConfig.resetWindowMs,
+    max: rateLimitConfig.resetMax,
+    key: (req) => {
+      const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
+      return email.length > 0 ? `email:${email}` : `ip:${resolveClientIp(req)}`;
+    },
+    skip: (req) => !req.path.toLowerCase().includes("reset"),
+  });
 
+  app.use(
+    createCorsPolicyMiddleware({
+      deploymentMode: opts.deploymentMode,
+      bindHost: opts.bindHost,
+      allowedHostnames: opts.allowedHostnames,
+    }),
+  );
   app.use(express.json());
   app.use(httpLogger);
   const privateHostnameGateEnabled =
@@ -66,6 +97,10 @@ export async function createApp(
       resolveSession: opts.resolveSession,
     }),
   );
+  if (rateLimitConfig.enabled) {
+    app.use("/api", globalRateLimiter);
+    app.use("/api/auth", authRateLimiter, passwordResetRateLimiter);
+  }
   app.get("/api/auth/get-session", (req, res) => {
     if (req.actor.type !== "board" || !req.actor.userId) {
       res.status(401).json({ error: "Unauthorized" });
