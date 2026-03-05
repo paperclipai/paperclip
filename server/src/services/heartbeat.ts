@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import path from "node:path";
 import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -9,7 +10,10 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   costEvents,
+  issueLabels,
   issues,
+  labels,
+  projects,
   projectWorkspaces,
 } from "@paperclipai/db";
 import { conflict, notFound } from "../errors.js";
@@ -19,8 +23,9 @@ import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, runningProcesses } from "../adapters/index.js";
 import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
-import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
+import { parseObject, asBoolean, asNumber, asString, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { secretService } from "./secrets.js";
+import { issueService } from "./issues.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
@@ -29,6 +34,18 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
+const BOOT_MARKER_RELATIVE_PATH = ".paperclip/runtime/boot-marker.json";
+const SAFE_HTTP_READ_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+const SENSITIVE_LABEL_TOKENS = [
+  "prod",
+  "production",
+  "deploy",
+  "payment",
+  "billing",
+  "database",
+  "secret",
+  "token",
+];
 
 function appendExcerpt(prev: string, chunk: string) {
   return appendWithCap(prev, chunk, MAX_EXCERPT_BYTES);
@@ -205,6 +222,97 @@ function normalizeAgentNameKey(value: string | null | undefined) {
   return normalized.length > 0 ? normalized : null;
 }
 
+function asPositiveInteger(value: unknown): number | null {
+  const numeric =
+    typeof value === "number"
+      ? value
+      : typeof value === "string"
+        ? Number.parseFloat(value)
+        : Number.NaN;
+  if (!Number.isFinite(numeric)) return null;
+  const rounded = Math.floor(numeric);
+  return rounded > 0 ? rounded : null;
+}
+
+function buildFailurePlaybook(errorCode: string | null) {
+  const normalized = (errorCode ?? "").trim();
+  switch (normalized) {
+    case "process_lost":
+      return {
+        playbookId: "process_lost_recovery",
+        recommendedAction: "Collect host diagnostics and resume the interrupted run.",
+      };
+    case "claude_auth_required":
+      return {
+        playbookId: "claude_auth_required",
+        recommendedAction: "Run Claude login for this agent, then retry the run.",
+      };
+    case "timeout":
+      return {
+        playbookId: "run_timeout",
+        recommendedAction: "Split scope or raise timeout using project guardrails.",
+      };
+    case "adapter_failed":
+      return {
+        playbookId: "adapter_failed_triage",
+        recommendedAction: "Inspect stderr/result payload and retry with tighter scope.",
+      };
+    case "agent_not_found":
+      return {
+        playbookId: "agent_not_found_reconcile",
+        recommendedAction: "Reconcile agent assignment/configuration, then requeue the run.",
+      };
+    case "safe_mode_external_mutation_blocked":
+      return {
+        playbookId: "safe_mode_external_mutation_blocked",
+        recommendedAction: "Disable safe mode for this run or switch to a read-only adapter flow.",
+      };
+    case "cancelled":
+      return {
+        playbookId: "run_cancelled",
+        recommendedAction: "No action required unless cancellation was unexpected.",
+      };
+    default:
+      return {
+        playbookId: "generic_run_failure",
+        recommendedAction: "Inspect run logs and follow the incident checklist.",
+      };
+  }
+}
+
+function mergeFailureRecommendationResult(
+  existingResultJson: Record<string, unknown> | null,
+  errorCode: string | null,
+  extraOps?: Record<string, unknown>,
+) {
+  const playbook = buildFailurePlaybook(errorCode);
+  const resultJson = parseObject(existingResultJson);
+  const existingOps = parseObject(resultJson.paperclipOps);
+  resultJson.paperclipOps = {
+    ...existingOps,
+    playbookId: playbook.playbookId,
+    recommendedAction: playbook.recommendedAction,
+    errorCode,
+    recommendedAt: new Date().toISOString(),
+    ...(extraOps ?? {}),
+  };
+  return {
+    resultJson,
+    playbook,
+  };
+}
+
+async function safeReadJsonFile(filePath: string) {
+  const raw = await fs.readFile(filePath, "utf8").catch(() => null);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return parseObject(parsed);
+  } catch {
+    return null;
+  }
+}
+
 const defaultSessionCodec: AdapterSessionCodec = {
   deserialize(raw: unknown) {
     const asObj = parseObject(raw);
@@ -292,6 +400,341 @@ function resolveNextSessionState(input: {
 export function heartbeatService(db: Db) {
   const runLogStore = getRunLogStore();
   const secretsSvc = secretService(db);
+  const issuesSvc = issueService(db);
+
+  async function resolveProjectIdFromContext(companyId: string, contextSnapshot: Record<string, unknown>) {
+    const contextProjectId = readNonEmptyString(contextSnapshot.projectId);
+    const issueId = readNonEmptyString(contextSnapshot.issueId);
+    if (issueId) {
+      const issueProjectId = await db
+        .select({ projectId: issues.projectId })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
+        .then((rows) => rows[0]?.projectId ?? null);
+      if (issueProjectId) return issueProjectId;
+    }
+    return contextProjectId;
+  }
+
+  async function resolveProjectRunGuardrails(companyId: string, projectId: string | null) {
+    if (!projectId) {
+      return {
+        projectId: null,
+        projectName: null,
+        maxConcurrentRuns: null,
+        timeoutSec: null,
+        safeModeDefault: false,
+      };
+    }
+
+    const project = await db
+      .select({ id: projects.id, name: projects.name })
+      .from(projects)
+      .where(and(eq(projects.id, projectId), eq(projects.companyId, companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!project) {
+      return {
+        projectId: null,
+        projectName: null,
+        maxConcurrentRuns: null,
+        timeoutSec: null,
+        safeModeDefault: false,
+      };
+    }
+
+    const workspaces = await db
+      .select({
+        metadata: projectWorkspaces.metadata,
+        isPrimary: projectWorkspaces.isPrimary,
+        createdAt: projectWorkspaces.createdAt,
+      })
+      .from(projectWorkspaces)
+      .where(and(eq(projectWorkspaces.companyId, companyId), eq(projectWorkspaces.projectId, project.id)))
+      .orderBy(sql`${projectWorkspaces.isPrimary} desc`, asc(projectWorkspaces.createdAt));
+
+    let runGuardrails: Record<string, unknown> | null = null;
+    for (const workspace of workspaces) {
+      const metadata = parseObject(workspace.metadata);
+      const parsedGuardrails = parseObject(metadata.runGuardrails);
+      if (Object.keys(parsedGuardrails).length > 0) {
+        runGuardrails = parsedGuardrails;
+        break;
+      }
+    }
+
+    return {
+      projectId: project.id,
+      projectName: project.name,
+      maxConcurrentRuns: asPositiveInteger(runGuardrails?.maxConcurrentRuns ?? null),
+      timeoutSec: asPositiveInteger(runGuardrails?.timeoutSec ?? null),
+      safeModeDefault: runGuardrails?.safeModeDefault === true,
+    };
+  }
+
+  async function countRunningRunsForProject(companyId: string, projectId: string) {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.status, "running"),
+          sql`(
+            coalesce(${heartbeatRuns.contextSnapshot} ->> 'projectId', '') = ${projectId}
+            or exists (
+              select 1 from ${issues}
+              where ${issues.companyId} = ${heartbeatRuns.companyId}
+                and ${issues.id}::text = (${heartbeatRuns.contextSnapshot} ->> 'issueId')
+                and ${issues.projectId} = ${projectId}
+            )
+          )`,
+        ),
+      );
+    return Number(count ?? 0);
+  }
+
+  async function issueLooksSensitive(companyId: string, issueId: string | null) {
+    if (!issueId) return false;
+    const rows = await db
+      .select({ name: labels.name })
+      .from(issueLabels)
+      .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+      .where(and(eq(issueLabels.companyId, companyId), eq(issueLabels.issueId, issueId)));
+    return rows.some((row) => {
+      const lower = row.name.toLowerCase();
+      return SENSITIVE_LABEL_TOKENS.some((token) => lower.includes(token));
+    });
+  }
+
+  function buildBootMarkerPath() {
+    const explicit = process.env.PAPERCLIP_BOOT_MARKER_FILE;
+    if (explicit && explicit.trim().length > 0) return explicit.trim();
+    return path.resolve(process.cwd(), BOOT_MARKER_RELATIVE_PATH);
+  }
+
+  async function readCurrentBootEvidence() {
+    const bootId = (await fs.readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim();
+    const uptimeRaw = (await fs.readFile("/proc/uptime", "utf8")).trim();
+    const uptimeSec = Number.parseFloat(uptimeRaw.split(" ")[0] ?? "0");
+    return {
+      bootId,
+      uptimeSec: Number.isFinite(uptimeSec) ? uptimeSec : 0,
+      checkedAt: new Date().toISOString(),
+    };
+  }
+
+  async function createOpsIncidentIssue(input: {
+    companyId: string;
+    title: string;
+    description: string;
+    priority?: "low" | "medium" | "high" | "critical";
+  }) {
+    const recentDuplicate = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, input.companyId),
+          eq(issues.title, input.title),
+          sql`${issues.createdAt} >= now() - interval '2 hours'`,
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (recentDuplicate) return recentDuplicate.id;
+
+    const created = await issuesSvc.create(input.companyId, {
+      title: input.title,
+      description: input.description,
+      status: "todo",
+      priority: input.priority ?? "high",
+      createdByUserId: "system",
+    });
+    return created.id;
+  }
+
+  async function appendFailureRecommendationEvent(
+    run: typeof heartbeatRuns.$inferSelect,
+    seq: number,
+    errorCode: string | null,
+    extraPayload?: Record<string, unknown>,
+  ) {
+    const playbook = buildFailurePlaybook(errorCode);
+    await appendRunEvent(run, seq, {
+      eventType: "ops.recommendation",
+      stream: "system",
+      level: "warn",
+      message: playbook.recommendedAction,
+      payload: {
+        playbookId: playbook.playbookId,
+        errorCode,
+        recommendedAction: playbook.recommendedAction,
+        ...(extraPayload ?? {}),
+      },
+    });
+  }
+
+  async function updateRunContextSnapshot(
+    runId: string,
+    contextSnapshot: Record<string, unknown>,
+    opts?: { touchUpdatedAt?: boolean },
+  ) {
+    const patch = opts?.touchUpdatedAt === false
+      ? { contextSnapshot }
+      : { contextSnapshot, updatedAt: new Date() };
+    await db
+      .update(heartbeatRuns)
+      .set(patch)
+      .where(eq(heartbeatRuns.id, runId));
+  }
+
+  function applySafeModeConfiguration(
+    adapterType: string,
+    baseConfig: Record<string, unknown>,
+    safeMode: {
+      enabled: boolean;
+      reason: string;
+      reasons: string[];
+      source: string;
+      projectId: string | null;
+      projectName: string | null;
+      issueId: string | null;
+    },
+  ) {
+    if (!safeMode.enabled) return baseConfig;
+
+    const safeModeDirective =
+      `Paperclip Safe Mode is active (${safeMode.reason}). ` +
+      "Operate in read-only planning mode unless explicitly told otherwise, " +
+      "do not deploy, do not mutate external systems, and avoid destructive shell commands.";
+    const envPatch: Record<string, string> = {
+      PAPERCLIP_SAFE_MODE: "1",
+      PAPERCLIP_SAFE_MODE_REASON: safeMode.reason,
+      PAPERCLIP_SAFE_MODE_REASONS: safeMode.reasons.join(","),
+      PAPERCLIP_SAFE_MODE_SOURCE: safeMode.source,
+    };
+    if (safeMode.projectId) envPatch.PAPERCLIP_SAFE_MODE_PROJECT_ID = safeMode.projectId;
+    if (safeMode.projectName) envPatch.PAPERCLIP_SAFE_MODE_PROJECT_NAME = safeMode.projectName;
+    if (safeMode.issueId) envPatch.PAPERCLIP_SAFE_MODE_ISSUE_ID = safeMode.issueId;
+
+    const merged = { ...baseConfig };
+    const existingEnv = parseObject(merged.env);
+    merged.env = {
+      ...existingEnv,
+      ...envPatch,
+    };
+
+    if (adapterType === "claude_local" || adapterType === "codex_local") {
+      const existingPromptTemplate = asString(
+        merged.promptTemplate,
+        "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
+      );
+      merged.promptTemplate = `${safeModeDirective}\n\n${existingPromptTemplate}`;
+    }
+
+    if (adapterType === "claude_local") {
+      merged.dangerouslySkipPermissions = false;
+    }
+    if (adapterType === "codex_local") {
+      merged.dangerouslyBypassApprovalsAndSandbox = false;
+      merged.dangerouslyBypassSandbox = false;
+    }
+    return merged;
+  }
+
+  function shouldBlockExternalMutableAdapterInSafeMode(
+    adapterType: string,
+    config: Record<string, unknown>,
+    safeModeEnabled: boolean,
+  ) {
+    if (!safeModeEnabled) return false;
+    const allowMutable = asBoolean(
+      config.allowExternalMutableInSafeMode ?? config.allowExternalWritesInSafeMode,
+      false,
+    );
+    if (allowMutable) return false;
+
+    if (adapterType === "http" || adapterType === "openclaw") {
+      const method = asString(config.method, "POST").toUpperCase();
+      return !SAFE_HTTP_READ_METHODS.has(method);
+    }
+    return false;
+  }
+
+  async function reportHostBootIncident() {
+    const markerPath = buildBootMarkerPath();
+    const current = await readCurrentBootEvidence();
+    const previous = await safeReadJsonFile(markerPath);
+
+    await fs.mkdir(path.dirname(markerPath), { recursive: true });
+    await fs.writeFile(
+      markerPath,
+      JSON.stringify(
+        {
+          ...current,
+          pid: process.pid,
+          recordedAt: new Date().toISOString(),
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    if (!previous) {
+      return { incidentCreated: false as const, kind: "first_seen" as const };
+    }
+
+    const previousBootId = readNonEmptyString(previous.bootId);
+    if (!previousBootId) {
+      return { incidentCreated: false as const, kind: "marker_invalid" as const };
+    }
+
+    const previousCheckedAt = readNonEmptyString(previous.checkedAt) ?? readNonEmptyString(previous.recordedAt);
+    const previousUptimeSec = asPositiveInteger(previous.uptimeSec);
+    const isHostReboot = previousBootId !== current.bootId;
+    const kind = isHostReboot ? "host_reboot" : "process_restart";
+
+    const affectedCompanies = await db
+      .selectDistinct({ companyId: heartbeatRuns.companyId })
+      .from(heartbeatRuns)
+      .where(
+        sql`${heartbeatRuns.createdAt} >= now() - interval '12 hours'`,
+      );
+
+    for (const company of affectedCompanies) {
+      const title = isHostReboot
+        ? "Ops incident: host reboot detected"
+        : "Ops incident: server process restart detected";
+      const description = [
+        "Paperclip detected a runtime restart from boot marker evidence.",
+        "",
+        `- kind: ${kind}`,
+        `- previousBootId: ${previousBootId}`,
+        `- currentBootId: ${current.bootId}`,
+        `- previousCheckedAt: ${previousCheckedAt ?? "unknown"}`,
+        `- currentCheckedAt: ${current.checkedAt}`,
+        `- previousUptimeSec: ${previousUptimeSec ?? "unknown"}`,
+        `- currentUptimeSec: ${Math.floor(current.uptimeSec)}`,
+        "",
+        "Follow-up:",
+        "1. Confirm if this restart was planned.",
+        "2. Inspect recent process_lost heartbeat runs and recover interrupted tasks.",
+      ].join("\n");
+      await createOpsIncidentIssue({
+        companyId: company.companyId,
+        title,
+        description,
+        priority: isHostReboot ? "high" : "medium",
+      });
+    }
+
+    return {
+      incidentCreated: affectedCompanies.length > 0,
+      affectedCompanies: affectedCompanies.length,
+      kind,
+    };
+  }
 
   async function getAgent(agentId: string) {
     return db
@@ -755,6 +1198,10 @@ export function heartbeatService(db: Db) {
       .where(inArray(heartbeatRuns.status, ["queued", "running"]));
 
     const reaped: string[] = [];
+    const reapedByCompany = new Map<
+      string,
+      Array<{ runId: string; agentId: string; status: string; wakeupRequestId: string | null }>
+    >();
 
     for (const run of activeRuns) {
       if (runningProcesses.has(run.id)) continue;
@@ -765,10 +1212,12 @@ export function heartbeatService(db: Db) {
         if (now.getTime() - refTime < staleThresholdMs) continue;
       }
 
+      const failureRecommendation = mergeFailureRecommendationResult(run.resultJson ?? null, "process_lost");
       await setRunStatus(run.id, "failed", {
         error: "Process lost -- server may have restarted",
         errorCode: "process_lost",
         finishedAt: now,
+        resultJson: failureRecommendation.resultJson,
       });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: now,
@@ -777,6 +1226,17 @@ export function heartbeatService(db: Db) {
       const updatedRun = await getRun(run.id);
       if (updatedRun) {
         await appendRunEvent(updatedRun, 1, {
+          eventType: "ops.recommendation",
+          stream: "system",
+          level: "warn",
+          message: failureRecommendation.playbook.recommendedAction,
+          payload: {
+            playbookId: failureRecommendation.playbook.playbookId,
+            errorCode: "process_lost",
+            recommendedAction: failureRecommendation.playbook.recommendedAction,
+          },
+        });
+        await appendRunEvent(updatedRun, 2, {
           eventType: "lifecycle",
           stream: "system",
           level: "error",
@@ -788,6 +1248,41 @@ export function heartbeatService(db: Db) {
       await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
+      const bucket = reapedByCompany.get(run.companyId) ?? [];
+      bucket.push({
+        runId: run.id,
+        agentId: run.agentId,
+        status: run.status,
+        wakeupRequestId: run.wakeupRequestId ?? null,
+      });
+      reapedByCompany.set(run.companyId, bucket);
+    }
+
+    for (const [companyId, companyRuns] of reapedByCompany.entries()) {
+      const lines = companyRuns.slice(0, 12).map((entry) =>
+        `- runId=${entry.runId} agentId=${entry.agentId} previousStatus=${entry.status} wakeupRequestId=${entry.wakeupRequestId ?? "null"}`,
+      );
+      const remaining = Math.max(0, companyRuns.length - lines.length);
+      if (remaining > 0) {
+        lines.push(`- ... ${remaining} more runs omitted`);
+      }
+      await createOpsIncidentIssue({
+        companyId,
+        title: "Ops incident: process_lost runs reaped",
+        description: [
+          `The heartbeat reaper marked ${companyRuns.length} active run(s) as process_lost.`,
+          "",
+          "Likely causes: server restart, host reboot, or worker crash.",
+          "",
+          "Affected runs:",
+          ...lines,
+          "",
+          "Recommended follow-up:",
+          "1. Validate host/process health and restart reason.",
+          "2. Resume or retrigger interrupted work.",
+        ].join("\n"),
+        priority: "high",
+      });
     }
 
     if (reaped.length > 0) {
@@ -864,13 +1359,87 @@ export function heartbeatService(db: Db) {
         .from(heartbeatRuns)
         .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")))
         .orderBy(asc(heartbeatRuns.createdAt))
-        .limit(availableSlots);
+        .limit(Math.max(availableSlots * 8, 40));
       if (queuedRuns.length === 0) return [];
 
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
+      const runningByProject = new Map<string, number>();
       for (const queuedRun of queuedRuns) {
+        if (claimedRuns.length >= availableSlots) break;
+
+        const context = parseObject(queuedRun.contextSnapshot);
+        const contextBefore = JSON.stringify(context);
+        const projectId = await resolveProjectIdFromContext(agent.companyId, context);
+        const guardrails = await resolveProjectRunGuardrails(agent.companyId, projectId);
+        const issueId = readNonEmptyString(context.issueId);
+        const sensitiveIssue = await issueLooksSensitive(agent.companyId, issueId);
+
+        const safeModeReasons: string[] = [];
+        if (guardrails.safeModeDefault) safeModeReasons.push("project_safe_mode_default");
+        if (sensitiveIssue) safeModeReasons.push("sensitive_issue_labels");
+        const safeModeEnabled = safeModeReasons.length > 0;
+        const safeModeReason = safeModeReasons[0] ?? "none";
+
+        const nextSafeMode = {
+          enabled: safeModeEnabled,
+          reason: safeModeReason,
+          reasons: safeModeReasons,
+          source: guardrails.safeModeDefault ? "project_guardrail" : sensitiveIssue ? "issue_labels" : "none",
+          projectId: guardrails.projectId,
+          projectName: guardrails.projectName,
+          issueId,
+          safeModeDefault: guardrails.safeModeDefault,
+          sensitiveIssue,
+        };
+        context.paperclipSafeMode = nextSafeMode;
+
+        const existingOps = parseObject(context.paperclipOps);
+        const nextOps: Record<string, unknown> = {
+          ...existingOps,
+          projectGuardrails: {
+            projectId: guardrails.projectId,
+            projectName: guardrails.projectName,
+            maxConcurrentRuns: guardrails.maxConcurrentRuns,
+            timeoutSec: guardrails.timeoutSec,
+            safeModeDefault: guardrails.safeModeDefault,
+          },
+        };
+
+        let guardrailBlocked: string | null = null;
+        if (guardrails.projectId && guardrails.maxConcurrentRuns != null) {
+          let runningForProject = runningByProject.get(guardrails.projectId);
+          if (runningForProject == null) {
+            runningForProject = await countRunningRunsForProject(agent.companyId, guardrails.projectId);
+            runningByProject.set(guardrails.projectId, runningForProject);
+          }
+          if (runningForProject >= guardrails.maxConcurrentRuns) {
+            guardrailBlocked = "project_max_concurrency";
+          }
+        }
+
+        if (guardrailBlocked) {
+          nextOps.guardrailBlocked = guardrailBlocked;
+        } else {
+          delete nextOps.guardrailBlocked;
+        }
+        context.paperclipOps = nextOps;
+
+        if (JSON.stringify(context) !== contextBefore) {
+          await updateRunContextSnapshot(queuedRun.id, context);
+        }
+
+        if (guardrailBlocked) {
+          continue;
+        }
+
         const claimed = await claimQueuedRun(queuedRun);
         if (claimed) claimedRuns.push(claimed);
+        if (claimed && guardrails.projectId && guardrails.maxConcurrentRuns != null) {
+          runningByProject.set(
+            guardrails.projectId,
+            (runningByProject.get(guardrails.projectId) ?? 0) + 1,
+          );
+        }
       }
       if (claimedRuns.length === 0) return [];
 
@@ -899,17 +1468,25 @@ export function heartbeatService(db: Db) {
 
     const agent = await getAgent(run.agentId);
     if (!agent) {
+      const failureRecommendation = mergeFailureRecommendationResult(
+        run.resultJson ?? null,
+        "agent_not_found",
+      );
       await setRunStatus(runId, "failed", {
         error: "Agent not found",
         errorCode: "agent_not_found",
         finishedAt: new Date(),
+        resultJson: failureRecommendation.resultJson,
       });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: new Date(),
         error: "Agent not found",
       });
       const failedRun = await getRun(runId);
-      if (failedRun) await releaseIssueExecutionAndPromote(failedRun);
+      if (failedRun) {
+        await appendFailureRecommendationEvent(failedRun, 1, "agent_not_found");
+        await releaseIssueExecutionAndPromote(failedRun);
+      }
       return;
     }
 
@@ -958,6 +1535,38 @@ export function heartbeatService(db: Db) {
     if (resolvedWorkspace.projectId && !readNonEmptyString(context.projectId)) {
       context.projectId = resolvedWorkspace.projectId;
     }
+    const runProjectId = await resolveProjectIdFromContext(agent.companyId, context);
+    const runGuardrails = await resolveProjectRunGuardrails(agent.companyId, runProjectId);
+    const sensitiveIssue = await issueLooksSensitive(agent.companyId, issueId);
+    const safeModeReasons: string[] = [];
+    if (runGuardrails.safeModeDefault) safeModeReasons.push("project_safe_mode_default");
+    if (sensitiveIssue) safeModeReasons.push("sensitive_issue_labels");
+    const safeModeEnabled = safeModeReasons.length > 0;
+    const safeModeReason = safeModeReasons[0] ?? "none";
+    context.paperclipSafeMode = {
+      enabled: safeModeEnabled,
+      reason: safeModeReason,
+      reasons: safeModeReasons,
+      source: runGuardrails.safeModeDefault ? "project_guardrail" : sensitiveIssue ? "issue_labels" : "none",
+      projectId: runGuardrails.projectId,
+      projectName: runGuardrails.projectName,
+      issueId,
+      safeModeDefault: runGuardrails.safeModeDefault,
+      sensitiveIssue,
+    };
+    const existingOps = parseObject(context.paperclipOps);
+    const nextOps: Record<string, unknown> = {
+      ...existingOps,
+      projectGuardrails: {
+        projectId: runGuardrails.projectId,
+        projectName: runGuardrails.projectName,
+        maxConcurrentRuns: runGuardrails.maxConcurrentRuns,
+        timeoutSec: runGuardrails.timeoutSec,
+        safeModeDefault: runGuardrails.safeModeDefault,
+      },
+    };
+    delete nextOps.guardrailBlocked;
+    context.paperclipOps = nextOps;
     const runtimeSessionFallback = taskKey ? null : runtime.sessionId;
     const previousSessionDisplayId = truncateDisplayId(
       taskSession?.sessionDisplayId ??
@@ -984,6 +1593,7 @@ export function heartbeatService(db: Db) {
         .set({
           startedAt,
           sessionIdBefore: runtimeForAdapter.sessionDisplayId ?? runtimeForAdapter.sessionId,
+          contextSnapshot: context,
           updatedAt: new Date(),
         })
         .where(eq(heartbeatRuns.id, run.id))
@@ -1064,9 +1674,24 @@ export function heartbeatService(db: Db) {
       };
 
       const config = parseObject(agent.adapterConfig);
-      const mergedConfig = issueAssigneeOverrides?.adapterConfig
+      let mergedConfig = issueAssigneeOverrides?.adapterConfig
         ? { ...config, ...issueAssigneeOverrides.adapterConfig }
         : config;
+      if (runGuardrails.timeoutSec != null) {
+        mergedConfig = {
+          ...mergedConfig,
+          timeoutSec: runGuardrails.timeoutSec,
+        };
+      }
+      mergedConfig = applySafeModeConfiguration(agent.adapterType, mergedConfig, {
+        enabled: safeModeEnabled,
+        reason: safeModeReason,
+        reasons: safeModeReasons,
+        source: runGuardrails.safeModeDefault ? "project_guardrail" : sensitiveIssue ? "issue_labels" : "none",
+        projectId: runGuardrails.projectId,
+        projectName: runGuardrails.projectName,
+        issueId,
+      });
       const resolvedConfig = await secretsSvc.resolveAdapterConfigForRuntime(
         agent.companyId,
         mergedConfig,
@@ -1082,6 +1707,65 @@ export function heartbeatService(db: Db) {
       };
 
       const adapter = getServerAdapter(agent.adapterType);
+      if (shouldBlockExternalMutableAdapterInSafeMode(agent.adapterType, resolvedConfig, safeModeEnabled)) {
+        await onLog(
+          "stderr",
+          "[paperclip] Safe mode blocked mutable external adapter invocation (set allowExternalMutableInSafeMode=true to bypass).\n",
+        );
+        let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
+        if (handle) {
+          logSummary = await runLogStore.finalize(handle);
+          handle = null;
+        }
+        const failureCode = "safe_mode_external_mutation_blocked";
+        const failureRecommendation = mergeFailureRecommendationResult(
+          null,
+          failureCode,
+          { safeMode: context.paperclipSafeMode },
+        );
+        const blockedRun = await setRunStatus(run.id, "failed", {
+          finishedAt: new Date(),
+          error: "Safe mode blocked mutable external adapter invocation",
+          errorCode: failureCode,
+          resultJson: failureRecommendation.resultJson,
+          stdoutExcerpt,
+          stderrExcerpt,
+          logBytes: logSummary?.bytes,
+          logSha256: logSummary?.sha256,
+          logCompressed: logSummary?.compressed ?? false,
+        });
+        await setWakeupStatus(run.wakeupRequestId, "failed", {
+          finishedAt: new Date(),
+          error: "Safe mode blocked mutable external adapter invocation",
+        });
+        if (blockedRun) {
+          await appendFailureRecommendationEvent(blockedRun, seq++, failureCode, {
+            safeMode: context.paperclipSafeMode,
+          });
+          await appendRunEvent(blockedRun, seq++, {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "error",
+            message: "run failed",
+            payload: {
+              status: "failed",
+              errorCode: failureCode,
+            },
+          });
+          await releaseIssueExecutionAndPromote(blockedRun);
+          await updateRuntimeState(agent, blockedRun, {
+            exitCode: 1,
+            signal: null,
+            timedOut: false,
+            errorCode: failureCode,
+            errorMessage: "Safe mode blocked mutable external adapter invocation",
+          }, {
+            legacySessionId: runtimeForAdapter.sessionId,
+          });
+        }
+        await finalizeAgentStatus(agent.id, "failed");
+        return;
+      }
       const authToken = adapter.supportsLocalAgentJwt
         ? createLocalAgentJwt(agent.id, agent.companyId, agent.adapterType, run.id)
         : null;
@@ -1139,6 +1823,18 @@ export function heartbeatService(db: Db) {
             : outcome === "timed_out"
               ? "timed_out"
               : "failed";
+      const terminalErrorCode =
+        outcome === "timed_out"
+          ? "timeout"
+          : outcome === "cancelled"
+            ? "cancelled"
+            : outcome === "failed"
+              ? (adapterResult.errorCode ?? "adapter_failed")
+              : null;
+      const terminalErrorMessage =
+        outcome === "succeeded"
+          ? null
+          : adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed");
 
       const usageJson =
         adapterResult.usage || adapterResult.costUsd != null
@@ -1148,25 +1844,23 @@ export function heartbeatService(db: Db) {
               ...(adapterResult.billingType ? { billingType: adapterResult.billingType } : {}),
             } as Record<string, unknown>)
           : null;
+      const failureRecommendation =
+        outcome === "failed" || outcome === "timed_out"
+          ? mergeFailureRecommendationResult(
+              adapterResult.resultJson ?? null,
+              terminalErrorCode,
+              { safeMode: context.paperclipSafeMode },
+            )
+          : null;
 
       await setRunStatus(run.id, status, {
         finishedAt: new Date(),
-        error:
-          outcome === "succeeded"
-            ? null
-            : adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
-        errorCode:
-          outcome === "timed_out"
-            ? "timeout"
-            : outcome === "cancelled"
-              ? "cancelled"
-              : outcome === "failed"
-                ? (adapterResult.errorCode ?? "adapter_failed")
-                : null,
+        error: terminalErrorMessage,
+        errorCode: terminalErrorCode,
         exitCode: adapterResult.exitCode,
         signal: adapterResult.signal,
         usageJson,
-        resultJson: adapterResult.resultJson ?? null,
+        resultJson: failureRecommendation?.resultJson ?? adapterResult.resultJson ?? null,
         sessionIdAfter: nextSessionState.displayId ?? nextSessionState.legacySessionId,
         stdoutExcerpt,
         stderrExcerpt,
@@ -1177,11 +1871,16 @@ export function heartbeatService(db: Db) {
 
       await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
         finishedAt: new Date(),
-        error: adapterResult.errorMessage ?? null,
+        error: terminalErrorMessage,
       });
 
       const finalizedRun = await getRun(run.id);
       if (finalizedRun) {
+        if (failureRecommendation) {
+          await appendFailureRecommendationEvent(finalizedRun, seq++, terminalErrorCode, {
+            safeMode: context.paperclipSafeMode,
+          });
+        }
         await appendRunEvent(finalizedRun, seq++, {
           eventType: "lifecycle",
           stream: "system",
@@ -1233,10 +1932,16 @@ export function heartbeatService(db: Db) {
         }
       }
 
+      const failureRecommendation = mergeFailureRecommendationResult(
+        run.resultJson ?? null,
+        "adapter_failed",
+        { safeMode: context.paperclipSafeMode },
+      );
       const failedRun = await setRunStatus(run.id, "failed", {
         error: message,
         errorCode: "adapter_failed",
         finishedAt: new Date(),
+        resultJson: failureRecommendation.resultJson,
         stdoutExcerpt,
         stderrExcerpt,
         logBytes: logSummary?.bytes,
@@ -1249,6 +1954,9 @@ export function heartbeatService(db: Db) {
       });
 
       if (failedRun) {
+        await appendFailureRecommendationEvent(failedRun, seq++, "adapter_failed", {
+          safeMode: context.paperclipSafeMode,
+        });
         await appendRunEvent(failedRun, seq++, {
           eventType: "error",
           stream: "system",
@@ -2026,6 +2734,8 @@ export function heartbeatService(db: Db) {
     wakeup: enqueueWakeup,
 
     reapOrphanedRuns,
+
+    reportHostBootIncident,
 
     tickTimers: async (now = new Date()) => {
       const allAgents = await db.select().from(agents);

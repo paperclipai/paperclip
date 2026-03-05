@@ -25,6 +25,7 @@
   },
   "devDependencies": {
     "@changesets/cli": "^2.30.0",
+    "@types/node": "^25.3.3",
     "esbuild": "^0.27.3",
     "typescript": "^5.7.3",
     "vitest": "^3.0.5"

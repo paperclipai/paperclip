@@ -86,6 +86,13 @@ export function Dashboard() {
     enabled: !!selectedCompanyId,
   });
 
+  const { data: opsPulse } = useQuery({
+    queryKey: queryKeys.operationsPulse(selectedCompanyId!),
+    queryFn: () => dashboardApi.operationsPulse(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 30_000,
+  });
+
   const recentIssues = issues ? getRecentIssues(issues) : [];
   const recentActivity = useMemo(() => (activity ?? []).slice(0, 10), [activity]);
 
@@ -286,6 +293,63 @@ export function Dashboard() {
               <SuccessRateChart runs={runs ?? []} />
             </ChartCard>
           </div>
+
+          {opsPulse && (
+            <div className="border border-border rounded-lg p-4 space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+                  Operations Pulse
+                </h3>
+                <span className="text-xs text-muted-foreground">Updated {timeAgo(opsPulse.generatedAt)}</span>
+              </div>
+
+              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-2">
+                <MetricCard icon={Bot} value={opsPulse.runHealth.running} label="Running" description="active runs" />
+                <MetricCard icon={CircleDot} value={opsPulse.runHealth.queued} label="Queued" description="waiting runs" />
+                <MetricCard icon={ShieldCheck} value={opsPulse.runHealth.processLost24h} label="Process Lost" description="last 24h" />
+                <MetricCard icon={CircleDot} value={opsPulse.runHealth.staleRunning} label="Stale Runs" description="> 5 min" />
+                <MetricCard icon={LayoutDashboard} value={opsPulse.projectGuardrails.configuredProjects} label="Guardrails" description={`${opsPulse.projectGuardrails.totalProjects} projects`} />
+                <MetricCard icon={ShieldCheck} value={opsPulse.projectGuardrails.defaultSafeModeProjects} label="Safe Mode" description="default-on projects" />
+                <MetricCard icon={CircleDot} value={opsPulse.failureRouting.recentRecommendations} label="Playbooks" description="routed last 24h" />
+                <MetricCard icon={DollarSign} value={opsPulse.integrationHealth.failing} label="Probe Fails" description={`${opsPulse.integrationHealth.total} probes`} />
+              </div>
+
+              {(opsPulse.integrationHealth.probes.length > 0 || opsPulse.projectGuardrails.missingProjectNames.length > 0) && (
+                <div className="grid md:grid-cols-2 gap-3">
+                  {opsPulse.integrationHealth.probes.length > 0 && (
+                    <div className="border border-border rounded-md divide-y divide-border">
+                      {opsPulse.integrationHealth.probes.map((probe) => (
+                        <div key={probe.id} className="px-3 py-2 text-xs flex items-center justify-between gap-3">
+                          <span className="truncate">{probe.label}</span>
+                          <span
+                            className={cn(
+                              "font-mono",
+                              probe.status === "ok"
+                                ? "text-green-600 dark:text-green-400"
+                                : probe.status === "degraded"
+                                  ? "text-yellow-600 dark:text-yellow-400"
+                                  : "text-red-600 dark:text-red-400",
+                            )}
+                          >
+                            {probe.statusCode ?? "ERR"}{probe.latencyMs != null ? ` · ${probe.latencyMs}ms` : ""}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {opsPulse.projectGuardrails.missingProjectNames.length > 0 && (
+                    <div className="border border-border rounded-md p-3">
+                      <div className="text-xs font-medium text-muted-foreground mb-2">Projects Missing Guardrails</div>
+                      <div className="text-xs text-muted-foreground">
+                        {opsPulse.projectGuardrails.missingProjectNames.join(", ")}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="grid md:grid-cols-2 gap-4">
             {/* Recent Activity */}

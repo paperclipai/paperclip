@@ -1937,6 +1937,12 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
   const adapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
   const transcript = useMemo(() => buildTranscript(logLines, adapter.parseStdoutLine), [logLines, adapter]);
+  const [assistantOnly, setAssistantOnly] = useState(false);
+  const [invocationOpen, setInvocationOpen] = useState(false);
+  const visibleTranscript = useMemo(
+    () => (assistantOnly ? transcript.filter((e) => e.kind === "assistant") : transcript),
+    [assistantOnly, transcript],
+  );
 
   if (loading && logLoading) {
     return <p className="text-xs text-muted-foreground">Loading run logs...</p>;
@@ -1961,65 +1967,76 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
   return (
     <div className="space-y-3">
       {adapterInvokePayload && (
-        <div className="rounded-lg border border-border bg-background/60 p-3 space-y-2">
-          <div className="text-xs font-medium text-muted-foreground">Invocation</div>
-          {typeof adapterInvokePayload.adapterType === "string" && (
-            <div className="text-xs"><span className="text-muted-foreground">Adapter: </span>{adapterInvokePayload.adapterType}</div>
-          )}
-          {typeof adapterInvokePayload.cwd === "string" && (
-            <div className="text-xs break-all"><span className="text-muted-foreground">Working dir: </span><span className="font-mono">{adapterInvokePayload.cwd}</span></div>
-          )}
-          {typeof adapterInvokePayload.command === "string" && (
-            <div className="text-xs break-all">
-              <span className="text-muted-foreground">Command: </span>
-              <span className="font-mono">
-                {[
-                  adapterInvokePayload.command,
-                  ...(Array.isArray(adapterInvokePayload.commandArgs)
-                    ? adapterInvokePayload.commandArgs.filter((v): v is string => typeof v === "string")
-                    : []),
-                ].join(" ")}
-              </span>
-            </div>
-          )}
-          {Array.isArray(adapterInvokePayload.commandNotes) && adapterInvokePayload.commandNotes.length > 0 && (
-            <div>
-              <div className="text-xs text-muted-foreground mb-1">Command notes</div>
-              <ul className="list-disc pl-5 space-y-1">
-                {adapterInvokePayload.commandNotes
-                  .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-                  .map((note, idx) => (
-                    <li key={`${idx}-${note}`} className="text-xs break-all font-mono">
-                      {note}
-                    </li>
-                  ))}
-              </ul>
-            </div>
-          )}
-          {adapterInvokePayload.prompt !== undefined && (
-            <div>
-              <div className="text-xs text-muted-foreground mb-1">Prompt</div>
-              <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
-                {typeof adapterInvokePayload.prompt === "string"
-                  ? adapterInvokePayload.prompt
-                  : JSON.stringify(adapterInvokePayload.prompt, null, 2)}
-              </pre>
-            </div>
-          )}
-          {adapterInvokePayload.context !== undefined && (
-            <div>
-              <div className="text-xs text-muted-foreground mb-1">Context</div>
-              <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
-                {JSON.stringify(adapterInvokePayload.context, null, 2)}
-              </pre>
-            </div>
-          )}
-          {adapterInvokePayload.env !== undefined && (
-            <div>
-              <div className="text-xs text-muted-foreground mb-1">Environment</div>
-              <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap font-mono">
-                {formatEnvForDisplay(adapterInvokePayload.env)}
-              </pre>
+        <div className="rounded-lg border border-border bg-background/60">
+          <button
+            type="button"
+            className="flex w-full items-center gap-1.5 px-3 py-2 text-left text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+            onClick={() => setInvocationOpen((v) => !v)}
+          >
+            <ChevronRight className={cn("h-3 w-3 transition-transform", invocationOpen && "rotate-90")} />
+            Invocation
+          </button>
+          {invocationOpen && (
+            <div className="space-y-2 px-3 pb-3">
+              {typeof adapterInvokePayload.adapterType === "string" && (
+                <div className="text-xs"><span className="text-muted-foreground">Adapter: </span>{adapterInvokePayload.adapterType}</div>
+              )}
+              {typeof adapterInvokePayload.cwd === "string" && (
+                <div className="text-xs break-all"><span className="text-muted-foreground">Working dir: </span><span className="font-mono">{adapterInvokePayload.cwd}</span></div>
+              )}
+              {typeof adapterInvokePayload.command === "string" && (
+                <div className="text-xs break-all">
+                  <span className="text-muted-foreground">Command: </span>
+                  <span className="font-mono">
+                    {[
+                      adapterInvokePayload.command,
+                      ...(Array.isArray(adapterInvokePayload.commandArgs)
+                        ? adapterInvokePayload.commandArgs.filter((v): v is string => typeof v === "string")
+                        : []),
+                    ].join(" ")}
+                  </span>
+                </div>
+              )}
+              {Array.isArray(adapterInvokePayload.commandNotes) && adapterInvokePayload.commandNotes.length > 0 && (
+                <div>
+                  <div className="text-xs text-muted-foreground mb-1">Command notes</div>
+                  <ul className="list-disc pl-5 space-y-1">
+                    {adapterInvokePayload.commandNotes
+                      .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+                      .map((note, idx) => (
+                        <li key={`${idx}-${note}`} className="text-xs break-all font-mono">
+                          {note}
+                        </li>
+                      ))}
+                  </ul>
+                </div>
+              )}
+              {adapterInvokePayload.prompt !== undefined && (
+                <div>
+                  <div className="text-xs text-muted-foreground mb-1">Prompt</div>
+                  <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
+                    {typeof adapterInvokePayload.prompt === "string"
+                      ? adapterInvokePayload.prompt
+                      : JSON.stringify(adapterInvokePayload.prompt, null, 2)}
+                  </pre>
+                </div>
+              )}
+              {adapterInvokePayload.context !== undefined && (
+                <div>
+                  <div className="text-xs text-muted-foreground mb-1">Context</div>
+                  <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
+                    {JSON.stringify(adapterInvokePayload.context, null, 2)}
+                  </pre>
+                </div>
+              )}
+              {adapterInvokePayload.env !== undefined && (
+                <div>
+                  <div className="text-xs text-muted-foreground mb-1">Environment</div>
+                  <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap font-mono">
+                    {formatEnvForDisplay(adapterInvokePayload.env)}
+                  </pre>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -2027,9 +2044,21 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
       <div className="flex items-center justify-between">
         <span className="text-xs font-medium text-muted-foreground">
-          Transcript ({transcript.length})
+          Transcript ({visibleTranscript.length}{assistantOnly ? ` of ${transcript.length}` : ""})
         </span>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setAssistantOnly((v) => !v)}
+            className={cn(
+              "inline-flex items-center gap-1 text-[10px] rounded px-1.5 py-0.5 border transition-colors",
+              assistantOnly
+                ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300"
+                : "border-border/50 text-muted-foreground hover:text-foreground hover:border-border",
+            )}
+            title={assistantOnly ? "Show full transcript" : "Show assistant messages only"}
+          >
+            {assistantOnly ? "assistant only" : "all"}
+          </button>
           {isLive && !isFollowing && (
             <Button
               variant="ghost"
@@ -2057,10 +2086,13 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
         </div>
       </div>
       <div className="bg-neutral-100 dark:bg-neutral-950 rounded-lg p-3 font-mono text-xs space-y-0.5 overflow-x-hidden">
-        {transcript.length === 0 && !run.logRef && (
+        {visibleTranscript.length === 0 && !run.logRef && (
           <div className="text-neutral-500">No persisted transcript for this run.</div>
         )}
-        {transcript.map((entry, idx) => {
+        {visibleTranscript.length === 0 && assistantOnly && transcript.length > 0 && (
+          <div className="text-neutral-500">No assistant messages yet.</div>
+        )}
+        {visibleTranscript.map((entry, idx) => {
           const time = new Date(entry.ts).toLocaleTimeString("en-US", { hour12: false });
           const grid = "grid grid-cols-[auto_auto_1fr] gap-x-2 sm:gap-x-3 items-baseline";
           const tsCell = "text-neutral-400 dark:text-neutral-600 select-none w-12 sm:w-16 text-[10px] sm:text-xs";

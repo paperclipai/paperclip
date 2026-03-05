@@ -30,6 +30,7 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@types/node": "^25.3.3",
     "typescript": "^5.7.3"
   }
 }
