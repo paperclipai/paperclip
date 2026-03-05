@@ -13,6 +13,10 @@ async function readStreamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer
   return Buffer.concat(chunks);
 }
 
+function samplePngBuffer(): Buffer {
+  return Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01]);
+}
+
 describe("local disk storage provider", () => {
   const tempRoots: string[] = [];
 
@@ -26,7 +30,7 @@ describe("local disk storage provider", () => {
     tempRoots.push(root);
 
     const service = createStorageService(createLocalDiskStorageProvider(root));
-    const content = Buffer.from("hello image bytes", "utf8");
+    const content = samplePngBuffer();
     const stored = await service.putFile({
       companyId: "company-1",
       namespace: "issues/issue-1",
@@ -38,7 +42,7 @@ describe("local disk storage provider", () => {
     const fetched = await service.getObject("company-1", stored.objectKey);
     const fetchedBody = await readStreamToBuffer(fetched.stream);
 
-    expect(fetchedBody.toString("utf8")).toBe("hello image bytes");
+    expect(fetchedBody.equals(content)).toBe(true);
     expect(stored.sha256).toHaveLength(64);
   });
 
@@ -52,7 +56,7 @@ describe("local disk storage provider", () => {
       namespace: "issues/issue-1",
       originalFilename: "demo.png",
       contentType: "image/png",
-      body: Buffer.from("hello", "utf8"),
+      body: samplePngBuffer(),
     });
 
     await expect(service.getObject("company-b", stored.objectKey)).rejects.toMatchObject({ status: 403 });
@@ -68,11 +72,27 @@ describe("local disk storage provider", () => {
       namespace: "issues/issue-1",
       originalFilename: "demo.png",
       contentType: "image/png",
-      body: Buffer.from("hello", "utf8"),
+      body: samplePngBuffer(),
     });
 
     await service.deleteObject("company-1", stored.objectKey);
     await service.deleteObject("company-1", stored.objectKey);
     await expect(service.getObject("company-1", stored.objectKey)).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("rejects mismatched image MIME types by signature", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-storage-"));
+    tempRoots.push(root);
+
+    const service = createStorageService(createLocalDiskStorageProvider(root));
+    await expect(
+      service.putFile({
+        companyId: "company-1",
+        namespace: "issues/issue-1",
+        originalFilename: "demo.jpg",
+        contentType: "image/jpeg",
+        body: samplePngBuffer(),
+      }),
+    ).rejects.toMatchObject({ status: 422 });
   });
 });
