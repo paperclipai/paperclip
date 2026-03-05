@@ -1,9 +1,20 @@
 import type { TranscriptEntry } from "@paperclipai/adapter-utils";
-import { asString, asNumber, parseJson } from "@paperclipai/adapter-utils/server-utils";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
+}
+
+function asString(value: unknown, fallback = ""): string {
+  return typeof value === "string" ? value : fallback;
+}
+
+function asNumber(value: unknown, fallback = 0): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function parseJson(line: string): unknown {
+  try { return JSON.parse(line); } catch { return null; }
 }
 
 export function parseGeminiStdoutLine(line: string, ts: string): TranscriptEntry[] {

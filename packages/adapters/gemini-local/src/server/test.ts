@@ -117,7 +117,13 @@ export async function testEnvironment(
     const model = asString(config.model, "").trim();
     const approvalMode = asString(config.approvalMode, "yolo");
 
+    const sandbox = asBoolean(config.sandbox, false);
     const args: string[] = ["--output-format", "json", "--approval-mode", approvalMode];
+    if (sandbox) {
+      args.push("--sandbox");
+    } else {
+      args.push("--sandbox=none");
+    }
     if (model) args.push("--model", model);
 
     const probe = await runChildProcess(

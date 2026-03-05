@@ -191,7 +191,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (resumeSessionId) args.push("--resume", resumeSessionId);
     args.push("--output-format", "stream-json");
     args.push("--approval-mode", approvalMode);
-    if (sandbox) args.push("--sandbox");
+    if (sandbox) {
+      args.push("--sandbox");
+    } else {
+      args.push("--sandbox=none");
+    }
     if (model) args.push("--model", model);
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
