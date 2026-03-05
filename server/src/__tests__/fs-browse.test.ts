@@ -38,14 +38,14 @@ function createApp(actorType: "board" | "agent") {
   return app;
 }
 
-describe("GET /api/fs/browse", () => {
+describe("GET /fs/browse", () => {
   beforeEach(() => {
     mockReaddir.mockReset();
   });
 
   it("returns 403 for agent actors", async () => {
     const app = createApp("agent");
-    const res = await request(app).get("/api/fs/browse");
+    const res = await request(app).get("/fs/browse");
     expect(res.status).toBe(403);
   });
 
@@ -58,7 +58,7 @@ describe("GET /api/fs/browse", () => {
     ]);
 
     const app = createApp("board");
-    const res = await request(app).get("/api/fs/browse");
+    const res = await request(app).get("/fs/browse");
 
     expect(res.status).toBe(200);
     expect(res.body.path).toBe(home);
@@ -75,7 +75,7 @@ describe("GET /api/fs/browse", () => {
     ]);
 
     const app = createApp("board");
-    const res = await request(app).get("/api/fs/browse?path=/Users/foo/project");
+    const res = await request(app).get("/fs/browse?path=/Users/foo/project");
 
     expect(res.status).toBe(200);
     expect(res.body.path).toBe("/Users/foo/project");
@@ -86,7 +86,7 @@ describe("GET /api/fs/browse", () => {
 
   it("returns 400 for relative paths", async () => {
     const app = createApp("board");
-    const res = await request(app).get("/api/fs/browse?path=relative/path");
+    const res = await request(app).get("/fs/browse?path=relative/path");
     expect(res.status).toBe(400);
   });
 
@@ -94,7 +94,7 @@ describe("GET /api/fs/browse", () => {
     mockReaddir.mockResolvedValueOnce([]);
 
     const app = createApp("board");
-    const res = await request(app).get("/api/fs/browse?path=/");
+    const res = await request(app).get("/fs/browse?path=/");
 
     expect(res.status).toBe(200);
     expect(res.body.parent).toBeNull();
@@ -105,7 +105,7 @@ describe("GET /api/fs/browse", () => {
     mockReaddir.mockRejectedValueOnce(err);
 
     const app = createApp("board");
-    const res = await request(app).get("/api/fs/browse?path=/nonexistent");
+    const res = await request(app).get("/fs/browse?path=/nonexistent");
     expect(res.status).toBe(404);
   });
 
@@ -114,8 +114,34 @@ describe("GET /api/fs/browse", () => {
     mockReaddir.mockRejectedValueOnce(err);
 
     const app = createApp("board");
-    const res = await request(app).get("/api/fs/browse?path=/etc/hosts");
+    const res = await request(app).get("/fs/browse?path=/etc/hosts");
     expect(res.status).toBe(400);
+  });
+
+  it("hides dotfile directories by default", async () => {
+    mockReaddir.mockResolvedValueOnce([
+      { name: ".git", isDirectory: () => true } as unknown as import("node:fs").Dirent,
+      { name: "src", isDirectory: () => true } as unknown as import("node:fs").Dirent,
+      { name: ".hidden", isDirectory: () => true } as unknown as import("node:fs").Dirent,
+    ]);
+
+    const app = createApp("board");
+    const res = await request(app).get("/fs/browse?path=/some/path");
+    expect(res.status).toBe(200);
+    expect(res.body.entries.map((e: { name: string }) => e.name)).toEqual(["src"]);
+  });
+
+  it("shows dotfile directories when showHidden=true", async () => {
+    mockReaddir.mockResolvedValueOnce([
+      { name: ".git", isDirectory: () => true } as unknown as import("node:fs").Dirent,
+      { name: "src", isDirectory: () => true } as unknown as import("node:fs").Dirent,
+      { name: ".hidden", isDirectory: () => true } as unknown as import("node:fs").Dirent,
+    ]);
+
+    const app = createApp("board");
+    const res = await request(app).get("/fs/browse?path=/some/path&showHidden=true");
+    expect(res.status).toBe(200);
+    expect(res.body.entries.map((e: { name: string }) => e.name)).toEqual([".git", ".hidden", "src"]);
   });
 
   it("returns sorted entries", async () => {
@@ -126,7 +152,7 @@ describe("GET /api/fs/browse", () => {
     ]);
 
     const app = createApp("board");
-    const res = await request(app).get("/api/fs/browse?path=/some/path");
+    const res = await request(app).get("/fs/browse?path=/some/path");
     expect(res.status).toBe(200);
     expect(res.body.entries.map((e: { name: string }) => e.name)).toEqual(["aaa", "mmm", "zzz"]);
   });

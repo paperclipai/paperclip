@@ -8,7 +8,7 @@ import { badRequest, notFound } from "../errors.js";
 export function fsRoutes() {
   const router = Router();
 
-  router.get("/api/fs/browse", async (req, res, next) => {
+  router.get("/fs/browse", async (req, res, next) => {
     try {
       assertBoard(req);
 
@@ -33,8 +33,9 @@ export function fsRoutes() {
         throw err;
       }
 
+      const showHidden = req.query.showHidden === "true";
       const entries = dirents
-        .filter((d) => d.isDirectory())
+        .filter((d) => d.isDirectory() && (showHidden || !d.name.startsWith(".")))
         .map((d) => ({ name: d.name, path: path.join(resolved, d.name) }))
         .sort((a, b) => a.name.localeCompare(b.name));
 

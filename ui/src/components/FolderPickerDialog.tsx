@@ -8,6 +8,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { fsApi } from "../api/fs";
 import { cn } from "../lib/utils";
 
@@ -25,10 +26,11 @@ export function FolderPickerDialog({
   initialPath,
 }: FolderPickerDialogProps) {
   const [currentPath, setCurrentPath] = useState<string | undefined>(initialPath);
+  const [showHidden, setShowHidden] = useState(false);
 
   const { data, isLoading, isError } = useQuery({
-    queryKey: ["fs-browse", currentPath ?? "__home__"],
-    queryFn: () => fsApi.browse(currentPath),
+    queryKey: ["fs-browse", currentPath ?? "__home__", showHidden],
+    queryFn: () => fsApi.browse(currentPath, showHidden),
     enabled: open,
     staleTime: 10_000,
   });
@@ -56,7 +58,7 @@ export function FolderPickerDialog({
     onOpenChange(next);
   }
 
-  const pathSegments = data?.path?.split("/").filter(Boolean) ?? [];
+  const pathSegments = (data?.path ?? "").split("/").filter(Boolean);
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -69,9 +71,9 @@ export function FolderPickerDialog({
         <div className="px-4 pb-2 flex items-center gap-1 text-xs text-muted-foreground overflow-x-auto whitespace-nowrap">
           <button
             className="hover:text-foreground transition-colors shrink-0"
-            onClick={() => setCurrentPath(undefined)}
+            onClick={() => setCurrentPath("/")}
           >
-            Home
+            /
           </button>
           {pathSegments.map((seg, i) => {
             const segPath = "/" + pathSegments.slice(0, i + 1).join("/");
@@ -143,13 +145,23 @@ export function FolderPickerDialog({
             <FolderOpen className="h-3.5 w-3.5 shrink-0" />
             <span className="truncate">{data?.path ?? "Loading…"}</span>
           </div>
-          <div className="flex items-center justify-end gap-2">
-            <Button variant="ghost" size="sm" onClick={() => handleOpenChange(false)}>
-              Cancel
-            </Button>
-            <Button size="sm" disabled={!data?.path} onClick={handleSelect}>
-              Select this folder
-            </Button>
+          <div className="flex items-center justify-between gap-2">
+            <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
+              <Checkbox
+                id="show-hidden"
+                checked={showHidden}
+                onCheckedChange={(checked) => setShowHidden(checked === true)}
+              />
+              Show hidden folders
+            </label>
+            <div className="flex items-center gap-2">
+              <Button variant="ghost" size="sm" onClick={() => handleOpenChange(false)}>
+                Cancel
+              </Button>
+              <Button size="sm" disabled={!data?.path} onClick={handleSelect}>
+                Select this folder
+              </Button>
+            </div>
           </div>
         </div>
       </DialogContent>
