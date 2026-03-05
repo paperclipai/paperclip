@@ -24,6 +24,8 @@ const adapterLabels: Record<string, string> = {
   claude_local: "Claude",
   codex_local: "Codex",
   pi_local: "Pi Agent",
+  opencode_local: "OpenCode",
+  cursor: "Cursor",
   openclaw: "OpenClaw",
   process: "Process",
   http: "HTTP",

@@ -49,7 +49,7 @@ const defaultViewState: IssueViewState = {
   priorities: [],
   assignees: [],
   labels: [],
-  sortField: "created",
+  sortField: "updated",
   sortDir: "desc",
   groupBy: "none",
   viewMode: "list",
@@ -207,9 +207,6 @@ export function IssuesList({
   const filtered = useMemo(() => {
     const sourceIssues = normalizedIssueSearch.length > 0 ? searchedIssues : issues;
     const filteredByControls = applyFilters(sourceIssues, viewState);
-    if (normalizedIssueSearch.length > 0) {
-      return filteredByControls;
-    }
     return sortIssues(filteredByControls, viewState);
   }, [issues, searchedIssues, viewState, normalizedIssueSearch]);
 

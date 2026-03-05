@@ -563,7 +563,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         onBlur={() => onBlur?.()}
         className={cn("paperclip-mdxeditor", !bordered && "paperclip-mdxeditor--borderless")}
         contentEditableClassName={cn(
-          "paperclip-mdxeditor-content focus:outline-none",
+          "paperclip-mdxeditor-content focus:outline-none [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:list-item",
           contentClassName,
         )}
         overlayContainer={containerRef.current}

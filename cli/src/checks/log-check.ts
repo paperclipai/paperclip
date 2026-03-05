@@ -8,15 +8,7 @@ export function logCheck(config: PaperclipConfig, configPath?: string): CheckRes
   const reportedDir = logDir;
 
   if (!fs.existsSync(logDir)) {
-    return {
-      name: "Log directory",
-      status: "warn",
-      message: `Log directory does not exist: ${reportedDir}`,
-      canRepair: true,
-      repair: () => {
-        fs.mkdirSync(reportedDir, { recursive: true });
-      },
-    };
+    fs.mkdirSync(reportedDir, { recursive: true });
   }
 
   try {

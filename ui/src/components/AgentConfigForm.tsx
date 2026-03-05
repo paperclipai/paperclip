@@ -15,6 +15,8 @@ import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
 } from "@paperclipai/adapter-codex-local";
+import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
+import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
 import {
   Popover,
   PopoverContent,
@@ -128,6 +130,21 @@ const codexThinkingEffortOptions = [
   { id: "low", label: "Low" },
   { id: "medium", label: "Medium" },
   { id: "high", label: "High" },
+] as const;
+
+const opencodeVariantOptions = [
+  { id: "", label: "Auto" },
+  { id: "minimal", label: "Minimal" },
+  { id: "low", label: "Low" },
+  { id: "medium", label: "Medium" },
+  { id: "high", label: "High" },
+  { id: "max", label: "Max" },
+] as const;
+
+const cursorModeOptions = [
+  { id: "", label: "Auto" },
+  { id: "plan", label: "Plan" },
+  { id: "ask", label: "Ask" },
 ] as const;
 
 const claudeThinkingEffortOptions = [
@@ -263,7 +280,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const adapterType = isCreate
     ? props.values.adapterType
     : overlay.adapterType ?? props.agent.adapterType;
-  const isLocal = adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "pi_local";
+  const isLocal =
+    adapterType === "claude_local" ||
+    adapterType === "codex_local" ||
+    adapterType === "pi_local" ||
+    adapterType === "opencode_local" ||
+    adapterType === "cursor";
   const uiAdapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
 
   // Fetch adapter models for the effective adapter type
@@ -322,32 +344,41 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     ? val!.model
     : eff("adapterConfig", "model", String(config.model ?? ""));
 
-  let thinkingEffortKey: "effort" | "modelReasoningEffort" | "thinking" = "effort";
-  let thinkingEffortOptions: ReadonlyArray<{ id: string; label: string }> = claudeThinkingEffortOptions;
-  let currentThinkingEffortFromConfig = eff("adapterConfig", "effort", String(config.effort ?? ""));
-
-  switch (adapterType) {
-    case "codex_local":
-      thinkingEffortKey = "modelReasoningEffort";
-      thinkingEffortOptions = codexThinkingEffortOptions;
-      currentThinkingEffortFromConfig = eff(
-        "adapterConfig",
-        "modelReasoningEffort",
-        String(config.modelReasoningEffort ?? config.reasoningEffort ?? ""),
-      );
-      break;
-    case "pi_local":
-      thinkingEffortKey = "thinking";
-      thinkingEffortOptions = piThinkingEffortOptions;
-      currentThinkingEffortFromConfig = eff("adapterConfig", "thinking", String(config.thinking ?? ""));
-      break;
-    default:
-      break;
-  }
-
+  const thinkingEffortKey =
+    adapterType === "codex_local"
+      ? "modelReasoningEffort"
+      : adapterType === "cursor"
+        ? "mode"
+      : adapterType === "opencode_local"
+        ? "variant"
+      : adapterType === "pi_local"
+        ? "thinking"
+        : "effort";
+  const thinkingEffortOptions =
+    adapterType === "codex_local"
+      ? codexThinkingEffortOptions
+      : adapterType === "cursor"
+        ? cursorModeOptions
+      : adapterType === "opencode_local"
+        ? opencodeVariantOptions
+      : adapterType === "pi_local"
+        ? piThinkingEffortOptions
+        : claudeThinkingEffortOptions;
   const currentThinkingEffort = isCreate
     ? val!.thinkingEffort
-    : currentThinkingEffortFromConfig;
+    : adapterType === "codex_local"
+      ? eff(
+          "adapterConfig",
+          "modelReasoningEffort",
+          String(config.modelReasoningEffort ?? config.reasoningEffort ?? ""),
+        )
+      : adapterType === "cursor"
+        ? eff("adapterConfig", "mode", String(config.mode ?? ""))
+      : adapterType === "opencode_local"
+        ? eff("adapterConfig", "variant", String(config.variant ?? ""))
+      : adapterType === "pi_local"
+        ? eff("adapterConfig", "thinking", String(config.thinking ?? ""))
+      : eff("adapterConfig", "effort", String(config.effort ?? ""));
   const codexSearchEnabled = adapterType === "codex_local"
     ? (isCreate ? Boolean(val!.search) : eff("adapterConfig", "search", Boolean(config.search)))
     : false;
@@ -465,19 +496,32 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     nextValues.model = DEFAULT_CODEX_LOCAL_MODEL;
                     nextValues.dangerouslyBypassSandbox =
                       DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
+                  } else if (t === "cursor") {
+                    nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
+                  } else if (t === "opencode_local") {
+                    nextValues.model = DEFAULT_OPENCODE_LOCAL_MODEL;
                   }
                   set!(nextValues);
                 } else {
-                  // Clear all adapter config and explicitly blank out model + both effort keys
+                  // Clear all adapter config and explicitly blank out model + effort/mode keys
                   // so the old adapter's values don't bleed through via eff()
                   setOverlay((prev) => ({
                     ...prev,
                     adapterType: t,
                     adapterConfig: {
-                      model: t === "codex_local" ? DEFAULT_CODEX_LOCAL_MODEL : "",
+                      model:
+                        t === "codex_local"
+                          ? DEFAULT_CODEX_LOCAL_MODEL
+                          : t === "cursor"
+                            ? DEFAULT_CURSOR_LOCAL_MODEL
+                          : t === "opencode_local"
+                            ? DEFAULT_OPENCODE_LOCAL_MODEL
+                            : "",
                       effort: "",
                       modelReasoningEffort: "",
                       thinking: "",
+                      variant: "",
+                      mode: "",
                       ...(t === "codex_local"
                         ? {
                             dangerouslyBypassApprovalsAndSandbox:
@@ -573,7 +617,17 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   }
                   immediate
                   className={inputClass}
-                  placeholder={adapterType === "codex_local" ? "codex" : adapterType === "pi_local" ? "pi" : "claude"}
+                  placeholder={
+                    adapterType === "codex_local"
+                      ? "codex"
+                      : adapterType === "pi_local"
+                        ? "pi"
+                      : adapterType === "cursor"
+                        ? "agent"
+                      : adapterType === "opencode_local"
+                        ? "opencode"
+                        : "claude"
+                  }
                 />
               </Field>
 
@@ -841,7 +895,13 @@ function AdapterEnvironmentResult({ result }: { result: AdapterEnvironmentTestRe
 
 /* ---- Internal sub-components ---- */
 
-const ENABLED_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "pi_local"]);
+const ENABLED_ADAPTER_TYPES = new Set([
+  "claude_local",
+  "codex_local",
+  "pi_local",
+  "opencode_local",
+  "cursor",
+]);
 
 /** Display list includes all real adapter types plus UI-only coming-soon entries. */
 const ADAPTER_DISPLAY_LIST: { value: string; label: string; comingSoon: boolean }[] = [
@@ -850,7 +910,6 @@ const ADAPTER_DISPLAY_LIST: { value: string; label: string; comingSoon: boolean 
     label: adapterLabels[t] ?? t,
     comingSoon: !ENABLED_ADAPTER_TYPES.has(t),
   })),
-  { value: "cursor", label: "Cursor", comingSoon: true },
 ];
 
 function AdapterTypeDropdown({

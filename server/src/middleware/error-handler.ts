@@ -26,6 +26,9 @@ export function errorHandler(
     ? { message: err.message, stack: err.stack, name: err.name }
     : { raw: err };
 
+  // Attach the real error so pino-http can include it in its response log
+  res.locals.serverError = errObj;
+
   logger.error(
     { err: errObj, method: req.method, url: req.originalUrl },
     "Unhandled error: %s %s — %s",

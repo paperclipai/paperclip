@@ -67,7 +67,12 @@ interface IssueDraft {
   assigneeUseProjectWorkspace: boolean;
 }
 
-const ISSUE_OVERRIDE_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "pi_local"]);
+const ISSUE_OVERRIDE_ADAPTER_TYPES = new Set([
+  "claude_local",
+  "codex_local",
+  "pi_local",
+  "opencode_local",
+]);
 
 const ISSUE_THINKING_EFFORT_OPTIONS = {
   claude_local: [
@@ -92,6 +97,14 @@ const ISSUE_THINKING_EFFORT_OPTIONS = {
     { value: "high", label: "High" },
     { value: "xhigh", label: "XHigh" },
   ],
+  opencode_local: [
+    { value: "", label: "Default" },
+    { value: "minimal", label: "Minimal" },
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium" },
+    { value: "high", label: "High" },
+    { value: "max", label: "Max" },
+  ],
 } as const;
 
 function buildAssigneeAdapterOverrides(input: {
@@ -111,6 +124,8 @@ function buildAssigneeAdapterOverrides(input: {
   if (input.thinkingEffortOverride) {
     if (adapterType === "codex_local") {
       adapterConfig.modelReasoningEffort = input.thinkingEffortOverride;
+    } else if (adapterType === "opencode_local") {
+      adapterConfig.variant = input.thinkingEffortOverride;
     } else if (adapterType === "claude_local") {
       adapterConfig.effort = input.thinkingEffortOverride;
     } else if (adapterType === "pi_local") {
@@ -362,8 +377,10 @@ export function NewIssueDialog() {
     const validThinkingValues =
       assigneeAdapterType === "codex_local"
         ? ISSUE_THINKING_EFFORT_OPTIONS.codex_local
-        : assigneeAdapterType === "pi_local"
-          ? ISSUE_THINKING_EFFORT_OPTIONS.pi_local
+      : assigneeAdapterType === "pi_local"
+        ? ISSUE_THINKING_EFFORT_OPTIONS.pi_local
+        : assigneeAdapterType === "opencode_local"
+          ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
           : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
     if (!validThinkingValues.some((option) => option.value === assigneeThinkingEffort)) {
       setAssigneeThinkingEffort("");
@@ -466,13 +483,17 @@ export function NewIssueDialog() {
         ? "Codex options"
         : assigneeAdapterType === "pi_local"
           ? "Pi options"
-          : "Agent options";
+          : assigneeAdapterType === "opencode_local"
+            ? "OpenCode options"
+            : "Agent options";
   const thinkingEffortOptions =
     assigneeAdapterType === "codex_local"
       ? ISSUE_THINKING_EFFORT_OPTIONS.codex_local
       : assigneeAdapterType === "pi_local"
         ? ISSUE_THINKING_EFFORT_OPTIONS.pi_local
-        : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
+        : assigneeAdapterType === "opencode_local"
+          ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
+          : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
   const assigneeOptions = useMemo<InlineEntityOption[]>(
     () =>
       (agents ?? [])
@@ -544,7 +565,7 @@ export function NewIssueDialog() {
                 </button>
               </PopoverTrigger>
               <PopoverContent className="w-48 p-1" align="start">
-                {companies.map((c) => (
+                {companies.filter((c) => c.status !== "archived").map((c) => (
                   <button
                     key={c.id}
                     className={cn(

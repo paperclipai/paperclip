@@ -779,6 +779,13 @@ export function issueService(db: Db) {
         .where(eq(issueComments.issueId, issueId))
         .orderBy(desc(issueComments.createdAt)),
 
+    getComment: (commentId: string) =>
+      db
+        .select()
+        .from(issueComments)
+        .where(eq(issueComments.id, commentId))
+        .then((rows) => rows[0] ?? null),
+
     addComment: async (issueId: string, body: string, actor: { agentId?: string; userId?: string }) => {
       const issue = await db
         .select({ companyId: issues.companyId })

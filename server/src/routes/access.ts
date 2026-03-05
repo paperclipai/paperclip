@@ -293,6 +293,7 @@ function normalizeAgentDefaultsForJoin(input: {
 function toInviteSummaryResponse(req: Request, token: string, invite: typeof invites.$inferSelect) {
   const baseUrl = requestBaseUrl(req);
   const onboardingPath = `/api/invites/${token}/onboarding`;
+  const onboardingTextPath = `/api/invites/${token}/onboarding.txt`;
   return {
     id: invite.id,
     companyId: invite.companyId,
@@ -301,9 +302,77 @@ function toInviteSummaryResponse(req: Request, token: string, invite: typeof inv
     expiresAt: invite.expiresAt,
     onboardingPath,
     onboardingUrl: baseUrl ? `${baseUrl}${onboardingPath}` : onboardingPath,
+    onboardingTextPath,
+    onboardingTextUrl: baseUrl ? `${baseUrl}${onboardingTextPath}` : onboardingTextPath,
     skillIndexPath: "/api/skills/index",
     skillIndexUrl: baseUrl ? `${baseUrl}/api/skills/index` : "/api/skills/index",
   };
+}
+
+function buildOnboardingDiscoveryDiagnostics(input: {
+  apiBaseUrl: string;
+  deploymentMode: DeploymentMode;
+  deploymentExposure: DeploymentExposure;
+  bindHost: string;
+  allowedHostnames: string[];
+}): JoinDiagnostic[] {
+  const diagnostics: JoinDiagnostic[] = [];
+  let apiHost: string | null = null;
+  if (input.apiBaseUrl) {
+    try {
+      apiHost = normalizeHostname(new URL(input.apiBaseUrl).hostname);
+    } catch {
+      apiHost = null;
+    }
+  }
+
+  const bindHost = normalizeHostname(input.bindHost);
+  const allowSet = new Set(
+    input.allowedHostnames
+      .map((entry) => normalizeHostname(entry))
+      .filter((entry): entry is string => Boolean(entry)),
+  );
+
+  if (apiHost && isLoopbackHost(apiHost)) {
+    diagnostics.push({
+      code: "openclaw_onboarding_api_loopback",
+      level: "warn",
+      message:
+        "Onboarding URL resolves to loopback hostname. Remote OpenClaw agents cannot reach localhost on your Paperclip host.",
+      hint: "Use a reachable hostname/IP (for example Tailscale hostname, Docker host alias, or public domain).",
+    });
+  }
+
+  if (
+    input.deploymentMode === "authenticated" &&
+    input.deploymentExposure === "private" &&
+    (!bindHost || isLoopbackHost(bindHost))
+  ) {
+    diagnostics.push({
+      code: "openclaw_onboarding_private_loopback_bind",
+      level: "warn",
+      message: "Paperclip is bound to loopback in authenticated/private mode.",
+      hint: "Run with a reachable bind host or use pnpm dev --tailscale-auth for private-network onboarding.",
+    });
+  }
+
+  if (
+    input.deploymentMode === "authenticated" &&
+    input.deploymentExposure === "private" &&
+    apiHost &&
+    !isLoopbackHost(apiHost) &&
+    allowSet.size > 0 &&
+    !allowSet.has(apiHost)
+  ) {
+    diagnostics.push({
+      code: "openclaw_onboarding_private_host_not_allowed",
+      level: "warn",
+      message: `Onboarding host "${apiHost}" is not in allowed hostnames for authenticated/private mode.`,
+      hint: `Run pnpm paperclipai allowed-hostname ${apiHost}`,
+    });
+  }
+
+  return diagnostics;
 }
 
 function buildInviteOnboardingManifest(
@@ -322,6 +391,15 @@ function buildInviteOnboardingManifest(
   const skillUrl = baseUrl ? `${baseUrl}${skillPath}` : skillPath;
   const registrationEndpointPath = `/api/invites/${token}/accept`;
   const registrationEndpointUrl = baseUrl ? `${baseUrl}${registrationEndpointPath}` : registrationEndpointPath;
+  const onboardingTextPath = `/api/invites/${token}/onboarding.txt`;
+  const onboardingTextUrl = baseUrl ? `${baseUrl}${onboardingTextPath}` : onboardingTextPath;
+  const discoveryDiagnostics = buildOnboardingDiscoveryDiagnostics({
+    apiBaseUrl: baseUrl,
+    deploymentMode: opts.deploymentMode,
+    deploymentExposure: opts.deploymentExposure,
+    bindHost: opts.bindHost,
+    allowedHostnames: opts.allowedHostnames,
+  });
 
   return {
     invite: toInviteSummaryResponse(req, token, invite),
@@ -354,10 +432,16 @@ function buildInviteOnboardingManifest(
         deploymentExposure: opts.deploymentExposure,
         bindHost: opts.bindHost,
         allowedHostnames: opts.allowedHostnames,
+        diagnostics: discoveryDiagnostics,
         guidance:
           opts.deploymentMode === "authenticated" && opts.deploymentExposure === "private"
             ? "If OpenClaw runs on another machine, ensure the Paperclip hostname is reachable and allowed via `pnpm paperclipai allowed-hostname <host>`."
             : "Ensure OpenClaw can reach this Paperclip API base URL for callbacks and claims.",
+      },
+      textInstructions: {
+        path: onboardingTextPath,
+        url: onboardingTextUrl,
+        contentType: "text/plain",
       },
       skill: {
         name: "paperclip",
@@ -367,6 +451,108 @@ function buildInviteOnboardingManifest(
       },
     },
   };
+}
+
+export function buildInviteOnboardingTextDocument(
+  req: Request,
+  token: string,
+  invite: typeof invites.$inferSelect,
+  opts: {
+    deploymentMode: DeploymentMode;
+    deploymentExposure: DeploymentExposure;
+    bindHost: string;
+    allowedHostnames: string[];
+  },
+) {
+  const manifest = buildInviteOnboardingManifest(req, token, invite, opts);
+  const onboarding = manifest.onboarding as {
+    registrationEndpoint: { method: string; path: string; url: string };
+    claimEndpointTemplate: { method: string; path: string };
+    textInstructions: { path: string; url: string };
+    skill: { path: string; url: string; installPath: string };
+    connectivity: { diagnostics?: JoinDiagnostic[]; guidance?: string };
+  };
+  const diagnostics = Array.isArray(onboarding.connectivity?.diagnostics)
+    ? onboarding.connectivity.diagnostics
+    : [];
+
+  const lines = [
+    "# Paperclip OpenClaw Onboarding",
+    "",
+    "This document is meant to be readable by both humans and agents.",
+    "",
+    "## Invite",
+    `- inviteType: ${invite.inviteType}`,
+    `- allowedJoinTypes: ${invite.allowedJoinTypes}`,
+    `- expiresAt: ${invite.expiresAt.toISOString()}`,
+    "",
+    "## Step 1: Submit agent join request",
+    `${onboarding.registrationEndpoint.method} ${onboarding.registrationEndpoint.url}`,
+    "",
+    "Body (JSON):",
+    "{",
+    '  "requestType": "agent",',
+    '  "agentName": "My OpenClaw Agent",',
+    '  "adapterType": "openclaw",',
+    '  "capabilities": "Optional summary",',
+    '  "agentDefaultsPayload": {',
+    '    "url": "https://your-openclaw-webhook.example/webhook",',
+    '    "method": "POST",',
+    '    "headers": { "x-openclaw-auth": "replace-me" },',
+    '    "timeoutSec": 30',
+    "  }",
+    "}",
+    "",
+    "Expected response includes:",
+    "- request id",
+    "- one-time claimSecret",
+    "- claimApiKeyPath",
+    "",
+    "## Step 2: Wait for board approval",
+    "The board approves the join request in Paperclip before key claim is allowed.",
+    "",
+    "## Step 3: Claim API key (one-time)",
+    `${onboarding.claimEndpointTemplate.method} /api/join-requests/{requestId}/claim-api-key`,
+    "",
+    "Body (JSON):",
+    "{",
+    '  "claimSecret": "<one-time-claim-secret>"',
+    "}",
+    "",
+    "Important:",
+    "- claim secrets expire",
+    "- claim secrets are single-use",
+    "- claim fails before board approval",
+    "",
+    "## Step 4: Install Paperclip skill in OpenClaw",
+    `GET ${onboarding.skill.url}`,
+    `Install path: ${onboarding.skill.installPath}`,
+    "",
+    "## Text onboarding URL",
+    `${onboarding.textInstructions.url}`,
+    "",
+    "## Connectivity guidance",
+    onboarding.connectivity?.guidance ?? "Ensure Paperclip is reachable from your OpenClaw runtime.",
+  ];
+
+  if (diagnostics.length > 0) {
+    lines.push("", "## Connectivity diagnostics");
+    for (const diag of diagnostics) {
+      lines.push(`- [${diag.level}] ${diag.message}`);
+      if (diag.hint) lines.push(`  hint: ${diag.hint}`);
+    }
+  }
+
+  lines.push(
+    "",
+    "## Helpful endpoints",
+    `${onboarding.registrationEndpoint.path}`,
+    `${onboarding.claimEndpointTemplate.path}`,
+    `${onboarding.skill.path}`,
+    manifest.invite.onboardingPath,
+  );
+
+  return `${lines.join("\n")}\n`;
 }
 
 function requestIp(req: Request) {
@@ -584,6 +770,21 @@ export function accessRoutes(
     }
 
     res.json(buildInviteOnboardingManifest(req, token, invite, opts));
+  });
+
+  router.get("/invites/:token/onboarding.txt", async (req, res) => {
+    const token = (req.params.token as string).trim();
+    if (!token) throw notFound("Invite not found");
+    const invite = await db
+      .select()
+      .from(invites)
+      .where(eq(invites.tokenHash, hashToken(token)))
+      .then((rows) => rows[0] ?? null);
+    if (!invite || invite.revokedAt || inviteExpired(invite)) {
+      throw notFound("Invite not found");
+    }
+
+    res.type("text/plain; charset=utf-8").send(buildInviteOnboardingTextDocument(req, token, invite, opts));
   });
 
   router.post("/invites/:token/accept", validate(acceptInviteSchema), async (req, res) => {

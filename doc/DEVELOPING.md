@@ -141,6 +141,36 @@ pnpm dev
 
 If you set `DATABASE_URL`, the server will use that instead of embedded PostgreSQL.
 
+## Automatic DB Backups
+
+Paperclip can run automatic DB backups on a timer. Defaults:
+
+- enabled
+- every 60 minutes
+- retain 30 days
+- backup dir: `~/.paperclip/instances/default/data/backups`
+
+Configure these in:
+
+```sh
+pnpm paperclipai configure --section database
+```
+
+Run a one-off backup manually:
+
+```sh
+pnpm paperclipai db:backup
+# or:
+pnpm db:backup
+```
+
+Environment overrides:
+
+- `PAPERCLIP_DB_BACKUP_ENABLED=true|false`
+- `PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES=<minutes>`
+- `PAPERCLIP_DB_BACKUP_RETENTION_DAYS=<days>`
+- `PAPERCLIP_DB_BACKUP_DIR=/absolute/or/~/path`
+
 ## Secrets in Dev
 
 Agent env vars now support secret references. By default, secret values are stored with local encryption and only secret refs are persisted in agent config.
@@ -216,5 +246,46 @@ Agent-oriented invite onboarding now exposes machine-readable API docs:
 
 - `GET /api/invites/:token` returns invite summary plus onboarding and skills index links.
 - `GET /api/invites/:token/onboarding` returns onboarding manifest details (registration endpoint, claim endpoint template, skill install hints).
+- `GET /api/invites/:token/onboarding.txt` returns a plain-text onboarding doc intended for both human operators and agents (llm.txt-style handoff).
 - `GET /api/skills/index` lists available skill documents.
 - `GET /api/skills/paperclip` returns the Paperclip heartbeat skill markdown.
+
+## OpenClaw Join Smoke Test
+
+Run the end-to-end OpenClaw join smoke harness:
+
+```sh
+pnpm smoke:openclaw-join
+```
+
+What it validates:
+
+- invite creation for agent-only join
+- agent join request using `adapterType=openclaw`
+- board approval + one-time API key claim semantics
+- callback delivery on wakeup to a dockerized OpenClaw-style webhook receiver
+
+Required permissions:
+
+- This script performs board-governed actions (create invite, approve join, wakeup another agent).
+- In authenticated mode, run with board auth via `PAPERCLIP_AUTH_HEADER` or `PAPERCLIP_COOKIE`.
+
+Optional auth flags (for authenticated mode):
+
+- `PAPERCLIP_AUTH_HEADER` (for example `Bearer ...`)
+- `PAPERCLIP_COOKIE` (session cookie header value)
+
+## OpenClaw Docker UI One-Command Script
+
+To boot OpenClaw in Docker and print a host-browser dashboard URL in one command:
+
+```sh
+pnpm smoke:openclaw-docker-ui
+```
+
+This script lives at `scripts/smoke/openclaw-docker-ui.sh` and automates clone/build/config/start for Compose-based local OpenClaw UI testing.
+
+Pairing behavior for this smoke script:
+
+- default `OPENCLAW_DISABLE_DEVICE_AUTH=1` (no Control UI pairing prompt for local smoke)
+- set `OPENCLAW_DISABLE_DEVICE_AUTH=0` to require standard device pairing

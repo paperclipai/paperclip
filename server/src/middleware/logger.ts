@@ -2,8 +2,20 @@ import path from "node:path";
 import fs from "node:fs";
 import pino from "pino";
 import { pinoHttp } from "pino-http";
+import { readConfigFile } from "../config-file.js";
+import { resolveDefaultLogsDir, resolveHomeAwarePath } from "../home-paths.js";
 
-const logDir = path.resolve(process.cwd(), ".paperclip", "logs");
+function resolveServerLogDir(): string {
+  const envOverride = process.env.PAPERCLIP_LOG_DIR?.trim();
+  if (envOverride) return resolveHomeAwarePath(envOverride);
+
+  const fileLogDir = readConfigFile()?.logging.logDir?.trim();
+  if (fileLogDir) return resolveHomeAwarePath(fileLogDir);
+
+  return resolveDefaultLogsDir();
+}
+
+const logDir = resolveServerLogDir();
 fs.mkdirSync(logDir, { recursive: true });
 
 const logFile = path.join(logDir, "server.log");
@@ -32,10 +44,22 @@ export const logger = pino({
 
 export const httpLogger = pinoHttp({
   logger,
+  customLogLevel(_req, res, err) {
+    if (err || res.statusCode >= 500) return "error";
+    if (res.statusCode >= 400) return "warn";
+    return "info";
+  },
   customSuccessMessage(req, res) {
     return `${req.method} ${req.url} ${res.statusCode}`;
   },
   customErrorMessage(req, res) {
     return `${req.method} ${req.url} ${res.statusCode}`;
+  },
+  customProps(_req, res) {
+    const serverError = (res as any).locals?.serverError;
+    if (serverError) {
+      return { serverError };
+    }
+    return {};
   },
 });
