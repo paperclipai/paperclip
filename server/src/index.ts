@@ -457,9 +457,21 @@ if (config.heartbeatSchedulerEnabled) {
     logger.error({ err }, "boot/restart incident detection failed");
   });
 
-  // Reap orphaned runs at startup (no threshold -- runningProcesses is empty)
-  void heartbeat.reapOrphanedRuns().catch((err) => {
-    logger.error({ err }, "startup reap of orphaned heartbeat runs failed");
+  // Reconcile stale execution state at startup before periodic scheduling begins.
+  void (async () => {
+    const reaped = await heartbeat.reapOrphanedRuns();
+    if (reaped.reaped > 0) {
+      logger.warn({ ...reaped }, "startup reconciliation reaped orphaned heartbeat runs");
+    }
+
+    const swept = await heartbeat.sweepStuckRuns();
+    if (swept.stale > 0 || reaped.reaped > 0) {
+      logger.warn({ reaped, swept }, "startup reconciliation report");
+    } else {
+      logger.info({ reaped, swept }, "startup reconciliation report");
+    }
+  })().catch((err) => {
+    logger.error({ err }, "startup reconciliation for heartbeat runs failed");
   });
   void workflowAutomation.tick(new Date()).catch((err) => {
     logger.error({ err }, "startup workflow automation tick failed");
@@ -483,10 +495,20 @@ if (config.heartbeatSchedulerEnabled) {
       .catch((err) => {
         logger.error({ err }, "periodic reap of orphaned heartbeat runs failed");
       });
+    void heartbeat
+      .sweepStuckRuns()
+      .then((result) => {
+        if (result.stale > 0) {
+          logger.warn({ ...result }, "stuck run sweeper processed stale runs");
+        }
+      })
+      .catch((err) => {
+        logger.error({ err }, "periodic stuck run sweep failed");
+      });
     void workflowAutomation
       .tick(new Date())
       .then((result) => {
-        if (result.blockedEscalations > 0 || result.dailyRollups > 0) {
+        if (result.blockedEscalations > 0 || result.queueAgingAlerts > 0 || result.dailyRollups > 0) {
           logger.info({ ...result }, "workflow automation tick applied updates");
         }
       })

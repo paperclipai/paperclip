@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -17,18 +17,33 @@ import {
 } from "@paperclipai/db";
 import { extractProjectMentionIds } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import {
+  assignmentCapacityTargetForStatus,
+  evaluateAssignmentCapacity,
+  parseCapacityEnvInteger,
+  resolveAssignmentCapacityLimits,
+} from "./issue-assignment-capacity.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const ASSIGNEE_REQUIRED_STATUSES = new Set(["todo", "in_progress"]);
 const ACTIVE_ISSUE_STATUSES_FOR_DEDUPE = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
-const WIP_CAP_OPEN_STATUSES = ["todo", "in_progress"] as const;
-const FOUNDING_ENGINEER_WIP_CAP = Math.max(
-  1,
-  Number(process.env.PAPERCLIP_FOUNDING_ENGINEER_WIP_CAP) || 3,
+const CAPACITY_COUNTED_STATUSES = ["todo", "in_progress"] as const;
+const DEFAULT_ASSIGNMENT_MAX_RUNNING_ISSUES = parseCapacityEnvInteger(
+  process.env.PAPERCLIP_ASSIGNMENT_MAX_RUNNING_ISSUES_DEFAULT,
 );
-const FOUNDING_ENGINEER_NAME_KEY = (
-  process.env.PAPERCLIP_FOUNDING_ENGINEER_NAME_KEY ?? "founding engineer"
-)
+const DEFAULT_ASSIGNMENT_MAX_QUEUED_ISSUES = parseCapacityEnvInteger(
+  process.env.PAPERCLIP_ASSIGNMENT_MAX_QUEUED_ISSUES_DEFAULT,
+);
+const FOUNDING_ENGINEER_LEGACY_OPEN_CAP = parseCapacityEnvInteger(
+  process.env.PAPERCLIP_FOUNDING_ENGINEER_WIP_CAP,
+) ?? 3;
+const FOUNDING_ENGINEER_MAX_RUNNING_ISSUES = parseCapacityEnvInteger(
+  process.env.PAPERCLIP_FOUNDING_ENGINEER_MAX_RUNNING_ISSUES,
+);
+const FOUNDING_ENGINEER_MAX_QUEUED_ISSUES = parseCapacityEnvInteger(
+  process.env.PAPERCLIP_FOUNDING_ENGINEER_MAX_QUEUED_ISSUES,
+);
+const FOUNDING_ENGINEER_NAME_KEY = (process.env.PAPERCLIP_FOUNDING_ENGINEER_NAME_KEY ?? "founding engineer")
   .trim()
   .toLowerCase();
 const ASSIGNMENT_TEMPLATE_RULES = [
@@ -104,12 +119,9 @@ function normalizeIssueTitle(value: string): string {
   return value.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
-function normalizeNameKey(value: string | null | undefined): string {
-  return (value ?? "").trim().toLowerCase();
-}
-
 export function issueStatusRequiresAssignee(status: string | null | undefined): boolean {
-  return Boolean(status && ASSIGNEE_REQUIRED_STATUSES.has(status));
+  if (!status) return false;
+  return ASSIGNEE_REQUIRED_STATUSES.has(status);
 }
 
 function missingAssignmentTemplateFields(description: string | null | undefined): string[] {
@@ -269,45 +281,93 @@ export function issueService(db: Db) {
   async function assertAssigneeWipCap(input: {
     companyId: string;
     assigneeAgentId: string | null | undefined;
+    targetStatus?: string | null;
     excludeIssueId?: string;
     options?: IssueMutationOptions;
   }) {
     if (!input.assigneeAgentId) return;
     if (input.options?.skipAssigneeWipCapValidation || input.options?.forceAssignment) return;
+    const target = assignmentCapacityTargetForStatus(input.targetStatus ?? null);
+    if (!target) return;
 
     const assignee = await db
-      .select({ name: agents.name })
+      .select({ name: agents.name, runtimeConfig: agents.runtimeConfig })
       .from(agents)
       .where(and(eq(agents.companyId, input.companyId), eq(agents.id, input.assigneeAgentId)))
       .then((rows) => rows[0] ?? null);
     if (!assignee) return;
-    if (normalizeNameKey(assignee.name) !== FOUNDING_ENGINEER_NAME_KEY) return;
+
+    const limits = resolveAssignmentCapacityLimits({
+      agentName: assignee.name,
+      runtimeConfig: assignee.runtimeConfig,
+      config: {
+        defaultMaxRunning: DEFAULT_ASSIGNMENT_MAX_RUNNING_ISSUES,
+        defaultMaxQueued: DEFAULT_ASSIGNMENT_MAX_QUEUED_ISSUES,
+        foundingEngineerNameKey: FOUNDING_ENGINEER_NAME_KEY,
+        foundingEngineerLegacyOpenCap: FOUNDING_ENGINEER_LEGACY_OPEN_CAP,
+        foundingEngineerMaxRunning: FOUNDING_ENGINEER_MAX_RUNNING_ISSUES,
+        foundingEngineerMaxQueued: FOUNDING_ENGINEER_MAX_QUEUED_ISSUES,
+      },
+    });
+    if (limits.maxRunning == null && limits.maxQueued == null) return;
 
     const conditions: any[] = [
       eq(issues.companyId, input.companyId),
       eq(issues.assigneeAgentId, input.assigneeAgentId),
       isNull(issues.hiddenAt),
-      inArray(issues.status, [...WIP_CAP_OPEN_STATUSES]),
+      inArray(issues.status, [...CAPACITY_COUNTED_STATUSES]),
     ];
     if (input.excludeIssueId) {
       conditions.push(ne(issues.id, input.excludeIssueId));
     }
 
-    const [{ count }] = await db
-      .select({ count: sql<number>`count(*)` })
+    const rows = await db
+      .select({
+        status: issues.status,
+        count: sql<number>`count(*)`,
+      })
       .from(issues)
-      .where(and(...conditions));
-    const openCount = Number(count ?? 0);
-    if (openCount < FOUNDING_ENGINEER_WIP_CAP) return;
+      .where(and(...conditions))
+      .groupBy(issues.status);
 
-    throw conflict(
-      `Founding Engineer WIP cap reached (${FOUNDING_ENGINEER_WIP_CAP} open todo/in_progress tasks). Retry with force=true to override.`,
-      {
-        assigneeAgentId: input.assigneeAgentId,
-        openCount,
-        cap: FOUNDING_ENGINEER_WIP_CAP,
+    let running = 0;
+    let queued = 0;
+    for (const row of rows) {
+      if (row.status === "in_progress") {
+        running = Number(row.count ?? 0);
+      } else if (row.status === "todo") {
+        queued = Number(row.count ?? 0);
+      }
+    }
+
+    const violation = evaluateAssignmentCapacity({
+      target,
+      counts: { running, queued },
+      limits,
+    });
+    if (!violation) return;
+
+    const availableRunning = limits.maxRunning == null ? null : Math.max(0, limits.maxRunning - running);
+    const availableQueued = limits.maxQueued == null ? null : Math.max(0, limits.maxQueued - queued);
+
+    throw conflict(violation.message, {
+      code: violation.code,
+      reason: violation.reason,
+      assigneeAgentId: input.assigneeAgentId,
+      attemptedStatus: input.targetStatus ?? null,
+      attemptedState: violation.attemptedState,
+      current: {
+        running,
+        queued,
       },
-    );
+      limits,
+      available: {
+        running: availableRunning,
+        queued: availableQueued,
+      },
+      suggestedStatus: "todo",
+      overrideHint: "Retry with force=true to override on create/update requests.",
+    });
   }
 
   async function assertValidLabelIds(companyId: string, labelIds: string[], dbOrTx: any = db) {
@@ -515,6 +575,81 @@ export function issueService(db: Db) {
       return withActiveRuns(withLabels, runMap);
     },
 
+    listAssignmentCapacity: async (companyId: string) => {
+      const [assignees, countRows] = await Promise.all([
+        db
+          .select({
+            id: agents.id,
+            name: agents.name,
+            runtimeConfig: agents.runtimeConfig,
+          })
+          .from(agents)
+          .where(eq(agents.companyId, companyId))
+          .orderBy(asc(agents.name), asc(agents.id)),
+        db
+          .select({
+            assigneeAgentId: issues.assigneeAgentId,
+            status: issues.status,
+            count: sql<number>`count(*)`,
+          })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, companyId),
+              isNull(issues.hiddenAt),
+              isNotNull(issues.assigneeAgentId),
+              inArray(issues.status, [...CAPACITY_COUNTED_STATUSES]),
+            ),
+          )
+          .groupBy(issues.assigneeAgentId, issues.status),
+      ]);
+
+      const countsByAgent = new Map<string, { running: number; queued: number }>();
+      for (const row of countRows) {
+        const agentId = row.assigneeAgentId;
+        if (!agentId) continue;
+        const existing = countsByAgent.get(agentId) ?? { running: 0, queued: 0 };
+        if (row.status === "in_progress") {
+          existing.running = Number(row.count ?? 0);
+        } else if (row.status === "todo") {
+          existing.queued = Number(row.count ?? 0);
+        }
+        countsByAgent.set(agentId, existing);
+      }
+
+      return assignees.map((assignee) => {
+        const counts = countsByAgent.get(assignee.id) ?? { running: 0, queued: 0 };
+        const limits = resolveAssignmentCapacityLimits({
+          agentName: assignee.name,
+          runtimeConfig: assignee.runtimeConfig,
+          config: {
+            defaultMaxRunning: DEFAULT_ASSIGNMENT_MAX_RUNNING_ISSUES,
+            defaultMaxQueued: DEFAULT_ASSIGNMENT_MAX_QUEUED_ISSUES,
+            foundingEngineerNameKey: FOUNDING_ENGINEER_NAME_KEY,
+            foundingEngineerLegacyOpenCap: FOUNDING_ENGINEER_LEGACY_OPEN_CAP,
+            foundingEngineerMaxRunning: FOUNDING_ENGINEER_MAX_RUNNING_ISSUES,
+            foundingEngineerMaxQueued: FOUNDING_ENGINEER_MAX_QUEUED_ISSUES,
+          },
+        });
+        const availableRunning =
+          limits.maxRunning == null ? null : Math.max(0, limits.maxRunning - counts.running);
+        const availableQueued =
+          limits.maxQueued == null ? null : Math.max(0, limits.maxQueued - counts.queued);
+
+        return {
+          agentId: assignee.id,
+          maxRunning: limits.maxRunning,
+          maxQueued: limits.maxQueued,
+          running: counts.running,
+          queued: counts.queued,
+          availableRunning,
+          availableQueued,
+          runningAtCapacity: limits.maxRunning != null && counts.running >= limits.maxRunning,
+          queuedAtCapacity: limits.maxQueued != null && counts.queued >= limits.maxQueued,
+        };
+      });
+    },
+
     getById: async (id: string) => {
       const row = await db
         .select()
@@ -555,6 +690,7 @@ export function issueService(db: Db) {
       await assertAssigneeWipCap({
         companyId,
         assigneeAgentId: data.assigneeAgentId,
+        targetStatus: data.status,
         options,
       });
       const targetStatus = data.status ?? "backlog";
@@ -662,6 +798,7 @@ export function issueService(db: Db) {
       await assertAssigneeWipCap({
         companyId: existing.companyId,
         assigneeAgentId: nextAssigneeAgentId,
+        targetStatus: nextStatus,
         excludeIssueId: id,
         options,
       });
@@ -761,6 +898,7 @@ export function issueService(db: Db) {
       await assertAssigneeWipCap({
         companyId: issueCompany.companyId,
         assigneeAgentId: agentId,
+        targetStatus: "in_progress",
         excludeIssueId: id,
       });
       if (!issueCompany.assigneeAgentId && !issueCompany.assigneeUserId) {

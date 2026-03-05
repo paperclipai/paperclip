@@ -1,5 +1,22 @@
-import type { Approval, Issue, IssueAttachment, IssueComment, IssueLabel } from "@paperclipai/shared";
+import type {
+  Approval,
+  Issue,
+  IssueAssignmentCapacity,
+  IssueAttachment,
+  IssueComment,
+  IssueLabel,
+} from "@paperclipai/shared";
 import { api } from "./client";
+
+export interface IssueCleanRetryResult {
+  issue: Issue;
+  previousRunId: string | null;
+  newRun: {
+    id: string;
+    agentId: string;
+  };
+  commentId: string;
+}
 
 export const issuesApi = {
   list: (
@@ -24,6 +41,8 @@ export const issuesApi = {
     return api.get<Issue[]>(`/companies/${companyId}/issues${qs ? `?${qs}` : ""}`);
   },
   listLabels: (companyId: string) => api.get<IssueLabel[]>(`/companies/${companyId}/labels`),
+  assignmentCapacity: (companyId: string) =>
+    api.get<IssueAssignmentCapacity[]>(`/companies/${companyId}/issues/assignment-capacity`),
   createLabel: (companyId: string, data: { name: string; color: string }) =>
     api.post<IssueLabel>(`/companies/${companyId}/labels`, data),
   deleteLabel: (id: string) => api.delete<IssueLabel>(`/labels/${id}`),
@@ -36,6 +55,8 @@ export const issuesApi = {
   update: (id: string, data: Record<string, unknown>, options?: { force?: boolean }) =>
     api.patch<Issue>(`/issues/${id}${options?.force ? "?force=true" : ""}`, data),
   remove: (id: string) => api.delete<Issue>(`/issues/${id}`),
+  cleanRetry: (id: string, data?: { runId?: string; assigneeAgentId?: string }) =>
+    api.post<IssueCleanRetryResult>(`/issues/${id}/clean-retry`, data ?? {}),
   checkout: (id: string, agentId: string) =>
     api.post<Issue>(`/issues/${id}/checkout`, {
       agentId,

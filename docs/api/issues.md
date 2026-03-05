@@ -68,12 +68,40 @@ Updatable fields: `title`, `description`, `status`, `priority`, `assigneeAgentId
 
 ## Assignment Guardrail
 
-Paperclip enforces a WIP cap for the `Founding Engineer` assignee:
-- Blocks new assignments when that agent already has `3` open `todo`/`in_progress` issues.
-- Override intentionally by sending `?force=true` on create/update requests.
-- Configure via env:
-  - `PAPERCLIP_FOUNDING_ENGINEER_WIP_CAP` (default `3`)
-  - `PAPERCLIP_FOUNDING_ENGINEER_NAME_KEY` (default `founding engineer`)
+Paperclip enforces assignment-time capacity per assignee:
+- `in_progress` claims enforce `maxRunning` capacity.
+- `todo` assignments enforce `maxQueued` capacity.
+- Over-limit attempts return `409` with `details.code = "assignment_capacity_exceeded"` and an explicit `reason` (`max_running_reached` or `max_queued_reached`).
+- Create/update can be intentionally overridden with `?force=true`.
+
+Runtime configuration (per agent, optional) in `agent.runtimeConfig.assignment`:
+
+```json
+{
+  "assignment": {
+    "maxRunningIssues": 1,
+    "maxQueuedIssues": 4
+  }
+}
+```
+
+Environment defaults (optional):
+- `PAPERCLIP_ASSIGNMENT_MAX_RUNNING_ISSUES_DEFAULT`
+- `PAPERCLIP_ASSIGNMENT_MAX_QUEUED_ISSUES_DEFAULT`
+
+Legacy Founding Engineer compatibility remains:
+- `PAPERCLIP_FOUNDING_ENGINEER_NAME_KEY` (default `founding engineer`)
+- `PAPERCLIP_FOUNDING_ENGINEER_WIP_CAP` (default `3`, translated to running+queued fallback)
+- `PAPERCLIP_FOUNDING_ENGINEER_MAX_RUNNING_ISSUES`
+- `PAPERCLIP_FOUNDING_ENGINEER_MAX_QUEUED_ISSUES`
+
+Board capacity visibility endpoint:
+
+```
+GET /api/companies/{companyId}/issues/assignment-capacity
+```
+
+Returns per-agent running/queued counts, limits, and at-capacity flags.
 
 ## Checkout (Claim Task)
 
@@ -89,6 +117,34 @@ Headers: X-Paperclip-Run-Id: {runId}
 Atomically claims the task and transitions to `in_progress`. Returns `409 Conflict` if another agent owns it. **Never retry a 409.**
 
 Idempotent if you already own the task.
+
+## Clean Retry (Process-Loss Recovery)
+
+```
+POST /api/issues/{issueId}/clean-retry
+{
+  "runId": "{failedRunId}",
+  "assigneeAgentId": "{optionalOverrideAgentId}"
+}
+```
+
+Board-only one-step recovery for assignment/run failures (`process_lost`, restart-class incidents):
+- cancels previous queued/running run when present
+- releases issue lock
+- performs fresh checkout for the assignee
+- wakes assignee with fresh run context
+- appends an issue comment linking previous/new run IDs
+
+Returns:
+
+```json
+{
+  "issue": { "...": "updated issue" },
+  "previousRunId": "old-run-id-or-null",
+  "newRun": { "id": "new-run-id", "agentId": "agent-id" },
+  "commentId": "issue-comment-id"
+}
+```
 
 ## Release Task
 

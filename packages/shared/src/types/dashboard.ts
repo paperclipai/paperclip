@@ -20,4 +20,11 @@ export interface DashboardSummary {
   };
   pendingApprovals: number;
   staleTasks: number;
+  queueAging: {
+    agedQueued: number;
+    agedBlocked: number;
+    blockerLoops: number;
+    total: number;
+    escalated24h: number;
+  };
 }

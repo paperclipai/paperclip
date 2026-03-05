@@ -24,8 +24,8 @@ import {
   workflowAutomationService,
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
-import { forbidden, HttpError, unauthorized } from "../errors.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { conflict, forbidden, HttpError, unauthorized, unprocessable } from "../errors.js";
+import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 
 const MAX_ATTACHMENT_BYTES = Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
 const FANOUT_CRITICAL_COMMAND = /(^|\n)\s*\/fanout-critical\b/i;
@@ -38,7 +38,6 @@ const ALLOWED_ATTACHMENT_CONTENT_TYPES = new Set([
   "image/webp",
   "image/gif",
 ]);
-
 export function issueRoutes(db: Db, storage: StorageService) {
   const router = Router();
   const svc = issueService(db);
@@ -136,7 +135,18 @@ export function issueRoutes(db: Db, storage: StorageService) {
   }
 
   function isUnassignedFilterToken(value: string | undefined): boolean {
-    return Boolean(value && UNASSIGNED_FILTER_TOKENS.has(value.toLowerCase()));
+    if (!value) return false;
+    return UNASSIGNED_FILTER_TOKENS.has(value.toLowerCase());
+  }
+
+  function issueIdFromRunContextSnapshot(snapshot: unknown): string | null {
+    if (typeof snapshot !== "object" || snapshot == null || Array.isArray(snapshot)) return null;
+    const context = snapshot as Record<string, unknown>;
+    const issueId = context.issueId;
+    if (typeof issueId === "string" && issueId.trim().length > 0) return issueId;
+    const taskId = context.taskId;
+    if (typeof taskId === "string" && taskId.trim().length > 0) return taskId;
+    return null;
   }
 
   async function assertAgentRunCheckoutOwnership(
@@ -247,6 +257,13 @@ export function issueRoutes(db: Db, storage: StorageService) {
       labelId: req.query.labelId as string | undefined,
       q: req.query.q as string | undefined,
     });
+    res.json(result);
+  });
+
+  router.get("/companies/:companyId/issues/assignment-capacity", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const result = await svc.listAssignmentCapacity(companyId);
     res.json(result);
   });
 
@@ -728,6 +745,169 @@ export function issueRoutes(db: Db, storage: StorageService) {
     });
 
     res.json(released);
+  });
+
+  router.post("/issues/:id/clean-retry", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    assertBoard(req);
+
+    const actor = getActorInfo(req);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const requestedRunId = typeof body.runId === "string" && body.runId.trim().length > 0
+      ? body.runId.trim()
+      : null;
+    const requestedAssigneeAgentId = typeof body.assigneeAgentId === "string" && body.assigneeAgentId.trim().length > 0
+      ? body.assigneeAgentId.trim()
+      : null;
+    const assigneeAgentId = requestedAssigneeAgentId ?? issue.assigneeAgentId;
+
+    if (!assigneeAgentId) {
+      throw unprocessable("Clean retry requires an assigneeAgentId");
+    }
+
+    const assignee = await agentsSvc.getById(assigneeAgentId);
+    if (!assignee || assignee.companyId !== issue.companyId) {
+      throw unprocessable("Assignee must belong to the issue company");
+    }
+    if (assignee.status === "pending_approval" || assignee.status === "terminated") {
+      throw conflict("Assignee is not invokable in its current state", { status: assignee.status });
+    }
+
+    let previousRun =
+      requestedRunId
+        ? await heartbeat.getRun(requestedRunId)
+        : issue.executionRunId
+          ? await heartbeat.getRun(issue.executionRunId)
+          : null;
+
+    if (previousRun && previousRun.companyId !== issue.companyId) {
+      previousRun = null;
+    }
+
+    if (previousRun) {
+      const linkedIssueId = issueIdFromRunContextSnapshot(previousRun.contextSnapshot);
+      if (linkedIssueId && linkedIssueId !== issue.id) {
+        previousRun = null;
+      }
+    }
+
+    if (!previousRun) {
+      const activeRun = await heartbeat.getActiveRunForAgent(assigneeAgentId);
+      if (activeRun && activeRun.companyId === issue.companyId) {
+        const activeIssueId = issueIdFromRunContextSnapshot(activeRun.contextSnapshot);
+        if (!activeIssueId || activeIssueId === issue.id) {
+          previousRun = activeRun;
+        }
+      }
+    }
+
+    let cancelledRunId: string | null = null;
+    if (previousRun && (previousRun.status === "queued" || previousRun.status === "running")) {
+      const cancelled = await heartbeat.cancelRun(previousRun.id);
+      if (cancelled) {
+        cancelledRunId = cancelled.id;
+        await logActivity(db, {
+          companyId: cancelled.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "heartbeat.cancelled",
+          entityType: "heartbeat_run",
+          entityId: cancelled.id,
+          details: {
+            agentId: cancelled.agentId,
+            source: "issue_clean_retry",
+            issueId: issue.id,
+          },
+        });
+      }
+    }
+
+    const previousRunId = cancelledRunId ?? previousRun?.id ?? requestedRunId ?? issue.executionRunId ?? null;
+
+    const released = await svc.release(issue.id);
+    if (!released) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+
+    const retriedIssue = await svc.checkout(
+      issue.id,
+      assigneeAgentId,
+      ["todo", "backlog", "blocked", "in_progress"],
+      null,
+    );
+
+    const newRun = await heartbeat.wakeup(assigneeAgentId, {
+      source: "assignment",
+      triggerDetail: "manual",
+      reason: "clean_retry_failed_assignment",
+      payload: {
+        issueId: issue.id,
+        taskId: issue.id,
+        cleanRetry: true,
+        previousRunId,
+      },
+      requestedByActorType: actor.actorType,
+      requestedByActorId: actor.actorId,
+      contextSnapshot: {
+        issueId: issue.id,
+        taskId: issue.id,
+        source: "issue.clean_retry",
+      },
+    });
+
+    if (!newRun) {
+      throw conflict("Clean retry wakeup was skipped because the assignee is not invokable");
+    }
+
+    const commentBody = [
+      "## Clean Retry",
+      "",
+      "Executed one-step assignment recovery.",
+      "",
+      `- Previous run: ${previousRunId ? `[${previousRunId}](/agents/${assigneeAgentId}/runs/${previousRunId})` : "none"}`,
+      `- New run: [${newRun.id}](/agents/${assigneeAgentId}/runs/${newRun.id})`,
+      `- Assignee: [${assignee.name}](/agents/${assignee.id})`,
+    ].join("\n");
+
+    const comment = await svc.addComment(issue.id, commentBody, {
+      agentId: actor.agentId ?? undefined,
+      userId: actor.actorType === "user" ? actor.actorId : undefined,
+    });
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.clean_retried",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        issueId: issue.id,
+        issueIdentifier: issue.identifier,
+        assigneeAgentId,
+        previousRunId,
+        newRunId: newRun.id,
+        commentId: comment.id,
+      },
+    });
+
+    res.json({
+      issue: retriedIssue,
+      previousRunId,
+      newRun,
+      commentId: comment.id,
+    });
   });
 
   router.get("/issues/:id/comments", async (req, res) => {

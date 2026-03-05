@@ -19,7 +19,7 @@ import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard } from "lucide-react";
+import { AlertTriangle, Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -228,7 +228,7 @@ export function Dashboard() {
 
       {data && (
         <>
-          <div className="grid grid-cols-2 xl:grid-cols-4 gap-1 sm:gap-2">
+          <div className="grid grid-cols-2 xl:grid-cols-5 gap-1 sm:gap-2">
             <MetricCard
               icon={Bot}
               value={data.agents.active + data.agents.running + data.agents.paused + data.agents.error}
@@ -255,6 +255,19 @@ export function Dashboard() {
               }
             />
             <MetricCard
+              icon={AlertTriangle}
+              value={data.queueAging.total}
+              label="Queue Alerts"
+              to="/issues?status=backlog,todo,blocked"
+              description={
+                <span>
+                  {data.queueAging.agedQueued} queued aging{", "}
+                  {data.queueAging.agedBlocked} blocked aging{", "}
+                  {data.queueAging.blockerLoops} loops
+                </span>
+              }
+            />
+            <MetricCard
               icon={DollarSign}
               value={formatCents(data.costs.monthSpendCents)}
               label="Month Spend"
@@ -274,6 +287,7 @@ export function Dashboard() {
               description={
                 <span>
                   {data.staleTasks} stale tasks
+                  {data.queueAging.escalated24h > 0 ? `, ${data.queueAging.escalated24h} queue escalations (24h)` : ""}
                 </span>
               }
             />

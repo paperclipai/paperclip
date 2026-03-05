@@ -79,6 +79,7 @@ export type {
   Issue,
   IssueAssigneeAdapterOverrides,
   IssueComment,
+  IssueAssignmentCapacity,
   IssueAttachment,
   IssueLabel,
   Goal,

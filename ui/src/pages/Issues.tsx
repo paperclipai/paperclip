@@ -48,6 +48,13 @@ export function Issues() {
     enabled: !!selectedCompanyId,
   });
 
+  const { data: assignmentCapacity } = useQuery({
+    queryKey: queryKeys.issues.assignmentCapacity(selectedCompanyId!),
+    queryFn: () => issuesApi.assignmentCapacity(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 10000,
+  });
+
   const updateIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
       issuesApi.update(id, data),
@@ -66,6 +73,7 @@ export function Issues() {
       isLoading={isLoading}
       error={error as Error | null}
       agents={agents}
+      assignmentCapacities={assignmentCapacity}
       liveIssueIds={liveIssueIds}
       viewStateKey="paperclip:issues-view"
       initialAssignees={searchParams.get("assignee") ? [searchParams.get("assignee")!] : undefined}

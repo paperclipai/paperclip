@@ -19,7 +19,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { CircleDot, Plus, Filter, ArrowUpDown, Layers, Check, X, ChevronRight, List, Columns3, User, Search } from "lucide-react";
 import { KanbanBoard } from "./KanbanBoard";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue, IssueAssignmentCapacity } from "@paperclipai/shared";
 
 /* ── Helpers ── */
 
@@ -138,6 +138,7 @@ interface IssuesListProps {
   isLoading?: boolean;
   error?: Error | null;
   agents?: Agent[];
+  assignmentCapacities?: IssueAssignmentCapacity[];
   liveIssueIds?: Set<string>;
   projectId?: string;
   viewStateKey: string;
@@ -150,6 +151,7 @@ export function IssuesList({
   isLoading,
   error,
   agents,
+  assignmentCapacities,
   liveIssueIds,
   projectId,
   viewStateKey,
@@ -220,6 +222,10 @@ export function IssuesList({
   });
 
   const activeFilterCount = countActiveFilters(viewState);
+  const capacityByAgentId = useMemo(
+    () => new Map((assignmentCapacities ?? []).map((entry) => [entry.agentId, entry])),
+    [assignmentCapacities],
+  );
 
   const groupedContent = useMemo(() => {
     if (viewState.groupBy === "none") {
@@ -679,22 +685,58 @@ export function IssuesList({
                                 if (!assigneeSearch.trim()) return true;
                                 return agent.name.toLowerCase().includes(assigneeSearch.toLowerCase());
                               })
-                              .map((agent) => (
-                                <button
-                                  key={agent.id}
-                                  className={cn(
-                                    "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-left",
-                                    issue.assigneeAgentId === agent.id && "bg-accent"
-                                  )}
-                                  onClick={(e) => {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    assignIssue(issue.id, agent.id);
-                                  }}
-                                >
-                                  <Identity name={agent.name} size="sm" className="min-w-0" />
-                                </button>
-                              ))}
+                              .map((agent) => {
+                                const capacity = capacityByAgentId.get(agent.id);
+                                const attemptedState =
+                                  issue.status === "in_progress"
+                                    ? "running"
+                                    : issue.status === "todo"
+                                      ? "queued"
+                                      : null;
+                                const blockedByCapacity =
+                                  attemptedState === "running"
+                                    ? (capacity?.runningAtCapacity ?? false)
+                                    : attemptedState === "queued"
+                                      ? (capacity?.queuedAtCapacity ?? false)
+                                      : false;
+                                const isCurrentAssignee = issue.assigneeAgentId === agent.id;
+                                const isDisabled = blockedByCapacity && !isCurrentAssignee;
+                                const capacityLabel =
+                                  capacity
+                                    ? `R ${capacity.running}/${capacity.maxRunning ?? "\u221e"} · Q ${capacity.queued}/${capacity.maxQueued ?? "\u221e"}`
+                                    : null;
+
+                                return (
+                                  <button
+                                    key={agent.id}
+                                    className={cn(
+                                      "flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent/50",
+                                      isCurrentAssignee && "bg-accent",
+                                      isDisabled && "cursor-not-allowed opacity-60",
+                                    )}
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      if (isDisabled) return;
+                                      assignIssue(issue.id, agent.id);
+                                    }}
+                                    disabled={isDisabled}
+                                    title={isDisabled ? "At assignment capacity for this issue state" : undefined}
+                                  >
+                                    <Identity name={agent.name} size="sm" className="min-w-0" />
+                                    {capacityLabel && (
+                                      <span
+                                        className={cn(
+                                          "shrink-0 font-mono text-[10px] text-muted-foreground",
+                                          isDisabled && "text-amber-600 dark:text-amber-400",
+                                        )}
+                                      >
+                                        {capacityLabel}
+                                      </span>
+                                    )}
+                                  </button>
+                                );
+                              })}
                           </div>
                         </PopoverContent>
                       </Popover>

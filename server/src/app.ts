@@ -47,11 +47,6 @@ export async function createApp(
 ) {
   const app = express();
   const rateLimitConfig = buildRateLimitConfigFromEnv();
-  const globalRateLimiter = createRateLimitMiddleware({
-    name: "api_global",
-    windowMs: rateLimitConfig.globalWindowMs,
-    max: rateLimitConfig.globalMax,
-  });
   const authRateLimiter = createRateLimitMiddleware({
     name: "auth",
     windowMs: rateLimitConfig.authWindowMs,
@@ -98,7 +93,6 @@ export async function createApp(
     }),
   );
   if (rateLimitConfig.enabled) {
-    app.use("/api", globalRateLimiter);
     app.use("/api/auth", authRateLimiter, passwordResetRateLimiter);
   }
   app.get("/api/auth/get-session", (req, res) => {

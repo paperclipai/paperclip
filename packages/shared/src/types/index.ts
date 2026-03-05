@@ -15,6 +15,7 @@ export type {
   Issue,
   IssueAssigneeAdapterOverrides,
   IssueComment,
+  IssueAssignmentCapacity,
   IssueAncestor,
   IssueAncestorProject,
   IssueAncestorGoal,

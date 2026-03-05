@@ -137,6 +137,17 @@ function FailedRunCard({
 
   const retryRun = useMutation({
     mutationFn: async () => {
+      if (issueId) {
+        const cleanRetry = await issuesApi.cleanRetry(issueId, {
+          runId: run.id,
+          assigneeAgentId: run.agentId,
+        });
+        return {
+          id: cleanRetry.newRun.id,
+          agentId: cleanRetry.newRun.agentId,
+        };
+      }
+
       const payload: Record<string, unknown> = {};
       const context = run.contextSnapshot as Record<string, unknown> | null;
       if (context) {
@@ -153,12 +164,18 @@ function FailedRunCard({
       if (!("id" in result)) {
         throw new Error("Retry was skipped because the agent is not currently invokable.");
       }
-      return result;
+      return {
+        id: result.id,
+        agentId: result.agentId,
+      };
     },
     onSuccess: (newRun) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(run.companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(run.companyId, run.agentId) });
-      navigate(`/agents/${run.agentId}/runs/${newRun.id}`);
+      if (issueId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId) });
+      }
+      navigate(`/agents/${newRun.agentId}/runs/${newRun.id}`);
     },
   });
 

@@ -671,7 +671,9 @@ export function heartbeatService(db: Db) {
     const created = await issuesSvc.create(input.companyId, {
       title: input.title,
       description: input.description,
-      status: "todo",
+      // Ops incidents are created without a human/agent assignee.
+      // Keep them in backlog to avoid unassigned todo/in_progress invariants.
+      status: "backlog",
       priority: input.priority ?? "high",
       createdByUserId: "system",
     });

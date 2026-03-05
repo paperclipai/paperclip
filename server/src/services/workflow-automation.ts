@@ -1,6 +1,6 @@
-import { and, asc, desc, eq, inArray, isNull, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, goals, issueComments, issues } from "@paperclipai/db";
+import { activityLog, agents, goals, issueComments, issues } from "@paperclipai/db";
 import { heartbeatService } from "./heartbeat.js";
 import { issueService } from "./issues.js";
 import { logActivity } from "./activity-log.js";
@@ -16,6 +16,7 @@ const DAILY_ROLLUP_HOUR_LOCAL = Math.min(
 );
 const DAILY_ROLLUP_PARENT_PRIORITIES = ["critical"];
 const ACTIVE_FANOUT_AGENT_STATUSES = ["active", "idle", "running"];
+const ALERTABLE_AGENT_STATUSES = ["active", "idle", "running", "paused"];
 const AUTO_ACTOR_ID = "workflow-automation";
 const AUTO_ACTOR_TYPE = "system" as const;
 const LOCAL_TIMEZONE =
@@ -23,6 +24,28 @@ const LOCAL_TIMEZONE =
   process.env.TZ ||
   Intl.DateTimeFormat().resolvedOptions().timeZone ||
   "UTC";
+const QUEUE_AGING_QUEUED_HOURS = Math.max(
+  1,
+  Number(process.env.PAPERCLIP_QUEUE_AGING_QUEUED_HOURS) || 6,
+);
+const QUEUE_AGING_BLOCKED_HOURS = Math.max(
+  1,
+  Number(process.env.PAPERCLIP_QUEUE_AGING_BLOCKED_HOURS) || BLOCKED_SLA_HOURS,
+);
+const QUEUE_AGING_BLOCKER_LOOP_WINDOW_HOURS = Math.max(
+  1,
+  Number(process.env.PAPERCLIP_QUEUE_AGING_BLOCKER_LOOP_WINDOW_HOURS) || 24,
+);
+const QUEUE_AGING_BLOCKER_LOOP_THRESHOLD = Math.max(
+  2,
+  Number(process.env.PAPERCLIP_QUEUE_AGING_BLOCKER_LOOP_THRESHOLD) || 3,
+);
+const QUEUE_AGING_ALERT_COOLDOWN_MS = Math.max(
+  5 * 60 * 1000,
+  Number(process.env.PAPERCLIP_QUEUE_AGING_ALERT_COOLDOWN_MS) || 4 * 60 * 60 * 1000,
+);
+
+type QueueAgingReason = "queued_age" | "blocked_age" | "blocker_loop";
 
 function localDayKey(now: Date): string {
   return new Intl.DateTimeFormat("en-CA", {
@@ -45,6 +68,24 @@ function localHour(now: Date): number {
 
 function issueRef(issue: { identifier: string | null; id: string }) {
   return issue.identifier ?? issue.id;
+}
+
+function formatQueueAgingReasonLine(input: {
+  reason: QueueAgingReason;
+  ageMinutes: number;
+  blockedTransitions: number;
+}) {
+  if (input.reason === "queued_age") {
+    return `- queued age: ${input.ageMinutes} minute(s) (threshold ${QUEUE_AGING_QUEUED_HOURS}h)`;
+  }
+  if (input.reason === "blocked_age") {
+    return `- blocked age: ${input.ageMinutes} minute(s) (threshold ${QUEUE_AGING_BLOCKED_HOURS}h)`;
+  }
+  return `- blocker loops: ${input.blockedTransitions} transition(s) to blocked in ${QUEUE_AGING_BLOCKER_LOOP_WINDOW_HOURS}h (threshold ${QUEUE_AGING_BLOCKER_LOOP_THRESHOLD})`;
+}
+
+function isAlertableAgentStatus(status: string) {
+  return ALERTABLE_AGENT_STATUSES.includes(status);
 }
 
 function buildFanoutDescription(input: {
@@ -419,6 +460,289 @@ export function workflowAutomationService(db: Db) {
     return posted;
   }
 
+  async function alertQueueAging(now: Date) {
+    const queuedCutoff = new Date(now.getTime() - QUEUE_AGING_QUEUED_HOURS * 60 * 60 * 1000);
+    const blockedCutoff = new Date(now.getTime() - QUEUE_AGING_BLOCKED_HOURS * 60 * 60 * 1000);
+    const blockerLoopSince = new Date(
+      now.getTime() - QUEUE_AGING_BLOCKER_LOOP_WINDOW_HOURS * 60 * 60 * 1000,
+    );
+
+    const queuedAged = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        identifier: issues.identifier,
+        title: issues.title,
+        status: issues.status,
+        updatedAt: issues.updatedAt,
+        assigneeAgentId: issues.assigneeAgentId,
+      })
+      .from(issues)
+      .where(
+        and(
+          isNull(issues.hiddenAt),
+          inArray(issues.status, ["backlog", "todo"]),
+          lte(issues.updatedAt, queuedCutoff),
+        ),
+      )
+      .orderBy(asc(issues.updatedAt))
+      .limit(200);
+
+    const blockedAged = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        identifier: issues.identifier,
+        title: issues.title,
+        status: issues.status,
+        updatedAt: issues.updatedAt,
+        assigneeAgentId: issues.assigneeAgentId,
+      })
+      .from(issues)
+      .where(
+        and(
+          isNull(issues.hiddenAt),
+          eq(issues.status, "blocked"),
+          lte(issues.updatedAt, blockedCutoff),
+        ),
+      )
+      .orderBy(asc(issues.updatedAt))
+      .limit(200);
+
+    const blockerLoopRows = await db
+      .select({
+        issueId: activityLog.entityId,
+        blockedTransitions: sql<number>`count(*)::int`,
+      })
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.action, "issue.updated"),
+          gte(activityLog.createdAt, blockerLoopSince),
+          sql`coalesce(${activityLog.details} ->> 'status', '') = 'blocked'`,
+        ),
+      )
+      .groupBy(activityLog.entityId)
+      .having(sql`count(*) >= ${QUEUE_AGING_BLOCKER_LOOP_THRESHOLD}`)
+      .orderBy(desc(sql`count(*)`))
+      .limit(200);
+
+    const loopIssueIds = blockerLoopRows.map((row) => row.issueId);
+    const blockerLoopIssues =
+      loopIssueIds.length > 0
+        ? await db
+          .select({
+            id: issues.id,
+            companyId: issues.companyId,
+            identifier: issues.identifier,
+            title: issues.title,
+            status: issues.status,
+            updatedAt: issues.updatedAt,
+            assigneeAgentId: issues.assigneeAgentId,
+          })
+          .from(issues)
+          .where(
+            and(
+              isNull(issues.hiddenAt),
+              inArray(issues.status, ["backlog", "todo", "in_progress", "in_review", "blocked"]),
+              inArray(issues.id, loopIssueIds),
+            ),
+          )
+          .limit(200)
+        : [];
+
+    const candidates = new Map<
+      string,
+      {
+        id: string;
+        companyId: string;
+        identifier: string | null;
+        title: string;
+        updatedAt: Date;
+        assigneeAgentId: string | null;
+        reasons: Set<QueueAgingReason>;
+        blockedTransitions: number;
+      }
+    >();
+
+    const appendCandidate = (
+      issue: {
+        id: string;
+        companyId: string;
+        identifier: string | null;
+        title: string;
+        updatedAt: Date;
+        assigneeAgentId: string | null;
+      },
+      reason: QueueAgingReason,
+      blockedTransitions?: number,
+    ) => {
+      const existing = candidates.get(issue.id);
+      if (!existing) {
+        candidates.set(issue.id, {
+          ...issue,
+          reasons: new Set([reason]),
+          blockedTransitions: blockedTransitions ?? 0,
+        });
+        return;
+      }
+      existing.reasons.add(reason);
+      existing.blockedTransitions = Math.max(existing.blockedTransitions, blockedTransitions ?? 0);
+    };
+
+    for (const row of queuedAged) appendCandidate(row, "queued_age");
+    for (const row of blockedAged) appendCandidate(row, "blocked_age");
+    const blockerLoopByIssue = new Map(
+      blockerLoopRows.map((row) => [row.issueId, Number(row.blockedTransitions ?? 0)]),
+    );
+    for (const row of blockerLoopIssues) {
+      appendCandidate(row, "blocker_loop", blockerLoopByIssue.get(row.id) ?? 0);
+    }
+
+    if (candidates.size === 0) return 0;
+
+    const candidateIssueIds = [...candidates.keys()];
+    const alertCooldownSince = new Date(now.getTime() - QUEUE_AGING_ALERT_COOLDOWN_MS);
+    const recentAlerts = await db
+      .select({
+        issueId: issueComments.issueId,
+        body: issueComments.body,
+      })
+      .from(issueComments)
+      .where(
+        and(
+          inArray(issueComments.issueId, candidateIssueIds),
+          gte(issueComments.createdAt, alertCooldownSince),
+          sql`${issueComments.body} like '%paperclip:auto-queue-aging:%'`,
+        ),
+      );
+
+    const recentReasonAlerts = new Set<string>();
+    for (const comment of recentAlerts) {
+      const matches = comment.body.matchAll(/paperclip:auto-queue-aging:([a-z_]+):/g);
+      for (const match of matches) {
+        const reason = (match[1] ?? "").trim();
+        if (!reason) continue;
+        recentReasonAlerts.add(`${comment.issueId}:${reason}`);
+      }
+    }
+
+    const agentRows = await db
+      .select({
+        id: agents.id,
+        name: agents.name,
+        status: agents.status,
+        reportsTo: agents.reportsTo,
+      })
+      .from(agents);
+    const agentById = new Map(agentRows.map((row) => [row.id, row]));
+
+    let alerted = 0;
+    for (const candidate of candidates.values()) {
+      const reasons = [...candidate.reasons].filter(
+        (reason) => !recentReasonAlerts.has(`${candidate.id}:${reason}`),
+      );
+      if (reasons.length === 0) continue;
+
+      const owner =
+        candidate.assigneeAgentId != null ? (agentById.get(candidate.assigneeAgentId) ?? null) : null;
+      const ownerTarget =
+        owner && isAlertableAgentStatus(owner.status) ? owner : null;
+      const manager =
+        ownerTarget?.reportsTo && ownerTarget.reportsTo !== ownerTarget.id
+          ? (agentById.get(ownerTarget.reportsTo) ?? null)
+          : null;
+      const managerTarget =
+        manager && isAlertableAgentStatus(manager.status) ? manager : null;
+
+      const severe = reasons.includes("blocked_age") || reasons.includes("blocker_loop");
+      const wakeTargets = new Map<string, "owner" | "fallback_escalation">();
+      if (ownerTarget) {
+        wakeTargets.set(ownerTarget.id, "owner");
+      }
+      if (managerTarget && (!ownerTarget || severe)) {
+        wakeTargets.set(managerTarget.id, "fallback_escalation");
+      }
+
+      const ageMinutes = Math.max(
+        1,
+        Math.floor((now.getTime() - candidate.updatedAt.getTime()) / 60_000),
+      );
+      const reasonLines = reasons.map((reason) =>
+        formatQueueAgingReasonLine({
+          reason,
+          ageMinutes,
+          blockedTransitions: candidate.blockedTransitions,
+        }),
+      );
+      const markers = reasons.map(
+        (reason) => `<!-- paperclip:auto-queue-aging:${reason}:${now.toISOString()} -->`,
+      );
+
+      const body = [
+        "## Queue Aging Alert",
+        "Workflow automation detected queue-health threshold breach.",
+        "",
+        ...reasonLines,
+        `- Owner: ${ownerTarget?.name ?? "unassigned/unknown"}`,
+        `- Fallback escalation: ${managerTarget?.name ?? "none"}`,
+        "",
+        ...markers,
+      ].join("\n");
+
+      const comment = await issuesSvc.addComment(candidate.id, body, {});
+      await logActivity(db, {
+        companyId: candidate.companyId,
+        actorType: AUTO_ACTOR_TYPE,
+        actorId: AUTO_ACTOR_ID,
+        action: "issue.queue_aging_alerted",
+        entityType: "issue",
+        entityId: candidate.id,
+        details: {
+          issueIdentifier: candidate.identifier,
+          reasons,
+          ownerAgentId: ownerTarget?.id ?? null,
+          fallbackAgentId: managerTarget?.id ?? null,
+          wakeTargets: [...wakeTargets.keys()],
+          blockedTransitions: candidate.blockedTransitions,
+          ageMinutes,
+          commentId: comment.id,
+        },
+      });
+
+      for (const [agentId, target] of wakeTargets.entries()) {
+        void heartbeat
+          .wakeup(agentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "queue_aging_alert",
+            payload: {
+              issueId: candidate.id,
+              issueIdentifier: candidate.identifier ?? null,
+              reasons,
+              target,
+              alertCommentId: comment.id,
+            },
+            requestedByActorType: AUTO_ACTOR_TYPE,
+            requestedByActorId: AUTO_ACTOR_ID,
+            contextSnapshot: {
+              issueId: candidate.id,
+              issueIdentifier: candidate.identifier ?? null,
+              reasons,
+              target,
+              source: "workflow_automation.queue_aging",
+            },
+          })
+          .catch(() => {});
+      }
+
+      alerted += 1;
+    }
+
+    return alerted;
+  }
+
   return {
     async tick(now = new Date()) {
       const blockedSweepDue = now.getTime() - lastBlockedSweepAt >= BLOCKED_SWEEP_INTERVAL_MS;
@@ -428,9 +752,11 @@ export function workflowAutomationService(db: Db) {
 
       let blockedEscalations = 0;
       let dailyRollups = 0;
+      let queueAgingAlerts = 0;
 
       if (blockedSweepDue) {
         blockedEscalations = await escalateOverdueBlocked(now);
+        queueAgingAlerts = await alertQueueAging(now);
         lastBlockedSweepAt = now.getTime();
       }
       if (shouldPostDailyRollup) {
@@ -440,6 +766,7 @@ export function workflowAutomationService(db: Db) {
 
       return {
         blockedEscalations,
+        queueAgingAlerts,
         dailyRollups,
       };
     },

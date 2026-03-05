@@ -1,6 +1,7 @@
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  activityLog,
   agents,
   agentWakeupRequests,
   approvals,
@@ -12,6 +13,23 @@ import {
   projects,
 } from "@paperclipai/db";
 import { notFound } from "../errors.js";
+
+const QUEUE_AGING_QUEUED_HOURS = Math.max(
+  1,
+  Number(process.env.PAPERCLIP_QUEUE_AGING_QUEUED_HOURS) || 6,
+);
+const QUEUE_AGING_BLOCKED_HOURS = Math.max(
+  1,
+  Number(process.env.PAPERCLIP_QUEUE_AGING_BLOCKED_HOURS) || 4,
+);
+const QUEUE_AGING_BLOCKER_LOOP_WINDOW_HOURS = Math.max(
+  1,
+  Number(process.env.PAPERCLIP_QUEUE_AGING_BLOCKER_LOOP_WINDOW_HOURS) || 24,
+);
+const QUEUE_AGING_BLOCKER_LOOP_THRESHOLD = Math.max(
+  2,
+  Number(process.env.PAPERCLIP_QUEUE_AGING_BLOCKER_LOOP_THRESHOLD) || 3,
+);
 
 type OpsProbeConfig = {
   id: string;
@@ -120,6 +138,71 @@ export function dashboardService(db: Db) {
         )
         .then((rows) => Number(rows[0]?.count ?? 0));
 
+      const now = new Date();
+      const queuedAgingCutoff = new Date(now.getTime() - QUEUE_AGING_QUEUED_HOURS * 60 * 60 * 1000);
+      const blockedAgingCutoff = new Date(now.getTime() - QUEUE_AGING_BLOCKED_HOURS * 60 * 60 * 1000);
+      const blockerLoopSince = new Date(
+        now.getTime() - QUEUE_AGING_BLOCKER_LOOP_WINDOW_HOURS * 60 * 60 * 1000,
+      );
+      const since24h = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
+      const agedQueued = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            sql`${issues.hiddenAt} is null`,
+            inArray(issues.status, ["backlog", "todo"]),
+            lte(issues.updatedAt, queuedAgingCutoff),
+          ),
+        )
+        .then((rows) => Number(rows[0]?.count ?? 0));
+
+      const agedBlocked = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            sql`${issues.hiddenAt} is null`,
+            eq(issues.status, "blocked"),
+            lte(issues.updatedAt, blockedAgingCutoff),
+          ),
+        )
+        .then((rows) => Number(rows[0]?.count ?? 0));
+
+      const blockerLoopRows = await db
+        .select({
+          issueId: activityLog.entityId,
+          transitions: sql<number>`count(*)::int`,
+        })
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.companyId, companyId),
+            eq(activityLog.entityType, "issue"),
+            eq(activityLog.action, "issue.updated"),
+            gte(activityLog.createdAt, blockerLoopSince),
+            sql`coalesce(${activityLog.details} ->> 'status', '') = 'blocked'`,
+          ),
+        )
+        .groupBy(activityLog.entityId)
+        .having(sql`count(*) >= ${QUEUE_AGING_BLOCKER_LOOP_THRESHOLD}`);
+
+      const escalated24h = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.companyId, companyId),
+            eq(activityLog.entityType, "issue"),
+            eq(activityLog.action, "issue.queue_aging_alerted"),
+            gte(activityLog.createdAt, since24h),
+          ),
+        )
+        .then((rows) => Number(rows[0]?.count ?? 0));
+
       const agentCounts: Record<string, number> = {
         active: 0,
         running: 0,
@@ -147,7 +230,6 @@ export function dashboardService(db: Db) {
         if (row.status !== "done" && row.status !== "cancelled") taskCounts.open += count;
       }
 
-      const now = new Date();
       const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
       const [{ monthSpend }] = await db
         .select({
@@ -215,6 +297,13 @@ export function dashboardService(db: Db) {
         },
         pendingApprovals,
         staleTasks,
+        queueAging: {
+          agedQueued,
+          agedBlocked,
+          blockerLoops: blockerLoopRows.length,
+          total: agedQueued + agedBlocked + blockerLoopRows.length,
+          escalated24h,
+        },
       };
     },
     operationsPulse: async (companyId: string) => {
