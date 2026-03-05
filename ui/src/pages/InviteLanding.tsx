@@ -19,13 +19,14 @@ const adapterLabels: Record<string, string> = {
   claude_local: "Claude (local)",
   codex_local: "Codex (local)",
   opencode_local: "OpenCode (local)",
-  openclaw: "OpenClaw",
+  cursor_local: "Cursor (local)",
   cursor: "Cursor (local)",
+  openclaw: "OpenClaw",
   process: "Process",
   http: "HTTP",
 };
 
-const ENABLED_INVITE_ADAPTERS = new Set(["claude_local", "codex_local", "opencode_local", "cursor"]);
+const ENABLED_INVITE_ADAPTERS = new Set(["claude_local", "codex_local", "opencode_local", "cursor", "cursor_local"]);
 
 function dateTime(value: string) {
   return new Date(value).toLocaleString();

@@ -275,6 +275,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     adapterType === "claude_local" ||
     adapterType === "codex_local" ||
     adapterType === "opencode_local" ||
+    adapterType === "cursor_local" ||
     adapterType === "cursor";
   const uiAdapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
 
@@ -485,6 +486,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   } else if (t === "opencode_local") {
                     nextValues.model = DEFAULT_OPENCODE_LOCAL_MODEL;
                   }
+                  if (t === "cursor_local") {
+                    nextValues.command = "agent";
+                  }
                   set!(nextValues);
                 } else {
                   // Clear all adapter config and explicitly blank out model + effort/mode keys
@@ -505,6 +509,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       modelReasoningEffort: "",
                       variant: "",
                       mode: "",
+                      command: t === "cursor_local" ? "agent" : undefined,
                       ...(t === "codex_local"
                         ? {
                             dangerouslyBypassApprovalsAndSandbox:
@@ -603,11 +608,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   placeholder={
                     adapterType === "codex_local"
                       ? "codex"
-                      : adapterType === "cursor"
+                      : adapterType === "cursor" || adapterType === "cursor_local"
                         ? "agent"
-                      : adapterType === "opencode_local"
-                        ? "opencode"
-                        : "claude"
+                        : adapterType === "opencode_local"
+                          ? "opencode"
+                          : "claude"
                   }
                 />
               </Field>
@@ -624,17 +629,19 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 onOpenChange={setModelOpen}
               />
 
-              <ThinkingEffortDropdown
-                value={currentThinkingEffort}
-                options={thinkingEffortOptions}
-                onChange={(v) =>
-                  isCreate
-                    ? set!({ thinkingEffort: v })
-                    : mark("adapterConfig", thinkingEffortKey, v || undefined)
-                }
-                open={thinkingEffortOpen}
-                onOpenChange={setThinkingEffortOpen}
-              />
+              {adapterType !== "cursor_local" && (
+                <ThinkingEffortDropdown
+                  value={currentThinkingEffort}
+                  options={thinkingEffortOptions}
+                  onChange={(v) =>
+                    isCreate
+                      ? set!({ thinkingEffort: v })
+                      : mark("adapterConfig", thinkingEffortKey, v || undefined)
+                  }
+                  open={thinkingEffortOpen}
+                  onOpenChange={setThinkingEffortOpen}
+                />
+              )}
               {adapterType === "codex_local" &&
                 codexSearchEnabled &&
                 currentThinkingEffort === "minimal" && (
@@ -876,16 +883,15 @@ function AdapterEnvironmentResult({ result }: { result: AdapterEnvironmentTestRe
 
 /* ---- Internal sub-components ---- */
 
-const ENABLED_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "opencode_local", "cursor"]);
+const ENABLED_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "opencode_local", "cursor", "cursor_local"]);
 
-/** Display list includes all real adapter types plus UI-only coming-soon entries. */
-const ADAPTER_DISPLAY_LIST: { value: string; label: string; comingSoon: boolean }[] = [
-  ...AGENT_ADAPTER_TYPES.map((t) => ({
+/** Display list includes all real adapter types from AGENT_ADAPTER_TYPES. */
+const ADAPTER_DISPLAY_LIST: { value: string; label: string; comingSoon: boolean }[] =
+  AGENT_ADAPTER_TYPES.map((t) => ({
     value: t,
     label: adapterLabels[t] ?? t,
     comingSoon: !ENABLED_ADAPTER_TYPES.has(t),
-  })),
-];
+  }));
 
 function AdapterTypeDropdown({
   value,
@@ -1216,15 +1222,18 @@ function ModelDropdown({
             <ChevronDown className="h-3 w-3 text-muted-foreground" />
           </button>
         </PopoverTrigger>
-        <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-1" align="start">
+        <PopoverContent
+          className="w-[var(--radix-popover-trigger-width)] p-1 max-h-[min(70vh,420px)] flex flex-col"
+          align="start"
+        >
           <input
-            className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
+            className="w-full shrink-0 px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
             placeholder="Search models..."
             value={modelSearch}
             onChange={(e) => setModelSearch(e.target.value)}
             autoFocus
           />
-          <div className="max-h-[240px] overflow-y-auto">
+          <div className="min-h-0 flex-1 overflow-y-auto max-h-[320px]">
             <button
               className={cn(
                 "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",

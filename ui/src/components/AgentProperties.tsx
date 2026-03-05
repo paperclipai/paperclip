@@ -18,8 +18,9 @@ const adapterLabels: Record<string, string> = {
   claude_local: "Claude (local)",
   codex_local: "Codex (local)",
   opencode_local: "OpenCode (local)",
-  openclaw: "OpenClaw",
+  cursor_local: "Cursor (local)",
   cursor: "Cursor (local)",
+  openclaw: "OpenClaw",
   process: "Process",
   http: "HTTP",
 };

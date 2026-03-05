@@ -53,6 +53,7 @@ type AdapterType =
   | "codex_local"
   | "opencode_local"
   | "cursor"
+  | "cursor_local"
   | "process"
   | "http"
   | "openclaw";
@@ -155,16 +156,16 @@ export function OnboardingWizard() {
     enabled: onboardingOpen && step === 2
   });
   const isLocalAdapter =
-    adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "opencode_local" || adapterType === "cursor";
+    adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "opencode_local" || adapterType === "cursor" || adapterType === "cursor_local";
   const effectiveAdapterCommand =
     command.trim() ||
     (adapterType === "codex_local"
       ? "codex"
-      : adapterType === "cursor"
+      : adapterType === "cursor" || adapterType === "cursor_local"
         ? "agent"
-      : adapterType === "opencode_local"
-        ? "opencode"
-        : "claude");
+        : adapterType === "opencode_local"
+          ? "opencode"
+          : "claude");
 
   useEffect(() => {
     if (step !== 2) return;
@@ -601,10 +602,10 @@ export function OnboardingWizard() {
                           comingSoon: true
                         },
                         {
-                          value: "cursor" as const,
-                          label: "Cursor",
+                          value: "cursor_local" as const,
+                          label: "Cursor (local)",
                           icon: MousePointer2,
-                          desc: "Local Cursor agent"
+                          desc: "Local Cursor CLI agent"
                         },
                         {
                           value: "process" as const,
@@ -643,6 +644,9 @@ export function OnboardingWizard() {
                             } else if (nextType === "opencode_local" && !model) {
                               setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
                             }
+                            if (nextType === "cursor_local" && !command.trim()) {
+                              setCommand("agent");
+                            }
                           }}
                         >
                           {opt.recommended && (
@@ -664,7 +668,8 @@ export function OnboardingWizard() {
                   {(adapterType === "claude_local" ||
                     adapterType === "codex_local" ||
                     adapterType === "opencode_local" ||
-                    adapterType === "cursor") && (
+                    adapterType === "cursor" ||
+                    adapterType === "cursor_local") && (
                     <div className="space-y-3">
                       <div>
                         <div className="flex items-center gap-1.5 mb-1">
@@ -704,39 +709,41 @@ export function OnboardingWizard() {
                             </button>
                           </PopoverTrigger>
                           <PopoverContent
-                            className="w-[var(--radix-popover-trigger-width)] p-1"
+                            className="w-[var(--radix-popover-trigger-width)] p-1 max-h-[min(70vh,400px)] flex flex-col"
                             align="start"
                           >
-                            <button
-                              className={cn(
-                                "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
-                                !model && "bg-accent"
-                              )}
-                              onClick={() => {
-                                setModel("");
-                                setModelOpen(false);
-                              }}
-                            >
-                              Default
-                            </button>
-                            {(adapterModels ?? []).map((m) => (
+                            <div className="overflow-y-auto min-h-0 flex-1">
                               <button
-                                key={m.id}
                                 className={cn(
-                                  "flex items-center justify-between w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
-                                  m.id === model && "bg-accent"
+                                  "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
+                                  !model && "bg-accent"
                                 )}
                                 onClick={() => {
-                                  setModel(m.id);
+                                  setModel("");
                                   setModelOpen(false);
                                 }}
                               >
-                                <span>{m.label}</span>
-                                <span className="text-xs text-muted-foreground font-mono">
-                                  {m.id}
-                                </span>
+                                Default
                               </button>
-                            ))}
+                              {(adapterModels ?? []).map((m) => (
+                                <button
+                                  key={m.id}
+                                  className={cn(
+                                    "flex items-center justify-between w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
+                                    m.id === model && "bg-accent"
+                                  )}
+                                  onClick={() => {
+                                    setModel(m.id);
+                                    setModelOpen(false);
+                                  }}
+                                >
+                                  <span>{m.label}</span>
+                                  <span className="text-xs text-muted-foreground font-mono">
+                                    {m.id}
+                                  </span>
+                                </button>
+                              ))}
+                            </div>
                           </PopoverContent>
                         </Popover>
                       </div>
@@ -803,13 +810,15 @@ export function OnboardingWizard() {
                             ? `${effectiveAdapterCommand} exec --json -`
                             : adapterType === "opencode_local"
                               ? `${effectiveAdapterCommand} run --format json \"Respond with hello.\"`
-                            : `${effectiveAdapterCommand} --print - --output-format stream-json --verbose`}
+                              : adapterType === "cursor_local"
+                                ? `${effectiveAdapterCommand} -p "Respond with hello." --output-format stream-json`
+                                : `${effectiveAdapterCommand} --print - --output-format stream-json --verbose`}
                         </p>
                         <p className="text-muted-foreground">
                           Prompt:{" "}
                           <span className="font-mono">Respond with hello.</span>
                         </p>
-                        {adapterType === "cursor" || adapterType === "codex_local" || adapterType === "opencode_local" ? (
+                        {adapterType === "cursor" || adapterType === "cursor_local" || adapterType === "codex_local" || adapterType === "opencode_local" ? (
                           <p className="text-muted-foreground">
                             If auth fails, set{" "}
                             <span className="font-mono">
@@ -824,6 +833,11 @@ export function OnboardingWizard() {
                                   ? "codex login"
                                   : "opencode auth login"}
                             </span>.
+                          </p>
+                        ) : adapterType === "cursor_local" ? (
+                          <p className="text-muted-foreground">
+                            Set <span className="font-mono">CURSOR_API_KEY</span> in
+                            env or run <span className="font-mono">agent login</span>.
                           </p>
                         ) : (
                           <p className="text-muted-foreground">
