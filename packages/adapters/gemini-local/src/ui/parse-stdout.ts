@@ -72,6 +72,8 @@ export function parseGeminiStdoutLine(line: string, ts: string): TranscriptEntry
 
   if (type === "result") {
     const stats = asRecord(parsed.stats);
+    const status = asString(parsed.status, "");
+    const errorText = asString(parsed.error, asString(parsed.message, ""));
     const inputTokens = asNumber(stats?.input_tokens, asNumber(stats?.input, 0));
     const outputTokens = asNumber(stats?.output_tokens, 0);
     const cachedTokens = asNumber(stats?.cached, 0);
@@ -84,8 +86,8 @@ export function parseGeminiStdoutLine(line: string, ts: string): TranscriptEntry
       cachedTokens,
       costUsd: 0,
       subtype: "",
-      isError: asString(parsed.status, "") !== "success",
-      errors: [],
+      isError: status.length > 0 && status !== "success",
+      errors: status.length > 0 && status !== "success" && errorText ? [errorText] : [],
     }];
   }
 

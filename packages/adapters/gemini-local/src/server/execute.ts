@@ -246,9 +246,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
     }
 
+    // Only fall back to runtime session if we actually attempted to resume it
+    const canFallbackToRuntimeSession = !isRetry && sessionId !== null;
     const resolvedSessionId = isRetry
       ? (attempt.parsed.sessionId ?? null)
-      : (attempt.parsed.sessionId ?? runtimeSessionId ?? runtime.sessionId ?? null);
+      : (attempt.parsed.sessionId ?? (canFallbackToRuntimeSession ? (runtimeSessionId || runtime.sessionId || null) : null));
     const resolvedSessionParams = resolvedSessionId
       ? ({
         sessionId: resolvedSessionId,
