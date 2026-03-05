@@ -41,6 +41,7 @@ What this command does:
 - starts `openclaw-gateway` via Compose (with required `/tmp` tmpfs override)
 - waits for health and prints:
   - `http://127.0.0.1:18789/#token=...`
+- disables Control UI device pairing by default for local smoke ergonomics
 
 Environment knobs:
 
@@ -50,6 +51,8 @@ Environment knobs:
 - `OPENCLAW_GATEWAY_TOKEN` (default random)
 - `OPENCLAW_BUILD=0` to skip rebuild
 - `OPENCLAW_OPEN_BROWSER=1` to auto-open the URL on macOS
+- `OPENCLAW_DISABLE_DEVICE_AUTH=1` (default) disables Control UI device pairing for local smoke
+- `OPENCLAW_DISABLE_DEVICE_AUTH=0` keeps pairing enabled (then approve browser with `devices` CLI commands)
 
 ### Authenticated mode
 

@@ -34,6 +34,19 @@ OPENCLAW_BUILD="${OPENCLAW_BUILD:-1}"
 OPENCLAW_WAIT_SECONDS="${OPENCLAW_WAIT_SECONDS:-45}"
 OPENCLAW_OPEN_BROWSER="${OPENCLAW_OPEN_BROWSER:-0}"
 OPENCLAW_SECRETS_FILE="${OPENCLAW_SECRETS_FILE:-$HOME/.secrets}"
+OPENCLAW_DISABLE_DEVICE_AUTH="${OPENCLAW_DISABLE_DEVICE_AUTH:-1}"
+
+case "$OPENCLAW_DISABLE_DEVICE_AUTH" in
+  1|true|TRUE|True|yes|YES|Yes)
+    OPENCLAW_DISABLE_DEVICE_AUTH_JSON="true"
+    ;;
+  0|false|FALSE|False|no|NO|No)
+    OPENCLAW_DISABLE_DEVICE_AUTH_JSON="false"
+    ;;
+  *)
+    fail "OPENCLAW_DISABLE_DEVICE_AUTH must be one of: 1,0,true,false,yes,no"
+    ;;
+esac
 
 if [[ -z "${OPENAI_API_KEY:-}" && -f "$OPENCLAW_SECRETS_FILE" ]]; then
   set +u
@@ -75,6 +88,7 @@ cat > "$OPENCLAW_CONFIG_DIR/openclaw.json" <<EOF
     },
     "controlUi": {
       "enabled": true,
+      "dangerouslyDisableDeviceAuth": ${OPENCLAW_DISABLE_DEVICE_AUTH_JSON},
       "allowedOrigins": [
         "http://127.0.0.1:${OPENCLAW_GATEWAY_PORT}",
         "http://localhost:${OPENCLAW_GATEWAY_PORT}"
@@ -153,10 +167,31 @@ OpenClaw gateway is running.
 Dashboard URL:
 $dashboard_url
 
+Pairing mode:
+  OPENCLAW_DISABLE_DEVICE_AUTH=$OPENCLAW_DISABLE_DEVICE_AUTH
+EOF
+
+if [[ "$OPENCLAW_DISABLE_DEVICE_AUTH_JSON" == "true" ]]; then
+  cat <<EOF
+  Device pairing is disabled for this local smoke run.
+  (Security tradeoff: enable pairing with OPENCLAW_DISABLE_DEVICE_AUTH=0.)
+
 Useful commands:
   docker compose -f "$OPENCLAW_DOCKER_DIR/docker-compose.yml" -f "$COMPOSE_OVERRIDE" logs -f openclaw-gateway
   docker compose -f "$OPENCLAW_DOCKER_DIR/docker-compose.yml" -f "$COMPOSE_OVERRIDE" down
 EOF
+else
+  cat <<EOF
+  Device pairing is enabled.
+  If UI shows "pairing required", run:
+    docker compose -f "$OPENCLAW_DOCKER_DIR/docker-compose.yml" -f "$COMPOSE_OVERRIDE" run --rm openclaw-cli devices list
+    docker compose -f "$OPENCLAW_DOCKER_DIR/docker-compose.yml" -f "$COMPOSE_OVERRIDE" run --rm openclaw-cli devices approve --latest
+
+Useful commands:
+  docker compose -f "$OPENCLAW_DOCKER_DIR/docker-compose.yml" -f "$COMPOSE_OVERRIDE" logs -f openclaw-gateway
+  docker compose -f "$OPENCLAW_DOCKER_DIR/docker-compose.yml" -f "$COMPOSE_OVERRIDE" down
+EOF
+fi
 
 if [[ "$OPENCLAW_OPEN_BROWSER" == "1" ]] && command -v open >/dev/null 2>&1; then
   log "opening dashboard in browser"

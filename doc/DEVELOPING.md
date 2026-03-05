@@ -284,3 +284,8 @@ pnpm smoke:openclaw-docker-ui
 ```
 
 This script lives at `scripts/smoke/openclaw-docker-ui.sh` and automates clone/build/config/start for Compose-based local OpenClaw UI testing.
+
+Pairing behavior for this smoke script:
+
+- default `OPENCLAW_DISABLE_DEVICE_AUTH=1` (no Control UI pairing prompt for local smoke)
+- set `OPENCLAW_DISABLE_DEVICE_AUTH=0` to require standard device pairing
