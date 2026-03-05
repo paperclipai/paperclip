@@ -73,6 +73,7 @@
             "pages": [
               "deploy/overview",
               "deploy/local-development",
+              "deploy/tailscale-private-access",
               "deploy/docker",
               "deploy/deployment-modes",
               "deploy/database",
