@@ -1242,9 +1242,9 @@ function RunsTab({
         </div>
       </div>
 
-      {/* Right: run detail — natural height, page scrolls */}
+      {/* Right: run detail — sticky, fills viewport height, scrolls internally like a terminal */}
       {selectedRun && (
-        <div className="flex-1 min-w-0 pl-4">
+        <div className="flex-1 min-w-0 pl-4 sticky top-4 overflow-y-auto" style={{ maxHeight: "calc(100vh - 2rem)" }}>
           <RunDetail key={selectedRun.id} run={selectedRun} agentRouteId={agentRouteId} adapterType={adapterType} />
         </div>
       )}
@@ -1673,17 +1673,17 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
   const [logLoading, setLogLoading] = useState(!!run.logRef);
   const [logError, setLogError] = useState<string | null>(null);
   const [logOffset, setLogOffset] = useState(0);
-  const [isFollowing, setIsFollowing] = useState(false);
+  const isLive = run.status === "running" || run.status === "queued";
+  const [isFollowing, setIsFollowing] = useState(isLive);
   const [isStreamingConnected, setIsStreamingConnected] = useState(false);
   const logEndRef = useRef<HTMLDivElement>(null);
   const pendingLogLineRef = useRef("");
   const scrollContainerRef = useRef<ScrollContainer | null>(null);
-  const isFollowingRef = useRef(false);
+  const isFollowingRef = useRef(isLive);
   const lastMetricsRef = useRef<{ scrollHeight: number; distanceFromBottom: number }>({
     scrollHeight: 0,
     distanceFromBottom: Number.POSITIVE_INFINITY,
   });
-  const isLive = run.status === "running" || run.status === "queued";
 
   function isRunLogUnavailable(err: unknown): boolean {
     return err instanceof ApiError && err.status === 404;
@@ -1765,6 +1765,12 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
     updateFollowingState();
   }, [isLive, run.id, updateFollowingState]);
+
+  // For completed runs, scroll to bottom once after log finishes loading
+  useEffect(() => {
+    if (isLive || logLoading || loading) return;
+    logEndRef.current?.scrollIntoView({ behavior: "auto" });
+  }, [isLive, logLoading, loading]);
 
   useEffect(() => {
     if (!isLive) return;
