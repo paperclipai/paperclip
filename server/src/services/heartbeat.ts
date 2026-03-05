@@ -1542,9 +1542,7 @@ export function heartbeatService(db: Db) {
     }
     const policy = parseHeartbeatPolicy(agent);
     const isMentionWake = readNonEmptyString(context.wakeReason) === "issue_comment_mentioned";
-    if (!policy.focusedTaskMode || isMentionWake) {
-      context.focusedTaskMode = false;
-    }
+    context.focusedTaskMode = policy.focusedTaskMode && !isMentionWake;
     if (executionWorkspace.projectId && !readNonEmptyString(context.projectId)) {
       context.projectId = executionWorkspace.projectId;
     }
