@@ -1,0 +1,140 @@
+name: Mobile Android CI
+
+on:
+  pull_request:
+    paths:
+      - "mobile/**"
+      - ".github/workflows/mobile-android.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "mobile/**"
+      - ".github/workflows/mobile-android.yml"
+  workflow_dispatch:
+    inputs:
+      run_internal_release:
+        description: "Run internal Android release lane"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify Mobile Android Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --prod=false
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Test
+        run: pnpm run test
+
+      - name: Offline recovery harness (OFF-02/OFF-03)
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          script: |
+            cd mobile
+            pnpm run ci:offline-harness
+
+      - name: Upload offline recovery artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobile-offline-recovery-artifacts
+          path: mobile/dist/offline-harness
+          if-no-files-found: error
+
+      - name: Build Android artifact
+        run: pnpm run build:android:artifact
+
+      - name: Upload Android artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobile-android-artifact
+          path: mobile/dist/android
+          if-no-files-found: error
+
+  internal-release:
+    name: Internal Android Release
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_internal_release }}
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: mobile-internal
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --prod=false
+
+      - name: Verify release secret contract
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if [ -z "${EXPO_TOKEN:-}" ]; then
+            echo "::error::Missing required secret EXPO_TOKEN"
+            exit 1
+          fi
+
+      - name: Trigger internal Android release build
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: pnpm run release:android:internal
+
+      - name: Capture latest EAS build metadata
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          mkdir -p dist
+          pnpm dlx eas-cli@latest build:list --platform android --limit 1 --json > dist/eas-build.json
+
+      - name: Upload release metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobile-android-release-metadata
+          path: mobile/dist/eas-build.json
+          if-no-files-found: error
