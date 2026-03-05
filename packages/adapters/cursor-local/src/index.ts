@@ -1,5 +1,6 @@
 export const type = "cursor_local";
 export const label = "Cursor (local)";
+export const DEFAULT_CURSOR_LOCAL_MODEL = "auto";
 
 export const models = [
   { id: "gpt-5.2", label: "gpt-5.2" },

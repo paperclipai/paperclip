@@ -83,6 +83,10 @@ const ADAPTER_DEFAULT_RULES_BY_TYPE: Record<string, Array<{ path: string[]; valu
     { path: ["graceSec"], value: 15 },
     { path: ["maxTurnsPerRun"], value: 80 },
   ],
+  cursor_local: [
+    { path: ["timeoutSec"], value: 0 },
+    { path: ["graceSec"], value: 20 },
+  ],
   openclaw: [
     { path: ["method"], value: "POST" },
     { path: ["timeoutSec"], value: 30 },

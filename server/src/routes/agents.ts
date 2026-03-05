@@ -45,6 +45,7 @@ export function agentRoutes(db: Db) {
     codex_local: "instructionsFilePath",
     opencode_local: "instructionsFilePath",
     cursor: "instructionsFilePath",
+    cursor_local: "instructionsFilePath",
   };
   const KNOWN_INSTRUCTIONS_PATH_KEYS = new Set(["instructionsFilePath", "agentsMdPath"]);
 
@@ -182,8 +183,8 @@ export function agentRoutes(db: Db) {
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
   ): Record<string, unknown> {
-    const next = { ...adapterConfig };
     if (adapterType === "codex_local") {
+      const next = { ...adapterConfig };
       if (!asNonEmptyString(next.model)) {
         next.model = DEFAULT_CODEX_LOCAL_MODEL;
       }
@@ -195,13 +196,22 @@ export function agentRoutes(db: Db) {
       }
       return next;
     }
-    if (adapterType === "opencode_local" && !asNonEmptyString(next.model)) {
-      next.model = DEFAULT_OPENCODE_LOCAL_MODEL;
+    if (adapterType === "opencode_local") {
+      const next = { ...adapterConfig };
+      if (!asNonEmptyString(next.model)) next.model = DEFAULT_OPENCODE_LOCAL_MODEL;
+      return next;
     }
-    if (adapterType === "cursor" && !asNonEmptyString(next.model)) {
-      next.model = DEFAULT_CURSOR_LOCAL_MODEL;
+    if (adapterType === "cursor") {
+      const next = { ...adapterConfig };
+      if (!asNonEmptyString(next.model)) next.model = DEFAULT_CURSOR_LOCAL_MODEL;
+      return next;
     }
-    return next;
+    if (adapterType === "cursor_local") {
+      const next = { ...adapterConfig };
+      if (!asNonEmptyString(next.command)) next.command = "agent";
+      return next;
+    }
+    return adapterConfig;
   }
 
   function resolveInstructionsFilePath(candidatePath: string, adapterConfig: Record<string, unknown>) {
