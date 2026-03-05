@@ -20,6 +20,7 @@ import {
   models as openclawModels,
 } from "@paperclipai/adapter-openclaw";
 import { listCodexModels } from "./codex-models.js";
+import { listClaudeModels } from "./claude-models.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
 
@@ -29,6 +30,7 @@ const claudeLocalAdapter: ServerAdapterModule = {
   testEnvironment: claudeTestEnvironment,
   sessionCodec: claudeSessionCodec,
   models: claudeModels,
+  listModels: listClaudeModels,
   supportsLocalAgentJwt: true,
   agentConfigurationDoc: claudeAgentConfigurationDoc,
 };
