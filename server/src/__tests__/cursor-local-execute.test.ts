@@ -122,6 +122,93 @@ describe("cursor execute", () => {
     }
   });
 
+  it("injects PAPERCLIP_FOCUSED_TASK_MODE when context includes issueId", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-cursor-focused-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "agent");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCursorCommand(commandPath);
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+    try {
+      await execute({
+        runId: "run-focused-1",
+        agent: { id: "agent-1", companyId: "company-1", name: "Cursor Coder", adapterType: "cursor", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: { command: commandPath, cwd: workspace, model: "auto", env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath }, promptTemplate: "heartbeat" },
+        context: { issueId: "issue-abc-123" },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.paperclipEnvKeys).toContain("PAPERCLIP_TASK_ID");
+      expect(capture.paperclipEnvKeys).toContain("PAPERCLIP_FOCUSED_TASK_MODE");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does NOT inject PAPERCLIP_FOCUSED_TASK_MODE when context has no taskId or issueId", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-cursor-no-focused-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "agent");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCursorCommand(commandPath);
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+    try {
+      await execute({
+        runId: "run-no-focused-1",
+        agent: { id: "agent-1", companyId: "company-1", name: "Cursor Coder", adapterType: "cursor", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: { command: commandPath, cwd: workspace, model: "auto", env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath }, promptTemplate: "heartbeat" },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.paperclipEnvKeys).not.toContain("PAPERCLIP_TASK_ID");
+      expect(capture.paperclipEnvKeys).not.toContain("PAPERCLIP_FOCUSED_TASK_MODE");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does NOT inject PAPERCLIP_FOCUSED_TASK_MODE when context.focusedTaskMode is false", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-cursor-optout-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "agent");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCursorCommand(commandPath);
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+    try {
+      await execute({
+        runId: "run-optout-1",
+        agent: { id: "agent-1", companyId: "company-1", name: "Cursor Coder", adapterType: "cursor", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: { command: commandPath, cwd: workspace, model: "auto", env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath }, promptTemplate: "heartbeat" },
+        context: { issueId: "issue-abc-123", focusedTaskMode: false },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.paperclipEnvKeys).toContain("PAPERCLIP_TASK_ID");
+      expect(capture.paperclipEnvKeys).not.toContain("PAPERCLIP_FOCUSED_TASK_MODE");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("passes --mode when explicitly configured", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-cursor-execute-mode-"));
     const workspace = path.join(root, "workspace");
