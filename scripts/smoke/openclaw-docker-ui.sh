@@ -15,6 +15,39 @@ require_cmd() {
   command -v "$cmd" >/dev/null 2>&1 || fail "missing required command: $cmd"
 }
 
+reset_openclaw_state_dir() {
+  local state_dir="$1"
+  local resolved_state_dir resolved_home
+
+  [[ -n "$state_dir" ]] || fail "OPENCLAW_CONFIG_DIR must not be empty when resetting state"
+  mkdir -p "$state_dir"
+
+  resolved_state_dir="$(cd "$state_dir" && pwd -P)"
+  resolved_home="$(cd "$HOME" && pwd -P)"
+  case "$resolved_state_dir" in
+    "/"|"$resolved_home")
+      fail "refusing to reset unsafe OPENCLAW_CONFIG_DIR: $resolved_state_dir"
+      ;;
+  esac
+
+  log "resetting OpenClaw state under $resolved_state_dir"
+  rm -rf \
+    "$resolved_state_dir/agents" \
+    "$resolved_state_dir/canvas" \
+    "$resolved_state_dir/cron" \
+    "$resolved_state_dir/credentials" \
+    "$resolved_state_dir/devices" \
+    "$resolved_state_dir/identity" \
+    "$resolved_state_dir/logs" \
+    "$resolved_state_dir/memory" \
+    "$resolved_state_dir/skills" \
+    "$resolved_state_dir/workspace"
+  rm -f \
+    "$resolved_state_dir/openclaw.json" \
+    "$resolved_state_dir/openclaw.json.bak" \
+    "$resolved_state_dir/update-check.json"
+}
+
 require_cmd docker
 require_cmd git
 require_cmd curl
@@ -80,8 +113,17 @@ fi
 
 log "writing OpenClaw config under $OPENCLAW_CONFIG_DIR"
 if [[ "$OPENCLAW_RESET_STATE" == "1" ]]; then
-  # Ensure deterministic smoke behavior across reruns by removing stale agent/auth state.
-  rm -rf "$OPENCLAW_CONFIG_DIR/agents"
+  # Ensure deterministic smoke behavior across reruns by restarting with a clean state dir.
+  OPENCLAW_CONFIG_DIR="$OPENCLAW_CONFIG_DIR" \
+    OPENCLAW_WORKSPACE_DIR="$OPENCLAW_WORKSPACE_DIR" \
+    OPENCLAW_GATEWAY_PORT="$OPENCLAW_GATEWAY_PORT" \
+    OPENCLAW_BRIDGE_PORT="$OPENCLAW_BRIDGE_PORT" \
+    OPENCLAW_GATEWAY_BIND="$OPENCLAW_GATEWAY_BIND" \
+    OPENCLAW_GATEWAY_TOKEN="$OPENCLAW_GATEWAY_TOKEN" \
+    OPENCLAW_IMAGE="$OPENCLAW_IMAGE" \
+    OPENAI_API_KEY="$OPENAI_API_KEY" \
+    docker compose -f "$OPENCLAW_DOCKER_DIR/docker-compose.yml" down --remove-orphans >/dev/null 2>&1 || true
+  reset_openclaw_state_dir "$OPENCLAW_CONFIG_DIR"
 fi
 mkdir -p "$OPENCLAW_WORKSPACE_DIR" "$OPENCLAW_CONFIG_DIR/identity" "$OPENCLAW_CONFIG_DIR/credentials"
 chmod 700 "$OPENCLAW_CONFIG_DIR" "$OPENCLAW_CONFIG_DIR/credentials"
