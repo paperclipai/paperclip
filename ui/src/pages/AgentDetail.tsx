@@ -1228,24 +1228,24 @@ function RunsTab({
     );
   }
 
+  const paneHeight = "calc(100vh - 12rem)";
+
   // Desktop: side-by-side layout
   return (
-    <div className="flex gap-0">
-      {/* Left: run list — border stretches full height, content sticks */}
+    <div className="flex gap-0 overflow-hidden" style={{ height: paneHeight }}>
+      {/* Left: run list — scrolls within fixed height */}
       <div className={cn(
-        "shrink-0 border border-border rounded-lg",
+        "shrink-0 border border-border rounded-lg overflow-y-auto",
         selectedRun ? "w-72" : "w-full",
       )}>
-        <div className="sticky top-4 overflow-y-auto" style={{ maxHeight: "calc(100vh - 2rem)" }}>
         {sorted.map((run) => (
           <RunListItem key={run.id} run={run} isSelected={run.id === effectiveRunId} agentId={agentRouteId} />
         ))}
-        </div>
       </div>
 
-      {/* Right: run detail — sticky, fills viewport height, scrolls internally like a terminal */}
+      {/* Right: run detail — fills remaining height */}
       {selectedRun && (
-        <div className="flex-1 min-w-0 pl-4 sticky top-4 overflow-y-auto" style={{ maxHeight: "calc(100vh - 2rem)" }}>
+        <div className="flex-1 min-w-0 pl-4 flex flex-col min-h-0">
           <RunDetail key={selectedRun.id} run={selectedRun} agentRouteId={agentRouteId} adapterType={adapterType} />
         </div>
       )}
@@ -1267,6 +1267,24 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
   const metrics = runMetrics(run);
   const [sessionOpen, setSessionOpen] = useState(false);
   const [claudeLoginResult, setClaudeLoginResult] = useState<ClaudeLoginResult | null>(null);
+  const [invocationOpen, setInvocationOpen] = useState(false);
+  const [eventsOpen, setEventsOpen] = useState(false);
+  const [transcriptOpen, setTranscriptOpen] = useState(true);
+
+  const isLiveRun = run.status === "running" || run.status === "queued";
+  const { data: runEvents } = useQuery({
+    queryKey: ["run-events", run.id],
+    queryFn: () => heartbeatsApi.events(run.id, 0, 200),
+    refetchInterval: isLiveRun ? 5000 : false,
+  });
+  const adapterInvokePayload = useMemo(() => {
+    const evt = (runEvents ?? []).find((e) => e.eventType === "adapter.invoke");
+    return asRecord(evt?.payload ?? null);
+  }, [runEvents]);
+  const displayEvents = useMemo(
+    () => (runEvents ?? []).filter((e) => e.eventType !== "adapter.invoke"),
+    [runEvents],
+  );
 
   useEffect(() => {
     setClaudeLoginResult(null);
@@ -1404,8 +1422,30 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
   const sessionId = run.sessionIdAfter || run.sessionIdBefore;
   const hasNonZeroExit = run.exitCode !== null && run.exitCode !== 0;
 
+  const [summaryHeight, setSummaryHeight] = useState(() => Math.round((window.innerHeight - 12 * 16) * 0.5));
+  const dragStartRef = useRef<{ y: number; h: number } | null>(null);
+  const onDragMouseDown = (e: React.MouseEvent) => {
+    dragStartRef.current = { y: e.clientY, h: summaryHeight };
+    const onMove = (ev: MouseEvent) => {
+      if (!dragStartRef.current) return;
+      setSummaryHeight(Math.max(120, Math.min(700, dragStartRef.current.h + ev.clientY - dragStartRef.current.y)));
+    };
+    const onUp = () => {
+      dragStartRef.current = null;
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  };
+
   return (
-    <div className="space-y-4 min-w-0">
+    <div className="flex flex-col h-full min-w-0">
+      {/* Summary pane — fixed height when transcript open, flex-1 when collapsed */}
+      <div
+        className={cn("overflow-y-auto space-y-4", transcriptOpen ? "shrink-0" : "flex-1")}
+        style={{ height: transcriptOpen ? summaryHeight : undefined }}
+      >
       {/* Run summary card */}
       <div className="border border-border rounded-lg overflow-hidden">
         <div className="flex flex-col sm:flex-row">
@@ -1642,32 +1682,104 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
         </div>
       )}
 
-      {/* stderr excerpt for failed runs */}
-      {run.stderrExcerpt && (
-        <div className="space-y-1">
-          <span className="text-xs font-medium text-red-600 dark:text-red-400">stderr</span>
-          <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap">{run.stderrExcerpt}</pre>
+      {/* Invocation details — collapsed by default */}
+      {adapterInvokePayload && (
+        <div className="border border-border rounded-lg overflow-hidden">
+          <button
+            className="flex items-center gap-1.5 w-full px-4 py-2 text-xs text-muted-foreground hover:text-foreground transition-colors"
+            onClick={() => setInvocationOpen((v) => !v)}
+          >
+            <ChevronRight className={cn("h-3 w-3 transition-transform", invocationOpen && "rotate-90")} />
+            Invocation
+          </button>
+          {invocationOpen && (
+            <div className="px-4 pb-3 space-y-2 text-xs border-t border-border">
+              {typeof adapterInvokePayload.adapterType === "string" && (
+                <div><span className="text-muted-foreground">Adapter: </span>{adapterInvokePayload.adapterType}</div>
+              )}
+              {typeof adapterInvokePayload.cwd === "string" && (
+                <div className="break-all"><span className="text-muted-foreground">Working dir: </span><span className="font-mono">{adapterInvokePayload.cwd}</span></div>
+              )}
+              {typeof adapterInvokePayload.command === "string" && (
+                <div className="break-all">
+                  <span className="text-muted-foreground">Command: </span>
+                  <span className="font-mono">
+                    {[adapterInvokePayload.command, ...(Array.isArray(adapterInvokePayload.commandArgs) ? adapterInvokePayload.commandArgs.filter((v): v is string => typeof v === "string") : [])].join(" ")}
+                  </span>
+                </div>
+              )}
+              {adapterInvokePayload.prompt !== undefined && (
+                <div>
+                  <div className="text-muted-foreground mb-1">Prompt</div>
+                  <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap max-h-48 overflow-y-auto">
+                    {typeof adapterInvokePayload.prompt === "string" ? adapterInvokePayload.prompt : JSON.stringify(adapterInvokePayload.prompt, null, 2)}
+                  </pre>
+                </div>
+              )}
+              {adapterInvokePayload.context !== undefined && (
+                <div>
+                  <div className="text-muted-foreground mb-1">Context</div>
+                  <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap max-h-48 overflow-y-auto">{JSON.stringify(adapterInvokePayload.context, null, 2)}</pre>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
-      {/* stdout excerpt when no log is available */}
-      {run.stdoutExcerpt && !run.logRef && (
-        <div className="space-y-1">
-          <span className="text-xs font-medium text-muted-foreground">stdout</span>
-          <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">{run.stdoutExcerpt}</pre>
+      {/* Events — collapsible, like Invocation */}
+      {displayEvents.length > 0 && (
+        <div className="border border-border rounded-lg overflow-hidden">
+          <button
+            className="flex items-center gap-1.5 w-full px-4 py-2 text-xs text-muted-foreground hover:text-foreground transition-colors"
+            onClick={() => setEventsOpen((v) => !v)}
+          >
+            <ChevronRight className={cn("h-3 w-3 transition-transform", eventsOpen && "rotate-90")} />
+            Events ({displayEvents.length})
+          </button>
+          {eventsOpen && (
+            <div className="border-t border-border px-3 py-2 space-y-0.5 font-mono text-[11px] max-h-48 overflow-y-auto">
+              {displayEvents.map((evt) => (
+                <div key={evt.id} className="grid grid-cols-[auto_1fr] gap-2 items-baseline">
+                  <span className="text-[10px] text-muted-foreground select-none w-14 shrink-0">
+                    {new Date(evt.createdAt).toLocaleTimeString("en-US", { hour12: false })}
+                  </span>
+                  <span className="break-all text-foreground/80">
+                    {evt.message ?? (evt.payload ? JSON.stringify(evt.payload) : "")}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
-      {/* Log viewer */}
-      <LogViewer run={run} adapterType={adapterType} />
-      <ScrollToBottom />
+      </div>
+
+      {/* Drag handle — only visible when transcript is open */}
+      {transcriptOpen && (
+        <div
+          className="h-1 my-1 cursor-row-resize rounded-full bg-border/60 hover:bg-cyan-500/40 transition-colors shrink-0"
+          onMouseDown={onDragMouseDown}
+        />
+      )}
+
+      {/* Terminal pane — flex-1 when open, hidden when collapsed */}
+      <div className={cn(transcriptOpen ? "flex-1 min-h-0" : "shrink-0")}>
+        <LogViewer
+          run={run}
+          adapterType={adapterType}
+          transcriptOpen={transcriptOpen}
+          onToggleTranscript={() => setTranscriptOpen((v) => !v)}
+        />
+      </div>
     </div>
   );
 }
 
 /* ---- Log Viewer ---- */
 
-function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: string }) {
+function LogViewer({ run, adapterType, transcriptOpen, onToggleTranscript }: { run: HeartbeatRun; adapterType: string; transcriptOpen: boolean; onToggleTranscript: () => void }) {
   const [events, setEvents] = useState<HeartbeatRunEvent[]>([]);
   const [logLines, setLogLines] = useState<Array<{ ts: string; stream: "stdout" | "stderr" | "system"; chunk: string }>>([]);
   const [loading, setLoading] = useState(true);
@@ -1679,6 +1791,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
   const [isStreamingConnected, setIsStreamingConnected] = useState(false);
   const [transcriptMode, setTranscriptMode] = useState<TranscriptMode>("nice");
   const logEndRef = useRef<HTMLDivElement>(null);
+  const terminalBodyRef = useRef<HTMLDivElement>(null);
   const pendingLogLineRef = useRef("");
   const scrollContainerRef = useRef<ScrollContainer | null>(null);
   const isFollowingRef = useRef(isLive);
@@ -1738,7 +1851,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
   const getScrollContainer = useCallback((): ScrollContainer => {
     if (scrollContainerRef.current) return scrollContainerRef.current;
-    const container = findScrollContainer(logEndRef.current);
+    const container = terminalBodyRef.current ?? findScrollContainer(logEndRef.current);
     scrollContainerRef.current = container;
     return container;
   }, []);
@@ -1769,10 +1882,14 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
   }, [isLive, run.id, updateFollowingState]);
 
   // For completed runs, scroll to bottom once after log finishes loading
+  // (uses logLines.length as proxy since transcript is declared below)
   useEffect(() => {
-    if (isLive || logLoading || loading) return;
-    logEndRef.current?.scrollIntoView({ behavior: "auto" });
-  }, [isLive, logLoading, loading]);
+    if (isLive || logLoading || loading || logLines.length === 0) return;
+    const el = terminalBodyRef.current;
+    if (el) {
+      requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
+    }
+  }, [isLive, logLoading, loading, logLines.length]);
 
   useEffect(() => {
     if (!isLive) return;
@@ -2040,223 +2157,82 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     setTranscriptMode("nice");
   }, [run.id]);
 
-  if (loading && logLoading) {
-    return <p className="text-xs text-muted-foreground">Loading run logs...</p>;
-  }
-
-  if (events.length === 0 && logLines.length === 0 && !logError) {
-    return <p className="text-xs text-muted-foreground">No log events.</p>;
-  }
-
-  const levelColors: Record<string, string> = {
-    info: "text-foreground",
-    warn: "text-yellow-600 dark:text-yellow-400",
-    error: "text-red-600 dark:text-red-400",
-  };
-
-  const streamColors: Record<string, string> = {
-    stdout: "text-foreground",
-    stderr: "text-red-600 dark:text-red-300",
-    system: "text-blue-600 dark:text-blue-300",
-  };
+  const isEmpty = events.length === 0 && logLines.length === 0 && !logError;
+  const isLoading = loading && logLoading;
 
   return (
-    <div className="space-y-3">
-      {adapterInvokePayload && (
-        <div className="rounded-lg border border-border bg-background/60 p-3 space-y-2">
-          <div className="text-xs font-medium text-muted-foreground">Invocation</div>
-          {typeof adapterInvokePayload.adapterType === "string" && (
-            <div className="text-xs"><span className="text-muted-foreground">Adapter: </span>{adapterInvokePayload.adapterType}</div>
-          )}
-          {typeof adapterInvokePayload.cwd === "string" && (
-            <div className="text-xs break-all"><span className="text-muted-foreground">Working dir: </span><span className="font-mono">{adapterInvokePayload.cwd}</span></div>
-          )}
-          {typeof adapterInvokePayload.command === "string" && (
-            <div className="text-xs break-all">
-              <span className="text-muted-foreground">Command: </span>
-              <span className="font-mono">
-                {[
-                  adapterInvokePayload.command,
-                  ...(Array.isArray(adapterInvokePayload.commandArgs)
-                    ? adapterInvokePayload.commandArgs.filter((v): v is string => typeof v === "string")
-                    : []),
-                ].join(" ")}
-              </span>
-            </div>
-          )}
-          {Array.isArray(adapterInvokePayload.commandNotes) && adapterInvokePayload.commandNotes.length > 0 && (
-            <div>
-              <div className="text-xs text-muted-foreground mb-1">Command notes</div>
-              <ul className="list-disc pl-5 space-y-1">
-                {adapterInvokePayload.commandNotes
-                  .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-                  .map((note, idx) => (
-                    <li key={`${idx}-${note}`} className="text-xs break-all font-mono">
-                      {note}
-                    </li>
-                  ))}
-              </ul>
-            </div>
-          )}
-          {adapterInvokePayload.prompt !== undefined && (
-            <div>
-              <div className="text-xs text-muted-foreground mb-1">Prompt</div>
-              <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
-                {typeof adapterInvokePayload.prompt === "string"
-                  ? redactHomePathUserSegments(adapterInvokePayload.prompt)
-                  : JSON.stringify(redactHomePathUserSegmentsInValue(adapterInvokePayload.prompt), null, 2)}
-              </pre>
-            </div>
-          )}
-          {adapterInvokePayload.context !== undefined && (
-            <div>
-              <div className="text-xs text-muted-foreground mb-1">Context</div>
-              <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
-                {JSON.stringify(redactHomePathUserSegmentsInValue(adapterInvokePayload.context), null, 2)}
-              </pre>
-            </div>
-          )}
-          {adapterInvokePayload.env !== undefined && (
-            <div>
-              <div className="text-xs text-muted-foreground mb-1">Environment</div>
-              <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap font-mono">
-                {formatEnvForDisplay(adapterInvokePayload.env)}
-              </pre>
-            </div>
-          )}
-        </div>
-      )}
-
-      <div className="flex items-center justify-between">
-        <span className="text-xs font-medium text-muted-foreground">
-          Transcript ({transcript.length})
-        </span>
-        <div className="flex items-center gap-2">
-          <div className="inline-flex rounded-lg border border-border/70 bg-background/70 p-0.5">
-            {(["nice", "raw"] as const).map((mode) => (
-              <button
-                key={mode}
-                type="button"
-                className={cn(
-                  "rounded-md px-2.5 py-1 text-[11px] font-medium capitalize transition-colors",
-                  transcriptMode === mode
-                    ? "bg-accent text-foreground shadow-sm"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-                onClick={() => setTranscriptMode(mode)}
+    <div className={cn("flex flex-col", transcriptOpen ? "h-full" : "")}>
+      {/* Terminal container */}
+      <div className={cn("rounded-lg border border-cyan-500/30 bg-background/80 overflow-hidden shadow-[0_0_12px_rgba(6,182,212,0.08)] flex flex-col", transcriptOpen ? "flex-1 min-h-0" : "")}>
+        {/* Terminal header bar */}
+        <div className="px-3 py-1.5 border-b border-cyan-500/20 flex items-center justify-between shrink-0">
+          <button
+            className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+            onClick={onToggleTranscript}
+          >
+            <ChevronRight className={cn("h-3 w-3 transition-transform", transcriptOpen && "rotate-90")} />
+            Transcript ({transcript.length})
+          </button>
+          <div className="flex items-center gap-2">
+            {transcriptOpen && isLive && !isFollowing && (
+              <Button
+                variant="ghost"
+                size="xs"
+                onClick={() => {
+                  const container = getScrollContainer();
+                  isFollowingRef.current = true;
+                  setIsFollowing(true);
+                  scrollToContainerBottom(container, "auto");
+                  lastMetricsRef.current = readScrollMetrics(container);
+                }}
               >
-                {mode}
-              </button>
-            ))}
-          </div>
-          {isLive && !isFollowing && (
-            <Button
-              variant="ghost"
-              size="xs"
-              onClick={() => {
-                const container = getScrollContainer();
-                isFollowingRef.current = true;
-                setIsFollowing(true);
-                scrollToContainerBottom(container, "auto");
-                lastMetricsRef.current = readScrollMetrics(container);
-              }}
-            >
-              Jump to live
-            </Button>
-          )}
-          {isLive && (
-            <span className="flex items-center gap-1 text-xs text-cyan-400">
-              <span className="relative flex h-2 w-2">
-                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-cyan-400" />
+                Jump to live
+              </Button>
+            )}
+            {isLive && (
+              <span className="flex items-center gap-1 text-xs text-cyan-400">
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-cyan-400" />
+                </span>
+                Live
               </span>
-              Live
-            </span>
-          )}
-        </div>
-      </div>
-      <div className="max-h-[38rem] overflow-y-auto rounded-2xl border border-border/70 bg-background/40 p-3 sm:p-4">
-        <RunTranscriptView
-          entries={transcript}
-          mode={transcriptMode}
-          streaming={isLive}
-          emptyMessage={run.logRef ? "Waiting for transcript..." : "No persisted transcript for this run."}
-        />
-        {logError && (
-          <div className="mt-3 rounded-xl border border-red-500/20 bg-red-500/[0.06] px-3 py-2 text-xs text-red-700 dark:text-red-300">
-            {logError}
+            )}
           </div>
+        </div>
+        {/* Scrollable transcript body — only when open */}
+        {transcriptOpen && (
+        <div ref={terminalBodyRef} className="flex-1 overflow-y-auto p-2 font-mono text-[11px] space-y-0.5">
+          {isLoading && <div className="text-muted-foreground/60 italic">Loading run logs...</div>}
+          {isEmpty && !isLoading && <div className="text-muted-foreground/60 italic">No transcript for this run.</div>}
+          <RunTranscriptView
+            entries={transcript}
+            mode={transcriptMode}
+            streaming={isLive}
+            emptyMessage={run.logRef ? "Waiting for transcript..." : "No persisted transcript for this run."}
+          />
+          {logError && <div className="text-red-600 dark:text-red-300 py-0.5">{logError}</div>}
+          {(run.status === "failed" || run.status === "timed_out") && (
+            <div className="mt-1 rounded border border-red-500/30 bg-red-950/20 p-2 space-y-1.5">
+              <div className="text-[10px] font-medium text-red-400 uppercase tracking-wider">Failure</div>
+              {run.error && (
+                <div className="text-red-300 whitespace-pre-wrap break-words">{redactHomePathUserSegments(run.error)}</div>
+              )}
+              {run.stderrExcerpt && run.stderrExcerpt.trim() && (
+                <pre className="text-red-200 whitespace-pre-wrap break-words overflow-x-auto">{redactHomePathUserSegments(run.stderrExcerpt)}</pre>
+              )}
+              {run.resultJson && (
+                <pre className="text-red-200 whitespace-pre-wrap break-words overflow-x-auto">{JSON.stringify(redactHomePathUserSegmentsInValue(run.resultJson), null, 2)}</pre>
+              )}
+              {run.stdoutExcerpt && run.stdoutExcerpt.trim() && !run.resultJson && (
+                <pre className="text-red-200 whitespace-pre-wrap break-words overflow-x-auto">{redactHomePathUserSegments(run.stdoutExcerpt)}</pre>
+              )}
+            </div>
+          )}
+          <div ref={logEndRef} />
+        </div>
         )}
-        <div ref={logEndRef} />
       </div>
-
-      {(run.status === "failed" || run.status === "timed_out") && (
-        <div className="rounded-lg border border-red-300 dark:border-red-500/30 bg-red-50 dark:bg-red-950/20 p-3 space-y-2">
-          <div className="text-xs font-medium text-red-700 dark:text-red-300">Failure details</div>
-          {run.error && (
-            <div className="text-xs text-red-600 dark:text-red-200">
-              <span className="text-red-700 dark:text-red-300">Error: </span>
-              {redactHomePathUserSegments(run.error)}
-            </div>
-          )}
-          {run.stderrExcerpt && run.stderrExcerpt.trim() && (
-            <div>
-              <div className="text-xs text-red-700 dark:text-red-300 mb-1">stderr excerpt</div>
-              <pre className="bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100">
-                {redactHomePathUserSegments(run.stderrExcerpt)}
-              </pre>
-            </div>
-          )}
-          {run.resultJson && (
-            <div>
-              <div className="text-xs text-red-700 dark:text-red-300 mb-1">adapter result JSON</div>
-              <pre className="bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100">
-                {JSON.stringify(redactHomePathUserSegmentsInValue(run.resultJson), null, 2)}
-              </pre>
-            </div>
-          )}
-          {run.stdoutExcerpt && run.stdoutExcerpt.trim() && !run.resultJson && (
-            <div>
-              <div className="text-xs text-red-700 dark:text-red-300 mb-1">stdout excerpt</div>
-              <pre className="bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100">
-                {redactHomePathUserSegments(run.stdoutExcerpt)}
-              </pre>
-            </div>
-          )}
-        </div>
-      )}
-
-      {events.length > 0 && (
-        <div>
-          <div className="mb-2 text-xs font-medium text-muted-foreground">Events ({events.length})</div>
-          <div className="bg-neutral-100 dark:bg-neutral-950 rounded-lg p-3 font-mono text-xs space-y-0.5">
-            {events.map((evt) => {
-              const color = evt.color
-                ?? (evt.level ? levelColors[evt.level] : null)
-                ?? (evt.stream ? streamColors[evt.stream] : null)
-                ?? "text-foreground";
-
-              return (
-                <div key={evt.id} className="flex gap-2">
-                  <span className="text-neutral-400 dark:text-neutral-600 shrink-0 select-none w-16">
-                    {new Date(evt.createdAt).toLocaleTimeString("en-US", { hour12: false })}
-                  </span>
-                  <span className={cn("shrink-0 w-14", evt.stream ? (streamColors[evt.stream] ?? "text-neutral-500") : "text-neutral-500")}>
-                    {evt.stream ? `[${evt.stream}]` : ""}
-                  </span>
-                  <span className={cn("break-all", color)}>
-                    {evt.message
-                      ? redactHomePathUserSegments(evt.message)
-                      : evt.payload
-                        ? JSON.stringify(redactHomePathUserSegmentsInValue(evt.payload))
-                        : ""}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
