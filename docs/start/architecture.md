@@ -20,7 +20,7 @@ Paperclip is a monorepo with four main layers.
 ├─────────────────────────────────────┤
 │  Adapters                           │
 │  Claude Local, Codex Local,         │
-│  Process, HTTP                      │
+│  Pi Local, Process, HTTP            │
 └─────────────────────────────────────┘
 ```
 
@@ -32,7 +32,7 @@ Paperclip is a monorepo with four main layers.
 | Backend | Node.js 20+, Express.js 5, TypeScript |
 | Database | PostgreSQL 17 (or embedded PGlite), Drizzle ORM |
 | Auth | Better Auth (sessions + API keys) |
-| Adapters | Claude Code CLI, Codex CLI, shell process, HTTP webhook |
+| Adapters | Claude Code CLI, Codex CLI, pi CLI, shell process, HTTP webhook |
 | Package manager | pnpm 9 with workspaces |
 
 ## Repository Structure
@@ -57,7 +57,8 @@ paperclip/
 │   ├── adapter-utils/           # Adapter interfaces and helpers
 │   └── adapters/
 │       ├── claude-local/        # Claude Code adapter
-│       └── codex-local/         # OpenAI Codex adapter
+│       ├── codex-local/         # OpenAI Codex adapter
+│       └── pi-local/            # pi CLI adapter
 │
 ├── skills/                      # Agent skills
 │   └── paperclip/               # Core Paperclip skill (heartbeat protocol)
@@ -87,7 +88,7 @@ Adapters are the bridge between Paperclip and agent runtimes. Each adapter is a 
 - **UI module** — stdout parser for the run viewer, config form fields for agent creation
 - **CLI module** — terminal formatter for `paperclipai run --watch`
 
-Built-in adapters: `claude_local`, `codex_local`, `process`, `http`. You can create custom adapters for any runtime.
+Built-in adapters: `claude_local`, `codex_local`, `pi_local`, `process`, `http`. You can create custom adapters for any runtime.
 
 ## Key Design Decisions
 

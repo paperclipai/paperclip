@@ -57,4 +57,4 @@ This keeps the base prompt small — full skill content is only loaded on demand
 
 ## Skill Injection
 
-Adapters are responsible for making skills discoverable to their agent runtime. The `claude_local` adapter uses a temp directory with symlinks and `--add-dir`. The `codex_local` adapter uses the global skills directory. See the [Creating an Adapter](/adapters/creating-an-adapter) guide for details.
+Adapters are responsible for making skills discoverable to their agent runtime. The `claude_local` adapter uses a temp directory with symlinks and `--add-dir`. The `codex_local` adapter uses the global skills directory. The `pi_local` adapter passes the Paperclip skills directory via `--skill`. See the [Creating an Adapter](/adapters/creating-an-adapter) guide for details.

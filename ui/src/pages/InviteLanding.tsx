@@ -18,13 +18,14 @@ const joinAdapterOptions: AgentAdapterType[] = [
 const adapterLabels: Record<string, string> = {
   claude_local: "Claude (local)",
   codex_local: "Codex (local)",
+  pi_local: "Pi Agent (local)",
   openclaw: "OpenClaw",
   cursor: "Cursor",
   process: "Process",
   http: "HTTP",
 };
 
-const ENABLED_INVITE_ADAPTERS = new Set(["claude_local", "codex_local"]);
+const ENABLED_INVITE_ADAPTERS = new Set(["claude_local", "codex_local", "pi_local"]);
 
 function dateTime(value: string) {
   return new Date(value).toLocaleString();

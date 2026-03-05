@@ -1,5 +1,5 @@
 {
-  "name": "@paperclipai/adapter-codex-local",
+  "name": "@paperclipai/adapter-pi-local",
   "version": "0.2.5",
   "type": "module",
   "exports": {

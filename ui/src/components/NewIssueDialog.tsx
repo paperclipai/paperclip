@@ -67,7 +67,7 @@ interface IssueDraft {
   assigneeUseProjectWorkspace: boolean;
 }
 
-const ISSUE_OVERRIDE_ADAPTER_TYPES = new Set(["claude_local", "codex_local"]);
+const ISSUE_OVERRIDE_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "pi_local"]);
 
 const ISSUE_THINKING_EFFORT_OPTIONS = {
   claude_local: [
@@ -82,6 +82,15 @@ const ISSUE_THINKING_EFFORT_OPTIONS = {
     { value: "low", label: "Low" },
     { value: "medium", label: "Medium" },
     { value: "high", label: "High" },
+  ],
+  pi_local: [
+    { value: "", label: "Default" },
+    { value: "off", label: "Off" },
+    { value: "minimal", label: "Minimal" },
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium" },
+    { value: "high", label: "High" },
+    { value: "xhigh", label: "XHigh" },
   ],
 } as const;
 
@@ -104,6 +113,8 @@ function buildAssigneeAdapterOverrides(input: {
       adapterConfig.modelReasoningEffort = input.thinkingEffortOverride;
     } else if (adapterType === "claude_local") {
       adapterConfig.effort = input.thinkingEffortOverride;
+    } else if (adapterType === "pi_local") {
+      adapterConfig.thinking = input.thinkingEffortOverride;
     }
   }
   if (adapterType === "claude_local" && input.chrome) {
@@ -351,7 +362,9 @@ export function NewIssueDialog() {
     const validThinkingValues =
       assigneeAdapterType === "codex_local"
         ? ISSUE_THINKING_EFFORT_OPTIONS.codex_local
-        : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
+        : assigneeAdapterType === "pi_local"
+          ? ISSUE_THINKING_EFFORT_OPTIONS.pi_local
+          : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
     if (!validThinkingValues.some((option) => option.value === assigneeThinkingEffort)) {
       setAssigneeThinkingEffort("");
     }
@@ -451,11 +464,15 @@ export function NewIssueDialog() {
       ? "Claude options"
       : assigneeAdapterType === "codex_local"
         ? "Codex options"
-        : "Agent options";
+        : assigneeAdapterType === "pi_local"
+          ? "Pi options"
+          : "Agent options";
   const thinkingEffortOptions =
     assigneeAdapterType === "codex_local"
       ? ISSUE_THINKING_EFFORT_OPTIONS.codex_local
-      : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
+      : assigneeAdapterType === "pi_local"
+        ? ISSUE_THINKING_EFFORT_OPTIONS.pi_local
+        : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
   const assigneeOptions = useMemo<InlineEntityOption[]>(
     () =>
       (agents ?? [])

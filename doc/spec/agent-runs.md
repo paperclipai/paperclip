@@ -231,10 +231,11 @@ For V1 rollout, adapter identity is explicit:
 
 - `claude_local`
 - `codex_local`
+- `pi_local`
 - `process` (generic existing behavior)
 - `http` (generic existing behavior)
 
-`claude_local` and `codex_local` are not wrappers around arbitrary `process`; they are typed adapters with known parser/resume semantics.
+`claude_local`, `codex_local`, and `pi_local` are not wrappers around arbitrary `process`; they are typed adapters with known parser/resume semantics.
 
 ## 7. Built-in Adapters (Phase 1)
 
@@ -317,7 +318,7 @@ Codex JSONL currently may not include cost; store token usage and leave cost nul
 
 ## 7.3 Common local adapter process handling
 
-Both local adapters must:
+All local CLI adapters (`claude_local`, `codex_local`, `pi_local`) must:
 
 1. Use `spawn(command, args, { shell: false, stdio: "pipe" })`.
 2. Capture stdout/stderr in stream chunks and forward to `RunLogStore`.
@@ -408,7 +409,7 @@ All tables remain company-scoped.
 
 ## 9.0 Changes to `agents`
 
-1. Extend `adapter_type` domain to include `claude_local` and `codex_local` (alongside existing `process`, `http`).
+1. Extend `adapter_type` domain to include `claude_local`, `codex_local`, and `pi_local` (alongside existing `process`, `http`).
 2. Keep `adapter_config` as adapter-owned config (CLI flags, cwd, prompt templates, env overrides).
 3. Add `runtime_config` jsonb for control-plane scheduling policy:
    - heartbeat enable/interval

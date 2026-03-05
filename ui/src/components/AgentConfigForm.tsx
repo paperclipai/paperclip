@@ -137,6 +137,15 @@ const claudeThinkingEffortOptions = [
   { id: "high", label: "High" },
 ] as const;
 
+const piThinkingEffortOptions = [
+  { id: "", label: "Auto" },
+  { id: "off", label: "Off" },
+  { id: "minimal", label: "Minimal" },
+  { id: "low", label: "Low" },
+  { id: "medium", label: "Medium" },
+  { id: "high", label: "High" },
+  { id: "xhigh", label: "XHigh" },
+] as const;
 
 /* ---- Form ---- */
 
@@ -254,7 +263,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const adapterType = isCreate
     ? props.values.adapterType
     : overlay.adapterType ?? props.agent.adapterType;
-  const isLocal = adapterType === "claude_local" || adapterType === "codex_local";
+  const isLocal = adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "pi_local";
   const uiAdapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
 
   // Fetch adapter models for the effective adapter type
@@ -313,18 +322,32 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     ? val!.model
     : eff("adapterConfig", "model", String(config.model ?? ""));
 
-  const thinkingEffortKey = adapterType === "codex_local" ? "modelReasoningEffort" : "effort";
-  const thinkingEffortOptions =
-    adapterType === "codex_local" ? codexThinkingEffortOptions : claudeThinkingEffortOptions;
+  let thinkingEffortKey: "effort" | "modelReasoningEffort" | "thinking" = "effort";
+  let thinkingEffortOptions: ReadonlyArray<{ id: string; label: string }> = claudeThinkingEffortOptions;
+  let currentThinkingEffortFromConfig = eff("adapterConfig", "effort", String(config.effort ?? ""));
+
+  switch (adapterType) {
+    case "codex_local":
+      thinkingEffortKey = "modelReasoningEffort";
+      thinkingEffortOptions = codexThinkingEffortOptions;
+      currentThinkingEffortFromConfig = eff(
+        "adapterConfig",
+        "modelReasoningEffort",
+        String(config.modelReasoningEffort ?? config.reasoningEffort ?? ""),
+      );
+      break;
+    case "pi_local":
+      thinkingEffortKey = "thinking";
+      thinkingEffortOptions = piThinkingEffortOptions;
+      currentThinkingEffortFromConfig = eff("adapterConfig", "thinking", String(config.thinking ?? ""));
+      break;
+    default:
+      break;
+  }
+
   const currentThinkingEffort = isCreate
     ? val!.thinkingEffort
-    : adapterType === "codex_local"
-      ? eff(
-          "adapterConfig",
-          "modelReasoningEffort",
-          String(config.modelReasoningEffort ?? config.reasoningEffort ?? ""),
-        )
-      : eff("adapterConfig", "effort", String(config.effort ?? ""));
+    : currentThinkingEffortFromConfig;
   const codexSearchEnabled = adapterType === "codex_local"
     ? (isCreate ? Boolean(val!.search) : eff("adapterConfig", "search", Boolean(config.search)))
     : false;
@@ -454,6 +477,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       model: t === "codex_local" ? DEFAULT_CODEX_LOCAL_MODEL : "",
                       effort: "",
                       modelReasoningEffort: "",
+                      thinking: "",
                       ...(t === "codex_local"
                         ? {
                             dangerouslyBypassApprovalsAndSandbox:
@@ -549,7 +573,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   }
                   immediate
                   className={inputClass}
-                  placeholder={adapterType === "codex_local" ? "codex" : "claude"}
+                  placeholder={adapterType === "codex_local" ? "codex" : adapterType === "pi_local" ? "pi" : "claude"}
                 />
               </Field>
 
@@ -817,7 +841,7 @@ function AdapterEnvironmentResult({ result }: { result: AdapterEnvironmentTestRe
 
 /* ---- Internal sub-components ---- */
 
-const ENABLED_ADAPTER_TYPES = new Set(["claude_local", "codex_local"]);
+const ENABLED_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "pi_local"]);
 
 /** Display list includes all real adapter types plus UI-only coming-soon entries. */
 const ADAPTER_DISPLAY_LIST: { value: string; label: string; comingSoon: boolean }[] = [

@@ -36,10 +36,11 @@ Common choices:
 
 - `claude_local`: runs your local `claude` CLI
 - `codex_local`: runs your local `codex` CLI
+- `pi_local`: runs your local `pi` CLI
 - `process`: generic shell command adapter
 - `http`: calls an external HTTP endpoint
 
-For `claude_local` and `codex_local`, Paperclip assumes the CLI is already installed and authenticated on the host machine.
+For `claude_local`, `codex_local`, and `pi_local`, Paperclip assumes the CLI is already installed and authenticated on the host machine.
 
 ## 3.2 Runtime behavior
 
@@ -134,7 +135,7 @@ If the connection drops, the UI reconnects automatically.
 
 If runs fail repeatedly:
 
-1. Check adapter command availability (`claude`/`codex` installed and logged in).
+1. Check adapter command availability (`claude`/`codex`/`pi` installed and authenticated).
 2. Verify `cwd` exists and is accessible.
 3. Inspect run error + stderr excerpt, then full log.
 4. Confirm timeout is not too low.
@@ -163,7 +164,7 @@ Start with least privilege where possible, and avoid exposing secrets in broad r
 
 ## 10. Minimal setup checklist
 
-1. Choose adapter (`claude_local` or `codex_local`).
+1. Choose adapter (`claude_local`, `codex_local`, or `pi_local`).
 2. Set `cwd` to the target workspace.
 3. Add bootstrap + normal prompt templates.
 4. Configure heartbeat policy (timer and/or assignment wakeups).

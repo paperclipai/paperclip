@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local";
+import { models as piModels } from "@paperclipai/adapter-pi-local";
 import { listAdapterModels } from "../adapters/index.js";
 import { resetCodexModelsCacheForTests } from "../adapters/codex-models.js";
 
@@ -21,6 +22,11 @@ describe("adapter model listing", () => {
 
     expect(models).toEqual(codexFallbackModels);
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("returns static pi models", async () => {
+    const models = await listAdapterModels("pi_local");
+    expect(models).toEqual(piModels);
   });
 
   it("loads codex models dynamically and merges fallback options", async () => {

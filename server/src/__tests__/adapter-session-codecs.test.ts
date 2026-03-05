@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { sessionCodec as claudeSessionCodec } from "@paperclipai/adapter-claude-local/server";
 import { sessionCodec as codexSessionCodec, isCodexUnknownSessionError } from "@paperclipai/adapter-codex-local/server";
+import { sessionCodec as piSessionCodec } from "@paperclipai/adapter-pi-local/server";
 
 describe("adapter session codecs", () => {
   it("normalizes claude session params with cwd", () => {
@@ -37,6 +38,27 @@ describe("adapter session codecs", () => {
       cwd: "/tmp/codex",
     });
     expect(codexSessionCodec.getDisplayId?.(serialized ?? null)).toBe("codex-session-1");
+  });
+
+  it("normalizes pi session params with session file", () => {
+    const parsed = piSessionCodec.deserialize({
+      id: "pi-session-1",
+      sessionPath: "/tmp/pi/session.jsonl",
+      cwd: "/tmp/pi",
+    });
+    expect(parsed).toEqual({
+      sessionId: "pi-session-1",
+      sessionFile: "/tmp/pi/session.jsonl",
+      cwd: "/tmp/pi",
+    });
+
+    const serialized = piSessionCodec.serialize(parsed);
+    expect(serialized).toEqual({
+      sessionId: "pi-session-1",
+      sessionFile: "/tmp/pi/session.jsonl",
+      cwd: "/tmp/pi",
+    });
+    expect(piSessionCodec.getDisplayId?.(serialized ?? null)).toBe("pi-session-1");
   });
 });
 

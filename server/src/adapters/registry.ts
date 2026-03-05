@@ -19,6 +19,15 @@ import {
   agentConfigurationDoc as openclawAgentConfigurationDoc,
   models as openclawModels,
 } from "@paperclipai/adapter-openclaw";
+import {
+  execute as piExecute,
+  testEnvironment as piTestEnvironment,
+  sessionCodec as piSessionCodec,
+} from "@paperclipai/adapter-pi-local/server";
+import {
+  agentConfigurationDoc as piAgentConfigurationDoc,
+  models as piModels,
+} from "@paperclipai/adapter-pi-local";
 import { listCodexModels } from "./codex-models.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
@@ -53,8 +62,18 @@ const openclawAdapter: ServerAdapterModule = {
   agentConfigurationDoc: openclawAgentConfigurationDoc,
 };
 
+const piLocalAdapter: ServerAdapterModule = {
+  type: "pi_local",
+  execute: piExecute,
+  testEnvironment: piTestEnvironment,
+  sessionCodec: piSessionCodec,
+  models: piModels,
+  supportsLocalAgentJwt: true,
+  agentConfigurationDoc: piAgentConfigurationDoc,
+};
+
 const adaptersByType = new Map<string, ServerAdapterModule>(
-  [claudeLocalAdapter, codexLocalAdapter, openclawAdapter, processAdapter, httpAdapter].map((a) => [a.type, a]),
+  [claudeLocalAdapter, codexLocalAdapter, openclawAdapter, piLocalAdapter, processAdapter, httpAdapter].map((a) => [a.type, a]),
 );
 
 export function getServerAdapter(type: string): ServerAdapterModule {

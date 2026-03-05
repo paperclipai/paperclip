@@ -13,7 +13,7 @@ The `http` adapter sends a webhook request to an external agent service. The age
 
 ## When Not to Use
 
-- If the agent runs locally on the same machine (use `process`, `claude_local`, or `codex_local`)
+- If the agent runs locally on the same machine (use `process`, `claude_local`, `codex_local`, or `pi_local`)
 - If you need stdout capture and real-time run viewing
 
 ## Configuration

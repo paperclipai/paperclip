@@ -13,7 +13,7 @@ The `process` adapter executes arbitrary shell commands. Use it for simple scrip
 
 ## When Not to Use
 
-- If you need session persistence across runs (use `claude_local` or `codex_local`)
+- If you need session persistence across runs (use `claude_local`, `codex_local`, or `pi_local`)
 - If the agent needs conversational context between heartbeats
 
 ## Configuration

@@ -2,7 +2,7 @@
 
 ## Scope
 
-- In-scope adapters: `claude_local`, `codex_local`.
+- In-scope adapters: `claude_local`, `codex_local`, `pi_local`.
 - Goal: zero-configuration auth for local adapters while preserving static keys for all other call paths.
 - Out-of-scope for P0: rotation UX, per-device revocation list, and CLI onboarding.
 
@@ -36,7 +36,7 @@
 1. Extend `ServerAdapterModule` (likely `packages/adapter-utils/src/types.ts`) with a capability flag:
    - `supportsLocalAgentJwt?: true`.
 2. Enable it on:
-   - `server/src/adapters/registry.ts` for `claude_local` and `codex_local`.
+   - `server/src/adapters/registry.ts` for `claude_local`, `codex_local`, and `pi_local`.
 3. Keep `process`/`http` adapters unset for P0.
 4. In `server/src/services/heartbeat.ts`, when adapter supports JWT:
    - mint JWT per heartbeat run before execute.
@@ -69,4 +69,4 @@
 - Existing static keys (`agent_api_keys`) still work unchanged.
 - Auth remains company-scoped (`req.actor.companyId` used by existing checks).
 - JWT generation and verification errors are logged as non-leaking structured events.
-- Scope remains local-only (`claude_local`, `codex_local`) while adapter capability model is generic.
+- Scope remains local-only (`claude_local`, `codex_local`, `pi_local`) while adapter capability model is generic.

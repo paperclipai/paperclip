@@ -20,6 +20,7 @@ When a heartbeat fires, Paperclip:
 |---------|----------|-------------|
 | [Claude Local](/adapters/claude-local) | `claude_local` | Runs Claude Code CLI locally |
 | [Codex Local](/adapters/codex-local) | `codex_local` | Runs OpenAI Codex CLI locally |
+| [Pi Local](/adapters/pi-local) | `pi_local` | Runs pi coding agent CLI locally |
 | [Process](/adapters/process) | `process` | Executes arbitrary shell commands |
 | [HTTP](/adapters/http) | `http` | Sends webhooks to external agents |
 
@@ -52,7 +53,7 @@ Three registries consume these modules:
 
 ## Choosing an Adapter
 
-- **Need a coding agent?** Use `claude_local` or `codex_local`
+- **Need a coding agent?** Use `claude_local`, `codex_local`, or `pi_local`
 - **Need to run a script or command?** Use `process`
 - **Need to call an external service?** Use `http`
 - **Need something custom?** [Create your own adapter](/adapters/creating-an-adapter)
