@@ -1926,7 +1926,14 @@ function LogViewer({ run, adapterType, transcriptOpen, onToggleTranscript }: { r
   }, [initialEvents]);
 
   const getScrollContainer = useCallback((): ScrollContainer => {
-    if (scrollContainerRef.current) return scrollContainerRef.current;
+    const cached = scrollContainerRef.current;
+    // Validate the cache: if the element has been detached (e.g., transcript
+    // was collapsed and reopened), recompute rather than returning a stale ref.
+    if (cached && cached !== window && !(cached as Element).isConnected) {
+      scrollContainerRef.current = null;
+    } else if (cached) {
+      return cached;
+    }
     const container = terminalBodyRef.current ?? findScrollContainer(logEndRef.current);
     scrollContainerRef.current = container;
     return container;
