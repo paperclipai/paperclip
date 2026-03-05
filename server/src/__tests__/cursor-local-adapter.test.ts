@@ -229,7 +229,7 @@ describe("cursor_local ui stdout parser", () => {
     ]);
   });
 
-  it("parses tool_call to tool_call TranscriptEntry", () => {
+  it("parses tool_call started to tool_call TranscriptEntry", () => {
     const ts = "2026-03-05T12:00:03.000Z";
     const line = JSON.stringify({
       type: "tool_call",
@@ -243,6 +243,26 @@ describe("cursor_local ui stdout parser", () => {
       expect(entries[0].ts).toBe(ts);
       expect(entries[0].name).toBeDefined();
       expect(entries[0].input).toBeDefined();
+    }
+  });
+
+  it("parses tool_call completed to tool_result TranscriptEntry", () => {
+    const ts = "2026-03-05T12:00:05.000Z";
+    const line = JSON.stringify({
+      type: "tool_call",
+      subtype: "completed",
+      id: "call-abc",
+      result: "Done.",
+      exit_code: 0,
+    });
+    const entries = parseCursorStdoutLine(line, ts);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].kind).toBe("tool_result");
+    if (entries[0].kind === "tool_result") {
+      expect(entries[0].ts).toBe(ts);
+      expect(entries[0].toolUseId).toBe("call-abc");
+      expect(entries[0].content).toBe("Done.");
+      expect(entries[0].isError).toBe(false);
     }
   });
 

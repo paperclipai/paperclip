@@ -57,16 +57,39 @@ export function parseCursorStdoutLine(line: string, ts: string): TranscriptEntry
     return text ? [{ kind: "assistant", ts, text }] : [];
   }
 
+  // tool_call: subtype "started" = invocation (tool_call entry); "completed"/"complete"/"finished" = result (tool_result entry with result/output/content, exit_code, status).
   if (type === "tool_call") {
     const subtype = asString(parsed.subtype);
-    const name =
-      subtype === "started"
-        ? Object.keys(parsed).find((k) => k.endsWith("ToolCall")) ?? "tool_call"
-        : "tool_call";
     const input =
       (parsed.readToolCall as Record<string, unknown>) ??
       (parsed.writeToolCall as Record<string, unknown>) ??
       parsed;
+    const isCompleted =
+      subtype === "completed" || subtype === "complete" || subtype === "finished";
+    if (isCompleted) {
+      const inputRec = asRecord(input);
+      const idFromInput = inputRec && typeof inputRec.id === "string" ? inputRec.id : "";
+      const toolUseId =
+        asString(parsed.id) || idFromInput || `tool_call_${ts}`;
+      const content =
+        asString(parsed.result) ||
+        asString(parsed.output) ||
+        asString(parsed.content) ||
+        (typeof input === "object" && input !== null ? JSON.stringify(input) : "");
+      const exitCode = asNumber(parsed.exit_code, -1);
+      const status = asString(parsed.status, "").toLowerCase();
+      const isError =
+        (exitCode !== -1 && exitCode !== 0) ||
+        status === "failed" ||
+        status === "errored" ||
+        status === "error" ||
+        status === "cancelled";
+      return [{ kind: "tool_result", ts, toolUseId, content: content.trim() || "completed", isError }];
+    }
+    const name =
+      subtype === "started"
+        ? Object.keys(parsed).find((k) => k.endsWith("ToolCall")) ?? "tool_call"
+        : "tool_call";
     return [{ kind: "tool_call", ts, name: String(name), input }];
   }
 
