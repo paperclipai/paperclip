@@ -9,12 +9,12 @@ async function writeFakeCursorCommand(commandPath: string): Promise<void> {
 const fs = require("node:fs");
 
 const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
+const paperclipEntries = Object.entries(process.env).filter(([key]) => key.startsWith("PAPERCLIP_"));
 const payload = {
   argv: process.argv.slice(2),
   prompt: fs.readFileSync(0, "utf8"),
-  paperclipEnvKeys: Object.keys(process.env)
-    .filter((key) => key.startsWith("PAPERCLIP_"))
-    .sort(),
+  paperclipEnvKeys: paperclipEntries.map(([key]) => key).sort(),
+  paperclipEnv: Object.fromEntries(paperclipEntries),
 };
 if (capturePath) {
   fs.writeFileSync(capturePath, JSON.stringify(payload), "utf8");
@@ -44,6 +44,7 @@ type CapturePayload = {
   argv: string[];
   prompt: string;
   paperclipEnvKeys: string[];
+  paperclipEnv: Record<string, string>;
 };
 
 describe("cursor execute", () => {
@@ -144,6 +145,7 @@ describe("cursor execute", () => {
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
       expect(capture.paperclipEnvKeys).toContain("PAPERCLIP_TASK_ID");
       expect(capture.paperclipEnvKeys).toContain("PAPERCLIP_FOCUSED_TASK_MODE");
+      expect(capture.paperclipEnv.PAPERCLIP_FOCUSED_TASK_MODE).toBe("true");
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
@@ -173,6 +175,7 @@ describe("cursor execute", () => {
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
       expect(capture.paperclipEnvKeys).not.toContain("PAPERCLIP_TASK_ID");
       expect(capture.paperclipEnvKeys).not.toContain("PAPERCLIP_FOCUSED_TASK_MODE");
+      expect(capture.paperclipEnv.PAPERCLIP_FOCUSED_TASK_MODE).toBeUndefined();
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
@@ -202,6 +205,7 @@ describe("cursor execute", () => {
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
       expect(capture.paperclipEnvKeys).toContain("PAPERCLIP_TASK_ID");
       expect(capture.paperclipEnvKeys).not.toContain("PAPERCLIP_FOCUSED_TASK_MODE");
+      expect(capture.paperclipEnv.PAPERCLIP_FOCUSED_TASK_MODE).toBeUndefined();
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
