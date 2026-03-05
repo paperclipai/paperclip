@@ -1,5 +1,6 @@
 import { Router, type Request } from "express";
 import { randomUUID } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
 import { agents as agentsTable, companies, heartbeatRuns } from "@paperclipai/db";
@@ -31,6 +32,7 @@ import { conflict, forbidden, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { findServerAdapter, listAdapterModels } from "../adapters/index.js";
 import { redactEventPayload } from "../redaction.js";
+import { logger } from "../middleware/logger.js";
 import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
@@ -207,6 +209,127 @@ export function agentRoutes(db: Db) {
       throw unprocessable("adapterConfig.cwd must be an absolute path to resolve relative instructions path");
     }
     return path.resolve(cwd, trimmed);
+  }
+
+  async function writeFileIfMissing(filePath: string, content: string): Promise<boolean> {
+    await mkdir(path.dirname(filePath), { recursive: true });
+    try {
+      await writeFile(filePath, content, { encoding: "utf8", flag: "wx" });
+      return true;
+    } catch (err) {
+      const code = (err as { code?: string })?.code;
+      if (code === "EEXIST") return false;
+      throw err;
+    }
+  }
+
+  function buildAgentScaffoldFiles(input: {
+    agentName: string;
+    agentRole: string;
+    managerName: string | null;
+    managerRole: string | null;
+  }) {
+    const { agentName, agentRole, managerName, managerRole } = input;
+    return {
+      "AGENTS.md": `# ${agentName} (${agentRole})
+
+You are an AI employee in this company.
+
+Mission:
+- Own outcomes for your role.
+- Keep work aligned to company goals.
+- Communicate progress and blockers clearly.
+- Escalate risks early.
+
+Operating rules:
+- Pick the highest-priority assignment first.
+- Prefer small, verifiable increments.
+- Record decisions and assumptions.
+- Ask for clarification when requirements are ambiguous.
+`,
+      "HEARTBEAT.md": `# HEARTBEAT
+
+On each heartbeat:
+1. Check assigned work and context.
+2. Select the highest-priority actionable task.
+3. Execute a concrete step.
+4. Report result, blockers, and next action.
+5. If blocked, escalate with clear options.
+`,
+      "SOUL.md": `# SOUL
+
+Identity:
+- Name: ${agentName}
+- Role: ${agentRole}
+- Reports to: ${managerName ?? "unassigned"}${managerRole ? ` (${managerRole})` : ""}
+
+Core values:
+- Clarity
+- Accountability
+- Pragmatic execution
+`,
+      "TOOLS.md": `# TOOLS
+
+Use tools intentionally:
+- Prefer safe, reversible changes first.
+- Validate results after each step.
+- Keep logs concise and actionable.
+`,
+    } as const;
+  }
+
+  async function scaffoldAgentFilesIfNeeded(agent: {
+    id: string;
+    name: string;
+    role: string;
+    reportsTo: string | null;
+    urlKey: string;
+    adapterType: string;
+    adapterConfig: Record<string, unknown>;
+  }) {
+    if (agent.role === "ceo") return;
+    if (!agent.reportsTo) return;
+
+    const chain = await svc.getChainOfCommand(agent.id);
+    const nearestManager = chain[0] ?? null;
+    const underCeo = chain.some((mgr) => mgr.role === "ceo");
+    if (!underCeo) return;
+
+    const cwd = asNonEmptyString(agent.adapterConfig.cwd);
+    if (!cwd || !path.isAbsolute(cwd)) return;
+
+    const agentDir = path.resolve(cwd, "agents", agent.urlKey);
+    const files = buildAgentScaffoldFiles({
+      agentName: agent.name,
+      agentRole: agent.role,
+      managerName: nearestManager?.name ?? null,
+      managerRole: nearestManager?.role ?? null,
+    });
+
+    const createdFiles: string[] = [];
+    for (const [name, content] of Object.entries(files)) {
+      const wrote = await writeFileIfMissing(path.join(agentDir, name), content);
+      if (wrote) createdFiles.push(name);
+    }
+
+    const defaultInstructionsKey = DEFAULT_INSTRUCTIONS_PATH_KEYS[agent.adapterType] ?? null;
+    if (defaultInstructionsKey) {
+      const existingInstructionsPath = asNonEmptyString(agent.adapterConfig[defaultInstructionsKey]);
+      if (!existingInstructionsPath) {
+        const nextAdapterConfig = {
+          ...agent.adapterConfig,
+          [defaultInstructionsKey]: path.join(agentDir, "AGENTS.md"),
+        };
+        await svc.update(agent.id, { adapterConfig: nextAdapterConfig });
+      }
+    }
+
+    if (createdFiles.length > 0) {
+      logger.info(
+        { agentId: agent.id, createdFiles, agentDir },
+        "Scaffolded default agent persona files for agent under CEO",
+      );
+    }
   }
 
   async function assertCanManageInstructionsPath(req: Request, targetAgent: { id: string; companyId: string }) {
@@ -601,6 +724,22 @@ export function agentRoutes(db: Db) {
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
     });
+    try {
+      await scaffoldAgentFilesIfNeeded({
+        id: agent.id,
+        name: agent.name,
+        role: agent.role,
+        reportsTo: agent.reportsTo,
+        urlKey: agent.urlKey,
+        adapterType: agent.adapterType,
+        adapterConfig: (asRecord(agent.adapterConfig) ?? {}) as Record<string, unknown>,
+      });
+    } catch (err) {
+      logger.warn(
+        { err, agentId: agent.id, companyId },
+        "Failed to scaffold default persona files for hired agent",
+      );
+    }
 
     let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
     const actor = getActorInfo(req);
@@ -721,6 +860,22 @@ export function agentRoutes(db: Db) {
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
     });
+    try {
+      await scaffoldAgentFilesIfNeeded({
+        id: agent.id,
+        name: agent.name,
+        role: agent.role,
+        reportsTo: agent.reportsTo,
+        urlKey: agent.urlKey,
+        adapterType: agent.adapterType,
+        adapterConfig: (asRecord(agent.adapterConfig) ?? {}) as Record<string, unknown>,
+      });
+    } catch (err) {
+      logger.warn(
+        { err, agentId: agent.id, companyId },
+        "Failed to scaffold default persona files for created agent",
+      );
+    }
 
     const actor = getActorInfo(req);
     await logActivity(db, {
