@@ -17,7 +17,7 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
-import { CircleDot, Plus, Filter, ArrowUpDown, Layers, Check, X, ChevronRight, List, Columns3, User, Search } from "lucide-react";
+import { CircleDot, Plus, Filter, ArrowUpDown, Layers, Check, X, ChevronRight, List, Columns3, User, Search, ArrowDown } from "lucide-react";
 import { KanbanBoard } from "./KanbanBoard";
 import type { Issue } from "@paperclipai/shared";
 
@@ -217,6 +217,24 @@ export function IssuesList({
   });
 
   const activeFilterCount = countActiveFilters(viewState);
+
+  const [showScrollBottom, setShowScrollBottom] = useState(false);
+  useEffect(() => {
+    const el = document.getElementById("main-content");
+    if (!el) return;
+    const check = () => {
+      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      setShowScrollBottom(distanceFromBottom > 300);
+    };
+    check();
+    el.addEventListener("scroll", check, { passive: true });
+    return () => el.removeEventListener("scroll", check);
+  }, [filtered.length]);
+
+  const scrollToBottom = useCallback(() => {
+    const el = document.getElementById("main-content");
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  }, []);
 
   const groupedContent = useMemo(() => {
     if (viewState.groupBy === "none") {
@@ -705,6 +723,15 @@ export function IssuesList({
             </CollapsibleContent>
           </Collapsible>
         ))
+      )}
+      {showScrollBottom && (
+        <button
+          onClick={scrollToBottom}
+          className="fixed bottom-6 right-6 z-40 flex h-9 w-9 items-center justify-center rounded-full border border-border bg-background shadow-md hover:bg-accent transition-colors"
+          aria-label="Scroll to bottom"
+        >
+          <ArrowDown className="h-4 w-4" />
+        </button>
       )}
     </div>
   );
