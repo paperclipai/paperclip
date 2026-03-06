@@ -161,6 +161,9 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
 
   if (wakeTaskId) {
     env.PAPERCLIP_TASK_ID = wakeTaskId;
+    if (context.focusedTaskMode !== false) {
+      env.PAPERCLIP_FOCUSED_TASK_MODE = "true";
+    }
   }
   if (wakeReason) {
     env.PAPERCLIP_WAKE_REASON = wakeReason;
