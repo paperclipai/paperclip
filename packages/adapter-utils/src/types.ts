@@ -119,27 +119,6 @@ export interface AdapterEnvironmentTestContext {
   };
 }
 
-/** Payload for the onHireApproved adapter lifecycle hook (e.g. join-request or hire_agent approval). */
-export interface HireApprovedPayload {
-  companyId: string;
-  agentId: string;
-  agentName: string;
-  adapterType: string;
-  /** "join_request" | "approval" */
-  source: "join_request" | "approval";
-  sourceId: string;
-  approvedAt: string;
-  /** Canonical operator-facing message for cloud adapters to show the user. */
-  message: string;
-}
-
-/** Result of onHireApproved hook; failures are non-fatal to the approval flow. */
-export interface HireApprovedHookResult {
-  ok: boolean;
-  error?: string;
-  detail?: Record<string, unknown>;
-}
-
 export interface ServerAdapterModule {
   type: string;
   execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult>;
@@ -149,14 +128,6 @@ export interface ServerAdapterModule {
   models?: AdapterModel[];
   listModels?: () => Promise<AdapterModel[]>;
   agentConfigurationDoc?: string;
-  /**
-   * Optional lifecycle hook when an agent is approved/hired (join-request or hire_agent approval).
-   * adapterConfig is the agent's adapter config so the adapter can e.g. send a callback to a configured URL.
-   */
-  onHireApproved?: (
-    payload: HireApprovedPayload,
-    adapterConfig: Record<string, unknown>,
-  ) => Promise<HireApprovedHookResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -164,8 +135,8 @@ export interface ServerAdapterModule {
 // ---------------------------------------------------------------------------
 
 export type TranscriptEntry =
-  | { kind: "assistant"; ts: string; text: string; delta?: boolean }
-  | { kind: "thinking"; ts: string; text: string; delta?: boolean }
+  | { kind: "assistant"; ts: string; text: string }
+  | { kind: "thinking"; ts: string; text: string }
   | { kind: "user"; ts: string; text: string }
   | { kind: "tool_call"; ts: string; name: string; input: unknown }
   | { kind: "tool_result"; ts: string; toolUseId: string; content: string; isError: boolean }
@@ -211,4 +182,5 @@ export interface CreateConfigValues {
   maxTurnsPerRun: number;
   heartbeatEnabled: boolean;
   intervalSec: number;
+  skipIfNoAssignments: boolean;
 }

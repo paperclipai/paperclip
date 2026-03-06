@@ -1,44 +1,14 @@
 import { createHash } from "node:crypto";
 import type { IncomingMessage, Server as HttpServer } from "node:http";
-import { createRequire } from "node:module";
 import type { Duplex } from "node:stream";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentApiKeys, companyMemberships, instanceUserRoles } from "@paperclipai/db";
 import type { DeploymentMode } from "@paperclipai/shared";
+import { WebSocket, WebSocketServer } from "ws";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "../middleware/logger.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
-
-interface WsSocket {
-  readyState: number;
-  ping(): void;
-  send(data: string): void;
-  terminate(): void;
-  close(code?: number, reason?: string): void;
-  on(event: "pong", listener: () => void): void;
-  on(event: "close", listener: () => void): void;
-  on(event: "error", listener: (err: Error) => void): void;
-}
-
-interface WsServer {
-  clients: Set<WsSocket>;
-  on(event: "connection", listener: (socket: WsSocket, req: IncomingMessage) => void): void;
-  on(event: "close", listener: () => void): void;
-  handleUpgrade(
-    req: IncomingMessage,
-    socket: Duplex,
-    head: Buffer,
-    callback: (ws: WsSocket) => void,
-  ): void;
-  emit(event: "connection", ws: WsSocket, req: IncomingMessage): boolean;
-}
-
-const require = createRequire(import.meta.url);
-const { WebSocket, WebSocketServer } = require("ws") as {
-  WebSocket: { OPEN: number };
-  WebSocketServer: new (opts: { noServer: boolean }) => WsServer;
-};
 
 interface UpgradeContext {
   companyId: string;
@@ -184,8 +154,8 @@ export function setupLiveEventsWebSocketServer(
   },
 ) {
   const wss = new WebSocketServer({ noServer: true });
-  const cleanupByClient = new Map<WsSocket, () => void>();
-  const aliveByClient = new Map<WsSocket, boolean>();
+  const cleanupByClient = new Map<WebSocket, () => void>();
+  const aliveByClient = new Map<WebSocket, boolean>();
 
   const pingInterval = setInterval(() => {
     for (const socket of wss.clients) {
@@ -198,7 +168,7 @@ export function setupLiveEventsWebSocketServer(
     }
   }, 30000);
 
-  wss.on("connection", (socket: WsSocket, req: IncomingMessage) => {
+  wss.on("connection", (socket, req) => {
     const context = (req as IncomingMessageWithContext).paperclipUpgradeContext;
     if (!context) {
       socket.close(1008, "missing context");
@@ -224,7 +194,7 @@ export function setupLiveEventsWebSocketServer(
       aliveByClient.delete(socket);
     });
 
-    socket.on("error", (err: Error) => {
+    socket.on("error", (err) => {
       logger.warn({ err, companyId: context.companyId }, "live websocket client error");
     });
   });
@@ -259,7 +229,7 @@ export function setupLiveEventsWebSocketServer(
         const reqWithContext = req as IncomingMessageWithContext;
         reqWithContext.paperclipUpgradeContext = context;
 
-        wss.handleUpgrade(req, socket, head, (ws: WsSocket) => {
+        wss.handleUpgrade(req, socket, head, (ws) => {
           wss.emit("connection", ws, reqWithContext);
         });
       })

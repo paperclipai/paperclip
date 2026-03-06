@@ -37,3 +37,6 @@ tmp/
 .vscode/
 .claude/settings.local.json
 .paperclip-local/
+test-results/
+__pycache__/
+scripts/tools/__pycache__/

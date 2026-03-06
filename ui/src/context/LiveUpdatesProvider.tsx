@@ -369,11 +369,6 @@ function invalidateActivityQueries(
     return;
   }
 
-  if (entityType === "join_request") {
-    queryClient.invalidateQueries({ queryKey: queryKeys.access.joinRequests(companyId) });
-    return;
-  }
-
   if (entityType === "cost_event") {
     queryClient.invalidateQueries({ queryKey: queryKeys.costs(companyId) });
     return;

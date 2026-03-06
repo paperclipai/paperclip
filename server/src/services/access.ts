@@ -48,10 +48,20 @@ export function accessService(db: Db) {
     principalId: string,
     permissionKey: PermissionKey,
   ): Promise<boolean> {
+    const grant = await getPermissionGrant(companyId, principalType, principalId, permissionKey);
+    return Boolean(grant);
+  }
+
+  async function getPermissionGrant(
+    companyId: string,
+    principalType: PrincipalType,
+    principalId: string,
+    permissionKey: PermissionKey,
+  ): Promise<{ id: string; scope: Record<string, unknown> | null } | null> {
     const membership = await getMembership(companyId, principalType, principalId);
-    if (!membership || membership.status !== "active") return false;
+    if (!membership || membership.status !== "active") return null;
     const grant = await db
-      .select({ id: principalPermissionGrants.id })
+      .select({ id: principalPermissionGrants.id, scope: principalPermissionGrants.scope })
       .from(principalPermissionGrants)
       .where(
         and(
@@ -62,7 +72,7 @@ export function accessService(db: Db) {
         ),
       )
       .then((rows) => rows[0] ?? null);
-    return Boolean(grant);
+    return grant;
   }
 
   async function canUser(
@@ -255,6 +265,7 @@ export function accessService(db: Db) {
     isInstanceAdmin,
     canUser,
     hasPermission,
+    getPermissionGrant,
     getMembership,
     ensureMembership,
     listMembers,

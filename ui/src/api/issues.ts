@@ -1,5 +1,22 @@
-import type { Approval, Issue, IssueAttachment, IssueComment, IssueLabel } from "@paperclipai/shared";
+import type {
+  Approval,
+  Issue,
+  IssueAssignmentCapacity,
+  IssueAttachment,
+  IssueComment,
+  IssueLabel,
+} from "@paperclipai/shared";
 import { api } from "./client";
+
+export interface IssueCleanRetryResult {
+  issue: Issue;
+  previousRunId: string | null;
+  newRun: {
+    id: string;
+    agentId: string;
+  };
+  commentId: string;
+}
 
 export const issuesApi = {
   list: (
@@ -9,8 +26,6 @@ export const issuesApi = {
       projectId?: string;
       assigneeAgentId?: string;
       assigneeUserId?: string;
-      touchedByUserId?: string;
-      unreadForUserId?: string;
       labelId?: string;
       q?: string;
     },
@@ -20,23 +35,28 @@ export const issuesApi = {
     if (filters?.projectId) params.set("projectId", filters.projectId);
     if (filters?.assigneeAgentId) params.set("assigneeAgentId", filters.assigneeAgentId);
     if (filters?.assigneeUserId) params.set("assigneeUserId", filters.assigneeUserId);
-    if (filters?.touchedByUserId) params.set("touchedByUserId", filters.touchedByUserId);
-    if (filters?.unreadForUserId) params.set("unreadForUserId", filters.unreadForUserId);
     if (filters?.labelId) params.set("labelId", filters.labelId);
     if (filters?.q) params.set("q", filters.q);
     const qs = params.toString();
     return api.get<Issue[]>(`/companies/${companyId}/issues${qs ? `?${qs}` : ""}`);
   },
   listLabels: (companyId: string) => api.get<IssueLabel[]>(`/companies/${companyId}/labels`),
+  assignmentCapacity: (companyId: string) =>
+    api.get<IssueAssignmentCapacity[]>(`/companies/${companyId}/issues/assignment-capacity`),
   createLabel: (companyId: string, data: { name: string; color: string }) =>
     api.post<IssueLabel>(`/companies/${companyId}/labels`, data),
   deleteLabel: (id: string) => api.delete<IssueLabel>(`/labels/${id}`),
   get: (id: string) => api.get<Issue>(`/issues/${id}`),
-  markRead: (id: string) => api.post<{ id: string; lastReadAt: Date }>(`/issues/${id}/read`, {}),
-  create: (companyId: string, data: Record<string, unknown>) =>
-    api.post<Issue>(`/companies/${companyId}/issues`, data),
-  update: (id: string, data: Record<string, unknown>) => api.patch<Issue>(`/issues/${id}`, data),
+  create: (
+    companyId: string,
+    data: Record<string, unknown>,
+    options?: { force?: boolean },
+  ) => api.post<Issue>(`/companies/${companyId}/issues${options?.force ? "?force=true" : ""}`, data),
+  update: (id: string, data: Record<string, unknown>, options?: { force?: boolean }) =>
+    api.patch<Issue>(`/issues/${id}${options?.force ? "?force=true" : ""}`, data),
   remove: (id: string) => api.delete<Issue>(`/issues/${id}`),
+  cleanRetry: (id: string, data?: { runId?: string; assigneeAgentId?: string }) =>
+    api.post<IssueCleanRetryResult>(`/issues/${id}/clean-retry`, data ?? {}),
   checkout: (id: string, agentId: string) =>
     api.post<Issue>(`/issues/${id}/checkout`, {
       agentId,

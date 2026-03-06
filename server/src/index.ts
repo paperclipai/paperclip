@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
-import type { Request as ExpressRequest, RequestHandler } from "express";
+import type { Request as ExpressRequest } from "express";
 import { and, eq } from "drizzle-orm";
 import {
   createDb,
@@ -12,8 +12,6 @@ import {
   inspectMigrations,
   applyPendingMigrations,
   reconcilePendingMigrationHistory,
-  formatDatabaseBackupResult,
-  runDatabaseBackup,
   authUsers,
   companies,
   companyMemberships,
@@ -24,21 +22,16 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
-import { heartbeatService } from "./services/index.js";
+import { heartbeatService, workflowAutomationService } from "./services/index.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
-
-type BetterAuthSessionUser = {
-  id: string;
-  email?: string | null;
-  name?: string | null;
-};
-
-type BetterAuthSessionResult = {
-  session: { id: string; userId: string } | null;
-  user: BetterAuthSessionUser | null;
-};
+import {
+  createBetterAuthHandler,
+  createBetterAuthInstance,
+  resolveBetterAuthSession,
+  resolveBetterAuthSessionFromHeaders,
+} from "./auth/better-auth.js";
 
 type EmbeddedPostgresInstance = {
   initialise(): Promise<void>;
@@ -222,7 +215,6 @@ let db;
 let embeddedPostgres: EmbeddedPostgresInstance | null = null;
 let embeddedPostgresStartedByThisProcess = false;
 let migrationSummary: MigrationSummary = "skipped";
-let activeDatabaseConnectionString: string;
 let startupDbInfo:
   | { mode: "external-postgres"; connectionString: string }
   | { mode: "embedded-postgres"; dataDir: string; port: number };
@@ -231,7 +223,6 @@ if (config.databaseUrl) {
 
   db = createDb(config.databaseUrl);
   logger.info("Using external PostgreSQL via DATABASE_URL/config");
-  activeDatabaseConnectionString = config.databaseUrl;
   startupDbInfo = { mode: "external-postgres", connectionString: config.databaseUrl };
 } else {
   const moduleName = "embedded-postgres";
@@ -241,7 +232,7 @@ if (config.databaseUrl) {
     EmbeddedPostgres = mod.default as EmbeddedPostgresCtor;
   } catch {
     throw new Error(
-      "Embedded PostgreSQL mode requires dependency `embedded-postgres`. Reinstall dependencies (without omitting required packages), or set DATABASE_URL for external Postgres.",
+      "Embedded PostgreSQL mode requires optional dependency `embedded-postgres`. Install optional dependencies or set DATABASE_URL for external Postgres.",
     );
   }
 
@@ -368,7 +359,6 @@ if (config.databaseUrl) {
 
   db = createDb(embeddedConnectionString);
   logger.info("Embedded PostgreSQL ready");
-  activeDatabaseConnectionString = embeddedConnectionString;
   startupDbInfo = { mode: "embedded-postgres", dataDir, port };
 }
 
@@ -398,24 +388,17 @@ if (config.deploymentMode === "authenticated") {
 }
 
 let authReady = config.deploymentMode === "local_trusted";
-let betterAuthHandler: RequestHandler | undefined;
+let betterAuthHandler: ReturnType<typeof createBetterAuthHandler> | undefined;
 let resolveSession:
-  | ((req: ExpressRequest) => Promise<BetterAuthSessionResult | null>)
+  | ((req: ExpressRequest) => Promise<Awaited<ReturnType<typeof resolveBetterAuthSession>>>)
   | undefined;
 let resolveSessionFromHeaders:
-  | ((headers: Headers) => Promise<BetterAuthSessionResult | null>)
+  | ((headers: Headers) => Promise<Awaited<ReturnType<typeof resolveBetterAuthSession>>>)
   | undefined;
 if (config.deploymentMode === "local_trusted") {
   await ensureLocalTrustedBoardPrincipal(db as any);
 }
 if (config.deploymentMode === "authenticated") {
-  const {
-    createBetterAuthHandler,
-    createBetterAuthInstance,
-    deriveAuthTrustedOrigins,
-    resolveBetterAuthSession,
-    resolveBetterAuthSessionFromHeaders,
-  } = await import("./auth/better-auth.js");
   const betterAuthSecret =
     process.env.BETTER_AUTH_SECRET?.trim() ?? process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim();
   if (!betterAuthSecret) {
@@ -423,25 +406,7 @@ if (config.deploymentMode === "authenticated") {
       "authenticated mode requires BETTER_AUTH_SECRET (or PAPERCLIP_AGENT_JWT_SECRET) to be set",
     );
   }
-  const derivedTrustedOrigins = deriveAuthTrustedOrigins(config);
-  const envTrustedOrigins = (process.env.BETTER_AUTH_TRUSTED_ORIGINS ?? "")
-    .split(",")
-    .map((value) => value.trim())
-    .filter((value) => value.length > 0);
-  const effectiveTrustedOrigins = Array.from(new Set([...derivedTrustedOrigins, ...envTrustedOrigins]));
-  logger.info(
-    {
-      authBaseUrlMode: config.authBaseUrlMode,
-      authPublicBaseUrl: config.authPublicBaseUrl ?? null,
-      trustedOrigins: effectiveTrustedOrigins,
-      trustedOriginsSource: {
-        derived: derivedTrustedOrigins.length,
-        env: envTrustedOrigins.length,
-      },
-    },
-    "Authenticated mode auth origin configuration",
-  );
-  const auth = createBetterAuthInstance(db as any, config, effectiveTrustedOrigins);
+  const auth = createBetterAuthInstance(db as any, config);
   betterAuthHandler = createBetterAuthHandler(auth);
   resolveSession = (req) => resolveBetterAuthSession(auth, req);
   resolveSessionFromHeaders = (headers) => resolveBetterAuthSessionFromHeaders(auth, headers);
@@ -463,7 +428,7 @@ const app = await createApp(db as any, {
   betterAuthHandler,
   resolveSession,
 });
-const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
+const server = createServer(app);
 const listenPort = await detectPort(config.port);
 
 if (listenPort !== config.port) {
@@ -486,10 +451,30 @@ setupLiveEventsWebSocketServer(server, db as any, {
 
 if (config.heartbeatSchedulerEnabled) {
   const heartbeat = heartbeatService(db as any);
+  const workflowAutomation = workflowAutomationService(db as any);
 
-  // Reap orphaned runs at startup (no threshold -- runningProcesses is empty)
-  void heartbeat.reapOrphanedRuns().catch((err) => {
-    logger.error({ err }, "startup reap of orphaned heartbeat runs failed");
+  void heartbeat.reportHostBootIncident().catch((err) => {
+    logger.error({ err }, "boot/restart incident detection failed");
+  });
+
+  // Reconcile stale execution state at startup before periodic scheduling begins.
+  void (async () => {
+    const reaped = await heartbeat.reapOrphanedRuns();
+    if (reaped.reaped > 0) {
+      logger.warn({ ...reaped }, "startup reconciliation reaped orphaned heartbeat runs");
+    }
+
+    const swept = await heartbeat.sweepStuckRuns();
+    if (swept.stale > 0 || reaped.reaped > 0) {
+      logger.warn({ reaped, swept }, "startup reconciliation report");
+    } else {
+      logger.info({ reaped, swept }, "startup reconciliation report");
+    }
+  })().catch((err) => {
+    logger.error({ err }, "startup reconciliation for heartbeat runs failed");
+  });
+  void workflowAutomation.tick(new Date()).catch((err) => {
+    logger.error({ err }, "startup workflow automation tick failed");
   });
 
   setInterval(() => {
@@ -510,55 +495,27 @@ if (config.heartbeatSchedulerEnabled) {
       .catch((err) => {
         logger.error({ err }, "periodic reap of orphaned heartbeat runs failed");
       });
-  }, config.heartbeatSchedulerIntervalMs);
-}
-
-if (config.databaseBackupEnabled) {
-  const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
-  let backupInFlight = false;
-
-  const runScheduledBackup = async () => {
-    if (backupInFlight) {
-      logger.warn("Skipping scheduled database backup because a previous backup is still running");
-      return;
-    }
-
-    backupInFlight = true;
-    try {
-      const result = await runDatabaseBackup({
-        connectionString: activeDatabaseConnectionString,
-        backupDir: config.databaseBackupDir,
-        retentionDays: config.databaseBackupRetentionDays,
-        filenamePrefix: "paperclip",
+    void heartbeat
+      .sweepStuckRuns()
+      .then((result) => {
+        if (result.stale > 0) {
+          logger.warn({ ...result }, "stuck run sweeper processed stale runs");
+        }
+      })
+      .catch((err) => {
+        logger.error({ err }, "periodic stuck run sweep failed");
       });
-      logger.info(
-        {
-          backupFile: result.backupFile,
-          sizeBytes: result.sizeBytes,
-          prunedCount: result.prunedCount,
-          backupDir: config.databaseBackupDir,
-          retentionDays: config.databaseBackupRetentionDays,
-        },
-        `Automatic database backup complete: ${formatDatabaseBackupResult(result)}`,
-      );
-    } catch (err) {
-      logger.error({ err, backupDir: config.databaseBackupDir }, "Automatic database backup failed");
-    } finally {
-      backupInFlight = false;
-    }
-  };
-
-  logger.info(
-    {
-      intervalMinutes: config.databaseBackupIntervalMinutes,
-      retentionDays: config.databaseBackupRetentionDays,
-      backupDir: config.databaseBackupDir,
-    },
-    "Automatic database backups enabled",
-  );
-  setInterval(() => {
-    void runScheduledBackup();
-  }, backupIntervalMs);
+    void workflowAutomation
+      .tick(new Date())
+      .then((result) => {
+        if (result.blockedEscalations > 0 || result.queueAgingAlerts > 0 || result.dailyRollups > 0) {
+          logger.info({ ...result }, "workflow automation tick applied updates");
+        }
+      })
+      .catch((err) => {
+        logger.error({ err }, "workflow automation tick failed");
+      });
+  }, config.heartbeatSchedulerIntervalMs);
 }
 
 server.listen(listenPort, config.host, () => {
@@ -587,10 +544,6 @@ server.listen(listenPort, config.host, () => {
     migrationSummary,
     heartbeatSchedulerEnabled: config.heartbeatSchedulerEnabled,
     heartbeatSchedulerIntervalMs: config.heartbeatSchedulerIntervalMs,
-    databaseBackupEnabled: config.databaseBackupEnabled,
-    databaseBackupIntervalMinutes: config.databaseBackupIntervalMinutes,
-    databaseBackupRetentionDays: config.databaseBackupRetentionDays,
-    databaseBackupDir: config.databaseBackupDir,
   });
 
   const boardClaimUrl = getBoardClaimWarningUrl(config.host, listenPort);

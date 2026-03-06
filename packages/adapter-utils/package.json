@@ -1,6 +1,6 @@
 {
   "name": "@paperclipai/adapter-utils",
-  "version": "0.2.7",
+  "version": "0.2.5",
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
@@ -30,7 +30,7 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@types/node": "^24.6.0",
+    "@types/node": "^25.3.3",
     "typescript": "^5.7.3"
   }
 }

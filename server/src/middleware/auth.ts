@@ -8,6 +8,13 @@ import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.floor(parsed);
+}
+
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
@@ -18,6 +25,9 @@ interface ActorMiddlewareOptions {
 }
 
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
+  const maxAgentKeyAgeDays = parsePositiveInt(process.env.PAPERCLIP_AGENT_API_KEY_MAX_AGE_DAYS, 90);
+  const maxAgentKeyAgeMs = maxAgentKeyAgeDays * 24 * 60 * 60 * 1000;
+
   return async (req, _res, next) => {
     req.actor =
       opts.deploymentMode === "local_trusted"
@@ -61,6 +71,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
             type: "board",
             userId,
             companyIds: memberships.map((row) => row.companyId),
+            sessionId: session.session?.id ?? undefined,
             isInstanceAdmin: Boolean(roleRow),
             runId: runIdHeader ?? undefined,
             source: "session",
@@ -118,6 +129,23 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         runId: runIdHeader || claims.run_id || undefined,
         source: "agent_jwt",
       };
+      next();
+      return;
+    }
+
+    if (
+      maxAgentKeyAgeMs > 0 &&
+      key.createdAt instanceof Date &&
+      Date.now() - key.createdAt.getTime() > maxAgentKeyAgeMs
+    ) {
+      await db
+        .update(agentApiKeys)
+        .set({ revokedAt: new Date() })
+        .where(eq(agentApiKeys.id, key.id));
+      logger.warn(
+        { keyId: key.id, agentId: key.agentId, companyId: key.companyId, maxAgeDays: maxAgentKeyAgeDays },
+        "Rejected expired agent API key",
+      );
       next();
       return;
     }

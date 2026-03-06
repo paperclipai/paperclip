@@ -1,6 +1,6 @@
 {
   "name": "@paperclipai/adapter-codex-local",
-  "version": "0.2.7",
+  "version": "0.2.5",
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
@@ -45,7 +45,6 @@
     "picocolors": "^1.1.1"
   },
   "devDependencies": {
-    "@types/node": "^24.6.0",
     "typescript": "^5.7.3"
   }
 }

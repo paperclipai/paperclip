@@ -1,6 +1,9 @@
-import { ChevronsUpDown, Plus, Settings } from "lucide-react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { ChevronsUpDown, Pause, Play, Plus, Settings } from "lucide-react";
 import { Link } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
+import { companiesApi } from "../api/companies";
+import { queryKeys } from "../lib/queryKeys";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -26,7 +29,21 @@ function statusDotColor(status?: string): string {
 
 export function CompanySwitcher() {
   const { companies, selectedCompany, setSelectedCompanyId } = useCompany();
+  const queryClient = useQueryClient();
   const sidebarCompanies = companies.filter((company) => company.status !== "archived");
+  const selectedCompanyId = selectedCompany?.id ?? null;
+
+  const statusMutation = useMutation({
+    mutationFn: ({ companyId, action }: { companyId: string; action: "pause" | "resume" }) =>
+      action === "pause" ? companiesApi.pause(companyId) : companiesApi.resume(companyId),
+    onSuccess: async (_updatedCompany, vars) => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.companies.stats });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(vars.companyId) });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(vars.companyId) });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(vars.companyId) });
+    },
+  });
 
   return (
     <DropdownMenu>
@@ -69,6 +86,34 @@ export function CompanySwitcher() {
             Company Settings
           </Link>
         </DropdownMenuItem>
+        {selectedCompany && selectedCompany.status === "active" && (
+          <DropdownMenuItem
+            disabled={statusMutation.isPending || !selectedCompanyId}
+            onClick={() => {
+              if (!selectedCompanyId) return;
+              const confirmed = window.confirm(
+                `Pause all agent heartbeats for "${selectedCompany.name}"? Active runs will be cancelled.`,
+              );
+              if (!confirmed) return;
+              statusMutation.mutate({ companyId: selectedCompanyId, action: "pause" });
+            }}
+          >
+            <Pause className="h-4 w-4 mr-2" />
+            {statusMutation.isPending ? "Pausing..." : "Pause Heartbeats"}
+          </DropdownMenuItem>
+        )}
+        {selectedCompany && selectedCompany.status === "paused" && (
+          <DropdownMenuItem
+            disabled={statusMutation.isPending || !selectedCompanyId}
+            onClick={() => {
+              if (!selectedCompanyId) return;
+              statusMutation.mutate({ companyId: selectedCompanyId, action: "resume" });
+            }}
+          >
+            <Play className="h-4 w-4 mr-2" />
+            {statusMutation.isPending ? "Resuming..." : "Resume Heartbeats"}
+          </DropdownMenuItem>
+        )}
         <DropdownMenuItem asChild>
           <Link to="/companies" className="no-underline text-inherit">
             <Plus className="h-4 w-4 mr-2" />

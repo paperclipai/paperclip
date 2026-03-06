@@ -1,0 +1,32 @@
+{
+  "name": "@paperclipai/mobile",
+  "version": "1.0.0",
+  "main": "index.ts",
+  "scripts": {
+    "start": "expo start --clear",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web",
+    "lint": "pnpm dlx expo-doctor@latest",
+    "typecheck": "tsc --noEmit",
+    "test": "pnpm run typecheck",
+    "verify:notifications-contract": "node --experimental-strip-types --experimental-specifier-resolution=node ./scripts/verify-notification-contract.ts",
+    "ci:offline-harness": "node ./scripts/ci-offline-recovery-harness.mjs",
+    "build:android:artifact": "pnpm exec expo export --platform android --output-dir dist/android",
+    "release:android:internal": "pnpm dlx eas-cli@latest build --platform android --profile internal --non-interactive --wait"
+  },
+  "dependencies": {
+    "@react-native-async-storage/async-storage": "^2.2.0",
+    "expo": "~55.0.4",
+    "expo-device": "~55.0.9",
+    "expo-notifications": "~55.0.11",
+    "expo-status-bar": "~55.0.4",
+    "react": "19.2.0",
+    "react-native": "0.83.2"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.14",
+    "typescript": "~5.9.2"
+  },
+  "private": true
+}

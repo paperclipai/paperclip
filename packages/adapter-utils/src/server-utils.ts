@@ -15,14 +15,6 @@ interface RunningProcess {
   graceSec: number;
 }
 
-type ChildProcessWithEvents = ChildProcess & {
-  on(event: "error", listener: (err: Error) => void): ChildProcess;
-  on(
-    event: "close",
-    listener: (code: number | null, signal: NodeJS.Signals | null) => void,
-  ): ChildProcess;
-};
-
 export const runningProcesses = new Map<string, RunningProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
@@ -225,7 +217,7 @@ export async function runChildProcess(
       env: mergedEnv,
       shell: false,
       stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
-    }) as ChildProcessWithEvents;
+    });
 
     if (opts.stdin != null && child.stdin) {
       child.stdin.write(opts.stdin);
@@ -252,7 +244,7 @@ export async function runChildProcess(
           }, opts.timeoutSec * 1000)
         : null;
 
-    child.stdout?.on("data", (chunk: unknown) => {
+    child.stdout?.on("data", (chunk) => {
       const text = String(chunk);
       stdout = appendWithCap(stdout, text);
       logChain = logChain
@@ -260,7 +252,7 @@ export async function runChildProcess(
         .catch((err) => onLogError(err, runId, "failed to append stdout log chunk"));
     });
 
-    child.stderr?.on("data", (chunk: unknown) => {
+    child.stderr?.on("data", (chunk) => {
       const text = String(chunk);
       stderr = appendWithCap(stderr, text);
       logChain = logChain
@@ -268,7 +260,7 @@ export async function runChildProcess(
         .catch((err) => onLogError(err, runId, "failed to append stderr log chunk"));
     });
 
-    child.on("error", (err: Error) => {
+    child.on("error", (err) => {
       if (timeout) clearTimeout(timeout);
       runningProcesses.delete(runId);
       const errno = (err as NodeJS.ErrnoException).code;
@@ -280,7 +272,7 @@ export async function runChildProcess(
       reject(new Error(msg));
     });
 
-    child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
+    child.on("close", (code, signal) => {
       if (timeout) clearTimeout(timeout);
       runningProcesses.delete(runId);
       void logChain.finally(() => {

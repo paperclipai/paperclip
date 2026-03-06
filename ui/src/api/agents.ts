@@ -45,6 +45,20 @@ export interface AgentHireResponse {
   approval: Approval | null;
 }
 
+export interface AgentTaskSessionWithAgent {
+  id: string;
+  agentId: string;
+  agentName: string;
+  adapterType: string;
+  taskKey: string;
+  sessionParamsJson: Record<string, unknown> | null;
+  sessionDisplayId: string | null;
+  lastRunId: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 function withCompanyScope(path: string, companyId?: string) {
   if (!companyId) return path;
   const separator = path.includes("?") ? "&" : "?";
@@ -115,12 +129,11 @@ export const agentsApi = {
     api.get<AgentRuntimeState>(agentPath(id, companyId, "/runtime-state")),
   taskSessions: (id: string, companyId?: string) =>
     api.get<AgentTaskSession[]>(agentPath(id, companyId, "/task-sessions")),
+  taskSessionsForCompany: (companyId: string) =>
+    api.get<AgentTaskSessionWithAgent[]>(`/companies/${companyId}/agent-task-sessions`),
   resetSession: (id: string, taskKey?: string | null, companyId?: string) =>
     api.post<void>(agentPath(id, companyId, "/runtime-state/reset-session"), { taskKey: taskKey ?? null }),
-  adapterModels: (companyId: string, type: string) =>
-    api.get<AdapterModel[]>(
-      `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/models`,
-    ),
+  adapterModels: (type: string) => api.get<AdapterModel[]>(`/adapters/${type}/models`),
   testEnvironment: (
     companyId: string,
     type: string,

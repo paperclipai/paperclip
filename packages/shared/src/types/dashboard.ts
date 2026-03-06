@@ -16,7 +16,15 @@ export interface DashboardSummary {
     monthSpendCents: number;
     monthBudgetCents: number;
     monthUtilizationPercent: number;
+    billingType: "api" | "subscription" | "mixed" | "unknown";
   };
   pendingApprovals: number;
   staleTasks: number;
+  queueAging: {
+    agedQueued: number;
+    agedBlocked: number;
+    blockerLoops: number;
+    total: number;
+    escalated24h: number;
+  };
 }

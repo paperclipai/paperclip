@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_ROOT="$(cd -- "$(dirname -- "$0")/.." && pwd)"
+cd "$REPO_ROOT"
+
+echo "[pre-push] Running docs guardrails..."
+python3 scripts/tools/docs-lint.py --all
+python3 scripts/tools/docs-drift-check.py
+
+echo "[pre-push] Running typecheck..."
+pnpm typecheck
+
+echo "[pre-push] Docs + typecheck passed."

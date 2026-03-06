@@ -7,7 +7,7 @@ import { getUIAdapter } from "../adapters";
 import type { TranscriptEntry } from "../adapters";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, relativeTime, formatDateTime } from "../lib/utils";
-import { ExternalLink, Square } from "lucide-react";
+import { ExternalLink, Square, MessageSquare, Layers } from "lucide-react";
 import { Identity } from "./Identity";
 import { StatusBadge } from "./StatusBadge";
 
@@ -26,13 +26,9 @@ interface FeedItem {
   agentName: string;
   text: string;
   tone: FeedTone;
-  dedupeKey: string;
-  streamingKind?: "assistant" | "thinking";
 }
 
 const MAX_FEED_ITEMS = 80;
-const MAX_FEED_TEXT_LENGTH = 220;
-const MAX_STREAMING_TEXT_LENGTH = 4000;
 const LOG_POLL_INTERVAL_MS = 2000;
 const LOG_READ_LIMIT_BYTES = 256_000;
 
@@ -85,25 +81,17 @@ function createFeedItem(
   text: string,
   tone: FeedTone,
   nextId: number,
-  options?: {
-    streamingKind?: "assistant" | "thinking";
-    preserveWhitespace?: boolean;
-  },
 ): FeedItem | null {
-  if (!text.trim()) return null;
-  const base = options?.preserveWhitespace ? text : text.trim();
-  const maxLength = options?.streamingKind ? MAX_STREAMING_TEXT_LENGTH : MAX_FEED_TEXT_LENGTH;
-  const normalized = base.length > maxLength ? base.slice(-maxLength) : base;
+  const trimmed = text.trim();
+  if (!trimmed) return null;
   return {
     id: `${run.id}:${nextId}`,
     ts,
     runId: run.id,
     agentId: run.agentId,
     agentName: run.agentName,
-    text: normalized,
+    text: trimmed.slice(0, 220),
     tone,
-    dedupeKey: `feed:${run.id}:${ts}:${tone}:${normalized}`,
-    streamingKind: options?.streamingKind,
   };
 }
 
@@ -120,61 +108,22 @@ function parseStdoutChunk(
   pendingByRun.set(pendingKey, split.pop() ?? "");
   const adapter = getUIAdapter(run.adapterType);
 
-  const summarized: Array<{ text: string; tone: FeedTone; streamingKind?: "assistant" | "thinking" }> = [];
-  const appendSummary = (entry: TranscriptEntry) => {
-    if (entry.kind === "assistant" && entry.delta) {
-      const text = entry.text;
-      if (!text.trim()) return;
-      const last = summarized[summarized.length - 1];
-      if (last && last.streamingKind === "assistant") {
-        last.text += text;
-      } else {
-        summarized.push({ text, tone: "assistant", streamingKind: "assistant" });
-      }
-      return;
-    }
-
-    if (entry.kind === "thinking" && entry.delta) {
-      const text = entry.text;
-      if (!text.trim()) return;
-      const last = summarized[summarized.length - 1];
-      if (last && last.streamingKind === "thinking") {
-        last.text += text;
-      } else {
-        summarized.push({ text: `[thinking] ${text}`, tone: "info", streamingKind: "thinking" });
-      }
-      return;
-    }
-
-    const summary = summarizeEntry(entry);
-    if (!summary) return;
-    summarized.push({ text: summary.text, tone: summary.tone });
-  };
-
   const items: FeedItem[] = [];
   for (const line of split.slice(-8)) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     const parsed = adapter.parseStdoutLine(trimmed, ts);
     if (parsed.length === 0) {
-      if (run.adapterType === "openclaw") {
-        continue;
-      }
       const fallback = createFeedItem(run, ts, trimmed, "info", nextIdRef.current++);
       if (fallback) items.push(fallback);
       continue;
     }
     for (const entry of parsed) {
-      appendSummary(entry);
+      const summary = summarizeEntry(entry);
+      if (!summary) continue;
+      const item = createFeedItem(run, ts, summary.text, summary.tone, nextIdRef.current++);
+      if (item) items.push(item);
     }
-  }
-
-  for (const summary of summarized) {
-    const item = createFeedItem(run, ts, summary.text, summary.tone, nextIdRef.current++, {
-      streamingKind: summary.streamingKind,
-      preserveWhitespace: !!summary.streamingKind,
-    });
-    if (item) items.push(item);
   }
 
   return items;
@@ -235,6 +184,7 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
   const queryClient = useQueryClient();
   const [feed, setFeed] = useState<FeedItem[]>([]);
   const [cancellingRunIds, setCancellingRunIds] = useState(new Set<string>());
+  const [assistantOnly, setAssistantOnly] = useState(false);
   const seenKeysRef = useRef(new Set<string>());
   const pendingByRunRef = useRef(new Map<string, string>());
   const pendingLogRowsByRunRef = useRef(new Map<string, string>());
@@ -306,46 +256,25 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
   const appendItems = (items: FeedItem[]) => {
     if (items.length === 0) return;
     setFeed((prev) => {
-      const next = [...prev];
+      const deduped: FeedItem[] = [];
       for (const item of items) {
-        if (seenKeysRef.current.has(item.dedupeKey)) continue;
-        seenKeysRef.current.add(item.dedupeKey);
-
-        const last = next[next.length - 1];
-        if (
-          item.streamingKind &&
-          last &&
-          last.runId === item.runId &&
-          last.streamingKind === item.streamingKind
-        ) {
-          const mergedText = `${last.text}${item.text}`;
-          const nextText =
-            mergedText.length > MAX_STREAMING_TEXT_LENGTH
-              ? mergedText.slice(-MAX_STREAMING_TEXT_LENGTH)
-              : mergedText;
-          next[next.length - 1] = {
-            ...last,
-            ts: item.ts,
-            text: nextText,
-            dedupeKey: last.dedupeKey,
-          };
-          continue;
-        }
-
-        next.push(item);
+        const key = `feed:${item.runId}:${item.ts}:${item.tone}:${item.text}`;
+        if (seenKeysRef.current.has(key)) continue;
+        seenKeysRef.current.add(key);
+        deduped.push(item);
       }
+      if (deduped.length === 0) return prev;
       if (seenKeysRef.current.size > 6000) {
         seenKeysRef.current.clear();
       }
-      if (next.length === prev.length) return prev;
-      return next.slice(-MAX_FEED_ITEMS);
+      return [...prev, ...deduped].slice(-MAX_FEED_ITEMS);
     });
   };
 
   useEffect(() => {
     const body = bodyRef.current;
     if (!body) return;
-    body.scrollTo({ top: body.scrollHeight, behavior: "smooth" });
+    body.scrollTo({ top: 0, behavior: "auto" });
   }, [feed.length]);
 
   useEffect(() => {
@@ -541,7 +470,9 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
 
   if (runs.length === 0 && feed.length === 0) return null;
 
-  const recent = feed.slice(-25);
+  const recent = assistantOnly
+    ? feed.filter((i) => i.tone === "assistant").slice(-25)
+    : feed.slice(-25);
 
   return (
     <div className="rounded-lg border border-cyan-500/30 bg-background/80 overflow-hidden shadow-[0_0_12px_rgba(6,182,212,0.08)]">
@@ -567,6 +498,23 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
               <StatusBadge status={run.status} />
               <div className="ml-auto flex items-center gap-2">
                 <button
+                  onClick={() => setAssistantOnly((v) => !v)}
+                  className={cn(
+                    "inline-flex items-center gap-1 text-[10px] rounded px-1.5 py-0.5 border transition-colors",
+                    assistantOnly
+                      ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300"
+                      : "border-border/50 text-muted-foreground hover:text-foreground hover:border-border",
+                  )}
+                  title={assistantOnly ? "Show all output" : "Show assistant messages only"}
+                >
+                  {assistantOnly ? (
+                    <MessageSquare className="h-3 w-3" />
+                  ) : (
+                    <Layers className="h-3 w-3" />
+                  )}
+                  {assistantOnly ? "assistant" : "all"}
+                </button>
+                <button
                   onClick={() => handleCancelRun(run.id)}
                   disabled={cancellingRunIds.has(run.id)}
                   className="inline-flex items-center gap-1 text-[10px] text-red-600 hover:text-red-500 dark:text-red-400 dark:hover:text-red-300 disabled:opacity-50"
@@ -586,12 +534,29 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
           </div>
         ))
       ) : (
-        <div className="flex items-center px-3 py-2 border-b border-border/50">
+        <div className="flex items-center justify-between px-3 py-2 border-b border-border/50">
           <span className="text-xs font-medium text-muted-foreground">Recent run updates</span>
+          <button
+            onClick={() => setAssistantOnly((v) => !v)}
+            className={cn(
+              "inline-flex items-center gap-1 text-[10px] rounded px-1.5 py-0.5 border transition-colors",
+              assistantOnly
+                ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300"
+                : "border-border/50 text-muted-foreground hover:text-foreground hover:border-border",
+            )}
+            title={assistantOnly ? "Show all output" : "Show assistant messages only"}
+          >
+            {assistantOnly ? (
+              <MessageSquare className="h-3 w-3" />
+            ) : (
+              <Layers className="h-3 w-3" />
+            )}
+            {assistantOnly ? "assistant" : "all"}
+          </button>
         </div>
       )}
 
-      <div ref={bodyRef} className="max-h-[220px] overflow-y-auto p-2 font-mono text-[11px] space-y-1">
+      <div ref={bodyRef} className="max-h-[220px] overflow-y-auto p-2 font-mono text-[11px] flex flex-col-reverse gap-1 relative">
         {recent.length === 0 && (
           <div className="text-xs text-muted-foreground">Waiting for run output...</div>
         )}
@@ -600,7 +565,7 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
             key={item.id}
             className={cn(
               "grid grid-cols-[auto_1fr] gap-2 items-start",
-              index === recent.length - 1 && "animate-in fade-in slide-in-from-bottom-1 duration-300",
+              index === recent.length - 1 && "animate-in fade-in slide-in-from-top-1 duration-300",
             )}
           >
             <span className="text-[10px] text-muted-foreground">{relativeTime(item.ts)}</span>

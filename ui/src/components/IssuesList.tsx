@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState, useCallback, useRef } from "react";
+import { useEffect, useDeferredValue, useMemo, useState, useCallback, useRef } from "react";
 import { Link } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
+import { useToast } from "../context/ToastContext";
 import { issuesApi } from "../api/issues";
+import { agentsApi } from "../api/agents";
 import { queryKeys } from "../lib/queryKeys";
 import { groupBy } from "../lib/groupBy";
 import { formatDate, cn } from "../lib/utils";
@@ -17,9 +19,9 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
-import { CircleDot, Plus, Filter, ArrowUpDown, Layers, Check, X, ChevronRight, List, Columns3, User, Search, ArrowDown } from "lucide-react";
+import { CircleDot, Plus, Filter, ArrowUpDown, Layers, Check, X, ChevronRight, List, Columns3, User, Search, Zap, Loader2 } from "lucide-react";
 import { KanbanBoard } from "./KanbanBoard";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue, IssueAssignmentCapacity } from "@paperclipai/shared";
 
 /* ── Helpers ── */
 
@@ -49,7 +51,7 @@ const defaultViewState: IssueViewState = {
   priorities: [],
   assignees: [],
   labels: [],
-  sortField: "updated",
+  sortField: "created",
   sortDir: "desc",
   groupBy: "none",
   viewMode: "list",
@@ -138,12 +140,11 @@ interface IssuesListProps {
   isLoading?: boolean;
   error?: Error | null;
   agents?: Agent[];
+  assignmentCapacities?: IssueAssignmentCapacity[];
   liveIssueIds?: Set<string>;
   projectId?: string;
   viewStateKey: string;
   initialAssignees?: string[];
-  initialSearch?: string;
-  onSearchChange?: (search: string) => void;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
 }
 
@@ -152,16 +153,17 @@ export function IssuesList({
   isLoading,
   error,
   agents,
+  assignmentCapacities,
   liveIssueIds,
   projectId,
   viewStateKey,
   initialAssignees,
-  initialSearch,
-  onSearchChange,
   onUpdateIssue,
 }: IssuesListProps) {
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialog();
+  const queryClient = useQueryClient();
+  const { pushToast } = useToast();
 
   // Scope the storage key per company so folding/view state is independent across companies.
   const scopedKey = selectedCompanyId ? `${viewStateKey}:${selectedCompanyId}` : viewStateKey;
@@ -174,20 +176,10 @@ export function IssuesList({
   });
   const [assigneePickerIssueId, setAssigneePickerIssueId] = useState<string | null>(null);
   const [assigneeSearch, setAssigneeSearch] = useState("");
-  const [issueSearch, setIssueSearch] = useState(initialSearch ?? "");
-  const [debouncedIssueSearch, setDebouncedIssueSearch] = useState(issueSearch);
-  const normalizedIssueSearch = debouncedIssueSearch.trim();
-
-  useEffect(() => {
-    setIssueSearch(initialSearch ?? "");
-  }, [initialSearch]);
-
-  useEffect(() => {
-    const timeoutId = window.setTimeout(() => {
-      setDebouncedIssueSearch(issueSearch);
-    }, 300);
-    return () => window.clearTimeout(timeoutId);
-  }, [issueSearch]);
+  const [issueSearch, setIssueSearch] = useState("");
+  const [wakingIssueIds, setWakingIssueIds] = useState<Set<string>>(new Set());
+  const deferredIssueSearch = useDeferredValue(issueSearch);
+  const normalizedIssueSearch = deferredIssueSearch.trim();
 
   // Reload view state from localStorage when company changes (scopedKey changes).
   const prevScopedKey = useRef(scopedKey);
@@ -222,6 +214,9 @@ export function IssuesList({
   const filtered = useMemo(() => {
     const sourceIssues = normalizedIssueSearch.length > 0 ? searchedIssues : issues;
     const filteredByControls = applyFilters(sourceIssues, viewState);
+    if (normalizedIssueSearch.length > 0) {
+      return filteredByControls;
+    }
     return sortIssues(filteredByControls, viewState);
   }, [issues, searchedIssues, viewState, normalizedIssueSearch]);
 
@@ -232,24 +227,10 @@ export function IssuesList({
   });
 
   const activeFilterCount = countActiveFilters(viewState);
-
-  const [showScrollBottom, setShowScrollBottom] = useState(false);
-  useEffect(() => {
-    const el = document.getElementById("main-content");
-    if (!el) return;
-    const check = () => {
-      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-      setShowScrollBottom(distanceFromBottom > 300);
-    };
-    check();
-    el.addEventListener("scroll", check, { passive: true });
-    return () => el.removeEventListener("scroll", check);
-  }, [filtered.length]);
-
-  const scrollToBottom = useCallback(() => {
-    const el = document.getElementById("main-content");
-    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-  }, []);
+  const capacityByAgentId = useMemo(
+    () => new Map((assignmentCapacities ?? []).map((entry) => [entry.agentId, entry])),
+    [assignmentCapacities],
+  );
 
   const groupedContent = useMemo(() => {
     if (viewState.groupBy === "none") {
@@ -287,7 +268,39 @@ export function IssuesList({
     return defaults;
   };
 
-  const assignIssue = (issueId: string, assigneeAgentId: string | null) => {
+  const handleWakeIssue = async (issue: Issue) => {
+    if (!issue.assigneeAgentId || !selectedCompanyId) return;
+    setWakingIssueIds((prev) => new Set(prev).add(issue.id));
+    try {
+      const result = await agentsApi.wakeup(
+        issue.assigneeAgentId,
+        {
+          source: "on_demand",
+          triggerDetail: "manual",
+          reason: "wake_issue_assignee",
+          payload: { issueId: issue.id, taskId: issue.id, taskKey: issue.identifier ?? issue.id },
+        },
+        selectedCompanyId,
+      );
+      queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(selectedCompanyId) });
+      const name = agents?.find((a) => a.id === issue.assigneeAgentId)?.name ?? "Agent";
+      if ("id" in result) {
+        pushToast({ dedupeKey: `wakeup:${result.id}`, title: `${name} woke up`, tone: "success" });
+      } else {
+        pushToast({ dedupeKey: `wakeup:skipped:${issue.id}`, title: `${name} did not wake`, body: "Agent skipped the request.", tone: "info" });
+      }
+    } catch (e) {
+      pushToast({ dedupeKey: `wakeup:error:${issue.id}`, title: "Wake failed", body: e instanceof Error ? e.message : "Unknown error", tone: "info" });
+    } finally {
+      setWakingIssueIds((prev) => {
+        const next = new Set(prev);
+        next.delete(issue.id);
+        return next;
+      });
+    }
+  };
+
+  const assignIssue = (issueId: string, assigneeAgentId: string) => {
     onUpdateIssue(issueId, { assigneeAgentId, assigneeUserId: null });
     setAssigneePickerIssueId(null);
     setAssigneeSearch("");
@@ -306,10 +319,7 @@ export function IssuesList({
             <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
               value={issueSearch}
-              onChange={(e) => {
-                setIssueSearch(e.target.value);
-                onSearchChange?.(e.target.value);
-              }}
+              onChange={(e) => setIssueSearch(e.target.value)}
               placeholder="Search issues..."
               className="pl-7 text-xs sm:text-sm"
               aria-label="Search issues"
@@ -652,6 +662,24 @@ export function IssuesList({
                         <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400 hidden sm:inline">Live</span>
                       </span>
                     )}
+                    {issue.status === "in_progress" && issue.assigneeAgentId && !liveIssueIds?.has(issue.id) && (
+                      <button
+                        className="hidden sm:flex items-center gap-1 px-1.5 py-0.5 rounded text-xs text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors disabled:opacity-50"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          void handleWakeIssue(issue);
+                        }}
+                        disabled={wakingIssueIds.has(issue.id)}
+                        title="Wake assigned agent"
+                      >
+                        {wakingIssueIds.has(issue.id) ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Zap className="h-3.5 w-3.5" />
+                        )}
+                      </button>
+                    )}
                     <div className="hidden sm:block">
                       <Popover
                         open={assigneePickerIssueId === issue.id}
@@ -694,40 +722,63 @@ export function IssuesList({
                             autoFocus
                           />
                           <div className="max-h-48 overflow-y-auto overscroll-contain">
-                            <button
-                              className={cn(
-                                "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-                                !issue.assigneeAgentId && "bg-accent"
-                              )}
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                assignIssue(issue.id, null);
-                              }}
-                            >
-                              No assignee
-                            </button>
                             {(agents ?? [])
                               .filter((agent) => {
                                 if (!assigneeSearch.trim()) return true;
                                 return agent.name.toLowerCase().includes(assigneeSearch.toLowerCase());
                               })
-                              .map((agent) => (
-                                <button
-                                  key={agent.id}
-                                  className={cn(
-                                    "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-left",
-                                    issue.assigneeAgentId === agent.id && "bg-accent"
-                                  )}
-                                  onClick={(e) => {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    assignIssue(issue.id, agent.id);
-                                  }}
-                                >
-                                  <Identity name={agent.name} size="sm" className="min-w-0" />
-                                </button>
-                              ))}
+                              .map((agent) => {
+                                const capacity = capacityByAgentId.get(agent.id);
+                                const attemptedState =
+                                  issue.status === "in_progress"
+                                    ? "running"
+                                    : issue.status === "todo"
+                                      ? "queued"
+                                      : null;
+                                const blockedByCapacity =
+                                  attemptedState === "running"
+                                    ? (capacity?.runningAtCapacity ?? false)
+                                    : attemptedState === "queued"
+                                      ? (capacity?.queuedAtCapacity ?? false)
+                                      : false;
+                                const isCurrentAssignee = issue.assigneeAgentId === agent.id;
+                                const isDisabled = blockedByCapacity && !isCurrentAssignee;
+                                const capacityLabel =
+                                  capacity
+                                    ? `R ${capacity.running}/${capacity.maxRunning ?? "\u221e"} · Q ${capacity.queued}/${capacity.maxQueued ?? "\u221e"}`
+                                    : null;
+
+                                return (
+                                  <button
+                                    key={agent.id}
+                                    className={cn(
+                                      "flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent/50",
+                                      isCurrentAssignee && "bg-accent",
+                                      isDisabled && "cursor-not-allowed opacity-60",
+                                    )}
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      if (isDisabled) return;
+                                      assignIssue(issue.id, agent.id);
+                                    }}
+                                    disabled={isDisabled}
+                                    title={isDisabled ? "At assignment capacity for this issue state" : undefined}
+                                  >
+                                    <Identity name={agent.name} size="sm" className="min-w-0" />
+                                    {capacityLabel && (
+                                      <span
+                                        className={cn(
+                                          "shrink-0 font-mono text-[10px] text-muted-foreground",
+                                          isDisabled && "text-amber-600 dark:text-amber-400",
+                                        )}
+                                      >
+                                        {capacityLabel}
+                                      </span>
+                                    )}
+                                  </button>
+                                );
+                              })}
                           </div>
                         </PopoverContent>
                       </Popover>
@@ -741,15 +792,6 @@ export function IssuesList({
             </CollapsibleContent>
           </Collapsible>
         ))
-      )}
-      {showScrollBottom && (
-        <button
-          onClick={scrollToBottom}
-          className="fixed bottom-6 right-6 z-40 flex h-9 w-9 items-center justify-center rounded-full border border-border bg-background shadow-md hover:bg-accent transition-colors"
-          aria-label="Scroll to bottom"
-        >
-          <ArrowDown className="h-4 w-4" />
-        </button>
       )}
     </div>
   );

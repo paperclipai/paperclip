@@ -152,6 +152,10 @@ Claude-specific note:
 
 - If `ANTHROPIC_API_KEY` is set in adapter env or host environment, Claude uses API-key auth instead of subscription login. Paperclip surfaces this as a warning in environment tests, not a hard error.
 
+Codex-specific note:
+
+- Codex can use either `OPENAI_API_KEY` or subscription login (`codex login --device-auth`) on the runtime machine/container.
+
 ## 9. Security and risk notes
 
 Local CLI adapters run unsandboxed on the host machine.

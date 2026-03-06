@@ -14,5 +14,12 @@ export function dashboardRoutes(db: Db) {
     res.json(summary);
   });
 
+  router.get("/companies/:companyId/operations/pulse", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const pulse = await svc.operationsPulse(companyId);
+    res.json(pulse);
+  });
+
   return router;
 }

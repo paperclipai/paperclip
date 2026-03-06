@@ -1,32 +1,21 @@
 import { useEffect, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
+import { agentsApi } from "../api/agents";
+import type { Agent } from "@paperclipai/shared";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { Settings, Check } from "lucide-react";
+import { ChevronDown, Pause, Play, Settings } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
-import {
-  Field,
-  ToggleField,
-  HintIcon
-} from "../components/agent-config-primitives";
-
-type AgentSnippetInput = {
-  onboardingTextUrl: string;
-  connectionCandidates?: string[] | null;
-  testResolutionUrl?: string | null;
-};
+import { Field, ToggleField, HintIcon } from "../components/agent-config-primitives";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { cn } from "../lib/utils";
 
 export function CompanySettings() {
-  const {
-    companies,
-    selectedCompany,
-    selectedCompanyId,
-    setSelectedCompanyId
-  } = useCompany();
+  const { companies, selectedCompany, selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
 
@@ -43,10 +32,8 @@ export function CompanySettings() {
     setBrandColor(selectedCompany.brandColor ?? "");
   }, [selectedCompany]);
 
+  const [inviteLink, setInviteLink] = useState<string | null>(null);
   const [inviteError, setInviteError] = useState<string | null>(null);
-  const [inviteSnippet, setInviteSnippet] = useState<string | null>(null);
-  const [snippetCopied, setSnippetCopied] = useState(false);
-  const [snippetCopyDelightId, setSnippetCopyDelightId] = useState(0);
 
   const generalDirty =
     !!selectedCompany &&
@@ -55,91 +42,64 @@ export function CompanySettings() {
       brandColor !== (selectedCompany.brandColor ?? ""));
 
   const generalMutation = useMutation({
-    mutationFn: (data: {
-      name: string;
-      description: string | null;
-      brandColor: string | null;
-    }) => companiesApi.update(selectedCompanyId!, data),
+    mutationFn: (data: { name: string; description: string | null; brandColor: string | null }) =>
+      companiesApi.update(selectedCompanyId!, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
-    }
+    },
   });
 
   const settingsMutation = useMutation({
     mutationFn: (requireApproval: boolean) =>
       companiesApi.update(selectedCompanyId!, {
-        requireBoardApprovalForNewAgents: requireApproval
+        requireBoardApprovalForNewAgents: requireApproval,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
-    }
+    },
+  });
+
+  const heartbeatMutation = useMutation({
+    mutationFn: ({
+      companyId,
+      action,
+    }: {
+      companyId: string;
+      action: "pause" | "resume";
+    }) => (action === "pause" ? companiesApi.pause(companyId) : companiesApi.resume(companyId)),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.companies.stats });
+      if (selectedCompanyId) {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(selectedCompanyId) });
+        await queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(selectedCompanyId) });
+      }
+    },
   });
 
   const inviteMutation = useMutation({
     mutationFn: () =>
       accessApi.createCompanyInvite(selectedCompanyId!, {
-        allowedJoinTypes: "agent"
+        allowedJoinTypes: "both",
+        expiresInHours: 72,
       }),
-    onSuccess: async (invite) => {
+    onSuccess: (invite) => {
       setInviteError(null);
       const base = window.location.origin.replace(/\/+$/, "");
-      const onboardingTextLink =
-        invite.onboardingTextUrl ??
-        invite.onboardingTextPath ??
-        `/api/invites/${invite.token}/onboarding.txt`;
-      const absoluteUrl = onboardingTextLink.startsWith("http")
-        ? onboardingTextLink
-        : `${base}${onboardingTextLink}`;
-      setSnippetCopied(false);
-      setSnippetCopyDelightId(0);
-      let snippet: string;
-      try {
-        const manifest = await accessApi.getInviteOnboarding(invite.token);
-        snippet = buildAgentSnippet({
-          onboardingTextUrl: absoluteUrl,
-          connectionCandidates:
-            manifest.onboarding.connectivity?.connectionCandidates ?? null,
-          testResolutionUrl:
-            manifest.onboarding.connectivity?.testResolutionEndpoint?.url ??
-            null
-        });
-      } catch {
-        snippet = buildAgentSnippet({
-          onboardingTextUrl: absoluteUrl,
-          connectionCandidates: null,
-          testResolutionUrl: null
-        });
-      }
-      setInviteSnippet(snippet);
-      try {
-        await navigator.clipboard.writeText(snippet);
-        setSnippetCopied(true);
-        setSnippetCopyDelightId((prev) => prev + 1);
-        setTimeout(() => setSnippetCopied(false), 2000);
-      } catch {
-        /* clipboard may not be available */
-      }
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.sidebarBadges(selectedCompanyId!)
-      });
+      const absoluteUrl = invite.inviteUrl.startsWith("http")
+        ? invite.inviteUrl
+        : `${base}${invite.inviteUrl}`;
+      setInviteLink(absoluteUrl);
+      queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId!) });
     },
     onError: (err) => {
-      setInviteError(
-        err instanceof Error ? err.message : "Failed to create invite"
-      );
-    }
+      setInviteError(err instanceof Error ? err.message : "Failed to create invite");
+    },
   });
-
-  useEffect(() => {
-    setInviteError(null);
-    setInviteSnippet(null);
-    setSnippetCopied(false);
-    setSnippetCopyDelightId(0);
-  }, [selectedCompanyId]);
   const archiveMutation = useMutation({
     mutationFn: ({
       companyId,
-      nextCompanyId
+      nextCompanyId,
     }: {
       companyId: string;
       nextCompanyId: string | null;
@@ -148,19 +108,15 @@ export function CompanySettings() {
       if (nextCompanyId) {
         setSelectedCompanyId(nextCompanyId);
       }
-      await queryClient.invalidateQueries({
-        queryKey: queryKeys.companies.all
-      });
-      await queryClient.invalidateQueries({
-        queryKey: queryKeys.companies.stats
-      });
-    }
+      await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.companies.stats });
+    },
   });
 
   useEffect(() => {
     setBreadcrumbs([
       { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: "Settings" }
+      { label: "Settings" },
     ]);
   }, [setBreadcrumbs, selectedCompany?.name]);
 
@@ -176,7 +132,7 @@ export function CompanySettings() {
     generalMutation.mutate({
       name: companyName.trim(),
       description: description.trim() || null,
-      brandColor: brandColor || null
+      brandColor: brandColor || null,
     });
   }
 
@@ -201,10 +157,7 @@ export function CompanySettings() {
               onChange={(e) => setCompanyName(e.target.value)}
             />
           </Field>
-          <Field
-            label="Description"
-            hint="Optional description shown in the company profile."
-          >
+          <Field label="Description" hint="Optional description shown in the company profile.">
             <input
               className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
               type="text"
@@ -231,10 +184,7 @@ export function CompanySettings() {
               />
             </div>
             <div className="flex-1 space-y-2">
-              <Field
-                label="Brand color"
-                hint="Sets the hue for the company icon. Leave empty for auto-generated color."
-              >
+              <Field label="Brand color" hint="Sets the hue for the company icon. Leave empty for auto-generated color.">
                 <div className="flex items-center gap-2">
                   <input
                     type="color"
@@ -309,6 +259,64 @@ export function CompanySettings() {
         </div>
       </div>
 
+      {/* Heartbeat Controls */}
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Heartbeat Controls
+        </div>
+        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+          <p className="text-sm text-muted-foreground">
+            Pause to stop all company agent heartbeats immediately. Active runs are cancelled. Resume to allow
+            heartbeats again.
+          </p>
+          <div className="flex items-center gap-2">
+            {selectedCompany.status === "paused" ? (
+              <Button
+                size="sm"
+                onClick={() => {
+                  if (!selectedCompanyId) return;
+                  heartbeatMutation.mutate({ companyId: selectedCompanyId, action: "resume" });
+                }}
+                disabled={heartbeatMutation.isPending}
+              >
+                <Play className="h-3.5 w-3.5 mr-1.5" />
+                {heartbeatMutation.isPending ? "Resuming..." : "Resume heartbeats"}
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  if (!selectedCompanyId) return;
+                  const confirmed = window.confirm(
+                    `Pause all agent heartbeats for "${selectedCompany.name}"? Active runs will be cancelled.`,
+                  );
+                  if (!confirmed) return;
+                  heartbeatMutation.mutate({ companyId: selectedCompanyId, action: "pause" });
+                }}
+                disabled={heartbeatMutation.isPending || selectedCompany.status === "archived"}
+              >
+                <Pause className="h-3.5 w-3.5 mr-1.5" />
+                {heartbeatMutation.isPending ? "Pausing..." : "Pause heartbeats"}
+              </Button>
+            )}
+            <span className="text-xs text-muted-foreground">Current status: {selectedCompany.status}</span>
+          </div>
+          {heartbeatMutation.isError && (
+            <p className="text-xs text-destructive">
+              {heartbeatMutation.error instanceof Error
+                ? heartbeatMutation.error.message
+                : "Failed to update heartbeat status"}
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* Agent Models */}
+      {selectedCompanyId && (
+        <AgentModelsSection companyId={selectedCompanyId} />
+      )}
+
       {/* Invites */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
@@ -316,112 +324,65 @@ export function CompanySettings() {
         </div>
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
           <div className="flex items-center gap-1.5">
-            <span className="text-xs text-muted-foreground">
-              Generate an agent snippet for join flows.
-            </span>
-            <HintIcon text="Creates an agent-only invite (10m) and renders a copy-ready snippet." />
+            <span className="text-xs text-muted-foreground">Generate a link to invite humans or agents to this company.</span>
+            <HintIcon text="Invite links expire after 72 hours and allow both human and agent joins." />
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Button
-              size="sm"
-              onClick={() => inviteMutation.mutate()}
-              disabled={inviteMutation.isPending}
-            >
-              {inviteMutation.isPending
-                ? "Generating..."
-                : "Generate agent snippet"}
+            <Button size="sm" onClick={() => inviteMutation.mutate()} disabled={inviteMutation.isPending}>
+              {inviteMutation.isPending ? "Creating..." : "Create invite link"}
             </Button>
+            {inviteLink && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={async () => {
+                  await navigator.clipboard.writeText(inviteLink);
+                }}
+              >
+                Copy link
+              </Button>
+            )}
           </div>
-          {inviteError && (
-            <p className="text-sm text-destructive">{inviteError}</p>
-          )}
-          {inviteSnippet && (
+          {inviteError && <p className="text-sm text-destructive">{inviteError}</p>}
+          {inviteLink && (
             <div className="rounded-md border border-border bg-muted/30 p-2">
-              <div className="flex items-center justify-between gap-2">
-                <div className="text-xs text-muted-foreground">
-                  Agent Snippet
-                </div>
-                {snippetCopied && (
-                  <span
-                    key={snippetCopyDelightId}
-                    className="flex items-center gap-1 text-xs text-green-600 animate-pulse"
-                  >
-                    <Check className="h-3 w-3" />
-                    Copied
-                  </span>
-                )}
-              </div>
-              <div className="mt-1 space-y-1.5">
-                <textarea
-                  className="h-[28rem] w-full rounded-md border border-border bg-background px-2 py-1.5 font-mono text-xs outline-none"
-                  value={inviteSnippet}
-                  readOnly
-                />
-                <div className="flex justify-end">
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={async () => {
-                      try {
-                        await navigator.clipboard.writeText(inviteSnippet);
-                        setSnippetCopied(true);
-                        setSnippetCopyDelightId((prev) => prev + 1);
-                        setTimeout(() => setSnippetCopied(false), 2000);
-                      } catch {
-                        /* clipboard may not be available */
-                      }
-                    }}
-                  >
-                    {snippetCopied ? "Copied snippet" : "Copy snippet"}
-                  </Button>
-                </div>
-              </div>
+              <div className="text-xs text-muted-foreground">Share link</div>
+              <div className="mt-1 break-all font-mono text-xs">{inviteLink}</div>
             </div>
           )}
         </div>
       </div>
 
-      {/* Danger Zone */}
+      {/* Archive */}
       <div className="space-y-4">
-        <div className="text-xs font-medium text-destructive uppercase tracking-wide">
-          Danger Zone
+        <div className="text-xs font-medium text-amber-700 uppercase tracking-wide">
+          Archive
         </div>
-        <div className="space-y-3 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-4">
+        <div className="space-y-3 rounded-md border border-amber-300/60 bg-amber-100/30 px-4 py-4">
           <p className="text-sm text-muted-foreground">
-            Archive this company to hide it from the sidebar. This persists in
-            the database.
+            Archive this company to hide it from the sidebar. This persists in the database.
           </p>
           <div className="flex items-center gap-2">
             <Button
               size="sm"
-              variant="destructive"
-              disabled={
-                archiveMutation.isPending ||
-                selectedCompany.status === "archived"
-              }
+              variant="outline"
+              disabled={archiveMutation.isPending || selectedCompany.status === "archived"}
               onClick={() => {
                 if (!selectedCompanyId) return;
                 const confirmed = window.confirm(
-                  `Archive company "${selectedCompany.name}"? It will be hidden from the sidebar.`
+                  `Archive company "${selectedCompany.name}"? It will be hidden from the sidebar.`,
                 );
                 if (!confirmed) return;
-                const nextCompanyId =
-                  companies.find(
-                    (company) =>
-                      company.id !== selectedCompanyId &&
-                      company.status !== "archived"
-                  )?.id ?? null;
-                archiveMutation.mutate({
-                  companyId: selectedCompanyId,
-                  nextCompanyId
-                });
+                const nextCompanyId = companies.find((company) =>
+                  company.id !== selectedCompanyId && company.status !== "archived")?.id ?? null;
+                archiveMutation.mutate({ companyId: selectedCompanyId, nextCompanyId });
               }}
             >
               {archiveMutation.isPending
                 ? "Archiving..."
                 : selectedCompany.status === "archived"
-                ? "Already archived"
-                : "Archive company"}
+                  ? "Already archived"
+                  : "Archive company"}
             </Button>
             {archiveMutation.isError && (
               <span className="text-xs text-destructive">
@@ -437,109 +398,284 @@ export function CompanySettings() {
   );
 }
 
-function buildAgentSnippet(input: AgentSnippetInput) {
-  const candidateUrls = buildCandidateOnboardingUrls(input);
-  const resolutionTestUrl = buildResolutionTestUrl(input);
+/* ---- Agent Models Section ---- */
 
-  const candidateList =
-    candidateUrls.length > 0
-      ? candidateUrls.map((u) => `- ${u}`).join("\n")
-      : "- (No candidate URLs available yet.)";
+const LOCAL_ADAPTER_TYPES = new Set(["claude_local", "codex_local"]);
 
-  const connectivityBlock =
-    candidateUrls.length === 0
-      ? `No candidate URLs are available. Ask your user to configure a reachable hostname in Paperclip, then retry.
-Suggested steps:
-- choose a hostname that resolves to the Paperclip host from your runtime
-- run: pnpm paperclipai allowed-hostname <host>
-- restart Paperclip
-- verify with: curl -fsS http://<host>:3100/api/health
-- regenerate this invite snippet`
-      : `If none are reachable, ask your user to add a reachable hostname in Paperclip, restart, and retry.
-Suggested command:
-- pnpm paperclipai allowed-hostname <host>
-Then verify with: curl -fsS <base-url>/api/health`;
+const ADAPTER_OPTIONS = [
+  { id: "claude_local", label: "Claude Code" },
+  { id: "codex_local", label: "Codex" },
+] as const;
 
-  const resolutionLine = resolutionTestUrl
-    ? `\nYou MUST test callback reachability, call: ${resolutionTestUrl}?url=<urlencoded-webhook-url> (well using the hostname that worked above). Do not assume your 172.x is necessarily reachable from Paperclip. Test it. `
-    : "";
+type PendingChange = { adapter: string; model: string };
 
-  return `You're invited to join a Paperclip organization.
+function AgentModelsSection({ companyId }: { companyId: string }) {
+  const queryClient = useQueryClient();
 
-The URLs you should try are:
-${candidateList}
+  const { data: agents = [] } = useQuery({
+    queryKey: queryKeys.agents.list(companyId),
+    queryFn: () => agentsApi.list(companyId),
+  });
 
-Connectivity guidance:
-If you are running on a different machine than Paperclip, Paperclip must be reachable at one of the hostnames used above.
-Verify the hostname works from your runtime with: GET <base-url>/api/health
+  const { data: claudeModels = [] } = useQuery({
+    queryKey: ["adapter-models", "claude_local"],
+    queryFn: () => agentsApi.adapterModels("claude_local"),
+  });
 
-${connectivityBlock}
+  const { data: codexModels = [] } = useQuery({
+    queryKey: ["adapter-models", "codex_local"],
+    queryFn: () => agentsApi.adapterModels("codex_local"),
+  });
 
-For your "agentName", just use your own agent name (OpenClaw or whatever your name is) and send it directly.
-You also need to send a webhook URL that Paperclip can access. Check your config and include that URL.${resolutionLine}
+  const localAgents = agents.filter(
+    (a) => LOCAL_ADAPTER_TYPES.has(a.adapterType) && a.status !== "terminated",
+  );
 
----
+  // pending[agentId] = { adapter, model }
+  const [pending, setPending] = useState<Record<string, PendingChange>>({});
+  const isDirty = Object.keys(pending).length > 0;
 
-In order for Paperclip to work smoothly, you need to enable \`gateway.http.endpoints.responses.enabled=true\` in your OpenClaw config.
+  // Reset pending when agents data refreshes after save
+  const agentIds = localAgents.map((a) => a.id).join(",");
+  useEffect(() => { setPending({}); }, [agentIds]); // eslint-disable-line react-hooks/exhaustive-deps
 
-Please enable that setting and notify your user that we did so.
+  const saveAll = useMutation({
+    mutationFn: async () => {
+      const agentMap = new Map(localAgents.map((a) => [a.id, a]));
+      await Promise.all(
+        Object.entries(pending).map(([agentId, change]) => {
+          const agent = agentMap.get(agentId);
+          if (!agent) return Promise.resolve();
+          const adapterChanged = change.adapter !== agent.adapterType;
+          if (adapterChanged) {
+            // Full adapter switch — start with a clean adapterConfig to avoid
+            // stale fields from the old adapter bleeding into the new one
+            return agentsApi.update(agentId, {
+              adapterType: change.adapter,
+              adapterConfig: change.model ? { model: change.model } : {},
+            }, companyId);
+          }
+          const existing = (agent.adapterConfig ?? {}) as Record<string, unknown>;
+          return agentsApi.update(agentId, {
+            adapterConfig: { ...existing, model: change.model || undefined },
+          }, companyId);
+        }),
+      );
+    },
+    onSuccess: () => {
+      setPending({});
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
+    },
+  });
 
-Before you do anything, please respond to your user that you understand the instructions and you're going to work on them. Then do the step above in another session called "paperclip-onboarding" and then tell your user when you're done. Update your user in intermediate steps along the way so they know what's going on.
+  if (localAgents.length === 0) return null;
 
-Then after you've connected to Paperclip (exchanged keys etc.) you MUST review and follow the onboarding instructions in onboarding.txt they give you.
+  const modelsByAdapter: Record<string, { id: string; label: string }[]> = {
+    claude_local: claudeModels,
+    codex_local: codexModels,
+  };
 
-`;
+  return (
+    <div className="space-y-4">
+      <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        Agent Runtime
+      </div>
+      <div className="rounded-md border border-border divide-y divide-border">
+        {localAgents.map((agent) => {
+          const config = (agent.adapterConfig ?? {}) as Record<string, unknown>;
+          const savedAdapter = agent.adapterType;
+          const savedModel = typeof config.model === "string" ? config.model : "";
+
+          const effectiveAdapter = pending[agent.id]?.adapter ?? savedAdapter;
+          const effectiveModel = pending[agent.id]?.model ?? (
+            // Reset model when adapter changed but model not yet set
+            pending[agent.id]?.adapter && pending[agent.id].adapter !== savedAdapter ? "" : savedModel
+          );
+
+          const models = modelsByAdapter[effectiveAdapter] ?? [];
+          const selectedModel = models.find((m) => m.id === effectiveModel);
+          const isDirtyRow = agent.id in pending && (
+            pending[agent.id].adapter !== savedAdapter ||
+            pending[agent.id].model !== savedModel
+          );
+
+          function onChange(patch: Partial<PendingChange>) {
+            setPending((prev) => {
+              const current = prev[agent.id] ?? { adapter: savedAdapter, model: savedModel };
+              const next = { ...current, ...patch };
+              // If adapter changed, clear model so user picks intentionally
+              if (patch.adapter && patch.adapter !== current.adapter) {
+                next.model = "";
+              }
+              // Remove from pending if nothing actually changed
+              if (next.adapter === savedAdapter && next.model === savedModel) {
+                const { [agent.id]: _, ...rest } = prev;
+                return rest;
+              }
+              return { ...prev, [agent.id]: next };
+            });
+          }
+
+          return (
+            <AgentRuntimeRow
+              key={agent.id}
+              agent={agent}
+              effectiveAdapter={effectiveAdapter}
+              effectiveModel={effectiveModel}
+              modelLabel={selectedModel?.label ?? (effectiveModel || "Default")}
+              models={models}
+              isDirty={isDirtyRow}
+              onChange={onChange}
+            />
+          );
+        })}
+      </div>
+      <div className="flex items-center gap-3">
+        {isDirty && (
+          <>
+            <Button size="sm" onClick={() => saveAll.mutate()} disabled={saveAll.isPending}>
+              {saveAll.isPending ? "Saving..." : "Save changes"}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setPending({})}
+              disabled={saveAll.isPending}
+              className="text-muted-foreground"
+            >
+              Cancel
+            </Button>
+          </>
+        )}
+        {saveAll.isSuccess && !isDirty && (
+          <span className="text-xs text-muted-foreground">Saved</span>
+        )}
+        {saveAll.isError && (
+          <span className="text-xs text-destructive">
+            {saveAll.error instanceof Error ? saveAll.error.message : "Failed to save"}
+          </span>
+        )}
+      </div>
+      <p className="text-[11px] text-muted-foreground/60">
+        Changes apply on the next heartbeat run. Switching adapter resets all adapter-specific config.
+      </p>
+    </div>
+  );
 }
 
-function buildCandidateOnboardingUrls(input: AgentSnippetInput): string[] {
-  const candidates = (input.connectionCandidates ?? [])
-    .map((candidate) => candidate.trim())
-    .filter(Boolean);
-  const urls = new Set<string>();
-  let onboardingUrl: URL | null = null;
+function AgentRuntimeRow({
+  agent,
+  effectiveAdapter,
+  effectiveModel,
+  modelLabel,
+  models,
+  isDirty,
+  onChange,
+}: {
+  agent: Agent;
+  effectiveAdapter: string;
+  effectiveModel: string;
+  modelLabel: string;
+  models: { id: string; label: string }[];
+  isDirty: boolean;
+  onChange: (patch: Partial<PendingChange>) => void;
+}) {
+  const [adapterOpen, setAdapterOpen] = useState(false);
+  const [modelOpen, setModelOpen] = useState(false);
+  const [search, setSearch] = useState("");
 
-  try {
-    onboardingUrl = new URL(input.onboardingTextUrl);
-    urls.add(onboardingUrl.toString());
-  } catch {
-    const trimmed = input.onboardingTextUrl.trim();
-    if (trimmed) {
-      urls.add(trimmed);
-    }
-  }
+  const filteredModels = models.filter((m) => {
+    if (!search.trim()) return true;
+    const q = search.toLowerCase();
+    return m.id.toLowerCase().includes(q) || m.label.toLowerCase().includes(q);
+  });
 
-  if (!onboardingUrl) {
-    for (const candidate of candidates) {
-      urls.add(candidate);
-    }
-    return Array.from(urls);
-  }
+  const adapterLabel = ADAPTER_OPTIONS.find((a) => a.id === effectiveAdapter)?.label ?? effectiveAdapter;
 
-  const onboardingPath = `${onboardingUrl.pathname}${onboardingUrl.search}`;
-  for (const candidate of candidates) {
-    try {
-      const base = new URL(candidate);
-      urls.add(`${base.origin}${onboardingPath}`);
-    } catch {
-      urls.add(candidate);
-    }
-  }
+  return (
+    <div className={cn("flex items-center gap-2 px-4 py-2.5", isDirty && "bg-accent/20")}>
+      <div className="flex-1 min-w-0">
+        <div className="text-sm truncate">{agent.name}</div>
+      </div>
+      {isDirty && (
+        <span className="text-[10px] text-amber-600 dark:text-amber-400 shrink-0">unsaved</span>
+      )}
 
-  return Array.from(urls);
-}
+      {/* Adapter dropdown */}
+      <div className="w-32 shrink-0">
+        <Popover open={adapterOpen} onOpenChange={setAdapterOpen}>
+          <PopoverTrigger asChild>
+            <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
+              <span>{adapterLabel}</span>
+              <ChevronDown className="h-3 w-3 text-muted-foreground shrink-0" />
+            </button>
+          </PopoverTrigger>
+          <PopoverContent className="w-36 p-1" align="start">
+            {ADAPTER_OPTIONS.map((opt) => (
+              <button
+                key={opt.id}
+                className={cn(
+                  "flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
+                  opt.id === effectiveAdapter && "bg-accent",
+                )}
+                onClick={() => { onChange({ adapter: opt.id }); setAdapterOpen(false); }}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </PopoverContent>
+        </Popover>
+      </div>
 
-function buildResolutionTestUrl(input: AgentSnippetInput): string | null {
-  const explicit = input.testResolutionUrl?.trim();
-  if (explicit) return explicit;
-
-  try {
-    const onboardingUrl = new URL(input.onboardingTextUrl);
-    const testPath = onboardingUrl.pathname.replace(
-      /\/onboarding\.txt$/,
-      "/test-resolution"
-    );
-    return `${onboardingUrl.origin}${testPath}`;
-  } catch {
-    return null;
-  }
+      {/* Model dropdown */}
+      <div className="w-44 shrink-0">
+        <Popover open={modelOpen} onOpenChange={(o) => { setModelOpen(o); if (!o) setSearch(""); }}>
+          <PopoverTrigger asChild>
+            <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
+              <span className={cn(!effectiveModel && "text-muted-foreground text-xs")}>
+                {modelLabel}
+              </span>
+              <ChevronDown className="h-3 w-3 text-muted-foreground shrink-0" />
+            </button>
+          </PopoverTrigger>
+          <PopoverContent className="w-56 p-1" align="end">
+            <input
+              className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
+              placeholder="Search models..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              autoFocus
+            />
+            <div className="max-h-[200px] overflow-y-auto">
+              <button
+                className={cn(
+                  "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
+                  !effectiveModel && "bg-accent",
+                )}
+                onClick={() => { onChange({ model: "" }); setModelOpen(false); }}
+              >
+                <span className="text-muted-foreground">Default</span>
+              </button>
+              {filteredModels.map((m) => (
+                <button
+                  key={m.id}
+                  className={cn(
+                    "flex items-center justify-between w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
+                    m.id === effectiveModel && "bg-accent",
+                  )}
+                  onClick={() => { onChange({ model: m.id }); setModelOpen(false); }}
+                >
+                  <span>{m.label}</span>
+                  <span className="text-[10px] text-muted-foreground font-mono ml-2 shrink-0">{m.id}</span>
+                </button>
+              ))}
+              {filteredModels.length === 0 && (
+                <p className="px-2 py-1.5 text-xs text-muted-foreground">No models found.</p>
+              )}
+            </div>
+          </PopoverContent>
+        </Popover>
+      </div>
+    </div>
+  );
 }

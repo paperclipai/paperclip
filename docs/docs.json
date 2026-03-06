@@ -47,8 +47,13 @@
               "guides/board-operator/org-structure",
               "guides/board-operator/managing-tasks",
               "guides/board-operator/approvals",
+              "guides/board-operator/cross-company-delegation",
               "guides/board-operator/costs-and-budgets",
-              "guides/board-operator/activity-log"
+              "guides/board-operator/activity-log",
+              "guides/board-operator/android-ci-release-pipeline",
+              "guides/board-operator/android-internal-testing-quickstart",
+              "guides/board-operator/android-troubleshooting",
+              "guides/board-operator/android-release-notes-template"
             ]
           },
           {
@@ -73,7 +78,6 @@
             "pages": [
               "deploy/overview",
               "deploy/local-development",
-              "deploy/tailscale-private-access",
               "deploy/docker",
               "deploy/deployment-modes",
               "deploy/database",

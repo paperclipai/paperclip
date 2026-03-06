@@ -3,7 +3,6 @@ import { useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
-import { useSidebar } from "../context/SidebarContext";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
@@ -38,7 +37,6 @@ export function CommandPalette() {
   const navigate = useNavigate();
   const { selectedCompanyId } = useCompany();
   const { openNewIssue, openNewAgent } = useDialog();
-  const { isMobile, setSidebarOpen } = useSidebar();
   const searchQuery = query.trim();
 
   useEffect(() => {
@@ -46,12 +44,11 @@ export function CommandPalette() {
       if (e.key === "k" && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         setOpen(true);
-        if (isMobile) setSidebarOpen(false);
       }
     }
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [isMobile, setSidebarOpen]);
+  }, []);
 
   useEffect(() => {
     if (!open) setQuery("");
@@ -97,10 +94,7 @@ export function CommandPalette() {
   );
 
   return (
-    <CommandDialog open={open} onOpenChange={(v) => {
-        setOpen(v);
-        if (v && isMobile) setSidebarOpen(false);
-      }}>
+    <CommandDialog open={open} onOpenChange={setOpen}>
       <CommandInput
         placeholder="Search issues, agents, projects..."
         value={query}
@@ -193,7 +187,7 @@ export function CommandPalette() {
                   <span className="flex-1 truncate">{issue.title}</span>
                   {issue.assigneeAgentId && (() => {
                     const name = agentName(issue.assigneeAgentId);
-                    return name ? <Identity name={name} size="sm" className="ml-2 hidden sm:inline-flex" /> : null;
+                    return name ? <Identity name={name} size="sm" className="ml-2" /> : null;
                   })()}
                 </CommandItem>
               ))}

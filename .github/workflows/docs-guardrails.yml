@@ -1,0 +1,54 @@
+name: Docs Guardrails
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  docs-guardrails:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Frontmatter lint (canonical docs)
+        run: python3 scripts/tools/docs-lint.py --all
+
+      - name: Behavior-doc drift check (changed files)
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          CHANGED_FILES=""
+
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ] && [ -n "${GITHUB_BASE_REF:-}" ]; then
+            git fetch --no-tags --prune --depth=1 origin "$GITHUB_BASE_REF"
+            CHANGED_FILES="$(git diff --name-only "origin/${GITHUB_BASE_REF}...HEAD")"
+          elif [ -n "${GITHUB_EVENT_BEFORE:-}" ] && [ "$GITHUB_EVENT_BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            CHANGED_FILES="$(git diff --name-only "${GITHUB_EVENT_BEFORE}...${GITHUB_SHA}")"
+          else
+            CHANGED_FILES="$(git show --name-only --pretty='' HEAD)"
+          fi
+
+          mapfile -t FILE_ARRAY < <(printf '%s\n' "$CHANGED_FILES" | sed '/^$/d')
+
+          if [ "${#FILE_ARRAY[@]}" -eq 0 ]; then
+            python3 scripts/tools/docs-drift-check.py
+          else
+            python3 scripts/tools/docs-drift-check.py --files "${FILE_ARRAY[@]}"
+          fi

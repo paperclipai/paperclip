@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 import { Link, useNavigate, useLocation } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { agentsApi, type OrgNode } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { useCompany } from "../context/CompanyContext";
@@ -18,13 +18,15 @@ import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Bot, Plus, List, GitBranch, SlidersHorizontal } from "lucide-react";
+import {
+  DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
+  DEFAULT_CODEX_LOCAL_MODEL,
+} from "@paperclipai/adapter-codex-local";
 import type { Agent } from "@paperclipai/shared";
 
 const adapterLabels: Record<string, string> = {
   claude_local: "Claude",
   codex_local: "Codex",
-  opencode_local: "OpenCode",
-  cursor: "Cursor",
   openclaw: "OpenClaw",
   process: "Process",
   http: "HTTP",
@@ -61,10 +63,101 @@ function filterOrgTree(nodes: OrgNode[], tab: FilterTab, showTerminated: boolean
   }, []);
 }
 
+type SwitchAdapterTarget = "claude_local" | "codex_local";
+
+function toRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return value as Record<string, unknown>;
+}
+
+function asNonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function commandMatchesAdapter(command: string | null, target: SwitchAdapterTarget): boolean {
+  if (!command) return false;
+  const normalized = command.toLowerCase();
+  if (target === "codex_local") return normalized.includes("codex");
+  return normalized.includes("claude");
+}
+
+function buildBulkAdapterConfig(
+  currentAdapterType: string,
+  currentConfig: unknown,
+  target: SwitchAdapterTarget,
+): Record<string, unknown> {
+  const config = toRecord(currentConfig);
+  const next: Record<string, unknown> = {};
+
+  const commonKeys = [
+    "cwd",
+    "instructionsFilePath",
+    "promptTemplate",
+    "env",
+    "timeoutSec",
+    "graceSec",
+    "extraArgs",
+  ];
+  for (const key of commonKeys) {
+    if (Object.prototype.hasOwnProperty.call(config, key)) {
+      next[key] = config[key];
+    }
+  }
+
+  if (target === "codex_local") {
+    const existingCommand = asNonEmptyString(config.command);
+    next.command = commandMatchesAdapter(existingCommand, "codex_local") ? existingCommand : "codex";
+    next.model =
+      currentAdapterType === "codex_local" && asNonEmptyString(config.model)
+        ? (config.model as string)
+        : DEFAULT_CODEX_LOCAL_MODEL;
+
+    if (Object.prototype.hasOwnProperty.call(config, "search")) next.search = config.search;
+
+    const codexEffort = asNonEmptyString(config.modelReasoningEffort);
+    const claudeEffort = asNonEmptyString(config.effort);
+    if (codexEffort) next.modelReasoningEffort = codexEffort;
+    else if (claudeEffort) next.modelReasoningEffort = claudeEffort;
+
+    if (typeof config.dangerouslyBypassApprovalsAndSandbox === "boolean") {
+      next.dangerouslyBypassApprovalsAndSandbox = config.dangerouslyBypassApprovalsAndSandbox;
+    } else if (typeof config.dangerouslyBypassSandbox === "boolean") {
+      next.dangerouslyBypassApprovalsAndSandbox = config.dangerouslyBypassSandbox;
+    } else {
+      next.dangerouslyBypassApprovalsAndSandbox = DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
+    }
+
+    return next;
+  }
+
+  const existingCommand = asNonEmptyString(config.command);
+  next.command = commandMatchesAdapter(existingCommand, "claude_local") ? existingCommand : "claude";
+
+  if (currentAdapterType === "claude_local" && asNonEmptyString(config.model)) {
+    next.model = config.model;
+  }
+
+  const claudeEffort = asNonEmptyString(config.effort);
+  const codexEffort = asNonEmptyString(config.modelReasoningEffort);
+  if (claudeEffort) next.effort = claudeEffort;
+  else if (codexEffort) next.effort = codexEffort;
+
+  if (typeof config.chrome === "boolean") next.chrome = config.chrome;
+  if (typeof config.maxTurnsPerRun === "number") next.maxTurnsPerRun = config.maxTurnsPerRun;
+  if (typeof config.dangerouslySkipPermissions === "boolean") {
+    next.dangerouslySkipPermissions = config.dangerouslySkipPermissions;
+  }
+
+  return next;
+}
+
 export function Agents() {
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
   const { isMobile } = useSidebar();
@@ -75,6 +168,7 @@ export function Agents() {
   const effectiveView: "list" | "org" = forceListView ? "list" : view;
   const [showTerminated, setShowTerminated] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [switchSummary, setSwitchSummary] = useState<string | null>(null);
 
   const { data: agents, isLoading, error } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -119,6 +213,71 @@ export function Agents() {
   useEffect(() => {
     setBreadcrumbs([{ label: "Agents" }]);
   }, [setBreadcrumbs]);
+
+  const bulkSwitchAdapter = useMutation({
+    mutationFn: async (target: SwitchAdapterTarget) => {
+      if (!selectedCompanyId) throw new Error("Select a company first");
+      const source = agents ?? (await agentsApi.list(selectedCompanyId));
+      const targets = source.filter((agent) => agent.status !== "terminated");
+
+      const updates = await Promise.allSettled(
+        targets.map(async (agent) => {
+          const adapterConfig = buildBulkAdapterConfig(agent.adapterType, agent.adapterConfig, target);
+          if (agent.adapterType === target) {
+            const current = toRecord(agent.adapterConfig);
+            const sameCommand = asNonEmptyString(current.command) === asNonEmptyString(adapterConfig.command);
+            const sameModel = asNonEmptyString(current.model) === asNonEmptyString(adapterConfig.model);
+            const sameBypass =
+              current.dangerouslyBypassApprovalsAndSandbox === adapterConfig.dangerouslyBypassApprovalsAndSandbox;
+            if (sameCommand && sameModel && sameBypass) {
+              return { skipped: true, id: agent.id };
+            }
+          }
+          await agentsApi.update(
+            agent.id,
+            { adapterType: target, adapterConfig },
+            selectedCompanyId,
+          );
+          return { skipped: false, id: agent.id };
+        }),
+      );
+
+      let updated = 0;
+      let skipped = 0;
+      const failures: string[] = [];
+      for (const result of updates) {
+        if (result.status === "fulfilled") {
+          if (result.value.skipped) skipped += 1;
+          else updated += 1;
+        } else {
+          failures.push(result.reason instanceof Error ? result.reason.message : String(result.reason));
+        }
+      }
+
+      return { target, updated, skipped, failed: failures.length, failures };
+    },
+    onSuccess: async ({ target, updated, skipped, failed }) => {
+      if (!selectedCompanyId) return;
+      const targetLabel = target === "codex_local" ? "Codex" : "Anthropic";
+      if (failed > 0) {
+        setSwitchSummary(
+          `Switched ${updated} agents to ${targetLabel}, skipped ${skipped}, failed ${failed}.`,
+        );
+      } else {
+        setSwitchSummary(`Switched ${updated} agents to ${targetLabel}, skipped ${skipped}.`);
+      }
+
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.org(selectedCompanyId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(selectedCompanyId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(selectedCompanyId) }),
+      ]);
+    },
+    onError: (error) => {
+      setSwitchSummary(error instanceof Error ? error.message : "Failed to switch agent adapter");
+    },
+  });
 
   if (!selectedCompanyId) {
     return <EmptyState icon={Bot} message="Select a company to view agents." />;
@@ -200,12 +359,38 @@ export function Agents() {
               </button>
             </div>
           )}
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              setSwitchSummary(null);
+              bulkSwitchAdapter.mutate("claude_local");
+            }}
+            disabled={bulkSwitchAdapter.isPending || !agents || agents.length === 0}
+          >
+            Switch to Anthropic
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              setSwitchSummary(null);
+              bulkSwitchAdapter.mutate("codex_local");
+            }}
+            disabled={bulkSwitchAdapter.isPending || !agents || agents.length === 0}
+          >
+            Switch to Codex
+          </Button>
           <Button size="sm" variant="outline" onClick={openNewAgent}>
             <Plus className="h-3.5 w-3.5 mr-1.5" />
             New Agent
           </Button>
         </div>
       </div>
+
+      {switchSummary && (
+        <p className="text-xs text-muted-foreground">{switchSummary}</p>
+      )}
 
       {filtered.length > 0 && (
         <p className="text-xs text-muted-foreground">{filtered.length} agent{filtered.length !== 1 ? "s" : ""}</p>

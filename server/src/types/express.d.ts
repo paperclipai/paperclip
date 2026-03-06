@@ -9,6 +9,7 @@ declare global {
         agentId?: string;
         companyId?: string;
         companyIds?: string[];
+        sessionId?: string;
         isInstanceAdmin?: boolean;
         keyId?: string;
         runId?: string;

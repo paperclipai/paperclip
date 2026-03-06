@@ -1,0 +1,153 @@
+
+> paperclip@ build /home/avi/projects/paperclip
+> pnpm -r build
+
+Scope: 10 of 11 workspace projects
+packages/adapter-utils build$ tsc
+packages/shared build$ tsc
+packages/adapter-utils build: Done
+packages/shared build: Done
+packages/adapters/claude-local build$ tsc
+packages/adapters/codex-local build$ tsc
+packages/adapters/openclaw build$ tsc
+packages/db build$ tsc && cp -r src/migrations dist/migrations
+packages/adapters/openclaw build: Done
+packages/adapters/claude-local build: Done
+packages/adapters/codex-local build: Done
+packages/db build: Done
+server build$ tsc
+ui build$ tsc -b && vite build
+server build: Done
+ui build: vite v6.4.1 building for production...
+ui build: transforming...
+ui build: ✓ 2815 modules transformed.
+ui build: rendering chunks...
+ui build: computing gzip size...
+ui build: dist/index.html                           2.05 kB │ gzip:   0.79 kB
+ui build: dist/assets/index-DSVOkUP-.css          190.42 kB │ gzip:  31.40 kB
+ui build: dist/assets/diff-DbItnlRl.js              0.31 kB │ gzip:   0.24 kB
+ui build: dist/assets/brainfuck-C4LP7Hcl.js         0.61 kB │ gzip:   0.33 kB
+ui build: dist/assets/properties-C78fOPTZ.js        0.67 kB │ gzip:   0.35 kB
+ui build: dist/assets/cmake-BQqOBYOt.js             0.78 kB │ gzip:   0.46 kB
+ui build: dist/assets/asciiarmor-Df11BRmG.js        0.79 kB │ gzip:   0.41 kB
+ui build: dist/assets/http-DBlCnlav.js              0.85 kB │ gzip:   0.41 kB
+ui build: dist/assets/protobuf-ChK-085T.js          0.86 kB │ gzip:   0.52 kB
+ui build: dist/assets/solr-DehyRSwq.js              0.87 kB │ gzip:   0.46 kB
+ui build: dist/assets/troff-wAsdV37c.js             0.96 kB │ gzip:   0.44 kB
+ui build: dist/assets/spreadsheet-BCZA_wO0.js       1.14 kB │ gzip:   0.54 kB
+ui build: dist/assets/toml-Bm5Em-hy.js              1.14 kB │ gzip:   0.54 kB
+ui build: dist/assets/mbox-CNhZ1qSd.js              1.40 kB │ gzip:   0.66 kB
+ui build: dist/assets/sieve-C3Gn_uJK.js             1.62 kB │ gzip:   0.77 kB
+ui build: dist/assets/rpm-CTu-6PCP.js               1.62 kB │ gzip:   0.83 kB
+ui build: dist/assets/factor-kuTfRLto.js            1.67 kB │ gzip:   0.61 kB
+ui build: dist/assets/z80-Hz9HOZM7.js               1.75 kB │ gzip:   0.81 kB
+ui build: dist/assets/eiffel-CnydiIhH.js            1.81 kB │ gzip:   0.92 kB
+ui build: dist/assets/elm-vLlmbW-K.js               1.89 kB │ gzip:   0.82 kB
+ui build: dist/assets/mathematica-DTrFuWx2.js       1.92 kB │ gzip:   0.82 kB
+ui build: dist/assets/dockerfile-BKs6k2Af.js        1.95 kB │ gzip:   0.67 kB
+ui build: dist/assets/turtle-B1tBg_DP.js            1.98 kB │ gzip:   0.90 kB
+ui build: dist/assets/ebnf-CDyGwa7X.js              1.99 kB │ gzip:   0.81 kB
+ui build: dist/assets/smalltalk-CnHTOXQT.js         2.01 kB │ gzip:   0.85 kB
+ui build: dist/assets/dtd-DF_7sFjM.js               2.06 kB │ gzip:   0.87 kB
+ui build: dist/assets/mumps-BT43cFF4.js             2.07 kB │ gzip:   0.98 kB
+ui build: dist/assets/fcl-Kvtd6kyn.js               2.08 kB │ gzip:   0.95 kB
+ui build: dist/assets/ntriples-BfvgReVJ.js          2.10 kB │ gzip:   0.75 kB
+ui build: dist/assets/yacas-BJ4BC0dw.js             2.15 kB │ gzip:   1.09 kB
+ui build: dist/assets/simple-mode-GW_nhZxv.js       2.28 kB │ gzip:   1.09 kB
+ui build: dist/assets/apl-B4CMkyY2.js               2.30 kB │ gzip:   1.23 kB
+ui build: dist/assets/pascal--L3eBynH.js            2.30 kB │ gzip:   1.19 kB
+ui build: dist/assets/octave-Ck1zUtKM.js            2.31 kB │ gzip:   1.09 kB
+ui build: dist/assets/commonlisp-DBKNyK5s.js        2.32 kB │ gzip:   1.10 kB
+ui build: dist/assets/tcl-DVfN8rqt.js               2.36 kB │ gzip:   1.23 kB
+ui build: dist/assets/index-BckshnZ-.js             2.42 kB │ gzip:   1.50 kB
+ui build: dist/assets/webidl-ZXfAyPTL.js            2.52 kB │ gzip:   1.26 kB
+ui build: dist/assets/pig-CevX1Tat.js               2.53 kB │ gzip:   1.38 kB
+ui build: dist/assets/puppet-DMA9R1ak.js            2.54 kB │ gzip:   1.20 kB
+ui build: dist/assets/forth-Ffai-XNe.js             2.54 kB │ gzip:   1.33 kB
+ui build: dist/assets/shell-CjFT_Tl9.js             2.57 kB │ gzip:   1.21 kB
+ui build: dist/assets/index-SWFUdxZN.js             2.63 kB │ gzip:   1.50 kB
+ui build: dist/assets/velocity-D8B20fx6.js          2.67 kB │ gzip:   1.11 kB
+ui build: dist/assets/tiddlywiki-DO-Gjzrf.js        2.78 kB │ gzip:   1.07 kB
+ui build: dist/assets/modelica-Dc1JOy9r.js          2.79 kB │ gzip:   1.29 kB
+ui build: dist/assets/oz-BzwKVEFT.js                2.90 kB │ gzip:   1.28 kB
+ui build: dist/assets/r-B6wPVr8A.js                 2.94 kB │ gzip:   1.36 kB
+ui build: dist/assets/stex-C3f8Ysf7.js              3.12 kB │ gzip:   1.20 kB
+ui build: dist/assets/tiki-DGYXhP31.js              3.25 kB │ gzip:   1.26 kB
+ui build: dist/assets/vhdl-lSbBsy5d.js              3.35 kB │ gzip:   1.51 kB
+ui build: dist/assets/lua-BgMRiT3U.js               3.40 kB │ gzip:   1.44 kB
+ui build: dist/assets/index-DWvL3pFO.js             3.40 kB │ gzip:   1.72 kB
+ui build: dist/assets/mscgen-BA5vi2Kp.js            3.51 kB │ gzip:   0.98 kB
+ui build: dist/assets/sparql-DkYu6x3z.js            3.55 kB │ gzip:   1.63 kB
+ui build: dist/assets/cypher-C_CwsFkJ.js            3.56 kB │ gzip:   1.52 kB
+ui build: dist/assets/d-pRatUO7H.js                 3.72 kB │ gzip:   1.68 kB
+ui build: dist/assets/coffeescript-S37ZYGWr.js      3.87 kB │ gzip:   1.69 kB
+ui build: dist/assets/vb-CmGdzxic.js                3.90 kB │ gzip:   1.79 kB
+ui build: dist/assets/swift-BzpIVaGY.js             3.96 kB │ gzip:   1.79 kB
+ui build: dist/assets/asn1-EdZsLKOL.js              3.98 kB │ gzip:   1.96 kB
+ui build: dist/assets/q-pXgVlZs6.js                 4.03 kB │ gzip:   1.67 kB
+ui build: dist/assets/ttcn-cfg-B9xdYoR4.js          4.05 kB │ gzip:   1.71 kB
+ui build: dist/assets/dylan-DwRh75JA.js             4.05 kB │ gzip:   1.65 kB
+ui build: dist/assets/livescript-BwQOo05w.js        4.09 kB │ gzip:   1.64 kB
+ui build: dist/assets/groovy-D9Dt4D0W.js            4.14 kB │ gzip:   1.77 kB
+ui build: dist/assets/haskell-Cw1EW3IL.js           4.17 kB │ gzip:   1.89 kB
+ui build: dist/assets/asterisk-B-8jnY81.js          4.48 kB │ gzip:   1.78 kB
+ui build: dist/assets/gas-Bneqetm1.js               4.57 kB │ gzip:   1.28 kB
+ui build: dist/assets/fortran-DYz_wnZ1.js           4.65 kB │ gzip:   2.01 kB
+ui build: dist/assets/mllike-CXdrOF99.js            4.79 kB │ gzip:   1.53 kB
+ui build: dist/assets/ttcn-CfJYG6tj.js              4.80 kB │ gzip:   2.13 kB
+ui build: dist/assets/index-DyYwvxEc.js             5.07 kB │ gzip:   2.40 kB
+ui build: dist/assets/ecl-Cabwm37j.js               5.13 kB │ gzip:   2.31 kB
+ui build: dist/assets/crystal-SjHAIU92.js           5.13 kB │ gzip:   2.07 kB
+ui build: dist/assets/ruby-B2Rjki9n.js              5.16 kB │ gzip:   2.15 kB
+ui build: dist/assets/julia-DuME0IfC.js             5.39 kB │ gzip:   2.14 kB
+ui build: dist/assets/vbscript-BuJXcnF6.js          5.82 kB │ gzip:   2.57 kB
+ui build: dist/assets/mirc-CjQqDB4T.js              5.92 kB │ gzip:   2.68 kB
+ui build: dist/assets/cobol-CWcv1MsR.js             6.20 kB │ gzip:   2.96 kB
+ui build: dist/assets/scheme-C41bIUwD.js            6.37 kB │ gzip:   2.39 kB
+ui build: dist/assets/python-BuPzkPfP.js            6.48 kB │ gzip:   2.73 kB
+ui build: dist/assets/xquery-DzFWVndE.js            6.62 kB │ gzip:   2.56 kB
+ui build: dist/assets/pug-DeIclll2.js               6.67 kB │ gzip:   1.94 kB
+ui build: dist/assets/textile-CnDTJFAw.js           6.80 kB │ gzip:   2.44 kB
+ui build: dist/assets/nsis-LdVXkNf5.js              6.81 kB │ gzip:   2.99 kB
+ui build: dist/assets/nginx-DdIZxoE0.js             7.34 kB │ gzip:   2.72 kB
+ui build: dist/assets/powershell-CFHJl5sT.js        7.77 kB │ gzip:   3.33 kB
+ui build: dist/assets/haxe-H-WmDvRZ.js              7.89 kB │ gzip:   2.95 kB
+ui build: dist/assets/erlang-BNw1qcRV.js            8.10 kB │ gzip:   2.89 kB
+ui build: dist/assets/verilog-C6RDOZhf.js           8.24 kB │ gzip:   3.52 kB
+ui build: dist/assets/sas-B4kiWyti.js               9.33 kB │ gzip:   4.11 kB
+ui build: dist/assets/perl-CdXCOZ3F.js              9.75 kB │ gzip:   3.46 kB
+ui build: dist/assets/gherkin-heZmZLOM.js          10.16 kB │ gzip:   5.09 kB
+ui build: dist/assets/clojure-BMjYHr_A.js          10.82 kB │ gzip:   3.99 kB
+ui build: dist/assets/idl-BEugSyMb.js              11.63 kB │ gzip:   4.52 kB
+ui build: dist/assets/index-mMd5D83m.js            12.70 kB │ gzip:   5.59 kB
+ui build: dist/assets/index-BN1g-3PK.js            14.79 kB │ gzip:   5.97 kB
+ui build: dist/assets/index-BugZ3o2R.js            16.31 kB │ gzip:   7.44 kB
+ui build: dist/assets/javascript-iXu5QeM3.js       17.08 kB │ gzip:   5.75 kB
+ui build: dist/assets/index-D58-7qhR.js            19.68 kB │ gzip:   9.29 kB
+ui build: dist/assets/index-cxLKDDW3.js            20.92 kB │ gzip:   9.34 kB
+ui build: dist/assets/clike-B9uivgTg.js            22.30 kB │ gzip:   7.86 kB
+ui build: dist/assets/index-jc9GrmXT.js            23.06 kB │ gzip:  10.38 kB
+ui build: dist/assets/stylus-B533Al4x.js           25.80 kB │ gzip:   8.60 kB
+ui build: dist/assets/index-h8Sa3PQ3.js            25.85 kB │ gzip:  11.61 kB
+ui build: dist/assets/index-zWGqG5jI.js            26.39 kB │ gzip:   8.81 kB
+ui build: dist/assets/css-BnMrqG3P.js              27.13 kB │ gzip:   8.47 kB
+ui build: dist/assets/index-D-Ch8QRj.js            28.69 kB │ gzip:  11.66 kB
+ui build: dist/assets/index-CT9u0YPN.js            30.79 kB │ gzip:  12.64 kB
+ui build: dist/assets/index-DepspinK.js            32.32 kB │ gzip:  13.06 kB
+ui build: dist/assets/sql-D0XecflT.js              37.05 kB │ gzip:  10.94 kB
+ui build: dist/assets/index-DJjgRQFI.js            40.73 kB │ gzip:  16.74 kB
+ui build: dist/assets/index-wgnkYybC.js            44.15 kB │ gzip:  15.32 kB
+ui build: dist/assets/index-CZto6pUj.js            45.10 kB │ gzip:  19.16 kB
+ui build: dist/assets/index-ULiJAl3g.js            70.81 kB │ gzip:  25.84 kB
+ui build: dist/assets/index-DwW_3LGU.js            86.63 kB │ gzip:  34.40 kB
+ui build: dist/assets/index-C06eK_Ho.js            97.86 kB │ gzip:  28.45 kB
+ui build: dist/assets/index-BS9i4M9a.js           100.55 kB │ gzip:  33.62 kB
+ui build: dist/assets/index-DSzYteP_.js         2,228.64 kB │ gzip: 664.67 kB
+ui build: ✓ built in 8.62s
+ui build: (!) Some chunks are larger than 500 kB after minification. Consider:
+ui build: - Using dynamic import() to code-split the application
+ui build: - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+ui build: - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+ui build: Done
+cli build$ node --input-type=module -e "import esbuild from 'esbuild'; import config from './esbuild.config.mjs'; await esbuild.build(config);" && chmod +x dist/index.js
+cli build: Done

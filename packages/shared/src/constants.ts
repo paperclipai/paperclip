@@ -21,15 +21,7 @@ export const AGENT_STATUSES = [
 ] as const;
 export type AgentStatus = (typeof AGENT_STATUSES)[number];
 
-export const AGENT_ADAPTER_TYPES = [
-  "process",
-  "http",
-  "claude_local",
-  "codex_local",
-  "opencode_local",
-  "cursor",
-  "openclaw",
-] as const;
+export const AGENT_ADAPTER_TYPES = ["process", "http", "claude_local", "codex_local", "openclaw"] as const;
 export type AgentAdapterType = (typeof AGENT_ADAPTER_TYPES)[number];
 
 export const AGENT_ROLES = [
@@ -134,7 +126,11 @@ export const PROJECT_COLORS = [
   "#3b82f6", // blue
 ] as const;
 
-export const APPROVAL_TYPES = ["hire_agent", "approve_ceo_strategy"] as const;
+export const APPROVAL_TYPES = [
+  "hire_agent",
+  "approve_ceo_strategy",
+  "delegate_issue_transfer",
+] as const;
 export type ApprovalType = (typeof APPROVAL_TYPES)[number];
 
 export const APPROVAL_STATUSES = [
@@ -171,6 +167,7 @@ export type WakeupTriggerDetail = (typeof WAKEUP_TRIGGER_DETAILS)[number];
 export const WAKEUP_REQUEST_STATUSES = [
   "queued",
   "deferred_issue_execution",
+  "deferred_company_paused",
   "claimed",
   "coalesced",
   "skipped",

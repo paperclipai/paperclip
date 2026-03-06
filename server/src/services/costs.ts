@@ -2,6 +2,8 @@ import { and, desc, eq, gte, isNotNull, lte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
+import { logger } from "../middleware/logger.js";
+import { getNotifications } from "./notifications.js";
 
 export interface CostDateRange {
   from?: Date;
@@ -61,6 +63,13 @@ export function costService(db: Db) {
           .update(agents)
           .set({ status: "paused", updatedAt: new Date() })
           .where(eq(agents.id, updatedAgent.id));
+
+        void getNotifications()
+          ?.notifyBudgetExhausted(companyId, {
+            agentId: updatedAgent.id,
+            agentName: updatedAgent.name,
+          })
+          .catch((err) => logger.warn({ err, agentId: updatedAgent.id }, "Failed to send budget exhausted notification"));
       }
 
       return event;

@@ -10,7 +10,7 @@ import { authApi } from "../api/auth";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
 import { useProjectOrder } from "../hooks/useProjectOrder";
-import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
+import { ensureIssueTemplate } from "../lib/issue-template";
 import {
   Dialog,
   DialogContent,
@@ -37,7 +37,6 @@ import {
   Paperclip,
 } from "lucide-react";
 import { cn } from "../lib/utils";
-import { extractProviderIdWithFallback } from "../lib/model-utils";
 import { issueStatusText, issueStatusTextDefault, priorityColor, priorityColorDefault } from "../lib/status-colors";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { AgentIcon } from "./AgentIconPicker";
@@ -69,7 +68,7 @@ interface IssueDraft {
   assigneeUseProjectWorkspace: boolean;
 }
 
-const ISSUE_OVERRIDE_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "opencode_local"]);
+const ISSUE_OVERRIDE_ADAPTER_TYPES = new Set(["claude_local", "codex_local"]);
 
 const ISSUE_THINKING_EFFORT_OPTIONS = {
   claude_local: [
@@ -84,14 +83,6 @@ const ISSUE_THINKING_EFFORT_OPTIONS = {
     { value: "low", label: "Low" },
     { value: "medium", label: "Medium" },
     { value: "high", label: "High" },
-  ],
-  opencode_local: [
-    { value: "", label: "Default" },
-    { value: "minimal", label: "Minimal" },
-    { value: "low", label: "Low" },
-    { value: "medium", label: "Medium" },
-    { value: "high", label: "High" },
-    { value: "max", label: "Max" },
   ],
 } as const;
 
@@ -112,12 +103,8 @@ function buildAssigneeAdapterOverrides(input: {
   if (input.thinkingEffortOverride) {
     if (adapterType === "codex_local") {
       adapterConfig.modelReasoningEffort = input.thinkingEffortOverride;
-    } else if (adapterType === "opencode_local") {
-      adapterConfig.variant = input.thinkingEffortOverride;
     } else if (adapterType === "claude_local") {
       adapterConfig.effort = input.thinkingEffortOverride;
-    } else if (adapterType === "opencode_local") {
-      adapterConfig.variant = input.thinkingEffortOverride;
     }
   }
   if (adapterType === "claude_local" && input.chrome) {
@@ -251,12 +238,9 @@ export function NewIssueDialog() {
   }, [agents, orderedProjects]);
 
   const { data: assigneeAdapterModels } = useQuery({
-    queryKey:
-      effectiveCompanyId && assigneeAdapterType
-        ? queryKeys.agents.adapterModels(effectiveCompanyId, assigneeAdapterType)
-        : ["agents", "none", "adapter-models", assigneeAdapterType ?? "none"],
-    queryFn: () => agentsApi.adapterModels(effectiveCompanyId!, assigneeAdapterType!),
-    enabled: Boolean(effectiveCompanyId) && newIssueOpen && supportsAssigneeOverrides,
+    queryKey: ["adapter-models", assigneeAdapterType],
+    queryFn: () => agentsApi.adapterModels(assigneeAdapterType!),
+    enabled: !!effectiveCompanyId && newIssueOpen && supportsAssigneeOverrides,
   });
 
   const createIssue = useMutation({
@@ -337,7 +321,7 @@ export function NewIssueDialog() {
       setDescription(draft.description);
       setStatus(draft.status || "todo");
       setPriority(draft.priority);
-      setAssigneeId(newIssueDefaults.assigneeAgentId ?? draft.assigneeId);
+      setAssigneeId(newIssueDefaults.assigneeAgentId ?? "");
       setProjectId(newIssueDefaults.projectId ?? draft.projectId);
       setAssigneeModelOverride(draft.assigneeModelOverride ?? "");
       setAssigneeThinkingEffort(draft.assigneeThinkingEffort ?? "");
@@ -368,9 +352,7 @@ export function NewIssueDialog() {
     const validThinkingValues =
       assigneeAdapterType === "codex_local"
         ? ISSUE_THINKING_EFFORT_OPTIONS.codex_local
-        : assigneeAdapterType === "opencode_local"
-          ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
-          : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
+        : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
     if (!validThinkingValues.some((option) => option.value === assigneeThinkingEffort)) {
       setAssigneeThinkingEffort("");
     }
@@ -418,7 +400,14 @@ export function NewIssueDialog() {
   }
 
   function handleSubmit() {
-    if (!effectiveCompanyId || !title.trim()) return;
+    if (!effectiveCompanyId || !title.trim() || !assigneeId) return;
+    const nextDescription = assigneeId
+      ? ensureIssueTemplate(description, {
+        goal: currentProject?.name ?? title.trim(),
+        owner: currentAssignee?.name ?? "TBD",
+        deadline: "TBD",
+      })
+      : description.trim();
     const assigneeAdapterOverrides = buildAssigneeAdapterOverrides({
       adapterType: assigneeAdapterType,
       modelOverride: assigneeModelOverride,
@@ -429,7 +418,7 @@ export function NewIssueDialog() {
     createIssue.mutate({
       companyId: effectiveCompanyId,
       title: title.trim(),
-      description: description.trim() || undefined,
+      description: nextDescription || undefined,
       status,
       priority: priority || "medium",
       ...(assigneeId ? { assigneeAgentId: assigneeId } : {}),
@@ -470,27 +459,21 @@ export function NewIssueDialog() {
       ? "Claude options"
       : assigneeAdapterType === "codex_local"
         ? "Codex options"
-        : assigneeAdapterType === "opencode_local"
-          ? "OpenCode options"
         : "Agent options";
   const thinkingEffortOptions =
     assigneeAdapterType === "codex_local"
       ? ISSUE_THINKING_EFFORT_OPTIONS.codex_local
-      : assigneeAdapterType === "opencode_local"
-        ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
       : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
-  const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [newIssueOpen]);
   const assigneeOptions = useMemo<InlineEntityOption[]>(
     () =>
-      sortAgentsByRecency(
-        (agents ?? []).filter((agent) => agent.status !== "terminated"),
-        recentAssigneeIds,
-      ).map((agent) => ({
-        id: agent.id,
-        label: agent.name,
-        searchText: `${agent.name} ${agent.role} ${agent.title ?? ""}`,
-      })),
-    [agents, recentAssigneeIds],
+      (agents ?? [])
+        .filter((agent) => agent.status !== "terminated")
+        .map((agent) => ({
+          id: agent.id,
+          label: agent.name,
+          searchText: `${agent.name} ${agent.role} ${agent.title ?? ""}`,
+        })),
+    [agents],
   );
   const projectOptions = useMemo<InlineEntityOption[]>(
     () =>
@@ -502,21 +485,12 @@ export function NewIssueDialog() {
     [orderedProjects],
   );
   const modelOverrideOptions = useMemo<InlineEntityOption[]>(
-    () => {
-      return [...(assigneeAdapterModels ?? [])]
-        .sort((a, b) => {
-          const providerA = extractProviderIdWithFallback(a.id);
-          const providerB = extractProviderIdWithFallback(b.id);
-          const byProvider = providerA.localeCompare(providerB);
-          if (byProvider !== 0) return byProvider;
-          return a.id.localeCompare(b.id);
-        })
-        .map((model) => ({
-          id: model.id,
-          label: model.label,
-          searchText: `${model.id} ${extractProviderIdWithFallback(model.id)}`,
-        }));
-    },
+    () =>
+      (assigneeAdapterModels ?? []).map((model) => ({
+        id: model.id,
+        label: model.label,
+        searchText: model.id,
+      })),
     [assigneeAdapterModels],
   );
 
@@ -537,18 +511,6 @@ export function NewIssueDialog() {
             : "sm:max-w-lg"
         )}
         onKeyDown={handleKeyDown}
-        onPointerDownOutside={(event) => {
-          // Radix Dialog's modal DismissableLayer calls preventDefault() on
-          // pointerdown events that originate outside the Dialog DOM tree.
-          // Popover portals render at the body level (outside the Dialog), so
-          // touch events on popover content get their default prevented — which
-          // kills scroll gesture recognition on mobile.  Telling Radix "this
-          // event is handled" skips that preventDefault, restoring touch scroll.
-          const target = event.detail.originalEvent.target as HTMLElement | null;
-          if (target?.closest("[data-radix-popper-content-wrapper]")) {
-            event.preventDefault();
-          }
-        }}
       >
         {/* Header bar */}
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-border shrink-0">
@@ -573,7 +535,7 @@ export function NewIssueDialog() {
                 </button>
               </PopoverTrigger>
               <PopoverContent className="w-48 p-1" align="start">
-                {companies.filter((c) => c.status !== "archived").map((c) => (
+                {companies.map((c) => (
                   <button
                     key={c.id}
                     className={cn(
@@ -656,19 +618,17 @@ export function NewIssueDialog() {
         </div>
 
         <div className="px-4 pb-2 shrink-0">
-          <div className="overflow-x-auto overscroll-x-contain">
-            <div className="inline-flex items-center gap-2 text-sm text-muted-foreground flex-wrap sm:flex-nowrap sm:min-w-max">
+          <div className="overflow-x-auto">
+            <div className="inline-flex min-w-max items-center gap-2 text-sm text-muted-foreground">
               <span>For</span>
               <InlineEntitySelector
                 ref={assigneeSelectorRef}
                 value={assigneeId}
                 options={assigneeOptions}
                 placeholder="Assignee"
-                disablePortal
-                noneLabel="No assignee"
                 searchPlaceholder="Search assignees..."
                 emptyMessage="No assignees found."
-                onChange={(id) => { if (id) trackRecentAssignee(id); setAssigneeId(id); }}
+                onChange={setAssigneeId}
                 onConfirm={() => {
                   projectSelectorRef.current?.focus();
                 }}
@@ -699,7 +659,6 @@ export function NewIssueDialog() {
                 value={projectId}
                 options={projectOptions}
                 placeholder="Project"
-                disablePortal
                 noneLabel="No project"
                 searchPlaceholder="Search projects..."
                 emptyMessage="No projects found."
@@ -755,7 +714,6 @@ export function NewIssueDialog() {
                     value={assigneeModelOverride}
                     options={modelOverrideOptions}
                     placeholder="Default model"
-                    disablePortal
                     noneLabel="Default model"
                     searchPlaceholder="Search models..."
                     emptyMessage="No models found."
@@ -954,7 +912,7 @@ export function NewIssueDialog() {
           </Button>
           <Button
             size="sm"
-            disabled={!title.trim() || createIssue.isPending}
+            disabled={!title.trim() || !assigneeId || createIssue.isPending}
             onClick={handleSubmit}
           >
             {createIssue.isPending ? "Creating..." : "Create Issue"}

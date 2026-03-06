@@ -1,6 +1,6 @@
 ---
 title: Approvals
-summary: Governance flows for hiring and strategy
+summary: Governance flows for hiring, strategy, and delegation
 ---
 
 Paperclip includes approval gates that keep the human board operator in control of key decisions.
@@ -16,6 +16,16 @@ The approval includes the proposed agent's name, role, capabilities, adapter con
 ### CEO Strategy
 
 The CEO's initial strategic plan requires board approval before the CEO can start moving tasks to `in_progress`. This ensures human sign-off on the company direction.
+
+### Delegate Issue Transfer
+
+Use `delegate_issue_transfer` when work should move from one company queue to another (for example, Avi company -> Idan company) with explicit board approval before transfer execution.
+
+On approval:
+
+- A target issue is created in the destination company
+- The source issue is moved to `in_review` (unless already terminal) and unassigned
+- A source issue comment is added with transfer metadata
 
 ## Approval Workflow
 

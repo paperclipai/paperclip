@@ -21,4 +21,5 @@ export const defaultCreateValues: CreateConfigValues = {
   maxTurnsPerRun: 80,
   heartbeatEnabled: false,
   intervalSec: 300,
+  skipIfNoAssignments: false,
 };

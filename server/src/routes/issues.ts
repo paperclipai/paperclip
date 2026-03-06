@@ -21,13 +21,21 @@ import {
   issueService,
   logActivity,
   projectService,
+  workflowAutomationService,
 } from "../services/index.js";
+import {
+  assignmentScopeStrictModeEnabled,
+  evaluateTasksAssignScope,
+  parseTasksAssignScope,
+} from "../services/assignment-scope.js";
 import { logger } from "../middleware/logger.js";
-import { forbidden, HttpError, unauthorized } from "../errors.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
-import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
+import { conflict, forbidden, HttpError, unauthorized, unprocessable } from "../errors.js";
+import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 
 const MAX_ATTACHMENT_BYTES = Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
+const FANOUT_CRITICAL_COMMAND = /(^|\n)\s*\/fanout-critical\b/i;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const UNASSIGNED_FILTER_TOKENS = new Set(["null", "unassigned"]);
 const ALLOWED_ATTACHMENT_CONTENT_TYPES = new Set([
   "image/png",
   "image/jpeg",
@@ -36,11 +44,49 @@ const ALLOWED_ATTACHMENT_CONTENT_TYPES = new Set([
   "image/gif",
 ]);
 
+type IssueAssignmentFields = {
+  assigneeAgentId: string | null | undefined;
+  assigneeUserId: string | null | undefined;
+};
+
+function hasIssueAssignee({ assigneeAgentId, assigneeUserId }: IssueAssignmentFields) {
+  return (
+    (typeof assigneeAgentId === "string" && assigneeAgentId.trim().length > 0) ||
+    (typeof assigneeUserId === "string" && assigneeUserId.trim().length > 0)
+  );
+}
+
+export function assertInteractiveIssueCreateAssignee(fields: IssueAssignmentFields) {
+  if (!hasIssueAssignee(fields)) {
+    throw unprocessable("Interactive issue creation requires an assignee");
+  }
+}
+
+export function assertInteractiveIssueUpdateAssignee(
+  existing: IssueAssignmentFields,
+  patch: IssueAssignmentFields,
+) {
+  const updatesAssignment =
+    patch.assigneeAgentId !== undefined || patch.assigneeUserId !== undefined;
+  if (!updatesAssignment) return;
+
+  const nextAssignment = {
+    assigneeAgentId:
+      patch.assigneeAgentId !== undefined ? patch.assigneeAgentId : existing.assigneeAgentId,
+    assigneeUserId:
+      patch.assigneeUserId !== undefined ? patch.assigneeUserId : existing.assigneeUserId,
+  };
+  if (!hasIssueAssignee(nextAssignment)) {
+    throw unprocessable("Interactive issue updates cannot clear the assignee");
+  }
+}
+
 export function issueRoutes(db: Db, storage: StorageService) {
   const router = Router();
   const svc = issueService(db);
   const access = accessService(db);
   const heartbeat = heartbeatService(db);
+  const workflowAutomation = workflowAutomationService(db);
   const agentsSvc = agentService(db);
   const projectsSvc = projectService(db);
   const goalsSvc = goalService(db);
@@ -89,23 +135,74 @@ export function issueRoutes(db: Db, storage: StorageService) {
     return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
   }
 
-  async function assertCanAssignTasks(req: Request, companyId: string) {
+  type AssignmentMutationIntent = {
+    projectId: string | null | undefined;
+    assigneeAgentId: string | null | undefined;
+    assigneeUserId: string | null | undefined;
+  };
+
+  async function assertCanAssignTasks(req: Request, companyId: string, intent?: AssignmentMutationIntent) {
     assertCompanyAccess(req, companyId);
+    let actorPrincipal: { principalType: "user" | "agent"; principalId: string } | null = null;
     if (req.actor.type === "board") {
       if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
+      if (!req.actor.userId) throw unauthorized();
       const allowed = await access.canUser(companyId, req.actor.userId, "tasks:assign");
       if (!allowed) throw forbidden("Missing permission: tasks:assign");
-      return;
-    }
-    if (req.actor.type === "agent") {
+      actorPrincipal = { principalType: "user", principalId: req.actor.userId };
+    } else if (req.actor.type === "agent") {
       if (!req.actor.agentId) throw forbidden("Agent authentication required");
       const allowedByGrant = await access.hasPermission(companyId, "agent", req.actor.agentId, "tasks:assign");
-      if (allowedByGrant) return;
-      const actorAgent = await agentsSvc.getById(req.actor.agentId);
-      if (actorAgent && actorAgent.companyId === companyId && canCreateAgentsLegacy(actorAgent)) return;
-      throw forbidden("Missing permission: tasks:assign");
+      if (!allowedByGrant) {
+        // tasks:assign_scope implies tasks:assign — a scoped grant is sufficient
+        const allowedByScopeGrant = await access.hasPermission(companyId, "agent", req.actor.agentId, "tasks:assign_scope");
+        if (!allowedByScopeGrant) {
+          const actorAgent = await agentsSvc.getById(req.actor.agentId);
+          if (!actorAgent || actorAgent.companyId !== companyId || !canCreateAgentsLegacy(actorAgent)) {
+            throw forbidden("Missing permission: tasks:assign");
+          }
+        }
+      }
+      actorPrincipal = { principalType: "agent", principalId: req.actor.agentId };
+    } else {
+      throw unauthorized();
     }
-    throw unauthorized();
+
+    if (!intent || !actorPrincipal) return;
+
+    const scopeGrant = await access.getPermissionGrant(
+      companyId,
+      actorPrincipal.principalType,
+      actorPrincipal.principalId,
+      "tasks:assign_scope",
+    );
+    if (!scopeGrant) {
+      if (assignmentScopeStrictModeEnabled()) {
+        throw new HttpError(403, "Missing permission: tasks:assign_scope", { reason: "missing_scope_grant" });
+      }
+      return;
+    }
+
+    const parsedScope = parseTasksAssignScope(scopeGrant.scope);
+    if (!parsedScope.ok) {
+      throw new HttpError(403, "Missing permission: tasks:assign_scope", { reason: parsedScope.reason });
+    }
+
+    let assigneeAgentRole: string | null = null;
+    if (intent.assigneeAgentId) {
+      const assigneeAgent = await agentsSvc.getById(intent.assigneeAgentId);
+      if (assigneeAgent && assigneeAgent.companyId === companyId) assigneeAgentRole = assigneeAgent.role;
+    }
+
+    const scopeDecision = evaluateTasksAssignScope(parsedScope.scope, {
+      projectId: intent.projectId,
+      assigneeAgentId: intent.assigneeAgentId,
+      assigneeAgentRole,
+      assigneeUserId: intent.assigneeUserId,
+    });
+    if (!scopeDecision.allowed) {
+      throw new HttpError(403, "Missing permission: tasks:assign_scope", { reason: scopeDecision.reason });
+    }
   }
 
   function requireAgentRunId(req: Request, res: Response) {
@@ -113,6 +210,36 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const runId = req.actor.runId?.trim();
     if (runId) return runId;
     res.status(401).json({ error: "Agent run id required" });
+    return null;
+  }
+
+  function forceAssignmentEnabled(req: Request) {
+    const raw = req.query.force;
+    if (typeof raw === "string") return raw.toLowerCase() === "true";
+    if (Array.isArray(raw)) {
+      return raw.some((value) => typeof value === "string" && value.toLowerCase() === "true");
+    }
+    return false;
+  }
+
+  function normalizeQueryToken(raw: unknown): string | undefined {
+    if (typeof raw !== "string") return undefined;
+    const trimmed = raw.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+
+  function isUnassignedFilterToken(value: string | undefined): boolean {
+    if (!value) return false;
+    return UNASSIGNED_FILTER_TOKENS.has(value.toLowerCase());
+  }
+
+  function issueIdFromRunContextSnapshot(snapshot: unknown): string | null {
+    if (typeof snapshot !== "object" || snapshot == null || Array.isArray(snapshot)) return null;
+    const context = snapshot as Record<string, unknown>;
+    const issueId = context.issueId;
+    if (typeof issueId === "string" && issueId.trim().length > 0) return issueId;
+    const taskId = context.taskId;
+    if (typeof taskId === "string" && taskId.trim().length > 0) return taskId;
     return null;
   }
 
@@ -187,45 +314,50 @@ export function issueRoutes(db: Db, storage: StorageService) {
   router.get("/companies/:companyId/issues", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const assigneeUserFilterRaw = req.query.assigneeUserId as string | undefined;
-    const touchedByUserFilterRaw = req.query.touchedByUserId as string | undefined;
-    const unreadForUserFilterRaw = req.query.unreadForUserId as string | undefined;
+    const assigneeAgentFilterRaw = normalizeQueryToken(req.query.assigneeAgentId);
+    const assigneeAgentUnassigned = isUnassignedFilterToken(assigneeAgentFilterRaw);
+    const assigneeAgentId = assigneeAgentUnassigned ? undefined : assigneeAgentFilterRaw;
+    if (assigneeAgentId && !UUID_PATTERN.test(assigneeAgentId)) {
+      res.status(400).json({ error: "Invalid assigneeAgentId filter" });
+      return;
+    }
+
+    const assigneeUserFilterRaw = normalizeQueryToken(req.query.assigneeUserId);
+    const assigneeUserUnassigned = isUnassignedFilterToken(assigneeUserFilterRaw);
     const assigneeUserId =
       assigneeUserFilterRaw === "me" && req.actor.type === "board"
         ? req.actor.userId
-        : assigneeUserFilterRaw;
-    const touchedByUserId =
-      touchedByUserFilterRaw === "me" && req.actor.type === "board"
-        ? req.actor.userId
-        : touchedByUserFilterRaw;
-    const unreadForUserId =
-      unreadForUserFilterRaw === "me" && req.actor.type === "board"
-        ? req.actor.userId
-        : unreadForUserFilterRaw;
+        : assigneeUserUnassigned
+          ? undefined
+          : assigneeUserFilterRaw;
+
+    const unassigned = assigneeAgentUnassigned || assigneeUserUnassigned;
 
     if (assigneeUserFilterRaw === "me" && (!assigneeUserId || req.actor.type !== "board")) {
       res.status(403).json({ error: "assigneeUserId=me requires board authentication" });
       return;
     }
-    if (touchedByUserFilterRaw === "me" && (!touchedByUserId || req.actor.type !== "board")) {
-      res.status(403).json({ error: "touchedByUserId=me requires board authentication" });
-      return;
-    }
-    if (unreadForUserFilterRaw === "me" && (!unreadForUserId || req.actor.type !== "board")) {
-      res.status(403).json({ error: "unreadForUserId=me requires board authentication" });
+    if (unassigned && (assigneeAgentId || assigneeUserId)) {
+      res.status(400).json({ error: "Cannot combine unassigned filter with assignee filters" });
       return;
     }
 
     const result = await svc.list(companyId, {
       status: req.query.status as string | undefined,
-      assigneeAgentId: req.query.assigneeAgentId as string | undefined,
+      assigneeAgentId,
       assigneeUserId,
-      touchedByUserId,
-      unreadForUserId,
+      unassigned,
       projectId: req.query.projectId as string | undefined,
       labelId: req.query.labelId as string | undefined,
       q: req.query.q as string | undefined,
     });
+    res.json(result);
+  });
+
+  router.get("/companies/:companyId/issues/assignment-capacity", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const result = await svc.listAssignmentCapacity(companyId);
     res.json(result);
   });
 
@@ -303,38 +435,6 @@ export function issueRoutes(db: Db, storage: StorageService) {
     res.json({ ...issue, ancestors, project: project ?? null, goal: goal ?? null, mentionedProjects });
   });
 
-  router.post("/issues/:id/read", async (req, res) => {
-    const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
-    if (req.actor.type !== "board") {
-      res.status(403).json({ error: "Board authentication required" });
-      return;
-    }
-    if (!req.actor.userId) {
-      res.status(403).json({ error: "Board user context required" });
-      return;
-    }
-    const readState = await svc.markRead(issue.companyId, issue.id, req.actor.userId, new Date());
-    const actor = getActorInfo(req);
-    await logActivity(db, {
-      companyId: issue.companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      action: "issue.read_marked",
-      entityType: "issue",
-      entityId: issue.id,
-      details: { userId: req.actor.userId, lastReadAt: readState.lastReadAt },
-    });
-    res.json(readState);
-  });
-
   router.get("/issues/:id/approvals", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
@@ -409,16 +509,25 @@ export function issueRoutes(db: Db, storage: StorageService) {
   router.post("/companies/:companyId/issues", validate(createIssueSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    assertInteractiveIssueCreateAssignee({
+      assigneeAgentId: req.body.assigneeAgentId,
+      assigneeUserId: req.body.assigneeUserId,
+    });
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
-      await assertCanAssignTasks(req, companyId);
+      await assertCanAssignTasks(req, companyId, {
+        projectId: req.body.projectId,
+        assigneeAgentId: req.body.assigneeAgentId,
+        assigneeUserId: req.body.assigneeUserId,
+      });
     }
 
     const actor = getActorInfo(req);
+    const forceAssignment = forceAssignmentEnabled(req);
     const issue = await svc.create(companyId, {
       ...req.body,
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
-    });
+    }, { forceAssignment });
 
     await logActivity(db, {
       companyId,
@@ -457,6 +566,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    assertInteractiveIssueUpdateAssignee(existing, {
+      assigneeAgentId: req.body.assigneeAgentId,
+      assigneeUserId: req.body.assigneeUserId,
+    });
     const assigneeWillChange =
       (req.body.assigneeAgentId !== undefined && req.body.assigneeAgentId !== existing.assigneeAgentId) ||
       (req.body.assigneeUserId !== undefined && req.body.assigneeUserId !== existing.assigneeUserId);
@@ -472,7 +585,16 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
     if (assigneeWillChange) {
       if (!isAgentReturningIssueToCreator) {
-        await assertCanAssignTasks(req, existing.companyId);
+        const targetProjectId = req.body.projectId !== undefined ? req.body.projectId : existing.projectId;
+        const targetAssigneeAgentId =
+          req.body.assigneeAgentId !== undefined ? req.body.assigneeAgentId : existing.assigneeAgentId;
+        const targetAssigneeUserId =
+          req.body.assigneeUserId !== undefined ? req.body.assigneeUserId : existing.assigneeUserId;
+        await assertCanAssignTasks(req, existing.companyId, {
+          projectId: targetProjectId,
+          assigneeAgentId: targetAssigneeAgentId,
+          assigneeUserId: targetAssigneeUserId,
+        });
       }
     }
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
@@ -482,8 +604,9 @@ export function issueRoutes(db: Db, storage: StorageService) {
       updateFields.hiddenAt = hiddenAtRaw ? new Date(hiddenAtRaw) : null;
     }
     let issue;
+    const forceAssignment = forceAssignmentEnabled(req);
     try {
-      issue = await svc.update(id, updateFields);
+      issue = await svc.update(id, updateFields, { forceAssignment });
     } catch (err) {
       if (err instanceof HttpError && err.status === 422) {
         logger.warn(
@@ -687,26 +810,17 @@ export function issueRoutes(db: Db, storage: StorageService) {
       details: { agentId: req.body.agentId },
     });
 
-    if (
-      shouldWakeAssigneeOnCheckout({
-        actorType: req.actor.type,
-        actorAgentId: req.actor.type === "agent" ? req.actor.agentId ?? null : null,
-        checkoutAgentId: req.body.agentId,
-        checkoutRunId,
+    void heartbeat
+      .wakeup(req.body.agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_checked_out",
+        payload: { issueId: issue.id, mutation: "checkout" },
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+        contextSnapshot: { issueId: issue.id, source: "issue.checkout" },
       })
-    ) {
-      void heartbeat
-        .wakeup(req.body.agentId, {
-          source: "assignment",
-          triggerDetail: "system",
-          reason: "issue_checked_out",
-          payload: { issueId: issue.id, mutation: "checkout" },
-          requestedByActorType: actor.actorType,
-          requestedByActorId: actor.actorId,
-          contextSnapshot: { issueId: issue.id, source: "issue.checkout" },
-        })
-        .catch((err) => logger.warn({ err, issueId: issue.id }, "failed to wake assignee on issue checkout"));
-    }
+      .catch((err) => logger.warn({ err, issueId: issue.id }, "failed to wake assignee on issue checkout"));
 
     res.json(updated);
   });
@@ -748,6 +862,195 @@ export function issueRoutes(db: Db, storage: StorageService) {
     res.json(released);
   });
 
+  router.post("/issues/:id/clean-retry", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    assertBoard(req);
+
+    const actor = getActorInfo(req);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const requestedRunId = typeof body.runId === "string" && body.runId.trim().length > 0
+      ? body.runId.trim()
+      : null;
+    const requestedAssigneeAgentId = typeof body.assigneeAgentId === "string" && body.assigneeAgentId.trim().length > 0
+      ? body.assigneeAgentId.trim()
+      : null;
+    const shouldAutoBalance = !requestedAssigneeAgentId && issue.priority === "critical";
+    const balancingDecision = shouldAutoBalance
+      ? await svc.selectBalancedAssignee({
+          companyId: issue.companyId,
+          priority: issue.priority,
+          targetStatus: "in_progress",
+          projectId: issue.projectId,
+          includeAgentId: issue.assigneeAgentId,
+        })
+      : null;
+    const assigneeAgentId =
+      requestedAssigneeAgentId ??
+      (balancingDecision && balancingDecision.mode === "auto" ? balancingDecision.selectedAgentId : null) ??
+      issue.assigneeAgentId;
+
+    if (!assigneeAgentId) {
+      throw unprocessable("Clean retry requires an assigneeAgentId");
+    }
+
+    const assignee = await agentsSvc.getById(assigneeAgentId);
+    if (!assignee || assignee.companyId !== issue.companyId) {
+      throw unprocessable("Assignee must belong to the issue company");
+    }
+    if (assignee.status === "pending_approval" || assignee.status === "terminated") {
+      throw conflict("Assignee is not invokable in its current state", { status: assignee.status });
+    }
+
+    let previousRun =
+      requestedRunId
+        ? await heartbeat.getRun(requestedRunId)
+        : issue.executionRunId
+          ? await heartbeat.getRun(issue.executionRunId)
+          : null;
+
+    if (previousRun && previousRun.companyId !== issue.companyId) {
+      previousRun = null;
+    }
+
+    if (previousRun) {
+      const linkedIssueId = issueIdFromRunContextSnapshot(previousRun.contextSnapshot);
+      if (linkedIssueId && linkedIssueId !== issue.id) {
+        previousRun = null;
+      }
+    }
+
+    if (!previousRun) {
+      const activeRun = await heartbeat.getActiveRunForAgent(assigneeAgentId);
+      if (activeRun && activeRun.companyId === issue.companyId) {
+        const activeIssueId = issueIdFromRunContextSnapshot(activeRun.contextSnapshot);
+        if (!activeIssueId || activeIssueId === issue.id) {
+          previousRun = activeRun;
+        }
+      }
+    }
+
+    let cancelledRunId: string | null = null;
+    if (previousRun && (previousRun.status === "queued" || previousRun.status === "running")) {
+      const cancelled = await heartbeat.cancelRun(previousRun.id);
+      if (cancelled) {
+        cancelledRunId = cancelled.id;
+        await logActivity(db, {
+          companyId: cancelled.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "heartbeat.cancelled",
+          entityType: "heartbeat_run",
+          entityId: cancelled.id,
+          details: {
+            agentId: cancelled.agentId,
+            source: "issue_clean_retry",
+            issueId: issue.id,
+          },
+        });
+      }
+    }
+
+    const previousRunId = cancelledRunId ?? previousRun?.id ?? requestedRunId ?? issue.executionRunId ?? null;
+
+    const released = await svc.release(issue.id);
+    if (!released) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+
+    const retriedIssue = await svc.checkout(
+      issue.id,
+      assigneeAgentId,
+      ["todo", "backlog", "blocked", "in_progress"],
+      null,
+    );
+
+    const newRun = await heartbeat.wakeup(assigneeAgentId, {
+      source: "assignment",
+      triggerDetail: "manual",
+      reason: "clean_retry_failed_assignment",
+      payload: {
+        issueId: issue.id,
+        taskId: issue.id,
+        cleanRetry: true,
+        previousRunId,
+      },
+      requestedByActorType: actor.actorType,
+      requestedByActorId: actor.actorId,
+      contextSnapshot: {
+        issueId: issue.id,
+        taskId: issue.id,
+        source: "issue.clean_retry",
+      },
+    });
+
+    if (!newRun) {
+      throw conflict("Clean retry wakeup was skipped because the assignee is not invokable");
+    }
+
+    const commentBody = [
+      "## Clean Retry",
+      "",
+      "Executed one-step assignment recovery.",
+      "",
+      `- Previous run: ${previousRunId ? `[${previousRunId}](/agents/${assigneeAgentId}/runs/${previousRunId})` : "none"}`,
+      `- New run: [${newRun.id}](/agents/${assigneeAgentId}/runs/${newRun.id})`,
+      `- Assignee: [${assignee.name}](/agents/${assignee.id})`,
+      balancingDecision && balancingDecision.mode !== "disabled"
+        ? `- Auto-balancer (${balancingDecision.mode}): selected ${balancingDecision.selectedAgentName ?? balancingDecision.selectedAgentId ?? "none"} from ${balancingDecision.candidatesEvaluated} candidate(s)`
+        : null,
+    ].join("\n");
+
+    const comment = await svc.addComment(issue.id, commentBody, {
+      agentId: actor.agentId ?? undefined,
+      userId: actor.actorType === "user" ? actor.actorId : undefined,
+    });
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.clean_retried",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        issueId: issue.id,
+        issueIdentifier: issue.identifier,
+        assigneeAgentId,
+        previousRunId,
+        newRunId: newRun.id,
+        commentId: comment.id,
+        autoBalancer:
+          balancingDecision && balancingDecision.mode !== "disabled"
+            ? {
+                mode: balancingDecision.mode,
+                selectedAgentId: balancingDecision.selectedAgentId,
+                selectedAgentName: balancingDecision.selectedAgentName,
+                candidatesEvaluated: balancingDecision.candidatesEvaluated,
+                topCandidates: balancingDecision.topCandidates,
+              }
+            : undefined,
+      },
+    });
+
+    res.json({
+      issue: retriedIssue,
+      previousRunId,
+      newRun,
+      commentId: comment.id,
+    });
+  });
+
   router.get("/issues/:id/comments", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
@@ -758,23 +1061,6 @@ export function issueRoutes(db: Db, storage: StorageService) {
     assertCompanyAccess(req, issue.companyId);
     const comments = await svc.listComments(id);
     res.json(comments);
-  });
-
-  router.get("/issues/:id/comments/:commentId", async (req, res) => {
-    const id = req.params.id as string;
-    const commentId = req.params.commentId as string;
-    const issue = await svc.getById(id);
-    if (!issue) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
-    const comment = await svc.getComment(commentId);
-    if (!comment || comment.issueId !== id) {
-      res.status(404).json({ error: "Comment not found" });
-      return;
-    }
-    res.json(comment);
   });
 
   router.post("/issues/:id/comments", validate(addIssueCommentSchema), async (req, res) => {
@@ -894,6 +1180,86 @@ export function issueRoutes(db: Db, storage: StorageService) {
         ...(interruptedRunId ? { interruptedRunId } : {}),
       },
     });
+
+    if (FANOUT_CRITICAL_COMMAND.test(req.body.body)) {
+      try {
+        await assertCanAssignTasks(req, currentIssue.companyId);
+        const result = await workflowAutomation.fanoutCritical({
+          companyId: currentIssue.companyId,
+          parentIssueId: currentIssue.id,
+          requestedByAgentId: actor.agentId ?? null,
+          requestedByUserId: actor.actorType === "user" ? actor.actorId : null,
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+        });
+        const createdRefs = result.created
+          .slice(0, 12)
+          .map((createdIssue) => `[${createdIssue.identifier ?? createdIssue.id}](/issues/${createdIssue.identifier ?? createdIssue.id})`)
+          .join(", ");
+        const summary = [
+          "## Critical Fanout",
+          "",
+          "Executed `/fanout-critical` for this parent issue.",
+          "",
+          `- Created child issues: ${result.created.length}`,
+          `- Skipped as duplicates: ${result.duplicates.length}`,
+          `- Skipped with errors: ${result.skipped.length}`,
+          `- New issues: ${createdRefs || "none"}`,
+          result.duplicates.length > 0 ? `- Duplicate assignees: ${result.duplicates.join(", ")}` : null,
+          result.skipped.length > 0 ? `- Failed assignees: ${result.skipped.join(", ")}` : null,
+        ]
+          .filter((line): line is string => Boolean(line))
+          .join("\n");
+        const summaryComment = await svc.addComment(id, summary, {});
+        await logActivity(db, {
+          companyId: currentIssue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.comment_added",
+          entityType: "issue",
+          entityId: currentIssue.id,
+          details: {
+            commentId: summaryComment.id,
+            bodySnippet: summaryComment.body.slice(0, 120),
+            identifier: currentIssue.identifier,
+            issueTitle: currentIssue.title,
+            source: "fanout_critical",
+          },
+        });
+      } catch (err) {
+        logger.warn({ err, issueId: id }, "failed to execute /fanout-critical command");
+        const failureComment = await svc.addComment(
+          id,
+          [
+            "## Critical Fanout",
+            "",
+            "Tried to execute `/fanout-critical` but failed.",
+            "",
+            "- Check assignment permissions and issue template requirements.",
+          ].join("\n"),
+          {},
+        );
+        await logActivity(db, {
+          companyId: currentIssue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.comment_added",
+          entityType: "issue",
+          entityId: currentIssue.id,
+          details: {
+            commentId: failureComment.id,
+            bodySnippet: failureComment.body.slice(0, 120),
+            identifier: currentIssue.identifier,
+            issueTitle: currentIssue.title,
+            source: "fanout_critical_error",
+          },
+        });
+      }
+    }
 
     // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
     void (async () => {

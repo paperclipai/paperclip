@@ -1,3 +1,5 @@
+import fs from "node:fs/promises";
+import os from "node:os";
 import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestContext,
@@ -38,6 +40,16 @@ function firstNonEmptyLine(text: string): string {
 function commandLooksLike(command: string, expected: string): boolean {
   const base = path.basename(command).toLowerCase();
   return base === expected || base === `${expected}.cmd` || base === `${expected}.exe`;
+}
+
+function resolveCodexHomeDir(env: Record<string, string>): string {
+  const explicit = env.CODEX_HOME ?? process.env.CODEX_HOME;
+  if (isNonEmpty(explicit)) return explicit.trim();
+
+  const home = env.HOME ?? process.env.HOME;
+  if (isNonEmpty(home)) return path.join(home.trim(), ".codex");
+
+  return path.join(os.homedir(), ".codex");
 }
 
 function summarizeProbeDetail(stdout: string, stderr: string, parsedError: string | null): string | null {
@@ -99,6 +111,12 @@ export async function testEnvironment(
 
   const configOpenAiKey = env.OPENAI_API_KEY;
   const hostOpenAiKey = process.env.OPENAI_API_KEY;
+  const codexHome = resolveCodexHomeDir(env);
+  const codexAuthPath = path.join(codexHome, "auth.json");
+  const hasCodexLogin = await fs
+    .stat(codexAuthPath)
+    .then((stat) => stat.isFile())
+    .catch(() => false);
   if (isNonEmpty(configOpenAiKey) || isNonEmpty(hostOpenAiKey)) {
     const source = isNonEmpty(configOpenAiKey) ? "adapter config env" : "server environment";
     checks.push({
@@ -107,12 +125,19 @@ export async function testEnvironment(
       message: "OPENAI_API_KEY is set for Codex authentication.",
       detail: `Detected in ${source}.`,
     });
+  } else if (hasCodexLogin) {
+    checks.push({
+      code: "codex_subscription_auth_present",
+      level: "info",
+      message: "Codex subscription login is configured (auth.json found).",
+      detail: codexAuthPath,
+    });
   } else {
     checks.push({
-      code: "codex_openai_api_key_missing",
+      code: "codex_auth_missing",
       level: "warn",
-      message: "OPENAI_API_KEY is not set. Codex runs may fail until authentication is configured.",
-      hint: "Set OPENAI_API_KEY in adapter env, shell environment, or Codex auth configuration.",
+      message: "Codex authentication is not configured yet.",
+      hint: "Run `codex login --device-auth` (subscription) or set OPENAI_API_KEY.",
     });
   }
 
@@ -200,7 +225,7 @@ export async function testEnvironment(
           level: "warn",
           message: "Codex CLI is installed, but authentication is not ready.",
           ...(detail ? { detail } : {}),
-          hint: "Configure OPENAI_API_KEY in adapter env/shell or run `codex login`, then retry the probe.",
+          hint: "Run `codex login --device-auth` (recommended for subscription) or configure OPENAI_API_KEY, then retry the probe.",
         });
       } else {
         checks.push({

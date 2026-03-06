@@ -9,6 +9,7 @@ import {
   SquarePen,
   Network,
   Settings,
+  Zap,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarSection } from "./SidebarSection";
@@ -65,7 +66,7 @@ export function Sidebar() {
         </Button>
       </div>
 
-      <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide flex flex-col gap-4 px-3 py-2">
+      <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-none flex flex-col gap-4 px-3 py-2">
         <div className="flex flex-col gap-0.5">
           {/* New Issue button aligned with nav items */}
           <button
@@ -87,6 +88,7 @@ export function Sidebar() {
         </div>
 
         <SidebarSection label="Work">
+          <SidebarNavItem to="/work" label="Work in Progress" icon={Zap} />
           <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} />
           <SidebarNavItem to="/goals" label="Goals" icon={Target} />
         </SidebarSection>

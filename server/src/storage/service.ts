@@ -2,6 +2,10 @@ import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { StorageService, StorageProvider, PutFileInput, PutFileResult } from "./types.js";
 import { badRequest, forbidden, unprocessable } from "../errors.js";
+import {
+  detectImageContentTypeBySignature,
+  normalizeDeclaredImageContentType,
+} from "../security/file-signatures.js";
 
 const MAX_SEGMENT_LENGTH = 120;
 
@@ -84,6 +88,19 @@ function assertPutFileInput(input: PutFileInput): void {
   }
   if (input.body.length <= 0) {
     throw unprocessable("File is empty");
+  }
+
+  const normalizedType = input.contentType.trim().toLowerCase();
+  const declaredImageType = normalizeDeclaredImageContentType(normalizedType);
+  if (!declaredImageType) return;
+  const detectedImageType = detectImageContentTypeBySignature(input.body);
+  if (!detectedImageType) {
+    throw unprocessable("Uploaded file does not match a supported image signature");
+  }
+  if (detectedImageType !== declaredImageType) {
+    throw unprocessable(
+      `Image content type mismatch: declared ${declaredImageType}, detected ${detectedImageType}`,
+    );
   }
 }
 

@@ -44,6 +44,18 @@ export interface IssueLabel {
   updatedAt: Date;
 }
 
+export interface IssueAssignmentCapacity {
+  agentId: string;
+  maxRunning: number | null;
+  maxQueued: number | null;
+  running: number;
+  queued: number;
+  availableRunning: number | null;
+  availableQueued: number | null;
+  runningAtCapacity: boolean;
+  queuedAtCapacity: boolean;
+}
+
 export interface IssueAssigneeAdapterOverrides {
   adapterConfig?: Record<string, unknown>;
   useProjectWorkspace?: boolean;
@@ -82,9 +94,6 @@ export interface Issue {
   project?: Project | null;
   goal?: Goal | null;
   mentionedProjects?: Project[];
-  myLastTouchAt?: Date | null;
-  lastExternalCommentAt?: Date | null;
-  isUnreadForMe?: boolean;
   createdAt: Date;
   updatedAt: Date;
 }

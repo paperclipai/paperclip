@@ -149,14 +149,7 @@ export async function promptServer(opts?: {
   }
 
   return {
-    server: {
-      deploymentMode,
-      exposure,
-      host: hostStr.trim(),
-      port,
-      allowedHostnames,
-      serveUi: currentServer?.serveUi ?? true,
-    },
+    server: { deploymentMode, exposure, host: hostStr.trim(), port, allowedHostnames, serveUi: true },
     auth,
   };
 }

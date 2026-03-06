@@ -27,7 +27,7 @@ import {
   logActivity,
   secretService,
 } from "../services/index.js";
-import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { findServerAdapter, listAdapterModels } from "../adapters/index.js";
 import { redactEventPayload } from "../redaction.js";
@@ -36,15 +36,11 @@ import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
 } from "@paperclipai/adapter-codex-local";
-import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
-import { ensureOpenCodeModelConfiguredAndAvailable } from "@paperclipai/adapter-opencode-local/server";
 
 export function agentRoutes(db: Db) {
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
     claude_local: "instructionsFilePath",
     codex_local: "instructionsFilePath",
-    opencode_local: "instructionsFilePath",
-    cursor: "instructionsFilePath",
   };
   const KNOWN_INSTRUCTIONS_PATH_KEYS = new Set(["instructionsFilePath", "agentsMdPath"]);
 
@@ -152,10 +148,7 @@ export function agentRoutes(db: Db) {
     if (resolved.ambiguous) {
       throw conflict("Agent shortname is ambiguous in this company. Use the agent ID.");
     }
-    if (!resolved.agent) {
-      throw notFound("Agent not found");
-    }
-    return resolved.agent.id;
+    return resolved.agent?.id ?? raw;
   }
 
   function parseSourceIssueIds(input: {
@@ -185,45 +178,19 @@ export function agentRoutes(db: Db) {
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
   ): Record<string, unknown> {
+    if (adapterType !== "codex_local") return adapterConfig;
+
     const next = { ...adapterConfig };
-    if (adapterType === "codex_local") {
-      if (!asNonEmptyString(next.model)) {
-        next.model = DEFAULT_CODEX_LOCAL_MODEL;
-      }
-      const hasBypassFlag =
-        typeof next.dangerouslyBypassApprovalsAndSandbox === "boolean" ||
-        typeof next.dangerouslyBypassSandbox === "boolean";
-      if (!hasBypassFlag) {
-        next.dangerouslyBypassApprovalsAndSandbox = DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
-      }
-      return next;
+    if (!asNonEmptyString(next.model)) {
+      next.model = DEFAULT_CODEX_LOCAL_MODEL;
     }
-    // OpenCode requires explicit model selection — no default
-    if (adapterType === "cursor" && !asNonEmptyString(next.model)) {
-      next.model = DEFAULT_CURSOR_LOCAL_MODEL;
+    const hasBypassFlag =
+      typeof next.dangerouslyBypassApprovalsAndSandbox === "boolean" ||
+      typeof next.dangerouslyBypassSandbox === "boolean";
+    if (!hasBypassFlag) {
+      next.dangerouslyBypassApprovalsAndSandbox = DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
     }
     return next;
-  }
-
-  async function assertAdapterConfigConstraints(
-    companyId: string,
-    adapterType: string | null | undefined,
-    adapterConfig: Record<string, unknown>,
-  ) {
-    if (adapterType !== "opencode_local") return;
-    const runtimeConfig = await secretsSvc.resolveAdapterConfigForRuntime(companyId, adapterConfig);
-    const runtimeEnv = asRecord(runtimeConfig.env) ?? {};
-    try {
-      await ensureOpenCodeModelConfiguredAndAvailable({
-        model: runtimeConfig.model,
-        command: runtimeConfig.command,
-        cwd: runtimeConfig.cwd,
-        env: runtimeEnv,
-      });
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      throw unprocessable(`Invalid opencode_local adapterConfig: ${reason}`);
-    }
   }
 
   function resolveInstructionsFilePath(candidatePath: string, adapterConfig: Record<string, unknown>) {
@@ -357,9 +324,7 @@ export function agentRoutes(db: Db) {
     }
   });
 
-  router.get("/companies/:companyId/adapters/:type/models", async (req, res) => {
-    const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+  router.get("/adapters/:type/models", async (req, res) => {
     const type = req.params.type as string;
     const models = await listAdapterModels(type);
     res.json(models);
@@ -570,6 +535,19 @@ export function agentRoutes(db: Db) {
     );
   });
 
+  router.get("/companies/:companyId/agent-task-sessions", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const sessions = await heartbeat.listTaskSessionsForCompany(companyId);
+    res.json(
+      sessions.map((session) => ({
+        ...session,
+        sessionParamsJson: redactEventPayload(session.sessionParamsJson ?? null),
+      })),
+    );
+  });
+
   router.post("/agents/:id/runtime-state/reset-session", validate(resetAgentSessionSchema), async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
@@ -612,11 +590,6 @@ export function agentRoutes(db: Db) {
       companyId,
       requestedAdapterConfig,
       { strictMode: strictSecretsMode },
-    );
-    await assertAdapterConfigConstraints(
-      companyId,
-      hireInput.adapterType,
-      normalizedAdapterConfig,
     );
     const normalizedHireInput = {
       ...hireInput,
@@ -752,11 +725,6 @@ export function agentRoutes(db: Db) {
       companyId,
       requestedAdapterConfig,
       { strictMode: strictSecretsMode },
-    );
-    await assertAdapterConfigConstraints(
-      companyId,
-      req.body.adapterType,
-      normalizedAdapterConfig,
     );
 
     const agent = await svc.create(companyId, {
@@ -937,27 +905,6 @@ export function agentRoutes(db: Db) {
       );
     }
 
-    const requestedAdapterType =
-      typeof patchData.adapterType === "string" ? patchData.adapterType : existing.adapterType;
-    const touchesAdapterConfiguration =
-      Object.prototype.hasOwnProperty.call(patchData, "adapterType") ||
-      Object.prototype.hasOwnProperty.call(patchData, "adapterConfig");
-    if (touchesAdapterConfiguration && requestedAdapterType === "opencode_local") {
-      const rawEffectiveAdapterConfig = Object.prototype.hasOwnProperty.call(patchData, "adapterConfig")
-        ? (asRecord(patchData.adapterConfig) ?? {})
-        : (asRecord(existing.adapterConfig) ?? {});
-      const effectiveAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
-        existing.companyId,
-        rawEffectiveAdapterConfig,
-        { strictMode: strictSecretsMode },
-      );
-      await assertAdapterConfigConstraints(
-        existing.companyId,
-        requestedAdapterType,
-        effectiveAdapterConfig,
-      );
-    }
-
     const actor = getActorInfo(req);
     const agent = await svc.update(id, patchData, {
       recordRevision: {
@@ -1077,6 +1024,12 @@ export function agentRoutes(db: Db) {
   router.get("/agents/:id/keys", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, agent.companyId);
     const keys = await svc.listKeys(id);
     res.json(keys);
   });
@@ -1084,32 +1037,53 @@ export function agentRoutes(db: Db) {
   router.post("/agents/:id/keys", validate(createAgentKeySchema), async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, agent.companyId);
     const key = await svc.createApiKey(id, req.body.name);
 
-    const agent = await svc.getById(id);
-    if (agent) {
-      await logActivity(db, {
-        companyId: agent.companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
-        action: "agent.key_created",
-        entityType: "agent",
-        entityId: agent.id,
-        details: { keyId: key.id, name: key.name },
-      });
-    }
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "agent.key_created",
+      entityType: "agent",
+      entityId: agent.id,
+      details: { keyId: key.id, name: key.name },
+    });
 
     res.status(201).json(key);
   });
 
   router.delete("/agents/:id/keys/:keyId", async (req, res) => {
     assertBoard(req);
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, agent.companyId);
     const keyId = req.params.keyId as string;
-    const revoked = await svc.revokeKey(keyId);
+    const revoked = await svc.revokeKey(id, keyId);
     if (!revoked) {
       res.status(404).json({ error: "Key not found" });
       return;
     }
+
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "agent.key_revoked",
+      entityType: "agent",
+      entityId: agent.id,
+      details: { keyId: revoked.id, name: revoked.name },
+    });
+
     res.json({ ok: true });
   });
 
@@ -1421,12 +1395,7 @@ export function agentRoutes(db: Db) {
     }
 
     if (!run && issue.assigneeAgentId && issue.status === "in_progress") {
-      const candidateRun = await heartbeat.getActiveRunForAgent(issue.assigneeAgentId);
-      const candidateContext = asRecord(candidateRun?.contextSnapshot);
-      const candidateIssueId = asNonEmptyString(candidateContext?.issueId);
-      if (candidateRun && candidateIssueId === issue.id) {
-        run = candidateRun;
-      }
+      run = await heartbeat.getActiveRunForAgent(issue.assigneeAgentId);
     }
     if (!run) {
       res.json(null);

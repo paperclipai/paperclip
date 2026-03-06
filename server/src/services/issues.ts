@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -10,7 +10,6 @@ import {
   issueAttachments,
   issueLabels,
   issueComments,
-  issueReadStates,
   issues,
   labels,
   projectWorkspaces,
@@ -18,8 +17,51 @@ import {
 } from "@paperclipai/db";
 import { extractProjectMentionIds } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import {
+  assignmentCapacityTargetForStatus,
+  evaluateAssignmentCapacity,
+  parseCapacityEnvInteger,
+  resolveAssignmentCapacityLimits,
+} from "./issue-assignment-capacity.js";
+import {
+  rankAssignmentCandidates,
+  resolveAssignmentBalancerConfigFromEnv,
+  type AssignmentBalancerCandidateInput,
+  type AssignmentBalancerDecision,
+} from "./issue-assignment-balancer.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
+const ASSIGNEE_REQUIRED_STATUSES = new Set(["todo", "in_progress"]);
+const ACTIVE_ISSUE_STATUSES_FOR_DEDUPE = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
+const CAPACITY_COUNTED_STATUSES = ["todo", "in_progress"] as const;
+const BALANCER_COUNTED_STATUSES = ["todo", "in_progress", "blocked"] as const;
+const AUTO_ASSIGNABLE_AGENT_STATUSES = ["active", "idle", "running"] as const;
+const DEFAULT_ASSIGNMENT_MAX_RUNNING_ISSUES = parseCapacityEnvInteger(
+  process.env.PAPERCLIP_ASSIGNMENT_MAX_RUNNING_ISSUES_DEFAULT,
+);
+const DEFAULT_ASSIGNMENT_MAX_QUEUED_ISSUES = parseCapacityEnvInteger(
+  process.env.PAPERCLIP_ASSIGNMENT_MAX_QUEUED_ISSUES_DEFAULT,
+);
+const FOUNDING_ENGINEER_LEGACY_OPEN_CAP = parseCapacityEnvInteger(
+  process.env.PAPERCLIP_FOUNDING_ENGINEER_WIP_CAP,
+) ?? 3;
+const FOUNDING_ENGINEER_MAX_RUNNING_ISSUES = parseCapacityEnvInteger(
+  process.env.PAPERCLIP_FOUNDING_ENGINEER_MAX_RUNNING_ISSUES,
+);
+const FOUNDING_ENGINEER_MAX_QUEUED_ISSUES = parseCapacityEnvInteger(
+  process.env.PAPERCLIP_FOUNDING_ENGINEER_MAX_QUEUED_ISSUES,
+);
+const FOUNDING_ENGINEER_NAME_KEY = (process.env.PAPERCLIP_FOUNDING_ENGINEER_NAME_KEY ?? "founding engineer")
+  .trim()
+  .toLowerCase();
+const ASSIGNMENT_BALANCER_CONFIG = resolveAssignmentBalancerConfigFromEnv();
+const ASSIGNMENT_TEMPLATE_RULES = [
+  { label: "Goal", pattern: /(^|\n)\s*(?:#{1,6}\s*goal\b|goal\s*:)/i },
+  { label: "Owner", pattern: /(^|\n)\s*(?:#{1,6}\s*owner\b|owner\s*:)/i },
+  { label: "Definition of Done", pattern: /(^|\n)\s*(?:#{1,6}\s*(?:definition of done|dod)\b|(?:definition of done|dod)\s*:)/i },
+  { label: "Dependencies", pattern: /(^|\n)\s*(?:#{1,6}\s*dependencies\b|dependencies\s*:)/i },
+  { label: "Deadline", pattern: /(^|\n)\s*(?:#{1,6}\s*deadline\b|deadline\s*:)/i },
+];
 
 function assertTransition(from: string, to: string) {
   if (from === to) return;
@@ -50,8 +92,7 @@ export interface IssueFilters {
   status?: string;
   assigneeAgentId?: string;
   assigneeUserId?: string;
-  touchedByUserId?: string;
-  unreadForUserId?: string;
+  unassigned?: boolean;
   projectId?: string;
   labelId?: string;
   q?: string;
@@ -71,17 +112,6 @@ type IssueActiveRunRow = {
 };
 type IssueWithLabels = IssueRow & { labels: IssueLabelRow[]; labelIds: string[] };
 type IssueWithLabelsAndRun = IssueWithLabels & { activeRun: IssueActiveRunRow | null };
-type IssueUserCommentStats = {
-  issueId: string;
-  myLastCommentAt: Date | null;
-  lastExternalCommentAt: Date | null;
-};
-type IssueUserContextInput = {
-  createdByUserId: string | null;
-  assigneeUserId: string | null;
-  createdAt: Date | string;
-  updatedAt: Date | string;
-};
 
 function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
   if (actorRunId) return checkoutRunId === actorRunId;
@@ -94,126 +124,27 @@ function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
 }
 
-function touchedByUserCondition(companyId: string, userId: string) {
-  return sql<boolean>`
-    (
-      ${issues.createdByUserId} = ${userId}
-      OR ${issues.assigneeUserId} = ${userId}
-      OR EXISTS (
-        SELECT 1
-        FROM ${issueReadStates}
-        WHERE ${issueReadStates.issueId} = ${issues.id}
-          AND ${issueReadStates.companyId} = ${companyId}
-          AND ${issueReadStates.userId} = ${userId}
-      )
-      OR EXISTS (
-        SELECT 1
-        FROM ${issueComments}
-        WHERE ${issueComments.issueId} = ${issues.id}
-          AND ${issueComments.companyId} = ${companyId}
-          AND ${issueComments.authorUserId} = ${userId}
-      )
-    )
-  `;
+function normalizeIssueTitle(value: string): string {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
-function myLastCommentAtExpr(companyId: string, userId: string) {
-  return sql<Date | null>`
-    (
-      SELECT MAX(${issueComments.createdAt})
-      FROM ${issueComments}
-      WHERE ${issueComments.issueId} = ${issues.id}
-        AND ${issueComments.companyId} = ${companyId}
-        AND ${issueComments.authorUserId} = ${userId}
-    )
-  `;
+export function issueStatusRequiresAssignee(status: string | null | undefined): boolean {
+  if (!status) return false;
+  return ASSIGNEE_REQUIRED_STATUSES.has(status);
 }
 
-function myLastReadAtExpr(companyId: string, userId: string) {
-  return sql<Date | null>`
-    (
-      SELECT MAX(${issueReadStates.lastReadAt})
-      FROM ${issueReadStates}
-      WHERE ${issueReadStates.issueId} = ${issues.id}
-        AND ${issueReadStates.companyId} = ${companyId}
-        AND ${issueReadStates.userId} = ${userId}
-    )
-  `;
+function missingAssignmentTemplateFields(description: string | null | undefined): string[] {
+  const text = (description ?? "").trim();
+  return ASSIGNMENT_TEMPLATE_RULES
+    .filter((rule) => !rule.pattern.test(text))
+    .map((rule) => rule.label);
 }
 
-function myLastTouchAtExpr(companyId: string, userId: string) {
-  const myLastCommentAt = myLastCommentAtExpr(companyId, userId);
-  const myLastReadAt = myLastReadAtExpr(companyId, userId);
-  return sql<Date | null>`
-    GREATEST(
-      COALESCE(${myLastCommentAt}, to_timestamp(0)),
-      COALESCE(${myLastReadAt}, to_timestamp(0)),
-      COALESCE(CASE WHEN ${issues.createdByUserId} = ${userId} THEN ${issues.createdAt} ELSE NULL END, to_timestamp(0)),
-      COALESCE(CASE WHEN ${issues.assigneeUserId} = ${userId} THEN ${issues.updatedAt} ELSE NULL END, to_timestamp(0))
-    )
-  `;
-}
-
-function unreadForUserCondition(companyId: string, userId: string) {
-  const touchedCondition = touchedByUserCondition(companyId, userId);
-  const myLastTouchAt = myLastTouchAtExpr(companyId, userId);
-  return sql<boolean>`
-    (
-      ${touchedCondition}
-      AND EXISTS (
-        SELECT 1
-        FROM ${issueComments}
-        WHERE ${issueComments.issueId} = ${issues.id}
-          AND ${issueComments.companyId} = ${companyId}
-          AND (
-            ${issueComments.authorUserId} IS NULL
-            OR ${issueComments.authorUserId} <> ${userId}
-          )
-          AND ${issueComments.createdAt} > ${myLastTouchAt}
-      )
-    )
-  `;
-}
-
-export function deriveIssueUserContext(
-  issue: IssueUserContextInput,
-  userId: string,
-  stats:
-    | {
-      myLastCommentAt: Date | string | null;
-      myLastReadAt: Date | string | null;
-      lastExternalCommentAt: Date | string | null;
-    }
-    | null
-    | undefined,
-) {
-  const normalizeDate = (value: Date | string | null | undefined) => {
-    if (!value) return null;
-    if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
-    const parsed = new Date(value);
-    return Number.isNaN(parsed.getTime()) ? null : parsed;
-  };
-
-  const myLastCommentAt = normalizeDate(stats?.myLastCommentAt);
-  const myLastReadAt = normalizeDate(stats?.myLastReadAt);
-  const createdTouchAt = issue.createdByUserId === userId ? normalizeDate(issue.createdAt) : null;
-  const assignedTouchAt = issue.assigneeUserId === userId ? normalizeDate(issue.updatedAt) : null;
-  const myLastTouchAt = [myLastCommentAt, myLastReadAt, createdTouchAt, assignedTouchAt]
-    .filter((value): value is Date => value instanceof Date)
-    .sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
-  const lastExternalCommentAt = normalizeDate(stats?.lastExternalCommentAt);
-  const isUnreadForMe = Boolean(
-    myLastTouchAt &&
-    lastExternalCommentAt &&
-    lastExternalCommentAt.getTime() > myLastTouchAt.getTime(),
-  );
-
-  return {
-    myLastTouchAt,
-    lastExternalCommentAt,
-    isUnreadForMe,
-  };
-}
+type IssueMutationOptions = {
+  skipAssignmentTemplateValidation?: boolean;
+  skipAssigneeWipCapValidation?: boolean;
+  forceAssignment?: boolean;
+};
 
 async function labelMapForIssues(dbOrTx: any, issueIds: string[]): Promise<Map<string, IssueLabelRow[]>> {
   const map = new Map<string, IssueLabelRow[]>();
@@ -297,6 +228,24 @@ function withActiveRuns(
 }
 
 export function issueService(db: Db) {
+  function assertAssignmentTemplateIfAssigned(
+    input: {
+      description: string | null | undefined;
+      assigneeAgentId: string | null | undefined;
+      assigneeUserId: string | null | undefined;
+    },
+    options?: IssueMutationOptions,
+  ) {
+    if (options?.skipAssignmentTemplateValidation) return;
+    if (!input.assigneeAgentId && !input.assigneeUserId) return;
+    const missingFields = missingAssignmentTemplateFields(input.description);
+    if (missingFields.length === 0) return;
+    throw unprocessable(
+      "Assigned issues require template fields in description: Goal, Owner, Definition of Done, Dependencies, Deadline",
+      { missingFields },
+    );
+  }
+
   async function assertAssignableAgent(companyId: string, agentId: string) {
     const assignee = await db
       .select({
@@ -338,6 +287,98 @@ export function issueService(db: Db) {
     }
   }
 
+  async function assertAssigneeWipCap(input: {
+    companyId: string;
+    assigneeAgentId: string | null | undefined;
+    targetStatus?: string | null;
+    excludeIssueId?: string;
+    options?: IssueMutationOptions;
+  }) {
+    if (!input.assigneeAgentId) return;
+    if (input.options?.skipAssigneeWipCapValidation || input.options?.forceAssignment) return;
+    const target = assignmentCapacityTargetForStatus(input.targetStatus ?? null);
+    if (!target) return;
+
+    const assignee = await db
+      .select({ name: agents.name, runtimeConfig: agents.runtimeConfig })
+      .from(agents)
+      .where(and(eq(agents.companyId, input.companyId), eq(agents.id, input.assigneeAgentId)))
+      .then((rows) => rows[0] ?? null);
+    if (!assignee) return;
+
+    const limits = resolveAssignmentCapacityLimits({
+      agentName: assignee.name,
+      runtimeConfig: assignee.runtimeConfig,
+      config: {
+        defaultMaxRunning: DEFAULT_ASSIGNMENT_MAX_RUNNING_ISSUES,
+        defaultMaxQueued: DEFAULT_ASSIGNMENT_MAX_QUEUED_ISSUES,
+        foundingEngineerNameKey: FOUNDING_ENGINEER_NAME_KEY,
+        foundingEngineerLegacyOpenCap: FOUNDING_ENGINEER_LEGACY_OPEN_CAP,
+        foundingEngineerMaxRunning: FOUNDING_ENGINEER_MAX_RUNNING_ISSUES,
+        foundingEngineerMaxQueued: FOUNDING_ENGINEER_MAX_QUEUED_ISSUES,
+      },
+    });
+    if (limits.maxRunning == null && limits.maxQueued == null) return;
+
+    const conditions: any[] = [
+      eq(issues.companyId, input.companyId),
+      eq(issues.assigneeAgentId, input.assigneeAgentId),
+      isNull(issues.hiddenAt),
+      inArray(issues.status, [...CAPACITY_COUNTED_STATUSES]),
+    ];
+    if (input.excludeIssueId) {
+      conditions.push(ne(issues.id, input.excludeIssueId));
+    }
+
+    const rows = await db
+      .select({
+        status: issues.status,
+        count: sql<number>`count(*)`,
+      })
+      .from(issues)
+      .where(and(...conditions))
+      .groupBy(issues.status);
+
+    let running = 0;
+    let queued = 0;
+    for (const row of rows) {
+      if (row.status === "in_progress") {
+        running = Number(row.count ?? 0);
+      } else if (row.status === "todo") {
+        queued = Number(row.count ?? 0);
+      }
+    }
+
+    const violation = evaluateAssignmentCapacity({
+      target,
+      counts: { running, queued },
+      limits,
+    });
+    if (!violation) return;
+
+    const availableRunning = limits.maxRunning == null ? null : Math.max(0, limits.maxRunning - running);
+    const availableQueued = limits.maxQueued == null ? null : Math.max(0, limits.maxQueued - queued);
+
+    throw conflict(violation.message, {
+      code: violation.code,
+      reason: violation.reason,
+      assigneeAgentId: input.assigneeAgentId,
+      attemptedStatus: input.targetStatus ?? null,
+      attemptedState: violation.attemptedState,
+      current: {
+        running,
+        queued,
+      },
+      limits,
+      available: {
+        running: availableRunning,
+        queued: availableQueued,
+      },
+      suggestedStatus: "todo",
+      overrideHint: "Retry with force=true to override on create/update requests.",
+    });
+  }
+
   async function assertValidLabelIds(companyId: string, labelIds: string[], dbOrTx: any = db) {
     if (labelIds.length === 0) return;
     const existing = await dbOrTx
@@ -365,6 +406,53 @@ export function issueService(db: Db) {
         labelId,
         companyId,
       })),
+    );
+  }
+
+  async function findDuplicateActiveIssue(input: {
+    companyId: string;
+    title: string;
+    goalId: string | null | undefined;
+    assigneeAgentId: string | null | undefined;
+    assigneeUserId: string | null | undefined;
+    excludeIssueId?: string;
+  }) {
+    if (!input.assigneeAgentId && !input.assigneeUserId) return null;
+    const conditions: any[] = [
+      eq(issues.companyId, input.companyId),
+      inArray(issues.status, [...ACTIVE_ISSUE_STATUSES_FOR_DEDUPE]),
+      isNull(issues.hiddenAt),
+    ];
+
+    if (input.goalId) conditions.push(eq(issues.goalId, input.goalId));
+    else conditions.push(isNull(issues.goalId));
+
+    if (input.assigneeAgentId) {
+      conditions.push(eq(issues.assigneeAgentId, input.assigneeAgentId));
+      conditions.push(isNull(issues.assigneeUserId));
+    } else if (input.assigneeUserId) {
+      conditions.push(eq(issues.assigneeUserId, input.assigneeUserId));
+      conditions.push(isNull(issues.assigneeAgentId));
+    }
+
+    if (input.excludeIssueId) {
+      conditions.push(sql`${issues.id} <> ${input.excludeIssueId}`);
+    }
+
+    const candidates = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        title: issues.title,
+      })
+      .from(issues)
+      .where(and(...conditions))
+      .orderBy(desc(issues.updatedAt));
+
+    const normalizedTarget = normalizeIssueTitle(input.title);
+    return (
+      candidates.find((candidate) => normalizeIssueTitle(candidate.title) === normalizedTarget) ??
+      null
     );
   }
 
@@ -419,9 +507,6 @@ export function issueService(db: Db) {
   return {
     list: async (companyId: string, filters?: IssueFilters) => {
       const conditions = [eq(issues.companyId, companyId)];
-      const touchedByUserId = filters?.touchedByUserId?.trim() || undefined;
-      const unreadForUserId = filters?.unreadForUserId?.trim() || undefined;
-      const contextUserId = unreadForUserId ?? touchedByUserId;
       const rawSearch = filters?.q?.trim() ?? "";
       const hasSearch = rawSearch.length > 0;
       const escapedSearch = hasSearch ? escapeLikePattern(rawSearch) : "";
@@ -445,17 +530,16 @@ export function issueService(db: Db) {
         const statuses = filters.status.split(",").map((s) => s.trim());
         conditions.push(statuses.length === 1 ? eq(issues.status, statuses[0]) : inArray(issues.status, statuses));
       }
-      if (filters?.assigneeAgentId) {
-        conditions.push(eq(issues.assigneeAgentId, filters.assigneeAgentId));
-      }
-      if (filters?.assigneeUserId) {
-        conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
-      }
-      if (touchedByUserId) {
-        conditions.push(touchedByUserCondition(companyId, touchedByUserId));
-      }
-      if (unreadForUserId) {
-        conditions.push(unreadForUserCondition(companyId, unreadForUserId));
+      if (filters?.unassigned) {
+        conditions.push(isNull(issues.assigneeAgentId));
+        conditions.push(isNull(issues.assigneeUserId));
+      } else {
+        if (filters?.assigneeAgentId) {
+          conditions.push(eq(issues.assigneeAgentId, filters.assigneeAgentId));
+        }
+        if (filters?.assigneeUserId) {
+          conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
+        }
       }
       if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
       if (filters?.labelId) {
@@ -497,102 +581,263 @@ export function issueService(db: Db) {
         .orderBy(hasSearch ? asc(searchOrder) : asc(priorityOrder), asc(priorityOrder), desc(issues.updatedAt));
       const withLabels = await withIssueLabels(db, rows);
       const runMap = await activeRunMapForIssues(db, withLabels);
-      const withRuns = withActiveRuns(withLabels, runMap);
-      if (!contextUserId || withRuns.length === 0) {
-        return withRuns;
+      return withActiveRuns(withLabels, runMap);
+    },
+
+    listAssignmentCapacity: async (companyId: string) => {
+      const [assignees, countRows] = await Promise.all([
+        db
+          .select({
+            id: agents.id,
+            name: agents.name,
+            runtimeConfig: agents.runtimeConfig,
+          })
+          .from(agents)
+          .where(eq(agents.companyId, companyId))
+          .orderBy(asc(agents.name), asc(agents.id)),
+        db
+          .select({
+            assigneeAgentId: issues.assigneeAgentId,
+            status: issues.status,
+            count: sql<number>`count(*)`,
+          })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, companyId),
+              isNull(issues.hiddenAt),
+              isNotNull(issues.assigneeAgentId),
+              inArray(issues.status, [...CAPACITY_COUNTED_STATUSES]),
+            ),
+          )
+          .groupBy(issues.assigneeAgentId, issues.status),
+      ]);
+
+      const countsByAgent = new Map<string, { running: number; queued: number }>();
+      for (const row of countRows) {
+        const agentId = row.assigneeAgentId;
+        if (!agentId) continue;
+        const existing = countsByAgent.get(agentId) ?? { running: 0, queued: 0 };
+        if (row.status === "in_progress") {
+          existing.running = Number(row.count ?? 0);
+        } else if (row.status === "todo") {
+          existing.queued = Number(row.count ?? 0);
+        }
+        countsByAgent.set(agentId, existing);
       }
 
-      const issueIds = withRuns.map((row) => row.id);
-      const statsRows = await db
+      return assignees.map((assignee) => {
+        const counts = countsByAgent.get(assignee.id) ?? { running: 0, queued: 0 };
+        const limits = resolveAssignmentCapacityLimits({
+          agentName: assignee.name,
+          runtimeConfig: assignee.runtimeConfig,
+          config: {
+            defaultMaxRunning: DEFAULT_ASSIGNMENT_MAX_RUNNING_ISSUES,
+            defaultMaxQueued: DEFAULT_ASSIGNMENT_MAX_QUEUED_ISSUES,
+            foundingEngineerNameKey: FOUNDING_ENGINEER_NAME_KEY,
+            foundingEngineerLegacyOpenCap: FOUNDING_ENGINEER_LEGACY_OPEN_CAP,
+            foundingEngineerMaxRunning: FOUNDING_ENGINEER_MAX_RUNNING_ISSUES,
+            foundingEngineerMaxQueued: FOUNDING_ENGINEER_MAX_QUEUED_ISSUES,
+          },
+        });
+        const availableRunning =
+          limits.maxRunning == null ? null : Math.max(0, limits.maxRunning - counts.running);
+        const availableQueued =
+          limits.maxQueued == null ? null : Math.max(0, limits.maxQueued - counts.queued);
+
+        return {
+          agentId: assignee.id,
+          maxRunning: limits.maxRunning,
+          maxQueued: limits.maxQueued,
+          running: counts.running,
+          queued: counts.queued,
+          availableRunning,
+          availableQueued,
+          runningAtCapacity: limits.maxRunning != null && counts.running >= limits.maxRunning,
+          queuedAtCapacity: limits.maxQueued != null && counts.queued >= limits.maxQueued,
+        };
+      });
+    },
+
+    selectBalancedAssignee: async (input: {
+      companyId: string;
+      priority?: string | null;
+      targetStatus?: string | null;
+      projectId?: string | null;
+      preferredRoles?: string[] | null;
+      excludeRoles?: string[] | null;
+      excludeAgentIds?: string[] | null;
+      includeAgentId?: string | null;
+    }): Promise<AssignmentBalancerDecision> => {
+      const candidateRows = await db
         .select({
-          issueId: issueComments.issueId,
-          myLastCommentAt: sql<Date | null>`
-            MAX(CASE WHEN ${issueComments.authorUserId} = ${contextUserId} THEN ${issueComments.createdAt} END)
-          `,
-          lastExternalCommentAt: sql<Date | null>`
-            MAX(
-              CASE
-                WHEN ${issueComments.authorUserId} IS NULL OR ${issueComments.authorUserId} <> ${contextUserId}
-                THEN ${issueComments.createdAt}
-              END
-            )
-          `,
+          id: agents.id,
+          name: agents.name,
+          role: agents.role,
+          runtimeConfig: agents.runtimeConfig,
         })
-        .from(issueComments)
+        .from(agents)
         .where(
           and(
-            eq(issueComments.companyId, companyId),
-            inArray(issueComments.issueId, issueIds),
+            eq(agents.companyId, input.companyId),
+            inArray(agents.status, [...AUTO_ASSIGNABLE_AGENT_STATUSES]),
           ),
         )
-        .groupBy(issueComments.issueId);
-      const readRows = await db
-        .select({
-          issueId: issueReadStates.issueId,
-          myLastReadAt: issueReadStates.lastReadAt,
-        })
-        .from(issueReadStates)
-        .where(
-          and(
-            eq(issueReadStates.companyId, companyId),
-            eq(issueReadStates.userId, contextUserId),
-            inArray(issueReadStates.issueId, issueIds),
-          ),
-        );
-      const statsByIssueId = new Map(statsRows.map((row) => [row.issueId, row]));
-      const readByIssueId = new Map(readRows.map((row) => [row.issueId, row.myLastReadAt]));
+        .orderBy(asc(agents.name), asc(agents.id));
 
-      return withRuns.map((row) => ({
-        ...row,
-        ...deriveIssueUserContext(row, contextUserId, {
-          myLastCommentAt: statsByIssueId.get(row.id)?.myLastCommentAt ?? null,
-          myLastReadAt: readByIssueId.get(row.id) ?? null,
-          lastExternalCommentAt: statsByIssueId.get(row.id)?.lastExternalCommentAt ?? null,
-        }),
-      }));
-    },
-
-    countUnreadTouchedByUser: async (companyId: string, userId: string, status?: string) => {
-      const conditions = [
-        eq(issues.companyId, companyId),
-        isNull(issues.hiddenAt),
-        unreadForUserCondition(companyId, userId),
-      ];
-      if (status) {
-        const statuses = status.split(",").map((s) => s.trim()).filter(Boolean);
-        if (statuses.length === 1) {
-          conditions.push(eq(issues.status, statuses[0]));
-        } else if (statuses.length > 1) {
-          conditions.push(inArray(issues.status, statuses));
-        }
+      if (candidateRows.length === 0) {
+        return {
+          mode: ASSIGNMENT_BALANCER_CONFIG.shadowMode ? "shadow" : "auto",
+          selectedAgentId: null,
+          selectedAgentName: null,
+          candidatesEvaluated: 0,
+          topCandidates: [],
+          excludedCandidates: [],
+        };
       }
-      const [row] = await db
-        .select({ count: sql<number>`count(*)` })
-        .from(issues)
-        .where(and(...conditions));
-      return Number(row?.count ?? 0);
-    },
 
-    markRead: async (companyId: string, issueId: string, userId: string, readAt: Date = new Date()) => {
-      const now = new Date();
-      const [row] = await db
-        .insert(issueReadStates)
-        .values({
-          companyId,
-          issueId,
-          userId,
-          lastReadAt: readAt,
-          updatedAt: now,
-        })
-        .onConflictDoUpdate({
-          target: [issueReadStates.companyId, issueReadStates.issueId, issueReadStates.userId],
-          set: {
-            lastReadAt: readAt,
-            updatedAt: now,
+      const includeAgentId =
+        typeof input.includeAgentId === "string" && input.includeAgentId.trim().length > 0
+          ? input.includeAgentId.trim()
+          : null;
+      const excludedAgentIds = new Set(
+        (input.excludeAgentIds ?? [])
+          .map((value) => (typeof value === "string" ? value.trim() : ""))
+          .filter((value) => value.length > 0),
+      );
+      if (includeAgentId) {
+        excludedAgentIds.delete(includeAgentId);
+      }
+
+      const filteredCandidates = candidateRows.filter((candidate) => {
+        if (includeAgentId && candidate.id === includeAgentId) return true;
+        return !excludedAgentIds.has(candidate.id);
+      });
+      if (filteredCandidates.length === 0) {
+        return {
+          mode: ASSIGNMENT_BALANCER_CONFIG.shadowMode ? "shadow" : "auto",
+          selectedAgentId: null,
+          selectedAgentName: null,
+          candidatesEvaluated: 0,
+          topCandidates: [],
+          excludedCandidates: [],
+        };
+      }
+
+      const candidateIds = filteredCandidates.map((candidate) => candidate.id);
+
+      const [countRows, lastAssignedRows, familiarityRows] = await Promise.all([
+        db
+          .select({
+            assigneeAgentId: issues.assigneeAgentId,
+            status: issues.status,
+            priority: issues.priority,
+            count: sql<number>`count(*)`,
+          })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, input.companyId),
+              isNull(issues.hiddenAt),
+              inArray(issues.assigneeAgentId, candidateIds),
+              inArray(issues.status, [...BALANCER_COUNTED_STATUSES]),
+            ),
+          )
+          .groupBy(issues.assigneeAgentId, issues.status, issues.priority),
+        db
+          .select({
+            assigneeAgentId: issues.assigneeAgentId,
+            lastAssignedAt: sql<Date>`max(${issues.createdAt})`,
+          })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, input.companyId),
+              isNull(issues.hiddenAt),
+              inArray(issues.assigneeAgentId, candidateIds),
+            ),
+          )
+          .groupBy(issues.assigneeAgentId),
+        input.projectId
+          ? db
+              .select({
+                assigneeAgentId: issues.assigneeAgentId,
+                count: sql<number>`count(*)`,
+              })
+              .from(issues)
+              .where(
+                and(
+                  eq(issues.companyId, input.companyId),
+                  eq(issues.projectId, input.projectId),
+                  isNull(issues.hiddenAt),
+                  inArray(issues.assigneeAgentId, candidateIds),
+                ),
+              )
+              .groupBy(issues.assigneeAgentId)
+          : Promise.resolve([] as Array<{ assigneeAgentId: string | null; count: number }>),
+      ]);
+
+      const countsByAgent = new Map<string, { running: number; queued: number; criticalOpen: number; blocked: number }>();
+      for (const row of countRows) {
+        const agentId = row.assigneeAgentId;
+        if (!agentId) continue;
+        const counts = countsByAgent.get(agentId) ?? { running: 0, queued: 0, criticalOpen: 0, blocked: 0 };
+        const nextCount = Number(row.count ?? 0);
+        if (row.status === "in_progress") counts.running += nextCount;
+        if (row.status === "todo") counts.queued += nextCount;
+        if (row.status === "blocked") counts.blocked += nextCount;
+        if ((row.status === "todo" || row.status === "in_progress") && row.priority === "critical") {
+          counts.criticalOpen += nextCount;
+        }
+        countsByAgent.set(agentId, counts);
+      }
+
+      const lastAssignedByAgent = new Map(
+        lastAssignedRows
+          .map((row) => [row.assigneeAgentId, row.lastAssignedAt] as const)
+          .filter((entry): entry is readonly [string, Date] => Boolean(entry[0])),
+      );
+      const familiarityByAgent = new Map(
+        familiarityRows
+          .map((row) => [row.assigneeAgentId, Number(row.count ?? 0)] as const)
+          .filter((entry): entry is readonly [string, number] => Boolean(entry[0])),
+      );
+
+      const balancerCandidates: AssignmentBalancerCandidateInput[] = filteredCandidates.map((candidate) => {
+        const counts = countsByAgent.get(candidate.id) ?? { running: 0, queued: 0, criticalOpen: 0, blocked: 0 };
+        const limits = resolveAssignmentCapacityLimits({
+          agentName: candidate.name,
+          runtimeConfig: candidate.runtimeConfig,
+          config: {
+            defaultMaxRunning: DEFAULT_ASSIGNMENT_MAX_RUNNING_ISSUES,
+            defaultMaxQueued: DEFAULT_ASSIGNMENT_MAX_QUEUED_ISSUES,
+            foundingEngineerNameKey: FOUNDING_ENGINEER_NAME_KEY,
+            foundingEngineerLegacyOpenCap: FOUNDING_ENGINEER_LEGACY_OPEN_CAP,
+            foundingEngineerMaxRunning: FOUNDING_ENGINEER_MAX_RUNNING_ISSUES,
+            foundingEngineerMaxQueued: FOUNDING_ENGINEER_MAX_QUEUED_ISSUES,
           },
-        })
-        .returning();
-      return row;
+        });
+
+        return {
+          agentId: candidate.id,
+          agentName: candidate.name,
+          role: candidate.role,
+          counts,
+          limits,
+          projectFamiliarityCount: familiarityByAgent.get(candidate.id) ?? 0,
+          lastAssignedAt: lastAssignedByAgent.get(candidate.id) ?? null,
+        };
+      });
+
+      return rankAssignmentCandidates({
+        candidates: balancerCandidates,
+        targetStatus: input.targetStatus ?? "todo",
+        priority: input.priority ?? null,
+        projectId: input.projectId ?? null,
+        preferredRoles: input.preferredRoles,
+        excludeRoles: input.excludeRoles,
+        config: ASSIGNMENT_BALANCER_CONFIG,
+      });
     },
 
     getById: async (id: string) => {
@@ -620,6 +865,7 @@ export function issueService(db: Db) {
     create: async (
       companyId: string,
       data: Omit<typeof issues.$inferInsert, "companyId"> & { labelIds?: string[] },
+      options?: IssueMutationOptions,
     ) => {
       const { labelIds: inputLabelIds, ...issueData } = data;
       if (data.assigneeAgentId && data.assigneeUserId) {
@@ -631,8 +877,36 @@ export function issueService(db: Db) {
       if (data.assigneeUserId) {
         await assertAssignableUser(companyId, data.assigneeUserId);
       }
-      if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
-        throw unprocessable("in_progress issues require an assignee");
+      await assertAssigneeWipCap({
+        companyId,
+        assigneeAgentId: data.assigneeAgentId,
+        targetStatus: data.status,
+        options,
+      });
+      const targetStatus = data.status ?? "backlog";
+      if (issueStatusRequiresAssignee(targetStatus) && !data.assigneeAgentId && !data.assigneeUserId) {
+        throw unprocessable(`${targetStatus} issues require an assignee`);
+      }
+      assertAssignmentTemplateIfAssigned(
+        {
+          description: data.description,
+          assigneeAgentId: data.assigneeAgentId,
+          assigneeUserId: data.assigneeUserId,
+        },
+        options,
+      );
+      const duplicate = await findDuplicateActiveIssue({
+        companyId,
+        title: data.title,
+        goalId: data.goalId,
+        assigneeAgentId: data.assigneeAgentId,
+        assigneeUserId: data.assigneeUserId,
+      });
+      if (duplicate) {
+        throw conflict("Duplicate issue exists for the same goal, assignee, and title", {
+          issueId: duplicate.id,
+          issueIdentifier: duplicate.identifier,
+        });
       }
       return db.transaction(async (tx) => {
         const [company] = await tx
@@ -664,7 +938,11 @@ export function issueService(db: Db) {
       });
     },
 
-    update: async (id: string, data: Partial<typeof issues.$inferInsert> & { labelIds?: string[] }) => {
+    update: async (
+      id: string,
+      data: Partial<typeof issues.$inferInsert> & { labelIds?: string[] },
+      options?: IssueMutationOptions,
+    ) => {
       const existing = await db
         .select()
         .from(issues)
@@ -687,18 +965,54 @@ export function issueService(db: Db) {
         issueData.assigneeAgentId !== undefined ? issueData.assigneeAgentId : existing.assigneeAgentId;
       const nextAssigneeUserId =
         issueData.assigneeUserId !== undefined ? issueData.assigneeUserId : existing.assigneeUserId;
+      const nextDescription =
+        issueData.description !== undefined ? issueData.description : existing.description;
+      const nextTitle = issueData.title ?? existing.title;
+      const nextGoalId =
+        issueData.goalId !== undefined ? issueData.goalId : existing.goalId;
+      const nextStatus =
+        issueData.status !== undefined ? issueData.status : existing.status;
 
       if (nextAssigneeAgentId && nextAssigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
       }
-      if (patch.status === "in_progress" && !nextAssigneeAgentId && !nextAssigneeUserId) {
-        throw unprocessable("in_progress issues require an assignee");
+      if (issueStatusRequiresAssignee(nextStatus) && !nextAssigneeAgentId && !nextAssigneeUserId) {
+        throw unprocessable(`${nextStatus} issues require an assignee`);
       }
       if (issueData.assigneeAgentId) {
         await assertAssignableAgent(existing.companyId, issueData.assigneeAgentId);
       }
       if (issueData.assigneeUserId) {
         await assertAssignableUser(existing.companyId, issueData.assigneeUserId);
+      }
+      await assertAssigneeWipCap({
+        companyId: existing.companyId,
+        assigneeAgentId: nextAssigneeAgentId,
+        targetStatus: nextStatus,
+        excludeIssueId: id,
+        options,
+      });
+      assertAssignmentTemplateIfAssigned(
+        {
+          description: nextDescription,
+          assigneeAgentId: nextAssigneeAgentId,
+          assigneeUserId: nextAssigneeUserId,
+        },
+        options,
+      );
+      const duplicate = await findDuplicateActiveIssue({
+        companyId: existing.companyId,
+        title: nextTitle,
+        goalId: nextGoalId,
+        assigneeAgentId: nextAssigneeAgentId,
+        assigneeUserId: nextAssigneeUserId,
+        excludeIssueId: id,
+      });
+      if (duplicate) {
+        throw conflict("Duplicate issue exists for the same goal, assignee, and title", {
+          issueId: duplicate.id,
+          issueIdentifier: duplicate.identifier,
+        });
       }
 
       applyStatusSideEffects(issueData.status, patch);
@@ -760,12 +1074,30 @@ export function issueService(db: Db) {
 
     checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
       const issueCompany = await db
-        .select({ companyId: issues.companyId })
+        .select({
+          companyId: issues.companyId,
+          description: issues.description,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+        })
         .from(issues)
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
       if (!issueCompany) throw notFound("Issue not found");
       await assertAssignableAgent(issueCompany.companyId, agentId);
+      await assertAssigneeWipCap({
+        companyId: issueCompany.companyId,
+        assigneeAgentId: agentId,
+        targetStatus: "in_progress",
+        excludeIssueId: id,
+      });
+      if (!issueCompany.assigneeAgentId && !issueCompany.assigneeUserId) {
+        assertAssignmentTemplateIfAssigned({
+          description: issueCompany.description,
+          assigneeAgentId: agentId,
+          assigneeUserId: null,
+        });
+      }
 
       const now = new Date();
       const sameRunAssigneeCondition = checkoutRunId
@@ -969,9 +1301,12 @@ export function issueService(db: Db) {
       const updated = await db
         .update(issues)
         .set({
-          status: "todo",
+          status: "backlog",
           assigneeAgentId: null,
+          assigneeUserId: null,
           checkoutRunId: null,
+          executionRunId: null,
+          executionLockedAt: null,
           updatedAt: new Date(),
         })
         .where(eq(issues.id, id))
@@ -1017,13 +1352,6 @@ export function issueService(db: Db) {
         .from(issueComments)
         .where(eq(issueComments.issueId, issueId))
         .orderBy(desc(issueComments.createdAt)),
-
-    getComment: (commentId: string) =>
-      db
-        .select()
-        .from(issueComments)
-        .where(eq(issueComments.id, commentId))
-        .then((rows) => rows[0] ?? null),
 
     addComment: async (issueId: string, body: string, actor: { agentId?: string; userId?: string }) => {
       const issue = await db

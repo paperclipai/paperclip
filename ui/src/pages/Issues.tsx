@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useCallback, useRef } from "react";
+import { useEffect, useMemo } from "react";
 import { useSearchParams } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
@@ -16,31 +16,6 @@ export function Issues() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
-
-  const initialSearch = searchParams.get("q") ?? "";
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const handleSearchChange = useCallback((search: string) => {
-    clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      const trimmedSearch = search.trim();
-      const currentSearch = new URLSearchParams(window.location.search).get("q") ?? "";
-      if (currentSearch === trimmedSearch) return;
-
-      const url = new URL(window.location.href);
-      if (trimmedSearch) {
-        url.searchParams.set("q", trimmedSearch);
-      } else {
-        url.searchParams.delete("q");
-      }
-
-      const nextUrl = `${url.pathname}${url.search}${url.hash}`;
-      window.history.replaceState(window.history.state, "", nextUrl);
-    }, 300);
-  }, []);
-
-  useEffect(() => {
-    return () => clearTimeout(debounceRef.current);
-  }, []);
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -73,6 +48,13 @@ export function Issues() {
     enabled: !!selectedCompanyId,
   });
 
+  const { data: assignmentCapacity } = useQuery({
+    queryKey: queryKeys.issues.assignmentCapacity(selectedCompanyId!),
+    queryFn: () => issuesApi.assignmentCapacity(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 10000,
+  });
+
   const updateIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
       issuesApi.update(id, data),
@@ -91,11 +73,10 @@ export function Issues() {
       isLoading={isLoading}
       error={error as Error | null}
       agents={agents}
+      assignmentCapacities={assignmentCapacity}
       liveIssueIds={liveIssueIds}
       viewStateKey="paperclip:issues-view"
       initialAssignees={searchParams.get("assignee") ? [searchParams.get("assignee")!] : undefined}
-      initialSearch={initialSearch}
-      onSearchChange={handleSearchChange}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
     />
   );

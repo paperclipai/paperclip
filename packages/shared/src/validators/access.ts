@@ -9,8 +9,8 @@ import {
 
 export const createCompanyInviteSchema = z.object({
   allowedJoinTypes: z.enum(INVITE_JOIN_TYPES).default("both"),
+  expiresInHours: z.number().int().min(1).max(24 * 30).optional().default(72),
   defaultsPayload: z.record(z.string(), z.unknown()).optional().nullable(),
-  agentMessage: z.string().max(4000).optional().nullable(),
 });
 
 export type CreateCompanyInvite = z.infer<typeof createCompanyInviteSchema>;
@@ -21,12 +21,6 @@ export const acceptInviteSchema = z.object({
   adapterType: z.enum(AGENT_ADAPTER_TYPES).optional(),
   capabilities: z.string().max(4000).optional().nullable(),
   agentDefaultsPayload: z.record(z.string(), z.unknown()).optional().nullable(),
-  // OpenClaw join compatibility fields accepted at top level.
-  responsesWebhookUrl: z.string().max(4000).optional().nullable(),
-  responsesWebhookMethod: z.string().max(32).optional().nullable(),
-  responsesWebhookHeaders: z.record(z.string(), z.unknown()).optional().nullable(),
-  paperclipApiUrl: z.string().max(4000).optional().nullable(),
-  webhookAuthHeader: z.string().max(4000).optional().nullable(),
 });
 
 export type AcceptInvite = z.infer<typeof acceptInviteSchema>;
@@ -44,11 +38,45 @@ export const claimJoinRequestApiKeySchema = z.object({
 
 export type ClaimJoinRequestApiKey = z.infer<typeof claimJoinRequestApiKeySchema>;
 
+const assignScopeRoleSchema = z.string().trim().min(1).max(120);
+const assignScopeProjectIdSchema = z.union([z.literal("*"), z.string().uuid()]);
+
+export const tasksAssignScopeSchema = z
+  .object({
+    projectIds: z.array(assignScopeProjectIdSchema).nonempty(),
+    allowedAssigneeAgentIds: z.array(z.string().uuid()).nonempty().optional(),
+    allowedAssigneeRoles: z.array(assignScopeRoleSchema).nonempty().optional(),
+    deniedAssigneeRoles: z.array(assignScopeRoleSchema).default(["ceo"]),
+    allowUnassign: z.boolean().default(false),
+    allowAssignToUsers: z.boolean().default(false),
+  })
+  .strict()
+  .superRefine((scope, ctx) => {
+    if ((scope.allowedAssigneeAgentIds?.length ?? 0) > 0) return;
+    if ((scope.allowedAssigneeRoles?.length ?? 0) > 0) return;
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["allowedAssigneeAgentIds"],
+      message: "Either allowedAssigneeAgentIds or allowedAssigneeRoles is required",
+    });
+  });
+
+export type TasksAssignScope = z.infer<typeof tasksAssignScopeSchema>;
+
 export const updateMemberPermissionsSchema = z.object({
   grants: z.array(
     z.object({
       permissionKey: z.enum(PERMISSION_KEYS),
       scope: z.record(z.string(), z.unknown()).optional().nullable(),
+    }).superRefine((grant, ctx) => {
+      if (grant.permissionKey !== "tasks:assign_scope") return;
+      const parsed = tasksAssignScopeSchema.safeParse(grant.scope);
+      if (parsed.success) return;
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["scope"],
+        message: `Invalid tasks:assign_scope grant: ${parsed.error.issues[0]?.message ?? "invalid scope"}`,
+      });
     }),
   ),
 });

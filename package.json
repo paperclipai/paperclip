@@ -22,12 +22,15 @@
     "version-packages": "changeset version",
     "check:tokens": "node scripts/check-forbidden-tokens.mjs",
     "docs:dev": "cd docs && npx mintlify dev",
-    "smoke:openclaw-join": "./scripts/smoke/openclaw-join.sh",
-    "smoke:openclaw-docker-ui": "./scripts/smoke/openclaw-docker-ui.sh",
-    "smoke:openclaw-sse-standalone": "./scripts/smoke/openclaw-sse-standalone.sh"
+    "docs:lint": "python3 scripts/tools/docs-lint.py",
+    "docs:drift": "python3 scripts/tools/docs-drift-check.py",
+    "docs:check": "python3 scripts/tools/docs-lint.py --all && python3 scripts/tools/docs-drift-check.py",
+    "cre:check": "pnpm run docs:check",
+    "prepare": "git config core.hooksPath .githooks"
   },
   "devDependencies": {
     "@changesets/cli": "^2.30.0",
+    "@types/node": "^25.3.3",
     "esbuild": "^0.27.3",
     "typescript": "^5.7.3",
     "vitest": "^3.0.5"

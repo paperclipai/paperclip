@@ -123,18 +123,6 @@ GET /api/companies/{companyId}/org
 
 Returns the full organizational tree for the company.
 
-## List Adapter Models
-
-```
-GET /api/companies/{companyId}/adapters/{adapterType}/models
-```
-
-Returns selectable models for an adapter type.
-
-- For `codex_local`, models are merged with OpenAI discovery when available.
-- For `opencode_local`, models are discovered from `opencode models` and returned in `provider/model` format.
-- `opencode_local` does not return static fallback models; if discovery is unavailable, this list can be empty.
-
 ## Config Revisions
 
 ```
@@ -143,3 +131,13 @@ POST /api/agents/{agentId}/config-revisions/{revisionId}/rollback
 ```
 
 View and roll back agent configuration changes.
+
+## Company-Scoped Task Sessions
+
+```
+GET /api/companies/{companyId}/agent-task-sessions
+```
+
+Returns all agent task sessions across every agent in the company. Each entry includes the agent name alongside the standard session fields (`adapterType`, `taskKey`, `sessionParamsJson`, `lastRunId`, `lastError`). `sessionParamsJson` is redacted for non-admin callers. Results are ordered by `updatedAt` descending.
+
+React Query cache key: `["agent-task-sessions", companyId]`.

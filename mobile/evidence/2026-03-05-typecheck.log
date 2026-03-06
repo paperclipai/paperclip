@@ -1,0 +1,25 @@
+
+> paperclip@ typecheck /home/avi/projects/paperclip
+> pnpm -r typecheck
+
+Scope: 10 of 11 workspace projects
+mobile typecheck$ tsc --noEmit
+packages/adapter-utils typecheck$ tsc --noEmit
+packages/shared typecheck$ tsc --noEmit
+packages/adapter-utils typecheck: Done
+mobile typecheck: Done
+packages/shared typecheck: Done
+packages/adapters/claude-local typecheck$ tsc --noEmit
+packages/adapters/codex-local typecheck$ tsc --noEmit
+packages/adapters/openclaw typecheck$ tsc --noEmit
+packages/db typecheck$ tsc --noEmit
+packages/adapters/openclaw typecheck: Done
+packages/adapters/claude-local typecheck: Done
+packages/adapters/codex-local typecheck: Done
+packages/db typecheck: Done
+server typecheck$ tsc --noEmit
+ui typecheck$ tsc -b
+server typecheck: Done
+ui typecheck: Done
+cli typecheck$ tsc --noEmit
+cli typecheck: Done

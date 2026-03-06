@@ -37,6 +37,8 @@ const ACTION_VERBS: Record<string, string> = {
   "cost.recorded": "recorded cost for",
   "company.created": "created company",
   "company.updated": "updated company",
+  "company.paused": "paused",
+  "company.resumed": "resumed",
   "company.archived": "archived",
   "company.budget_updated": "updated budget for",
 };

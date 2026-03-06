@@ -29,10 +29,6 @@ type StartupBannerOptions = {
   migrationSummary: string;
   heartbeatSchedulerEnabled: boolean;
   heartbeatSchedulerIntervalMs: number;
-  databaseBackupEnabled: boolean;
-  databaseBackupIntervalMinutes: number;
-  databaseBackupRetentionDays: number;
-  databaseBackupDir: string;
 };
 
 const ansi = {
@@ -129,9 +125,6 @@ export function printStartupBanner(opts: StartupBannerOptions): void {
   const heartbeat = opts.heartbeatSchedulerEnabled
     ? `enabled ${color(`(${opts.heartbeatSchedulerIntervalMs}ms)`, "dim")}`
     : color("disabled", "yellow");
-  const dbBackup = opts.databaseBackupEnabled
-    ? `enabled ${color(`(every ${opts.databaseBackupIntervalMinutes}m, keep ${opts.databaseBackupRetentionDays}d)`, "dim")}`
-    : color("disabled", "yellow");
 
   const art = [
     color("██████╗  █████╗ ██████╗ ███████╗██████╗  ██████╗██╗     ██╗██████╗ ", "cyan"),
@@ -161,8 +154,6 @@ export function printStartupBanner(opts: StartupBannerOptions): void {
         : color(agentJwtSecret.message, "yellow"),
     ),
     row("Heartbeat", heartbeat),
-    row("DB Backup", dbBackup),
-    row("Backup Dir", opts.databaseBackupDir),
     row("Config", configPath),
     agentJwtSecret.status === "warn"
       ? color("  ───────────────────────────────────────────────────────", "yellow")

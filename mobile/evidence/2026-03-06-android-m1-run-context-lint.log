@@ -1,0 +1,6 @@
+
+> @paperclipai/mobile@1.0.0 lint /home/avi/projects/paperclip/mobile
+> pnpm dlx expo-doctor@latest
+
+Running 17 checks on your project...
+17/17 checks passed. No issues detected!

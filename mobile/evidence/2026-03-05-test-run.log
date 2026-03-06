@@ -1,0 +1,38 @@
+
+> paperclip@ test:run /home/avi/projects/paperclip
+> vitest run
+
+
+ RUN  v3.2.4 /home/avi/projects/paperclip
+
+ ✓ |@paperclipai/server| src/__tests__/storage-local-provider.test.ts (3 tests) 39ms
+ ✓ |paperclipai| src/__tests__/http.test.ts (3 tests) 15ms
+ ✓ |@paperclipai/server| src/__tests__/agent-auth-jwt.test.ts (4 tests) 18ms
+ ✓ |paperclipai| src/__tests__/context.test.ts (3 tests) 12ms
+ ✓ |@paperclipai/server| src/__tests__/private-hostname-guard.test.ts (5 tests) 63ms
+ ✓ |@paperclipai/server| src/__tests__/board-mutation-guard.test.ts (6 tests) 93ms
+ ✓ |@paperclipai/server| src/__tests__/claude-local-adapter-environment.test.ts (3 tests) 43ms
+ ✓ |@paperclipai/server| src/__tests__/codex-local-adapter-environment.test.ts (1 test) 27ms
+ ✓ |@paperclipai/server| src/__tests__/paperclip-env.test.ts (3 tests) 10ms
+ ✓ |@paperclipai/server| src/__tests__/codex-local-adapter.test.ts (6 tests) 13ms
+ ✓ |paperclipai| src/__tests__/home-paths.test.ts (4 tests) 16ms
+ ✓ |@paperclipai/server| src/__tests__/redaction.test.ts (3 tests) 20ms
+ ✓ |@paperclipai/server| src/__tests__/adapter-session-codecs.test.ts (3 tests) 13ms
+ ✓ |@paperclipai/server| src/__tests__/claude-local-adapter.test.ts (3 tests) 6ms
+ ✓ |paperclipai| src/__tests__/data-dir.test.ts (4 tests) 16ms
+│
+◆  Added allowed hostname: dotta-macbook-pro
+│
+●  Hostname dotta-macbook-pro is already allowed.
+ ✓ |paperclipai| src/__tests__/allowed-hostname.test.ts (1 test) 13ms
+ ✓ |paperclipai| src/__tests__/common.test.ts (3 tests) 13ms
+ ✓ |paperclipai| src/__tests__/company-delete.test.ts (9 tests) 11ms
+ ✓ |paperclipai| src/__tests__/agent-jwt-env.test.ts (3 tests) 10ms
+ ✓ |@paperclipai/server| src/__tests__/adapter-models.test.ts (4 tests) 27ms
+ ✓ |@paperclipai/server| src/__tests__/health.test.ts (1 test) 26ms
+
+ Test Files  21 passed (21)
+      Tests  75 passed (75)
+   Start at  07:26:18
+   Duration  2.94s (transform 5.38s, setup 0ms, collect 17.59s, tests 502ms, environment 6ms, prepare 4.79s)
+

@@ -1,0 +1,13 @@
+
+> @paperclipai/mobile@1.0.0 verify:notifications-contract /home/avi/projects/paperclip/mobile
+> node --experimental-strip-types --experimental-specifier-resolution=node ./scripts/verify-notification-contract.ts
+
+# Notification Contract Verification
+Started: 2026-03-05T23:01:36.141Z
+PASS: assignment payload via eventType
+PASS: mention payload via reason alias
+PASS: unknown payload ignored
+PASS: deep link path extraction
+PASS: deep link query extraction
+Summary: 5/5 cases passed
+Finished: 2026-03-05T23:01:36.142Z

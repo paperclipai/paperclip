@@ -1,0 +1,23 @@
+{
+  "require_frontmatter_for": [
+    "AGENTS.md",
+    "docs/specs/features/**/*.md",
+    "docs/specs/features/*.md",
+    "docs/standards/**/*.md",
+    "docs/standards/*.md",
+    "docs/workflows/documentation-handbook-system.md"
+  ],
+  "required_fields": [
+    "id",
+    "title",
+    "doc_type",
+    "owner",
+    "status",
+    "version",
+    "updated",
+    "applies_to",
+    "depends_on",
+    "related_docs",
+    "toc"
+  ]
+}

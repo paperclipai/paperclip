@@ -36,12 +36,14 @@ import {
   ChevronRight,
   EyeOff,
   Hexagon,
+  Loader2,
   ListTree,
   MessageSquare,
   MoreHorizontal,
   Paperclip,
   SlidersHorizontal,
   Trash2,
+  Zap,
 } from "lucide-react";
 import type { ActivityEvent } from "@paperclipai/shared";
 import type { Agent, IssueAttachment } from "@paperclipai/shared";
@@ -70,6 +72,8 @@ const ACTION_LABELS: Record<string, string> = {
   "approval.created": "requested approval",
   "approval.approved": "approved",
   "approval.rejected": "rejected",
+  "company.paused": "paused the company",
+  "company.resumed": "resumed the company",
 };
 
 function humanizeValue(value: unknown): string {
@@ -152,6 +156,7 @@ export function IssueDetail() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [moreOpen, setMoreOpen] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
   const [detailTab, setDetailTab] = useState("comments");
   const [secondaryOpen, setSecondaryOpen] = useState({
@@ -160,7 +165,6 @@ export function IssueDetail() {
   });
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const lastMarkedReadIssueIdRef = useRef<string | null>(null);
 
   const { data: issue, isLoading, error } = useQuery({
     queryKey: queryKeys.issues.detail(issueId!),
@@ -384,22 +388,8 @@ export function IssueDetail() {
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(issueId!) });
     if (selectedCompanyId) {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
     }
   };
-
-  const markIssueRead = useMutation({
-    mutationFn: (id: string) => issuesApi.markRead(id),
-    onSuccess: () => {
-      if (selectedCompanyId) {
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId) });
-        queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
-      }
-    },
-  });
 
   const updateIssue = useMutation({
     mutationFn: (data: Record<string, unknown>) => issuesApi.update(issueId!, data),
@@ -490,13 +480,96 @@ export function IssueDetail() {
     },
   });
 
+  const deleteIssue = useMutation({
+    mutationFn: () => issuesApi.remove(issueId!),
+    onSuccess: () => {
+      if (selectedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
+      }
+      navigate("/issues");
+      pushToast({
+        dedupeKey: `issue:deleted:${issueId}`,
+        title: "Issue deleted",
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        dedupeKey: `issue:delete:error:${issueId}`,
+        title: "Delete failed",
+        body: err instanceof Error ? err.message : "Failed to delete issue",
+        tone: "info",
+      });
+    },
+  });
+
+  const wakeAssignee = useMutation({
+    mutationFn: async () => {
+      const currentIssue = issue;
+      if (!currentIssue?.assigneeAgentId) {
+        throw new Error("This issue is not assigned to an agent.");
+      }
+      const result = await agentsApi.wakeup(
+        currentIssue.assigneeAgentId,
+        {
+          source: "on_demand",
+          triggerDetail: "manual",
+          reason: "wake_issue_assignee",
+          payload: {
+            issueId: currentIssue.id,
+            taskId: currentIssue.id,
+            taskKey: currentIssue.identifier ?? currentIssue.id,
+          },
+        },
+        currentIssue.companyId,
+      );
+      return {
+        result,
+        agentId: currentIssue.assigneeAgentId,
+        companyId: currentIssue.companyId,
+        issueId: currentIssue.id,
+        issueTitle: currentIssue.title,
+      };
+    },
+    onSuccess: ({ result, agentId, companyId, issueId: wakeIssueId, issueTitle }) => {
+      invalidateIssue();
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.runtimeState(agentId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId, agentId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(companyId) });
+      const assigneeName = agentMap.get(agentId)?.name ?? "Assignee";
+      if ("id" in result) {
+        pushToast({
+          dedupeKey: `heartbeat:wakeup:${result.id}`,
+          title: `${assigneeName} woke up`,
+          body: issueTitle ? truncate(issueTitle, 96) : undefined,
+          tone: "success",
+          action: { label: "View run", href: `/agents/${agentId}/runs/${result.id}` },
+        });
+        return;
+      }
+      pushToast({
+        dedupeKey: `heartbeat:wakeup:skipped:${wakeIssueId}:${agentId}`,
+        title: `${assigneeName} did not wake`,
+        body: "The agent skipped the request. Check paused state or heartbeat wake settings.",
+        tone: "info",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        dedupeKey: `heartbeat:wakeup:error:${issueId ?? "unknown"}`,
+        title: "Wake failed",
+        body: err instanceof Error ? err.message : "Failed to wake the assigned agent.",
+        tone: "info",
+      });
+    },
+  });
+
   useEffect(() => {
-    const titleLabel = issue?.title ?? issueId ?? "Issue";
     setBreadcrumbs([
       { label: "Issues", href: "/issues" },
-      { label: hasLiveRuns ? `🔵 ${titleLabel}` : titleLabel },
+      { label: issue?.title ?? issueId ?? "Issue" },
     ]);
-  }, [setBreadcrumbs, issue, issueId, hasLiveRuns]);
+  }, [setBreadcrumbs, issue, issueId]);
 
   // Redirect to identifier-based URL if navigated via UUID
   useEffect(() => {
@@ -504,13 +577,6 @@ export function IssueDetail() {
       navigate(`/issues/${issue.identifier}`, { replace: true });
     }
   }, [issue, issueId, navigate]);
-
-  useEffect(() => {
-    if (!issue?.id) return;
-    if (lastMarkedReadIssueIdRef.current === issue.id) return;
-    lastMarkedReadIssueIdRef.current = issue.id;
-    markIssueRead.mutate(issue.id);
-  }, [issue?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (issue) {
@@ -527,6 +593,7 @@ export function IssueDetail() {
 
   // Ancestors are returned oldest-first from the server (root at end, immediate parent at start)
   const ancestors = issue.ancestors ?? [];
+  const canWakeAssignee = !!issue.assigneeAgentId;
 
   const handleFilePicked = async (evt: ChangeEvent<HTMLInputElement>) => {
     const file = evt.target.files?.[0];
@@ -626,17 +693,52 @@ export function IssueDetail() {
             </div>
           )}
 
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            className="ml-auto md:hidden shrink-0"
-            onClick={() => setMobilePropsOpen(true)}
-            title="Properties"
-          >
-            <SlidersHorizontal className="h-4 w-4" />
-          </Button>
+          <div className="ml-auto flex items-center gap-1 md:hidden shrink-0">
+            {canWakeAssignee && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 gap-1.5 px-2"
+                onClick={() => wakeAssignee.mutate()}
+                disabled={wakeAssignee.isPending}
+                title="Wake the assigned agent now"
+              >
+                {wakeAssignee.isPending ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Zap className="h-3.5 w-3.5" />
+                )}
+                {wakeAssignee.isPending ? "Waking..." : "Wake"}
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              onClick={() => setMobilePropsOpen(true)}
+              title="Properties"
+            >
+              <SlidersHorizontal className="h-4 w-4" />
+            </Button>
+          </div>
 
           <div className="hidden md:flex items-center md:ml-auto shrink-0">
+            {canWakeAssignee && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="mr-1.5 h-7 gap-1.5 px-2.5"
+                onClick={() => wakeAssignee.mutate()}
+                disabled={wakeAssignee.isPending}
+                title="Wake the assigned agent now"
+              >
+                {wakeAssignee.isPending ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Zap className="h-3.5 w-3.5" />
+                )}
+                {wakeAssignee.isPending ? "Waking..." : "Wake Assignee"}
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="icon-xs"
@@ -650,7 +752,7 @@ export function IssueDetail() {
               <SlidersHorizontal className="h-4 w-4" />
             </Button>
 
-            <Popover open={moreOpen} onOpenChange={setMoreOpen}>
+            <Popover open={moreOpen} onOpenChange={(open) => { setMoreOpen(open); if (!open) setConfirmDelete(false); }}>
               <PopoverTrigger asChild>
                 <Button variant="ghost" size="icon-xs" className="shrink-0">
                   <MoreHorizontal className="h-4 w-4" />
@@ -669,6 +771,24 @@ export function IssueDetail() {
               >
                 <EyeOff className="h-3 w-3" />
                 Hide this Issue
+              </button>
+              <button
+                className={cn(
+                  "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive",
+                  confirmDelete && "bg-destructive/10",
+                )}
+                onClick={() => {
+                  if (!confirmDelete) {
+                    setConfirmDelete(true);
+                  } else {
+                    deleteIssue.mutate();
+                    setMoreOpen(false);
+                  }
+                }}
+                disabled={deleteIssue.isPending}
+              >
+                <Trash2 className="h-3 w-3" />
+                {deleteIssue.isPending ? "Deleting..." : confirmDelete ? "Confirm?" : "Delete Issue"}
               </button>
             </PopoverContent>
             </Popover>
@@ -771,6 +891,8 @@ export function IssueDetail() {
 
       <Separator />
 
+      <LiveRunWidget issueId={issueId!} companyId={issue.companyId} />
+
       <Tabs value={detailTab} onValueChange={setDetailTab} className="space-y-3">
         <TabsList variant="line" className="w-full justify-start gap-1">
           <TabsTrigger value="comments" className="gap-1.5">
@@ -812,7 +934,7 @@ export function IssueDetail() {
             onAttachImage={async (file) => {
               await uploadAttachment.mutateAsync(file);
             }}
-            liveRunSlot={<LiveRunWidget issueId={issueId!} companyId={issue.companyId} />}
+            liveRunSlot={undefined}
           />
         </TabsContent>
 

@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -49,16 +49,6 @@ interface RevisionMetadata {
 
 interface UpdateAgentOptions {
   recordRevision?: RevisionMetadata;
-}
-
-interface AgentShortnameRow {
-  id: string;
-  name: string;
-  status: string;
-}
-
-interface AgentShortnameCollisionOptions {
-  excludeAgentId?: string | null;
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -150,37 +140,6 @@ function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agents.$infe
   };
 }
 
-export function hasAgentShortnameCollision(
-  candidateName: string,
-  existingAgents: AgentShortnameRow[],
-  options?: AgentShortnameCollisionOptions,
-): boolean {
-  const candidateShortname = normalizeAgentUrlKey(candidateName);
-  if (!candidateShortname) return false;
-
-  return existingAgents.some((agent) => {
-    if (agent.status === "terminated") return false;
-    if (options?.excludeAgentId && agent.id === options.excludeAgentId) return false;
-    return normalizeAgentUrlKey(agent.name) === candidateShortname;
-  });
-}
-
-export function deduplicateAgentName(
-  candidateName: string,
-  existingAgents: AgentShortnameRow[],
-): string {
-  if (!hasAgentShortnameCollision(candidateName, existingAgents)) {
-    return candidateName;
-  }
-  for (let i = 2; i <= 100; i++) {
-    const suffixed = `${candidateName} ${i}`;
-    if (!hasAgentShortnameCollision(suffixed, existingAgents)) {
-      return suffixed;
-    }
-  }
-  return `${candidateName} ${Date.now()}`;
-}
-
 export function agentService(db: Db) {
   function withUrlKey<T extends { id: string; name: string }>(row: T) {
     return {
@@ -226,31 +185,6 @@ export function agentService(db: Db) {
     }
   }
 
-  async function assertCompanyShortnameAvailable(
-    companyId: string,
-    candidateName: string,
-    options?: AgentShortnameCollisionOptions,
-  ) {
-    const candidateShortname = normalizeAgentUrlKey(candidateName);
-    if (!candidateShortname) return;
-
-    const existingAgents = await db
-      .select({
-        id: agents.id,
-        name: agents.name,
-        status: agents.status,
-      })
-      .from(agents)
-      .where(eq(agents.companyId, companyId));
-
-    const hasCollision = hasAgentShortnameCollision(candidateName, existingAgents, options);
-    if (hasCollision) {
-      throw conflict(
-        `Agent shortname '${candidateShortname}' is already in use in this company`,
-      );
-    }
-  }
-
   async function updateAgent(
     id: string,
     data: Partial<typeof agents.$inferInsert>,
@@ -276,14 +210,6 @@ export function agentService(db: Db) {
         await ensureManager(existing.companyId, data.reportsTo);
       }
       await assertNoCycle(id, data.reportsTo);
-    }
-
-    if (data.name !== undefined) {
-      const previousShortname = normalizeAgentUrlKey(existing.name);
-      const nextShortname = normalizeAgentUrlKey(data.name);
-      if (previousShortname !== nextShortname) {
-        await assertCompanyShortnameAvailable(existing.companyId, data.name, { excludeAgentId: id });
-      }
     }
 
     const normalizedPatch = { ...data } as Partial<typeof agents.$inferInsert>;
@@ -325,12 +251,8 @@ export function agentService(db: Db) {
   }
 
   return {
-    list: async (companyId: string, options?: { includeTerminated?: boolean }) => {
-      const conditions = [eq(agents.companyId, companyId)];
-      if (!options?.includeTerminated) {
-        conditions.push(ne(agents.status, "terminated"));
-      }
-      const rows = await db.select().from(agents).where(and(...conditions));
+    list: async (companyId: string) => {
+      const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
       return rows.map(normalizeAgentRow);
     },
 
@@ -340,8 +262,6 @@ export function agentService(db: Db) {
       if (data.reportsTo) {
         await ensureManager(companyId, data.reportsTo);
       }
-
-      await assertCompanyShortnameAvailable(companyId, data.name);
 
       const role = data.role ?? "general";
       const normalizedPermissions = normalizeAgentPermissions(data.permissions, role);
@@ -539,20 +459,17 @@ export function agentService(db: Db) {
         .from(agentApiKeys)
         .where(eq(agentApiKeys.agentId, id)),
 
-    revokeKey: async (keyId: string) => {
+    revokeKey: async (agentId: string, keyId: string) => {
       const rows = await db
         .update(agentApiKeys)
         .set({ revokedAt: new Date() })
-        .where(eq(agentApiKeys.id, keyId))
+        .where(and(eq(agentApiKeys.id, keyId), eq(agentApiKeys.agentId, agentId)))
         .returning();
       return rows[0] ?? null;
     },
 
     orgForCompany: async (companyId: string) => {
-      const rows = await db
-        .select()
-        .from(agents)
-        .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated")));
+      const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
       const normalizedRows = rows.map(normalizeAgentRow);
       const byManager = new Map<string | null, typeof normalizedRows>();
       for (const row of normalizedRows) {

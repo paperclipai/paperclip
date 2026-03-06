@@ -40,6 +40,11 @@
   --radius-md: 0.5rem;
   --radius-lg: 0px;
   --radius-xl: 0px;
+  /* Global type scale bump (+1px across common sizes). */
+  --text-xs: 13px;
+  --text-sm: 0.9375rem;  /* 15px */
+  --text-base: 1.0625rem; /* 17px */
+  --text-lg: 1.1875rem;  /* 19px */
 }
 
 :root {
@@ -94,8 +99,8 @@
   --muted-foreground: oklch(0.708 0 0);
   --accent: oklch(0.269 0 0);
   --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.637 0.237 25.331);
-  --destructive-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.396 0.141 25.723);
+  --destructive-foreground: oklch(0.637 0.237 25.331);
   --border: oklch(0.269 0 0);
   --input: oklch(0.269 0 0);
   --ring: oklch(0.439 0 0);
@@ -178,17 +183,6 @@
   background: oklch(0.5 0 0);
 }
 
-/* Auto-hide scrollbar: transparent by default, visible on container hover */
-.scrollbar-auto-hide::-webkit-scrollbar-thumb {
-  background: transparent !important;
-}
-.scrollbar-auto-hide:hover::-webkit-scrollbar-thumb {
-  background: oklch(0.4 0 0) !important;
-}
-.scrollbar-auto-hide:hover::-webkit-scrollbar-thumb:hover {
-  background: oklch(0.5 0 0) !important;
-}
-
 /* Expandable dialog transition for max-width changes */
 [data-slot="dialog-content"] {
   transition: max-width 200ms cubic-bezier(0.16, 1, 0.3, 1);
@@ -264,7 +258,7 @@
   --accentBgActive: color-mix(in oklab, var(--accent) 72%, var(--background));
   --accentText: var(--accent-foreground);
   font-family: inherit;
-  font-size: 0.875rem;
+  font-size: var(--text-sm);
   line-height: 1.5;
   color: var(--foreground);
 }
@@ -295,7 +289,7 @@
 
 .paperclip-mdxeditor [class*="_placeholder_"] {
   font-family: inherit;
-  font-size: 0.875rem;
+  font-size: var(--text-sm);
   line-height: 1.5;
   color: var(--muted-foreground);
 }
@@ -332,7 +326,7 @@
   padding: 0.05rem 0.45rem;
   border: 1px solid var(--border);
   border-radius: 999px;
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   line-height: 1.3;
   text-decoration: none;
   vertical-align: baseline;
@@ -435,7 +429,7 @@ a.paperclip-project-mention-chip {
   padding: 0.05rem 0.45rem;
   border: 1px solid var(--border);
   border-radius: 999px;
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   line-height: 1.3;
   text-decoration: none;
   vertical-align: baseline;

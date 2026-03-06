@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Link } from "@/lib/router";
 import type { Issue } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -9,7 +9,6 @@ import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { useProjectOrder } from "../hooks/useProjectOrder";
-import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
@@ -182,12 +181,6 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
     return project ? projectUrl(project) : `/projects/${id}`;
   };
 
-  const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [assigneeOpen]);
-  const sortedAgents = useMemo(
-    () => sortAgentsByRecency((agents ?? []).filter((a) => a.status !== "terminated"), recentAssigneeIds),
-    [agents, recentAssigneeIds],
-  );
-
   const assignee = issue.assigneeAgentId
     ? agents?.find((a) => a.id === issue.assigneeAgentId)
     : null;
@@ -325,15 +318,6 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
         autoFocus={!inline}
       />
       <div className="max-h-48 overflow-y-auto overscroll-contain">
-        <button
-          className={cn(
-            "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-            !issue.assigneeAgentId && !issue.assigneeUserId && "bg-accent"
-          )}
-          onClick={() => { onUpdate({ assigneeAgentId: null, assigneeUserId: null }); setAssigneeOpen(false); }}
-        >
-          No assignee
-        </button>
         {issue.createdByUserId && (
           <button
             className={cn(
@@ -349,7 +333,8 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
             {creatorUserLabel ? `Assign to ${creatorUserLabel === "Me" ? "me" : creatorUserLabel}` : "Assign to requester"}
           </button>
         )}
-        {sortedAgents
+        {(agents ?? [])
+          .filter((a) => a.status !== "terminated")
           .filter((a) => {
             if (!assigneeSearch.trim()) return true;
             const q = assigneeSearch.toLowerCase();
@@ -362,7 +347,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
               "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
               a.id === issue.assigneeAgentId && "bg-accent"
             )}
-            onClick={() => { trackRecentAssignee(a.id); onUpdate({ assigneeAgentId: a.id, assigneeUserId: null }); setAssigneeOpen(false); }}
+            onClick={() => { onUpdate({ assigneeAgentId: a.id, assigneeUserId: null }); setAssigneeOpen(false); }}
           >
             <AgentIcon icon={a.icon} className="shrink-0 h-3 w-3 text-muted-foreground" />
             {a.name}

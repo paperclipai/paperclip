@@ -39,7 +39,15 @@ export async function databaseCheck(config: PaperclipConfig, configPath?: string
     const dataDir = resolveRuntimeLikePath(config.database.embeddedPostgresDataDir, configPath);
     const reportedPath = dataDir;
     if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(reportedPath, { recursive: true });
+      return {
+        name: "Database",
+        status: "warn",
+        message: `Embedded PostgreSQL data directory does not exist: ${reportedPath}`,
+        canRepair: true,
+        repair: () => {
+          fs.mkdirSync(reportedPath, { recursive: true });
+        },
+      };
     }
 
     return {

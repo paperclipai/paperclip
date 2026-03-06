@@ -1,0 +1,41 @@
+{
+  "documentation_patterns": [
+    "AGENTS.md",
+    "docs/**/*.md",
+    "doc/**/*.md"
+  ],
+  "groups": [
+    {
+      "name": "paperclip-control-plane",
+      "code_patterns": [
+        "server/src/**/*.ts",
+        "ui/src/**/*.ts",
+        "ui/src/**/*.tsx",
+        "packages/**/*.ts"
+      ],
+      "required_doc_patterns": [
+        "docs/specs/**/*.md",
+        "docs/specs/*.md",
+        "docs/api/**/*.md",
+        "docs/api/*.md",
+        "doc/spec/**/*.md",
+        "doc/spec/*.md",
+        "AGENTS.md"
+      ]
+    },
+    {
+      "name": "paperclip-adapters-runtime",
+      "code_patterns": [
+        "packages/adapters/**/*.ts",
+        "cli/src/**/*.ts"
+      ],
+      "required_doc_patterns": [
+        "docs/specs/**/*.md",
+        "docs/specs/*.md",
+        "doc/spec/**/*.md",
+        "doc/spec/*.md",
+        "AGENTS.md"
+      ]
+    }
+  ]
+}

@@ -23,6 +23,7 @@ import {
   principalPermissionGrants,
   companyMemberships,
 } from "@paperclipai/db";
+import { conflict } from "../errors.js";
 
 export function companyService(db: Db) {
   const ISSUE_PREFIX_FALLBACK = "CMP";
@@ -96,6 +97,44 @@ export function companyService(db: Db) {
         .where(eq(companies.id, id))
         .returning()
         .then((rows) => rows[0] ?? null),
+
+    pause: async (id: string) => {
+      const existing = await db
+        .select()
+        .from(companies)
+        .where(eq(companies.id, id))
+        .then((rows) => rows[0] ?? null);
+      if (!existing) return null;
+      if (existing.status === "archived") {
+        throw conflict("Archived companies cannot be paused");
+      }
+      if (existing.status === "paused") return existing;
+      return db
+        .update(companies)
+        .set({ status: "paused", updatedAt: new Date() })
+        .where(eq(companies.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+    },
+
+    resume: async (id: string) => {
+      const existing = await db
+        .select()
+        .from(companies)
+        .where(eq(companies.id, id))
+        .then((rows) => rows[0] ?? null);
+      if (!existing) return null;
+      if (existing.status === "archived") {
+        throw conflict("Archived companies cannot be resumed");
+      }
+      if (existing.status === "active") return existing;
+      return db
+        .update(companies)
+        .set({ status: "active", updatedAt: new Date() })
+        .where(eq(companies.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+    },
 
     remove: (id: string) =>
       db.transaction(async (tx) => {

@@ -3,7 +3,6 @@ import { useParams, useNavigate, Link, useBeforeUnload } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { agentsApi, type AgentKey, type ClaudeLoginResult } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
-import { ApiError } from "../api/client";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { activityApi } from "../api/activity";
 import { issuesApi } from "../api/issues";
@@ -53,6 +52,7 @@ import {
   ChevronDown,
   ArrowLeft,
   Settings,
+  Flame,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
@@ -139,7 +139,7 @@ function findScrollContainer(anchor: HTMLElement | null): ScrollContainer {
   return window;
 }
 
-function readScrollMetrics(container: ScrollContainer): { scrollHeight: number; distanceFromBottom: number } {
+function readScrollMetrics(container: ScrollContainer): { scrollHeight: number; distanceFromBottom: number; distanceFromTop: number } {
   if (isWindowContainer(container)) {
     const pageHeight = Math.max(
       document.documentElement.scrollHeight,
@@ -149,6 +149,7 @@ function readScrollMetrics(container: ScrollContainer): { scrollHeight: number; 
     return {
       scrollHeight: pageHeight,
       distanceFromBottom: Math.max(0, pageHeight - viewportBottom),
+      distanceFromTop: window.scrollY,
     };
   }
 
@@ -156,6 +157,7 @@ function readScrollMetrics(container: ScrollContainer): { scrollHeight: number; 
   return {
     scrollHeight: container.scrollHeight,
     distanceFromBottom: Math.max(0, container.scrollHeight - viewportBottom),
+    distanceFromTop: container.scrollTop,
   };
 }
 
@@ -170,6 +172,15 @@ function scrollToContainerBottom(container: ScrollContainer, behavior: ScrollBeh
   }
 
   container.scrollTo({ top: container.scrollHeight, behavior });
+}
+
+function scrollToContainerTop(container: ScrollContainer, behavior: ScrollBehavior = "auto") {
+  if (isWindowContainer(container)) {
+    window.scrollTo({ top: 0, behavior });
+    return;
+  }
+
+  container.scrollTo({ top: 0, behavior });
 }
 
 type AgentDetailView = "overview" | "configure" | "runs";
@@ -265,12 +276,11 @@ export function AgentDetail() {
   const resolvedCompanyId = agent?.companyId ?? selectedCompanyId;
   const canonicalAgentRef = agent ? agentRouteRef(agent) : routeAgentRef;
   const agentLookupRef = agent?.id ?? routeAgentRef;
-  const resolvedAgentId = agent?.id ?? null;
 
   const { data: runtimeState } = useQuery({
-    queryKey: queryKeys.agents.runtimeState(resolvedAgentId ?? routeAgentRef),
-    queryFn: () => agentsApi.runtimeState(resolvedAgentId!, resolvedCompanyId ?? undefined),
-    enabled: Boolean(resolvedAgentId),
+    queryKey: queryKeys.agents.runtimeState(agentLookupRef),
+    queryFn: () => agentsApi.runtimeState(agentLookupRef, resolvedCompanyId ?? undefined),
+    enabled: Boolean(agentLookupRef),
   });
 
   const { data: heartbeats } = useQuery({
@@ -359,6 +369,42 @@ export function AgentDetail() {
       if (resolvedCompanyId) {
         queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
       }
+    },
+  });
+
+  const isRabakMode = (() => {
+    if (!agent) return false;
+    const rc = typeof agent.runtimeConfig === "object" && agent.runtimeConfig !== null
+      ? (agent.runtimeConfig as Record<string, unknown>)
+      : {};
+    const hb = typeof rc.heartbeat === "object" && rc.heartbeat !== null
+      ? (rc.heartbeat as Record<string, unknown>)
+      : {};
+    return hb.autoRestart === true;
+  })();
+
+  const toggleRabakMode = useMutation({
+    mutationFn: () => {
+      if (!agent) throw new Error("No agent");
+      const rc = typeof agent.runtimeConfig === "object" && agent.runtimeConfig !== null
+        ? (agent.runtimeConfig as Record<string, unknown>)
+        : {};
+      const hb = typeof rc.heartbeat === "object" && rc.heartbeat !== null
+        ? (rc.heartbeat as Record<string, unknown>)
+        : {};
+      return agentsApi.update(agentLookupRef, {
+        runtimeConfig: { ...rc, heartbeat: { ...hb, autoRestart: !isRabakMode } },
+      }, resolvedCompanyId ?? undefined);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(routeAgentRef) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentLookupRef) });
+      if (resolvedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
+      }
+    },
+    onError: (err) => {
+      setActionError(err instanceof Error ? err.message : "Failed to toggle Rabak Mode");
     },
   });
 
@@ -469,6 +515,17 @@ export function AgentDetail() {
           >
             <Play className="h-3.5 w-3.5 sm:mr-1" />
             <span className="hidden sm:inline">Invoke</span>
+          </Button>
+          <Button
+            variant={isRabakMode ? "default" : "outline"}
+            size="sm"
+            onClick={() => toggleRabakMode.mutate()}
+            disabled={toggleRabakMode.isPending || agent.status === "terminated"}
+            className={cn(isRabakMode && "bg-orange-500 hover:bg-orange-600 border-orange-500 text-white")}
+            title={isRabakMode ? "Rabak Mode ON — agent auto-restarts after each run. Click to disable." : "Enable Rabak Mode — agent will sprint continuously"}
+          >
+            <Flame className={cn("h-3.5 w-3.5 sm:mr-1", isRabakMode && "animate-pulse")} />
+            <span className="hidden sm:inline">{isRabakMode ? "Rabak ON" : "Rabak"}</span>
           </Button>
           {agent.status === "paused" ? (
             <Button
@@ -882,9 +939,15 @@ function ConfigSummary({
                     const maxConcurrentRuns = Math.max(1, Math.floor(Number(hb.maxConcurrentRuns) || 1));
                     const intervalLabel = sec >= 60 ? `${Math.round(sec / 60)} min` : `${sec}s`;
                     return (
-                      <span>
+                      <span className="flex items-center gap-1.5">
                         Every {intervalLabel}
                         {maxConcurrentRuns > 1 ? ` (max ${maxConcurrentRuns} concurrent)` : ""}
+                        {hb.autoRestart === true && (
+                          <span className="inline-flex items-center gap-0.5 text-orange-500 font-medium">
+                            <Flame className="h-3 w-3" />
+                            Rabak
+                          </span>
+                        )}
                       </span>
                     );
                   })()
@@ -1156,12 +1219,8 @@ function ConfigurationTab({
   const queryClient = useQueryClient();
 
   const { data: adapterModels } = useQuery({
-    queryKey:
-      companyId
-        ? queryKeys.agents.adapterModels(companyId, agent.adapterType)
-        : ["agents", "none", "adapter-models", agent.adapterType],
-    queryFn: () => agentsApi.adapterModels(companyId!, agent.adapterType),
-    enabled: Boolean(companyId),
+    queryKey: ["adapter-models", agent.adapterType],
+    queryFn: () => agentsApi.adapterModels(agent.adapterType),
   });
 
   const updateAgent = useMutation({
@@ -1401,38 +1460,6 @@ function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRun; agen
     },
   });
 
-  const canRetryRun = run.status === "failed" || run.status === "timed_out";
-  const retryPayload = useMemo(() => {
-    const payload: Record<string, unknown> = {};
-    const context = asRecord(run.contextSnapshot);
-    if (!context) return payload;
-    const issueId = asNonEmptyString(context.issueId);
-    const taskId = asNonEmptyString(context.taskId);
-    const taskKey = asNonEmptyString(context.taskKey);
-    if (issueId) payload.issueId = issueId;
-    if (taskId) payload.taskId = taskId;
-    if (taskKey) payload.taskKey = taskKey;
-    return payload;
-  }, [run.contextSnapshot]);
-  const retryRun = useMutation({
-    mutationFn: async () => {
-      const result = await agentsApi.wakeup(run.agentId, {
-        source: "on_demand",
-        triggerDetail: "manual",
-        reason: "retry_failed_run",
-        payload: retryPayload,
-      }, run.companyId);
-      if (!("id" in result)) {
-        throw new Error("Retry was skipped because the agent is not currently invokable.");
-      }
-      return result;
-    },
-    onSuccess: (newRun) => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(run.companyId, run.agentId) });
-      navigate(`/agents/${agentRouteId}/runs/${newRun.id}`);
-    },
-  });
-
   const { data: touchedIssues } = useQuery({
     queryKey: queryKeys.runIssues(run.id),
     queryFn: () => activityApi.issuesForRun(run.id),
@@ -1523,27 +1550,10 @@ function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRun; agen
                   {resumeRun.isPending ? "Resuming…" : "Resume"}
                 </Button>
               )}
-              {canRetryRun && !canResumeLostRun && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="text-xs h-6 px-2"
-                  onClick={() => retryRun.mutate()}
-                  disabled={retryRun.isPending}
-                >
-                  <RotateCcw className="h-3.5 w-3.5 mr-1" />
-                  {retryRun.isPending ? "Retrying…" : "Retry"}
-                </Button>
-              )}
             </div>
             {resumeRun.isError && (
               <div className="text-xs text-destructive">
                 {resumeRun.error instanceof Error ? resumeRun.error.message : "Failed to resume run"}
-              </div>
-            )}
-            {retryRun.isError && (
-              <div className="text-xs text-destructive">
-                {retryRun.error instanceof Error ? retryRun.error.message : "Failed to retry run"}
               </div>
             )}
             {startTime && (
@@ -1765,15 +1775,12 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
   const pendingLogLineRef = useRef("");
   const scrollContainerRef = useRef<ScrollContainer | null>(null);
   const isFollowingRef = useRef(false);
-  const lastMetricsRef = useRef<{ scrollHeight: number; distanceFromBottom: number }>({
+  const lastMetricsRef = useRef<{ scrollHeight: number; distanceFromBottom: number; distanceFromTop: number }>({
     scrollHeight: 0,
     distanceFromBottom: Number.POSITIVE_INFINITY,
+    distanceFromTop: 0,
   });
   const isLive = run.status === "running" || run.status === "queued";
-
-  function isRunLogUnavailable(err: unknown): boolean {
-    return err instanceof ApiError && err.status === 404;
-  }
 
   function appendLogContent(content: string, finalize = false) {
     if (!content && !finalize) return;
@@ -1831,9 +1838,9 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     const container = getScrollContainer();
     const metrics = readScrollMetrics(container);
     lastMetricsRef.current = metrics;
-    const nearBottom = metrics.distanceFromBottom <= LIVE_SCROLL_BOTTOM_TOLERANCE_PX;
-    isFollowingRef.current = nearBottom;
-    setIsFollowing((prev) => (prev === nearBottom ? prev : nearBottom));
+    const nearTop = metrics.distanceFromTop <= LIVE_SCROLL_BOTTOM_TOLERANCE_PX;
+    isFollowingRef.current = nearTop;
+    setIsFollowing((prev) => (prev === nearTop ? prev : nearTop));
   }, [getScrollContainer]);
 
   useEffect(() => {
@@ -1841,6 +1848,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     lastMetricsRef.current = {
       scrollHeight: 0,
       distanceFromBottom: Number.POSITIVE_INFINITY,
+      distanceFromTop: 0,
     };
 
     if (!isLive) {
@@ -1880,11 +1888,9 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     const container = getScrollContainer();
     const previous = lastMetricsRef.current;
     const current = readScrollMetrics(container);
-    const growth = Math.max(0, current.scrollHeight - previous.scrollHeight);
-    const expectedDistance = previous.distanceFromBottom + growth;
-    const movedAwayBy = current.distanceFromBottom - expectedDistance;
+    const movedAwayBy = current.distanceFromTop - previous.distanceFromTop;
 
-    // If user moved away from bottom between updates, release auto-follow immediately.
+    // If user scrolled away from top between updates, release auto-follow immediately.
     if (movedAwayBy > LIVE_SCROLL_BOTTOM_TOLERANCE_PX) {
       isFollowingRef.current = false;
       setIsFollowing(false);
@@ -1892,7 +1898,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
       return;
     }
 
-    scrollToContainerBottom(container, "auto");
+    scrollToContainerTop(container, "auto");
     const after = readScrollMetrics(container);
     lastMetricsRef.current = after;
     if (!isFollowingRef.current) {
@@ -1909,7 +1915,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     setLogOffset(0);
     setLogError(null);
 
-    if (!run.logRef && !isLive) {
+    if (!run.logRef) {
       setLogLoading(false);
       return () => {
         cancelled = true;
@@ -1938,10 +1944,6 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
         }
       } catch (err) {
         if (!cancelled) {
-          if (isLive && isRunLogUnavailable(err)) {
-            setLogLoading(false);
-            return;
-          }
           setLogError(err instanceof Error ? err.message : "Failed to load run log");
         }
       } finally {
@@ -1974,7 +1976,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
   // Poll shell log for running runs
   useEffect(() => {
-    if (!isLive) return;
+    if (!isLive || !run.logRef) return;
     const interval = setInterval(async () => {
       try {
         const result = await heartbeatsApi.log(run.id, logOffset, 256_000);
@@ -1986,13 +1988,12 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
         } else if (result.content.length > 0) {
           setLogOffset((prev) => prev + result.content.length);
         }
-      } catch (err) {
-        if (isRunLogUnavailable(err)) return;
+      } catch {
         // ignore polling errors
       }
     }, 2000);
     return () => clearInterval(interval);
-  }, [run.id, isLive, logOffset]);
+  }, [run.id, run.logRef, isLive, logOffset]);
 
   const adapterInvokePayload = useMemo(() => {
     const evt = events.find((e) => e.eventType === "adapter.invoke");
@@ -2001,6 +2002,12 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
   const adapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
   const transcript = useMemo(() => buildTranscript(logLines, adapter.parseStdoutLine), [logLines, adapter]);
+  const [assistantOnly, setAssistantOnly] = useState(false);
+  const [invocationOpen, setInvocationOpen] = useState(false);
+  const visibleTranscript = useMemo(
+    () => (assistantOnly ? transcript.filter((e) => e.kind === "assistant") : transcript),
+    [assistantOnly, transcript],
+  );
 
   if (loading && logLoading) {
     return <p className="text-xs text-muted-foreground">Loading run logs...</p>;
@@ -2025,65 +2032,76 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
   return (
     <div className="space-y-3">
       {adapterInvokePayload && (
-        <div className="rounded-lg border border-border bg-background/60 p-3 space-y-2">
-          <div className="text-xs font-medium text-muted-foreground">Invocation</div>
-          {typeof adapterInvokePayload.adapterType === "string" && (
-            <div className="text-xs"><span className="text-muted-foreground">Adapter: </span>{adapterInvokePayload.adapterType}</div>
-          )}
-          {typeof adapterInvokePayload.cwd === "string" && (
-            <div className="text-xs break-all"><span className="text-muted-foreground">Working dir: </span><span className="font-mono">{adapterInvokePayload.cwd}</span></div>
-          )}
-          {typeof adapterInvokePayload.command === "string" && (
-            <div className="text-xs break-all">
-              <span className="text-muted-foreground">Command: </span>
-              <span className="font-mono">
-                {[
-                  adapterInvokePayload.command,
-                  ...(Array.isArray(adapterInvokePayload.commandArgs)
-                    ? adapterInvokePayload.commandArgs.filter((v): v is string => typeof v === "string")
-                    : []),
-                ].join(" ")}
-              </span>
-            </div>
-          )}
-          {Array.isArray(adapterInvokePayload.commandNotes) && adapterInvokePayload.commandNotes.length > 0 && (
-            <div>
-              <div className="text-xs text-muted-foreground mb-1">Command notes</div>
-              <ul className="list-disc pl-5 space-y-1">
-                {adapterInvokePayload.commandNotes
-                  .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-                  .map((note, idx) => (
-                    <li key={`${idx}-${note}`} className="text-xs break-all font-mono">
-                      {note}
-                    </li>
-                  ))}
-              </ul>
-            </div>
-          )}
-          {adapterInvokePayload.prompt !== undefined && (
-            <div>
-              <div className="text-xs text-muted-foreground mb-1">Prompt</div>
-              <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
-                {typeof adapterInvokePayload.prompt === "string"
-                  ? adapterInvokePayload.prompt
-                  : JSON.stringify(adapterInvokePayload.prompt, null, 2)}
-              </pre>
-            </div>
-          )}
-          {adapterInvokePayload.context !== undefined && (
-            <div>
-              <div className="text-xs text-muted-foreground mb-1">Context</div>
-              <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
-                {JSON.stringify(adapterInvokePayload.context, null, 2)}
-              </pre>
-            </div>
-          )}
-          {adapterInvokePayload.env !== undefined && (
-            <div>
-              <div className="text-xs text-muted-foreground mb-1">Environment</div>
-              <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap font-mono">
-                {formatEnvForDisplay(adapterInvokePayload.env)}
-              </pre>
+        <div className="rounded-lg border border-border bg-background/60">
+          <button
+            type="button"
+            className="flex w-full items-center gap-1.5 px-3 py-2 text-left text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+            onClick={() => setInvocationOpen((v) => !v)}
+          >
+            <ChevronRight className={cn("h-3 w-3 transition-transform", invocationOpen && "rotate-90")} />
+            Invocation
+          </button>
+          {invocationOpen && (
+            <div className="space-y-2 px-3 pb-3">
+              {typeof adapterInvokePayload.adapterType === "string" && (
+                <div className="text-xs"><span className="text-muted-foreground">Adapter: </span>{adapterInvokePayload.adapterType}</div>
+              )}
+              {typeof adapterInvokePayload.cwd === "string" && (
+                <div className="text-xs break-all"><span className="text-muted-foreground">Working dir: </span><span className="font-mono">{adapterInvokePayload.cwd}</span></div>
+              )}
+              {typeof adapterInvokePayload.command === "string" && (
+                <div className="text-xs break-all">
+                  <span className="text-muted-foreground">Command: </span>
+                  <span className="font-mono">
+                    {[
+                      adapterInvokePayload.command,
+                      ...(Array.isArray(adapterInvokePayload.commandArgs)
+                        ? adapterInvokePayload.commandArgs.filter((v): v is string => typeof v === "string")
+                        : []),
+                    ].join(" ")}
+                  </span>
+                </div>
+              )}
+              {Array.isArray(adapterInvokePayload.commandNotes) && adapterInvokePayload.commandNotes.length > 0 && (
+                <div>
+                  <div className="text-xs text-muted-foreground mb-1">Command notes</div>
+                  <ul className="list-disc pl-5 space-y-1">
+                    {adapterInvokePayload.commandNotes
+                      .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+                      .map((note, idx) => (
+                        <li key={`${idx}-${note}`} className="text-xs break-all font-mono">
+                          {note}
+                        </li>
+                      ))}
+                  </ul>
+                </div>
+              )}
+              {adapterInvokePayload.prompt !== undefined && (
+                <div>
+                  <div className="text-xs text-muted-foreground mb-1">Prompt</div>
+                  <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
+                    {typeof adapterInvokePayload.prompt === "string"
+                      ? adapterInvokePayload.prompt
+                      : JSON.stringify(adapterInvokePayload.prompt, null, 2)}
+                  </pre>
+                </div>
+              )}
+              {adapterInvokePayload.context !== undefined && (
+                <div>
+                  <div className="text-xs text-muted-foreground mb-1">Context</div>
+                  <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
+                    {JSON.stringify(adapterInvokePayload.context, null, 2)}
+                  </pre>
+                </div>
+              )}
+              {adapterInvokePayload.env !== undefined && (
+                <div>
+                  <div className="text-xs text-muted-foreground mb-1">Environment</div>
+                  <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap font-mono">
+                    {formatEnvForDisplay(adapterInvokePayload.env)}
+                  </pre>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -2091,9 +2109,21 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
       <div className="flex items-center justify-between">
         <span className="text-xs font-medium text-muted-foreground">
-          Transcript ({transcript.length})
+          Transcript ({visibleTranscript.length}{assistantOnly ? ` of ${transcript.length}` : ""})
         </span>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setAssistantOnly((v) => !v)}
+            className={cn(
+              "inline-flex items-center gap-1 text-[10px] rounded px-1.5 py-0.5 border transition-colors",
+              assistantOnly
+                ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300"
+                : "border-border/50 text-muted-foreground hover:text-foreground hover:border-border",
+            )}
+            title={assistantOnly ? "Show full transcript" : "Show assistant messages only"}
+          >
+            {assistantOnly ? "assistant only" : "all"}
+          </button>
           {isLive && !isFollowing && (
             <Button
               variant="ghost"
@@ -2102,7 +2132,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
                 const container = getScrollContainer();
                 isFollowingRef.current = true;
                 setIsFollowing(true);
-                scrollToContainerBottom(container, "auto");
+                scrollToContainerTop(container, "auto");
                 lastMetricsRef.current = readScrollMetrics(container);
               }}
             >
@@ -2121,10 +2151,14 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
         </div>
       </div>
       <div className="bg-neutral-100 dark:bg-neutral-950 rounded-lg p-3 font-mono text-xs space-y-0.5 overflow-x-hidden">
-        {transcript.length === 0 && !run.logRef && (
+        <div ref={logEndRef} />
+        {visibleTranscript.length === 0 && !run.logRef && (
           <div className="text-neutral-500">No persisted transcript for this run.</div>
         )}
-        {transcript.map((entry, idx) => {
+        {visibleTranscript.length === 0 && assistantOnly && transcript.length > 0 && (
+          <div className="text-neutral-500">No assistant messages yet.</div>
+        )}
+        {[...visibleTranscript].reverse().map((entry, idx) => {
           const time = new Date(entry.ts).toLocaleTimeString("en-US", { hour12: false });
           const grid = "grid grid-cols-[auto_auto_1fr] gap-x-2 sm:gap-x-3 items-baseline";
           const tsCell = "text-neutral-400 dark:text-neutral-600 select-none w-12 sm:w-16 text-[10px] sm:text-xs";
@@ -2237,7 +2271,6 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           )
         })}
         {logError && <div className="text-red-600 dark:text-red-300">{logError}</div>}
-        <div ref={logEndRef} />
       </div>
 
       {(run.status === "failed" || run.status === "timed_out") && (

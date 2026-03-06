@@ -1,0 +1,8 @@
+
+> @paperclipai/mobile@1.0.0 test /home/avi/projects/paperclip/mobile
+> pnpm run typecheck
+
+
+> @paperclipai/mobile@1.0.0 typecheck /home/avi/projects/paperclip/mobile
+> tsc --noEmit
+

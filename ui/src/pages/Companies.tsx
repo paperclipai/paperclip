@@ -26,6 +26,8 @@ import {
   CircleDot,
   DollarSign,
   Calendar,
+  Pause,
+  Play,
 } from "lucide-react";
 
 export function Companies() {
@@ -65,6 +67,15 @@ export function Companies() {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.stats });
       setConfirmDeleteId(null);
+    },
+  });
+
+  const statusMutation = useMutation({
+    mutationFn: ({ id, action }: { id: string; action: "pause" | "resume" }) =>
+      action === "pause" ? companiesApi.pause(id) : companiesApi.resume(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.stats });
     },
   });
 
@@ -217,6 +228,24 @@ export function Companies() {
                         <Pencil className="h-3.5 w-3.5" />
                         Rename
                       </DropdownMenuItem>
+                      {company.status === "active" && (
+                        <DropdownMenuItem
+                          onClick={() => statusMutation.mutate({ id: company.id, action: "pause" })}
+                          disabled={statusMutation.isPending}
+                        >
+                          <Pause className="h-3.5 w-3.5" />
+                          Pause Company
+                        </DropdownMenuItem>
+                      )}
+                      {company.status === "paused" && (
+                        <DropdownMenuItem
+                          onClick={() => statusMutation.mutate({ id: company.id, action: "resume" })}
+                          disabled={statusMutation.isPending}
+                        >
+                          <Play className="h-3.5 w-3.5" />
+                          Resume Company
+                        </DropdownMenuItem>
+                      )}
                       <DropdownMenuSeparator />
                       <DropdownMenuItem
                         variant="destructive"

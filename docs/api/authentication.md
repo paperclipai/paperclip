@@ -47,6 +47,24 @@ No authentication required. All requests are treated as the local board operator
 
 Board operators authenticate via Better Auth sessions (cookie-based). The web UI handles login/logout flows automatically.
 
+### Session Handshake Side Effects
+
+In authenticated mode, the UI calls:
+
+```
+GET /api/auth/get-session
+```
+
+For session-authenticated users with access to exactly one company, this request also performs a one-time login autostart for that company:
+
+- Enables agent heartbeat flags (`enabled`, `wakeOnDemand`, `wakeOnAssignment`, `wakeOnAutomation`, `wakeOnOnDemand`)
+- Queues wakeups for agents that already have open assigned issues (`todo`, `in_progress`, `blocked`)
+
+Notes:
+
+- This autostart path does not run in `local_trusted` mode.
+- It is intentionally skipped for users with multi-company membership to avoid unintended broad wakeups.
+
 ## Company Scoping
 
 All entities belong to a company. The API enforces company boundaries:

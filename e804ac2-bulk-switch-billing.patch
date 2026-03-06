@@ -1,0 +1,372 @@
+From e804ac200c7441838ef31ebb0b072db9be8db3af Mon Sep 17 00:00:00 2001
+From: Avi <avi2k3x@gmail.com>
+Date: Thu, 5 Mar 2026 05:53:57 +0200
+Subject: [PATCH] feat: add bulk adapter switch and billing type labeling
+
+---
+ packages/shared/src/types/dashboard.ts |   1 +
+ server/src/services/dashboard.ts       |  34 ++++-
+ ui/src/pages/Agents.tsx                | 189 ++++++++++++++++++++++++-
+ ui/src/pages/Dashboard.tsx             |  17 ++-
+ 4 files changed, 236 insertions(+), 5 deletions(-)
+
+diff --git a/packages/shared/src/types/dashboard.ts b/packages/shared/src/types/dashboard.ts
+index 514d0ee..1627719 100644
+--- a/packages/shared/src/types/dashboard.ts
++++ b/packages/shared/src/types/dashboard.ts
+@@ -16,6 +16,7 @@ export interface DashboardSummary {
+     monthSpendCents: number;
+     monthBudgetCents: number;
+     monthUtilizationPercent: number;
++    billingType: "api" | "subscription" | "mixed" | "unknown";
+   };
+   pendingApprovals: number;
+   staleTasks: number;
+diff --git a/server/src/services/dashboard.ts b/server/src/services/dashboard.ts
+index cf7f32c..f211d60 100644
+--- a/server/src/services/dashboard.ts
++++ b/server/src/services/dashboard.ts
+@@ -1,6 +1,6 @@
+ import { and, eq, gte, sql } from "drizzle-orm";
+ import type { Db } from "@paperclipai/db";
+-import { agents, approvals, companies, costEvents, issues } from "@paperclipai/db";
++import { agents, approvals, companies, costEvents, heartbeatRuns, issues } from "@paperclipai/db";
+ import { notFound } from "../errors.js";
+ 
+ export function dashboardService(db: Db) {
+@@ -92,6 +92,37 @@ export function dashboardService(db: Db) {
+           ? (monthSpendCents / company.budgetMonthlyCents) * 100
+           : 0;
+ 
++      const billingRows = await db
++        .select({
++          billingType: sql<string>`coalesce(${heartbeatRuns.usageJson} ->> 'billingType', 'unknown')`,
++          count: sql<number>`count(*)`,
++        })
++        .from(heartbeatRuns)
++        .where(
++          and(
++            eq(heartbeatRuns.companyId, companyId),
++            gte(heartbeatRuns.finishedAt, monthStart),
++          ),
++        )
++        .groupBy(sql`coalesce(${heartbeatRuns.usageJson} ->> 'billingType', 'unknown')`);
++
++      let apiRuns = 0;
++      let subscriptionRuns = 0;
++      for (const row of billingRows) {
++        const count = Number(row.count);
++        if (row.billingType === "api") apiRuns += count;
++        if (row.billingType === "subscription") subscriptionRuns += count;
++      }
++
++      const billingType =
++        apiRuns > 0 && subscriptionRuns > 0
++          ? "mixed"
++          : apiRuns > 0
++            ? "api"
++            : subscriptionRuns > 0
++              ? "subscription"
++              : "unknown";
++
+       return {
+         companyId,
+         agents: {
+@@ -105,6 +136,7 @@ export function dashboardService(db: Db) {
+           monthSpendCents,
+           monthBudgetCents: company.budgetMonthlyCents,
+           monthUtilizationPercent: Number(utilization.toFixed(2)),
++          billingType,
+         },
+         pendingApprovals,
+         staleTasks,
+diff --git a/ui/src/pages/Agents.tsx b/ui/src/pages/Agents.tsx
+index 801d483..87b9ba1 100644
+--- a/ui/src/pages/Agents.tsx
++++ b/ui/src/pages/Agents.tsx
+@@ -1,6 +1,6 @@
+ import { useState, useEffect, useMemo } from "react";
+ import { Link, useNavigate, useLocation } from "@/lib/router";
+-import { useQuery } from "@tanstack/react-query";
++import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+ import { agentsApi, type OrgNode } from "../api/agents";
+ import { heartbeatsApi } from "../api/heartbeats";
+ import { useCompany } from "../context/CompanyContext";
+@@ -18,6 +18,10 @@ import { PageTabBar } from "../components/PageTabBar";
+ import { Tabs } from "@/components/ui/tabs";
+ import { Button } from "@/components/ui/button";
+ import { Bot, Plus, List, GitBranch, SlidersHorizontal } from "lucide-react";
++import {
++  DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
++  DEFAULT_CODEX_LOCAL_MODEL,
++} from "@paperclipai/adapter-codex-local";
+ import type { Agent } from "@paperclipai/shared";
+ 
+ const adapterLabels: Record<string, string> = {
+@@ -59,10 +63,101 @@ function filterOrgTree(nodes: OrgNode[], tab: FilterTab, showTerminated: boolean
+   }, []);
+ }
+ 
++type SwitchAdapterTarget = "claude_local" | "codex_local";
++
++function toRecord(value: unknown): Record<string, unknown> {
++  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
++  return value as Record<string, unknown>;
++}
++
++function asNonEmptyString(value: unknown): string | null {
++  if (typeof value !== "string") return null;
++  const trimmed = value.trim();
++  return trimmed.length > 0 ? trimmed : null;
++}
++
++function commandMatchesAdapter(command: string | null, target: SwitchAdapterTarget): boolean {
++  if (!command) return false;
++  const normalized = command.toLowerCase();
++  if (target === "codex_local") return normalized.includes("codex");
++  return normalized.includes("claude");
++}
++
++function buildBulkAdapterConfig(
++  currentAdapterType: string,
++  currentConfig: unknown,
++  target: SwitchAdapterTarget,
++): Record<string, unknown> {
++  const config = toRecord(currentConfig);
++  const next: Record<string, unknown> = {};
++
++  const commonKeys = [
++    "cwd",
++    "instructionsFilePath",
++    "promptTemplate",
++    "env",
++    "timeoutSec",
++    "graceSec",
++    "extraArgs",
++  ];
++  for (const key of commonKeys) {
++    if (Object.prototype.hasOwnProperty.call(config, key)) {
++      next[key] = config[key];
++    }
++  }
++
++  if (target === "codex_local") {
++    const existingCommand = asNonEmptyString(config.command);
++    next.command = commandMatchesAdapter(existingCommand, "codex_local") ? existingCommand : "codex";
++    next.model =
++      currentAdapterType === "codex_local" && asNonEmptyString(config.model)
++        ? (config.model as string)
++        : DEFAULT_CODEX_LOCAL_MODEL;
++
++    if (Object.prototype.hasOwnProperty.call(config, "search")) next.search = config.search;
++
++    const codexEffort = asNonEmptyString(config.modelReasoningEffort);
++    const claudeEffort = asNonEmptyString(config.effort);
++    if (codexEffort) next.modelReasoningEffort = codexEffort;
++    else if (claudeEffort) next.modelReasoningEffort = claudeEffort;
++
++    if (typeof config.dangerouslyBypassApprovalsAndSandbox === "boolean") {
++      next.dangerouslyBypassApprovalsAndSandbox = config.dangerouslyBypassApprovalsAndSandbox;
++    } else if (typeof config.dangerouslyBypassSandbox === "boolean") {
++      next.dangerouslyBypassApprovalsAndSandbox = config.dangerouslyBypassSandbox;
++    } else {
++      next.dangerouslyBypassApprovalsAndSandbox = DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
++    }
++
++    return next;
++  }
++
++  const existingCommand = asNonEmptyString(config.command);
++  next.command = commandMatchesAdapter(existingCommand, "claude_local") ? existingCommand : "claude";
++
++  if (currentAdapterType === "claude_local" && asNonEmptyString(config.model)) {
++    next.model = config.model;
++  }
++
++  const claudeEffort = asNonEmptyString(config.effort);
++  const codexEffort = asNonEmptyString(config.modelReasoningEffort);
++  if (claudeEffort) next.effort = claudeEffort;
++  else if (codexEffort) next.effort = codexEffort;
++
++  if (typeof config.chrome === "boolean") next.chrome = config.chrome;
++  if (typeof config.maxTurnsPerRun === "number") next.maxTurnsPerRun = config.maxTurnsPerRun;
++  if (typeof config.dangerouslySkipPermissions === "boolean") {
++    next.dangerouslySkipPermissions = config.dangerouslySkipPermissions;
++  }
++
++  return next;
++}
++
+ export function Agents() {
+   const { selectedCompanyId } = useCompany();
+   const { openNewAgent } = useDialog();
+   const { setBreadcrumbs } = useBreadcrumbs();
++  const queryClient = useQueryClient();
+   const navigate = useNavigate();
+   const location = useLocation();
+   const { isMobile } = useSidebar();
+@@ -73,6 +168,7 @@ export function Agents() {
+   const effectiveView: "list" | "org" = forceListView ? "list" : view;
+   const [showTerminated, setShowTerminated] = useState(false);
+   const [filtersOpen, setFiltersOpen] = useState(false);
++  const [switchSummary, setSwitchSummary] = useState<string | null>(null);
+ 
+   const { data: agents, isLoading, error } = useQuery({
+     queryKey: queryKeys.agents.list(selectedCompanyId!),
+@@ -118,6 +214,71 @@ export function Agents() {
+     setBreadcrumbs([{ label: "Agents" }]);
+   }, [setBreadcrumbs]);
+ 
++  const bulkSwitchAdapter = useMutation({
++    mutationFn: async (target: SwitchAdapterTarget) => {
++      if (!selectedCompanyId) throw new Error("Select a company first");
++      const source = agents ?? (await agentsApi.list(selectedCompanyId));
++      const targets = source.filter((agent) => agent.status !== "terminated");
++
++      const updates = await Promise.allSettled(
++        targets.map(async (agent) => {
++          const adapterConfig = buildBulkAdapterConfig(agent.adapterType, agent.adapterConfig, target);
++          if (agent.adapterType === target) {
++            const current = toRecord(agent.adapterConfig);
++            const sameCommand = asNonEmptyString(current.command) === asNonEmptyString(adapterConfig.command);
++            const sameModel = asNonEmptyString(current.model) === asNonEmptyString(adapterConfig.model);
++            const sameBypass =
++              current.dangerouslyBypassApprovalsAndSandbox === adapterConfig.dangerouslyBypassApprovalsAndSandbox;
++            if (sameCommand && sameModel && sameBypass) {
++              return { skipped: true, id: agent.id };
++            }
++          }
++          await agentsApi.update(
++            agent.id,
++            { adapterType: target, adapterConfig },
++            selectedCompanyId,
++          );
++          return { skipped: false, id: agent.id };
++        }),
++      );
++
++      let updated = 0;
++      let skipped = 0;
++      const failures: string[] = [];
++      for (const result of updates) {
++        if (result.status === "fulfilled") {
++          if (result.value.skipped) skipped += 1;
++          else updated += 1;
++        } else {
++          failures.push(result.reason instanceof Error ? result.reason.message : String(result.reason));
++        }
++      }
++
++      return { target, updated, skipped, failed: failures.length, failures };
++    },
++    onSuccess: async ({ target, updated, skipped, failed }) => {
++      if (!selectedCompanyId) return;
++      const targetLabel = target === "codex_local" ? "Codex" : "Anthropic";
++      if (failed > 0) {
++        setSwitchSummary(
++          `Switched ${updated} agents to ${targetLabel}, skipped ${skipped}, failed ${failed}.`,
++        );
++      } else {
++        setSwitchSummary(`Switched ${updated} agents to ${targetLabel}, skipped ${skipped}.`);
++      }
++
++      await Promise.all([
++        queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId) }),
++        queryClient.invalidateQueries({ queryKey: queryKeys.org(selectedCompanyId) }),
++        queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(selectedCompanyId) }),
++        queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(selectedCompanyId) }),
++      ]);
++    },
++    onError: (error) => {
++      setSwitchSummary(error instanceof Error ? error.message : "Failed to switch agent adapter");
++    },
++  });
++
+   if (!selectedCompanyId) {
+     return <EmptyState icon={Bot} message="Select a company to view agents." />;
+   }
+@@ -198,6 +359,28 @@ export function Agents() {
+               </button>
+             </div>
+           )}
++          <Button
++            size="sm"
++            variant="outline"
++            onClick={() => {
++              setSwitchSummary(null);
++              bulkSwitchAdapter.mutate("claude_local");
++            }}
++            disabled={bulkSwitchAdapter.isPending || !agents || agents.length === 0}
++          >
++            Switch to Anthropic
++          </Button>
++          <Button
++            size="sm"
++            variant="outline"
++            onClick={() => {
++              setSwitchSummary(null);
++              bulkSwitchAdapter.mutate("codex_local");
++            }}
++            disabled={bulkSwitchAdapter.isPending || !agents || agents.length === 0}
++          >
++            Switch to Codex
++          </Button>
+           <Button size="sm" variant="outline" onClick={openNewAgent}>
+             <Plus className="h-3.5 w-3.5 mr-1.5" />
+             New Agent
+@@ -205,6 +388,10 @@ export function Agents() {
+         </div>
+       </div>
+ 
++      {switchSummary && (
++        <p className="text-xs text-muted-foreground">{switchSummary}</p>
++      )}
++
+       {filtered.length > 0 && (
+         <p className="text-xs text-muted-foreground">{filtered.length} agent{filtered.length !== 1 ? "s" : ""}</p>
+       )}
+diff --git a/ui/src/pages/Dashboard.tsx b/ui/src/pages/Dashboard.tsx
+index 823d57d..404fb06 100644
+--- a/ui/src/pages/Dashboard.tsx
++++ b/ui/src/pages/Dashboard.tsx
+@@ -30,6 +30,13 @@ function getRecentIssues(issues: Issue[]): Issue[] {
+     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+ }
+ 
++function getCostBillingLabel(billingType: "api" | "subscription" | "mixed" | "unknown"): string {
++  if (billingType === "api") return "API billed";
++  if (billingType === "subscription") return "Estimated usage (subscription)";
++  if (billingType === "mixed") return "Mixed billing (API + subscription)";
++  return "Billing source unknown";
++}
++
+ export function Dashboard() {
+   const { selectedCompanyId, companies } = useCompany();
+   const { openOnboarding } = useDialog();
+@@ -183,6 +190,11 @@ export function Dashboard() {
+   }
+ 
+   const hasNoAgents = agents !== undefined && agents.length === 0;
++  const budgetSummary =
++    data && data.costs.monthBudgetCents > 0
++      ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
++      : "Unlimited budget";
++  const billingSummary = data ? getCostBillingLabel(data.costs.billingType) : "Billing source unknown";
+ 
+   return (
+     <div className="space-y-6">
+@@ -242,9 +254,8 @@ export function Dashboard() {
+               to="/costs"
+               description={
+                 <span>
+-                  {data.costs.monthBudgetCents > 0
+-                    ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
+-                    : "Unlimited budget"}
++                  {budgetSummary}{" "}
++                  <span className="text-muted-foreground">· {billingSummary}</span>
+                 </span>
+               }
+             />
+-- 
+2.43.0
+

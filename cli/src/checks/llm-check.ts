@@ -5,16 +5,20 @@ export async function llmCheck(config: PaperclipConfig): Promise<CheckResult> {
   if (!config.llm) {
     return {
       name: "LLM provider",
-      status: "pass",
-      message: "No LLM provider configured (optional)",
+      status: "warn",
+      message: "No LLM provider configured",
+      canRepair: false,
+      repairHint: "Run `paperclipai configure --section llm` to set one up",
     };
   }
 
   if (!config.llm.apiKey) {
     return {
       name: "LLM provider",
-      status: "pass",
-      message: `${config.llm.provider} configured but no API key set (optional)`,
+      status: "warn",
+      message: `${config.llm.provider} configured but no API key set`,
+      canRepair: false,
+      repairHint: "Run `paperclipai configure --section llm`",
     };
   }
 

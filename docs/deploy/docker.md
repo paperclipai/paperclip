@@ -53,7 +53,12 @@ The Docker image pre-installs:
 - `claude` (Anthropic Claude Code CLI)
 - `codex` (OpenAI Codex CLI)
 
-Pass API keys to enable local adapter runs inside the container:
+You can authenticate adapters in two ways:
+
+- Subscription login in-container (`claude login`, `codex login --device-auth`)
+- API keys (optional)
+
+Example with API keys:
 
 ```sh
 docker run --name paperclip \
@@ -67,3 +72,28 @@ docker run --name paperclip \
 ```
 
 Without API keys, the app runs normally — adapter environment checks will surface missing prerequisites.
+
+### Subscription Auth (No API Keys)
+
+For subscription-based instances, run login inside the running container once:
+
+```sh
+docker exec -it paperclip codex login --device-auth
+docker exec -it paperclip claude login
+```
+
+Because `PAPERCLIP_HOME` is bind-mounted, CLI auth state under `/paperclip` persists across container restarts.
+
+### Host Path Mounting for Agent Workspaces/Instructions
+
+If agents use absolute host paths in `cwd` or `instructionsFilePath` (for example `/home/ubuntu/myproject/AGENTS.md`), mount those host paths into the container at the same location:
+
+```sh
+docker run --name paperclip \
+  -p 3100:3100 \
+  -e HOST=0.0.0.0 \
+  -e PAPERCLIP_HOME=/paperclip \
+  -v /home/ubuntu/myproject:/home/ubuntu/myproject \
+  -v "$(pwd)/data/docker-paperclip:/paperclip" \
+  paperclip-local
+```
