@@ -564,7 +564,7 @@ describe("openclaw adapter execute", () => {
     expect((body.paperclip as Record<string, unknown>).streamTransport).toBe("webhook");
   });
 
-  it("uses OpenResponses payload shape for webhook transport against /v1/responses", async () => {
+  it("normalizes /v1/responses to /hooks/wake for webhook transport", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ ok: true }), {
         status: 200,
@@ -586,16 +586,12 @@ describe("openclaw adapter execute", () => {
 
     expect(result.exitCode).toBe(0);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://agent.example/hooks/wake");
     const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body ?? "{}")) as Record<string, unknown>;
-    expect(body.foo).toBe("bar");
-    expect(body.stream).toBe(false);
-    expect(body.model).toBe("openclaw");
-    expect(String(body.input ?? "")).toContain("PAPERCLIP_RUN_ID=run-123");
-    const metadata = body.metadata as Record<string, unknown>;
-    expect(metadata.PAPERCLIP_RUN_ID).toBe("run-123");
-    expect(metadata.paperclip_session_key).toBe("paperclip");
-    expect(metadata.paperclip_stream_transport).toBe("webhook");
-    expect(body.paperclip).toBeUndefined();
+    expect(body.mode).toBe("now");
+    expect(String(body.text ?? "")).toContain("PAPERCLIP_RUN_ID=run-123");
+    expect(body.model).toBeUndefined();
+    expect(body.input).toBeUndefined();
   });
 
   it("uses wake compatibility payloads for /hooks/wake when transport=webhook", async () => {
@@ -649,7 +645,7 @@ describe("openclaw adapter execute", () => {
 
     const result = await execute(
       buildContext({
-        url: "https://agent.example/v1/responses",
+        url: "https://agent.example/webhook",
         streamTransport: "webhook",
       }),
     );
@@ -658,13 +654,13 @@ describe("openclaw adapter execute", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const firstBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body ?? "{}")) as Record<string, unknown>;
     const secondBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body ?? "{}")) as Record<string, unknown>;
-    expect(firstBody.model).toBe("openclaw");
-    expect(String(firstBody.input ?? "")).toContain("PAPERCLIP_RUN_ID=run-123");
+    expect(firstBody.paperclip).toBeTruthy();
+    expect(String(firstBody.text ?? "")).toContain("PAPERCLIP_RUN_ID=run-123");
     expect(secondBody.mode).toBe("now");
     expect(String(secondBody.text ?? "")).toContain("PAPERCLIP_RUN_ID=run-123");
   });
 
-  it("retries webhook payloads when /v1/responses reports missing string input", async () => {
+  it("retries webhook payloads when endpoint reports missing string input", async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
@@ -697,7 +693,7 @@ describe("openclaw adapter execute", () => {
 
     const result = await execute(
       buildContext({
-        url: "https://agent.example/v1/responses",
+        url: "https://agent.example/webhook",
         streamTransport: "webhook",
       }),
     );
@@ -806,6 +802,27 @@ describe("openclaw adapter environment checks", () => {
     expect(unsupported).toBeUndefined();
     expect(configured?.level).toBe("info");
     expect(wakeIncompatible).toBeUndefined();
+  });
+
+  it("warns when webhook transport is configured with a /v1/responses endpoint", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 405, statusText: "Method Not Allowed" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await testEnvironment({
+      companyId: "company-123",
+      adapterType: "openclaw",
+      config: {
+        url: "https://agent.example/v1/responses",
+        streamTransport: "webhook",
+      },
+    });
+
+    const normalizedWarning = result.checks.find(
+      (entry) => entry.code === "openclaw_webhook_endpoint_normalized",
+    );
+    expect(normalizedWarning?.level).toBe("warn");
   });
 });
 

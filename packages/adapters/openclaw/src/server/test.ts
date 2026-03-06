@@ -34,6 +34,11 @@ function isWakePath(pathname: string): boolean {
   return value === "/hooks/wake" || value.endsWith("/hooks/wake");
 }
 
+function isOpenResponsesPath(pathname: string): boolean {
+  const value = pathname.trim().toLowerCase();
+  return value === "/v1/responses" || value.endsWith("/v1/responses");
+}
+
 function normalizeTransport(value: unknown): "sse" | "webhook" | null {
   const normalized = asString(value, "sse").trim().toLowerCase();
   if (!normalized || normalized === "sse") return "sse";
@@ -169,6 +174,16 @@ export async function testEnvironment(
         level: "error",
         message: "Endpoint targets /hooks/wake, which is not stream-capable for SSE transport.",
         hint: "Use an endpoint that returns text/event-stream for the full run duration.",
+      });
+    }
+
+    if (streamTransport === "webhook" && isOpenResponsesPath(url.pathname)) {
+      checks.push({
+        code: "openclaw_webhook_endpoint_normalized",
+        level: "warn",
+        message:
+          "Webhook transport is configured with a /v1/responses endpoint. Runtime will normalize this to /hooks/wake.",
+        hint: "Set endpoint path to /hooks/wake to avoid ambiguous transport behavior.",
       });
     }
   }
