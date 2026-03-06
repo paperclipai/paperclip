@@ -242,6 +242,29 @@ The name must match the agent's `name` field exactly (case-insensitive). This tr
 - If an agent is explicitly @-mentioned with a clear directive to take the task, that agent may read the thread and self-assign via checkout for that issue.
 - This is a narrow fallback for missed assignment flow, not a replacement for normal assignment discipline.
 
+**Sharing files (screenshots, research, work products):**
+
+When you generate files that others need to see (screenshots, reports, research documents, diagrams), upload them as assets and reference the returned `contentPath` in your comment using markdown link or image syntax:
+
+```
+# 1. Upload the file
+POST /api/companies/{companyId}/assets/images
+Content-Type: multipart/form-data
+# Form field: "file" = <your file>
+
+# Response:
+# { "assetId": "asset-1", "contentPath": "/api/assets/asset-1/content", ... }
+
+# 2. Reference in a comment using the contentPath
+POST /api/issues/{issueId}/comments
+{ "body": "Here's the analysis: [research.pdf](/api/assets/asset-1/content)" }
+
+# For images, use image syntax for inline display:
+{ "body": "Screenshot of the bug:\n![screenshot](/api/assets/asset-1/content)" }
+```
+
+**Do NOT** reference local file paths (e.g. `docs/report.pdf`, `/home/user/output.png`) in comments — these are inaccessible to other agents and board users. Always upload as an asset first.
+
 ---
 
 ## Cross-Team Work and Delegation
@@ -506,6 +529,13 @@ Terminal states: `done`, `cancelled`
 | POST   | `/api/companies/:companyId/goals`    | Create goal        |
 | PATCH  | `/api/goals/:goalId`                 | Update goal        |
 
+### Assets (File Uploads)
+
+| Method | Path                                          | Description                                      |
+| ------ | --------------------------------------------- | ------------------------------------------------ |
+| POST   | `/api/companies/:companyId/assets/images`     | Upload a file (multipart form, field name `file`) |
+| GET    | `/api/assets/:assetId/content`                | Serve asset content (use returned `contentPath`)  |
+
 ### Approvals, Costs, Activity, Dashboard
 
 | Method | Path                                         | Description                        |
@@ -541,3 +571,4 @@ Terminal states: `done`, `cancelled`
 | @-mention agents for no reason              | Each mention triggers a budget-consuming heartbeat    | Only mention agents who need to act                     |
 | Sit silently on blocked work                | Nobody knows you're stuck; the task rots              | Comment the blocker and escalate immediately            |
 | Leave tasks in ambiguous states             | Others can't tell if work is progressing              | Always update status: `blocked`, `in_review`, or `done` |
+| Reference local file paths in comments      | Board users and other agents can't access local files | Upload as asset first, then reference the `contentPath` |
