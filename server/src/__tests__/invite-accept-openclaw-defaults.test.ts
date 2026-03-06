@@ -142,6 +142,26 @@ describe("buildJoinDefaultsPayloadForAccept", () => {
     });
   });
 
+  it("accepts auth headers wrapped in a single unknown key", () => {
+    const result = buildJoinDefaultsPayloadForAccept({
+      adapterType: "openclaw",
+      defaultsPayload: {
+        headers: {
+          "x-openclaw-auth": {
+            gatewayToken: "gateway-token",
+          },
+        },
+      },
+    }) as Record<string, unknown>;
+
+    expect(result).toMatchObject({
+      headers: {
+        "x-openclaw-auth": "gateway-token",
+      },
+      webhookAuthHeader: "Bearer gateway-token",
+    });
+  });
+
   it("leaves non-openclaw payloads unchanged", () => {
     const defaultsPayload = { command: "echo hello" };
     const result = buildJoinDefaultsPayloadForAccept({

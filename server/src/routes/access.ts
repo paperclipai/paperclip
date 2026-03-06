@@ -159,6 +159,22 @@ function normalizeHeaderValue(
     const normalized = normalizeHeaderValue((value as Record<string, unknown>)[key], depth + 1);
     if (normalized) return normalized;
   }
+
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length === 1) {
+    const [singleKey, singleValue] = entries[0];
+    const normalizedKey = singleKey.trim().toLowerCase();
+    if (
+      normalizedKey !== "type" &&
+      normalizedKey !== "version" &&
+      normalizedKey !== "secretid" &&
+      normalizedKey !== "secret_id"
+    ) {
+      const normalized = normalizeHeaderValue(singleValue, depth + 1);
+      if (normalized) return normalized;
+    }
+  }
+
   return null;
 }
 
