@@ -1,6 +1,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 import pc from "picocolors";
 import type { Agent, HeartbeatRun, HeartbeatRunEvent, HeartbeatRunStatus } from "@paperclipai/shared";
+import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { getCLIAdapter } from "../adapters/index.js";
 import { resolveCommandContext } from "./client/common.js";
 
@@ -28,6 +29,8 @@ interface HeartbeatRunOptions {
   timeoutMs: string;
   debug?: boolean;
   json?: boolean;
+  local?: boolean;
+  cwd?: string;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -79,6 +82,11 @@ export async function heartbeatRun(opts: HeartbeatRunOptions): Promise<void> {
   const agent = await api.get<Agent>(`/api/agents/${opts.agentId}`);
   if (!agent || typeof agent !== "object" || !agent.id) {
     console.error(pc.red(`Agent not found: ${opts.agentId}`));
+    return;
+  }
+
+  if (opts.local) {
+    await runLocalExecution(api, agent, { source, triggerDetail, cwd: opts.cwd, debug, timeoutMs });
     return;
   }
 
@@ -320,6 +328,224 @@ export async function heartbeatRun(opts: HeartbeatRunOptions): Promise<void> {
   } else {
     process.exitCode = 1;
     console.log(pc.gray("Heartbeat stream ended without terminal status"));
+  }
+}
+
+interface ClaimLocalResult {
+  run: HeartbeatRun;
+  agent: { id: string; companyId: string; name: string; adapterType: string };
+  config: Record<string, unknown>;
+  context: Record<string, unknown>;
+  authToken: string | null;
+}
+
+type ApiClient = ReturnType<typeof resolveCommandContext>["api"];
+
+async function getAdapterExecute(adapterType: string): Promise<((ctx: AdapterExecutionContext) => Promise<AdapterExecutionResult>) | null> {
+  try {
+    switch (adapterType) {
+      case "claude_local": {
+        const mod = await import("@paperclipai/adapter-claude-local/server");
+        return mod.execute;
+      }
+      case "codex_local": {
+        const mod = await import("@paperclipai/adapter-codex-local/server");
+        return mod.execute;
+      }
+      case "opencode_local": {
+        const mod = await import("@paperclipai/adapter-opencode-local/server");
+        return mod.execute;
+      }
+      case "cursor": {
+        const mod = await import("@paperclipai/adapter-cursor-local/server");
+        return mod.execute;
+      }
+      case "openclaw": {
+        const mod = await import("@paperclipai/adapter-openclaw/server");
+        return mod.execute;
+      }
+      default:
+        return null;
+    }
+  } catch {
+    return null;
+  }
+}
+
+async function runLocalExecution(
+  api: ApiClient,
+  agent: Agent,
+  opts: {
+    source: string;
+    triggerDetail: string;
+    cwd?: string;
+    debug: boolean;
+    timeoutMs: number;
+  },
+): Promise<void> {
+  console.log(pc.cyan(`[local] Starting local execution for agent ${agent.name} (${agent.id})`));
+
+  // 1. Wakeup with executionMode: "local" via payload
+  const payload: Record<string, unknown> = { executionMode: "local" };
+  if (opts.cwd) {
+    payload.localCwd = opts.cwd;
+  }
+
+  const invokeRes = await api.post<InvokedHeartbeat>(
+    `/api/agents/${agent.id}/wakeup`,
+    {
+      source: opts.source,
+      triggerDetail: opts.triggerDetail,
+      payload,
+    },
+  );
+  if (!invokeRes) {
+    console.error(pc.red("Failed to invoke heartbeat"));
+    return;
+  }
+  if ((invokeRes as { status?: string }).status === "skipped") {
+    console.log(pc.yellow("Heartbeat invocation was skipped"));
+    return;
+  }
+
+  const run = invokeRes as HeartbeatRun;
+  console.log(pc.cyan(`[local] Created run ${run.id}, claiming for local execution...`));
+
+  // 2. Claim the run for local execution
+  const claimRes = await api.post<ClaimLocalResult>(
+    `/api/heartbeat-runs/${run.id}/claim-local`,
+    {},
+  );
+  if (!claimRes || !claimRes.run) {
+    console.error(pc.red("Failed to claim run for local execution"));
+    return;
+  }
+
+  console.log(pc.green(`[local] Claimed run ${run.id}`));
+  console.log(pc.cyan(`[local] Adapter: ${claimRes.agent.adapterType}`));
+
+  // 3. Get the adapter execute function
+  const adapterExecute = await getAdapterExecute(claimRes.agent.adapterType);
+  if (!adapterExecute) {
+    console.error(pc.red(`Adapter type "${claimRes.agent.adapterType}" not supported for local execution`));
+    await api.post(`/api/heartbeat-runs/${run.id}/complete`, {
+      status: "failed",
+      error: `Adapter type "${claimRes.agent.adapterType}" not supported for local execution`,
+      errorCode: "unsupported_adapter",
+    });
+    return;
+  }
+
+  // 4. Build execution context
+  const cwd = opts.cwd || process.cwd();
+  const context = claimRes.context ?? {};
+  if (!context.paperclipWorkspace || !(context.paperclipWorkspace as Record<string, unknown>).cwd) {
+    context.paperclipWorkspace = { cwd, source: "local_cli" };
+  }
+
+  const cliAdapter = getCLIAdapter(claimRes.agent.adapterType);
+  let stdoutJsonBuffer = "";
+
+  const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
+    // Display locally
+    if (opts.debug) {
+      if (stream === "stdout") process.stdout.write(pc.green("[stdout] ") + chunk);
+      else process.stdout.write(pc.red("[stderr] ") + chunk);
+    } else if (stream === "stdout") {
+      const combined = stdoutJsonBuffer + chunk;
+      const lines = combined.split(/\r?\n/);
+      stdoutJsonBuffer = lines.pop() ?? "";
+      for (const line of lines) {
+        cliAdapter.formatStdoutEvent(line, opts.debug);
+      }
+    } else {
+      process.stdout.write(pc.red("[stderr] ") + chunk);
+    }
+
+    // Stream back to server (fire-and-forget)
+    api.post(`/api/heartbeat-runs/${run.id}/append-log`, { stream, chunk }).catch(() => {});
+  };
+
+  const executionContext: AdapterExecutionContext = {
+    runId: run.id,
+    agent: {
+      id: claimRes.agent.id,
+      companyId: claimRes.agent.companyId,
+      name: claimRes.agent.name,
+      adapterType: claimRes.agent.adapterType,
+      adapterConfig: claimRes.config,
+    },
+    runtime: {
+      sessionId: null,
+      sessionParams: null,
+      sessionDisplayId: null,
+      taskKey: null,
+    },
+    config: claimRes.config,
+    context,
+    onLog,
+    authToken: claimRes.authToken ?? undefined,
+  };
+
+  // 5. Execute the adapter locally
+  console.log(pc.cyan(`[local] Executing adapter in ${cwd}...`));
+
+  let adapterResult: AdapterExecutionResult;
+  try {
+    adapterResult = await adapterExecute(executionContext);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Local adapter execution failed";
+    console.error(pc.red(`[local] Execution failed: ${message}`));
+    await api.post(`/api/heartbeat-runs/${run.id}/complete`, {
+      status: "failed",
+      error: message,
+      errorCode: "adapter_failed",
+    });
+    process.exitCode = 1;
+    return;
+  }
+
+  // Flush remaining stdout buffer
+  if (stdoutJsonBuffer.trim()) {
+    cliAdapter.formatStdoutEvent(stdoutJsonBuffer, opts.debug);
+    stdoutJsonBuffer = "";
+  }
+
+  // 6. Report completion
+  const status = adapterResult.timedOut
+    ? "timed_out"
+    : (adapterResult.exitCode ?? 0) === 0 && !adapterResult.errorMessage
+      ? "succeeded"
+      : "failed";
+
+  const usageJson = adapterResult.usage || adapterResult.costUsd != null
+    ? {
+        ...(adapterResult.usage ?? {}),
+        ...(adapterResult.costUsd != null ? { costUsd: adapterResult.costUsd } : {}),
+        ...(adapterResult.billingType ? { billingType: adapterResult.billingType } : {}),
+      }
+    : null;
+
+  await api.post(`/api/heartbeat-runs/${run.id}/complete`, {
+    status,
+    exitCode: adapterResult.exitCode ?? null,
+    signal: adapterResult.signal ?? null,
+    error: adapterResult.errorMessage ?? null,
+    errorCode: adapterResult.errorCode ?? null,
+    resultJson: adapterResult.resultJson ?? null,
+    usageJson,
+    sessionIdAfter: adapterResult.sessionId ?? null,
+  });
+
+  const label = `[local] Run ${run.id} completed with status ${status}`;
+  if (status === "succeeded") {
+    console.log(pc.green(label));
+  } else {
+    console.log(pc.red(label));
+    if (adapterResult.errorMessage) {
+      console.log(pc.red(`Error: ${adapterResult.errorMessage}`));
+    }
+    process.exitCode = 1;
   }
 }
 

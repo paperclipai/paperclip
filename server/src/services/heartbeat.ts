@@ -273,6 +273,10 @@ function enrichWakeContextSnapshot(input: {
   if (!readNonEmptyString(contextSnapshot["wakeTriggerDetail"]) && triggerDetail) {
     contextSnapshot.wakeTriggerDetail = triggerDetail;
   }
+  // Propagate executionMode from payload for local agent execution
+  if (payload?.["executionMode"] === "local" && !contextSnapshot.executionMode) {
+    contextSnapshot.executionMode = "local";
+  }
 
   return {
     contextSnapshot,
@@ -1015,10 +1019,15 @@ export function heartbeatService(db: Db) {
         .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")))
         .orderBy(asc(heartbeatRuns.createdAt))
         .limit(availableSlots);
-      if (queuedRuns.length === 0) return [];
+      // Filter out runs marked for local execution — those are claimed by the CLI.
+      const serverRuns = queuedRuns.filter((r) => {
+        const ctx = parseObject(r.contextSnapshot);
+        return ctx.executionMode !== "local";
+      });
+      if (serverRuns.length === 0) return [];
 
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
-      for (const queuedRun of queuedRuns) {
+      for (const queuedRun of serverRuns) {
         const claimed = await claimQueuedRun(queuedRun);
         if (claimed) claimedRuns.push(claimed);
       }
@@ -2197,6 +2206,127 @@ export function heartbeatService(db: Db) {
       }),
 
     wakeup: enqueueWakeup,
+
+    claimForLocalExecution: async (runId: string) => {
+      const run = await getRun(runId);
+      if (!run) throw notFound("Heartbeat run not found");
+      if (run.status !== "queued") {
+        throw conflict("Run is not in queued state", { status: run.status });
+      }
+      const ctx = parseObject(run.contextSnapshot);
+      if (ctx.executionMode !== "local") {
+        throw conflict("Run is not marked for local execution");
+      }
+      const claimed = await claimQueuedRun(run);
+      if (!claimed) throw conflict("Run already claimed by another worker");
+
+      const agent = await getAgent(run.agentId);
+      if (!agent) throw notFound("Agent not found");
+
+      const config = parseObject(agent.adapterConfig);
+      const resolvedConfig = await secretsSvc.resolveAdapterConfigForRuntime(
+        agent.companyId,
+        config,
+      );
+
+      const adapter = getServerAdapter(agent.adapterType);
+      const authToken = adapter.supportsLocalAgentJwt
+        ? createLocalAgentJwt(agent.id, agent.companyId, agent.adapterType, run.id)
+        : null;
+
+      await appendRunEvent(claimed, 1, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "info",
+        message: "run claimed for local execution",
+      });
+
+      return {
+        run: claimed,
+        agent: {
+          id: agent.id,
+          companyId: agent.companyId,
+          name: agent.name,
+          adapterType: agent.adapterType,
+        },
+        config: resolvedConfig,
+        context: ctx,
+        authToken,
+      };
+    },
+
+    appendLocalRunLog: async (runId: string, stream: "stdout" | "stderr", chunk: string) => {
+      const run = await getRun(runId);
+      if (!run) throw notFound("Heartbeat run not found");
+      if (run.status !== "running") return;
+
+      publishLiveEvent({
+        companyId: run.companyId,
+        type: "heartbeat.run.log",
+        payload: {
+          runId: run.id,
+          agentId: run.agentId,
+          stream,
+          chunk: chunk.length > MAX_LIVE_LOG_CHUNK_BYTES ? chunk.slice(chunk.length - MAX_LIVE_LOG_CHUNK_BYTES) : chunk,
+          truncated: chunk.length > MAX_LIVE_LOG_CHUNK_BYTES,
+        },
+      });
+    },
+
+    completeLocalRun: async (
+      runId: string,
+      result: {
+        status: "succeeded" | "failed" | "timed_out";
+        exitCode?: number | null;
+        signal?: string | null;
+        error?: string | null;
+        errorCode?: string | null;
+        resultJson?: Record<string, unknown> | null;
+        usageJson?: Record<string, unknown> | null;
+        sessionIdAfter?: string | null;
+        stdoutExcerpt?: string | null;
+        stderrExcerpt?: string | null;
+      },
+    ) => {
+      const run = await getRun(runId);
+      if (!run) throw notFound("Heartbeat run not found");
+      if (run.status !== "running") {
+        throw conflict("Run is not in running state", { status: run.status });
+      }
+
+      const finalRun = await setRunStatus(run.id, result.status, {
+        finishedAt: new Date(),
+        error: result.error ?? null,
+        errorCode: result.errorCode ?? null,
+        exitCode: result.exitCode ?? null,
+        signal: result.signal ?? null,
+        resultJson: result.resultJson ?? null,
+        usageJson: result.usageJson ?? null,
+        sessionIdAfter: result.sessionIdAfter ?? null,
+        stdoutExcerpt: result.stdoutExcerpt ?? null,
+        stderrExcerpt: result.stderrExcerpt ?? null,
+      });
+
+      await setWakeupStatus(run.wakeupRequestId, result.status === "succeeded" ? "completed" : result.status, {
+        finishedAt: new Date(),
+        error: result.error ?? null,
+      });
+
+      if (finalRun) {
+        await appendRunEvent(finalRun, 2, {
+          eventType: "lifecycle",
+          stream: "system",
+          level: result.status === "succeeded" ? "info" : "error",
+          message: `run ${result.status} (local execution)`,
+          payload: { status: result.status, exitCode: result.exitCode },
+        });
+        await releaseIssueExecutionAndPromote(finalRun);
+      }
+
+      await finalizeAgentStatus(run.agentId, result.status === "succeeded" ? "succeeded" : "failed");
+      await startNextQueuedRunForAgent(run.agentId);
+      return finalRun;
+    },
 
     reapOrphanedRuns,
 
