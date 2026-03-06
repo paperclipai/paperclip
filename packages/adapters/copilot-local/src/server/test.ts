@@ -87,6 +87,12 @@ export async function testEnvironment(
     });
   }
 
+  // Forward host auth token into env if not already present (mirrors execute.ts logic)
+  if (authSource && !hasNonEmptyEnvValue(env, authSource)) {
+    const hostValue = mergedEnv[authSource];
+    if (typeof hostValue === "string") env.COPILOT_GITHUB_TOKEN = hostValue;
+  }
+
   // Run probe if binary and auth are available
   const canProbe = commandFound && authSource !== null;
   if (canProbe) {
@@ -153,7 +159,7 @@ export async function testEnvironment(
 
   checks.push({
     code: "copilot_no_cost_tracking",
-    level: "warn",
+    level: "info",
     message: "Cost tracking is not available for copilot_local. The Copilot CLI does not report token usage.",
   });
 

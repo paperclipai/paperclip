@@ -90,6 +90,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const graceSec = asNumber(config.graceSec, 10);
   const extraArgs = asStringArray(config.extraArgs);
 
+  // Copilot CLI --resume is cwd-agnostic (session state is server-side, not directory-bound),
+  // so we intentionally skip cwd validation on resume unlike some other adapters.
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
   const sessionId = runtimeSessionId || null;
