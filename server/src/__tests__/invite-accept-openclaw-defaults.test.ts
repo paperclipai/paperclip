@@ -110,6 +110,38 @@ describe("buildJoinDefaultsPayloadForAccept", () => {
     });
   });
 
+  it("accepts auth headers provided as tuple entries", () => {
+    const result = buildJoinDefaultsPayloadForAccept({
+      adapterType: "openclaw",
+      defaultsPayload: {
+        headers: [["x-openclaw-auth", "gateway-token"]],
+      },
+    }) as Record<string, unknown>;
+
+    expect(result).toMatchObject({
+      headers: {
+        "x-openclaw-auth": "gateway-token",
+      },
+      webhookAuthHeader: "Bearer gateway-token",
+    });
+  });
+
+  it("accepts auth headers provided as name/value entries", () => {
+    const result = buildJoinDefaultsPayloadForAccept({
+      adapterType: "openclaw",
+      defaultsPayload: {
+        headers: [{ name: "x-openclaw-auth", value: { authToken: "gateway-token" } }],
+      },
+    }) as Record<string, unknown>;
+
+    expect(result).toMatchObject({
+      headers: {
+        "x-openclaw-auth": "gateway-token",
+      },
+      webhookAuthHeader: "Bearer gateway-token",
+    });
+  });
+
   it("leaves non-openclaw payloads unchanged", () => {
     const defaultsPayload = { command: "echo hello" };
     const result = buildJoinDefaultsPayloadForAccept({

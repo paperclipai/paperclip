@@ -134,7 +134,7 @@ function normalizeHeaderValue(
 ): string | null {
   const direct = nonEmptyTrimmedString(value);
   if (direct) return direct;
-  if (!isPlainObject(value) || depth >= 2) return null;
+  if (!isPlainObject(value) || depth >= 3) return null;
 
   const candidateKeys = [
     "value",
@@ -143,9 +143,16 @@ function normalizeHeaderValue(
     "apiKey",
     "api_key",
     "auth",
+    "authToken",
+    "auth_token",
+    "accessToken",
+    "access_token",
     "authorization",
     "bearer",
     "header",
+    "raw",
+    "text",
+    "string",
   ];
   for (const key of candidateKeys) {
     if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
@@ -155,10 +162,56 @@ function normalizeHeaderValue(
   return null;
 }
 
+function extractHeaderEntries(input: unknown): Array<[string, unknown]> {
+  if (isPlainObject(input)) {
+    return Object.entries(input);
+  }
+  if (!Array.isArray(input)) {
+    return [];
+  }
+
+  const entries: Array<[string, unknown]> = [];
+  for (const item of input) {
+    if (Array.isArray(item)) {
+      const key = nonEmptyTrimmedString(item[0]);
+      if (!key) continue;
+      entries.push([key, item[1]]);
+      continue;
+    }
+    if (!isPlainObject(item)) continue;
+
+    const mapped = item as Record<string, unknown>;
+    const explicitKey =
+      nonEmptyTrimmedString(mapped.key) ??
+      nonEmptyTrimmedString(mapped.name) ??
+      nonEmptyTrimmedString(mapped.header);
+    if (explicitKey) {
+      const explicitValue = Object.prototype.hasOwnProperty.call(mapped, "value")
+        ? mapped.value
+        : Object.prototype.hasOwnProperty.call(mapped, "token")
+          ? mapped.token
+          : Object.prototype.hasOwnProperty.call(mapped, "secret")
+            ? mapped.secret
+            : mapped;
+      entries.push([explicitKey, explicitValue]);
+      continue;
+    }
+
+    const singleEntry = Object.entries(mapped);
+    if (singleEntry.length === 1) {
+      entries.push(singleEntry[0] as [string, unknown]);
+    }
+  }
+
+  return entries;
+}
+
 function normalizeHeaderMap(input: unknown): Record<string, string> | undefined {
-  if (!isPlainObject(input)) return undefined;
+  const entries = extractHeaderEntries(input);
+  if (entries.length === 0) return undefined;
+
   const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(input)) {
+  for (const [key, value] of entries) {
     const normalizedValue = normalizeHeaderValue(value);
     if (!normalizedValue) continue;
     const trimmedKey = key.trim();
