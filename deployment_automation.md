@@ -11,12 +11,15 @@ When the container starts, it checks for an existing configuration in the `/pape
 - It executes `paperclipai onboard --yes` to generate a default `config.json`.
 - It automatically configures the `deploymentMode` to `authenticated` to ensure secure access.
 
-### 2. Automatic Admin Bootstrapping
+### 2. Automatic Admin Setup & Redirect
 Immediately after onboarding, the script:
 - Generates a one-time **CEO Bootstrap Invite URL**.
-- Prints this URL prominently in the container logs.
+- Exports the invite token to the environment.
+- The Paperclip server detects this token and exposes it via the `/api/health` endpoint.
+- When you open Paperclip in your browser (`http://localhost:3100`), the UI will **automatically redirect** you to the admin creation page.
 
-## Viewing the Admin Invite
+## Viewing the Admin Invite Alternatively
+If for some reason the redirect doesn't work, you can still find the link in the logs:
 
 To get your initial login link on a fresh deployment, run:
 
