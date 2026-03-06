@@ -17,6 +17,8 @@ export const defaultCreateValues: CreateConfigValues = {
   envVars: "",
   envBindings: {},
   url: "",
+  webhookAuthHeader: "",
+  gatewayAuthToken: "",
   bootstrapPrompt: "",
   maxTurnsPerRun: 80,
   heartbeatEnabled: false,

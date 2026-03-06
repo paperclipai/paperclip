@@ -59,19 +59,26 @@ export function OpenClawConfigFields({
       : {};
   const effectiveHeaders =
     (eff("adapterConfig", "headers", configuredHeaders) as Record<string, unknown>) ?? {};
-  const effectiveGatewayAuthHeader = typeof effectiveHeaders["x-openclaw-auth"] === "string"
-    ? String(effectiveHeaders["x-openclaw-auth"])
-    : "";
+
+  const effectiveGatewayAuthHeader = isCreate
+    ? String(values?.gatewayAuthToken ?? "")
+    : typeof effectiveHeaders["x-openclaw-auth"] === "string"
+      ? String(effectiveHeaders["x-openclaw-auth"])
+      : "";
 
   const commitGatewayAuthHeader = (rawValue: string) => {
     const nextValue = rawValue.trim();
-    const nextHeaders: Record<string, unknown> = { ...effectiveHeaders };
-    if (nextValue) {
-      nextHeaders["x-openclaw-auth"] = nextValue;
+    if (isCreate) {
+      set!({ gatewayAuthToken: nextValue || undefined });
     } else {
-      delete nextHeaders["x-openclaw-auth"];
+      const nextHeaders: Record<string, unknown> = { ...effectiveHeaders };
+      if (nextValue) {
+        nextHeaders["x-openclaw-auth"] = nextValue;
+      } else {
+        delete nextHeaders["x-openclaw-auth"];
+      }
+      mark("adapterConfig", "headers", Object.keys(nextHeaders).length > 0 ? nextHeaders : undefined);
     }
-    mark("adapterConfig", "headers", Object.keys(nextHeaders).length > 0 ? nextHeaders : undefined);
   };
 
   const transport = eff(
@@ -104,6 +111,29 @@ export function OpenClawConfigFields({
           placeholder="https://..."
         />
       </Field>
+
+      <SecretField
+        label="Webhook auth header (optional)"
+        value={
+          isCreate
+            ? String(values?.webhookAuthHeader ?? "")
+            : eff("adapterConfig", "webhookAuthHeader", String(config.webhookAuthHeader ?? ""))
+        }
+        onCommit={(v) =>
+          isCreate
+            ? set!({ webhookAuthHeader: v.trim() || undefined })
+            : mark("adapterConfig", "webhookAuthHeader", v || undefined)
+        }
+        placeholder="Bearer <token>"
+      />
+
+      <SecretField
+        label="Gateway auth token (x-openclaw-auth)"
+        value={effectiveGatewayAuthHeader}
+        onCommit={commitGatewayAuthHeader}
+        placeholder="OpenClaw gateway token"
+      />
+
       {!isCreate && (
         <>
           <Field label="Paperclip API URL override">
@@ -156,20 +186,6 @@ export function OpenClawConfigFields({
               />
             </Field>
           )}
-
-          <SecretField
-            label="Webhook auth header (optional)"
-            value={eff("adapterConfig", "webhookAuthHeader", String(config.webhookAuthHeader ?? ""))}
-            onCommit={(v) => mark("adapterConfig", "webhookAuthHeader", v || undefined)}
-            placeholder="Bearer <token>"
-          />
-
-          <SecretField
-            label="Gateway auth token (x-openclaw-auth)"
-            value={effectiveGatewayAuthHeader}
-            onCommit={commitGatewayAuthHeader}
-            placeholder="OpenClaw gateway token"
-          />
         </>
       )}
     </>

@@ -207,6 +207,8 @@ export interface CreateConfigValues {
   envVars: string;
   envBindings: Record<string, unknown>;
   url: string;
+  webhookAuthHeader: string;
+  gatewayAuthToken: string;
   bootstrapPrompt: string;
   maxTurnsPerRun: number;
   heartbeatEnabled: boolean;
