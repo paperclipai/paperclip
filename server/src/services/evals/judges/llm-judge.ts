@@ -250,11 +250,21 @@ function parseIsolatedResponse(raw: string, kind: EvalKind): EvalResult {
 
 // ── LLM call helpers ────────────────────────────────────────────────
 
+const JUDGE_TIMEOUT_MS = 60_000;
+
 type LlmCaller = (systemPrompt: string, userPrompt: string) => Promise<string>;
+
+function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), JUDGE_TIMEOUT_MS);
+  return fetch(url, { ...init, signal: controller.signal }).finally(() =>
+    clearTimeout(timeoutId),
+  );
+}
 
 function makeOpenAICaller(model: string, apiKey: string): LlmCaller {
   return async (systemPrompt, userPrompt) => {
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    const res = await fetchWithTimeout("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -284,7 +294,7 @@ function makeOpenAICaller(model: string, apiKey: string): LlmCaller {
 
 function makeAnthropicCaller(model: string, apiKey: string): LlmCaller {
   return async (systemPrompt, userPrompt) => {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
+    const res = await fetchWithTimeout("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
