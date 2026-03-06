@@ -99,7 +99,12 @@ export function parseGeminiStreamJson(stdout: string): GeminiJsonResult {
     if (eventType === "result") {
       const status = asString(event.status, "");
       if (status !== "success" && status) {
-        const msg = asString(event.error, asString(event.message, "")).trim();
+        // error can be a string or an object like {"type":"Error","message":"..."}
+        const errorVal = event.error;
+        const errorStr = typeof errorVal === "string"
+          ? errorVal
+          : (typeof errorVal === "object" && errorVal !== null ? asString((errorVal as Record<string, unknown>).message, "") : "");
+        const msg = (errorStr || asString(event.message, "")).trim();
         if (msg) errorMessage = msg;
       }
       const stats = typeof event.stats === "object" && event.stats !== null ? event.stats as Record<string, unknown> : {};

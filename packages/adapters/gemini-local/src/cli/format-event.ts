@@ -19,8 +19,13 @@ export function printGeminiStreamEvent(raw: string, _debug: boolean): void {
 
   let parsed: Record<string, unknown> | null = null;
   try {
-    parsed = JSON.parse(line) as Record<string, unknown>;
+    const raw = JSON.parse(line);
+    parsed = asRecord(raw);
   } catch {
+    console.log(line);
+    return;
+  }
+  if (!parsed) {
     console.log(line);
     return;
   }
@@ -44,14 +49,15 @@ export function printGeminiStreamEvent(raw: string, _debug: boolean): void {
     return;
   }
 
-  if (type === "tool_call") {
-    const name = asString(parsed.name, "unknown");
+  if (type === "tool_use" || type === "tool_call") {
+    const name = asString(parsed.tool_name, asString(parsed.name, "unknown"));
     console.log(pc.yellow(`tool_call: ${name}`));
-    if (parsed.input !== undefined) {
+    const input = parsed.parameters ?? parsed.input;
+    if (input !== undefined) {
       try {
-        console.log(pc.gray(JSON.stringify(parsed.input, null, 2)));
+        console.log(pc.gray(JSON.stringify(input, null, 2)));
       } catch {
-        console.log(pc.gray(String(parsed.input)));
+        console.log(pc.gray(String(input)));
       }
     }
     return;

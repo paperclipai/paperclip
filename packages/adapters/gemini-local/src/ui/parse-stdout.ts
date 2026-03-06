@@ -46,12 +46,12 @@ export function parseGeminiStdoutLine(line: string, ts: string): TranscriptEntry
     return [];
   }
 
-  if (type === "tool_call") {
+  if (type === "tool_use" || type === "tool_call") {
     return [{
       kind: "tool_call",
       ts,
-      name: asString(parsed.name, "unknown"),
-      input: parsed.input ?? {},
+      name: asString(parsed.tool_name, asString(parsed.name, "unknown")),
+      input: parsed.parameters ?? parsed.input ?? {},
     }];
   }
 
