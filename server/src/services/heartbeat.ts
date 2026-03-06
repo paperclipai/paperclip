@@ -1683,6 +1683,11 @@ export function heartbeatService(db: Db) {
         .then(([row]) => Number(row?.count ?? 0));
       if (assignedCount === 0) {
         await writeSkippedRequest("heartbeat.skipIfNoAssignments");
+        // Reset the interval baseline so tickTimers doesn't fire again immediately.
+        await db
+          .update(agents)
+          .set({ lastHeartbeatAt: new Date() })
+          .where(eq(agents.id, agentId));
         return null;
       }
     }
