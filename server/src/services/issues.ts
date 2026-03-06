@@ -10,6 +10,7 @@ import {
   issueAttachments,
   issueLabels,
   issueComments,
+  issuePrefixes,
   issues,
   labels,
   projectWorkspaces,
@@ -383,6 +384,16 @@ export function issueService(db: Db) {
       data: Omit<typeof issues.$inferInsert, "companyId"> & { labelIds?: string[] },
     ) => {
       const { labelIds: inputLabelIds, ...issueData } = data;
+      if (issueData.projectId) {
+        const project = await db
+          .select({ id: projects.id, companyId: projects.companyId })
+          .from(projects)
+          .where(eq(projects.id, issueData.projectId))
+          .then((rows) => rows[0] ?? null);
+        if (!project || project.companyId !== companyId) {
+          throw unprocessable("projectId must belong to the target company");
+        }
+      }
       if (data.assigneeAgentId && data.assigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
       }
@@ -396,14 +407,64 @@ export function issueService(db: Db) {
         throw unprocessable("in_progress issues require an assignee");
       }
       return db.transaction(async (tx) => {
-        const [company] = await tx
-          .update(companies)
-          .set({ issueCounter: sql`${companies.issueCounter} + 1` })
-          .where(eq(companies.id, companyId))
-          .returning({ issueCounter: companies.issueCounter, issuePrefix: companies.issuePrefix });
+        const incrementPrefixCounter = async (ownerType: "company" | "project", ownerId: string) => {
+          const rows = await tx
+            .update(issuePrefixes)
+            .set({ counter: sql`${issuePrefixes.counter} + 1` })
+            .where(and(eq(issuePrefixes.ownerType, ownerType), eq(issuePrefixes.ownerId, ownerId)))
+            .returning({ prefix: issuePrefixes.prefix, counter: issuePrefixes.counter });
+          return rows[0] ?? null;
+        };
 
-        const issueNumber = company.issueCounter;
-        const identifier = `${company.issuePrefix}-${issueNumber}`;
+        let prefixOwner: "company" | "project" = "company";
+        let prefixCounter = issueData.projectId
+          ? await incrementPrefixCounter("project", issueData.projectId)
+          : null;
+
+        if (!prefixCounter) {
+          prefixCounter = await incrementPrefixCounter("company", companyId);
+          prefixOwner = "company";
+        } else {
+          prefixOwner = "project";
+        }
+
+        if (!prefixCounter) {
+          const [company] = await tx
+            .update(companies)
+            .set({ issueCounter: sql`${companies.issueCounter} + 1` })
+            .where(eq(companies.id, companyId))
+            .returning({ issueCounter: companies.issueCounter, issuePrefix: companies.issuePrefix });
+          if (!company) {
+            throw notFound("Company not found");
+          }
+          prefixCounter = { prefix: company.issuePrefix, counter: company.issueCounter };
+          // Backfill the registry for pre-migration companies that don't have a row yet.
+          // onConflictDoNothing handles the race where another concurrent request already
+          // inserted the row — in that case, the registry counter may lag behind the
+          // companies.issueCounter, but subsequent requests will use the registry path
+          // (incrementPrefixCounter) and converge. The companies.issueCounter sync below
+          // keeps the legacy column in sync for this transaction.
+          await tx
+            .insert(issuePrefixes)
+            .values({
+              prefix: company.issuePrefix,
+              ownerType: "company",
+              ownerId: companyId,
+              counter: company.issueCounter,
+            })
+            .onConflictDoNothing();
+          prefixOwner = "company";
+        }
+
+        if (prefixOwner === "company") {
+          await tx
+            .update(companies)
+            .set({ issueCounter: prefixCounter.counter })
+            .where(eq(companies.id, companyId));
+        }
+
+        const issueNumber = prefixCounter.counter;
+        const identifier = `${prefixCounter.prefix}-${issueNumber}`;
 
         const values = { ...issueData, companyId, issueNumber, identifier } as typeof issues.$inferInsert;
         if (values.status === "in_progress" && !values.startedAt) {

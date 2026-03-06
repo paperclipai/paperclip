@@ -1,14 +1,17 @@
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { projects, projectGoals, goals, projectWorkspaces } from "@paperclipai/db";
+import { projects, projectGoals, goals, projectWorkspaces, issuePrefixes, issues } from "@paperclipai/db";
 import {
   PROJECT_COLORS,
+  buildIssuePrefixCandidate,
+  deriveIssuePrefixBase,
   deriveProjectUrlKey,
   isUuidLike,
   normalizeProjectUrlKey,
   type ProjectGoalRef,
   type ProjectWorkspace,
 } from "@paperclipai/shared";
+import { conflict, isUniqueViolation } from "../errors.js";
 
 type ProjectRow = typeof projects.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
@@ -124,16 +127,59 @@ async function attachWorkspaces(db: Db, rows: ProjectWithGoals[]): Promise<Proje
 }
 
 /** Sync the project_goals join table for a single project. */
-async function syncGoalLinks(db: Db, projectId: string, companyId: string, goalIds: string[]) {
+async function syncGoalLinks(dbOrTx: any, projectId: string, companyId: string, goalIds: string[]) {
   // Delete existing links
-  await db.delete(projectGoals).where(eq(projectGoals.projectId, projectId));
+  await dbOrTx.delete(projectGoals).where(eq(projectGoals.projectId, projectId));
 
   // Insert new links
   if (goalIds.length > 0) {
-    await db.insert(projectGoals).values(
+    await dbOrTx.insert(projectGoals).values(
       goalIds.map((goalId) => ({ projectId, goalId, companyId })),
     );
   }
+}
+
+const PROJECT_PREFIX_CONSTRAINTS = ["issue_prefixes_pkey", "issue_prefixes_owner_id_idx"];
+
+async function resequenceProjectIssues(
+  tx: any,
+  input: { projectId: string; prefix: string },
+) {
+  await tx.execute(sql`
+    WITH renumbered AS (
+      SELECT
+        i.id,
+        ROW_NUMBER() OVER (
+          ORDER BY i.created_at ASC, i.id ASC
+        )::integer AS issue_number
+      FROM issues i
+      WHERE i.project_id = ${input.projectId}
+    )
+    UPDATE issues i
+    SET
+      issue_number = renumbered.issue_number,
+      identifier = ${input.prefix} || '-' || renumbered.issue_number::text
+    FROM renumbered
+    WHERE i.id = renumbered.id
+  `);
+
+  const maxRows = await tx
+    .select({
+      issueNumber: sql<number>`COALESCE(MAX(${issues.issueNumber}), 0)`,
+    })
+    .from(issues)
+    .where(eq(issues.projectId, input.projectId));
+
+  const maxIssueNumber = maxRows[0]?.issueNumber ?? 0;
+  await tx
+    .update(issuePrefixes)
+    .set({ counter: maxIssueNumber })
+    .where(
+      and(
+        eq(issuePrefixes.ownerType, "project"),
+        eq(issuePrefixes.ownerId, input.projectId),
+      ),
+    );
 }
 
 /** Resolve goalIds from input, handling the legacy goalId field. */
@@ -273,26 +319,65 @@ export function projectService(db: Db) {
 
       // Also write goalId to the legacy column (first goal or null)
       const legacyGoalId = ids && ids.length > 0 ? ids[0] : projectData.goalId ?? null;
+      const explicitPrefix = readNonEmptyString(projectData.issuePrefix)?.toUpperCase() ?? null;
+      const basePrefix = explicitPrefix ?? deriveIssuePrefixBase(projectData.name);
 
-      const row = await db
-        .insert(projects)
-        .values({ ...projectData, goalId: legacyGoalId, companyId })
-        .returning()
-        .then((rows) => rows[0]);
+      let attempt = 1;
+      while (attempt < 10000) {
+        const candidatePrefix = explicitPrefix ?? buildIssuePrefixCandidate(basePrefix, attempt);
+        try {
+          const row = await db.transaction(async (tx) => {
+            const inserted = await tx
+              .insert(projects)
+              .values({
+                ...projectData,
+                goalId: legacyGoalId,
+                companyId,
+                issuePrefix: candidatePrefix,
+              })
+              .returning()
+              .then((rows) => rows[0]!);
 
-      if (ids && ids.length > 0) {
-        await syncGoalLinks(db, row.id, companyId, ids);
+            await tx.insert(issuePrefixes).values({
+              prefix: candidatePrefix,
+              ownerType: "project",
+              ownerId: inserted.id,
+              counter: 0,
+            });
+
+            if (ids && ids.length > 0) {
+              await syncGoalLinks(tx, inserted.id, companyId, ids);
+            }
+
+            return inserted;
+          });
+
+          const [withGoals] = await attachGoals(db, [row]);
+          const [enriched] = withGoals ? await attachWorkspaces(db, [withGoals]) : [];
+          return enriched!;
+        } catch (error) {
+          if (!isUniqueViolation(error, PROJECT_PREFIX_CONSTRAINTS)) throw error;
+          if (explicitPrefix) {
+            throw conflict(`Issue prefix '${candidatePrefix}' is already in use.`);
+          }
+        }
+        attempt += 1;
       }
 
-      const [withGoals] = await attachGoals(db, [row]);
-      const [enriched] = withGoals ? await attachWorkspaces(db, [withGoals]) : [];
-      return enriched!;
+      throw new Error("Unable to allocate unique issue prefix");
     },
 
     update: async (
       id: string,
       data: Partial<typeof projects.$inferInsert> & { goalIds?: string[] },
     ): Promise<ProjectWithGoals | null> => {
+      const existing = await db
+        .select()
+        .from(projects)
+        .where(eq(projects.id, id))
+        .then((rows) => rows[0] ?? null);
+      if (!existing) return null;
+
       const { goalIds: inputGoalIds, ...projectData } = data;
       const ids = resolveGoalIds({ goalIds: inputGoalIds, goalId: projectData.goalId });
 
@@ -305,17 +390,69 @@ export function projectService(db: Db) {
         updates.goalId = ids.length > 0 ? ids[0] : null;
       }
 
-      const row = await db
-        .update(projects)
-        .set(updates)
-        .where(eq(projects.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      if (!row) return null;
-
-      if (ids !== undefined) {
-        await syncGoalLinks(db, id, row.companyId, ids);
+      const requestedIssuePrefix = readNonEmptyString(projectData.issuePrefix)?.toUpperCase();
+      const shouldRotateProjectPrefix =
+        typeof requestedIssuePrefix === "string" && requestedIssuePrefix !== existing.issuePrefix;
+      if (shouldRotateProjectPrefix) {
+        updates.issuePrefix = requestedIssuePrefix;
       }
+
+      let row: ProjectRow | null = null;
+      try {
+        row = await db.transaction(async (tx) => {
+          if (shouldRotateProjectPrefix) {
+            const prefixRows = await tx
+              .update(issuePrefixes)
+              .set({ prefix: requestedIssuePrefix! })
+              .where(
+                and(
+                  eq(issuePrefixes.ownerType, "project"),
+                  eq(issuePrefixes.ownerId, id),
+                ),
+              )
+              .returning({ ownerId: issuePrefixes.ownerId });
+
+            if (prefixRows.length === 0) {
+              const maxRows = await tx
+                .select({
+                  issueNumber: sql<number>`COALESCE(MAX(${issues.issueNumber}), 0)`,
+                })
+                .from(issues)
+                .where(eq(issues.projectId, id));
+              await tx.insert(issuePrefixes).values({
+                prefix: requestedIssuePrefix!,
+                ownerType: "project",
+                ownerId: id,
+                counter: maxRows[0]?.issueNumber ?? 0,
+              });
+            }
+          }
+
+          const updated = await tx
+            .update(projects)
+            .set(updates)
+            .where(eq(projects.id, id))
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          if (!updated) return null;
+
+          if (ids !== undefined) {
+            await syncGoalLinks(tx, id, updated.companyId, ids);
+          }
+
+          if (shouldRotateProjectPrefix && requestedIssuePrefix) {
+            await resequenceProjectIssues(tx, { projectId: id, prefix: requestedIssuePrefix });
+          }
+
+          return updated;
+        });
+      } catch (error) {
+        if (isUniqueViolation(error, PROJECT_PREFIX_CONSTRAINTS) && requestedIssuePrefix) {
+          throw conflict(`Issue prefix '${requestedIssuePrefix}' is already in use.`);
+        }
+        throw error;
+      }
+      if (!row) return null;
 
       const [withGoals] = await attachGoals(db, [row]);
       const [enriched] = withGoals ? await attachWorkspaces(db, [withGoals]) : [];

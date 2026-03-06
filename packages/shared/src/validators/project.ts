@@ -37,6 +37,13 @@ const projectFields = {
   /** @deprecated Use goalIds instead */
   goalId: z.string().uuid().optional().nullable(),
   goalIds: z.array(z.string().uuid()).optional(),
+  issuePrefix: z
+    .string()
+    .trim()
+    .min(1)
+    .transform((value) => value.toUpperCase())
+    .refine((value) => /^[A-Z]+$/.test(value), "Issue prefix must contain only letters A-Z")
+    .optional(),
   name: z.string().min(1),
   description: z.string().optional().nullable(),
   status: z.enum(PROJECT_STATUSES).optional().default("backlog"),

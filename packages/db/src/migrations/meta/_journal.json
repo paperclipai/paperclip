@@ -169,6 +169,13 @@
       "when": 1772139727599,
       "tag": "0023_fair_lethal_legion",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1772663244352,
+      "tag": "0024_classy_monster_badoon",
+      "breakpoints": true
     }
   ]
 }

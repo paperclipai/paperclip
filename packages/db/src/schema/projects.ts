@@ -2,6 +2,7 @@ import { pgTable, uuid, text, timestamp, date, index } from "drizzle-orm/pg-core
 import { companies } from "./companies.js";
 import { goals } from "./goals.js";
 import { agents } from "./agents.js";
+import { issuePrefixes } from "./issue_prefixes.js";
 
 export const projects = pgTable(
   "projects",
@@ -13,6 +14,7 @@ export const projects = pgTable(
     description: text("description"),
     status: text("status").notNull().default("backlog"),
     leadAgentId: uuid("lead_agent_id").references(() => agents.id),
+    issuePrefix: text("issue_prefix").references(() => issuePrefixes.prefix, { onDelete: "set null", onUpdate: "cascade" }),
     targetDate: date("target_date"),
     color: text("color"),
     archivedAt: timestamp("archived_at", { withTimezone: true }),
