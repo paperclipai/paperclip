@@ -237,6 +237,53 @@ export function buildJoinDefaultsPayloadForAccept(input: {
   return Object.keys(merged).length > 0 ? merged : null;
 }
 
+export function mergeJoinDefaultsPayloadForReplay(existingDefaultsPayload: unknown, nextDefaultsPayload: unknown): unknown {
+  if (!isPlainObject(existingDefaultsPayload) && !isPlainObject(nextDefaultsPayload)) {
+    return nextDefaultsPayload ?? existingDefaultsPayload;
+  }
+  if (!isPlainObject(existingDefaultsPayload)) {
+    return nextDefaultsPayload;
+  }
+  if (!isPlainObject(nextDefaultsPayload)) {
+    return existingDefaultsPayload;
+  }
+
+  const merged: Record<string, unknown> = {
+    ...(existingDefaultsPayload as Record<string, unknown>),
+    ...(nextDefaultsPayload as Record<string, unknown>),
+  };
+
+  const existingHeaders = normalizeHeaderMap((existingDefaultsPayload as Record<string, unknown>).headers);
+  const nextHeaders = normalizeHeaderMap((nextDefaultsPayload as Record<string, unknown>).headers);
+  if (existingHeaders || nextHeaders) {
+    merged.headers = {
+      ...(existingHeaders ?? {}),
+      ...(nextHeaders ?? {}),
+    };
+  } else if (Object.prototype.hasOwnProperty.call(merged, "headers")) {
+    delete merged.headers;
+  }
+
+  return merged;
+}
+
+export function canReplayOpenClawInviteAccept(input: {
+  requestType: "human" | "agent";
+  adapterType: string | null;
+  existingJoinRequest: Pick<typeof joinRequests.$inferSelect, "requestType" | "adapterType" | "status"> | null;
+}): boolean {
+  if (input.requestType !== "agent" || input.adapterType !== "openclaw") {
+    return false;
+  }
+  if (!input.existingJoinRequest) {
+    return false;
+  }
+  if (input.existingJoinRequest.requestType !== "agent" || input.existingJoinRequest.adapterType !== "openclaw") {
+    return false;
+  }
+  return input.existingJoinRequest.status === "pending_approval" || input.existingJoinRequest.status === "approved";
+}
+
 function summarizeSecretForLog(value: unknown): { present: true; length: number; sha256Prefix: string } | null {
   const trimmed = nonEmptyTrimmedString(value);
   if (!trimmed) return null;
@@ -1317,11 +1364,20 @@ export function accessRoutes(
       .from(invites)
       .where(eq(invites.tokenHash, hashToken(token)))
       .then((rows) => rows[0] ?? null);
-    if (!invite || invite.revokedAt || invite.acceptedAt || inviteExpired(invite)) {
+    if (!invite || invite.revokedAt || inviteExpired(invite)) {
       throw notFound("Invite not found");
     }
+    const inviteAlreadyAccepted = Boolean(invite.acceptedAt);
+    const existingJoinRequestForInvite = inviteAlreadyAccepted
+      ? await db
+        .select()
+        .from(joinRequests)
+        .where(eq(joinRequests.inviteId, invite.id))
+        .then((rows) => rows[0] ?? null)
+      : null;
 
     if (invite.inviteType === "bootstrap_ceo") {
+      if (inviteAlreadyAccepted) throw notFound("Invite not found");
       if (req.body.requestType !== "human") {
         throw badRequest("Bootstrap invite requires human request type");
       }
@@ -1362,13 +1418,38 @@ export function accessRoutes(
       throw unauthorized("Authenticated user is required");
     }
     if (requestType === "agent" && !req.body.agentName) {
-      throw badRequest("agentName is required for agent join requests");
+      if (!inviteAlreadyAccepted || !existingJoinRequestForInvite?.agentName) {
+        throw badRequest("agentName is required for agent join requests");
+      }
     }
+
+    const adapterType = req.body.adapterType ?? null;
+    if (
+      inviteAlreadyAccepted &&
+      !canReplayOpenClawInviteAccept({
+        requestType,
+        adapterType,
+        existingJoinRequest: existingJoinRequestForInvite,
+      })
+    ) {
+      throw notFound("Invite not found");
+    }
+    const replayJoinRequestId = inviteAlreadyAccepted ? existingJoinRequestForInvite?.id ?? null : null;
+    if (inviteAlreadyAccepted && !replayJoinRequestId) {
+      throw conflict("Join request not found");
+    }
+
+    const replayMergedDefaults = inviteAlreadyAccepted
+      ? mergeJoinDefaultsPayloadForReplay(
+        existingJoinRequestForInvite?.agentDefaultsPayload ?? null,
+        req.body.agentDefaultsPayload ?? null,
+      )
+      : (req.body.agentDefaultsPayload ?? null);
 
     const openClawDefaultsPayload = requestType === "agent"
       ? buildJoinDefaultsPayloadForAccept({
-        adapterType: req.body.adapterType ?? null,
-        defaultsPayload: req.body.agentDefaultsPayload ?? null,
+        adapterType,
+        defaultsPayload: replayMergedDefaults,
         responsesWebhookUrl: req.body.responsesWebhookUrl ?? null,
         responsesWebhookMethod: req.body.responsesWebhookMethod ?? null,
         responsesWebhookHeaders: req.body.responsesWebhookHeaders ?? null,
@@ -1378,12 +1459,12 @@ export function accessRoutes(
       })
       : null;
 
-    if (requestType === "agent" && (req.body.adapterType ?? null) === "openclaw") {
+    if (requestType === "agent" && adapterType === "openclaw") {
       logger.info(
         {
           inviteId: invite.id,
           requestType,
-          adapterType: req.body.adapterType ?? null,
+          adapterType,
           bodyKeys: isPlainObject(req.body) ? Object.keys(req.body).sort() : [],
           responsesWebhookUrl: nonEmptyTrimmedString(req.body.responsesWebhookUrl),
           paperclipApiUrl: nonEmptyTrimmedString(req.body.paperclipApiUrl),
@@ -1398,7 +1479,7 @@ export function accessRoutes(
 
     const joinDefaults = requestType === "agent"
       ? normalizeAgentDefaultsForJoin({
-        adapterType: req.body.adapterType ?? null,
+        adapterType,
         defaultsPayload: openClawDefaultsPayload,
         deploymentMode: opts.deploymentMode,
         deploymentExposure: opts.deploymentExposure,
@@ -1407,7 +1488,7 @@ export function accessRoutes(
       })
       : { normalized: null as Record<string, unknown> | null, diagnostics: [] as JoinDiagnostic[] };
 
-    if (requestType === "agent" && (req.body.adapterType ?? null) === "openclaw") {
+    if (requestType === "agent" && adapterType === "openclaw") {
       logger.info(
         {
           inviteId: invite.id,
@@ -1421,42 +1502,102 @@ export function accessRoutes(
       );
     }
 
-    const claimSecret = requestType === "agent" ? createClaimSecret() : null;
+    const claimSecret = requestType === "agent" && !inviteAlreadyAccepted ? createClaimSecret() : null;
     const claimSecretHash = claimSecret ? hashToken(claimSecret) : null;
     const claimSecretExpiresAt = claimSecret
       ? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
       : null;
 
     const actorEmail = requestType === "human" ? await resolveActorEmail(db, req) : null;
-    const created = await db.transaction(async (tx) => {
-      await tx
-        .update(invites)
-        .set({ acceptedAt: new Date(), updatedAt: new Date() })
-        .where(and(eq(invites.id, invite.id), isNull(invites.acceptedAt), isNull(invites.revokedAt)));
+    const created = !inviteAlreadyAccepted
+      ? await db.transaction(async (tx) => {
+        await tx
+          .update(invites)
+          .set({ acceptedAt: new Date(), updatedAt: new Date() })
+          .where(and(eq(invites.id, invite.id), isNull(invites.acceptedAt), isNull(invites.revokedAt)));
 
-      const row = await tx
-        .insert(joinRequests)
-        .values({
-          inviteId: invite.id,
-          companyId,
-          requestType,
-          status: "pending_approval",
+        const row = await tx
+          .insert(joinRequests)
+          .values({
+            inviteId: invite.id,
+            companyId,
+            requestType,
+            status: "pending_approval",
+            requestIp: requestIp(req),
+            requestingUserId: requestType === "human" ? req.actor.userId ?? "local-board" : null,
+            requestEmailSnapshot: requestType === "human" ? actorEmail : null,
+            agentName: requestType === "agent" ? req.body.agentName : null,
+            adapterType: requestType === "agent" ? adapterType : null,
+            capabilities: requestType === "agent" ? req.body.capabilities ?? null : null,
+            agentDefaultsPayload: requestType === "agent" ? joinDefaults.normalized : null,
+            claimSecretHash,
+            claimSecretExpiresAt,
+          })
+          .returning()
+          .then((rows) => rows[0]);
+        return row;
+      })
+      : await db
+        .update(joinRequests)
+        .set({
           requestIp: requestIp(req),
-          requestingUserId: requestType === "human" ? req.actor.userId ?? "local-board" : null,
-          requestEmailSnapshot: requestType === "human" ? actorEmail : null,
-          agentName: requestType === "agent" ? req.body.agentName : null,
-          adapterType: requestType === "agent" ? req.body.adapterType ?? null : null,
-          capabilities: requestType === "agent" ? req.body.capabilities ?? null : null,
+          agentName: requestType === "agent" ? req.body.agentName ?? existingJoinRequestForInvite?.agentName ?? null : null,
+          capabilities:
+            requestType === "agent"
+              ? req.body.capabilities ?? existingJoinRequestForInvite?.capabilities ?? null
+              : null,
+          adapterType: requestType === "agent" ? adapterType : null,
           agentDefaultsPayload: requestType === "agent" ? joinDefaults.normalized : null,
-          claimSecretHash,
-          claimSecretExpiresAt,
+          updatedAt: new Date(),
         })
+        .where(eq(joinRequests.id, replayJoinRequestId as string))
         .returning()
         .then((rows) => rows[0]);
-      return row;
-    });
 
-    if (requestType === "agent" && (req.body.adapterType ?? null) === "openclaw") {
+    if (!created) {
+      throw conflict("Join request not found");
+    }
+
+    if (
+      inviteAlreadyAccepted &&
+      requestType === "agent" &&
+      adapterType === "openclaw" &&
+      created.status === "approved" &&
+      created.createdAgentId
+    ) {
+      const existingAgent = await agents.getById(created.createdAgentId);
+      if (!existingAgent) {
+        throw conflict("Approved join request agent not found");
+      }
+      const existingAdapterConfig = isPlainObject(existingAgent.adapterConfig)
+        ? (existingAgent.adapterConfig as Record<string, unknown>)
+        : {};
+      const nextAdapterConfig = {
+        ...existingAdapterConfig,
+        ...(joinDefaults.normalized ?? {}),
+      };
+      const updatedAgent = await agents.update(created.createdAgentId, {
+        adapterType,
+        adapterConfig: nextAdapterConfig,
+      });
+      if (!updatedAgent) {
+        throw conflict("Approved join request agent not found");
+      }
+      await logActivity(db, {
+        companyId,
+        actorType: req.actor.type === "agent" ? "agent" : "user",
+        actorId:
+          req.actor.type === "agent"
+            ? req.actor.agentId ?? "invite-agent"
+            : req.actor.userId ?? "board",
+        action: "agent.updated_from_join_replay",
+        entityType: "agent",
+        entityId: updatedAgent.id,
+        details: { inviteId: invite.id, joinRequestId: created.id },
+      });
+    }
+
+    if (requestType === "agent" && adapterType === "openclaw") {
       const expectedDefaults = summarizeOpenClawDefaultsForLog(joinDefaults.normalized);
       const persistedDefaults = summarizeOpenClawDefaultsForLog(created.agentDefaultsPayload);
       const missingPersistedFields: string[] = [];
@@ -1511,10 +1652,10 @@ export function accessRoutes(
         req.actor.type === "agent"
           ? req.actor.agentId ?? "invite-agent"
           : req.actor.userId ?? (requestType === "agent" ? "invite-anon" : "board"),
-      action: "join.requested",
+      action: inviteAlreadyAccepted ? "join.request_replayed" : "join.requested",
       entityType: "join_request",
       entityId: created.id,
-      details: { requestType, requestIp: created.requestIp },
+      details: { requestType, requestIp: created.requestIp, inviteReplay: inviteAlreadyAccepted },
     });
 
     const response = toJoinRequestResponse(created);
