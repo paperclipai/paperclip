@@ -55,6 +55,7 @@ export const adapterLabels: Record<string, string> = {
   opencode_local: "OpenCode (local)",
   openclaw: "OpenClaw",
   cursor: "Cursor (local)",
+  copilot_local: "GitHub Copilot CLI",
   process: "Process",
   http: "HTTP",
 };

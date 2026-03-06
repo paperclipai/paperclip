@@ -32,6 +32,9 @@ importers:
       '@paperclipai/adapter-codex-local':
         specifier: workspace:*
         version: link:../packages/adapters/codex-local
+      '@paperclipai/adapter-copilot-local':
+        specifier: workspace:*
+        version: link:../packages/adapters/copilot-local
       '@paperclipai/adapter-cursor-local':
         specifier: workspace:*
         version: link:../packages/adapters/cursor-local
@@ -96,6 +99,19 @@ importers:
         version: 5.9.3
 
   packages/adapters/codex-local:
+    dependencies:
+      '@paperclipai/adapter-utils':
+        specifier: workspace:*
+        version: link:../../adapter-utils
+      picocolors:
+        specifier: ^1.1.1
+        version: 1.1.1
+    devDependencies:
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+
+  packages/adapters/copilot-local:
     dependencies:
       '@paperclipai/adapter-utils':
         specifier: workspace:*
@@ -193,6 +209,9 @@ importers:
       '@paperclipai/adapter-codex-local':
         specifier: workspace:*
         version: link:../packages/adapters/codex-local
+      '@paperclipai/adapter-copilot-local':
+        specifier: workspace:*
+        version: link:../packages/adapters/copilot-local
       '@paperclipai/adapter-cursor-local':
         specifier: workspace:*
         version: link:../packages/adapters/cursor-local
@@ -299,6 +318,9 @@ importers:
       '@paperclipai/adapter-codex-local':
         specifier: workspace:*
         version: link:../packages/adapters/codex-local
+      '@paperclipai/adapter-copilot-local':
+        specifier: workspace:*
+        version: link:../packages/adapters/copilot-local
       '@paperclipai/adapter-cursor-local':
         specifier: workspace:*
         version: link:../packages/adapters/cursor-local
