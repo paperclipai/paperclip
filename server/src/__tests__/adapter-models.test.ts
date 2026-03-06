@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local";
 import { models as cursorFallbackModels } from "@paperclipai/adapter-cursor-local";
+import { models as opencodeFallbackModels } from "@paperclipai/adapter-opencode-local";
 import { listAdapterModels } from "../adapters/index.js";
 import { resetCodexModelsCacheForTests } from "../adapters/codex-models.js";
 import { resetCursorModelsCacheForTests, setCursorModelsRunnerForTests } from "../adapters/cursor-models.js";
@@ -70,6 +71,12 @@ describe("adapter model listing", () => {
 
     const models = await listAdapterModels("cursor");
     expect(models).toEqual(cursorFallbackModels);
+  });
+
+  it("returns opencode fallback models including gpt-5.4", async () => {
+    const models = await listAdapterModels("opencode_local");
+
+    expect(models).toEqual(opencodeFallbackModels);
   });
 
   it("loads cursor models dynamically and caches them", async () => {
