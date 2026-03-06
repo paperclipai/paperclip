@@ -128,13 +128,41 @@ function normalizeHostname(value: string | null | undefined): string | null {
   return trimmed.toLowerCase();
 }
 
+function normalizeHeaderValue(
+  value: unknown,
+  depth: number = 0,
+): string | null {
+  const direct = nonEmptyTrimmedString(value);
+  if (direct) return direct;
+  if (!isPlainObject(value) || depth >= 2) return null;
+
+  const candidateKeys = [
+    "value",
+    "token",
+    "secret",
+    "apiKey",
+    "api_key",
+    "auth",
+    "authorization",
+    "bearer",
+    "header",
+  ];
+  for (const key of candidateKeys) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+    const normalized = normalizeHeaderValue((value as Record<string, unknown>)[key], depth + 1);
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
 function normalizeHeaderMap(input: unknown): Record<string, string> | undefined {
   if (!isPlainObject(input)) return undefined;
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(input)) {
-    if (typeof value !== "string") continue;
+    const normalizedValue = normalizeHeaderValue(value);
+    if (!normalizedValue) continue;
     const trimmedKey = key.trim();
-    const trimmedValue = value.trim();
+    const trimmedValue = normalizedValue.trim();
     if (!trimmedKey || !trimmedValue) continue;
     out[trimmedKey] = trimmedValue;
   }
