@@ -89,6 +89,9 @@ export function OnboardingWizard() {
   const [command, setCommand] = useState("");
   const [args, setArgs] = useState("");
   const [url, setUrl] = useState("");
+  const [gatewayUrl, setGatewayUrl] = useState("ws://127.0.0.1:5555");
+  const [agentId, setAgentId] = useState("");
+  const [authToken, setAuthToken] = useState("");
   const [adapterEnvResult, setAdapterEnvResult] =
     useState<AdapterEnvironmentTestResult | null>(null);
   const [adapterEnvError, setAdapterEnvError] = useState<string | null>(null);
@@ -196,6 +199,9 @@ export function OnboardingWizard() {
     setCommand("");
     setArgs("");
     setUrl("");
+    setGatewayUrl("ws://127.0.0.1:5555");
+    setAgentId("");
+    setAuthToken("");
     setAdapterEnvResult(null);
     setAdapterEnvError(null);
     setAdapterEnvLoading(false);
@@ -231,6 +237,9 @@ export function OnboardingWizard() {
       command,
       args,
       url,
+      gatewayUrl,
+      agentId,
+      authToken,
       dangerouslySkipPermissions: adapterType === "claude_local",
       dangerouslyBypassSandbox:
         adapterType === "codex_local"
@@ -597,8 +606,7 @@ export function OnboardingWizard() {
                           value: "openclaw" as const,
                           label: "OpenClaw",
                           icon: Bot,
-                          desc: "Notify OpenClaw webhook",
-                          comingSoon: true
+                          desc: "OpenClaw gateway agent"
                         },
                         {
                           value: "cursor" as const,
@@ -863,7 +871,7 @@ export function OnboardingWizard() {
                     </div>
                   )}
 
-                  {(adapterType === "http" || adapterType === "openclaw") && (
+                  {adapterType === "http" && (
                     <div>
                       <label className="text-xs text-muted-foreground mb-1 block">
                         Webhook URL
@@ -874,6 +882,45 @@ export function OnboardingWizard() {
                         value={url}
                         onChange={(e) => setUrl(e.target.value)}
                       />
+                    </div>
+                  )}
+
+                  {adapterType === "openclaw" && (
+                    <div className="space-y-3">
+                      <div>
+                        <label className="text-xs text-muted-foreground mb-1 block">
+                          Gateway URL
+                        </label>
+                        <input
+                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                          placeholder="ws://127.0.0.1:5555"
+                          value={gatewayUrl}
+                          onChange={(e) => setGatewayUrl(e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-muted-foreground mb-1 block">
+                          Agent ID
+                        </label>
+                        <input
+                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                          placeholder="main"
+                          value={agentId}
+                          onChange={(e) => setAgentId(e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-muted-foreground mb-1 block">
+                          Auth Token (optional)
+                        </label>
+                        <input
+                          type="password"
+                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                          placeholder="Bearer token or leave empty"
+                          value={authToken}
+                          onChange={(e) => setAuthToken(e.target.value)}
+                        />
+                      </div>
                     </div>
                   )}
                 </div>

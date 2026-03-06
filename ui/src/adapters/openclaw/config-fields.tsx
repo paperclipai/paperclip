@@ -2,7 +2,6 @@ import type { AdapterConfigFieldsProps } from "../types";
 import {
   Field,
   DraftInput,
-  help,
 } from "../../components/agent-config-primitives";
 
 const inputClass =
@@ -18,36 +17,58 @@ export function OpenClawConfigFields({
 }: AdapterConfigFieldsProps) {
   return (
     <>
-      <Field label="Webhook URL" hint={help.webhookUrl}>
+      <Field label="Gateway URL" hint="WebSocket URL of the OpenClaw gateway.">
         <DraftInput
           value={
             isCreate
-              ? values!.url
-              : eff("adapterConfig", "url", String(config.url ?? ""))
+              ? (values as any).gatewayUrl ?? "ws://127.0.0.1:5555"
+              : eff("adapterConfig", "gatewayUrl", String(config.gatewayUrl ?? "ws://127.0.0.1:5555"))
           }
           onCommit={(v) =>
             isCreate
-              ? set!({ url: v })
-              : mark("adapterConfig", "url", v || undefined)
+              ? set!({ gatewayUrl: v } as any)
+              : mark("adapterConfig", "gatewayUrl", v || undefined)
           }
           immediate
           className={inputClass}
-          placeholder="https://..."
+          placeholder="ws://127.0.0.1:5555"
         />
       </Field>
-      {!isCreate && (
-        <Field label="Webhook auth header (optional)">
-          <DraftInput
-            value={
-              eff("adapterConfig", "webhookAuthHeader", String(config.webhookAuthHeader ?? ""))
-            }
-            onCommit={(v) => mark("adapterConfig", "webhookAuthHeader", v || undefined)}
-            immediate
-            className={inputClass}
-            placeholder="Bearer <token>"
-          />
-        </Field>
-      )}
+      <Field label="Agent ID" hint="Identifier for the agent on the OpenClaw gateway.">
+        <DraftInput
+          value={
+            isCreate
+              ? (values as any).agentId ?? ""
+              : eff("adapterConfig", "agentId", String(config.agentId ?? ""))
+          }
+          onCommit={(v) =>
+            isCreate
+              ? set!({ agentId: v } as any)
+              : mark("adapterConfig", "agentId", v || undefined)
+          }
+          immediate
+          className={inputClass}
+          placeholder="main"
+        />
+      </Field>
+      <Field label="Auth Token (optional)" hint="Bearer token for authenticating with the gateway.">
+        <DraftInput
+          type="password"
+          value={
+            isCreate
+              ? (values as any).authToken ?? ""
+              : eff("adapterConfig", "authToken", String(config.authToken ?? ""))
+          }
+          onCommit={(v) =>
+            isCreate
+              ? set!({ authToken: v } as any)
+              : mark("adapterConfig", "authToken", v || undefined)
+          }
+          immediate
+          className={inputClass}
+          placeholder="Bearer token or leave empty"
+        />
+      </Field>
     </>
   );
 }

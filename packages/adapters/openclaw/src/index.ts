@@ -1,27 +1,31 @@
 export const type = "openclaw";
 export const label = "OpenClaw";
 
-export const models: { id: string; label: string }[] = [];
+// Static models for v1 — matches our OpenClaw agent config
+export const models = [
+  { id: "anthropic/claude-opus-4-6", label: "Claude Opus 4.6 (via OpenClaw)" },
+  { id: "openai-codex/gpt-5.4", label: "GPT 5.4 (via OpenClaw)" },
+];
 
-export const agentConfigurationDoc = `# openclaw agent configuration
+export const agentConfigurationDoc = `
+# OpenClaw Adapter Configuration
 
-Adapter: openclaw
+Connect to an OpenClaw gateway to orchestrate AI agents.
 
-Use when:
-- You run an OpenClaw agent remotely and wake it via webhook.
-- You want Paperclip heartbeat/task events delivered over HTTP.
+## Configuration Fields
 
-Don't use when:
-- You need local CLI execution inside Paperclip (use claude_local/codex_local/opencode_local/process).
-- The OpenClaw endpoint is not reachable from the Paperclip server.
+- **gatewayUrl** (string, required): WebSocket URL of the OpenClaw gateway. Default: \`ws://127.0.0.1:5555\`
+- **agentId** (string, required): The agent identifier to use. Examples: "main", "researcher"
+- **authToken** (string, optional): Authentication token for the gateway. Required for non-local deployments.
+- **timeoutSec** (number, optional): Maximum execution time in seconds. Default: 120
 
-Core fields:
-- url (string, required): OpenClaw webhook endpoint URL
-- method (string, optional): HTTP method, default POST
-- headers (object, optional): extra HTTP headers for webhook calls
-- webhookAuthHeader (string, optional): Authorization header value if your endpoint requires auth
-- payloadTemplate (object, optional): additional JSON payload fields merged into each wake payload
+## Example
 
-Operational fields:
-- timeoutSec (number, optional): request timeout in seconds (default 30)
+\`\`\`json
+{
+  "gatewayUrl": "ws://127.0.0.1:5555",
+  "agentId": "main",
+  "timeoutSec": 120
+}
+\`\`\`
 `;
