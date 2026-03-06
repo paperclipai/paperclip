@@ -67,6 +67,7 @@ docker run --name paperclip \
   -p 3100:3100 \
   -e HOST=0.0.0.0 \
   -e PAPERCLIP_HOME=/paperclip \
+  -e BETTER_AUTH_SECRET=replace-with-strong-random-secret \
   -v "$(pwd)/data/docker-paperclip:/paperclip" \
   paperclip-local
 ```
@@ -74,7 +75,8 @@ docker run --name paperclip \
 Or use Compose:
 
 ```sh
-docker compose -f docker-compose.quickstart.yml up --build
+BETTER_AUTH_SECRET=$(openssl rand -base64 32) \
+  docker compose -f docker-compose.quickstart.yml up --build
 ```
 
 See `doc/DOCKER.md` for API key wiring (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY`) and persistence details.

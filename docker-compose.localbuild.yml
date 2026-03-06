@@ -1,3 +1,5 @@
+name: paperclip-localbuild
+
 services:
   db:
     image: postgres:17-alpine
@@ -6,27 +8,38 @@ services:
       POSTGRES_PASSWORD: paperclip
       POSTGRES_DB: paperclip
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata-localbuild:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paperclip -d paperclip"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
-  server:
+  paperclip:
     build:
       context: .
       dockerfile: Dockerfile
       target: ${NODE_ENV:-production}
     ports:
-      - "3100:3100"
+      - "${PAPERCLIP_PORT:-3110}:3100"
     environment:
       DATABASE_URL: postgres://paperclip:paperclip@db:5432/paperclip
-      PORT: "3100"
-      SERVE_UI: "true"
+      HOST: "0.0.0.0"
       NODE_ENV: "${NODE_ENV:-production}"
+      PAPERCLIP_HOME: "/paperclip"
       PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set for authenticated mode}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+    volumes:
+      - "${PAPERCLIP_DATA_DIR:-./data/docker-paperclip-localbuild}:/paperclip"
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+    restart: on-failure
 
 volumes:
-  pgdata:
+  pgdata-localbuild:

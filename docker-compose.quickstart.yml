@@ -3,11 +3,16 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: ${NODE_ENV:-production}
     ports:
       - "${PAPERCLIP_PORT:-3100}:3100"
     environment:
       HOST: "0.0.0.0"
+      NODE_ENV: "${NODE_ENV:-production}"
       PAPERCLIP_HOME: "/paperclip"
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
+      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set for authenticated mode}"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
     volumes:

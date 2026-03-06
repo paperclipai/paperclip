@@ -10,6 +10,7 @@ docker run --name paperclip \
   -p 3100:3100 \
   -e HOST=0.0.0.0 \
   -e PAPERCLIP_HOME=/paperclip \
+  -e BETTER_AUTH_SECRET=replace-with-strong-random-secret \
   -v "$(pwd)/data/docker-paperclip:/paperclip" \
   paperclip-local
 ```
@@ -27,19 +28,30 @@ All persisted under your bind mount (`./data/docker-paperclip` in the example ab
 
 ## Compose Quickstart
 
+`BETTER_AUTH_SECRET` is required in authenticated mode.
+
 ```sh
-docker compose -f docker-compose.quickstart.yml up --build
+BETTER_AUTH_SECRET=$(openssl rand -base64 32) \
+  docker compose -f docker-compose.quickstart.yml up --build
 ```
 
 Defaults:
 
 - host port: `3100`
 - persistent data dir: `./data/docker-paperclip`
+- build target: `production` (`NODE_ENV=production`)
 
 Optional overrides:
 
 ```sh
 PAPERCLIP_PORT=3200 PAPERCLIP_DATA_DIR=./data/pc docker compose -f docker-compose.quickstart.yml up --build
+```
+
+Development container target (keeps `pnpm dev` behavior):
+
+```sh
+NODE_ENV=development BETTER_AUTH_SECRET=$(openssl rand -base64 32) \
+  docker compose -f docker-compose.quickstart.yml up --build
 ```
 
 ## Claude + Codex Local Adapters in Docker
@@ -56,6 +68,7 @@ docker run --name paperclip \
   -p 3100:3100 \
   -e HOST=0.0.0.0 \
   -e PAPERCLIP_HOME=/paperclip \
+  -e BETTER_AUTH_SECRET=replace-with-strong-random-secret \
   -e OPENAI_API_KEY=... \
   -e ANTHROPIC_API_KEY=... \
   -v "$(pwd)/data/docker-paperclip:/paperclip" \
