@@ -14,7 +14,7 @@ import { CircleDot } from "lucide-react";
 export function Issues() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
 
   const initialSearch = searchParams.get("q") ?? "";
@@ -22,17 +22,15 @@ export function Issues() {
   const handleSearchChange = useCallback((search: string) => {
     clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
-      setSearchParams((prev) => {
-        const next = new URLSearchParams(prev);
-        if (search.trim()) {
-          next.set("q", search.trim());
-        } else {
-          next.delete("q");
-        }
-        return next;
-      }, { replace: true });
+      const url = new URL(window.location.href);
+      if (search.trim()) {
+        url.searchParams.set("q", search.trim());
+      } else {
+        url.searchParams.delete("q");
+      }
+      window.history.replaceState(null, "", url);
     }, 300);
-  }, [setSearchParams]);
+  }, []);
 
   useEffect(() => {
     return () => clearTimeout(debounceRef.current);
