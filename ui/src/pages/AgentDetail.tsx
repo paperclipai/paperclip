@@ -1320,24 +1320,24 @@ function RunsTab({
     );
   }
 
+  const paneHeight = "calc(100vh - 12rem)";
+
   // Desktop: side-by-side layout
   return (
-    <div className="flex gap-0">
-      {/* Left: run list — border stretches full height, content sticks */}
+    <div className="flex gap-0 overflow-hidden" style={{ height: paneHeight }}>
+      {/* Left: run list — scrolls within fixed height */}
       <div className={cn(
-        "shrink-0 border border-border rounded-lg",
+        "shrink-0 border border-border rounded-lg overflow-y-auto",
         selectedRun ? "w-72" : "w-full",
       )}>
-        <div className="sticky top-4 overflow-y-auto" style={{ maxHeight: "calc(100vh - 2rem)" }}>
         {sorted.map((run) => (
           <RunListItem key={run.id} run={run} isSelected={run.id === effectiveRunId} agentId={agentRouteId} />
         ))}
-        </div>
       </div>
 
-      {/* Right: run detail — natural height, page scrolls */}
+      {/* Right: run detail — fills remaining height */}
       {selectedRun && (
-        <div className="flex-1 min-w-0 pl-4">
+        <div className="flex-1 min-w-0 pl-4 flex flex-col min-h-0">
           <RunDetail key={selectedRun.id} run={selectedRun} agentRouteId={agentRouteId} adapterType={adapterType} />
         </div>
       )}
@@ -1353,6 +1353,24 @@ function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRun; agen
   const metrics = runMetrics(run);
   const [sessionOpen, setSessionOpen] = useState(false);
   const [claudeLoginResult, setClaudeLoginResult] = useState<ClaudeLoginResult | null>(null);
+  const [invocationOpen, setInvocationOpen] = useState(false);
+  const [eventsOpen, setEventsOpen] = useState(false);
+  const [transcriptOpen, setTranscriptOpen] = useState(true);
+
+  const isLiveRun = run.status === "running" || run.status === "queued";
+  const { data: runEvents, error: runEventsError } = useQuery({
+    queryKey: ["run-events", run.id],
+    queryFn: () => heartbeatsApi.events(run.id, 0, 200),
+    refetchInterval: isLiveRun ? 5000 : false,
+  });
+  const adapterInvokePayload = useMemo(() => {
+    const evt = (runEvents ?? []).find((e) => e.eventType === "adapter.invoke");
+    return asRecord(evt?.payload ?? null);
+  }, [runEvents]);
+  const displayEvents = useMemo(
+    () => (runEvents ?? []).filter((e) => e.eventType !== "adapter.invoke"),
+    [runEvents],
+  );
 
   useEffect(() => {
     setClaudeLoginResult(null);
@@ -1490,8 +1508,46 @@ function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRun; agen
   const sessionId = run.sessionIdAfter || run.sessionIdBefore;
   const hasNonZeroExit = run.exitCode !== null && run.exitCode !== 0;
 
+  const [summaryHeight, setSummaryHeight] = useState(() => Math.round((window.innerHeight - 12 * 16) * 0.5));
+  const splitContainerRef = useRef<HTMLDivElement>(null);
+  const dragStartRef = useRef<{ y: number; h: number } | null>(null);
+  const dragMoveRef = useRef<((ev: MouseEvent) => void) | null>(null);
+  const dragUpRef = useRef<(() => void) | null>(null);
+  // Clean up drag listeners if the component unmounts mid-drag.
+  useEffect(() => {
+    return () => {
+      if (dragMoveRef.current) document.removeEventListener("mousemove", dragMoveRef.current);
+      if (dragUpRef.current) document.removeEventListener("mouseup", dragUpRef.current);
+    };
+  }, []);
+  const onDragMouseDown = (e: React.MouseEvent) => {
+    dragStartRef.current = { y: e.clientY, h: summaryHeight };
+    const onMove = (ev: MouseEvent) => {
+      if (!dragStartRef.current) return;
+      // Cap summary to container height minus a small reserve for the transcript (no hardcoded pixel min).
+      const containerHeight = splitContainerRef.current?.clientHeight ?? window.innerHeight;
+      setSummaryHeight(Math.max(80, Math.min(containerHeight - 40, dragStartRef.current.h + ev.clientY - dragStartRef.current.y)));
+    };
+    const onUp = () => {
+      dragStartRef.current = null;
+      dragMoveRef.current = null;
+      dragUpRef.current = null;
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    dragMoveRef.current = onMove;
+    dragUpRef.current = onUp;
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  };
+
   return (
-    <div className="space-y-4 min-w-0">
+    <div ref={splitContainerRef} className="flex flex-col h-full min-w-0">
+      {/* Summary pane — fixed height when transcript open, flex-1 when collapsed */}
+      <div
+        className={cn("overflow-y-auto space-y-4", transcriptOpen ? "shrink-0" : "flex-1")}
+        style={{ height: transcriptOpen ? summaryHeight : undefined }}
+      >
       {/* Run summary card */}
       <div className="border border-border rounded-lg overflow-hidden">
         <div className="flex flex-col sm:flex-row">
@@ -1728,47 +1784,129 @@ function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRun; agen
         </div>
       )}
 
-      {/* stderr excerpt for failed runs */}
-      {run.stderrExcerpt && (
-        <div className="space-y-1">
-          <span className="text-xs font-medium text-red-600 dark:text-red-400">stderr</span>
-          <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap">{run.stderrExcerpt}</pre>
+      {/* Events fetch error */}
+      {runEventsError && (
+        <div className="border border-destructive/40 bg-destructive/10 rounded-lg px-4 py-2 text-xs text-destructive">
+          Failed to load events: {runEventsError instanceof Error ? runEventsError.message : "Unknown error"}
         </div>
       )}
 
-      {/* stdout excerpt when no log is available */}
-      {run.stdoutExcerpt && !run.logRef && (
-        <div className="space-y-1">
-          <span className="text-xs font-medium text-muted-foreground">stdout</span>
-          <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">{run.stdoutExcerpt}</pre>
+      {/* Invocation details — collapsed by default */}
+      {adapterInvokePayload && (
+        <div className="border border-border rounded-lg overflow-hidden">
+          <button
+            className="flex items-center gap-1.5 w-full px-4 py-2 text-xs text-muted-foreground hover:text-foreground transition-colors"
+            onClick={() => setInvocationOpen((v) => !v)}
+          >
+            <ChevronRight className={cn("h-3 w-3 transition-transform", invocationOpen && "rotate-90")} />
+            Invocation
+          </button>
+          {invocationOpen && (
+            <div className="px-4 pb-3 space-y-2 text-xs border-t border-border">
+              {typeof adapterInvokePayload.adapterType === "string" && (
+                <div><span className="text-muted-foreground">Adapter: </span>{adapterInvokePayload.adapterType}</div>
+              )}
+              {typeof adapterInvokePayload.cwd === "string" && (
+                <div className="break-all"><span className="text-muted-foreground">Working dir: </span><span className="font-mono">{adapterInvokePayload.cwd}</span></div>
+              )}
+              {typeof adapterInvokePayload.command === "string" && (
+                <div className="break-all">
+                  <span className="text-muted-foreground">Command: </span>
+                  <span className="font-mono">
+                    {[adapterInvokePayload.command, ...(Array.isArray(adapterInvokePayload.commandArgs) ? adapterInvokePayload.commandArgs.filter((v): v is string => typeof v === "string") : [])].join(" ")}
+                  </span>
+                </div>
+              )}
+              {adapterInvokePayload.prompt !== undefined && (
+                <div>
+                  <div className="text-muted-foreground mb-1">Prompt</div>
+                  <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap max-h-48 overflow-y-auto">
+                    {typeof adapterInvokePayload.prompt === "string" ? adapterInvokePayload.prompt : JSON.stringify(adapterInvokePayload.prompt, null, 2)}
+                  </pre>
+                </div>
+              )}
+              {adapterInvokePayload.context !== undefined && (
+                <div>
+                  <div className="text-muted-foreground mb-1">Context</div>
+                  <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap max-h-48 overflow-y-auto">{JSON.stringify(adapterInvokePayload.context, null, 2)}</pre>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
-      {/* Log viewer */}
-      <LogViewer run={run} adapterType={adapterType} />
+      {/* Events — collapsible, like Invocation */}
+      {displayEvents.length > 0 && (
+        <div className="border border-border rounded-lg overflow-hidden">
+          <button
+            className="flex items-center gap-1.5 w-full px-4 py-2 text-xs text-muted-foreground hover:text-foreground transition-colors"
+            onClick={() => setEventsOpen((v) => !v)}
+          >
+            <ChevronRight className={cn("h-3 w-3 transition-transform", eventsOpen && "rotate-90")} />
+            Events ({displayEvents.length})
+          </button>
+          {eventsOpen && (
+            <div className="border-t border-border px-3 py-2 space-y-0.5 font-mono text-[11px] max-h-48 overflow-y-auto">
+              {displayEvents.map((evt) => (
+                <div key={evt.id} className="grid grid-cols-[auto_1fr] gap-2 items-baseline">
+                  <span className="text-[10px] text-muted-foreground select-none w-14 shrink-0">
+                    {new Date(evt.createdAt).toLocaleTimeString("en-US", { hour12: false })}
+                  </span>
+                  <span className="break-all text-foreground/80">
+                    {evt.message ?? (evt.payload ? JSON.stringify(evt.payload) : "")}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      </div>
+
+      {/* Drag handle — only visible when transcript is open */}
+      {transcriptOpen && (
+        <div
+          className="h-1 my-1 cursor-row-resize rounded-full bg-border/60 hover:bg-cyan-500/40 transition-colors shrink-0"
+          onMouseDown={onDragMouseDown}
+        />
+      )}
+
+      {/* Terminal pane — flex-1 when open, hidden when collapsed */}
+      <div className={cn(transcriptOpen ? "flex-1 min-h-0" : "shrink-0")}>
+        <LogViewer
+          run={run}
+          adapterType={adapterType}
+          transcriptOpen={transcriptOpen}
+          onToggleTranscript={() => setTranscriptOpen((v) => !v)}
+        />
+      </div>
     </div>
   );
 }
 
 /* ---- Log Viewer ---- */
 
-function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: string }) {
+function LogViewer({ run, adapterType, transcriptOpen, onToggleTranscript }: { run: HeartbeatRun; adapterType: string; transcriptOpen: boolean; onToggleTranscript: () => void }) {
   const [events, setEvents] = useState<HeartbeatRunEvent[]>([]);
   const [logLines, setLogLines] = useState<Array<{ ts: string; stream: "stdout" | "stderr" | "system"; chunk: string }>>([]);
   const [loading, setLoading] = useState(true);
   const [logLoading, setLogLoading] = useState(!!run.logRef);
   const [logError, setLogError] = useState<string | null>(null);
   const [logOffset, setLogOffset] = useState(0);
-  const [isFollowing, setIsFollowing] = useState(false);
+  const isLive = run.status === "running" || run.status === "queued";
+  const [isFollowing, setIsFollowing] = useState(isLive);
   const logEndRef = useRef<HTMLDivElement>(null);
+  const terminalBodyRef = useRef<HTMLDivElement>(null);
   const pendingLogLineRef = useRef("");
   const scrollContainerRef = useRef<ScrollContainer | null>(null);
-  const isFollowingRef = useRef(false);
+  const isFollowingRef = useRef(isLive);
+  const hasMountedRef = useRef(false);
   const lastMetricsRef = useRef<{ scrollHeight: number; distanceFromBottom: number }>({
     scrollHeight: 0,
     distanceFromBottom: Number.POSITIVE_INFINITY,
   });
-  const isLive = run.status === "running" || run.status === "queued";
 
   function appendLogContent(content: string, finalize = false) {
     if (!content && !finalize) return;
@@ -1816,8 +1954,18 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
   }, [initialEvents]);
 
   const getScrollContainer = useCallback((): ScrollContainer => {
-    if (scrollContainerRef.current) return scrollContainerRef.current;
-    const container = findScrollContainer(logEndRef.current);
+    const cached = scrollContainerRef.current;
+    // Validate the cache: if the element has been detached (e.g., transcript
+    // was collapsed and reopened), recompute rather than returning a stale ref.
+    if (cached && cached !== window && !(cached as Element).isConnected) {
+      scrollContainerRef.current = null;
+    } else if (cached === window && terminalBodyRef.current) {
+      // window was cached before the terminal body mounted; prefer the body now.
+      scrollContainerRef.current = null;
+    } else if (cached) {
+      return cached;
+    }
+    const container = terminalBodyRef.current ?? findScrollContainer(logEndRef.current);
     scrollContainerRef.current = container;
     return container;
   }, []);
@@ -1844,8 +1992,26 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
       return;
     }
 
+    // Skip the very first mount: terminalBodyRef isn't attached yet, so
+    // getScrollContainer() would fall back to window and cache it prematurely.
+    // isFollowing already defaults to isLive, so no state correction is needed.
+    if (!hasMountedRef.current) {
+      hasMountedRef.current = true;
+      return;
+    }
+
     updateFollowingState();
   }, [isLive, run.id, updateFollowingState]);
+
+  // For completed runs, scroll to bottom once after log finishes loading
+  // (uses logLines.length as proxy since transcript is declared below)
+  useEffect(() => {
+    if (isLive || logLoading || loading || logLines.length === 0) return;
+    const el = terminalBodyRef.current;
+    if (el) {
+      requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
+    }
+  }, [isLive, logLoading, loading, logLines.length]);
 
   useEffect(() => {
     if (!isLive) return;
@@ -1984,150 +2150,74 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     return () => clearInterval(interval);
   }, [run.id, run.logRef, isLive, logOffset]);
 
-  const adapterInvokePayload = useMemo(() => {
-    const evt = events.find((e) => e.eventType === "adapter.invoke");
-    return asRecord(evt?.payload ?? null);
-  }, [events]);
-
   const adapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
   const transcript = useMemo(() => buildTranscript(logLines, adapter.parseStdoutLine), [logLines, adapter]);
 
-  if (loading && logLoading) {
-    return <p className="text-xs text-muted-foreground">Loading run logs...</p>;
-  }
-
-  if (events.length === 0 && logLines.length === 0 && !logError) {
-    return <p className="text-xs text-muted-foreground">No log events.</p>;
-  }
-
-  const levelColors: Record<string, string> = {
-    info: "text-foreground",
-    warn: "text-yellow-600 dark:text-yellow-400",
-    error: "text-red-600 dark:text-red-400",
-  };
-
-  const streamColors: Record<string, string> = {
-    stdout: "text-foreground",
-    stderr: "text-red-600 dark:text-red-300",
-    system: "text-blue-600 dark:text-blue-300",
-  };
+  const isEmpty = events.length === 0 && logLines.length === 0 && !logError;
+  const isLoading = loading && logLoading;
 
   return (
-    <div className="space-y-3">
-      {adapterInvokePayload && (
-        <div className="rounded-lg border border-border bg-background/60 p-3 space-y-2">
-          <div className="text-xs font-medium text-muted-foreground">Invocation</div>
-          {typeof adapterInvokePayload.adapterType === "string" && (
-            <div className="text-xs"><span className="text-muted-foreground">Adapter: </span>{adapterInvokePayload.adapterType}</div>
-          )}
-          {typeof adapterInvokePayload.cwd === "string" && (
-            <div className="text-xs break-all"><span className="text-muted-foreground">Working dir: </span><span className="font-mono">{adapterInvokePayload.cwd}</span></div>
-          )}
-          {typeof adapterInvokePayload.command === "string" && (
-            <div className="text-xs break-all">
-              <span className="text-muted-foreground">Command: </span>
-              <span className="font-mono">
-                {[
-                  adapterInvokePayload.command,
-                  ...(Array.isArray(adapterInvokePayload.commandArgs)
-                    ? adapterInvokePayload.commandArgs.filter((v): v is string => typeof v === "string")
-                    : []),
-                ].join(" ")}
+    <div className={cn("flex flex-col", transcriptOpen ? "h-full" : "")}>
+      {/* Terminal container */}
+      <div className={cn("rounded-lg border border-cyan-500/30 bg-background/80 overflow-hidden shadow-[0_0_12px_rgba(6,182,212,0.08)] flex flex-col", transcriptOpen ? "flex-1 min-h-0" : "")}>
+        {/* Terminal header bar */}
+        <div className="px-3 py-1.5 border-b border-cyan-500/20 flex items-center justify-between shrink-0">
+          <button
+            className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+            onClick={onToggleTranscript}
+          >
+            <ChevronRight className={cn("h-3 w-3 transition-transform", transcriptOpen && "rotate-90")} />
+            Transcript ({transcript.length})
+          </button>
+          <div className="flex items-center gap-2">
+            {transcriptOpen && isLive && !isFollowing && (
+              <Button
+                variant="ghost"
+                size="xs"
+                onClick={() => {
+                  const container = getScrollContainer();
+                  isFollowingRef.current = true;
+                  setIsFollowing(true);
+                  scrollToContainerBottom(container, "auto");
+                  lastMetricsRef.current = readScrollMetrics(container);
+                }}
+              >
+                Jump to live
+              </Button>
+            )}
+            {isLive && (
+              <span className="flex items-center gap-1 text-xs text-cyan-400">
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-cyan-400" />
+                </span>
+                Live
               </span>
-            </div>
-          )}
-          {Array.isArray(adapterInvokePayload.commandNotes) && adapterInvokePayload.commandNotes.length > 0 && (
-            <div>
-              <div className="text-xs text-muted-foreground mb-1">Command notes</div>
-              <ul className="list-disc pl-5 space-y-1">
-                {adapterInvokePayload.commandNotes
-                  .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-                  .map((note, idx) => (
-                    <li key={`${idx}-${note}`} className="text-xs break-all font-mono">
-                      {note}
-                    </li>
-                  ))}
-              </ul>
-            </div>
-          )}
-          {adapterInvokePayload.prompt !== undefined && (
-            <div>
-              <div className="text-xs text-muted-foreground mb-1">Prompt</div>
-              <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
-                {typeof adapterInvokePayload.prompt === "string"
-                  ? adapterInvokePayload.prompt
-                  : JSON.stringify(adapterInvokePayload.prompt, null, 2)}
-              </pre>
-            </div>
-          )}
-          {adapterInvokePayload.context !== undefined && (
-            <div>
-              <div className="text-xs text-muted-foreground mb-1">Context</div>
-              <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
-                {JSON.stringify(adapterInvokePayload.context, null, 2)}
-              </pre>
-            </div>
-          )}
-          {adapterInvokePayload.env !== undefined && (
-            <div>
-              <div className="text-xs text-muted-foreground mb-1">Environment</div>
-              <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap font-mono">
-                {formatEnvForDisplay(adapterInvokePayload.env)}
-              </pre>
-            </div>
-          )}
+            )}
+          </div>
         </div>
-      )}
-
-      <div className="flex items-center justify-between">
-        <span className="text-xs font-medium text-muted-foreground">
-          Transcript ({transcript.length})
-        </span>
-        <div className="flex items-center gap-2">
-          {isLive && !isFollowing && (
-            <Button
-              variant="ghost"
-              size="xs"
-              onClick={() => {
-                const container = getScrollContainer();
-                isFollowingRef.current = true;
-                setIsFollowing(true);
-                scrollToContainerBottom(container, "auto");
-                lastMetricsRef.current = readScrollMetrics(container);
-              }}
-            >
-              Jump to live
-            </Button>
+        {/* Scrollable transcript body — only when open */}
+        {transcriptOpen && (
+        <div ref={terminalBodyRef} className="flex-1 overflow-y-auto p-2 font-mono text-[11px] space-y-0.5">
+          {isLoading && <div className="text-muted-foreground/60 italic">Loading run logs...</div>}
+          {isEmpty && !isLoading && <div className="text-muted-foreground/60 italic">No transcript for this run.</div>}
+          {transcript.length === 0 && !run.logRef && (
+            <div className="text-muted-foreground/60 italic">No persisted transcript for this run.</div>
           )}
-          {isLive && (
-            <span className="flex items-center gap-1 text-xs text-cyan-400">
-              <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-cyan-400" />
-              </span>
-              Live
-            </span>
-          )}
-        </div>
-      </div>
-      <div className="bg-neutral-100 dark:bg-neutral-950 rounded-lg p-3 font-mono text-xs space-y-0.5 overflow-x-hidden">
-        {transcript.length === 0 && !run.logRef && (
-          <div className="text-neutral-500">No persisted transcript for this run.</div>
-        )}
-        {transcript.map((entry, idx) => {
-          const time = new Date(entry.ts).toLocaleTimeString("en-US", { hour12: false });
-          const grid = "grid grid-cols-[auto_auto_1fr] gap-x-2 sm:gap-x-3 items-baseline";
-          const tsCell = "text-neutral-400 dark:text-neutral-600 select-none w-12 sm:w-16 text-[10px] sm:text-xs";
-          const lblCell = "w-14 sm:w-20 text-[10px] sm:text-xs";
-          const contentCell = "min-w-0 whitespace-pre-wrap break-words overflow-hidden";
-          const expandCell = "col-span-full md:col-start-3 md:col-span-1";
+          {transcript.map((entry, idx) => {
+            const time = new Date(entry.ts).toLocaleTimeString("en-US", { hour12: false });
+            const grid = "grid grid-cols-[auto_auto_1fr] gap-x-2 items-baseline";
+            const tsCell = "text-[10px] text-muted-foreground select-none w-14 shrink-0";
+            const lblCell = "w-16 shrink-0 text-[10px]";
+            const contentCell = "min-w-0 whitespace-pre-wrap break-words overflow-hidden";
+            const expandCell = "col-span-full md:col-start-3 md:col-span-1";
 
           if (entry.kind === "assistant") {
             return (
               <div key={`${entry.ts}-assistant-${idx}`} className={cn(grid, "py-0.5")}>
                 <span className={tsCell}>{time}</span>
-                <span className={cn(lblCell, "text-green-700 dark:text-green-300")}>assistant</span>
-                <span className={cn(contentCell, "text-green-900 dark:text-green-100")}>{entry.text}</span>
+                <span className={cn(lblCell, "text-emerald-700 dark:text-emerald-200")}>assistant</span>
+                <span className={cn(contentCell, "text-emerald-900 dark:text-emerald-100")}>{entry.text}</span>
               </div>
             );
           }
@@ -2156,9 +2246,9 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
             return (
               <div key={`${entry.ts}-tool-${idx}`} className={cn(grid, "gap-y-1 py-0.5")}>
                 <span className={tsCell}>{time}</span>
-                <span className={cn(lblCell, "text-yellow-700 dark:text-yellow-300")}>tool_call</span>
-                <span className="text-yellow-900 dark:text-yellow-100 min-w-0">{entry.name}</span>
-                <pre className={cn(expandCell, "bg-neutral-200 dark:bg-neutral-900 rounded p-2 text-[11px] overflow-x-auto whitespace-pre-wrap text-neutral-800 dark:text-neutral-200")}>
+                <span className={cn(lblCell, "text-cyan-600 dark:text-cyan-300")}>tool_call</span>
+                <span className="text-cyan-700 dark:text-cyan-200 min-w-0">{entry.name}</span>
+                <pre className={cn(expandCell, "bg-background/60 rounded p-2 text-[11px] overflow-x-auto whitespace-pre-wrap text-foreground/80")}>
                   {JSON.stringify(entry.input, null, 2)}
                 </pre>
               </div>
@@ -2217,7 +2307,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           const color =
             entry.kind === "stderr" ? "text-red-600 dark:text-red-300" :
             entry.kind === "system" ? "text-blue-600 dark:text-blue-300" :
-            "text-neutral-500";
+            "text-foreground/80";
           return (
             <div key={`${entry.ts}-raw-${idx}`} className={grid}>
               <span className={tsCell}>{time}</span>
@@ -2226,73 +2316,28 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
             </div>
           )
         })}
-        {logError && <div className="text-red-600 dark:text-red-300">{logError}</div>}
-        <div ref={logEndRef} />
+          {logError && <div className="text-red-600 dark:text-red-300 py-0.5">{logError}</div>}
+          {(run.status === "failed" || run.status === "timed_out") && (
+            <div className="mt-1 rounded border border-red-500/30 bg-red-950/20 p-2 space-y-1.5">
+              <div className="text-[10px] font-medium text-red-400 uppercase tracking-wider">Failure</div>
+              {run.error && (
+                <div className="text-red-300 whitespace-pre-wrap break-words">{run.error}</div>
+              )}
+              {run.stderrExcerpt && run.stderrExcerpt.trim() && (
+                <pre className="text-red-200 whitespace-pre-wrap break-words overflow-x-auto">{run.stderrExcerpt}</pre>
+              )}
+              {run.resultJson && (
+                <pre className="text-red-200 whitespace-pre-wrap break-words overflow-x-auto">{JSON.stringify(run.resultJson, null, 2)}</pre>
+              )}
+              {run.stdoutExcerpt && run.stdoutExcerpt.trim() && !run.resultJson && (
+                <pre className="text-red-200 whitespace-pre-wrap break-words overflow-x-auto">{run.stdoutExcerpt}</pre>
+              )}
+            </div>
+          )}
+          <div ref={logEndRef} />
+        </div>
+        )}
       </div>
-
-      {(run.status === "failed" || run.status === "timed_out") && (
-        <div className="rounded-lg border border-red-300 dark:border-red-500/30 bg-red-50 dark:bg-red-950/20 p-3 space-y-2">
-          <div className="text-xs font-medium text-red-700 dark:text-red-300">Failure details</div>
-          {run.error && (
-            <div className="text-xs text-red-600 dark:text-red-200">
-              <span className="text-red-700 dark:text-red-300">Error: </span>
-              {run.error}
-            </div>
-          )}
-          {run.stderrExcerpt && run.stderrExcerpt.trim() && (
-            <div>
-              <div className="text-xs text-red-700 dark:text-red-300 mb-1">stderr excerpt</div>
-              <pre className="bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100">
-                {run.stderrExcerpt}
-              </pre>
-            </div>
-          )}
-          {run.resultJson && (
-            <div>
-              <div className="text-xs text-red-700 dark:text-red-300 mb-1">adapter result JSON</div>
-              <pre className="bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100">
-                {JSON.stringify(run.resultJson, null, 2)}
-              </pre>
-            </div>
-          )}
-          {run.stdoutExcerpt && run.stdoutExcerpt.trim() && !run.resultJson && (
-            <div>
-              <div className="text-xs text-red-700 dark:text-red-300 mb-1">stdout excerpt</div>
-              <pre className="bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100">
-                {run.stdoutExcerpt}
-              </pre>
-            </div>
-          )}
-        </div>
-      )}
-
-      {events.length > 0 && (
-        <div>
-          <div className="mb-2 text-xs font-medium text-muted-foreground">Events ({events.length})</div>
-          <div className="bg-neutral-100 dark:bg-neutral-950 rounded-lg p-3 font-mono text-xs space-y-0.5">
-            {events.map((evt) => {
-              const color = evt.color
-                ?? (evt.level ? levelColors[evt.level] : null)
-                ?? (evt.stream ? streamColors[evt.stream] : null)
-                ?? "text-foreground";
-
-              return (
-                <div key={evt.id} className="flex gap-2">
-                  <span className="text-neutral-400 dark:text-neutral-600 shrink-0 select-none w-16">
-                    {new Date(evt.createdAt).toLocaleTimeString("en-US", { hour12: false })}
-                  </span>
-                  <span className={cn("shrink-0 w-14", evt.stream ? (streamColors[evt.stream] ?? "text-neutral-500") : "text-neutral-500")}>
-                    {evt.stream ? `[${evt.stream}]` : ""}
-                  </span>
-                  <span className={cn("break-all", color)}>
-                    {evt.message ?? (evt.payload ? JSON.stringify(evt.payload) : "")}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
