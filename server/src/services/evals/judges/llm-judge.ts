@@ -385,6 +385,7 @@ export interface LlmJudgeOptions {
   strategy?: EvalStrategy;
 }
 
+/** Creates an LLM-based eval judge using the specified provider, model, and scoring strategy. */
 export function createLlmJudge(opts: LlmJudgeOptions = {}): EvalJudge {
   const provider = opts.provider ?? "openai";
   const model = opts.model ?? "gpt-4.1-mini";

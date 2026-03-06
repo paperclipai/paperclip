@@ -121,6 +121,7 @@ export function resolveKindsForRun(
   });
 }
 
+/** Maps a raw score to a pass/warn/fail label using the threshold for the given kind. */
 export function applyLabel(kind: EvalKind, score: number, threshold?: EvalThreshold): EvalLabel {
   // Merge user overrides with defaults so partial overrides (e.g. only failAbove)
   // don't silently drop the default warnAbove/warnBelow tier
@@ -139,6 +140,7 @@ export function applyLabel(kind: EvalKind, score: number, threshold?: EvalThresh
   return "pass";
 }
 
+/** Computes the worst label across results and collects triggered actions based on policy config. */
 export function determineActions(
   results: EvalResult[],
   config: EvalPolicyConfig,
@@ -164,6 +166,7 @@ export function determineActions(
   return { triggered: [...actions], worstLabel };
 }
 
+/** Constructs the JSON payload stored in heartbeat_run_events for an eval run. */
 export function buildEvalEventPayload(
   results: EvalResult[],
   judge: { provider: string; model: string },
@@ -177,6 +180,7 @@ export function buildEvalEventPayload(
   };
 }
 
+/** Builds a human-readable one-line summary of eval results for the run timeline. */
 export function buildEvalSummaryMessage(results: EvalResult[]): string {
   return (
     "Evals: " +
@@ -199,6 +203,7 @@ export interface RunEvalResult {
   summaryMessage: string;
 }
 
+/** Runs the full eval pipeline: resolve kinds → judge → apply labels → determine actions. */
 export async function runEvals(opts: RunEvalOptions): Promise<RunEvalResult> {
   const { input, config, runSeq } = opts;
 
