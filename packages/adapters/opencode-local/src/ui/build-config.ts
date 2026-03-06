@@ -1,5 +1,4 @@
 import type { CreateConfigValues } from "@paperclipai/adapter-utils";
-import { DEFAULT_OPENCODE_LOCAL_MODEL } from "../index.js";
 
 function parseCommaArgs(value: string): string[] {
   return value
@@ -56,10 +55,12 @@ export function buildOpenCodeLocalConfig(v: CreateConfigValues): Record<string, 
   if (v.cwd) ac.cwd = v.cwd;
   if (v.instructionsFilePath) ac.instructionsFilePath = v.instructionsFilePath;
   if (v.promptTemplate) ac.promptTemplate = v.promptTemplate;
-  ac.model = v.model || DEFAULT_OPENCODE_LOCAL_MODEL;
+  if (v.model) ac.model = v.model;
   if (v.thinkingEffort) ac.variant = v.thinkingEffort;
+  // OpenCode sessions can run until the CLI exits naturally; keep timeout disabled (0)
+  // and rely on graceSec for termination handling when a timeout is configured elsewhere.
   ac.timeoutSec = 0;
-  ac.graceSec = 15;
+  ac.graceSec = 20;
   const env = parseEnvBindings(v.envBindings);
   const legacy = parseEnvVars(v.envVars);
   for (const [key, value] of Object.entries(legacy)) {

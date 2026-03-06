@@ -97,8 +97,20 @@ function parseStdoutChunk(
   pendingByRun.set(pendingKey, split.pop() ?? "");
   const adapter = getUIAdapter(run.adapterType);
 
-  const summarized: Array<{ text: string; tone: FeedTone; thinkingDelta?: boolean }> = [];
+  const summarized: Array<{ text: string; tone: FeedTone; thinkingDelta?: boolean; assistantDelta?: boolean }> = [];
   const appendSummary = (entry: TranscriptEntry) => {
+    if (entry.kind === "assistant" && entry.delta) {
+      const text = entry.text;
+      if (!text.trim()) return;
+      const last = summarized[summarized.length - 1];
+      if (last && last.assistantDelta) {
+        last.text += text;
+      } else {
+        summarized.push({ text, tone: "assistant", assistantDelta: true });
+      }
+      return;
+    }
+
     if (entry.kind === "thinking" && entry.delta) {
       const text = entry.text;
       if (!text.trim()) return;

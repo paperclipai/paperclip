@@ -1,13 +1,7 @@
 export const type = "opencode_local";
 export const label = "OpenCode (local)";
-export const DEFAULT_OPENCODE_LOCAL_MODEL = "openai/gpt-5.2-codex";
 
-export const models = [
-  { id: DEFAULT_OPENCODE_LOCAL_MODEL, label: DEFAULT_OPENCODE_LOCAL_MODEL },
-  { id: "openai/gpt-5.2", label: "openai/gpt-5.2" },
-  { id: "openai/gpt-5.1-codex-max", label: "openai/gpt-5.1-codex-max" },
-  { id: "openai/gpt-5.1-codex-mini", label: "openai/gpt-5.1-codex-mini" },
-];
+export const models: Array<{ id: string; label: string }> = [];
 
 export const agentConfigurationDoc = `# opencode_local agent configuration
 
@@ -26,8 +20,8 @@ Don't use when:
 Core fields:
 - cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to the run prompt
-- model (string, optional): OpenCode model id in provider/model format (for example openai/gpt-5.2-codex)
-- variant (string, optional): provider-specific reasoning/profile variant passed as --variant
+- model (string, required): OpenCode model id in provider/model format (for example anthropic/claude-sonnet-4-5)
+- variant (string, optional): provider-specific model variant (for example minimal|low|medium|high|max)
 - promptTemplate (string, optional): run prompt template
 - command (string, optional): defaults to "opencode"
 - extraArgs (string[], optional): additional CLI args
@@ -38,7 +32,9 @@ Operational fields:
 - graceSec (number, optional): SIGTERM grace period in seconds
 
 Notes:
+- OpenCode supports multiple providers and models. Use \
+  \`opencode models\` to list available options in provider/model format.
+- Paperclip requires an explicit \`model\` value for \`opencode_local\` agents.
 - Runs are executed with: opencode run --format json ...
-- Prompts are passed as the final positional message argument.
 - Sessions are resumed with --session when stored session cwd matches current cwd.
 `;

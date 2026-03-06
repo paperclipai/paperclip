@@ -8,6 +8,7 @@ import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySel
 import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { StatusBadge } from "./StatusBadge";
+import { AgentIcon } from "./AgentIconPicker";
 import { formatDateTime } from "../lib/utils";
 
 interface CommentWithRunMeta extends IssueComment {
@@ -385,6 +386,32 @@ export function CommentThread({
               emptyMessage="No assignees found."
               onChange={setReassignTarget}
               className="text-xs h-8"
+              renderTriggerValue={(option) => {
+                if (!option) return <span className="text-muted-foreground">Assignee</span>;
+                const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
+                const agent = agentId ? agentMap?.get(agentId) : null;
+                return (
+                  <>
+                    {agent ? (
+                      <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    ) : null}
+                    <span className="truncate">{option.label}</span>
+                  </>
+                );
+              }}
+              renderOption={(option) => {
+                if (!option.id) return <span className="truncate">{option.label}</span>;
+                const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
+                const agent = agentId ? agentMap?.get(agentId) : null;
+                return (
+                  <>
+                    {agent ? (
+                      <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    ) : null}
+                    <span className="truncate">{option.label}</span>
+                  </>
+                );
+              }}
             />
           )}
           <Button size="sm" disabled={!canSubmit} onClick={handleSubmit}>

@@ -160,6 +160,7 @@ export function IssueDetail() {
   });
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const lastMarkedReadIssueIdRef = useRef<string | null>(null);
 
   const { data: issue, isLoading, error } = useQuery({
     queryKey: queryKeys.issues.detail(issueId!),
@@ -383,8 +384,22 @@ export function IssueDetail() {
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(issueId!) });
     if (selectedCompanyId) {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
     }
   };
+
+  const markIssueRead = useMutation({
+    mutationFn: (id: string) => issuesApi.markRead(id),
+    onSuccess: () => {
+      if (selectedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
+      }
+    },
+  });
 
   const updateIssue = useMutation({
     mutationFn: (data: Record<string, unknown>) => issuesApi.update(issueId!, data),
@@ -476,11 +491,12 @@ export function IssueDetail() {
   });
 
   useEffect(() => {
+    const titleLabel = issue?.title ?? issueId ?? "Issue";
     setBreadcrumbs([
       { label: "Issues", href: "/issues" },
-      { label: issue?.title ?? issueId ?? "Issue" },
+      { label: hasLiveRuns ? `🔵 ${titleLabel}` : titleLabel },
     ]);
-  }, [setBreadcrumbs, issue, issueId]);
+  }, [setBreadcrumbs, issue, issueId, hasLiveRuns]);
 
   // Redirect to identifier-based URL if navigated via UUID
   useEffect(() => {
@@ -488,6 +504,13 @@ export function IssueDetail() {
       navigate(`/issues/${issue.identifier}`, { replace: true });
     }
   }, [issue, issueId, navigate]);
+
+  useEffect(() => {
+    if (!issue?.id) return;
+    if (lastMarkedReadIssueIdRef.current === issue.id) return;
+    lastMarkedReadIssueIdRef.current = issue.id;
+    markIssueRead.mutate(issue.id);
+  }, [issue?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (issue) {

@@ -23,8 +23,9 @@ import {
 } from "@paperclipai/shared";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import { forbidden, conflict, notFound, unauthorized, badRequest } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 import { validate } from "../middleware/validate.js";
-import { accessService, agentService, logActivity } from "../services/index.js";
+import { accessService, agentService, logActivity, notifyHireApproved } from "../services/index.js";
 import { assertCompanyAccess } from "./authz.js";
 import { claimBoardOwnership, inspectBoardClaimChallenge } from "../board-claim.js";
 
@@ -32,12 +33,27 @@ function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
 
+const INVITE_TOKEN_PREFIX = "pcp_invite_";
+const INVITE_TOKEN_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
+const INVITE_TOKEN_SUFFIX_LENGTH = 8;
+const INVITE_TOKEN_MAX_RETRIES = 5;
+const COMPANY_INVITE_TTL_MS = 10 * 60 * 1000;
+
 function createInviteToken() {
-  return `pcp_invite_${randomBytes(24).toString("hex")}`;
+  const bytes = randomBytes(INVITE_TOKEN_SUFFIX_LENGTH);
+  let suffix = "";
+  for (let idx = 0; idx < INVITE_TOKEN_SUFFIX_LENGTH; idx += 1) {
+    suffix += INVITE_TOKEN_ALPHABET[bytes[idx]! % INVITE_TOKEN_ALPHABET.length];
+  }
+  return `${INVITE_TOKEN_PREFIX}${suffix}`;
 }
 
 function createClaimSecret() {
   return `pcp_claim_${randomBytes(24).toString("hex")}`;
+}
+
+export function companyInviteExpiresAt(nowMs: number = Date.now()) {
+  return new Date(nowMs + COMPANY_INVITE_TTL_MS);
 }
 
 function tokenHashesMatch(left: string, right: string) {
@@ -94,6 +110,11 @@ function isLoopbackHost(hostname: string): boolean {
   return value === "localhost" || value === "127.0.0.1" || value === "::1";
 }
 
+function isWakePath(pathname: string): boolean {
+  const value = pathname.trim().toLowerCase();
+  return value === "/hooks/wake" || value.endsWith("/hooks/wake");
+}
+
 function normalizeHostname(value: string | null | undefined): string | null {
   if (!value) return null;
   const trimmed = value.trim();
@@ -118,6 +139,131 @@ function normalizeHeaderMap(input: unknown): Record<string, string> | undefined 
     out[trimmedKey] = trimmedValue;
   }
   return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function nonEmptyTrimmedString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function headerMapHasKeyIgnoreCase(headers: Record<string, string>, targetKey: string): boolean {
+  const normalizedTarget = targetKey.trim().toLowerCase();
+  return Object.keys(headers).some((key) => key.trim().toLowerCase() === normalizedTarget);
+}
+
+function headerMapGetIgnoreCase(headers: Record<string, string>, targetKey: string): string | null {
+  const normalizedTarget = targetKey.trim().toLowerCase();
+  const key = Object.keys(headers).find((candidate) => candidate.trim().toLowerCase() === normalizedTarget);
+  if (!key) return null;
+  const value = headers[key];
+  return typeof value === "string" ? value : null;
+}
+
+function toAuthorizationHeaderValue(rawToken: string): string {
+  const trimmed = rawToken.trim();
+  if (!trimmed) return trimmed;
+  return /^bearer\s+/i.test(trimmed) ? trimmed : `Bearer ${trimmed}`;
+}
+
+export function buildJoinDefaultsPayloadForAccept(input: {
+  adapterType: string | null;
+  defaultsPayload: unknown;
+  responsesWebhookUrl?: unknown;
+  responsesWebhookMethod?: unknown;
+  responsesWebhookHeaders?: unknown;
+  paperclipApiUrl?: unknown;
+  webhookAuthHeader?: unknown;
+  inboundOpenClawAuthHeader?: string | null;
+}): unknown {
+  if (input.adapterType !== "openclaw") {
+    return input.defaultsPayload;
+  }
+
+  const merged = isPlainObject(input.defaultsPayload)
+    ? { ...(input.defaultsPayload as Record<string, unknown>) }
+    : {} as Record<string, unknown>;
+
+  if (!nonEmptyTrimmedString(merged.url)) {
+    const legacyUrl = nonEmptyTrimmedString(input.responsesWebhookUrl);
+    if (legacyUrl) merged.url = legacyUrl;
+  }
+
+  if (!nonEmptyTrimmedString(merged.method)) {
+    const legacyMethod = nonEmptyTrimmedString(input.responsesWebhookMethod);
+    if (legacyMethod) merged.method = legacyMethod.toUpperCase();
+  }
+
+  if (!nonEmptyTrimmedString(merged.paperclipApiUrl)) {
+    const legacyPaperclipApiUrl = nonEmptyTrimmedString(input.paperclipApiUrl);
+    if (legacyPaperclipApiUrl) merged.paperclipApiUrl = legacyPaperclipApiUrl;
+  }
+
+  if (!nonEmptyTrimmedString(merged.webhookAuthHeader)) {
+    const providedWebhookAuthHeader = nonEmptyTrimmedString(input.webhookAuthHeader);
+    if (providedWebhookAuthHeader) merged.webhookAuthHeader = providedWebhookAuthHeader;
+  }
+
+  const mergedHeaders = normalizeHeaderMap(merged.headers) ?? {};
+  const compatibilityHeaders = normalizeHeaderMap(input.responsesWebhookHeaders);
+  if (compatibilityHeaders) {
+    for (const [key, value] of Object.entries(compatibilityHeaders)) {
+      if (!headerMapHasKeyIgnoreCase(mergedHeaders, key)) {
+        mergedHeaders[key] = value;
+      }
+    }
+  }
+
+  const inboundOpenClawAuthHeader = nonEmptyTrimmedString(input.inboundOpenClawAuthHeader);
+  if (inboundOpenClawAuthHeader && !headerMapHasKeyIgnoreCase(mergedHeaders, "x-openclaw-auth")) {
+    mergedHeaders["x-openclaw-auth"] = inboundOpenClawAuthHeader;
+  }
+
+  if (Object.keys(mergedHeaders).length > 0) {
+    merged.headers = mergedHeaders;
+  } else {
+    delete merged.headers;
+  }
+
+  const hasAuthorizationHeader = headerMapHasKeyIgnoreCase(mergedHeaders, "authorization");
+  const hasWebhookAuthHeader = Boolean(nonEmptyTrimmedString(merged.webhookAuthHeader));
+  if (!hasAuthorizationHeader && !hasWebhookAuthHeader) {
+    const openClawAuthToken = headerMapGetIgnoreCase(mergedHeaders, "x-openclaw-auth");
+    if (openClawAuthToken) {
+      merged.webhookAuthHeader = toAuthorizationHeaderValue(openClawAuthToken);
+    }
+  }
+
+  return Object.keys(merged).length > 0 ? merged : null;
+}
+
+function summarizeSecretForLog(value: unknown): { present: true; length: number; sha256Prefix: string } | null {
+  const trimmed = nonEmptyTrimmedString(value);
+  if (!trimmed) return null;
+  return {
+    present: true,
+    length: trimmed.length,
+    sha256Prefix: hashToken(trimmed).slice(0, 12),
+  };
+}
+
+function summarizeOpenClawDefaultsForLog(defaultsPayload: unknown) {
+  const defaults = isPlainObject(defaultsPayload) ? (defaultsPayload as Record<string, unknown>) : null;
+  const headers = defaults ? normalizeHeaderMap(defaults.headers) : undefined;
+  const openClawAuthHeaderValue = headers
+    ? Object.entries(headers).find(([key]) => key.trim().toLowerCase() === "x-openclaw-auth")?.[1] ?? null
+    : null;
+
+  return {
+    present: Boolean(defaults),
+    keys: defaults ? Object.keys(defaults).sort() : [],
+    url: defaults ? nonEmptyTrimmedString(defaults.url) : null,
+    method: defaults ? nonEmptyTrimmedString(defaults.method) : null,
+    paperclipApiUrl: defaults ? nonEmptyTrimmedString(defaults.paperclipApiUrl) : null,
+    headerKeys: headers ? Object.keys(headers).sort() : [],
+    webhookAuthHeader: defaults ? summarizeSecretForLog(defaults.webhookAuthHeader) : null,
+    openClawAuthHeader: summarizeSecretForLog(openClawAuthHeaderValue),
+  };
 }
 
 function buildJoinConnectivityDiagnostics(input: {
@@ -207,13 +353,13 @@ function normalizeAgentDefaultsForJoin(input: {
       code: "openclaw_callback_config_missing",
       level: "warn",
       message: "No OpenClaw callback config was provided in agentDefaultsPayload.",
-      hint: "Include agentDefaultsPayload.url so Paperclip can invoke the OpenClaw webhook immediately after approval.",
+      hint: "Include agentDefaultsPayload.url so Paperclip can invoke the OpenClaw SSE endpoint immediately after approval.",
     });
     return { normalized: null as Record<string, unknown> | null, diagnostics };
   }
 
   const defaults = input.defaultsPayload as Record<string, unknown>;
-  const normalized: Record<string, unknown> = {};
+  const normalized: Record<string, unknown> = { streamTransport: "sse" };
 
   let callbackUrl: URL | null = null;
   const rawUrl = typeof defaults.url === "string" ? defaults.url.trim() : "";
@@ -222,7 +368,7 @@ function normalizeAgentDefaultsForJoin(input: {
       code: "openclaw_callback_url_missing",
       level: "warn",
       message: "OpenClaw callback URL is missing.",
-      hint: "Set agentDefaultsPayload.url to your OpenClaw webhook endpoint.",
+      hint: "Set agentDefaultsPayload.url to your OpenClaw SSE endpoint.",
     });
   } else {
     try {
@@ -240,6 +386,14 @@ function normalizeAgentDefaultsForJoin(input: {
           code: "openclaw_callback_url_configured",
           level: "info",
           message: `Callback endpoint set to ${callbackUrl.toString()}`,
+        });
+      }
+      if (isWakePath(callbackUrl.pathname)) {
+        diagnostics.push({
+          code: "openclaw_callback_wake_path_incompatible",
+          level: "warn",
+          message: "Configured callback path targets /hooks/wake, which is not stream-capable for strict SSE mode.",
+          hint: "Use an endpoint that returns text/event-stream for the full run duration.",
         });
       }
       if (isLoopbackHost(callbackUrl.hostname)) {
@@ -263,7 +417,7 @@ function normalizeAgentDefaultsForJoin(input: {
   normalized.method = rawMethod || "POST";
 
   if (typeof defaults.timeoutSec === "number" && Number.isFinite(defaults.timeoutSec)) {
-    normalized.timeoutSec = Math.max(1, Math.min(120, Math.floor(defaults.timeoutSec)));
+    normalized.timeoutSec = Math.max(0, Math.min(7200, Math.floor(defaults.timeoutSec)));
   }
 
   const headers = normalizeHeaderMap(defaults.headers);
@@ -275,6 +429,44 @@ function normalizeAgentDefaultsForJoin(input: {
 
   if (isPlainObject(defaults.payloadTemplate)) {
     normalized.payloadTemplate = defaults.payloadTemplate;
+  }
+
+  const rawPaperclipApiUrl = typeof defaults.paperclipApiUrl === "string"
+    ? defaults.paperclipApiUrl.trim()
+    : "";
+  if (rawPaperclipApiUrl) {
+    try {
+      const parsedPaperclipApiUrl = new URL(rawPaperclipApiUrl);
+      if (parsedPaperclipApiUrl.protocol !== "http:" && parsedPaperclipApiUrl.protocol !== "https:") {
+        diagnostics.push({
+          code: "openclaw_paperclip_api_url_protocol",
+          level: "warn",
+          message: `paperclipApiUrl must use http:// or https:// (got ${parsedPaperclipApiUrl.protocol}).`,
+        });
+      } else {
+        normalized.paperclipApiUrl = parsedPaperclipApiUrl.toString();
+        diagnostics.push({
+          code: "openclaw_paperclip_api_url_configured",
+          level: "info",
+          message: `paperclipApiUrl set to ${parsedPaperclipApiUrl.toString()}`,
+        });
+        if (isLoopbackHost(parsedPaperclipApiUrl.hostname)) {
+          diagnostics.push({
+            code: "openclaw_paperclip_api_url_loopback",
+            level: "warn",
+            message:
+              "paperclipApiUrl uses loopback hostname. Remote OpenClaw workers cannot reach localhost on the Paperclip host.",
+            hint: "Use a reachable hostname/IP and keep it in allowed hostnames for authenticated/private deployments.",
+          });
+        }
+      }
+    } catch {
+      diagnostics.push({
+        code: "openclaw_paperclip_api_url_invalid",
+        level: "warn",
+        message: `Invalid paperclipApiUrl: ${rawPaperclipApiUrl}`,
+      });
+    }
   }
 
   diagnostics.push(
@@ -294,6 +486,7 @@ function toInviteSummaryResponse(req: Request, token: string, invite: typeof inv
   const baseUrl = requestBaseUrl(req);
   const onboardingPath = `/api/invites/${token}/onboarding`;
   const onboardingTextPath = `/api/invites/${token}/onboarding.txt`;
+  const inviteMessage = extractInviteMessage(invite);
   return {
     id: invite.id,
     companyId: invite.companyId,
@@ -306,6 +499,7 @@ function toInviteSummaryResponse(req: Request, token: string, invite: typeof inv
     onboardingTextUrl: baseUrl ? `${baseUrl}${onboardingTextPath}` : onboardingTextPath,
     skillIndexPath: "/api/skills/index",
     skillIndexUrl: baseUrl ? `${baseUrl}/api/skills/index` : "/api/skills/index",
+    inviteMessage,
   };
 }
 
@@ -375,6 +569,46 @@ function buildOnboardingDiscoveryDiagnostics(input: {
   return diagnostics;
 }
 
+function buildOnboardingConnectionCandidates(input: {
+  apiBaseUrl: string;
+  bindHost: string;
+  allowedHostnames: string[];
+}): string[] {
+  let base: URL | null = null;
+  try {
+    if (input.apiBaseUrl) {
+      base = new URL(input.apiBaseUrl);
+    }
+  } catch {
+    base = null;
+  }
+
+  const protocol = base?.protocol ?? "http:";
+  const port = base?.port ? `:${base.port}` : "";
+  const candidates = new Set<string>();
+
+  if (base) {
+    candidates.add(base.origin);
+  }
+
+  const bindHost = normalizeHostname(input.bindHost);
+  if (bindHost && !isLoopbackHost(bindHost)) {
+    candidates.add(`${protocol}//${bindHost}${port}`);
+  }
+
+  for (const rawHost of input.allowedHostnames) {
+    const host = normalizeHostname(rawHost);
+    if (!host) continue;
+    candidates.add(`${protocol}//${host}${port}`);
+  }
+
+  if (base && isLoopbackHost(base.hostname)) {
+    candidates.add(`${protocol}//host.docker.internal${port}`);
+  }
+
+  return Array.from(candidates);
+}
+
 function buildInviteOnboardingManifest(
   req: Request,
   token: string,
@@ -393,10 +627,17 @@ function buildInviteOnboardingManifest(
   const registrationEndpointUrl = baseUrl ? `${baseUrl}${registrationEndpointPath}` : registrationEndpointPath;
   const onboardingTextPath = `/api/invites/${token}/onboarding.txt`;
   const onboardingTextUrl = baseUrl ? `${baseUrl}${onboardingTextPath}` : onboardingTextPath;
+  const testResolutionPath = `/api/invites/${token}/test-resolution`;
+  const testResolutionUrl = baseUrl ? `${baseUrl}${testResolutionPath}` : testResolutionPath;
   const discoveryDiagnostics = buildOnboardingDiscoveryDiagnostics({
     apiBaseUrl: baseUrl,
     deploymentMode: opts.deploymentMode,
     deploymentExposure: opts.deploymentExposure,
+    bindHost: opts.bindHost,
+    allowedHostnames: opts.allowedHostnames,
+  });
+  const connectionCandidates = buildOnboardingConnectionCandidates({
+    apiBaseUrl: baseUrl,
     bindHost: opts.bindHost,
     allowedHostnames: opts.allowedHostnames,
   });
@@ -406,14 +647,15 @@ function buildInviteOnboardingManifest(
     onboarding: {
       instructions:
         "Join as an agent, save your one-time claim secret, wait for board approval, then claim your API key and install the Paperclip skill before starting heartbeat loops.",
+      inviteMessage: extractInviteMessage(invite),
       recommendedAdapterType: "openclaw",
       requiredFields: {
         requestType: "agent",
         agentName: "Display name for this agent",
-        adapterType: "Use 'openclaw' for OpenClaw webhook-based agents",
+        adapterType: "Use 'openclaw' for OpenClaw streaming agents",
         capabilities: "Optional capability summary",
         agentDefaultsPayload:
-          "Optional adapter config such as url/method/headers/webhookAuthHeader for OpenClaw callback endpoint",
+          "Optional adapter config such as url/method/headers/webhookAuthHeader and paperclipApiUrl for OpenClaw SSE endpoint",
       },
       registrationEndpoint: {
         method: "POST",
@@ -432,6 +674,16 @@ function buildInviteOnboardingManifest(
         deploymentExposure: opts.deploymentExposure,
         bindHost: opts.bindHost,
         allowedHostnames: opts.allowedHostnames,
+        connectionCandidates,
+        testResolutionEndpoint: {
+          method: "GET",
+          path: testResolutionPath,
+          url: testResolutionUrl,
+          query: {
+            url: "https://your-openclaw-agent.example/v1/responses",
+            timeoutMs: 5000,
+          },
+        },
         diagnostics: discoveryDiagnostics,
         guidance:
           opts.deploymentMode === "authenticated" && opts.deploymentExposure === "private"
@@ -466,11 +718,17 @@ export function buildInviteOnboardingTextDocument(
 ) {
   const manifest = buildInviteOnboardingManifest(req, token, invite, opts);
   const onboarding = manifest.onboarding as {
+    inviteMessage?: string | null;
     registrationEndpoint: { method: string; path: string; url: string };
     claimEndpointTemplate: { method: string; path: string };
     textInstructions: { path: string; url: string };
     skill: { path: string; url: string; installPath: string };
-    connectivity: { diagnostics?: JoinDiagnostic[]; guidance?: string };
+    connectivity: {
+      diagnostics?: JoinDiagnostic[];
+      guidance?: string;
+      connectionCandidates?: string[];
+      testResolutionEndpoint?: { method?: string; path?: string; url?: string };
+    };
   };
   const diagnostics = Array.isArray(onboarding.connectivity?.diagnostics)
     ? onboarding.connectivity.diagnostics
@@ -486,6 +744,13 @@ export function buildInviteOnboardingTextDocument(
     `- allowedJoinTypes: ${invite.allowedJoinTypes}`,
     `- expiresAt: ${invite.expiresAt.toISOString()}`,
     "",
+  ];
+
+  if (onboarding.inviteMessage) {
+    lines.push("## Message from inviter", onboarding.inviteMessage, "");
+  }
+
+  lines.push(
     "## Step 1: Submit agent join request",
     `${onboarding.registrationEndpoint.method} ${onboarding.registrationEndpoint.url}`,
     "",
@@ -496,10 +761,12 @@ export function buildInviteOnboardingTextDocument(
     '  "adapterType": "openclaw",',
     '  "capabilities": "Optional summary",',
     '  "agentDefaultsPayload": {',
-    '    "url": "https://your-openclaw-webhook.example/webhook",',
+    '    "url": "https://your-openclaw-agent.example/v1/responses",',
+    '    "paperclipApiUrl": "https://paperclip-hostname-your-agent-can-reach:3100",',
+    '    "streamTransport": "sse",',
     '    "method": "POST",',
     '    "headers": { "x-openclaw-auth": "replace-me" },',
-    '    "timeoutSec": 30',
+    '    "timeoutSec": 0',
     "  }",
     "}",
     "",
@@ -533,7 +800,39 @@ export function buildInviteOnboardingTextDocument(
     "",
     "## Connectivity guidance",
     onboarding.connectivity?.guidance ?? "Ensure Paperclip is reachable from your OpenClaw runtime.",
-  ];
+  );
+
+  if (onboarding.connectivity?.testResolutionEndpoint?.url) {
+    lines.push(
+      "",
+      "## Optional: test callback resolution from Paperclip",
+      `${onboarding.connectivity.testResolutionEndpoint.method ?? "GET"} ${onboarding.connectivity.testResolutionEndpoint.url}?url=https%3A%2F%2Fyour-openclaw-agent.example%2Fv1%2Fresponses`,
+      "",
+      "This endpoint checks whether Paperclip can reach your OpenClaw endpoint and reports reachable, timeout, or unreachable.",
+    );
+  }
+
+  const connectionCandidates = Array.isArray(onboarding.connectivity?.connectionCandidates)
+    ? onboarding.connectivity.connectionCandidates.filter((entry): entry is string => Boolean(entry))
+    : [];
+
+  if (connectionCandidates.length > 0) {
+    lines.push("", "## Suggested Paperclip base URLs to try");
+    for (const candidate of connectionCandidates) {
+      lines.push(`- ${candidate}`);
+    }
+    lines.push(
+      "",
+      "Test each candidate with:",
+      "- GET <candidate>/api/health",
+      "- set the first reachable candidate as agentDefaultsPayload.paperclipApiUrl when submitting your join request",
+      "",
+      "If none are reachable: ask your human operator for a reachable hostname/address and help them update network configuration.",
+      "For authenticated/private mode, they may need:",
+      "- pnpm paperclipai allowed-hostname <host>",
+      "- then restart Paperclip and retry onboarding.",
+    );
+  }
 
   if (diagnostics.length > 0) {
     lines.push("", "## Connectivity diagnostics");
@@ -551,8 +850,37 @@ export function buildInviteOnboardingTextDocument(
     `${onboarding.skill.path}`,
     manifest.invite.onboardingPath,
   );
+  if (onboarding.connectivity?.testResolutionEndpoint?.path) {
+    lines.push(`${onboarding.connectivity.testResolutionEndpoint.path}`);
+  }
 
   return `${lines.join("\n")}\n`;
+}
+
+function extractInviteMessage(invite: typeof invites.$inferSelect): string | null {
+  const rawDefaults = invite.defaultsPayload;
+  if (!rawDefaults || typeof rawDefaults !== "object" || Array.isArray(rawDefaults)) {
+    return null;
+  }
+  const rawMessage = (rawDefaults as Record<string, unknown>).agentMessage;
+  if (typeof rawMessage !== "string") {
+    return null;
+  }
+  const trimmed = rawMessage.trim();
+  return trimmed.length ? trimmed : null;
+}
+
+function mergeInviteDefaults(
+  defaultsPayload: Record<string, unknown> | null | undefined,
+  agentMessage: string | null,
+): Record<string, unknown> | null {
+  const merged = defaultsPayload && typeof defaultsPayload === "object"
+    ? { ...defaultsPayload }
+    : {};
+  if (agentMessage) {
+    merged.agentMessage = agentMessage;
+  }
+  return Object.keys(merged).length ? merged : null;
 }
 
 function requestIp(req: Request) {
@@ -612,6 +940,96 @@ function grantsFromDefaults(
     });
   }
   return result;
+}
+
+function isInviteTokenHashCollisionError(error: unknown) {
+  const candidates = [
+    error,
+    (error as { cause?: unknown } | null)?.cause ?? null,
+  ];
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const code = "code" in candidate && typeof candidate.code === "string" ? candidate.code : null;
+    const message = "message" in candidate && typeof candidate.message === "string" ? candidate.message : "";
+    const constraint = "constraint" in candidate && typeof candidate.constraint === "string"
+      ? candidate.constraint
+      : null;
+    if (code !== "23505") continue;
+    if (constraint === "invites_token_hash_unique_idx") return true;
+    if (message.includes("invites_token_hash_unique_idx")) return true;
+  }
+  return false;
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+type InviteResolutionProbe = {
+  status: "reachable" | "timeout" | "unreachable";
+  method: "HEAD";
+  durationMs: number;
+  httpStatus: number | null;
+  message: string;
+};
+
+async function probeInviteResolutionTarget(url: URL, timeoutMs: number): Promise<InviteResolutionProbe> {
+  const startedAt = Date.now();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      method: "HEAD",
+      redirect: "manual",
+      signal: controller.signal,
+    });
+    const durationMs = Date.now() - startedAt;
+    if (
+      response.ok ||
+      response.status === 401 ||
+      response.status === 403 ||
+      response.status === 404 ||
+      response.status === 405 ||
+      response.status === 422 ||
+      response.status === 500 ||
+      response.status === 501
+    ) {
+      return {
+        status: "reachable",
+        method: "HEAD",
+        durationMs,
+        httpStatus: response.status,
+        message: `Webhook endpoint responded to HEAD with HTTP ${response.status}.`,
+      };
+    }
+    return {
+      status: "unreachable",
+      method: "HEAD",
+      durationMs,
+      httpStatus: response.status,
+      message: `Webhook endpoint probe returned HTTP ${response.status}.`,
+    };
+  } catch (error) {
+    const durationMs = Date.now() - startedAt;
+    if (isAbortError(error)) {
+      return {
+        status: "timeout",
+        method: "HEAD",
+        durationMs,
+        httpStatus: null,
+        message: `Webhook endpoint probe timed out after ${timeoutMs}ms.`,
+      };
+    }
+    return {
+      status: "unreachable",
+      method: "HEAD",
+      durationMs,
+      httpStatus: null,
+      message: error instanceof Error ? error.message : "Webhook endpoint probe failed.",
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export function accessRoutes(
@@ -704,21 +1122,43 @@ export function accessRoutes(
     async (req, res) => {
       const companyId = req.params.companyId as string;
       await assertCompanyPermission(req, companyId, "users:invite");
+      const normalizedAgentMessage = typeof req.body.agentMessage === "string"
+        ? req.body.agentMessage.trim() || null
+        : null;
+      const insertValues = {
+        companyId,
+        inviteType: "company_join" as const,
+        allowedJoinTypes: req.body.allowedJoinTypes,
+        defaultsPayload: mergeInviteDefaults(req.body.defaultsPayload ?? null, normalizedAgentMessage),
+        expiresAt: companyInviteExpiresAt(),
+        invitedByUserId: req.actor.userId ?? null,
+      };
 
-      const token = createInviteToken();
-      const created = await db
-        .insert(invites)
-        .values({
-          companyId,
-          inviteType: "company_join",
-          tokenHash: hashToken(token),
-          allowedJoinTypes: req.body.allowedJoinTypes,
-          defaultsPayload: req.body.defaultsPayload ?? null,
-          expiresAt: new Date(Date.now() + req.body.expiresInHours * 60 * 60 * 1000),
-          invitedByUserId: req.actor.userId ?? null,
-        })
-        .returning()
-        .then((rows) => rows[0]);
+      let token: string | null = null;
+      let created: typeof invites.$inferSelect | null = null;
+      for (let attempt = 0; attempt < INVITE_TOKEN_MAX_RETRIES; attempt += 1) {
+        const candidateToken = createInviteToken();
+        try {
+          const row = await db
+            .insert(invites)
+            .values({
+              ...insertValues,
+              tokenHash: hashToken(candidateToken),
+            })
+            .returning()
+            .then((rows) => rows[0]);
+          token = candidateToken;
+          created = row;
+          break;
+        } catch (error) {
+          if (!isInviteTokenHashCollisionError(error)) {
+            throw error;
+          }
+        }
+      }
+      if (!token || !created) {
+        throw conflict("Failed to generate a unique invite token. Please retry.");
+      }
 
       await logActivity(db, {
         companyId,
@@ -731,13 +1171,18 @@ export function accessRoutes(
           inviteType: created.inviteType,
           allowedJoinTypes: created.allowedJoinTypes,
           expiresAt: created.expiresAt.toISOString(),
+          hasAgentMessage: Boolean(normalizedAgentMessage),
         },
       });
 
+      const inviteSummary = toInviteSummaryResponse(req, token, created);
       res.status(201).json({
         ...created,
         token,
         inviteUrl: `/invite/${token}`,
+        onboardingTextPath: inviteSummary.onboardingTextPath,
+        onboardingTextUrl: inviteSummary.onboardingTextUrl,
+        inviteMessage: inviteSummary.inviteMessage,
       });
     },
   );
@@ -785,6 +1230,44 @@ export function accessRoutes(
     }
 
     res.type("text/plain; charset=utf-8").send(buildInviteOnboardingTextDocument(req, token, invite, opts));
+  });
+
+  router.get("/invites/:token/test-resolution", async (req, res) => {
+    const token = (req.params.token as string).trim();
+    if (!token) throw notFound("Invite not found");
+    const invite = await db
+      .select()
+      .from(invites)
+      .where(eq(invites.tokenHash, hashToken(token)))
+      .then((rows) => rows[0] ?? null);
+    if (!invite || invite.revokedAt || inviteExpired(invite)) {
+      throw notFound("Invite not found");
+    }
+
+    const rawUrl = typeof req.query.url === "string" ? req.query.url.trim() : "";
+    if (!rawUrl) throw badRequest("url query parameter is required");
+    let target: URL;
+    try {
+      target = new URL(rawUrl);
+    } catch {
+      throw badRequest("url must be an absolute http(s) URL");
+    }
+    if (target.protocol !== "http:" && target.protocol !== "https:") {
+      throw badRequest("url must use http or https");
+    }
+
+    const parsedTimeoutMs = typeof req.query.timeoutMs === "string" ? Number(req.query.timeoutMs) : NaN;
+    const timeoutMs = Number.isFinite(parsedTimeoutMs)
+      ? Math.max(1000, Math.min(15000, Math.floor(parsedTimeoutMs)))
+      : 5000;
+    const probe = await probeInviteResolutionTarget(target, timeoutMs);
+    res.json({
+      inviteId: invite.id,
+      testResolutionPath: `/api/invites/${token}/test-resolution`,
+      requestedUrl: target.toString(),
+      timeoutMs,
+      ...probe,
+    });
   });
 
   router.post("/invites/:token/accept", validate(acceptInviteSchema), async (req, res) => {
@@ -844,16 +1327,61 @@ export function accessRoutes(
       throw badRequest("agentName is required for agent join requests");
     }
 
+    const openClawDefaultsPayload = requestType === "agent"
+      ? buildJoinDefaultsPayloadForAccept({
+        adapterType: req.body.adapterType ?? null,
+        defaultsPayload: req.body.agentDefaultsPayload ?? null,
+        responsesWebhookUrl: req.body.responsesWebhookUrl ?? null,
+        responsesWebhookMethod: req.body.responsesWebhookMethod ?? null,
+        responsesWebhookHeaders: req.body.responsesWebhookHeaders ?? null,
+        paperclipApiUrl: req.body.paperclipApiUrl ?? null,
+        webhookAuthHeader: req.body.webhookAuthHeader ?? null,
+        inboundOpenClawAuthHeader: req.header("x-openclaw-auth") ?? null,
+      })
+      : null;
+
+    if (requestType === "agent" && (req.body.adapterType ?? null) === "openclaw") {
+      logger.info(
+        {
+          inviteId: invite.id,
+          requestType,
+          adapterType: req.body.adapterType ?? null,
+          bodyKeys: isPlainObject(req.body) ? Object.keys(req.body).sort() : [],
+          responsesWebhookUrl: nonEmptyTrimmedString(req.body.responsesWebhookUrl),
+          paperclipApiUrl: nonEmptyTrimmedString(req.body.paperclipApiUrl),
+          webhookAuthHeader: summarizeSecretForLog(req.body.webhookAuthHeader),
+          inboundOpenClawAuthHeader: summarizeSecretForLog(req.header("x-openclaw-auth") ?? null),
+          rawAgentDefaults: summarizeOpenClawDefaultsForLog(req.body.agentDefaultsPayload ?? null),
+          mergedAgentDefaults: summarizeOpenClawDefaultsForLog(openClawDefaultsPayload),
+        },
+        "invite accept received OpenClaw join payload",
+      );
+    }
+
     const joinDefaults = requestType === "agent"
       ? normalizeAgentDefaultsForJoin({
         adapterType: req.body.adapterType ?? null,
-        defaultsPayload: req.body.agentDefaultsPayload ?? null,
+        defaultsPayload: openClawDefaultsPayload,
         deploymentMode: opts.deploymentMode,
         deploymentExposure: opts.deploymentExposure,
         bindHost: opts.bindHost,
         allowedHostnames: opts.allowedHostnames,
       })
       : { normalized: null as Record<string, unknown> | null, diagnostics: [] as JoinDiagnostic[] };
+
+    if (requestType === "agent" && (req.body.adapterType ?? null) === "openclaw") {
+      logger.info(
+        {
+          inviteId: invite.id,
+          joinRequestDiagnostics: joinDefaults.diagnostics.map((diag) => ({
+            code: diag.code,
+            level: diag.level,
+          })),
+          normalizedAgentDefaults: summarizeOpenClawDefaultsForLog(joinDefaults.normalized),
+        },
+        "invite accept normalized OpenClaw defaults",
+      );
+    }
 
     const claimSecret = requestType === "agent" ? createClaimSecret() : null;
     const claimSecretHash = claimSecret ? hashToken(claimSecret) : null;
@@ -889,6 +1417,54 @@ export function accessRoutes(
         .then((rows) => rows[0]);
       return row;
     });
+
+    if (requestType === "agent" && (req.body.adapterType ?? null) === "openclaw") {
+      const expectedDefaults = summarizeOpenClawDefaultsForLog(joinDefaults.normalized);
+      const persistedDefaults = summarizeOpenClawDefaultsForLog(created.agentDefaultsPayload);
+      const missingPersistedFields: string[] = [];
+
+      if (expectedDefaults.url && !persistedDefaults.url) missingPersistedFields.push("url");
+      if (expectedDefaults.paperclipApiUrl && !persistedDefaults.paperclipApiUrl) {
+        missingPersistedFields.push("paperclipApiUrl");
+      }
+      if (expectedDefaults.webhookAuthHeader && !persistedDefaults.webhookAuthHeader) {
+        missingPersistedFields.push("webhookAuthHeader");
+      }
+      if (expectedDefaults.openClawAuthHeader && !persistedDefaults.openClawAuthHeader) {
+        missingPersistedFields.push("headers.x-openclaw-auth");
+      }
+      if (expectedDefaults.headerKeys.length > 0 && persistedDefaults.headerKeys.length === 0) {
+        missingPersistedFields.push("headers");
+      }
+
+      logger.info(
+        {
+          inviteId: invite.id,
+          joinRequestId: created.id,
+          joinRequestStatus: created.status,
+          expectedDefaults,
+          persistedDefaults,
+          diagnostics: joinDefaults.diagnostics.map((diag) => ({
+            code: diag.code,
+            level: diag.level,
+            message: diag.message,
+            hint: diag.hint ?? null,
+          })),
+        },
+        "invite accept persisted OpenClaw join request",
+      );
+
+      if (missingPersistedFields.length > 0) {
+        logger.warn(
+          {
+            inviteId: invite.id,
+            joinRequestId: created.id,
+            missingPersistedFields,
+          },
+          "invite accept detected missing persisted OpenClaw defaults",
+        );
+      }
+    }
 
     await logActivity(db, {
       companyId,
@@ -1052,6 +1628,16 @@ export function accessRoutes(
       entityId: requestId,
       details: { requestType: existing.requestType, createdAgentId },
     });
+
+    if (createdAgentId) {
+      void notifyHireApproved(db, {
+        companyId,
+        agentId: createdAgentId,
+        source: "join_request",
+        sourceId: requestId,
+        approvedAt: new Date(),
+      }).catch(() => {});
+    }
 
     res.json(toJoinRequestResponse(approved));
   });

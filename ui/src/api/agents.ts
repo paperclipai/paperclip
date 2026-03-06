@@ -117,7 +117,10 @@ export const agentsApi = {
     api.get<AgentTaskSession[]>(agentPath(id, companyId, "/task-sessions")),
   resetSession: (id: string, taskKey?: string | null, companyId?: string) =>
     api.post<void>(agentPath(id, companyId, "/runtime-state/reset-session"), { taskKey: taskKey ?? null }),
-  adapterModels: (type: string) => api.get<AdapterModel[]>(`/adapters/${type}/models`),
+  adapterModels: (companyId: string, type: string) =>
+    api.get<AdapterModel[]>(
+      `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/models`,
+    ),
   testEnvironment: (
     companyId: string,
     type: string,

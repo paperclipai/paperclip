@@ -51,6 +51,16 @@ interface UpdateAgentOptions {
   recordRevision?: RevisionMetadata;
 }
 
+interface AgentShortnameRow {
+  id: string;
+  name: string;
+  status: string;
+}
+
+interface AgentShortnameCollisionOptions {
+  excludeAgentId?: string | null;
+}
+
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -140,6 +150,21 @@ function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agents.$infe
   };
 }
 
+export function hasAgentShortnameCollision(
+  candidateName: string,
+  existingAgents: AgentShortnameRow[],
+  options?: AgentShortnameCollisionOptions,
+): boolean {
+  const candidateShortname = normalizeAgentUrlKey(candidateName);
+  if (!candidateShortname) return false;
+
+  return existingAgents.some((agent) => {
+    if (agent.status === "terminated") return false;
+    if (options?.excludeAgentId && agent.id === options.excludeAgentId) return false;
+    return normalizeAgentUrlKey(agent.name) === candidateShortname;
+  });
+}
+
 export function agentService(db: Db) {
   function withUrlKey<T extends { id: string; name: string }>(row: T) {
     return {
@@ -185,6 +210,31 @@ export function agentService(db: Db) {
     }
   }
 
+  async function assertCompanyShortnameAvailable(
+    companyId: string,
+    candidateName: string,
+    options?: AgentShortnameCollisionOptions,
+  ) {
+    const candidateShortname = normalizeAgentUrlKey(candidateName);
+    if (!candidateShortname) return;
+
+    const existingAgents = await db
+      .select({
+        id: agents.id,
+        name: agents.name,
+        status: agents.status,
+      })
+      .from(agents)
+      .where(eq(agents.companyId, companyId));
+
+    const hasCollision = hasAgentShortnameCollision(candidateName, existingAgents, options);
+    if (hasCollision) {
+      throw conflict(
+        `Agent shortname '${candidateShortname}' is already in use in this company`,
+      );
+    }
+  }
+
   async function updateAgent(
     id: string,
     data: Partial<typeof agents.$inferInsert>,
@@ -210,6 +260,14 @@ export function agentService(db: Db) {
         await ensureManager(existing.companyId, data.reportsTo);
       }
       await assertNoCycle(id, data.reportsTo);
+    }
+
+    if (data.name !== undefined) {
+      const previousShortname = normalizeAgentUrlKey(existing.name);
+      const nextShortname = normalizeAgentUrlKey(data.name);
+      if (previousShortname !== nextShortname) {
+        await assertCompanyShortnameAvailable(existing.companyId, data.name, { excludeAgentId: id });
+      }
     }
 
     const normalizedPatch = { ...data } as Partial<typeof agents.$inferInsert>;
@@ -266,6 +324,8 @@ export function agentService(db: Db) {
       if (data.reportsTo) {
         await ensureManager(companyId, data.reportsTo);
       }
+
+      await assertCompanyShortnameAvailable(companyId, data.name);
 
       const role = data.role ?? "general";
       const normalizedPermissions = normalizeAgentPermissions(data.permissions, role);

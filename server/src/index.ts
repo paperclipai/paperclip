@@ -463,7 +463,7 @@ const app = await createApp(db as any, {
   betterAuthHandler,
   resolveSession,
 });
-const server = createServer(app);
+const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
 const listenPort = await detectPort(config.port);
 
 if (listenPort !== config.port) {

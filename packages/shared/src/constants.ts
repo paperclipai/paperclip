@@ -21,7 +21,15 @@ export const AGENT_STATUSES = [
 ] as const;
 export type AgentStatus = (typeof AGENT_STATUSES)[number];
 
-export const AGENT_ADAPTER_TYPES = ["process", "http", "claude_local", "codex_local", "opencode_local", "cursor", "openclaw"] as const;
+export const AGENT_ADAPTER_TYPES = [
+  "process",
+  "http",
+  "claude_local",
+  "codex_local",
+  "opencode_local",
+  "cursor",
+  "openclaw",
+] as const;
 export type AgentAdapterType = (typeof AGENT_ADAPTER_TYPES)[number];
 
 export const AGENT_ROLES = [

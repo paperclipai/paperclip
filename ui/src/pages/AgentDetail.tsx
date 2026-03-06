@@ -264,11 +264,12 @@ export function AgentDetail() {
   const resolvedCompanyId = agent?.companyId ?? selectedCompanyId;
   const canonicalAgentRef = agent ? agentRouteRef(agent) : routeAgentRef;
   const agentLookupRef = agent?.id ?? routeAgentRef;
+  const resolvedAgentId = agent?.id ?? null;
 
   const { data: runtimeState } = useQuery({
-    queryKey: queryKeys.agents.runtimeState(agentLookupRef),
-    queryFn: () => agentsApi.runtimeState(agentLookupRef, resolvedCompanyId ?? undefined),
-    enabled: Boolean(agentLookupRef),
+    queryKey: queryKeys.agents.runtimeState(resolvedAgentId ?? routeAgentRef),
+    queryFn: () => agentsApi.runtimeState(resolvedAgentId!, resolvedCompanyId ?? undefined),
+    enabled: Boolean(resolvedAgentId),
   });
 
   const { data: heartbeats } = useQuery({
@@ -1154,8 +1155,12 @@ function ConfigurationTab({
   const queryClient = useQueryClient();
 
   const { data: adapterModels } = useQuery({
-    queryKey: ["adapter-models", agent.adapterType],
-    queryFn: () => agentsApi.adapterModels(agent.adapterType),
+    queryKey:
+      companyId
+        ? queryKeys.agents.adapterModels(companyId, agent.adapterType)
+        : ["agents", "none", "adapter-models", agent.adapterType],
+    queryFn: () => agentsApi.adapterModels(companyId!, agent.adapterType),
+    enabled: Boolean(companyId),
   });
 
   const updateAgent = useMutation({

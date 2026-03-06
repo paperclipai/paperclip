@@ -33,12 +33,16 @@ To spin up OpenClaw in Docker and print a host-browser dashboard URL in one comm
 pnpm smoke:openclaw-docker-ui
 ```
 
+Default behavior is zero-flag: you can run the command as-is with no pairing-related env vars.
+
 What this command does:
 
 - clones/updates `openclaw/openclaw` in `/tmp/openclaw-docker`
 - builds `openclaw:local` (unless `OPENCLAW_BUILD=0`)
-- writes `~/.openclaw/openclaw.json` and Docker `.env`
+- writes isolated smoke config under `~/.openclaw-paperclip-smoke/openclaw.json` and Docker `.env`
+- pins agent model defaults to OpenAI (`openai/gpt-5.2` with OpenAI fallback)
 - starts `openclaw-gateway` via Compose (with required `/tmp` tmpfs override)
+- probes and prints a Paperclip host URL that is reachable from inside OpenClaw Docker
 - waits for health and prints:
   - `http://127.0.0.1:18789/#token=...`
 - disables Control UI device pairing by default for local smoke ergonomics
@@ -53,6 +57,12 @@ Environment knobs:
 - `OPENCLAW_OPEN_BROWSER=1` to auto-open the URL on macOS
 - `OPENCLAW_DISABLE_DEVICE_AUTH=1` (default) disables Control UI device pairing for local smoke
 - `OPENCLAW_DISABLE_DEVICE_AUTH=0` keeps pairing enabled (then approve browser with `devices` CLI commands)
+- `OPENCLAW_MODEL_PRIMARY` (default `openai/gpt-5.2`)
+- `OPENCLAW_MODEL_FALLBACK` (default `openai/gpt-5.2-chat-latest`)
+- `OPENCLAW_CONFIG_DIR` (default `~/.openclaw-paperclip-smoke`)
+- `OPENCLAW_RESET_STATE=1` (default) resets smoke agent state on each run to avoid stale auth/session drift
+- `PAPERCLIP_HOST_PORT` (default `3100`)
+- `PAPERCLIP_HOST_FROM_CONTAINER` (default `host.docker.internal`)
 
 ### Authenticated mode
 
@@ -67,6 +77,15 @@ PAPERCLIP_COOKIE="your_session_cookie=..." pnpm smoke:openclaw-join
 ### Network topology tips
 
 - Local same-host smoke: default callback uses `http://127.0.0.1:<port>/webhook`.
+- Inside OpenClaw Docker, `127.0.0.1` points to the container itself, not your host Paperclip server.
+- For invite/onboarding URLs consumed by OpenClaw in Docker, use the script-printed Paperclip URL (typically `http://host.docker.internal:3100`).
+- If Paperclip rejects the container-visible host with a hostname error, allow it from host:
+
+```bash
+pnpm paperclipai allowed-hostname host.docker.internal
+```
+
+Then restart Paperclip and rerun the smoke script.
 - Docker/remote OpenClaw: prefer a reachable hostname (Docker host alias, Tailscale hostname, or public domain).
 - Authenticated/private mode: ensure hostnames are in the allowed list when required:
 

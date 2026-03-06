@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { approvalsApi } from "../api/approvals";
@@ -34,7 +34,7 @@ import {
   Clock,
   ArrowUpRight,
   XCircle,
-  UserCheck,
+  X,
   RotateCcw,
 } from "lucide-react";
 import { Identity } from "../components/Identity";
@@ -42,13 +42,14 @@ import { PageTabBar } from "../components/PageTabBar";
 import type { HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
 
 const STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24 hours
+const RECENT_ISSUES_LIMIT = 100;
 const FAILED_RUN_STATUSES = new Set(["failed", "timed_out"]);
 const ACTIONABLE_APPROVAL_STATUSES = new Set(["pending", "revision_requested"]);
 
 type InboxTab = "new" | "all";
 type InboxCategoryFilter =
   | "everything"
-  | "assigned_to_me"
+  | "issues_i_touched"
   | "join_requests"
   | "approvals"
   | "failed_runs"
@@ -56,12 +57,42 @@ type InboxCategoryFilter =
   | "stale_work";
 type InboxApprovalFilter = "all" | "actionable" | "resolved";
 type SectionKey =
-  | "assigned_to_me"
+  | "issues_i_touched"
   | "join_requests"
   | "approvals"
   | "failed_runs"
   | "alerts"
   | "stale_work";
+
+const DISMISSED_KEY = "paperclip:inbox:dismissed";
+
+function loadDismissed(): Set<string> {
+  try {
+    const raw = localStorage.getItem(DISMISSED_KEY);
+    return raw ? new Set(JSON.parse(raw)) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function saveDismissed(ids: Set<string>) {
+  localStorage.setItem(DISMISSED_KEY, JSON.stringify([...ids]));
+}
+
+function useDismissedItems() {
+  const [dismissed, setDismissed] = useState<Set<string>>(loadDismissed);
+
+  const dismiss = useCallback((id: string) => {
+    setDismissed((prev) => {
+      const next = new Set(prev);
+      next.add(id);
+      saveDismissed(next);
+      return next;
+    });
+  }, []);
+
+  return { dismissed, dismiss };
+}
 
 const RUN_SOURCE_LABELS: Record<string, string> = {
   timer: "Scheduled",
@@ -106,6 +137,23 @@ function runFailureMessage(run: HeartbeatRun): string {
   return firstNonEmptyLine(run.error) ?? firstNonEmptyLine(run.stderrExcerpt) ?? "Run exited with an error.";
 }
 
+function normalizeTimestamp(value: string | Date | null | undefined): number {
+  if (!value) return 0;
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function issueLastActivityTimestamp(issue: Issue): number {
+  const lastExternalCommentAt = normalizeTimestamp(issue.lastExternalCommentAt);
+  if (lastExternalCommentAt > 0) return lastExternalCommentAt;
+
+  const updatedAt = normalizeTimestamp(issue.updatedAt);
+  const myLastTouchAt = normalizeTimestamp(issue.myLastTouchAt);
+  if (myLastTouchAt > 0 && updatedAt <= myLastTouchAt) return 0;
+
+  return updatedAt;
+}
+
 function readIssueIdFromRun(run: HeartbeatRun): string | null {
   const context = run.contextSnapshot;
   if (!context) return null;
@@ -123,10 +171,12 @@ function FailedRunCard({
   run,
   issueById,
   agentName: linkedAgentName,
+  onDismiss,
 }: {
   run: HeartbeatRun;
   issueById: Map<string, Issue>;
   agentName: string | null;
+  onDismiss: () => void;
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -165,6 +215,14 @@ function FailedRunCard({
   return (
     <div className="group relative overflow-hidden rounded-xl border border-red-500/30 bg-gradient-to-br from-red-500/10 via-card to-card p-4">
       <div className="absolute right-0 top-0 h-24 w-24 rounded-full bg-red-500/10 blur-2xl" />
+      <button
+        type="button"
+        onClick={onDismiss}
+        className="absolute right-2 top-2 z-10 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100"
+        aria-label="Dismiss"
+      >
+        <X className="h-4 w-4" />
+      </button>
       <div className="relative space-y-3">
         {issue ? (
           <Link
@@ -182,9 +240,9 @@ function FailedRunCard({
           </span>
         )}
 
-        <div className="flex items-start justify-between gap-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <span className="rounded-md bg-red-500/20 p-1.5">
                 <XCircle className="h-4 w-4 text-red-600 dark:text-red-400" />
               </span>
@@ -199,12 +257,12 @@ function FailedRunCard({
               {sourceLabel} run failed {timeAgo(run.createdAt)}
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
             <Button
               type="button"
               variant="outline"
               size="sm"
-              className="h-8 px-2.5"
+              className="h-8 shrink-0 px-2.5"
               onClick={() => retryRun.mutate()}
               disabled={retryRun.isPending}
             >
@@ -215,7 +273,7 @@ function FailedRunCard({
               type="button"
               variant="outline"
               size="sm"
-              className="h-8 px-2.5"
+              className="h-8 shrink-0 px-2.5"
               asChild
             >
               <Link to={`/agents/${run.agentId}/runs/${run.id}`}>
@@ -253,6 +311,7 @@ export function Inbox() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [allCategoryFilter, setAllCategoryFilter] = useState<InboxCategoryFilter>("everything");
   const [allApprovalFilter, setAllApprovalFilter] = useState<InboxApprovalFilter>("all");
+  const { dismissed, dismiss } = useDismissedItems();
 
   const pathSegment = location.pathname.split("/").pop() ?? "new";
   const tab: InboxTab = pathSegment === "all" ? "all" : "new";
@@ -308,14 +367,14 @@ export function Inbox() {
     enabled: !!selectedCompanyId,
   });
   const {
-    data: assignedToMeIssuesRaw = [],
-    isLoading: isAssignedToMeLoading,
+    data: touchedIssuesRaw = [],
+    isLoading: isTouchedIssuesLoading,
   } = useQuery({
-    queryKey: queryKeys.issues.listAssignedToMe(selectedCompanyId!),
+    queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId!),
     queryFn: () =>
       issuesApi.list(selectedCompanyId!, {
-        assigneeUserId: "me",
-        status: "backlog,todo,in_progress,in_review,blocked",
+        touchedByUserId: "me",
+        status: "backlog,todo,in_progress,in_review,blocked,done",
       }),
     enabled: !!selectedCompanyId,
   });
@@ -326,13 +385,22 @@ export function Inbox() {
     enabled: !!selectedCompanyId,
   });
 
-  const staleIssues = issues ? getStaleIssues(issues) : [];
-  const assignedToMeIssues = useMemo(
-    () =>
-      [...assignedToMeIssuesRaw].sort(
-        (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
-      ),
-    [assignedToMeIssuesRaw],
+  const staleIssues = useMemo(
+    () => (issues ? getStaleIssues(issues) : []).filter((i) => !dismissed.has(`stale:${i.id}`)),
+    [issues, dismissed],
+  );
+  const sortByMostRecentActivity = useCallback(
+    (a: Issue, b: Issue) => {
+      const activityDiff = issueLastActivityTimestamp(b) - issueLastActivityTimestamp(a);
+      if (activityDiff !== 0) return activityDiff;
+      return normalizeTimestamp(b.updatedAt) - normalizeTimestamp(a.updatedAt);
+    },
+    [],
+  );
+
+  const touchedIssues = useMemo(
+    () => [...touchedIssuesRaw].sort(sortByMostRecentActivity).slice(0, RECENT_ISSUES_LIMIT),
+    [sortByMostRecentActivity, touchedIssuesRaw],
   );
 
   const agentById = useMemo(() => {
@@ -348,8 +416,8 @@ export function Inbox() {
   }, [issues]);
 
   const failedRuns = useMemo(
-    () => getLatestFailedRunsByAgent(heartbeatRuns ?? []),
-    [heartbeatRuns],
+    () => getLatestFailedRunsByAgent(heartbeatRuns ?? []).filter((r) => !dismissed.has(`run:${r.id}`)),
+    [heartbeatRuns, dismissed],
   );
 
   const allApprovals = useMemo(
@@ -435,20 +503,18 @@ export function Inbox() {
   }
 
   const hasRunFailures = failedRuns.length > 0;
-  const showAggregateAgentError = !!dashboard && dashboard.agents.error > 0 && !hasRunFailures;
+  const showAggregateAgentError = !!dashboard && dashboard.agents.error > 0 && !hasRunFailures && !dismissed.has("alert:agent-errors");
   const showBudgetAlert =
     !!dashboard &&
     dashboard.costs.monthBudgetCents > 0 &&
-    dashboard.costs.monthUtilizationPercent >= 80;
+    dashboard.costs.monthUtilizationPercent >= 80 &&
+    !dismissed.has("alert:budget");
   const hasAlerts = showAggregateAgentError || showBudgetAlert;
   const hasStale = staleIssues.length > 0;
   const hasJoinRequests = joinRequests.length > 0;
-  const hasAssignedToMe = assignedToMeIssues.length > 0;
+  const hasTouchedIssues = touchedIssues.length > 0;
 
   const newItemCount =
-    assignedToMeIssues.length +
-    joinRequests.length +
-    actionableApprovals.length +
     failedRuns.length +
     staleIssues.length +
     (showAggregateAgentError ? 1 : 0) +
@@ -456,8 +522,8 @@ export function Inbox() {
 
   const showJoinRequestsCategory =
     allCategoryFilter === "everything" || allCategoryFilter === "join_requests";
-  const showAssignedCategory =
-    allCategoryFilter === "everything" || allCategoryFilter === "assigned_to_me";
+  const showTouchedCategory =
+    allCategoryFilter === "everything" || allCategoryFilter === "issues_i_touched";
   const showApprovalsCategory = allCategoryFilter === "everything" || allCategoryFilter === "approvals";
   const showFailedRunsCategory =
     allCategoryFilter === "everything" || allCategoryFilter === "failed_runs";
@@ -465,7 +531,7 @@ export function Inbox() {
   const showStaleCategory = allCategoryFilter === "everything" || allCategoryFilter === "stale_work";
 
   const approvalsToRender = tab === "new" ? actionableApprovals : filteredAllApprovals;
-  const showAssignedSection = tab === "new" ? hasAssignedToMe : showAssignedCategory && hasAssignedToMe;
+  const showTouchedSection = tab === "new" ? hasTouchedIssues : showTouchedCategory && hasTouchedIssues;
   const showJoinRequestsSection =
     tab === "new" ? hasJoinRequests : showJoinRequestsCategory && hasJoinRequests;
   const showApprovalsSection =
@@ -478,12 +544,12 @@ export function Inbox() {
   const showStaleSection = tab === "new" ? hasStale : showStaleCategory && hasStale;
 
   const visibleSections = [
-    showAssignedSection ? "assigned_to_me" : null,
-    showApprovalsSection ? "approvals" : null,
-    showJoinRequestsSection ? "join_requests" : null,
     showFailedRunsSection ? "failed_runs" : null,
     showAlertsSection ? "alerts" : null,
     showStaleSection ? "stale_work" : null,
+    showApprovalsSection ? "approvals" : null,
+    showJoinRequestsSection ? "join_requests" : null,
+    showTouchedSection ? "issues_i_touched" : null,
   ].filter((key): key is SectionKey => key !== null);
 
   const allLoaded =
@@ -491,7 +557,7 @@ export function Inbox() {
     !isApprovalsLoading &&
     !isDashboardLoading &&
     !isIssuesLoading &&
-    !isAssignedToMeLoading &&
+    !isTouchedIssuesLoading &&
     !isRunsLoading;
 
   const showSeparatorBefore = (key: SectionKey) => visibleSections.indexOf(key) > 0;
@@ -531,7 +597,7 @@ export function Inbox() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="everything">All categories</SelectItem>
-                <SelectItem value="assigned_to_me">Assigned to me</SelectItem>
+                <SelectItem value="issues_i_touched">My recent issues</SelectItem>
                 <SelectItem value="join_requests">Join requests</SelectItem>
                 <SelectItem value="approvals">Approvals</SelectItem>
                 <SelectItem value="failed_runs">Failed runs</SelectItem>
@@ -569,39 +635,12 @@ export function Inbox() {
       {allLoaded && visibleSections.length === 0 && (
         <EmptyState
           icon={InboxIcon}
-          message={tab === "new" ? "You're all caught up!" : "No inbox items match these filters."}
+          message={
+            tab === "new"
+              ? "No issues you're involved in yet."
+              : "No inbox items match these filters."
+          }
         />
-      )}
-
-      {showAssignedSection && (
-        <>
-          {showSeparatorBefore("assigned_to_me") && <Separator />}
-          <div>
-            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              Assigned To Me
-            </h3>
-            <div className="divide-y divide-border border border-border">
-              {assignedToMeIssues.map((issue) => (
-                <Link
-                  key={issue.id}
-                  to={`/issues/${issue.identifier ?? issue.id}`}
-                  className="flex cursor-pointer items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50 no-underline text-inherit"
-                >
-                  <UserCheck className="h-4 w-4 shrink-0 text-blue-600 dark:text-blue-400" />
-                  <PriorityIcon priority={issue.priority} />
-                  <StatusIcon status={issue.status} />
-                  <span className="text-xs font-mono text-muted-foreground">
-                    {issue.identifier ?? issue.id.slice(0, 8)}
-                  </span>
-                  <span className="flex-1 truncate text-sm">{issue.title}</span>
-                  <span className="shrink-0 text-xs text-muted-foreground">
-                    updated {timeAgo(issue.updatedAt)}
-                  </span>
-                </Link>
-              ))}
-            </div>
-          </div>
-        </>
       )}
 
       {showApprovalsSection && (
@@ -700,6 +739,7 @@ export function Inbox() {
                   run={run}
                   issueById={issueById}
                   agentName={agentName(run.agentId)}
+                  onDismiss={() => dismiss(`run:${run.id}`)}
                 />
               ))}
             </div>
@@ -716,29 +756,49 @@ export function Inbox() {
             </h3>
             <div className="divide-y divide-border border border-border">
               {showAggregateAgentError && (
-                <Link
-                  to="/agents"
-                  className="flex cursor-pointer items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50 no-underline text-inherit"
-                >
-                  <AlertTriangle className="h-4 w-4 shrink-0 text-red-600 dark:text-red-400" />
-                  <span className="text-sm">
-                    <span className="font-medium">{dashboard!.agents.error}</span>{" "}
-                    {dashboard!.agents.error === 1 ? "agent has" : "agents have"} errors
-                  </span>
-                </Link>
+                <div className="group/alert relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50">
+                  <Link
+                    to="/agents"
+                    className="flex flex-1 cursor-pointer items-center gap-3 no-underline text-inherit"
+                  >
+                    <AlertTriangle className="h-4 w-4 shrink-0 text-red-600 dark:text-red-400" />
+                    <span className="text-sm">
+                      <span className="font-medium">{dashboard!.agents.error}</span>{" "}
+                      {dashboard!.agents.error === 1 ? "agent has" : "agents have"} errors
+                    </span>
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={() => dismiss("alert:agent-errors")}
+                    className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/alert:opacity-100"
+                    aria-label="Dismiss"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
               )}
               {showBudgetAlert && (
-                <Link
-                  to="/costs"
-                  className="flex cursor-pointer items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50 no-underline text-inherit"
-                >
-                  <AlertTriangle className="h-4 w-4 shrink-0 text-yellow-400" />
-                  <span className="text-sm">
-                    Budget at{" "}
-                    <span className="font-medium">{dashboard!.costs.monthUtilizationPercent}%</span>{" "}
-                    utilization this month
-                  </span>
-                </Link>
+                <div className="group/alert relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50">
+                  <Link
+                    to="/costs"
+                    className="flex flex-1 cursor-pointer items-center gap-3 no-underline text-inherit"
+                  >
+                    <AlertTriangle className="h-4 w-4 shrink-0 text-yellow-400" />
+                    <span className="text-sm">
+                      Budget at{" "}
+                      <span className="font-medium">{dashboard!.costs.monthUtilizationPercent}%</span>{" "}
+                      utilization this month
+                    </span>
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={() => dismiss("alert:budget")}
+                    className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/alert:opacity-100"
+                    aria-label="Dismiss"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
               )}
             </div>
           </div>
@@ -754,31 +814,85 @@ export function Inbox() {
             </h3>
             <div className="divide-y divide-border border border-border">
               {staleIssues.map((issue) => (
+                <div
+                  key={issue.id}
+                  className="group/stale relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50"
+                >
+                  <Link
+                    to={`/issues/${issue.identifier ?? issue.id}`}
+                    className="flex flex-1 cursor-pointer items-center gap-3 no-underline text-inherit"
+                  >
+                    <Clock className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    <PriorityIcon priority={issue.priority} />
+                    <StatusIcon status={issue.status} />
+                    <span className="text-xs font-mono text-muted-foreground">
+                      {issue.identifier ?? issue.id.slice(0, 8)}
+                    </span>
+                    <span className="flex-1 truncate text-sm">{issue.title}</span>
+                    {issue.assigneeAgentId &&
+                      (() => {
+                        const name = agentName(issue.assigneeAgentId);
+                        return name ? (
+                          <Identity name={name} size="sm" />
+                        ) : (
+                          <span className="font-mono text-xs text-muted-foreground">
+                            {issue.assigneeAgentId.slice(0, 8)}
+                          </span>
+                        );
+                      })()}
+                    <span className="shrink-0 text-xs text-muted-foreground">
+                      updated {timeAgo(issue.updatedAt)}
+                    </span>
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={() => dismiss(`stale:${issue.id}`)}
+                    className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/stale:opacity-100"
+                    aria-label="Dismiss"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+
+      {showTouchedSection && (
+        <>
+          {showSeparatorBefore("issues_i_touched") && <Separator />}
+          <div>
+            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+              My Recent Issues
+            </h3>
+            <div className="divide-y divide-border border border-border">
+              {touchedIssues.map((issue) => (
                 <Link
                   key={issue.id}
                   to={`/issues/${issue.identifier ?? issue.id}`}
                   className="flex cursor-pointer items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50 no-underline text-inherit"
                 >
-                  <Clock className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  <span className="flex w-4 shrink-0 justify-center">
+                    <span
+                      className={`h-2.5 w-2.5 rounded-full ${
+                        issue.isUnreadForMe
+                          ? "bg-blue-600 dark:bg-blue-400"
+                          : "border border-muted-foreground/40 bg-transparent"
+                      }`}
+                      aria-label={issue.isUnreadForMe ? "Unread" : "Read"}
+                    />
+                  </span>
                   <PriorityIcon priority={issue.priority} />
                   <StatusIcon status={issue.status} />
                   <span className="text-xs font-mono text-muted-foreground">
                     {issue.identifier ?? issue.id.slice(0, 8)}
                   </span>
                   <span className="flex-1 truncate text-sm">{issue.title}</span>
-                  {issue.assigneeAgentId &&
-                    (() => {
-                      const name = agentName(issue.assigneeAgentId);
-                      return name ? (
-                        <Identity name={name} size="sm" />
-                      ) : (
-                        <span className="font-mono text-xs text-muted-foreground">
-                          {issue.assigneeAgentId.slice(0, 8)}
-                        </span>
-                      );
-                    })()}
                   <span className="shrink-0 text-xs text-muted-foreground">
-                    updated {timeAgo(issue.updatedAt)}
+                    {issue.lastExternalCommentAt
+                      ? `commented ${timeAgo(issue.lastExternalCommentAt)}`
+                      : `updated ${timeAgo(issue.updatedAt)}`}
                   </span>
                 </Link>
               ))}

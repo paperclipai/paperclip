@@ -4,12 +4,16 @@ set -euo pipefail
 # release.sh — One-command version bump, build, and publish via Changesets.
 #
 # Usage:
-#   ./scripts/release.sh patch          # 0.2.0 → 0.2.1
-#   ./scripts/release.sh minor          # 0.2.0 → 0.3.0
-#   ./scripts/release.sh major          # 0.2.0 → 1.0.0
-#   ./scripts/release.sh patch --dry-run # everything except npm publish
+#   ./scripts/release.sh patch                  # 0.2.0 → 0.2.1
+#   ./scripts/release.sh minor                  # 0.2.0 → 0.3.0
+#   ./scripts/release.sh major                  # 0.2.0 → 1.0.0
+#   ./scripts/release.sh patch --dry-run        # everything except npm publish
+#   ./scripts/release.sh patch --canary          # publish under @canary tag, no commit/tag
+#   ./scripts/release.sh patch --canary --dry-run
+#   ./scripts/release.sh --promote 0.2.8        # promote canary to @latest + commit/tag
+#   ./scripts/release.sh --promote 0.2.8 --dry-run
 #
-# Steps:
+# Steps (normal):
 #   1. Preflight checks (clean tree, npm login)
 #   2. Auto-create a changeset for all public packages
 #   3. Run changeset version (bumps versions, generates CHANGELOGs)
@@ -17,6 +21,9 @@ set -euo pipefail
 #   5. Build CLI bundle (esbuild)
 #   6. Publish to npm via changeset publish (unless --dry-run)
 #   7. Commit and tag
+#
+# --canary: Steps 1-5 unchanged, Step 6 publishes with --tag canary, Step 7 skipped.
+# --promote: Skips Steps 1-6, promotes canary to latest, then commits and tags.
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CLI_DIR="$REPO_ROOT/cli"
@@ -24,23 +31,130 @@ CLI_DIR="$REPO_ROOT/cli"
 # ── Parse args ────────────────────────────────────────────────────────────────
 
 dry_run=false
+canary=false
+promote=false
+promote_version=""
 bump_type=""
 
-for arg in "$@"; do
-  case "$arg" in
+while [ $# -gt 0 ]; do
+  case "$1" in
     --dry-run) dry_run=true ;;
-    *) bump_type="$arg" ;;
+    --canary) canary=true ;;
+    --promote)
+      promote=true
+      shift
+      if [ $# -eq 0 ] || [[ "$1" == --* ]]; then
+        echo "Error: --promote requires a version argument (e.g. --promote 0.2.8)"
+        exit 1
+      fi
+      promote_version="$1"
+      ;;
+    *) bump_type="$1" ;;
   esac
+  shift
 done
 
-if [ -z "$bump_type" ]; then
-  echo "Usage: $0 <patch|minor|major> [--dry-run]"
+if [ "$promote" = true ] && [ "$canary" = true ]; then
+  echo "Error: --canary and --promote cannot be used together"
   exit 1
 fi
 
-if [[ ! "$bump_type" =~ ^(patch|minor|major)$ ]]; then
-  echo "Error: bump type must be patch, minor, or major (got '$bump_type')"
-  exit 1
+if [ "$promote" = false ]; then
+  if [ -z "$bump_type" ]; then
+    echo "Usage: $0 <patch|minor|major> [--dry-run] [--canary]"
+    echo "       $0 --promote <version> [--dry-run]"
+    exit 1
+  fi
+
+  if [[ ! "$bump_type" =~ ^(patch|minor|major)$ ]]; then
+    echo "Error: bump type must be patch, minor, or major (got '$bump_type')"
+    exit 1
+  fi
+fi
+
+# ── Promote mode (skips Steps 1-6) ───────────────────────────────────────────
+
+if [ "$promote" = true ]; then
+  NEW_VERSION="$promote_version"
+  echo ""
+  echo "==> Promote mode: promoting v$NEW_VERSION from canary to latest..."
+
+  # Get all publishable package names
+  PACKAGES=$(node -e "
+const { readFileSync } = require('fs');
+const { resolve } = require('path');
+const root = '$REPO_ROOT';
+const dirs = ['packages/shared', 'packages/adapter-utils', 'packages/db',
+  'packages/adapters/claude-local', 'packages/adapters/codex-local', 'packages/adapters/openclaw',
+  'server', 'cli'];
+const names = [];
+for (const d of dirs) {
+  try {
+    const pkg = JSON.parse(readFileSync(resolve(root, d, 'package.json'), 'utf8'));
+    if (!pkg.private) names.push(pkg.name);
+  } catch {}
+}
+console.log(names.join('\n'));
+")
+
+  echo ""
+  echo "  Promoting packages to @latest:"
+  while IFS= read -r pkg; do
+    if [ "$dry_run" = true ]; then
+      echo "  [dry-run] npm dist-tag add ${pkg}@${NEW_VERSION} latest"
+    else
+      npm dist-tag add "${pkg}@${NEW_VERSION}" latest
+      echo "  ✓ ${pkg}@${NEW_VERSION} → latest"
+    fi
+  done <<< "$PACKAGES"
+
+  # Restore CLI dev package.json if present
+  if [ -f "$CLI_DIR/package.dev.json" ]; then
+    mv "$CLI_DIR/package.dev.json" "$CLI_DIR/package.json"
+    echo "  ✓ Restored workspace dependencies in cli/package.json"
+  fi
+
+  # Remove the README copied for npm publishing
+  if [ -f "$CLI_DIR/README.md" ]; then
+    rm "$CLI_DIR/README.md"
+  fi
+
+  # Remove temporary build artifacts
+  rm -rf "$REPO_ROOT/server/ui-dist"
+  for pkg_dir in server packages/adapters/claude-local packages/adapters/codex-local; do
+    rm -rf "$REPO_ROOT/$pkg_dir/skills"
+  done
+
+  # Stage release files, commit, and tag
+  echo ""
+  echo "  Committing and tagging v$NEW_VERSION..."
+  if [ "$dry_run" = true ]; then
+    echo "  [dry-run] git add + commit + tag v$NEW_VERSION"
+  else
+    git add \
+      .changeset/ \
+      '**/CHANGELOG.md' \
+      '**/package.json' \
+      cli/src/index.ts
+    git commit -m "chore: release v$NEW_VERSION"
+    git tag "v$NEW_VERSION"
+    echo "  ✓ Committed and tagged v$NEW_VERSION"
+  fi
+
+  echo ""
+  if [ "$dry_run" = true ]; then
+    echo "Dry run complete for promote v$NEW_VERSION."
+    echo "  - Would promote all packages to @latest"
+    echo "  - Would commit and tag v$NEW_VERSION"
+  else
+    echo "Promoted all packages to @latest at v$NEW_VERSION"
+    echo ""
+    echo "Verify: npm view paperclipai@latest version"
+    echo ""
+    echo "To push:"
+    echo "  git push && git push origin v$NEW_VERSION"
+  fi
+  exit 0
 fi
 
 # ── Step 1: Preflight checks ─────────────────────────────────────────────────
@@ -74,7 +188,7 @@ const { resolve } = require('path');
 const root = '$REPO_ROOT';
 const wsYaml = readFileSync(resolve(root, 'pnpm-workspace.yaml'), 'utf8');
 const dirs = ['packages/shared', 'packages/adapter-utils', 'packages/db',
-  'packages/adapters/claude-local', 'packages/adapters/codex-local', 'packages/adapters/openclaw',
+  'packages/adapters/claude-local', 'packages/adapters/codex-local', 'packages/adapters/opencode-local', 'packages/adapters/openclaw',
   'server', 'cli'];
 const names = [];
 for (const d of dirs) {
@@ -131,6 +245,7 @@ pnpm --filter @paperclipai/adapter-utils build
 pnpm --filter @paperclipai/db build
 pnpm --filter @paperclipai/adapter-claude-local build
 pnpm --filter @paperclipai/adapter-codex-local build
+pnpm --filter @paperclipai/adapter-opencode-local build
 pnpm --filter @paperclipai/adapter-openclaw build
 pnpm --filter @paperclipai/server build
 
@@ -158,29 +273,48 @@ echo "  ✓ CLI bundled"
 
 if [ "$dry_run" = true ]; then
   echo ""
-  echo "==> Step 6/7: Skipping publish (--dry-run)"
+  if [ "$canary" = true ]; then
+    echo "==> Step 6/7: Skipping publish (--dry-run, --canary)"
+  else
+    echo "==> Step 6/7: Skipping publish (--dry-run)"
+  fi
   echo ""
   echo "  Preview what would be published:"
   for dir in packages/shared packages/adapter-utils packages/db \
-             packages/adapters/claude-local packages/adapters/codex-local packages/adapters/openclaw \
+             packages/adapters/claude-local packages/adapters/codex-local packages/adapters/opencode-local packages/adapters/openclaw \
              server cli; do
     echo "  --- $dir ---"
     cd "$REPO_ROOT/$dir"
     npm pack --dry-run 2>&1 | tail -3
   done
   cd "$REPO_ROOT"
+  if [ "$canary" = true ]; then
+    echo ""
+    echo "  [dry-run] Would publish with: npx changeset publish --tag canary"
+  fi
 else
   echo ""
-  echo "==> Step 6/7: Publishing to npm..."
-  cd "$REPO_ROOT"
-  npx changeset publish
-  echo "  ✓ Published all packages"
+  if [ "$canary" = true ]; then
+    echo "==> Step 6/7: Publishing to npm (canary)..."
+    cd "$REPO_ROOT"
+    npx changeset publish --tag canary
+    echo "  ✓ Published all packages under @canary tag"
+  else
+    echo "==> Step 6/7: Publishing to npm..."
+    cd "$REPO_ROOT"
+    npx changeset publish
+    echo "  ✓ Published all packages"
+  fi
 fi
 
 # ── Step 7: Restore CLI dev package.json and commit ──────────────────────────
 
 echo ""
-echo "==> Step 7/7: Restoring dev package.json, committing, and tagging..."
+if [ "$canary" = true ]; then
+  echo "==> Step 7/7: Skipping commit and tag (canary mode — promote later)..."
+else
+  echo "==> Step 7/7: Restoring dev package.json, committing, and tagging..."
+fi
 cd "$REPO_ROOT"
 
 # Restore the dev package.json (build-npm.sh backs it up)
@@ -200,20 +334,39 @@ for pkg_dir in server packages/adapters/claude-local packages/adapters/codex-loc
   rm -rf "$REPO_ROOT/$pkg_dir/skills"
 done
 
-# Stage only release-related files (avoid sweeping unrelated changes with -A)
-git add \
-  .changeset/ \
-  '**/CHANGELOG.md' \
-  '**/package.json' \
-  cli/src/index.ts
-git commit -m "chore: release v$NEW_VERSION"
-git tag "v$NEW_VERSION"
-echo "  ✓ Committed and tagged v$NEW_VERSION"
+if [ "$canary" = false ]; then
+  # Stage only release-related files (avoid sweeping unrelated changes with -A)
+  git add \
+    .changeset/ \
+    '**/CHANGELOG.md' \
+    '**/package.json' \
+    cli/src/index.ts
+  git commit -m "chore: release v$NEW_VERSION"
+  git tag "v$NEW_VERSION"
+  echo "  ✓ Committed and tagged v$NEW_VERSION"
+fi
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 
 echo ""
-if [ "$dry_run" = true ]; then
+if [ "$canary" = true ]; then
+  if [ "$dry_run" = true ]; then
+    echo "Dry run complete for canary v$NEW_VERSION."
+    echo "  - Versions bumped, built, and previewed"
+    echo "  - Dev package.json restored"
+    echo "  - No commit or tag (canary mode)"
+    echo ""
+    echo "To actually publish canary, run:"
+    echo "  ./scripts/release.sh $bump_type --canary"
+  else
+    echo "Published canary at v$NEW_VERSION"
+    echo ""
+    echo "Verify: npm view paperclipai@canary version"
+    echo ""
+    echo "To promote to latest:"
+    echo "  ./scripts/release.sh --promote $NEW_VERSION"
+  fi
+elif [ "$dry_run" = true ]; then
   echo "Dry run complete for v$NEW_VERSION."
   echo "  - Versions bumped, built, and previewed"
   echo "  - Dev package.json restored"

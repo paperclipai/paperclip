@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 import { cn } from "../lib/utils";
+import { extractModelName, extractProviderIdWithFallback } from "../lib/model-utils";
 import { getUIAdapter } from "../adapters";
 import { defaultCreateValues } from "./agent-config-defaults";
 import {
@@ -24,10 +25,10 @@ import {
   DEFAULT_CODEX_LOCAL_MODEL
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
-import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { ChoosePathButton } from "./PathInstructionsModal";
 import { HintIcon } from "./agent-config-primitives";
+import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 import {
   Building2,
   Bot,
@@ -76,6 +77,7 @@ export function OnboardingWizard() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [modelOpen, setModelOpen] = useState(false);
+  const [modelSearch, setModelSearch] = useState("");
 
   // Step 1
   const [companyName, setCompanyName] = useState("");
@@ -149,10 +151,18 @@ export function OnboardingWizard() {
     if (step === 3) autoResizeTextarea();
   }, [step, taskDescription, autoResizeTextarea]);
 
-  const { data: adapterModels } = useQuery({
-    queryKey: ["adapter-models", adapterType],
-    queryFn: () => agentsApi.adapterModels(adapterType),
-    enabled: onboardingOpen && step === 2
+  const {
+    data: adapterModels,
+    error: adapterModelsError,
+    isLoading: adapterModelsLoading,
+    isFetching: adapterModelsFetching,
+  } = useQuery({
+    queryKey:
+      createdCompanyId
+        ? queryKeys.agents.adapterModels(createdCompanyId, adapterType)
+        : ["agents", "none", "adapter-models", adapterType],
+    queryFn: () => agentsApi.adapterModels(createdCompanyId!, adapterType),
+    enabled: Boolean(createdCompanyId) && onboardingOpen && step === 2
   });
   const isLocalAdapter =
     adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "opencode_local" || adapterType === "cursor";
@@ -162,9 +172,9 @@ export function OnboardingWizard() {
       ? "codex"
       : adapterType === "cursor"
         ? "agent"
-      : adapterType === "opencode_local"
-        ? "opencode"
-        : "claude");
+        : adapterType === "opencode_local"
+          ? "opencode"
+          : "claude");
 
   useEffect(() => {
     if (step !== 2) return;
@@ -182,6 +192,41 @@ export function OnboardingWizard() {
     adapterType === "claude_local" &&
     adapterEnvResult?.status === "fail" &&
     hasAnthropicApiKeyOverrideCheck;
+  const filteredModels = useMemo(() => {
+    const query = modelSearch.trim().toLowerCase();
+    return (adapterModels ?? []).filter((entry) => {
+      if (!query) return true;
+      const provider = extractProviderIdWithFallback(entry.id, "");
+      return (
+        entry.id.toLowerCase().includes(query) ||
+        entry.label.toLowerCase().includes(query) ||
+        provider.toLowerCase().includes(query)
+      );
+    });
+  }, [adapterModels, modelSearch]);
+  const groupedModels = useMemo(() => {
+    if (adapterType !== "opencode_local") {
+      return [
+        {
+          provider: "models",
+          entries: [...filteredModels].sort((a, b) => a.id.localeCompare(b.id)),
+        },
+      ];
+    }
+    const groups = new Map<string, Array<{ id: string; label: string }>>();
+    for (const entry of filteredModels) {
+      const provider = extractProviderIdWithFallback(entry.id);
+      const bucket = groups.get(provider) ?? [];
+      bucket.push(entry);
+      groups.set(provider, bucket);
+    }
+    return Array.from(groups.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([provider, entries]) => ({
+        provider,
+        entries: [...entries].sort((a, b) => a.id.localeCompare(b.id)),
+      }));
+  }, [filteredModels, adapterType]);
 
   function reset() {
     setStep(1);
@@ -225,8 +270,6 @@ export function OnboardingWizard() {
           ? model || DEFAULT_CODEX_LOCAL_MODEL
           : adapterType === "cursor"
             ? model || DEFAULT_CURSOR_LOCAL_MODEL
-          : adapterType === "opencode_local"
-            ? model || DEFAULT_OPENCODE_LOCAL_MODEL
           : model,
       command,
       args,
@@ -315,6 +358,35 @@ export function OnboardingWizard() {
     setLoading(true);
     setError(null);
     try {
+      if (adapterType === "opencode_local") {
+        const selectedModelId = model.trim();
+        if (!selectedModelId) {
+          setError("OpenCode requires an explicit model in provider/model format.");
+          return;
+        }
+        if (adapterModelsError) {
+          setError(
+            adapterModelsError instanceof Error
+              ? adapterModelsError.message
+              : "Failed to load OpenCode models.",
+          );
+          return;
+        }
+        if (adapterModelsLoading || adapterModelsFetching) {
+          setError("OpenCode models are still loading. Please wait and try again.");
+          return;
+        }
+        const discoveredModels = adapterModels ?? [];
+        if (!discoveredModels.some((entry) => entry.id === selectedModelId)) {
+          setError(
+            discoveredModels.length === 0
+              ? "No OpenCode models discovered. Run `opencode models` and authenticate providers."
+              : `Configured OpenCode model is unavailable: ${selectedModelId}`,
+          );
+          return;
+        }
+      }
+
       if (isLocalAdapter) {
         const result = adapterEnvResult ?? (await runAdapterEnvironmentTest());
         if (!result) return;
@@ -590,8 +662,8 @@ export function OnboardingWizard() {
                         {
                           value: "opencode_local" as const,
                           label: "OpenCode",
-                          icon: Code,
-                          desc: "Local OpenCode agent"
+                          icon: OpenCodeLogoIcon,
+                          desc: "Local multi-provider agent"
                         },
                         {
                           value: "openclaw" as const,
@@ -640,9 +712,14 @@ export function OnboardingWizard() {
                               setModel(DEFAULT_CODEX_LOCAL_MODEL);
                             } else if (nextType === "cursor" && !model) {
                               setModel(DEFAULT_CURSOR_LOCAL_MODEL);
-                            } else if (nextType === "opencode_local" && !model) {
-                              setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
                             }
+                            if (nextType === "opencode_local") {
+                              if (!model.includes("/")) {
+                                setModel("");
+                              }
+                              return;
+                            }
+                            setModel("");
                           }}
                         >
                           {opt.recommended && (
@@ -688,7 +765,13 @@ export function OnboardingWizard() {
                         <label className="text-xs text-muted-foreground mb-1 block">
                           Model
                         </label>
-                        <Popover open={modelOpen} onOpenChange={setModelOpen}>
+                        <Popover
+                          open={modelOpen}
+                          onOpenChange={(next) => {
+                            setModelOpen(next);
+                            if (!next) setModelSearch("");
+                          }}
+                        >
                           <PopoverTrigger asChild>
                             <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
                               <span
@@ -698,7 +781,10 @@ export function OnboardingWizard() {
                               >
                                 {selectedModel
                                   ? selectedModel.label
-                                  : model || "Default"}
+                                  : model ||
+                                    (adapterType === "opencode_local"
+                                      ? "Select model (required)"
+                                      : "Default")}
                               </span>
                               <ChevronDown className="h-3 w-3 text-muted-foreground" />
                             </button>
@@ -707,36 +793,60 @@ export function OnboardingWizard() {
                             className="w-[var(--radix-popover-trigger-width)] p-1"
                             align="start"
                           >
-                            <button
-                              className={cn(
-                                "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
-                                !model && "bg-accent"
-                              )}
-                              onClick={() => {
-                                setModel("");
-                                setModelOpen(false);
-                              }}
-                            >
-                              Default
-                            </button>
-                            {(adapterModels ?? []).map((m) => (
+                            <input
+                              className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
+                              placeholder="Search models..."
+                              value={modelSearch}
+                              onChange={(e) => setModelSearch(e.target.value)}
+                              autoFocus
+                            />
+                            {adapterType !== "opencode_local" && (
                               <button
-                                key={m.id}
                                 className={cn(
-                                  "flex items-center justify-between w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
-                                  m.id === model && "bg-accent"
+                                  "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
+                                  !model && "bg-accent"
                                 )}
                                 onClick={() => {
-                                  setModel(m.id);
+                                  setModel("");
                                   setModelOpen(false);
                                 }}
                               >
-                                <span>{m.label}</span>
-                                <span className="text-xs text-muted-foreground font-mono">
-                                  {m.id}
-                                </span>
-                              </button>
-                            ))}
+                                  Default
+                                </button>
+                            )}
+                            <div className="max-h-[240px] overflow-y-auto">
+                              {groupedModels.map((group) => (
+                                <div key={group.provider} className="mb-1 last:mb-0">
+                                  {adapterType === "opencode_local" && (
+                                    <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+                                      {group.provider} ({group.entries.length})
+                                    </div>
+                                  )}
+                                  {group.entries.map((m) => (
+                                    <button
+                                      key={m.id}
+                                      className={cn(
+                                        "flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
+                                        m.id === model && "bg-accent"
+                                      )}
+                                      onClick={() => {
+                                        setModel(m.id);
+                                        setModelOpen(false);
+                                      }}
+                                    >
+                                      <span className="block w-full text-left truncate" title={m.id}>
+                                        {adapterType === "opencode_local" ? extractModelName(m.id) : m.label}
+                                      </span>
+                                    </button>
+                                  ))}
+                                </div>
+                              ))}
+                            </div>
+                            {filteredModels.length === 0 && (
+                              <p className="px-2 py-1.5 text-xs text-muted-foreground">
+                                No models discovered.
+                              </p>
+                            )}
                           </PopoverContent>
                         </Popover>
                       </div>
@@ -802,7 +912,7 @@ export function OnboardingWizard() {
                             : adapterType === "codex_local"
                             ? `${effectiveAdapterCommand} exec --json -`
                             : adapterType === "opencode_local"
-                              ? `${effectiveAdapterCommand} run --format json \"Respond with hello.\"`
+                              ? `${effectiveAdapterCommand} run --format json "Respond with hello."`
                             : `${effectiveAdapterCommand} --print - --output-format stream-json --verbose`}
                         </p>
                         <p className="text-muted-foreground">

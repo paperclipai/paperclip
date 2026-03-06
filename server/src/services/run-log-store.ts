@@ -1,4 +1,4 @@
-import { createReadStream, createWriteStream, promises as fs } from "node:fs";
+import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { notFound } from "../errors.js";
@@ -113,11 +113,7 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
         stream: event.stream,
         chunk: event.chunk,
       });
-      await new Promise<void>((resolve, reject) => {
-        const stream = createWriteStream(absPath, { flags: "a", encoding: "utf8" });
-        stream.on("error", reject);
-        stream.end(`${line}\n`, () => resolve());
-      });
+      await fs.appendFile(absPath, `${line}\n`, "utf8");
     },
 
     async finalize(handle) {

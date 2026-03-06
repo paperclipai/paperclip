@@ -55,11 +55,7 @@ export const httpLogger = pinoHttp({
   customErrorMessage(req, res) {
     return `${req.method} ${req.url} ${res.statusCode}`;
   },
-  customProps(_req, res) {
-    const serverError = (res as any).locals?.serverError;
-    if (serverError) {
-      return { serverError };
-    }
+  customProps() {
     return {};
   },
 });

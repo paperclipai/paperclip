@@ -17,7 +17,7 @@ const codexLocalCLIAdapter: CLIAdapterModule = {
   formatStdoutEvent: printCodexStreamEvent,
 };
 
-const opencodeLocalCLIAdapter: CLIAdapterModule = {
+const openCodeLocalCLIAdapter: CLIAdapterModule = {
   type: "opencode_local",
   formatStdoutEvent: printOpenCodeStreamEvent,
 };
@@ -33,7 +33,7 @@ const openclawCLIAdapter: CLIAdapterModule = {
 };
 
 const adaptersByType = new Map<string, CLIAdapterModule>(
-  [claudeLocalCLIAdapter, codexLocalCLIAdapter, opencodeLocalCLIAdapter, cursorLocalCLIAdapter, openclawCLIAdapter, processCLIAdapter, httpCLIAdapter].map((a) => [a.type, a]),
+  [claudeLocalCLIAdapter, codexLocalCLIAdapter, openCodeLocalCLIAdapter, cursorLocalCLIAdapter, openclawCLIAdapter, processCLIAdapter, httpCLIAdapter].map((a) => [a.type, a]),
 );
 
 export function getCLIAdapter(type: string): CLIAdapterModule {

@@ -4,4 +4,4 @@
 
 ### Patch Changes
 
-- Added initial `opencode_local` adapter package for local OpenCode execution
+- Add local OpenCode adapter package with server/UI/CLI modules.

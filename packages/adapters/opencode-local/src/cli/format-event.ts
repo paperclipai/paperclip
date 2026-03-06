@@ -1,5 +1,13 @@
 import pc from "picocolors";
 
+function safeJsonParse(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
@@ -13,42 +21,21 @@ function asNumber(value: unknown, fallback = 0): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
-function printToolEvent(part: Record<string, unknown>): void {
-  const tool = asString(part.tool, "tool");
-  const callId = asString(part.callID, asString(part.id, ""));
-  const state = asRecord(part.state);
-  const status = asString(state?.status);
-  const input = state?.input;
-  const output = asString(state?.output).replace(/\s+$/, "");
-  const metadata = asRecord(state?.metadata);
-  const exit = asNumber(metadata?.exit, NaN);
-  const isError =
-    status === "failed" ||
-    status === "error" ||
-    status === "cancelled" ||
-    (Number.isFinite(exit) && exit !== 0);
-
-  console.log(pc.yellow(`tool_call: ${tool}${callId ? ` (${callId})` : ""}`));
-  if (input !== undefined) {
-    try {
-      console.log(pc.gray(JSON.stringify(input, null, 2)));
-    } catch {
-      console.log(pc.gray(String(input)));
-    }
-  }
-
-  if (status || output) {
-    const summary = [
-      "tool_result",
-      status ? `status=${status}` : "",
-      Number.isFinite(exit) ? `exit=${exit}` : "",
-    ]
-      .filter(Boolean)
-      .join(" ");
-    console.log((isError ? pc.red : pc.cyan)(summary));
-    if (output) {
-      console.log((isError ? pc.red : pc.gray)(output));
-    }
+function errorText(value: unknown): string {
+  if (typeof value === "string") return value;
+  const rec = asRecord(value);
+  if (!rec) return "";
+  const data = asRecord(rec.data);
+  const message =
+    asString(rec.message) ||
+    asString(data?.message) ||
+    asString(rec.name) ||
+    "";
+  if (message) return message;
+  try {
+    return JSON.stringify(rec);
+  } catch {
+    return "";
   }
 }
 
@@ -56,10 +43,8 @@ export function printOpenCodeStreamEvent(raw: string, _debug: boolean): void {
   const line = raw.trim();
   if (!line) return;
 
-  let parsed: Record<string, unknown> | null = null;
-  try {
-    parsed = JSON.parse(line) as Record<string, unknown>;
-  } catch {
+  const parsed = asRecord(safeJsonParse(line));
+  if (!parsed) {
     console.log(line);
     return;
   }
@@ -74,18 +59,36 @@ export function printOpenCodeStreamEvent(raw: string, _debug: boolean): void {
 
   if (type === "text") {
     const part = asRecord(parsed.part);
-    const text = asString(part?.text);
+    const text = asString(part?.text).trim();
     if (text) console.log(pc.green(`assistant: ${text}`));
+    return;
+  }
+
+  if (type === "reasoning") {
+    const part = asRecord(parsed.part);
+    const text = asString(part?.text).trim();
+    if (text) console.log(pc.gray(`thinking: ${text}`));
     return;
   }
 
   if (type === "tool_use") {
     const part = asRecord(parsed.part);
-    if (part) {
-      printToolEvent(part);
-    } else {
-      console.log(pc.yellow("tool_use"));
+    const tool = asString(part?.tool, "tool");
+    const state = asRecord(part?.state);
+    const status = asString(state?.status);
+    const summary = `tool_${status || "event"}: ${tool}`;
+    const isError = status === "error";
+    console.log((isError ? pc.red : pc.yellow)(summary));
+    const input = state?.input;
+    if (input !== undefined) {
+      try {
+        console.log(pc.gray(JSON.stringify(input, null, 2)));
+      } catch {
+        console.log(pc.gray(String(input)));
+      }
     }
+    const output = asString(state?.output) || asString(state?.error);
+    if (output) console.log((isError ? pc.red : pc.gray)(output));
     return;
   }
 
@@ -93,20 +96,18 @@ export function printOpenCodeStreamEvent(raw: string, _debug: boolean): void {
     const part = asRecord(parsed.part);
     const tokens = asRecord(part?.tokens);
     const cache = asRecord(tokens?.cache);
-    const reason = asString(part?.reason, "step_finish");
-    const input = asNumber(tokens?.input);
-    const output = asNumber(tokens?.output);
-    const cached = asNumber(cache?.read);
-    const cost = asNumber(part?.cost);
-    console.log(pc.blue(`step finished: reason=${reason}`));
-    console.log(pc.blue(`tokens: in=${input} out=${output} cached=${cached} cost=$${cost.toFixed(6)}`));
+    const input = asNumber(tokens?.input, 0);
+    const output = asNumber(tokens?.output, 0) + asNumber(tokens?.reasoning, 0);
+    const cached = asNumber(cache?.read, 0);
+    const cost = asNumber(part?.cost, 0);
+    const reason = asString(part?.reason, "step");
+    console.log(pc.blue(`step finished (${reason}) tokens: in=${input} out=${output} cached=${cached} cost=$${cost.toFixed(6)}`));
     return;
   }
 
   if (type === "error") {
-    const part = asRecord(parsed.part);
-    const message = asString(parsed.message) || asString(part?.message) || line;
-    console.log(pc.red(`error: ${message}`));
+    const message = errorText(parsed.error ?? parsed.message);
+    if (message) console.log(pc.red(`error: ${message}`));
     return;
   }
 

@@ -21,6 +21,8 @@ interface InlineEntitySelectorProps {
   className?: string;
   renderTriggerValue?: (option: InlineEntityOption | null) => ReactNode;
   renderOption?: (option: InlineEntityOption, isSelected: boolean) => ReactNode;
+  /** Skip the Portal so the popover stays in the DOM tree (fixes scroll inside Dialogs). */
+  disablePortal?: boolean;
 }
 
 export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySelectorProps>(
@@ -37,6 +39,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
       className,
       renderTriggerValue,
       renderOption,
+      disablePortal,
     },
     ref,
   ) {
@@ -45,6 +48,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
     const [highlightedIndex, setHighlightedIndex] = useState(0);
     const inputRef = useRef<HTMLInputElement>(null);
     const shouldPreventCloseAutoFocusRef = useRef(false);
+    const isPointerDownRef = useRef(false);
 
     const allOptions = useMemo<InlineEntityOption[]>(
       () => [{ id: "", label: noneLabel, searchText: noneLabel }, ...options],
@@ -97,7 +101,11 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
               "inline-flex min-w-0 items-center gap-1 rounded-md border border-border bg-muted/40 px-2 py-1 text-sm font-medium text-foreground transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               className,
             )}
-            onFocus={() => setOpen(true)}
+            onPointerDown={() => { isPointerDownRef.current = true; }}
+            onFocus={() => {
+              if (!isPointerDownRef.current) setOpen(true);
+              isPointerDownRef.current = false;
+            }}
           >
             {renderTriggerValue
               ? renderTriggerValue(currentOption)
@@ -106,11 +114,19 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
         </PopoverTrigger>
         <PopoverContent
           align="start"
+          side="bottom"
           collisionPadding={16}
           className="w-[min(20rem,calc(100vw-2rem))] p-1"
+          disablePortal={disablePortal}
           onOpenAutoFocus={(event) => {
             event.preventDefault();
-            inputRef.current?.focus();
+            // On touch devices, don't auto-focus the search input to avoid
+            // opening the virtual keyboard which reshapes the viewport and
+            // pushes the popover off-screen.
+            const isTouch = window.matchMedia("(pointer: coarse)").matches;
+            if (!isTouch) {
+              inputRef.current?.focus();
+            }
           }}
           onCloseAutoFocus={(event) => {
             if (!shouldPreventCloseAutoFocusRef.current) return;
@@ -158,10 +174,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
               }
             }}
           />
-          <div
-            className="max-h-56 overflow-y-auto overscroll-contain py-1 touch-pan-y"
-            style={{ WebkitOverflowScrolling: "touch" }}
-          >
+          <div className="max-h-56 overflow-y-auto overscroll-contain py-1 touch-pan-y">
             {filteredOptions.length === 0 ? (
               <p className="px-2 py-2 text-xs text-muted-foreground">{emptyMessage}</p>
             ) : (
@@ -173,7 +186,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
                     key={option.id || "__none__"}
                     type="button"
                     className={cn(
-                      "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm touch-pan-y",
+                      "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm touch-manipulation",
                       isHighlighted && "bg-accent",
                     )}
                     onMouseEnter={() => setHighlightedIndex(index)}

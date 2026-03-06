@@ -160,7 +160,7 @@ if [[ -z "$COMPANY_ID" ]]; then
 fi
 
 log "creating agent-only invite for company ${COMPANY_ID}"
-INVITE_PAYLOAD="$(jq -nc '{allowedJoinTypes:"agent",expiresInHours:24}')"
+INVITE_PAYLOAD="$(jq -nc '{allowedJoinTypes:"agent"}')"
 api_request "POST" "/companies/${COMPANY_ID}/invites" "$INVITE_PAYLOAD"
 if [[ "$RESPONSE_CODE" == "401" || "$RESPONSE_CODE" == "403" ]]; then
   fail_board_auth_required "Invite creation"

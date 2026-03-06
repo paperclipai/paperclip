@@ -27,6 +27,14 @@ Create agents from the Agents page. Each agent requires:
 - **Adapter config** — runtime-specific settings (working directory, model, prompt, etc.)
 - **Capabilities** — short description of what this agent does
 
+Common adapter choices:
+- `claude_local` / `codex_local` / `opencode_local` for local coding agents
+- `openclaw` / `http` for webhook-based external agents
+- `process` for generic local command execution
+
+For `opencode_local`, configure an explicit `adapterConfig.model` (`provider/model`).
+Paperclip validates the selected model against live `opencode models` output.
+
 ## Agent Hiring via Governance
 
 Agents can request to hire subordinates. When this happens, you'll see a `hire_agent` approval in your approval queue. Review the proposed agent config and approve or reject.

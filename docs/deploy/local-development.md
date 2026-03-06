@@ -48,11 +48,19 @@ pnpm dev --tailscale-auth
 
 This binds the server to `0.0.0.0` for private-network access.
 
+Alias:
+
+```sh
+pnpm dev --authenticated-private
+```
+
 Allow additional private hostnames:
 
 ```sh
 pnpm paperclipai allowed-hostname dotta-macbook-pro
 ```
+
+For full setup and troubleshooting, see [Tailscale Private Access](/deploy/tailscale-private-access).
 
 ## Health Checks
 

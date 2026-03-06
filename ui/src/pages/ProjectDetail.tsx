@@ -16,7 +16,11 @@ import { InlineEditor } from "../components/InlineEditor";
 import { StatusBadge } from "../components/StatusBadge";
 import { IssuesList } from "../components/IssuesList";
 import { PageSkeleton } from "../components/PageSkeleton";
-import { projectRouteRef } from "../lib/utils";
+import { projectRouteRef, cn } from "../lib/utils";
+import { Button } from "@/components/ui/button";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { SlidersHorizontal } from "lucide-react";
 
 /* ── Top-level tab types ── */
 
@@ -194,8 +198,9 @@ export function ProjectDetail() {
     filter?: string;
   }>();
   const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
-  const { openPanel, closePanel } = usePanel();
+  const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
@@ -309,6 +314,27 @@ export function ProjectDetail() {
           as="h2"
           className="text-xl font-bold"
         />
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          className="ml-auto md:hidden shrink-0"
+          onClick={() => setMobilePropsOpen(true)}
+          title="Properties"
+        >
+          <SlidersHorizontal className="h-4 w-4" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          className={cn(
+            "shrink-0 ml-auto transition-opacity duration-200 hidden md:flex",
+            panelVisible ? "opacity-0 pointer-events-none w-0 overflow-hidden" : "opacity-100",
+          )}
+          onClick={() => setPanelVisible(true)}
+          title="Show properties"
+        >
+          <SlidersHorizontal className="h-4 w-4" />
+        </Button>
       </div>
 
       {/* Top-level project tabs */}
@@ -350,6 +376,20 @@ export function ProjectDetail() {
       {activeTab === "list" && project?.id && resolvedCompanyId && (
         <ProjectIssuesList projectId={project.id} companyId={resolvedCompanyId} />
       )}
+
+      {/* Mobile properties drawer */}
+      <Sheet open={mobilePropsOpen} onOpenChange={setMobilePropsOpen}>
+        <SheetContent side="bottom" className="max-h-[85dvh] pb-[env(safe-area-inset-bottom)]">
+          <SheetHeader>
+            <SheetTitle className="text-sm">Properties</SheetTitle>
+          </SheetHeader>
+          <ScrollArea className="flex-1 overflow-y-auto">
+            <div className="px-4 pb-4">
+              <ProjectProperties project={project} onUpdate={(data) => updateProject.mutate(data)} />
+            </div>
+          </ScrollArea>
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }

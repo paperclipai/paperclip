@@ -246,7 +246,7 @@ Agent-oriented invite onboarding now exposes machine-readable API docs:
 
 - `GET /api/invites/:token` returns invite summary plus onboarding and skills index links.
 - `GET /api/invites/:token/onboarding` returns onboarding manifest details (registration endpoint, claim endpoint template, skill install hints).
-- `GET /api/invites/:token/onboarding.txt` returns a plain-text onboarding doc intended for both human operators and agents (llm.txt-style handoff).
+- `GET /api/invites/:token/onboarding.txt` returns a plain-text onboarding doc intended for both human operators and agents (llm.txt-style handoff), including optional inviter message and suggested network host candidates.
 - `GET /api/skills/index` lists available skill documents.
 - `GET /api/skills/paperclip` returns the Paperclip heartbeat skill markdown.
 
@@ -287,5 +287,20 @@ This script lives at `scripts/smoke/openclaw-docker-ui.sh` and automates clone/b
 
 Pairing behavior for this smoke script:
 
-- default `OPENCLAW_DISABLE_DEVICE_AUTH=1` (no Control UI pairing prompt for local smoke)
+- default `OPENCLAW_DISABLE_DEVICE_AUTH=1` (no Control UI pairing prompt for local smoke; no extra pairing env vars required)
 - set `OPENCLAW_DISABLE_DEVICE_AUTH=0` to require standard device pairing
+
+Model behavior for this smoke script:
+
+- defaults to OpenAI models (`openai/gpt-5.2` + OpenAI fallback) so it does not require Anthropic auth by default
+
+State behavior for this smoke script:
+
+- defaults to isolated config dir `~/.openclaw-paperclip-smoke`
+- resets smoke agent state each run by default (`OPENCLAW_RESET_STATE=1`) to avoid stale provider/auth drift
+
+Networking behavior for this smoke script:
+
+- auto-detects and prints a Paperclip host URL reachable from inside OpenClaw Docker
+- default container-side host alias is `host.docker.internal` (override with `PAPERCLIP_HOST_FROM_CONTAINER` / `PAPERCLIP_HOST_PORT`)
+- if Paperclip rejects container hostnames in authenticated/private mode, allow `host.docker.internal` via `pnpm paperclipai allowed-hostname host.docker.internal` and restart Paperclip

@@ -21,26 +21,57 @@ function asNumber(value: unknown, fallback = 0): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
-function stringifyUnknown(value: unknown): string {
+function errorText(value: unknown): string {
   if (typeof value === "string") return value;
-  if (value === null || value === undefined) return "";
+  const rec = asRecord(value);
+  if (!rec) return "";
+  const data = asRecord(rec.data);
+  const msg =
+    asString(rec.message) ||
+    asString(data?.message) ||
+    asString(rec.name) ||
+    "";
+  if (msg) return msg;
   try {
-    return JSON.stringify(value, null, 2);
+    return JSON.stringify(rec);
   } catch {
-    return String(value);
+    return "";
   }
 }
 
-function isJsonLike(text: string): boolean {
-  const trimmed = text.trim();
-  if (!trimmed) return false;
-  if (!(trimmed.startsWith("{") || trimmed.startsWith("["))) return false;
-  try {
-    JSON.parse(trimmed);
-    return true;
-  } catch {
-    return false;
-  }
+function parseToolUse(parsed: Record<string, unknown>, ts: string): TranscriptEntry[] {
+  const part = asRecord(parsed.part);
+  if (!part) return [{ kind: "system", ts, text: "tool event" }];
+
+  const toolName = asString(part.tool, "tool");
+  const state = asRecord(part.state);
+  const input = state?.input ?? {};
+  const callEntry: TranscriptEntry = {
+    kind: "tool_call",
+    ts,
+    name: toolName,
+    input,
+  };
+
+  const status = asString(state?.status);
+  if (status !== "completed" && status !== "error") return [callEntry];
+
+  const output =
+    asString(state?.output) ||
+    asString(state?.error) ||
+    asString(part.title) ||
+    `${toolName} ${status}`;
+
+  return [
+    callEntry,
+    {
+      kind: "tool_result",
+      ts,
+      toolUseId: asString(part.id, toolName),
+      content: output,
+      isError: status === "error",
+    },
+  ];
 }
 
 export function parseOpenCodeStdoutLine(line: string, ts: string): TranscriptEntry[] {
@@ -50,6 +81,24 @@ export function parseOpenCodeStdoutLine(line: string, ts: string): TranscriptEnt
   }
 
   const type = asString(parsed.type);
+
+  if (type === "text") {
+    const part = asRecord(parsed.part);
+    const text = asString(part?.text).trim();
+    if (!text) return [];
+    return [{ kind: "assistant", ts, text }];
+  }
+
+  if (type === "reasoning") {
+    const part = asRecord(parsed.part);
+    const text = asString(part?.text).trim();
+    if (!text) return [];
+    return [{ kind: "thinking", ts, text }];
+  }
+
+  if (type === "tool_use") {
+    return parseToolUse(parsed, ts);
+  }
 
   if (type === "step_start") {
     const sessionId = asString(parsed.sessionID);
@@ -62,93 +111,31 @@ export function parseOpenCodeStdoutLine(line: string, ts: string): TranscriptEnt
     ];
   }
 
-  if (type === "text") {
-    const part = asRecord(parsed.part);
-    const text = asString(part?.text).trim();
-    if (!text) return [];
-    return [{ kind: "assistant", ts, text }];
-  }
-
-  if (type === "tool_use") {
-    const part = asRecord(parsed.part);
-    const toolUseId = asString(part?.callID, asString(part?.id, "tool_use"));
-    const toolName = asString(part?.tool, "tool");
-    const state = asRecord(part?.state);
-    const input = state?.input ?? {};
-    const output = asString(state?.output).trim();
-    const status = asString(state?.status).trim();
-    const exitCode = asNumber(asRecord(state?.metadata)?.exit, NaN);
-    const isError =
-      status === "failed" ||
-      status === "error" ||
-      status === "cancelled" ||
-      (Number.isFinite(exitCode) && exitCode !== 0);
-
-    const entries: TranscriptEntry[] = [
-      {
-        kind: "tool_call",
-        ts,
-        name: toolName,
-        input,
-      },
-    ];
-
-    if (status || output) {
-      const lines: string[] = [];
-      if (status) lines.push(`status: ${status}`);
-      if (Number.isFinite(exitCode)) lines.push(`exit: ${exitCode}`);
-      if (output) {
-        if (lines.length > 0) lines.push("");
-        if (isJsonLike(output)) {
-          try {
-            lines.push(JSON.stringify(JSON.parse(output), null, 2));
-          } catch {
-            lines.push(output);
-          }
-        } else {
-          lines.push(output);
-        }
-      }
-      entries.push({
-        kind: "tool_result",
-        ts,
-        toolUseId,
-        content: lines.join("\n").trim() || "tool completed",
-        isError,
-      });
-    }
-
-    return entries;
-  }
-
   if (type === "step_finish") {
     const part = asRecord(parsed.part);
     const tokens = asRecord(part?.tokens);
     const cache = asRecord(tokens?.cache);
-    const reason = asString(part?.reason);
+    const reason = asString(part?.reason, "step");
+    const output = asNumber(tokens?.output, 0) + asNumber(tokens?.reasoning, 0);
     return [
       {
         kind: "result",
         ts,
         text: reason,
-        inputTokens: asNumber(tokens?.input),
-        outputTokens: asNumber(tokens?.output),
-        cachedTokens: asNumber(cache?.read),
-        costUsd: asNumber(part?.cost),
-        subtype: reason || "step_finish",
-        isError: reason === "error" || reason === "failed",
+        inputTokens: asNumber(tokens?.input, 0),
+        outputTokens: output,
+        cachedTokens: asNumber(cache?.read, 0),
+        costUsd: asNumber(part?.cost, 0),
+        subtype: reason,
+        isError: false,
         errors: [],
       },
     ];
   }
 
   if (type === "error") {
-    const message =
-      asString(parsed.message) ||
-      asString(asRecord(parsed.part)?.message) ||
-      stringifyUnknown(parsed.error ?? asRecord(parsed.part)?.error) ||
-      line;
-    return [{ kind: "stderr", ts, text: message }];
+    const text = errorText(parsed.error ?? parsed.message);
+    return [{ kind: "stderr", ts, text: text || line }];
   }
 
   return [{ kind: "stdout", ts, text: line }];
