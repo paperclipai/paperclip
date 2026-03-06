@@ -112,6 +112,21 @@ function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: b
   );
 }
 
+const FILE_REF_RE = /\/api\/(?:assets|attachments)\/[^/]+\/content/;
+
+/**
+ * Auto-linkify bare file reference paths (e.g. `/api/assets/{id}/content`)
+ * that appear in plain text (not already inside a markdown link).
+ */
+function linkifyFileReferences(md: string): string {
+  // Match bare file paths that are NOT already inside markdown link syntax [text](url)
+  // Negative lookbehind for ]( and negative lookbehind for ![ prevents double-wrapping
+  return md.replace(
+    /(?<!\]\()(?<!\()(?<!")(?:^|(?<=\s))(\/api\/(?:assets|attachments)\/[^\s)]+\/content)(?=[\s),.]|$)/gm,
+    "[$1]($1)",
+  );
+}
+
 export function MarkdownBody({ children, className }: MarkdownBodyProps) {
   const { theme } = useTheme();
   return (
@@ -146,6 +161,13 @@ export function MarkdownBody({ children, className }: MarkdownBodyProps) {
                 </a>
               );
             }
+            if (href && FILE_REF_RE.test(href)) {
+              return (
+                <a href={href} target="_blank" rel="noreferrer">
+                  {linkChildren}
+                </a>
+              );
+            }
             return (
               <a href={href} rel="noreferrer">
                 {linkChildren}
@@ -154,7 +176,7 @@ export function MarkdownBody({ children, className }: MarkdownBodyProps) {
           },
         }}
       >
-        {children}
+        {linkifyFileReferences(children)}
       </Markdown>
     </div>
   );
