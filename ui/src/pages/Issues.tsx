@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useCallback, useRef } from "react";
 import { useSearchParams } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
@@ -14,8 +14,29 @@ import { CircleDot } from "lucide-react";
 export function Issues() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const queryClient = useQueryClient();
+
+  const initialSearch = searchParams.get("q") ?? "";
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const handleSearchChange = useCallback((search: string) => {
+    clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        if (search.trim()) {
+          next.set("q", search.trim());
+        } else {
+          next.delete("q");
+        }
+        return next;
+      }, { replace: true });
+    }, 300);
+  }, [setSearchParams]);
+
+  useEffect(() => {
+    return () => clearTimeout(debounceRef.current);
+  }, []);
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -69,6 +90,8 @@ export function Issues() {
       liveIssueIds={liveIssueIds}
       viewStateKey="paperclip:issues-view"
       initialAssignees={searchParams.get("assignee") ? [searchParams.get("assignee")!] : undefined}
+      initialSearch={initialSearch}
+      onSearchChange={handleSearchChange}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
     />
   );

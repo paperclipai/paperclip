@@ -142,6 +142,8 @@ interface IssuesListProps {
   projectId?: string;
   viewStateKey: string;
   initialAssignees?: string[];
+  initialSearch?: string;
+  onSearchChange?: (search: string) => void;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
 }
 
@@ -154,6 +156,8 @@ export function IssuesList({
   projectId,
   viewStateKey,
   initialAssignees,
+  initialSearch,
+  onSearchChange,
   onUpdateIssue,
 }: IssuesListProps) {
   const { selectedCompanyId } = useCompany();
@@ -170,7 +174,7 @@ export function IssuesList({
   });
   const [assigneePickerIssueId, setAssigneePickerIssueId] = useState<string | null>(null);
   const [assigneeSearch, setAssigneeSearch] = useState("");
-  const [issueSearch, setIssueSearch] = useState("");
+  const [issueSearch, setIssueSearch] = useState(initialSearch ?? "");
   const deferredIssueSearch = useDeferredValue(issueSearch);
   const normalizedIssueSearch = deferredIssueSearch.trim();
 
@@ -291,7 +295,10 @@ export function IssuesList({
             <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
               value={issueSearch}
-              onChange={(e) => setIssueSearch(e.target.value)}
+              onChange={(e) => {
+                setIssueSearch(e.target.value);
+                onSearchChange?.(e.target.value);
+              }}
               placeholder="Search issues..."
               className="pl-7 text-xs sm:text-sm"
               aria-label="Search issues"
