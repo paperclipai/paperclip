@@ -1,6 +1,6 @@
 /// <reference path="./types/express.d.ts" />
 import { existsSync, readFileSync, rmSync } from "node:fs";
-import { createServer } from "node:http";
+import { createServer, type RequestListener } from "node:http";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
@@ -444,7 +444,7 @@ const app = await createApp(db as any, {
   betterAuthHandler,
   resolveSession,
 });
-const server = createServer(app);
+const server = createServer(app as RequestListener);
 const listenPort = await detectPort(config.port);
 
 if (listenPort !== config.port) {

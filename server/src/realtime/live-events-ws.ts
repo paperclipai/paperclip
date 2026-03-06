@@ -168,7 +168,7 @@ export function setupLiveEventsWebSocketServer(
     }
   }, 30000);
 
-  wss.on("connection", (socket, req) => {
+  wss.on("connection", (socket: WebSocket, req: IncomingMessage) => {
     const context = (req as IncomingMessageWithContext).paperclipUpgradeContext;
     if (!context) {
       socket.close(1008, "missing context");
@@ -194,7 +194,7 @@ export function setupLiveEventsWebSocketServer(
       aliveByClient.delete(socket);
     });
 
-    socket.on("error", (err) => {
+    socket.on("error", (err: Error) => {
       logger.warn({ err, companyId: context.companyId }, "live websocket client error");
     });
   });
@@ -203,7 +203,7 @@ export function setupLiveEventsWebSocketServer(
     clearInterval(pingInterval);
   });
 
-  server.on("upgrade", (req, socket, head) => {
+  server.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     if (!req.url) {
       rejectUpgrade(socket, "400 Bad Request", "missing url");
       return;
@@ -229,11 +229,11 @@ export function setupLiveEventsWebSocketServer(
         const reqWithContext = req as IncomingMessageWithContext;
         reqWithContext.paperclipUpgradeContext = context;
 
-        wss.handleUpgrade(req, socket, head, (ws) => {
+        wss.handleUpgrade(req, socket, head, (ws: WebSocket) => {
           wss.emit("connection", ws, reqWithContext);
         });
       })
-      .catch((err) => {
+      .catch((err: Error) => {
         logger.error({ err, path: req.url }, "failed websocket upgrade authorization");
         rejectUpgrade(socket, "500 Internal Server Error", "upgrade failed");
       });

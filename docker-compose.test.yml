@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: paperclip-db-test
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: paperclip
+      POSTGRES_PASSWORD: paperclip
+      POSTGRES_DB: paperclip
+    volumes:
+      - paperclip_db_data_test:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  paperclip:
+    build: .
+    container_name: paperclip-app-test
+    restart: unless-stopped
+    ports:
+      - "32753:3100"
+    environment:
+      DATABASE_URL: postgres://paperclip:paperclip@db:5432/paperclip
+      PORT: "3100"
+      SERVE_UI: "true"
+      PAPERCLIP_HOME: "/paperclip"
+      BETTER_AUTH_SECRET: "test-only-secret"
+    volumes:
+      - paperclip_data_test:/paperclip
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  paperclip_db_data_test:
+  paperclip_data_test:

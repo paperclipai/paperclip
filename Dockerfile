@@ -15,14 +15,17 @@ COPY packages/db/package.json packages/db/
 COPY packages/adapter-utils/package.json packages/adapter-utils/
 COPY packages/adapters/claude-local/package.json packages/adapters/claude-local/
 COPY packages/adapters/codex-local/package.json packages/adapters/codex-local/
+COPY packages/adapters/cursor-local/package.json packages/adapters/cursor-local/
+COPY packages/adapters/openclaw/package.json packages/adapters/openclaw/
+COPY packages/adapters/opencode-local/package.json packages/adapters/opencode-local/
 RUN pnpm install --frozen-lockfile
 
 FROM base AS build
 WORKDIR /app
 COPY --from=deps /app /app
 COPY . .
-RUN pnpm --filter @paperclip/ui build
-RUN pnpm --filter @paperclip/server build
+RUN pnpm --filter @paperclipai/ui build
+RUN pnpm --filter @paperclipai/server build
 
 FROM base AS production
 WORKDIR /app
