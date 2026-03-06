@@ -93,6 +93,28 @@ export function isOpenResponsesEndpoint(url: string): boolean {
   }
 }
 
+export function normalizeWebhookInvocationUrl(url: string): {
+  url: string;
+  normalizedFromOpenResponses: boolean;
+} {
+  try {
+    const parsed = new URL(url);
+    const path = parsed.pathname;
+    const normalizedPath = path.toLowerCase();
+    const suffix = "/v1/responses";
+
+    if (normalizedPath !== suffix && !normalizedPath.endsWith(suffix)) {
+      return { url: parsed.toString(), normalizedFromOpenResponses: false };
+    }
+
+    const prefix = path.slice(0, path.length - suffix.length);
+    parsed.pathname = `${prefix}/hooks/wake`;
+    return { url: parsed.toString(), normalizedFromOpenResponses: true };
+  } catch {
+    return { url, normalizedFromOpenResponses: false };
+  }
+}
+
 export function toStringRecord(value: unknown): Record<string, string> {
   const parsed = parseObject(value);
   const out: Record<string, string> = {};
