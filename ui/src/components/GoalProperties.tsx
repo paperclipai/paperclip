@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import type { Goal } from "@paperclipai/shared";
@@ -8,10 +7,9 @@ import { goalsApi } from "../api/goals";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { StatusBadge } from "./StatusBadge";
-import { formatDate, cn, agentUrl } from "../lib/utils";
+import { PickerButton } from "./PickerButton";
+import { formatDate, agentUrl } from "../lib/utils";
 import { Separator } from "@/components/ui/separator";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Button } from "@/components/ui/button";
 
 interface GoalPropertiesProps {
   goal: Goal;
@@ -24,49 +22,6 @@ function PropertyRow({ label, children }: { label: string; children: React.React
       <span className="text-xs text-muted-foreground shrink-0 w-20">{label}</span>
       <div className="flex items-center gap-1.5 min-w-0">{children}</div>
     </div>
-  );
-}
-
-function label(s: string): string {
-  return s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-function PickerButton({
-  current,
-  options,
-  onChange,
-  children,
-}: {
-  current: string;
-  options: readonly string[];
-  onChange: (value: string) => void;
-  children: React.ReactNode;
-}) {
-  const [open, setOpen] = useState(false);
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button className="cursor-pointer hover:opacity-80 transition-opacity">
-          {children}
-        </button>
-      </PopoverTrigger>
-      <PopoverContent className="w-40 p-1" align="end">
-        {options.map((opt) => (
-          <Button
-            key={opt}
-            variant="ghost"
-            size="sm"
-            className={cn("w-full justify-start text-xs", opt === current && "bg-accent")}
-            onClick={() => {
-              onChange(opt);
-              setOpen(false);
-            }}
-          >
-            {label(opt)}
-          </Button>
-        ))}
-      </PopoverContent>
-    </Popover>
   );
 }
 

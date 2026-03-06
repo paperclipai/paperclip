@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, useLocation, Navigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { PROJECT_COLORS, isUuidLike } from "@paperclipai/shared";
+import { PROJECT_COLORS, PROJECT_STATUSES, isUuidLike } from "@paperclipai/shared";
 import { projectsApi } from "../api/projects";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
@@ -14,6 +14,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { ProjectProperties } from "../components/ProjectProperties";
 import { InlineEditor } from "../components/InlineEditor";
 import { StatusBadge } from "../components/StatusBadge";
+import { PickerButton } from "../components/PickerButton";
 import { IssuesList } from "../components/IssuesList";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { projectRouteRef } from "../lib/utils";
@@ -59,7 +60,13 @@ function OverviewContent({
         <div>
           <span className="text-muted-foreground">Status</span>
           <div className="mt-1">
-            <StatusBadge status={project.status} />
+            <PickerButton
+              current={project.status}
+              options={PROJECT_STATUSES}
+              onChange={(status) => onUpdate({ status })}
+            >
+              <StatusBadge status={project.status} />
+            </PickerButton>
           </div>
         </div>
         {project.targetDate && (
