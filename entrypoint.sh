@@ -12,8 +12,12 @@ if [[ -n "${CODEX_CREDENTIALS:-}" ]]; then
 fi
 
 # Authenticate gh CLI with the GitHub token
+# Unset GITHUB_TOKEN before calling gh auth login so gh doesn't refuse to store
+# credentials (gh exits non-zero when GITHUB_TOKEN env var is present).
 if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-  echo "$GITHUB_TOKEN" | gh auth login --with-token
+  _gh_token="$GITHUB_TOKEN"
+  unset GITHUB_TOKEN
+  echo "$_gh_token" | gh auth login --with-token
   echo "[entrypoint] gh CLI authenticated"
 fi
 
