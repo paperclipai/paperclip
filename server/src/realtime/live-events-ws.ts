@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { IncomingMessage, Server as HttpServer } from "node:http";
+import type { IncomingMessage, Server as HttpServer } from "http";
 import type { Duplex } from "node:stream";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";

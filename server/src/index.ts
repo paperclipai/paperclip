@@ -444,7 +444,8 @@ const app = await createApp(db as any, {
   betterAuthHandler,
   resolveSession,
 });
-const server = createServer(app);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const server = createServer(app as any);
 const listenPort = await detectPort(config.port);
 
 if (listenPort !== config.port) {

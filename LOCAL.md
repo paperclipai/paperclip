@@ -22,7 +22,8 @@ docker run \
   -e CODEX_CREDENTIALS="$(cat ~/.codex/credentials.json)" \
   -e GITHUB_TOKEN="ghp_..." \
   -e DATABASE_URL="postgres://..." \
-  -e PAPERCLIP_AUTH_SECRET="change-me" \
+  -e BETTER_AUTH_SECRET="$(openssl rand -hex 32)" \
+  -e BETTER_AUTH_URL="http://localhost:3100" \
   -p 3100:3100 \
   paperclip
 ```
@@ -37,7 +38,8 @@ docker run \
 | `CODEX_CREDENTIALS` | Secrets Manager | Codex subscription token JSON. Obtain by running `codex auth login` locally. |
 | `GITHUB_TOKEN` | SSM Parameter Store | GitHub PAT with `repo` scope, used by `gh` CLI for PR creation. |
 | `DATABASE_URL` | SSM Parameter Store | PostgreSQL connection string (Aurora in production). |
-| `PAPERCLIP_AUTH_SECRET` | Secrets Manager | Random secret used by Better Auth for session signing. Generate with `openssl rand -hex 32`. |
+| `BETTER_AUTH_SECRET` | Secrets Manager | Random secret used by Better Auth for session signing. Generate with `openssl rand -hex 32`. |
+| `BETTER_AUTH_URL` | Task definition | Public base URL of the app (e.g. `https://app.example.com`). Required for OAuth redirects and email links. |
 
 ### Optional / tunable
 
@@ -78,13 +80,15 @@ The `disallowedTools` list prevents agents from merging or force-pushing directl
 
 ## Token expiry
 
-Claude and Codex subscription tokens expire periodically. When an agent run fails with `claude_auth_required`, re-authenticate locally and update the Secrets Manager values:
+`ANTHROPIC_SETUP_TOKEN` and Codex tokens expire periodically. When an agent run fails with `claude_auth_required`, generate a fresh token on a locally authenticated machine and update Secrets Manager:
 
 ```bash
-claude auth login
+# Re-generate the Claude setup token
+claude setup-token
+# Copy the printed token, then:
 aws secretsmanager put-secret-value \
-  --secret-id /paperclip/claude/credentials \
-  --secret-string "$(cat ~/.claude/.credentials.json)"
+  --secret-id /paperclip/anthropic-setup-token \
+  --secret-string "sk-ant-oat-..."
 ```
 
-Then restart the ECS task to pick up the new credentials.
+Then restart the ECS task to pick up the new token.

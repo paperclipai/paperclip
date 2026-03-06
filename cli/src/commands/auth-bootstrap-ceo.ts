@@ -47,11 +47,17 @@ export async function bootstrapCeoInvite(opts: {
   const configPath = resolveConfigPath(opts.config);
   const config = readConfig(configPath);
   if (!config) {
-    p.log.error(`No config found at ${configPath}. Run ${pc.cyan("paperclip onboard")} first.`);
-    return;
-  }
-
-  if (config.server.deploymentMode !== "authenticated") {
+    // Fall back to env vars when no config file exists (e.g. fresh container before first server run)
+    const modeFromEnv = process.env.PAPERCLIP_DEPLOYMENT_MODE;
+    if (modeFromEnv !== "authenticated") {
+      p.log.error(`No config found at ${configPath}. Run ${pc.cyan("paperclip onboard")} first.`);
+      return;
+    }
+    if (!process.env.DATABASE_URL) {
+      p.log.error("No config found and DATABASE_URL is not set. Cannot bootstrap without a database connection.");
+      return;
+    }
+  } else if (config.server.deploymentMode !== "authenticated") {
     p.log.info("Deployment mode is local_trusted. Bootstrap CEO invite is only required for authenticated mode.");
     return;
   }
@@ -112,5 +118,8 @@ export async function bootstrapCeoInvite(opts: {
   } catch (err) {
     p.log.error(`Could not create bootstrap invite: ${err instanceof Error ? err.message : String(err)}`);
     p.log.info("If using embedded-postgres, start the Paperclip server and run this command again.");
+  } finally {
+    // Close the connection pool so the process can exit cleanly (e.g. when run from entrypoint.sh)
+    await (db as any).$client.end();
   }
 }

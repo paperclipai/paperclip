@@ -260,7 +260,7 @@ export async function runChildProcess(
         .catch((err) => onLogError(err, runId, "failed to append stderr log chunk"));
     });
 
-    child.on("error", (err) => {
+    (child as any).on("error", (err: Error) => {
       if (timeout) clearTimeout(timeout);
       runningProcesses.delete(runId);
       const errno = (err as NodeJS.ErrnoException).code;
@@ -272,7 +272,7 @@ export async function runChildProcess(
       reject(new Error(msg));
     });
 
-    child.on("close", (code, signal) => {
+    (child as any).on("close", (code: number | null, signal: string | null) => {
       if (timeout) clearTimeout(timeout);
       runningProcesses.delete(runId);
       void logChain.finally(() => {
