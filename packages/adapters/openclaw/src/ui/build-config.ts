@@ -8,5 +8,9 @@ export function buildOpenClawConfig(v: CreateConfigValues): Record<string, unkno
   ac.streamTransport = "sse";
   ac.sessionKeyStrategy = "fixed";
   ac.sessionKey = "paperclip";
+  if (v.webhookAuthHeader?.trim()) ac.webhookAuthHeader = v.webhookAuthHeader.trim();
+  if (v.gatewayAuthToken?.trim()) {
+    ac.headers = { "x-openclaw-auth": v.gatewayAuthToken.trim() };
+  }
   return ac;
 }
