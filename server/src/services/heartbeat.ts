@@ -864,16 +864,14 @@ export function heartbeatService(db: Db) {
 
   async function getRunSequenceNumber(runId: string, agentId: string, companyId: string) {
     // Compute a deterministic sequence number for this run using ROW_NUMBER().
-    // Unlike count(*), this is stable under concurrent finalizations — each run
-    // gets a unique position based on created_at ordering, so every-N gating
-    // won't duplicate or skip when multiple runs finalize simultaneously.
+    // Orders by created_at (immutable at insert) across ALL runs, not just completed ones,
+    // so out-of-order completions don't cause duplicate or shifting ordinals.
     const result = await db.execute<{ seq: number }>(sql`
       SELECT seq FROM (
         SELECT id, ROW_NUMBER() OVER (ORDER BY created_at, id) AS seq
         FROM heartbeat_runs
         WHERE agent_id = ${agentId}
           AND company_id = ${companyId}
-          AND status IN ('succeeded', 'failed', 'cancelled', 'timed_out')
       ) numbered
       WHERE id = ${runId}
     `);
@@ -1447,7 +1445,7 @@ export function heartbeatService(db: Db) {
                 prompt: adapterResult.summary ?? deriveTaskKey(context, null) ?? "agent task",
                 response: stdoutExcerpt,
                 context: context.issueId
-                  ? { messages: [{ role: "system", content: `Issue context: ${JSON.stringify(context)}` }] }
+                  ? { messages: [{ role: "system", content: `Issue ID: ${context.issueId}` }] }
                   : undefined,
               },
               config: evalConfig,
