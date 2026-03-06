@@ -2,9 +2,11 @@ import { Router } from "express";
 import { spawn } from "node:child_process";
 import type { Db } from "@paperclipai/db";
 import { assertBoard } from "./authz.js";
+import { logActivity } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
 
-const CLAUDE_BIN = process.env.CLAUDE_BIN || "/Users/user/.local/bin/claude";
+const CLAUDE_BIN = process.env.CLAUDE_BIN || "claude";
+const CLAUDE_TIMEOUT_MS = 60_000;
 
 const TOOL_CALL_OPEN = "<tool_call>";
 const TOOL_CALL_CLOSE = "</tool_call>";
@@ -43,11 +45,14 @@ Available endpoints:
 - GET  /api/companies/:id/dashboard → company dashboard
 - GET  /api/companies/:id/agents → list agents
 - POST /api/companies/:id/agents → create agent
-- PATCH /api/companies/:id/agents/:agentId → update agent
-- POST /api/companies/:id/agents/:agentId/wakeup → trigger heartbeat
-- POST /api/companies/:id/agents/:agentId/pause → pause agent
-- POST /api/companies/:id/agents/:agentId/resume → resume agent
-- GET  /api/companies/:id/agents/:agentId/runs → list runs
+- GET  /api/agents/:agentId → get agent details
+- PATCH /api/agents/:agentId → update agent
+- POST /api/agents/:agentId/wakeup → trigger heartbeat
+- POST /api/agents/:agentId/heartbeat/invoke → invoke heartbeat
+- POST /api/agents/:agentId/pause → pause agent
+- POST /api/agents/:agentId/resume → resume agent
+- POST /api/agents/:agentId/terminate → terminate agent (irreversible)
+- GET  /api/companies/:id/heartbeat-runs → list runs
 - GET  /api/companies/:id/issues → list issues/tasks
 - POST /api/companies/:id/issues → create issue {title, description, assignee_id, project_id, goal_id}
 - PATCH /api/companies/:id/issues/:issueId → update issue {status, comment, assignee_id}
@@ -85,6 +90,11 @@ function runClaude(prompt: string): Promise<string> {
       env: { ...process.env },
     });
 
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error("claude -p timed out"));
+    }, CLAUDE_TIMEOUT_MS);
+
     let stdout = "";
     let stderr = "";
 
@@ -96,10 +106,12 @@ function runClaude(prompt: string): Promise<string> {
     });
 
     child.on("error", (err) => {
+      clearTimeout(timer);
       reject(new Error(`Failed to spawn claude: ${err.message}`));
     });
 
     child.on("close", (code) => {
+      clearTimeout(timer);
       if (code !== 0) {
         reject(new Error(`claude exited with code ${code}: ${stderr}`));
       } else {
@@ -155,12 +167,17 @@ async function executeApiCall(
   path: string,
   body: unknown,
   port: number,
+  cookie?: string,
 ): Promise<{ ok: boolean; status: number; data: unknown }> {
   const url = `http://127.0.0.1:${port}${path.startsWith("/") ? path : "/" + path}`;
   try {
     const opts: RequestInit = {
       method,
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        ...(cookie ? { Cookie: cookie } : {}),
+      },
     };
     if (body && (method === "POST" || method === "PATCH")) {
       opts.body = JSON.stringify(body);
@@ -180,16 +197,37 @@ async function executeApiCall(
   }
 }
 
-export function boardChatRoutes(_db: Db) {
+const VALID_ROLES = new Set(["user", "assistant", "tool_call", "tool_result"]);
+
+function validateHistory(history: unknown): DisplayMessage[] {
+  if (!Array.isArray(history)) return [];
+  const validated: DisplayMessage[] = [];
+  for (const entry of history) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const e = entry as Record<string, unknown>;
+    if (!VALID_ROLES.has(e.role as string)) continue;
+    validated.push({
+      role: e.role as DisplayMessage["role"],
+      ...(typeof e.content === "string" ? { content: e.content } : {}),
+      ...(typeof e.method === "string" ? { method: e.method } : {}),
+      ...(typeof e.path === "string" ? { path: e.path } : {}),
+      ...(e.body !== undefined ? { body: e.body } : {}),
+      ...(typeof e.isError === "boolean" ? { isError: e.isError } : {}),
+    });
+  }
+  return validated;
+}
+
+export function boardChatRoutes(db: Db) {
   const router = Router();
 
   router.post("/board/chat", async (req, res, next) => {
     try {
       assertBoard(req);
 
-      const { message, history } = req.body as {
+      const { message, history: rawHistory } = req.body as {
         message: string;
-        history?: DisplayMessage[];
+        history?: unknown;
       };
 
       if (!message?.trim()) {
@@ -198,8 +236,9 @@ export function boardChatRoutes(_db: Db) {
       }
 
       const port = Number(process.env.PORT) || 3100;
+      const cookie = req.headers.cookie;
       const displayMessages: DisplayMessage[] = [];
-      const fullHistory: DisplayMessage[] = [...(history ?? [])];
+      const fullHistory: DisplayMessage[] = validateHistory(rawHistory);
       let maxTurns = 10;
 
       while (maxTurns-- > 0) {
@@ -234,12 +273,31 @@ export function boardChatRoutes(_db: Db) {
           displayMessages.push({ role: "tool_call", method: call.method, path: call.path, body: call.body });
           fullHistory.push({ role: "tool_call", method: call.method, path: call.path, body: call.body });
 
-          const result = await executeApiCall(call.method, call.path, call.body, port);
+          const result = await executeApiCall(call.method, call.path, call.body, port, cookie);
           const resultText = JSON.stringify(result.data, null, 2);
           const isError = !result.ok;
 
           displayMessages.push({ role: "tool_result", content: resultText, isError });
           fullHistory.push({ role: "tool_result", content: resultText, isError });
+
+          // Log mutating API calls for audit trail
+          if (call.method !== "GET" && result.ok) {
+            const companyMatch = call.path.match(/\/api\/companies\/([^/]+)/);
+            const companyId = companyMatch?.[1];
+            if (companyId) {
+              await logActivity(db, {
+                companyId,
+                actorType: "user",
+                actorId: req.actor.userId ?? "board",
+                action: "board_terminal.api_call",
+                entityType: "board_terminal",
+                entityId: "board_terminal",
+                details: { method: call.method, path: call.path },
+              }).catch((err) => {
+                logger.warn({ err }, "Failed to log board terminal activity");
+              });
+            }
+          }
         }
       }
 
