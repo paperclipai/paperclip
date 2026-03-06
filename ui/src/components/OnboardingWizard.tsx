@@ -53,6 +53,7 @@ type AdapterType =
   | "codex_local"
   | "opencode_local"
   | "cursor"
+  | "copilot_local"
   | "process"
   | "http"
   | "openclaw";
@@ -155,7 +156,7 @@ export function OnboardingWizard() {
     enabled: onboardingOpen && step === 2
   });
   const isLocalAdapter =
-    adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "opencode_local" || adapterType === "cursor";
+    adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "opencode_local" || adapterType === "cursor" || adapterType === "copilot_local";
   const effectiveAdapterCommand =
     command.trim() ||
     (adapterType === "codex_local"
