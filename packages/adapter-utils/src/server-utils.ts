@@ -110,6 +110,26 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
   return vars;
 }
 
+
+/**
+ * Remove env vars that CLI tools (Claude Code, Codex, etc.) set to detect
+ * nested sessions. If Paperclip's own server process was started from inside
+ * such a CLI, these vars leak into child adapter processes and cause them to
+ * refuse to launch ("cannot be launched inside another session").
+ */
+function stripParentCliEnv<T extends Record<string, unknown>>(env: T): T {
+  const keysToStrip = [
+    "CLAUDECODE",              // Claude Code nesting guard
+    "CLAUDE_CODE_ENTRYPOINT",  // Claude Code entry marker
+    "CODEX_CLI_SESSION",       // Codex CLI nesting guard
+  ];
+  const cleaned = { ...env };
+  for (const key of keysToStrip) {
+    delete (cleaned as Record<string, unknown>)[key];
+  }
+  return cleaned;
+}
+
 export function defaultPathForPlatform() {
   if (process.platform === "win32") {
     return "C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\Wbem";
@@ -211,7 +231,7 @@ export async function runChildProcess(
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
 
   return new Promise<RunProcessResult>((resolve, reject) => {
-    const mergedEnv = ensurePathInEnv({ ...process.env, ...opts.env });
+    const mergedEnv = ensurePathInEnv(stripParentCliEnv({ ...process.env, ...opts.env }));
     const child = spawn(command, args, {
       cwd: opts.cwd,
       env: mergedEnv,
