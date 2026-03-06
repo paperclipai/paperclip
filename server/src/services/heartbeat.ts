@@ -23,6 +23,8 @@ import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
+import { runEvals, shouldRunEval } from "./evals/index.js";
+import type { EvalKind, EvalPolicyConfig, EvalPreset, EvalStrategy } from "./evals/index.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -793,6 +795,53 @@ export function heartbeatService(db: Db) {
     });
   }
 
+  const VALID_EVAL_KINDS: EvalKind[] = ["toxicity", "relevance", "quality", "hallucination", "factuality"];
+
+  function filterToEvalKinds(obj: Record<string, unknown>): Record<string, unknown> {
+    return Object.fromEntries(
+      Object.entries(obj).filter(([k]) => (VALID_EVAL_KINDS as string[]).includes(k)),
+    );
+  }
+
+  function parseEvalPolicy(agent: typeof agents.$inferSelect): EvalPolicyConfig {
+    const runtimeConfig = parseObject(agent.runtimeConfig);
+    const evals = parseObject(runtimeConfig.evals);
+
+    const VALID_PRESETS = ["off", "light", "moderate", "strict", "full", "custom"];
+    const rawPreset = typeof evals.preset === "string" && VALID_PRESETS.includes(evals.preset)
+      ? (evals.preset as EvalPreset)
+      : "custom";
+
+    // If a preset is set (and not "off"), treat as enabled unless explicitly disabled
+    const enabled = rawPreset === "off"
+      ? false
+      : asBoolean(evals.enabled, rawPreset !== "custom");
+
+    const sampling = parseObject(evals.sampling);
+
+    const VALID_STRATEGIES = ["batched", "isolated", "specialized"];
+    const rawStrategy = typeof evals.strategy === "string" && VALID_STRATEGIES.includes(evals.strategy)
+      ? (evals.strategy as EvalStrategy)
+      : "batched";
+
+    return {
+      enabled,
+      preset: rawPreset,
+      strategy: rawStrategy,
+      on: Array.isArray(evals.on) ? evals.on : ["final_response"],
+      sampling: {
+        rate: typeof sampling.rate === "number" ? sampling.rate : undefined,
+        every: typeof sampling.every === "number" ? Math.max(1, Math.floor(sampling.every)) : undefined,
+        perKind: sampling.perKind
+          ? filterToEvalKinds(parseObject(sampling.perKind)) as EvalPolicyConfig["sampling"]["perKind"]
+          : undefined,
+      },
+      thresholds: filterToEvalKinds(parseObject(evals.thresholds)) as EvalPolicyConfig["thresholds"],
+      actions: parseObject(evals.actions) as EvalPolicyConfig["actions"],
+      judge: evals.judge ? (parseObject(evals.judge) as EvalPolicyConfig["judge"]) : undefined,
+    };
+  }
+
   function parseHeartbeatPolicy(agent: typeof agents.$inferSelect) {
     const runtimeConfig = parseObject(agent.runtimeConfig);
     const heartbeat = parseObject(runtimeConfig.heartbeat);
@@ -811,6 +860,22 @@ export function heartbeatService(db: Db) {
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "running")));
     return Number(count ?? 0);
+  }
+
+  async function getRunSequenceNumber(runId: string, agentId: string, companyId: string) {
+    // Compute a deterministic sequence number for this run using ROW_NUMBER().
+    // Orders by created_at (immutable at insert) across ALL runs, not just completed ones,
+    // so out-of-order completions don't cause duplicate or shifting ordinals.
+    const result = await db.execute<{ seq: number }>(sql`
+      SELECT seq FROM (
+        SELECT id, ROW_NUMBER() OVER (ORDER BY created_at, id) AS seq
+        FROM heartbeat_runs
+        WHERE agent_id = ${agentId}
+          AND company_id = ${companyId}
+      ) numbered
+      WHERE id = ${runId}
+    `);
+    return Number(result[0]?.seq ?? 0);
   }
 
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
@@ -1365,6 +1430,75 @@ export function heartbeatService(db: Db) {
             exitCode: adapterResult.exitCode,
           },
         });
+
+        // --- Response evaluation harness ---
+        const evalConfig = parseEvalPolicy(agent);
+        // Deterministic per-run sequence number for every-N sampling (race-safe via ROW_NUMBER)
+        const runSeq = await getRunSequenceNumber(finalizedRun.id, agent.id, agent.companyId!);
+        if (shouldRunEval(evalConfig, runSeq) && outcome === "succeeded" && stdoutExcerpt) {
+          try {
+            const evalResult = await runEvals({
+              input: {
+                runId: finalizedRun.id,
+                agentId: agent.id,
+                companyId: agent.companyId!,
+                prompt: adapterResult.summary ?? deriveTaskKey(context, null) ?? "agent task",
+                response: stdoutExcerpt,
+                context: context.issueId
+                  ? { messages: [{ role: "system", content: `Issue ID: ${context.issueId}` }] }
+                  : undefined,
+              },
+              config: evalConfig,
+              runSeq,
+            });
+
+            await appendRunEvent(finalizedRun, seq++, {
+              eventType: "eval",
+              stream: "system",
+              level: evalResult.worstLabel === "fail" ? "error" : evalResult.worstLabel === "warn" ? "warn" : "info",
+              message: evalResult.summaryMessage,
+              payload: evalResult.payload as unknown as Record<string, unknown>,
+            });
+
+            if (evalResult.actions.includes("open_issue") && agent.companyId) {
+              const issueSvc = (await import("./issues.js")).issueService(db);
+              await issueSvc.create(agent.companyId, {
+                title: `Eval ${evalResult.worstLabel}: ${agent.name ?? agent.id} run ${finalizedRun.id.slice(0, 8)}`,
+                description: [
+                  `Automated eval detected **${evalResult.worstLabel}** on run \`${finalizedRun.id}\`.`,
+                  "",
+                  "**Results:**",
+                  ...evalResult.results.map(
+                    (r) => `- ${r.kind}: ${r.label} (${r.score.toFixed(2)})${r.rationale ? ` — ${r.rationale}` : ""}`,
+                  ),
+                ].join("\n"),
+                status: "todo",
+                priority: evalResult.worstLabel === "fail" ? "high" : "medium",
+                createdByAgentId: agent.id,
+              });
+            }
+
+            if (evalResult.actions.includes("require_approval") && agent.companyId) {
+              const approvalSvc = (await import("./approvals.js")).approvalService(db);
+              await approvalSvc.create(agent.companyId, {
+                type: "eval_review",
+                payload: {
+                  ...evalResult.payload as unknown as Record<string, unknown>,
+                  description: `Review required: eval ${evalResult.worstLabel} on run ${finalizedRun.id.slice(0, 8)}`,
+                },
+                requestedByAgentId: agent.id,
+              });
+            }
+
+            logger.info(
+              { runId: finalizedRun.id, worstLabel: evalResult.worstLabel, actions: evalResult.actions },
+              "eval harness completed",
+            );
+          } catch (evalErr) {
+            logger.warn({ err: evalErr, runId: finalizedRun.id }, "eval harness failed (non-fatal)");
+          }
+        }
+
         await releaseIssueExecutionAndPromote(finalizedRun);
       }
 
