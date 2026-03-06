@@ -90,6 +90,41 @@ describe("buildJoinDefaultsPayloadForAccept", () => {
     });
   });
 
+  it("accepts auth from agentDefaultsPayload.headers.x-openclaw-token", () => {
+    const result = buildJoinDefaultsPayloadForAccept({
+      adapterType: "openclaw",
+      defaultsPayload: {
+        url: "http://127.0.0.1:18789/hooks/agent",
+        method: "POST",
+        headers: {
+          "x-openclaw-token": "gateway-token",
+        },
+      },
+    }) as Record<string, unknown>;
+
+    expect(result).toMatchObject({
+      headers: {
+        "x-openclaw-token": "gateway-token",
+      },
+      webhookAuthHeader: "Bearer gateway-token",
+    });
+  });
+
+  it("accepts inbound x-openclaw-token compatibility header", () => {
+    const result = buildJoinDefaultsPayloadForAccept({
+      adapterType: "openclaw",
+      defaultsPayload: null,
+      inboundOpenClawTokenHeader: "gateway-token",
+    }) as Record<string, unknown>;
+
+    expect(result).toMatchObject({
+      headers: {
+        "x-openclaw-token": "gateway-token",
+      },
+      webhookAuthHeader: "Bearer gateway-token",
+    });
+  });
+
   it("accepts wrapped auth values in headers for compatibility", () => {
     const result = buildJoinDefaultsPayloadForAccept({
       adapterType: "openclaw",

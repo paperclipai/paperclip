@@ -320,6 +320,7 @@ export function buildJoinDefaultsPayloadForAccept(input: {
   paperclipApiUrl?: unknown;
   webhookAuthHeader?: unknown;
   inboundOpenClawAuthHeader?: string | null;
+  inboundOpenClawTokenHeader?: string | null;
 }): unknown {
   if (input.adapterType !== "openclaw") {
     return input.defaultsPayload;
@@ -367,6 +368,15 @@ export function buildJoinDefaultsPayloadForAccept(input: {
   const inboundOpenClawAuthHeader = nonEmptyTrimmedString(
     input.inboundOpenClawAuthHeader
   );
+  const inboundOpenClawTokenHeader = nonEmptyTrimmedString(
+    input.inboundOpenClawTokenHeader
+  );
+  if (
+    inboundOpenClawTokenHeader &&
+    !headerMapHasKeyIgnoreCase(mergedHeaders, "x-openclaw-token")
+  ) {
+    mergedHeaders["x-openclaw-token"] = inboundOpenClawTokenHeader;
+  }
   if (
     inboundOpenClawAuthHeader &&
     !headerMapHasKeyIgnoreCase(mergedHeaders, "x-openclaw-auth")
@@ -388,7 +398,9 @@ export function buildJoinDefaultsPayloadForAccept(input: {
     nonEmptyTrimmedString(merged.webhookAuthHeader)
   );
   if (!hasAuthorizationHeader && !hasWebhookAuthHeader) {
-    const openClawAuthToken = headerMapGetIgnoreCase(
+    const openClawAuthToken =
+      headerMapGetIgnoreCase(mergedHeaders, "x-openclaw-token") ??
+      headerMapGetIgnoreCase(
       mergedHeaders,
       "x-openclaw-auth"
     );
@@ -484,9 +496,8 @@ function summarizeOpenClawDefaultsForLog(defaultsPayload: unknown) {
     : null;
   const headers = defaults ? normalizeHeaderMap(defaults.headers) : undefined;
   const openClawAuthHeaderValue = headers
-    ? Object.entries(headers).find(
-        ([key]) => key.trim().toLowerCase() === "x-openclaw-auth"
-      )?.[1] ?? null
+    ? headerMapGetIgnoreCase(headers, "x-openclaw-token") ??
+      headerMapGetIgnoreCase(headers, "x-openclaw-auth")
     : null;
 
   return {
@@ -703,20 +714,23 @@ function normalizeAgentDefaultsForJoin(input: {
   }
 
   const openClawAuthHeader = headers
-    ? headerMapGetIgnoreCase(headers, "x-openclaw-auth")
+    ? headerMapGetIgnoreCase(headers, "x-openclaw-token") ??
+      headerMapGetIgnoreCase(headers, "x-openclaw-auth")
     : null;
   if (openClawAuthHeader) {
     diagnostics.push({
       code: "openclaw_auth_header_configured",
       level: "info",
-      message: "Gateway auth token received via headers.x-openclaw-auth."
+      message:
+        "Gateway auth token received via headers.x-openclaw-token (or legacy x-openclaw-auth)."
     });
   } else {
     diagnostics.push({
       code: "openclaw_auth_header_missing",
       level: "warn",
       message: "Gateway auth token is missing from agent defaults.",
-      hint: "Set agentDefaultsPayload.headers.x-openclaw-auth to the token your OpenClaw endpoint requires."
+      hint:
+        "Set agentDefaultsPayload.headers.x-openclaw-token (or legacy x-openclaw-auth) to the token your OpenClaw endpoint requires."
     });
   }
 
@@ -1894,7 +1908,8 @@ export function accessRoutes(
               responsesWebhookHeaders: req.body.responsesWebhookHeaders ?? null,
               paperclipApiUrl: req.body.paperclipApiUrl ?? null,
               webhookAuthHeader: req.body.webhookAuthHeader ?? null,
-              inboundOpenClawAuthHeader: req.header("x-openclaw-auth") ?? null
+              inboundOpenClawAuthHeader: req.header("x-openclaw-auth") ?? null,
+              inboundOpenClawTokenHeader: req.header("x-openclaw-token") ?? null
             })
           : null;
 
@@ -1916,6 +1931,9 @@ export function accessRoutes(
             ),
             inboundOpenClawAuthHeader: summarizeSecretForLog(
               req.header("x-openclaw-auth") ?? null
+            ),
+            inboundOpenClawTokenHeader: summarizeSecretForLog(
+              req.header("x-openclaw-token") ?? null
             ),
             rawAgentDefaults: summarizeOpenClawDefaultsForLog(
               req.body.agentDefaultsPayload ?? null
@@ -2107,7 +2125,9 @@ export function accessRoutes(
           expectedDefaults.openClawAuthHeader &&
           !persistedDefaults.openClawAuthHeader
         ) {
-          missingPersistedFields.push("headers.x-openclaw-auth");
+          missingPersistedFields.push(
+            "headers.x-openclaw-token|headers.x-openclaw-auth"
+          );
         }
         if (
           expectedDefaults.headerKeys.length > 0 &&
