@@ -105,7 +105,7 @@ function EvalReviewPayload({ payload }: { payload: Record<string, unknown> }) {
                       : "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
                 }`}
               >
-                {r.label} ({r.score.toFixed(2)})
+                {r.label} ({typeof r.score === "number" ? r.score.toFixed(2) : "—"})
               </span>
               {r.rationale && (
                 <span className="text-muted-foreground truncate">{r.rationale}</span>

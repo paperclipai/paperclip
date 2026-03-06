@@ -24,7 +24,7 @@ import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } fr
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import { runEvals, shouldRunEval } from "./evals/index.js";
-import type { EvalPolicyConfig, EvalPreset, EvalStrategy } from "./evals/index.js";
+import type { EvalKind, EvalPolicyConfig, EvalPreset, EvalStrategy } from "./evals/index.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -795,6 +795,14 @@ export function heartbeatService(db: Db) {
     });
   }
 
+  const VALID_EVAL_KINDS: EvalKind[] = ["toxicity", "relevance", "quality", "hallucination", "factuality"];
+
+  function filterToEvalKinds(obj: Record<string, unknown>): Record<string, unknown> {
+    return Object.fromEntries(
+      Object.entries(obj).filter(([k]) => (VALID_EVAL_KINDS as string[]).includes(k)),
+    );
+  }
+
   function parseEvalPolicy(agent: typeof agents.$inferSelect): EvalPolicyConfig {
     const runtimeConfig = parseObject(agent.runtimeConfig);
     const evals = parseObject(runtimeConfig.evals);
@@ -824,9 +832,11 @@ export function heartbeatService(db: Db) {
       sampling: {
         rate: typeof sampling.rate === "number" ? sampling.rate : undefined,
         every: typeof sampling.every === "number" ? Math.max(1, Math.floor(sampling.every)) : undefined,
-        perKind: sampling.perKind ? parseObject(sampling.perKind) as EvalPolicyConfig["sampling"]["perKind"] : undefined,
+        perKind: sampling.perKind
+          ? filterToEvalKinds(parseObject(sampling.perKind)) as EvalPolicyConfig["sampling"]["perKind"]
+          : undefined,
       },
-      thresholds: parseObject(evals.thresholds) as EvalPolicyConfig["thresholds"],
+      thresholds: filterToEvalKinds(parseObject(evals.thresholds)) as EvalPolicyConfig["thresholds"],
       actions: parseObject(evals.actions) as EvalPolicyConfig["actions"],
       judge: evals.judge ? (parseObject(evals.judge) as EvalPolicyConfig["judge"]) : undefined,
     };
@@ -852,17 +862,22 @@ export function heartbeatService(db: Db) {
     return Number(count ?? 0);
   }
 
-  async function countCompletedRunsForAgent(agentId: string) {
-    const [{ count }] = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(heartbeatRuns)
-      .where(
-        and(
-          eq(heartbeatRuns.agentId, agentId),
-          inArray(heartbeatRuns.status, ["succeeded", "failed", "cancelled", "timed_out"]),
-        ),
-      );
-    return Number(count ?? 0);
+  async function getRunSequenceNumber(runId: string, agentId: string, companyId: string) {
+    // Compute a deterministic sequence number for this run using ROW_NUMBER().
+    // Unlike count(*), this is stable under concurrent finalizations — each run
+    // gets a unique position based on created_at ordering, so every-N gating
+    // won't duplicate or skip when multiple runs finalize simultaneously.
+    const result = await db.execute<{ seq: number }>(sql`
+      SELECT seq FROM (
+        SELECT id, ROW_NUMBER() OVER (ORDER BY created_at, id) AS seq
+        FROM heartbeat_runs
+        WHERE agent_id = ${agentId}
+          AND company_id = ${companyId}
+          AND status IN ('succeeded', 'failed', 'cancelled', 'timed_out')
+      ) numbered
+      WHERE id = ${runId}
+    `);
+    return Number(result[0]?.seq ?? 0);
   }
 
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
@@ -1420,9 +1435,9 @@ export function heartbeatService(db: Db) {
 
         // --- Response evaluation harness ---
         const evalConfig = parseEvalPolicy(agent);
-        // Use agent's total completed run count as a stable monotonic counter for every-N sampling
-        const agentRunCount = await countCompletedRunsForAgent(agent.id);
-        if (shouldRunEval(evalConfig, agentRunCount) && outcome === "succeeded" && stdoutExcerpt) {
+        // Deterministic per-run sequence number for every-N sampling (race-safe via ROW_NUMBER)
+        const runSeq = await getRunSequenceNumber(finalizedRun.id, agent.id, agent.companyId!);
+        if (shouldRunEval(evalConfig, runSeq) && outcome === "succeeded" && stdoutExcerpt) {
           try {
             const evalResult = await runEvals({
               input: {
@@ -1436,7 +1451,7 @@ export function heartbeatService(db: Db) {
                   : undefined,
               },
               config: evalConfig,
-              runSeq: agentRunCount,
+              runSeq,
             });
 
             await appendRunEvent(finalizedRun, seq++, {

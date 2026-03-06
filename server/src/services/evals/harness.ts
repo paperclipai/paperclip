@@ -93,9 +93,12 @@ export function resolveKindsForRun(
 
   // If user configured explicit thresholds, those determine which kinds run
   // (for "custom" preset). Otherwise fall back to preset kinds.
+  const customKinds = Object.keys(config.thresholds).filter(
+    (k): k is EvalKind => (ALL_EVAL_KINDS as string[]).includes(k),
+  );
   const baseKinds =
-    config.preset === "custom" && Object.keys(config.thresholds).length > 0
-      ? (Object.keys(config.thresholds) as EvalKind[])
+    config.preset === "custom" && customKinds.length > 0
+      ? customKinds
       : presetKinds;
 
   if (!config.sampling.perKind) return baseKinds;
@@ -170,7 +173,7 @@ export function buildEvalEventPayload(
     schemaVersion: 1,
     target: { type: "agent.response", step: "final" },
     results,
-    judge: { ...judge, latencyMs },
+    judge: { provider: judge.provider, model: judge.model, latencyMs },
   };
 }
 
