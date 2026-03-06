@@ -46,6 +46,7 @@ type OnboardOptions = {
 type OnboardDefaults = Pick<PaperclipConfig, "database" | "logging" | "server" | "auth" | "storage" | "secrets">;
 
 const ONBOARD_ENV_KEYS = [
+  "PAPERCLIP_PUBLIC_URL",
   "DATABASE_URL",
   "PAPERCLIP_DB_BACKUP_ENABLED",
   "PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES",
@@ -60,6 +61,7 @@ const ONBOARD_ENV_KEYS = [
   "PAPERCLIP_AUTH_BASE_URL_MODE",
   "PAPERCLIP_AUTH_PUBLIC_BASE_URL",
   "BETTER_AUTH_URL",
+  "BETTER_AUTH_BASE_URL",
   "PAPERCLIP_STORAGE_PROVIDER",
   "PAPERCLIP_STORAGE_LOCAL_DIR",
   "PAPERCLIP_STORAGE_S3_BUCKET",
@@ -106,6 +108,12 @@ function quickstartDefaultsFromEnv(): {
   const defaultStorage = defaultStorageConfig();
   const defaultSecrets = defaultSecretsConfig();
   const databaseUrl = process.env.DATABASE_URL?.trim() || undefined;
+  const publicUrl =
+    process.env.PAPERCLIP_PUBLIC_URL?.trim() ||
+    process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL?.trim() ||
+    process.env.BETTER_AUTH_URL?.trim() ||
+    process.env.BETTER_AUTH_BASE_URL?.trim() ||
+    undefined;
   const deploymentMode =
     parseEnumFromEnv<DeploymentMode>(process.env.PAPERCLIP_DEPLOYMENT_MODE, DEPLOYMENT_MODES) ?? "local_trusted";
   const deploymentExposureFromEnv = parseEnumFromEnv<DeploymentExposure>(
@@ -114,8 +122,7 @@ function quickstartDefaultsFromEnv(): {
   );
   const deploymentExposure =
     deploymentMode === "local_trusted" ? "private" : (deploymentExposureFromEnv ?? "private");
-  const authPublicBaseUrl =
-    (process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL ?? process.env.BETTER_AUTH_URL)?.trim() || undefined;
+  const authPublicBaseUrl = publicUrl;
   const authBaseUrlModeFromEnv = parseEnumFromEnv<AuthBaseUrlMode>(
     process.env.PAPERCLIP_AUTH_BASE_URL_MODE,
     AUTH_BASE_URL_MODES,
@@ -127,6 +134,15 @@ function quickstartDefaultsFromEnv(): {
       .map((value) => value.trim().toLowerCase())
       .filter((value) => value.length > 0)
     : [];
+  const hostnameFromPublicUrl = publicUrl
+    ? (() => {
+      try {
+        return new URL(publicUrl).hostname.trim().toLowerCase();
+      } catch {
+        return null;
+      }
+    })()
+    : null;
   const storageProvider =
     parseEnumFromEnv<StorageProvider>(process.env.PAPERCLIP_STORAGE_PROVIDER, STORAGE_PROVIDERS) ??
     defaultStorage.provider;
@@ -164,7 +180,7 @@ function quickstartDefaultsFromEnv(): {
       exposure: deploymentExposure,
       host: process.env.HOST ?? "127.0.0.1",
       port: Number(process.env.PORT) || 3100,
-      allowedHostnames: Array.from(new Set(allowedHostnamesFromEnv)),
+      allowedHostnames: Array.from(new Set([...allowedHostnamesFromEnv, ...(hostnameFromPublicUrl ? [hostnameFromPublicUrl] : [])])),
       serveUi: parseBooleanFromEnv(process.env.SERVE_UI) ?? true,
     },
     auth: {

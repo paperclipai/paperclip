@@ -42,13 +42,38 @@ function headersFromExpressRequest(req: Request): Headers {
   return headersFromNodeHeaders(req.headers);
 }
 
-export function createBetterAuthInstance(db: Db, config: Config): BetterAuthInstance {
+export function deriveAuthTrustedOrigins(config: Config): string[] {
+  const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
+  const trustedOrigins = new Set<string>();
+
+  if (baseUrl) {
+    try {
+      trustedOrigins.add(new URL(baseUrl).origin);
+    } catch {
+      // Better Auth will surface invalid base URL separately.
+    }
+  }
+  if (config.deploymentMode === "authenticated") {
+    for (const hostname of config.allowedHostnames) {
+      const trimmed = hostname.trim().toLowerCase();
+      if (!trimmed) continue;
+      trustedOrigins.add(`https://${trimmed}`);
+      trustedOrigins.add(`http://${trimmed}`);
+    }
+  }
+
+  return Array.from(trustedOrigins);
+}
+
+export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?: string[]): BetterAuthInstance {
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
   const secret = process.env.BETTER_AUTH_SECRET ?? process.env.PAPERCLIP_AGENT_JWT_SECRET ?? "paperclip-dev-secret";
+  const effectiveTrustedOrigins = trustedOrigins ?? deriveAuthTrustedOrigins(config);
 
   const authConfig = {
     baseURL: baseUrl,
     secret,
+    trustedOrigins: effectiveTrustedOrigins,
     database: drizzleAdapter(db, {
       provider: "pg",
       schema: {

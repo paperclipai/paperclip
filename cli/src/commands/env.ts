@@ -118,6 +118,29 @@ function collectDeploymentEnvRows(config: PaperclipConfig | null, configPath: st
   const dbUrl = process.env.DATABASE_URL ?? config?.database?.connectionString ?? "";
   const databaseMode = config?.database?.mode ?? "embedded-postgres";
   const dbUrlSource: EnvSource = process.env.DATABASE_URL ? "env" : config?.database?.connectionString ? "config" : "missing";
+  const publicUrl =
+    process.env.PAPERCLIP_PUBLIC_URL ??
+    process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL ??
+    process.env.BETTER_AUTH_URL ??
+    process.env.BETTER_AUTH_BASE_URL ??
+    config?.auth?.publicBaseUrl ??
+    "";
+  const publicUrlSource: EnvSource =
+    process.env.PAPERCLIP_PUBLIC_URL
+      ? "env"
+      : process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL || process.env.BETTER_AUTH_URL || process.env.BETTER_AUTH_BASE_URL
+        ? "env"
+        : config?.auth?.publicBaseUrl
+          ? "config"
+          : "missing";
+  let trustedOriginsDefault = "";
+  if (publicUrl) {
+    try {
+      trustedOriginsDefault = new URL(publicUrl).origin;
+    } catch {
+      trustedOriginsDefault = "";
+    }
+  }
 
   const heartbeatInterval = process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS ?? DEFAULT_HEARTBEAT_SCHEDULER_INTERVAL_MS;
   const heartbeatEnabled = process.env.HEARTBEAT_SCHEDULER_ENABLED ?? "true";
@@ -191,6 +214,24 @@ function collectDeploymentEnvRows(config: PaperclipConfig | null, configPath: st
       source: process.env.PORT ? "env" : config?.server?.port !== undefined ? "config" : "default",
       required: false,
       note: "HTTP listen port",
+    },
+    {
+      key: "PAPERCLIP_PUBLIC_URL",
+      value: publicUrl,
+      source: publicUrlSource,
+      required: false,
+      note: "Canonical public URL for auth/callback/invite origin wiring",
+    },
+    {
+      key: "BETTER_AUTH_TRUSTED_ORIGINS",
+      value: process.env.BETTER_AUTH_TRUSTED_ORIGINS ?? trustedOriginsDefault,
+      source: process.env.BETTER_AUTH_TRUSTED_ORIGINS
+        ? "env"
+        : trustedOriginsDefault
+          ? "default"
+          : "missing",
+      required: false,
+      note: "Comma-separated auth origin allowlist (auto-derived from PAPERCLIP_PUBLIC_URL when possible)",
     },
     {
       key: "PAPERCLIP_AGENT_JWT_TTL_SECONDS",
