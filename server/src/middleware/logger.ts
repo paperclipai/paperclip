@@ -53,11 +53,21 @@ export const httpLogger = pinoHttp({
     return `${req.method} ${req.url} ${res.statusCode}`;
   },
   customErrorMessage(req, res, err) {
-    const errMsg = err?.message || (res as any).err?.message || "unknown error";
+    const ctx = (res as any).__errorContext;
+    const errMsg = ctx?.error?.message || err?.message || (res as any).err?.message || "unknown error";
     return `${req.method} ${req.url} ${res.statusCode} — ${errMsg}`;
   },
   customProps(req, res) {
     if (res.statusCode >= 400) {
+      const ctx = (res as any).__errorContext;
+      if (ctx) {
+        return {
+          err: ctx.error,
+          reqBody: ctx.reqBody,
+          reqParams: ctx.reqParams,
+          reqQuery: ctx.reqQuery,
+        };
+      }
       const props: Record<string, unknown> = {};
       const { body, params, query } = req as any;
       if (body && typeof body === "object" && Object.keys(body).length > 0) {

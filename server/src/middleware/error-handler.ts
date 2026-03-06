@@ -1,7 +1,15 @@
 import type { Request, Response, NextFunction } from "express";
 import { ZodError } from "zod";
-import { logger } from "./logger.js";
 import { HttpError } from "../errors.js";
+
+export interface ErrorContext {
+  error: { message: string; stack?: string; name?: string; details?: unknown; raw?: unknown };
+  method: string;
+  url: string;
+  reqBody?: unknown;
+  reqParams?: unknown;
+  reqQuery?: unknown;
+}
 
 export function errorHandler(
   err: unknown,
@@ -11,22 +19,14 @@ export function errorHandler(
 ) {
   if (err instanceof HttpError) {
     if (err.status >= 500) {
-      (res as any).err = err;
-      logger.error(
-        {
-          err: { message: err.message, stack: err.stack, name: err.name, details: err.details },
-          method: req.method,
-          url: req.originalUrl,
-          reqBody: req.body,
-          reqParams: req.params,
-          reqQuery: req.query,
-        },
-        "HttpError %d: %s %s — %s",
-        err.status,
-        req.method,
-        req.originalUrl,
-        err.message,
-      );
+      (res as any).__errorContext = {
+        error: { message: err.message, stack: err.stack, name: err.name, details: err.details },
+        method: req.method,
+        url: req.originalUrl,
+        reqBody: req.body,
+        reqParams: req.params,
+        reqQuery: req.query,
+      } satisfies ErrorContext;
     }
     res.status(err.status).json({
       error: err.message,
@@ -40,28 +40,16 @@ export function errorHandler(
     return;
   }
 
-  const errObj = err instanceof Error
-    ? { message: err.message, stack: err.stack, name: err.name }
-    : { raw: err };
+  (res as any).__errorContext = {
+    error: err instanceof Error
+      ? { message: err.message, stack: err.stack, name: err.name }
+      : { message: String(err), raw: err },
+    method: req.method,
+    url: req.originalUrl,
+    reqBody: req.body,
+    reqParams: req.params,
+    reqQuery: req.query,
+  } satisfies ErrorContext;
 
-  // Attach the real error so pino-http uses it instead of its generic
-  // "failed with status code 500" message in the response-complete log
-  const realError = err instanceof Error ? err : Object.assign(new Error(String(err)), { raw: err });
-  (res as any).err = realError;
-
-  logger.error(
-    {
-      err: errObj,
-      method: req.method,
-      url: req.originalUrl,
-      reqBody: req.body,
-      reqParams: req.params,
-      reqQuery: req.query,
-    },
-    "Unhandled error: %s %s — %s",
-    req.method,
-    req.originalUrl,
-    err instanceof Error ? err.message : String(err),
-  );
   res.status(500).json({ error: "Internal server error" });
 }
