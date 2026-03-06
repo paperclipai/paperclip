@@ -21,8 +21,8 @@ FROM base AS build
 WORKDIR /app
 COPY --from=deps /app /app
 COPY . .
-RUN pnpm --filter @paperclip/ui build
-RUN pnpm --filter @paperclip/server build
+RUN pnpm --filter @paperclipai/ui build
+RUN pnpm --filter @paperclipai/server build
 
 FROM base AS production
 WORKDIR /app
@@ -37,7 +37,7 @@ ENV NODE_ENV=production \
   PAPERCLIP_HOME=/paperclip \
   PAPERCLIP_INSTANCE_ID=default \
   PAPERCLIP_CONFIG=/paperclip/instances/default/config.json \
-  PAPERCLIP_DEPLOYMENT_MODE=local_trusted \
+  PAPERCLIP_DEPLOYMENT_MODE=cloud_untrusted \
   PAPERCLIP_DEPLOYMENT_EXPOSURE=private
 
 VOLUME ["/paperclip"]
