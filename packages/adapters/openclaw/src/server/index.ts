@@ -6,3 +6,4 @@ export {
   extractSummary,
   parseOpenClawResponse,
 } from "./parse.js";
+export type { RpcRequest, RpcResponse } from "./rpc.js";

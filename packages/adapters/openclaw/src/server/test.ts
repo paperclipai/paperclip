@@ -1,10 +1,10 @@
-import crypto from "node:crypto";
 import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestContext,
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
 import { asString, parseObject } from "@paperclipai/adapter-utils/server-utils";
+import { rpcCall } from "./rpc.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -16,113 +16,6 @@ function summarizeStatus(
   if (checks.some((c) => c.level === "error")) return "fail";
   if (checks.some((c) => c.level === "warn")) return "warn";
   return "pass";
-}
-
-interface RpcResponse {
-  type: "res";
-  id: string;
-  ok: boolean;
-  payload: Record<string, unknown>;
-}
-
-function isRpcResponse(data: unknown): data is RpcResponse {
-  if (typeof data !== "object" || data === null || Array.isArray(data)) return false;
-  const obj = data as Record<string, unknown>;
-  return obj.type === "res" && typeof obj.id === "string";
-}
-
-/**
- * Open a WebSocket, send a JSON-RPC request, and wait for a single response
- * frame that matches the request id.  Rejects on timeout or connection error.
- */
-function rpcCall(
-  url: string,
-  method: string,
-  params: Record<string, unknown>,
-  timeoutMs: number,
-  headers?: Record<string, string>,
-): Promise<RpcResponse> {
-  return new Promise<RpcResponse>((resolve, reject) => {
-    const id = crypto.randomUUID();
-    const frame = JSON.stringify({ type: "req", id, method, params });
-
-    const options: Record<string, unknown> = {};
-    if (headers && Object.keys(headers).length > 0) {
-      options.headers = headers;
-    }
-    const ws: WebSocket =
-      Object.keys(options).length > 0
-        ? new (WebSocket as unknown as new (url: string, protocols?: string | string[], opts?: unknown) => WebSocket)(url, undefined, options)
-        : new WebSocket(url);
-
-    let settled = false;
-    const settle = (fn: () => void) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      fn();
-    };
-
-    const timer = setTimeout(() => {
-      settle(() => reject(new Error(`RPC call to ${method} timed out after ${timeoutMs}ms`)));
-    }, timeoutMs);
-
-    const onOpen = () => {
-      try {
-        ws.send(frame);
-      } catch (err) {
-        settle(() =>
-          reject(new Error(err instanceof Error ? err.message : String(err))),
-        );
-      }
-    };
-
-    const onMessage = (ev: MessageEvent) => {
-      let data: unknown;
-      try {
-        data = JSON.parse(typeof ev.data === "string" ? ev.data : String(ev.data));
-      } catch {
-        return;
-      }
-      if (!isRpcResponse(data) || data.id !== id) return;
-      settle(() => resolve(data as RpcResponse));
-    };
-
-    const onError = (ev: Event) => {
-      const msg =
-        (ev as ErrorEvent).message ?? `WebSocket connection to ${url} failed`;
-      settle(() => reject(new Error(msg)));
-    };
-
-    const onClose = () => {
-      settle(() =>
-        reject(new Error("WebSocket closed before receiving a response")),
-      );
-    };
-
-    const cleanup = () => {
-      clearTimeout(timer);
-      ws.removeEventListener("open", onOpen);
-      ws.removeEventListener("message", onMessage);
-      ws.removeEventListener("error", onError);
-      ws.removeEventListener("close", onClose);
-      try {
-        if (
-          ws.readyState === WebSocket.OPEN ||
-          ws.readyState === WebSocket.CONNECTING
-        ) {
-          ws.close();
-        }
-      } catch {
-        // best-effort
-      }
-    };
-
-    ws.addEventListener("open", onOpen);
-    ws.addEventListener("message", onMessage);
-    ws.addEventListener("error", onError);
-    ws.addEventListener("close", onClose);
-  });
 }
 
 // ---------------------------------------------------------------------------

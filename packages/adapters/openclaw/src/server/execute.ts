@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
@@ -13,92 +12,12 @@ import {
   parseOpenClawAgentResult,
   isOpenClawError,
 } from "./parse.js";
-
-// ---------------------------------------------------------------------------
-// JSON-RPC frame helpers
-// ---------------------------------------------------------------------------
-
-interface RpcRequest {
-  type: "req";
-  id: string;
-  method: string;
-  params: Record<string, unknown>;
-}
-
-interface RpcResponse {
-  type: "res";
-  id: string;
-  ok: boolean;
-  payload: Record<string, unknown>;
-}
-
-function buildRpcRequest(
-  method: string,
-  params: Record<string, unknown>,
-): { frame: RpcRequest; id: string } {
-  const id = crypto.randomUUID();
-  return {
-    id,
-    frame: { type: "req", id, method, params },
-  };
-}
-
-function isRpcResponse(data: unknown): data is RpcResponse {
-  if (typeof data !== "object" || data === null || Array.isArray(data)) return false;
-  const obj = data as Record<string, unknown>;
-  return obj.type === "res" && typeof obj.id === "string";
-}
-
-// ---------------------------------------------------------------------------
-// WebSocket helpers (Node 22 native WebSocket)
-// ---------------------------------------------------------------------------
-
-function openWebSocket(
-  url: string,
-  headers?: Record<string, string>,
-): Promise<WebSocket> {
-  return new Promise<WebSocket>((resolve, reject) => {
-    // Node 22 supports a second options arg with `headers` for the native WS.
-    // The typing is not always present so we cast through unknown.
-    const options: Record<string, unknown> = {};
-    if (headers && Object.keys(headers).length > 0) {
-      options.headers = headers;
-    }
-    const ws: WebSocket =
-      Object.keys(options).length > 0
-        ? new (WebSocket as unknown as new (url: string, protocols?: string | string[], opts?: unknown) => WebSocket)(url, undefined, options)
-        : new WebSocket(url);
-
-    const onOpen = () => {
-      cleanup();
-      resolve(ws);
-    };
-    const onError = (ev: Event) => {
-      cleanup();
-      const msg =
-        (ev as ErrorEvent).message ??
-        `WebSocket connection to ${url} failed`;
-      reject(new Error(msg));
-    };
-    const cleanup = () => {
-      ws.removeEventListener("open", onOpen);
-      ws.removeEventListener("error", onError);
-    };
-
-    ws.addEventListener("open", onOpen);
-    ws.addEventListener("error", onError);
-  });
-}
-
-function safeCloseWebSocket(ws: WebSocket) {
-  try {
-    if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
-      ws.close();
-    }
-  } catch {
-    // swallow — best-effort cleanup
-  }
-}
+import {
+  buildRpcRequest,
+  isRpcResponse,
+  openWebSocket,
+  safeCloseWebSocket,
+} from "./rpc.js";
 
 // ---------------------------------------------------------------------------
 // execute()
