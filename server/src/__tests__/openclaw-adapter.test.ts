@@ -332,6 +332,31 @@ describe("openclaw adapter execute", () => {
     expect(headers.authorization).toBe("Bearer gateway-token");
   });
 
+  it("derives Authorization header from x-openclaw-token when webhookAuthHeader is unset", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      sseResponse([
+        "event: response.completed\n",
+        'data: {"type":"response.completed","status":"completed"}\n\n',
+      ]),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(
+      buildContext({
+        url: "https://agent.example/sse",
+        method: "POST",
+        headers: {
+          "x-openclaw-token": "gateway-token",
+        },
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    const headers = (fetchMock.mock.calls[0]?.[1]?.headers ?? {}) as Record<string, string>;
+    expect(headers["x-openclaw-token"]).toBe("gateway-token");
+    expect(headers.authorization).toBe("Bearer gateway-token");
+  });
+
   it("derives issue session keys when configured", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       sseResponse([
@@ -564,7 +589,7 @@ describe("openclaw adapter execute", () => {
     expect((body.paperclip as Record<string, unknown>).streamTransport).toBe("webhook");
   });
 
-  it("uses OpenResponses payload shape for webhook transport against /v1/responses", async () => {
+  it("remaps legacy /v1/responses URLs to /hooks/agent in webhook transport", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ ok: true }), {
         status: 200,
@@ -586,16 +611,69 @@ describe("openclaw adapter execute", () => {
 
     expect(result.exitCode).toBe(0);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]?.[0] ?? "")).toBe("https://agent.example/hooks/agent");
     const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body ?? "{}")) as Record<string, unknown>;
-    expect(body.foo).toBe("bar");
-    expect(body.stream).toBe(false);
-    expect(body.model).toBe("openclaw");
-    expect(String(body.input ?? "")).toContain("PAPERCLIP_RUN_ID=run-123");
-    const metadata = body.metadata as Record<string, unknown>;
-    expect(metadata.PAPERCLIP_RUN_ID).toBe("run-123");
-    expect(metadata.paperclip_session_key).toBe("paperclip");
-    expect(metadata.paperclip_stream_transport).toBe("webhook");
+    expect(typeof body.message).toBe("string");
+    expect(String(body.message ?? "")).toContain("PAPERCLIP_RUN_ID=run-123");
+    expect(body.stream).toBeUndefined();
+    expect(body.input).toBeUndefined();
+    expect(body.metadata).toBeUndefined();
     expect(body.paperclip).toBeUndefined();
+    const headers = (fetchMock.mock.calls[0]?.[1]?.headers ?? {}) as Record<string, string>;
+    expect(headers["x-openclaw-session-key"]).toBeUndefined();
+  });
+
+  it("falls back to legacy /v1/responses when remapped /hooks/agent returns 404", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response("Not Found", {
+          status: 404,
+          statusText: "Not Found",
+          headers: {
+            "content-type": "text/plain",
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          statusText: "OK",
+          headers: {
+            "content-type": "application/json",
+          },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(
+      buildContext({
+        url: "https://agent.example/v1/responses",
+        streamTransport: "webhook",
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[0]?.[0] ?? "")).toBe("https://agent.example/hooks/agent");
+    expect(String(fetchMock.mock.calls[1]?.[0] ?? "")).toBe("https://agent.example/v1/responses");
+
+    const firstBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body ?? "{}")) as Record<string, unknown>;
+    expect(typeof firstBody.message).toBe("string");
+    expect(String(firstBody.message ?? "")).toContain("PAPERCLIP_RUN_ID=run-123");
+
+    const secondBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body ?? "{}")) as Record<string, unknown>;
+    expect(secondBody.stream).toBe(false);
+    expect(typeof secondBody.input).toBe("string");
+    expect(String(secondBody.input ?? "")).toContain("PAPERCLIP_RUN_ID=run-123");
+
+    const secondHeaders = (fetchMock.mock.calls[1]?.[1]?.headers ?? {}) as Record<string, string>;
+    expect(secondHeaders["x-openclaw-session-key"]).toBe("paperclip");
+    expect(result.resultJson).toEqual(
+      expect.objectContaining({
+        usedLegacyResponsesFallback: true,
+      }),
+    );
   });
 
   it("uses wake compatibility payloads for /hooks/wake when transport=webhook", async () => {
@@ -624,6 +702,73 @@ describe("openclaw adapter execute", () => {
     expect(body.paperclip).toBeUndefined();
   });
 
+  it("uses /hooks/agent payloads for webhook transport and omits sessionKey by default", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        statusText: "OK",
+        headers: {
+          "content-type": "application/json",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(
+      buildContext({
+        url: "https://agent.example/hooks/agent",
+        streamTransport: "webhook",
+        payloadTemplate: {
+          name: "Paperclip Hook",
+          wakeMode: "next-heartbeat",
+          deliver: true,
+          channel: "last",
+          model: "openai/gpt-5.2-mini",
+        },
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body ?? "{}")) as Record<string, unknown>;
+    expect(typeof body.message).toBe("string");
+    expect(String(body.message)).toContain("PAPERCLIP_RUN_ID=run-123");
+    expect(body.name).toBe("Paperclip Hook");
+    expect(body.wakeMode).toBe("next-heartbeat");
+    expect(body.deliver).toBe(true);
+    expect(body.channel).toBe("last");
+    expect(body.model).toBe("openai/gpt-5.2-mini");
+    expect(body.sessionKey).toBeUndefined();
+    expect(body.text).toBeUndefined();
+    expect(body.paperclip).toBeUndefined();
+  });
+
+  it("includes sessionKey for /hooks/agent payloads only when hookIncludeSessionKey=true", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        statusText: "OK",
+        headers: {
+          "content-type": "application/json",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(
+      buildContext({
+        url: "https://agent.example/hooks/agent",
+        streamTransport: "webhook",
+        hookIncludeSessionKey: true,
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body ?? "{}")) as Record<string, unknown>;
+    expect(body.sessionKey).toBe("paperclip");
+  });
+
   it("retries webhook payloads with wake compatibility format on text-required errors", async () => {
     const fetchMock = vi
       .fn()
@@ -649,7 +794,7 @@ describe("openclaw adapter execute", () => {
 
     const result = await execute(
       buildContext({
-        url: "https://agent.example/v1/responses",
+        url: "https://agent.example/webhook",
         streamTransport: "webhook",
       }),
     );
@@ -658,8 +803,8 @@ describe("openclaw adapter execute", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const firstBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body ?? "{}")) as Record<string, unknown>;
     const secondBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body ?? "{}")) as Record<string, unknown>;
-    expect(firstBody.model).toBe("openclaw");
-    expect(String(firstBody.input ?? "")).toContain("PAPERCLIP_RUN_ID=run-123");
+    expect(String(firstBody.text ?? "")).toContain("PAPERCLIP_RUN_ID=run-123");
+    expect(firstBody.paperclip).toBeTypeOf("object");
     expect(secondBody.mode).toBe("now");
     expect(String(secondBody.text ?? "")).toContain("PAPERCLIP_RUN_ID=run-123");
   });
@@ -697,7 +842,7 @@ describe("openclaw adapter execute", () => {
 
     const result = await execute(
       buildContext({
-        url: "https://agent.example/v1/responses",
+        url: "https://agent.example/webhook",
         streamTransport: "webhook",
       }),
     );
@@ -739,6 +884,21 @@ describe("openclaw adapter execute", () => {
     expect(result.errorCode).toBe("openclaw_sse_incompatible_endpoint");
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it("rejects /hooks/agent endpoints in SSE mode", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(
+      buildContext({
+        url: "https://agent.example/hooks/agent",
+      }),
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("openclaw_sse_incompatible_endpoint");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
 
 describe("openclaw adapter environment checks", () => {
@@ -759,6 +919,24 @@ describe("openclaw adapter environment checks", () => {
         exposure: "private",
         bindHost: "paperclip.internal",
         allowedHostnames: ["paperclip.internal"],
+      },
+    });
+
+    const check = result.checks.find((entry) => entry.code === "openclaw_wake_endpoint_incompatible");
+    expect(check?.level).toBe("error");
+  });
+
+  it("reports /hooks/agent endpoints as incompatible for SSE mode", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 405, statusText: "Method Not Allowed" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await testEnvironment({
+      companyId: "company-123",
+      adapterType: "openclaw",
+      config: {
+        url: "https://agent.example/hooks/agent",
       },
     });
 

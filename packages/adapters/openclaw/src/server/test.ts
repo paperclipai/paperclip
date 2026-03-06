@@ -34,6 +34,16 @@ function isWakePath(pathname: string): boolean {
   return value === "/hooks/wake" || value.endsWith("/hooks/wake");
 }
 
+function isHooksPath(pathname: string): boolean {
+  const value = pathname.trim().toLowerCase();
+  return (
+    value === "/hooks" ||
+    value.startsWith("/hooks/") ||
+    value.endsWith("/hooks") ||
+    value.includes("/hooks/")
+  );
+}
+
 function normalizeTransport(value: unknown): "sse" | "webhook" | null {
   const normalized = asString(value, "sse").trim().toLowerCase();
   if (!normalized || normalized === "sse") return "sse";
@@ -163,12 +173,12 @@ export async function testEnvironment(
       });
     }
 
-    if (streamTransport === "sse" && isWakePath(url.pathname)) {
+    if (streamTransport === "sse" && (isWakePath(url.pathname) || isHooksPath(url.pathname))) {
       checks.push({
         code: "openclaw_wake_endpoint_incompatible",
         level: "error",
-        message: "Endpoint targets /hooks/wake, which is not stream-capable for SSE transport.",
-        hint: "Use an endpoint that returns text/event-stream for the full run duration.",
+        message: "Endpoint targets /hooks/*, which is not stream-capable for SSE transport.",
+        hint: "Use webhook transport for /hooks/* endpoints.",
       });
     }
   }

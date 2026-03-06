@@ -5,6 +5,7 @@ import { parseOpenClawResponse } from "./parse.js";
 
 export type OpenClawTransport = "sse" | "webhook";
 export type SessionKeyStrategy = "fixed" | "issue" | "run";
+export type OpenClawEndpointKind = "open_responses" | "hook_wake" | "hook_agent" | "generic";
 
 export type WakePayload = {
   runId: string;
@@ -31,7 +32,7 @@ export type OpenClawExecutionState = {
 };
 
 const SENSITIVE_LOG_KEY_PATTERN =
-  /(^|[_-])(auth|authorization|token|secret|password|api[_-]?key|private[_-]?key)([_-]|$)|^x-openclaw-auth$/i;
+  /(^|[_-])(auth|authorization|token|secret|password|api[_-]?key|private[_-]?key)([_-]|$)|^x-openclaw-(auth|token)$/i;
 
 export function nonEmpty(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -73,11 +74,54 @@ export function resolveSessionKey(input: {
   return fallback;
 }
 
+function normalizeUrlPath(pathname: string): string {
+  const trimmed = pathname.trim().toLowerCase();
+  if (!trimmed) return "/";
+  return trimmed.endsWith("/") && trimmed !== "/" ? trimmed.slice(0, -1) : trimmed;
+}
+
+function isWakePath(pathname: string): boolean {
+  const normalized = normalizeUrlPath(pathname);
+  return normalized === "/hooks/wake" || normalized.endsWith("/hooks/wake");
+}
+
+function isHookAgentPath(pathname: string): boolean {
+  const normalized = normalizeUrlPath(pathname);
+  return normalized === "/hooks/agent" || normalized.endsWith("/hooks/agent");
+}
+
+function isHookPath(pathname: string): boolean {
+  const normalized = normalizeUrlPath(pathname);
+  return (
+    normalized === "/hooks" ||
+    normalized.startsWith("/hooks/") ||
+    normalized.endsWith("/hooks") ||
+    normalized.includes("/hooks/")
+  );
+}
+
+export function isHookEndpoint(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return isHookPath(parsed.pathname);
+  } catch {
+    return false;
+  }
+}
+
 export function isWakeCompatibilityEndpoint(url: string): boolean {
   try {
     const parsed = new URL(url);
-    const path = parsed.pathname.toLowerCase();
-    return path === "/hooks/wake" || path.endsWith("/hooks/wake");
+    return isWakePath(parsed.pathname);
+  } catch {
+    return false;
+  }
+}
+
+export function isHookAgentEndpoint(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return isHookAgentPath(parsed.pathname);
   } catch {
     return false;
   }
@@ -86,10 +130,35 @@ export function isWakeCompatibilityEndpoint(url: string): boolean {
 export function isOpenResponsesEndpoint(url: string): boolean {
   try {
     const parsed = new URL(url);
-    const path = parsed.pathname.toLowerCase();
+    const path = normalizeUrlPath(parsed.pathname);
     return path === "/v1/responses" || path.endsWith("/v1/responses");
   } catch {
     return false;
+  }
+}
+
+export function resolveEndpointKind(url: string): OpenClawEndpointKind {
+  if (isOpenResponsesEndpoint(url)) return "open_responses";
+  if (isWakeCompatibilityEndpoint(url)) return "hook_wake";
+  if (isHookAgentEndpoint(url)) return "hook_agent";
+  return "generic";
+}
+
+export function deriveHookAgentUrlFromResponses(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    const path = normalizeUrlPath(parsed.pathname);
+    if (path === "/v1/responses") {
+      parsed.pathname = "/hooks/agent";
+      return parsed.toString();
+    }
+    if (path.endsWith("/v1/responses")) {
+      parsed.pathname = `${path.slice(0, -"/v1/responses".length)}/hooks/agent`;
+      return parsed.toString();
+    }
+    return null;
+  } catch {
+    return null;
   }
 }
 
@@ -390,7 +459,12 @@ export function buildExecutionState(ctx: AdapterExecutionContext): OpenClawExecu
     }
   }
 
-  const openClawAuthHeader = nonEmpty(headers["x-openclaw-auth"] ?? headers["X-OpenClaw-Auth"]);
+  const openClawAuthHeader = nonEmpty(
+    headers["x-openclaw-token"] ??
+      headers["X-OpenClaw-Token"] ??
+      headers["x-openclaw-auth"] ??
+      headers["X-OpenClaw-Auth"],
+  );
   if (openClawAuthHeader && !headers.authorization && !headers.Authorization) {
     headers.authorization = toAuthorizationHeaderValue(openClawAuthHeader);
   }

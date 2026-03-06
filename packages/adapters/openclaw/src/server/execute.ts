@@ -1,6 +1,6 @@
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { asString } from "@paperclipai/adapter-utils/server-utils";
-import { isWakeCompatibilityEndpoint } from "./execute-common.js";
+import { isHookEndpoint } from "./execute-common.js";
 import { executeSse } from "./execute-sse.js";
 import { executeWebhook } from "./execute-webhook.js";
 
@@ -35,12 +35,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   }
 
-  if (transport === "sse" && isWakeCompatibilityEndpoint(url)) {
+  if (transport === "sse" && isHookEndpoint(url)) {
     return {
       exitCode: 1,
       signal: null,
       timedOut: false,
-      errorMessage: "OpenClaw /hooks/wake is not stream-capable. Use SSE transport with a streaming endpoint.",
+      errorMessage: "OpenClaw /hooks/* endpoints are not stream-capable. Use webhook transport for hooks.",
       errorCode: "openclaw_sse_incompatible_endpoint",
     };
   }
