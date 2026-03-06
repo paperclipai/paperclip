@@ -3,6 +3,7 @@ import { useParams, useNavigate, Link, useBeforeUnload } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { agentsApi, type AgentKey, type ClaudeLoginResult } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
+import { ApiError } from "../api/client";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { activityApi } from "../api/activity";
 import { issuesApi } from "../api/issues";
@@ -1770,6 +1771,10 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
   });
   const isLive = run.status === "running" || run.status === "queued";
 
+  function isRunLogUnavailable(err: unknown): boolean {
+    return err instanceof ApiError && err.status === 404;
+  }
+
   function appendLogContent(content: string, finalize = false) {
     if (!content && !finalize) return;
     const combined = `${pendingLogLineRef.current}${content}`;
@@ -1904,7 +1909,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     setLogOffset(0);
     setLogError(null);
 
-    if (!run.logRef) {
+    if (!run.logRef && !isLive) {
       setLogLoading(false);
       return () => {
         cancelled = true;
@@ -1933,6 +1938,10 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
         }
       } catch (err) {
         if (!cancelled) {
+          if (isLive && isRunLogUnavailable(err)) {
+            setLogLoading(false);
+            return;
+          }
           setLogError(err instanceof Error ? err.message : "Failed to load run log");
         }
       } finally {
@@ -1965,7 +1974,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
   // Poll shell log for running runs
   useEffect(() => {
-    if (!isLive || !run.logRef) return;
+    if (!isLive) return;
     const interval = setInterval(async () => {
       try {
         const result = await heartbeatsApi.log(run.id, logOffset, 256_000);
@@ -1977,12 +1986,13 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
         } else if (result.content.length > 0) {
           setLogOffset((prev) => prev + result.content.length);
         }
-      } catch {
+      } catch (err) {
+        if (isRunLogUnavailable(err)) return;
         // ignore polling errors
       }
     }, 2000);
     return () => clearInterval(interval);
-  }, [run.id, run.logRef, isLive, logOffset]);
+  }, [run.id, isLive, logOffset]);
 
   const adapterInvokePayload = useMemo(() => {
     const evt = events.find((e) => e.eventType === "adapter.invoke");
