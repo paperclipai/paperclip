@@ -13,6 +13,10 @@ import {
   sessionCodec as opencodeSessionCodec,
   isOpenCodeUnknownSessionError,
 } from "@paperclipai/adapter-opencode-local/server";
+import {
+  sessionCodec as copilotSessionCodec,
+  isCopilotSessionNotFoundError,
+} from "@paperclipai/adapter-copilot-local/server";
 
 describe("adapter session codecs", () => {
   it("normalizes claude session params with cwd", () => {
@@ -103,6 +107,34 @@ describe("adapter session codecs", () => {
       cwd: "/tmp/gemini",
     });
     expect(geminiSessionCodec.getDisplayId?.(serialized ?? null)).toBe("gemini-session-1");
+  });
+
+  it("normalizes copilot session params with cwd", () => {
+    const parsed = copilotSessionCodec.deserialize({
+      sessionId: "copilot-session-1",
+      cwd: "/tmp/copilot",
+    });
+    expect(parsed).toEqual({
+      sessionId: "copilot-session-1",
+      cwd: "/tmp/copilot",
+    });
+
+    const serialized = copilotSessionCodec.serialize(parsed);
+    expect(serialized).toEqual({
+      sessionId: "copilot-session-1",
+      cwd: "/tmp/copilot",
+    });
+    expect(copilotSessionCodec.getDisplayId?.(serialized ?? null)).toBe("copilot-session-1");
+  });
+});
+
+describe("copilot resume recovery detection", () => {
+  it("detects session not found errors from copilot output", () => {
+    expect(isCopilotSessionNotFoundError("Error: session not found")).toBe(true);
+    expect(isCopilotSessionNotFoundError("session expired")).toBe(true);
+    expect(isCopilotSessionNotFoundError("could not resume abc")).toBe(true);
+    expect(isCopilotSessionNotFoundError("no session with id abc")).toBe(true);
+    expect(isCopilotSessionNotFoundError("everything is fine")).toBe(false);
   });
 });
 

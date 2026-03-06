@@ -65,6 +65,7 @@ export const adapterLabels: Record<string, string> = {
   openclaw_gateway: "OpenClaw Gateway",
   cursor: "Cursor (local)",
   hermes_local: "Hermes Agent",
+  copilot_local: "GitHub Copilot CLI",
   process: "Process",
   http: "HTTP",
 };
