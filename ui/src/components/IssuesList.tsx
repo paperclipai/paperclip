@@ -45,7 +45,7 @@ export type IssueViewState = {
 };
 
 const defaultViewState: IssueViewState = {
-  statuses: [],
+  statuses: ["todo", "in_progress", "in_review", "blocked", "backlog"],
   priorities: [],
   assignees: [],
   labels: [],
@@ -630,6 +630,7 @@ export function IssuesList({
                             onClick={(e) => {
                               e.preventDefault();
                               e.stopPropagation();
+                              setAssigneePickerIssueId(assigneePickerIssueId === issue.id ? null : issue.id);
                             }}
                           >
                             {issue.assigneeAgentId && agentName(issue.assigneeAgentId) ? (
