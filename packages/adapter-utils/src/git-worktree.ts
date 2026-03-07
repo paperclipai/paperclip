@@ -114,14 +114,18 @@ export async function ensureGitWorktree(opts: WorktreeOptions): Promise<Worktree
 
 /**
  * Remove a git worktree. Optionally delete the associated branch via `deleteBranch`.
+ *
+ * Returns `true` if the worktree was successfully removed, `false` otherwise.
  */
-export async function removeGitWorktree(opts: WorktreeRemoveOptions): Promise<void> {
+export async function removeGitWorktree(opts: WorktreeRemoveOptions): Promise<boolean> {
   const { repoCwd, worktreePath, deleteBranch, onLog } = opts;
   const absWorktree = path.resolve(repoCwd, worktreePath);
 
+  let removed = false;
   try {
     await git(repoCwd, ["worktree", "remove", absWorktree, "--force"]);
     await onLog("stderr", `[paperclip] Removed worktree at ${absWorktree}\n`);
+    removed = true;
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     await onLog("stderr", `[paperclip] Warning: failed to remove worktree at ${absWorktree}: ${reason}\n`);
@@ -135,6 +139,8 @@ export async function removeGitWorktree(opts: WorktreeRemoveOptions): Promise<vo
       // Non-fatal: branch may still have unmerged changes or already be gone
     }
   }
+
+  return removed;
 }
 
 /**
