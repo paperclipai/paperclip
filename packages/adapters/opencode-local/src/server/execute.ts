@@ -340,7 +340,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       provider: parseModelProvider(modelId),
       model: modelId,
       billingType: "unknown",
-      costUsd: attempt.parsed.usage.costUsd,
+      costUsd: attempt.parsed.costUsd,
       resultJson: {
         stdout: attempt.proc.stdout,
         stderr: attempt.proc.stderr,

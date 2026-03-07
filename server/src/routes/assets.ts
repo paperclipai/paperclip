@@ -1,5 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
+import createDOMPurify from "dompurify";
+import { JSDOM } from "jsdom";
 import type { Db } from "@paperclipai/db";
 import { createAssetImageMetadataSchema } from "@paperclipai/shared";
 import type { StorageService } from "../storage/types.js";
@@ -7,13 +9,80 @@ import { assetService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
 const MAX_ASSET_IMAGE_BYTES = Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
+const MAX_COMPANY_LOGO_BYTES = 100 * 1024;
+const SVG_CONTENT_TYPE = "image/svg+xml";
 const ALLOWED_IMAGE_CONTENT_TYPES = new Set([
   "image/png",
   "image/jpeg",
   "image/jpg",
   "image/webp",
   "image/gif",
+  SVG_CONTENT_TYPE,
 ]);
+
+function sanitizeSvgBuffer(input: Buffer): Buffer | null {
+  const raw = input.toString("utf8").trim();
+  if (!raw) return null;
+
+  const baseDom = new JSDOM("");
+  const domPurify = createDOMPurify(
+    baseDom.window as unknown as Parameters<typeof createDOMPurify>[0],
+  );
+  domPurify.addHook("uponSanitizeAttribute", (_node, data) => {
+    const attrName = data.attrName.toLowerCase();
+    const attrValue = (data.attrValue ?? "").trim();
+
+    if (attrName.startsWith("on")) {
+      data.keepAttr = false;
+      return;
+    }
+
+    if ((attrName === "href" || attrName === "xlink:href") && attrValue && !attrValue.startsWith("#")) {
+      data.keepAttr = false;
+    }
+  });
+
+  let parsedDom: JSDOM | null = null;
+  try {
+    const sanitized = domPurify.sanitize(raw, {
+      USE_PROFILES: { svg: true, svgFilters: true, html: false },
+      FORBID_TAGS: ["script", "foreignObject"],
+      FORBID_CONTENTS: ["script", "foreignObject"],
+      RETURN_TRUSTED_TYPE: false,
+    });
+
+    parsedDom = new JSDOM(sanitized, { contentType: SVG_CONTENT_TYPE });
+    const document = parsedDom.window.document;
+    const root = document.documentElement;
+    if (!root || root.tagName.toLowerCase() !== "svg") return null;
+
+    for (const el of Array.from(root.querySelectorAll("script, foreignObject"))) {
+      el.remove();
+    }
+    for (const el of Array.from(root.querySelectorAll("*"))) {
+      for (const attr of Array.from(el.attributes)) {
+        const attrName = attr.name.toLowerCase();
+        const attrValue = attr.value.trim();
+        if (attrName.startsWith("on")) {
+          el.removeAttribute(attr.name);
+          continue;
+        }
+        if ((attrName === "href" || attrName === "xlink:href") && attrValue && !attrValue.startsWith("#")) {
+          el.removeAttribute(attr.name);
+        }
+      }
+    }
+
+    const output = root.outerHTML.trim();
+    if (!output || !/^<svg[\s>]/i.test(output)) return null;
+    return Buffer.from(output, "utf8");
+  } catch {
+    return null;
+  } finally {
+    parsedDom?.window.close();
+    baseDom.window.close();
+  }
+}
 
 export function assetRoutes(db: Db, storage: StorageService) {
   const router = Router();
@@ -56,12 +125,21 @@ export function assetRoutes(db: Db, storage: StorageService) {
       return;
     }
 
-    const contentType = (file.mimetype || "").toLowerCase();
+    let contentType = (file.mimetype || "").toLowerCase();
     if (!ALLOWED_IMAGE_CONTENT_TYPES.has(contentType)) {
       res.status(422).json({ error: `Unsupported image type: ${contentType || "unknown"}` });
       return;
     }
-    if (file.buffer.length <= 0) {
+    let fileBody = file.buffer;
+    if (contentType === SVG_CONTENT_TYPE) {
+      const sanitized = sanitizeSvgBuffer(file.buffer);
+      if (!sanitized || sanitized.length <= 0) {
+        res.status(422).json({ error: "SVG could not be sanitized" });
+        return;
+      }
+      fileBody = sanitized;
+    }
+    if (fileBody.length <= 0) {
       res.status(422).json({ error: "Image is empty" });
       return;
     }
@@ -73,13 +151,19 @@ export function assetRoutes(db: Db, storage: StorageService) {
     }
 
     const namespaceSuffix = parsedMeta.data.namespace ?? "general";
+    const isCompanyLogoNamespace = namespaceSuffix === "companies" || namespaceSuffix.startsWith("companies/");
+    if (isCompanyLogoNamespace && fileBody.length > MAX_COMPANY_LOGO_BYTES) {
+      res.status(422).json({ error: `Image exceeds ${MAX_COMPANY_LOGO_BYTES} bytes` });
+      return;
+    }
+
     const actor = getActorInfo(req);
     const stored = await storage.putFile({
       companyId,
       namespace: `assets/${namespaceSuffix}`,
       originalFilename: file.originalname || null,
       contentType,
-      body: file.buffer,
+      body: fileBody,
     });
 
     const asset = await svc.create(companyId, {
@@ -136,9 +220,14 @@ export function assetRoutes(db: Db, storage: StorageService) {
     assertCompanyAccess(req, asset.companyId);
 
     const object = await storage.getObject(asset.companyId, asset.objectKey);
-    res.setHeader("Content-Type", asset.contentType || object.contentType || "application/octet-stream");
+    const responseContentType = asset.contentType || object.contentType || "application/octet-stream";
+    res.setHeader("Content-Type", responseContentType);
     res.setHeader("Content-Length", String(asset.byteSize || object.contentLength || 0));
     res.setHeader("Cache-Control", "private, max-age=60");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    if (responseContentType === SVG_CONTENT_TYPE) {
+      res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'");
+    }
     const filename = asset.originalFilename ?? "asset";
     res.setHeader("Content-Disposition", `inline; filename=\"${filename.replaceAll("\"", "")}\"`);
 
@@ -150,4 +239,3 @@ export function assetRoutes(db: Db, storage: StorageService) {
 
   return router;
 }
-

@@ -42,6 +42,24 @@ PATCH /api/companies/{companyId}
 }
 ```
 
+## Upload Company Logo
+
+Upload an image for a company icon and store it as that company’s logo.
+
+```
+POST /api/companies/{companyId}/assets/images
+Content-Type: multipart/form-data
+```
+
+Valid image content types:
+
+- `image/png`
+- `image/jpeg`
+- `image/jpg`
+- `image/webp`
+- `image/gif`
+- `image/svg+xml`
+
 ## Archive Company
 
 ```
@@ -58,6 +76,7 @@ Archives a company. Archived companies are hidden from default listings.
 | `name` | string | Company name |
 | `description` | string | Company description |
 | `status` | string | `active`, `paused`, `archived` |
+| `logoUrl` | string | Optional path or URL for the logo image |
 | `budgetMonthlyCents` | number | Monthly budget limit |
 | `createdAt` | string | ISO timestamp |
 | `updatedAt` | string | ISO timestamp |
