@@ -1,6 +1,6 @@
 import { and, eq, gte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, approvals, companies, costEvents, issues } from "@paperclipai/db";
+import { agents, approvals, companies, costEvents, heartbeatRuns, issues } from "@paperclipai/db";
 import { notFound } from "../errors.js";
 
 export function dashboardService(db: Db) {
@@ -92,6 +92,35 @@ export function dashboardService(db: Db) {
           ? (monthSpendCents / company.budgetMonthlyCents) * 100
           : 0;
 
+      // Run health: failure rates over the last 24 hours
+      const runCutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const runRows = await db
+        .select({
+          status: heartbeatRuns.status,
+          count: sql<number>`count(*)`,
+        })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            gte(heartbeatRuns.createdAt, runCutoff),
+          ),
+        )
+        .groupBy(heartbeatRuns.status);
+
+      const runCounts: Record<string, number> = {};
+      let totalRuns = 0;
+      let failedRuns = 0;
+      for (const row of runRows) {
+        const count = Number(row.count);
+        runCounts[row.status] = count;
+        totalRuns += count;
+        if (row.status === "failed" || row.status === "timed_out") {
+          failedRuns += count;
+        }
+      }
+      const failureRate = totalRuns > 0 ? failedRuns / totalRuns : 0;
+
       return {
         companyId,
         agents: {
@@ -105,6 +134,13 @@ export function dashboardService(db: Db) {
           monthSpendCents,
           monthBudgetCents: company.budgetMonthlyCents,
           monthUtilizationPercent: Number(utilization.toFixed(2)),
+        },
+        runs: {
+          last24h: totalRuns,
+          succeeded: runCounts.succeeded ?? 0,
+          failed: failedRuns,
+          cancelled: runCounts.cancelled ?? 0,
+          failureRatePercent: Number((failureRate * 100).toFixed(2)),
         },
         pendingApprovals,
         staleTasks,
