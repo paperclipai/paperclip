@@ -487,12 +487,29 @@ setupLiveEventsWebSocketServer(server, db as any, {
 if (config.heartbeatSchedulerEnabled) {
   const heartbeat = heartbeatService(db as any);
 
+  // Gate timer ticks until initial reap completes to avoid scheduling runs
+  // for agents whose previous runs are still being cleaned up.
+  let startupReapComplete = false;
+
   // Reap orphaned runs at startup (no threshold -- runningProcesses is empty)
-  void heartbeat.reapOrphanedRuns().catch((err) => {
-    logger.error({ err }, "startup reap of orphaned heartbeat runs failed");
-  });
+  void heartbeat
+    .reapOrphanedRuns()
+    .then(() => {
+      logger.info("startup reap complete — heartbeat scheduler accepting wakes");
+    })
+    .catch((err) => {
+      logger.error({ err }, "startup reap of orphaned heartbeat runs failed");
+    })
+    .finally(() => {
+      startupReapComplete = true; // unblock scheduler regardless of outcome
+    });
 
   setInterval(() => {
+    if (!startupReapComplete) {
+      logger.debug("skipping heartbeat tick — startup reap still in progress");
+      return;
+    }
+
     void heartbeat
       .tickTimers(new Date())
       .then((result) => {
