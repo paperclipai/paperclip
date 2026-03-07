@@ -561,16 +561,20 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
 
     const assigneeChanged = assigneeWillChange;
+    const statusMovedOutOfBacklog =
+      existing.status === "backlog" &&
+      issue.status !== undefined &&
+      issue.status !== "backlog";
 
     // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
     void (async () => {
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
 
-      if (assigneeChanged && issue.assigneeAgentId && issue.status !== "backlog") {
+      if (issue.assigneeAgentId && issue.status !== "backlog" && (assigneeChanged || statusMovedOutOfBacklog)) {
         wakeups.set(issue.assigneeAgentId, {
           source: "assignment",
           triggerDetail: "system",
-          reason: "issue_assigned",
+          reason: assigneeChanged ? "issue_assigned" : "issue_status_activated",
           payload: { issueId: issue.id, mutation: "update" },
           requestedByActorType: actor.actorType,
           requestedByActorId: actor.actorId,

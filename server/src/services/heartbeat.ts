@@ -199,7 +199,7 @@ export function shouldResetTaskSessionForWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
-  if (wakeReason === "issue_assigned") return true;
+  if (wakeReason === "issue_assigned" || wakeReason === "issue_status_activated") return true;
 
   const wakeSource = readNonEmptyString(contextSnapshot?.wakeSource);
   if (wakeSource === "timer") return true;
@@ -212,7 +212,8 @@ function describeSessionResetReason(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
-  if (wakeReason === "issue_assigned") return "wake reason is issue_assigned";
+  if (wakeReason === "issue_assigned" || wakeReason === "issue_status_activated")
+    return `wake reason is ${wakeReason}`;
 
   const wakeSource = readNonEmptyString(contextSnapshot?.wakeSource);
   if (wakeSource === "timer") return "wake source is timer";
@@ -383,11 +384,11 @@ function resolveNextSessionState(input: {
 
   const displayId = truncateDisplayId(
     explicitDisplayId ??
-      (codec.getDisplayId ? codec.getDisplayId(deserialized) : null) ??
-      readNonEmptyString(deserialized?.sessionId) ??
-      (shouldUsePrevious ? previousDisplayId : null) ??
-      explicitSessionId ??
-      (shouldUsePrevious ? previousLegacySessionId : null),
+    (codec.getDisplayId ? codec.getDisplayId(deserialized) : null) ??
+    readNonEmptyString(deserialized?.sessionId) ??
+    (shouldUsePrevious ? previousDisplayId : null) ??
+    explicitSessionId ??
+    (shouldUsePrevious ? previousLegacySessionId : null),
   );
 
   const legacySessionId =
@@ -468,8 +469,8 @@ export function heartbeatService(db: Db) {
       );
       return truncateDisplayId(
         existingTaskSession?.sessionDisplayId ??
-          (codec.getDisplayId ? codec.getDisplayId(parsedParams) : null) ??
-          readNonEmptyString(parsedParams?.sessionId),
+        (codec.getDisplayId ? codec.getDisplayId(parsedParams) : null) ??
+        readNonEmptyString(parsedParams?.sessionId),
       );
     }
 
@@ -487,10 +488,10 @@ export function heartbeatService(db: Db) {
     const contextProjectId = readNonEmptyString(context.projectId);
     const issueProjectId = issueId
       ? await db
-          .select({ projectId: issues.projectId })
-          .from(issues)
-          .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
-          .then((rows) => rows[0]?.projectId ?? null)
+        .select({ projectId: issues.projectId })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
+        .then((rows) => rows[0]?.projectId ?? null)
       : null;
     const resolvedProjectId = issueProjectId ?? contextProjectId;
     const useProjectWorkspace = opts?.useProjectWorkspace !== false;
@@ -498,15 +499,15 @@ export function heartbeatService(db: Db) {
 
     const projectWorkspaceRows = workspaceProjectId
       ? await db
-          .select()
-          .from(projectWorkspaces)
-          .where(
-            and(
-              eq(projectWorkspaces.companyId, agent.companyId),
-              eq(projectWorkspaces.projectId, workspaceProjectId),
-            ),
-          )
-          .orderBy(asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id))
+        .select()
+        .from(projectWorkspaces)
+        .where(
+          and(
+            eq(projectWorkspaces.companyId, agent.companyId),
+            eq(projectWorkspaces.projectId, workspaceProjectId),
+          ),
+        )
+        .orderBy(asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id))
       : [];
 
     const workspaceHints = projectWorkspaceRows.map((workspace) => ({
@@ -1070,19 +1071,19 @@ export function heartbeatService(db: Db) {
     const issueId = readNonEmptyString(context.issueId);
     const issueAssigneeConfig = issueId
       ? await db
-          .select({
-            assigneeAgentId: issues.assigneeAgentId,
-            assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
-          })
-          .from(issues)
-          .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
-          .then((rows) => rows[0] ?? null)
+        .select({
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
+        })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
+        .then((rows) => rows[0] ?? null)
       : null;
     const issueAssigneeOverrides =
       issueAssigneeConfig && issueAssigneeConfig.assigneeAgentId === agent.id
         ? parseIssueAssigneeAdapterOverrides(
-            issueAssigneeConfig.assigneeAdapterOverrides,
-          )
+          issueAssigneeConfig.assigneeAdapterOverrides,
+        )
         : null;
     const taskSession = taskKey
       ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, taskKey)
@@ -1110,10 +1111,10 @@ export function heartbeatService(db: Db) {
       ...(runtimeSessionResolution.warning ? [runtimeSessionResolution.warning] : []),
       ...(resetTaskSession && sessionResetReason
         ? [
-            taskKey
-              ? `Skipping saved session resume for task "${taskKey}" because ${sessionResetReason}.`
-              : `Skipping saved session resume because ${sessionResetReason}.`,
-          ]
+          taskKey
+            ? `Skipping saved session resume for task "${taskKey}" because ${sessionResetReason}.`
+            : `Skipping saved session resume because ${sessionResetReason}.`,
+        ]
         : []),
     ];
     context.paperclipWorkspace = {
@@ -1131,9 +1132,9 @@ export function heartbeatService(db: Db) {
     const runtimeSessionFallback = taskKey || resetTaskSession ? null : runtime.sessionId;
     const previousSessionDisplayId = truncateDisplayId(
       taskSessionForRun?.sessionDisplayId ??
-        (sessionCodec.getDisplayId ? sessionCodec.getDisplayId(runtimeSessionParams) : null) ??
-        readNonEmptyString(runtimeSessionParams?.sessionId) ??
-        runtimeSessionFallback,
+      (sessionCodec.getDisplayId ? sessionCodec.getDisplayId(runtimeSessionParams) : null) ??
+      readNonEmptyString(runtimeSessionParams?.sessionId) ??
+      runtimeSessionFallback,
     );
     const runtimeForAdapter = {
       sessionId: readNonEmptyString(runtimeSessionParams?.sessionId) ?? runtimeSessionFallback,
@@ -1316,10 +1317,10 @@ export function heartbeatService(db: Db) {
       const usageJson =
         adapterResult.usage || adapterResult.costUsd != null
           ? ({
-              ...(adapterResult.usage ?? {}),
-              ...(adapterResult.costUsd != null ? { costUsd: adapterResult.costUsd } : {}),
-              ...(adapterResult.billingType ? { billingType: adapterResult.billingType } : {}),
-            } as Record<string, unknown>)
+            ...(adapterResult.usage ?? {}),
+            ...(adapterResult.costUsd != null ? { costUsd: adapterResult.costUsd } : {}),
+            ...(adapterResult.billingType ? { billingType: adapterResult.billingType } : {}),
+          } as Record<string, unknown>)
           : null;
 
       await setRunStatus(run.id, status, {
