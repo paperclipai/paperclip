@@ -374,7 +374,7 @@ export function IssueDetail() {
     };
   }, [linkedRuns]);
 
-  const invalidateIssue = () => {
+  const invalidateIssue = (updatedIssue?: { projectId?: string | null }) => {
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId!) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(issueId!) });
@@ -388,8 +388,13 @@ export function IssueDetail() {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listAssignedToMe(selectedCompanyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
+      // Invalidate the old project list (pre-mutation state)
       if (issue?.projectId) {
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(selectedCompanyId, issue.projectId) });
+      }
+      // If the issue was moved to a different project, also invalidate the new project list
+      if (updatedIssue?.projectId && updatedIssue.projectId !== issue?.projectId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(selectedCompanyId, updatedIssue.projectId) });
       }
     }
   };
@@ -408,7 +413,7 @@ export function IssueDetail() {
   const updateIssue = useMutation({
     mutationFn: (data: Record<string, unknown>) => issuesApi.update(issueId!, data),
     onSuccess: (updated) => {
-      invalidateIssue();
+      invalidateIssue(updated);
       const issueRef = updated.identifier ?? `Issue ${updated.id.slice(0, 8)}`;
       pushToast({
         dedupeKey: `activity:issue.updated:${updated.id}`,
