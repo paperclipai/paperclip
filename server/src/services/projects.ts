@@ -323,29 +323,31 @@ export function projectService(db: Db) {
     },
 
     remove: async (id: string) => {
-      // Reject if any issues reference this project
-      const relatedIssues = await db
-        .select({ id: issues.id })
-        .from(issues)
-        .where(eq(issues.projectId, id))
-        .limit(1);
-      if (relatedIssues.length > 0) {
-        return { rejected: true as const };
-      }
+      return db.transaction(async (tx) => {
+        // Reject if any issues reference this project
+        const relatedIssues = await tx
+          .select({ id: issues.id })
+          .from(issues)
+          .where(eq(issues.projectId, id))
+          .limit(1);
+        if (relatedIssues.length > 0) {
+          return { rejected: true as const };
+        }
 
-      // Null out cost_events references before deleting
-      await db
-        .update(costEvents)
-        .set({ projectId: null })
-        .where(eq(costEvents.projectId, id));
+        // Null out cost_events references before deleting
+        await tx
+          .update(costEvents)
+          .set({ projectId: null })
+          .where(eq(costEvents.projectId, id));
 
-      const rows = await db
-        .delete(projects)
-        .where(eq(projects.id, id))
-        .returning();
-      const row = rows[0] ?? null;
-      if (!row) return null;
-      return { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) };
+        const rows = await tx
+          .delete(projects)
+          .where(eq(projects.id, id))
+          .returning();
+        const row = rows[0] ?? null;
+        if (!row) return null;
+        return { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) };
+      });
     },
 
     listWorkspaces: async (projectId: string): Promise<ProjectWorkspace[]> => {
