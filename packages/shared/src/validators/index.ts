@@ -124,10 +124,12 @@ export {
   claimJoinRequestApiKeySchema,
   updateMemberPermissionsSchema,
   updateUserCompanyAccessSchema,
+  resetUserPasswordSchema,
   type CreateCompanyInvite,
   type AcceptInvite,
   type ListJoinRequestsQuery,
   type ClaimJoinRequestApiKey,
   type UpdateMemberPermissions,
   type UpdateUserCompanyAccess,
+  type ResetUserPassword,
 } from "./access.js";

@@ -64,6 +64,17 @@ type BoardClaimStatus = {
   claimedByUserId: string | null;
 };
 
+export type CompanyHumanMember = {
+  membershipId: string;
+  companyId: string;
+  userId: string;
+  email: string | null;
+  name: string | null;
+  membershipRole: string | null;
+  status: "pending" | "active" | "suspended";
+  isInstanceAdmin: boolean;
+};
+
 export const accessApi = {
   createCompanyInvite: (
     companyId: string,
@@ -114,4 +125,12 @@ export const accessApi = {
 
   claimBoard: (token: string, code: string) =>
     api.post<{ claimed: true; userId: string }>(`/board-claim/${token}/claim`, { code }),
+
+  listCompanyHumanMembers: (companyId: string) =>
+    api.get<CompanyHumanMember[]>(`/admin/companies/${companyId}/human-members`),
+
+  resetUserPassword: (companyId: string, userId: string, newPassword: string) =>
+    api.post<{ status: true }>(`/admin/companies/${companyId}/users/${userId}/reset-password`, {
+      newPassword,
+    }),
 };

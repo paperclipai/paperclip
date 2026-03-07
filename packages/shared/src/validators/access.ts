@@ -60,3 +60,9 @@ export const updateUserCompanyAccessSchema = z.object({
 });
 
 export type UpdateUserCompanyAccess = z.infer<typeof updateUserCompanyAccessSchema>;
+
+export const resetUserPasswordSchema = z.object({
+  newPassword: z.string().min(8).max(128),
+});
+
+export type ResetUserPassword = z.infer<typeof resetUserPasswordSchema>;

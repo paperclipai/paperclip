@@ -1,6 +1,7 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  authUsers,
   companyMemberships,
   instanceUserRoles,
   principalPermissionGrants,
@@ -11,6 +12,17 @@ type MembershipRow = typeof companyMemberships.$inferSelect;
 type GrantInput = {
   permissionKey: PermissionKey;
   scope?: Record<string, unknown> | null;
+};
+
+export type CompanyHumanMember = {
+  membershipId: string;
+  companyId: string;
+  userId: string;
+  email: string | null;
+  name: string | null;
+  membershipRole: string | null;
+  status: MembershipRow["status"];
+  isInstanceAdmin: boolean;
 };
 
 export function accessService(db: Db) {
@@ -81,6 +93,75 @@ export function accessService(db: Db) {
       .from(companyMemberships)
       .where(eq(companyMemberships.companyId, companyId))
       .orderBy(sql`${companyMemberships.createdAt} desc`);
+  }
+
+  async function listCompanyHumanMembers(companyId: string): Promise<CompanyHumanMember[]> {
+    const memberships = await db
+      .select()
+      .from(companyMemberships)
+      .where(
+        and(
+          eq(companyMemberships.companyId, companyId),
+          eq(companyMemberships.principalType, "user"),
+        ),
+      )
+      .orderBy(sql`${companyMemberships.createdAt} desc`);
+
+    const userIds = Array.from(new Set(memberships.map((row) => row.principalId)));
+    if (userIds.length === 0) return [];
+
+    const [users, adminRoles] = await Promise.all([
+      db.select().from(authUsers).where(inArray(authUsers.id, userIds)),
+      db
+        .select({ userId: instanceUserRoles.userId })
+        .from(instanceUserRoles)
+        .where(
+          and(
+            inArray(instanceUserRoles.userId, userIds),
+            eq(instanceUserRoles.role, "instance_admin"),
+          ),
+        ),
+    ]);
+
+    const usersById = new Map(users.map((user) => [user.id, user]));
+    const adminIds = new Set(adminRoles.map((row) => row.userId));
+
+    return memberships.map((membership) => {
+      const user = usersById.get(membership.principalId);
+      return {
+        membershipId: membership.id,
+        companyId: membership.companyId,
+        userId: membership.principalId,
+        email: user?.email ?? null,
+        name: user?.name ?? null,
+        membershipRole: membership.membershipRole,
+        status: membership.status,
+        isInstanceAdmin: adminIds.has(membership.principalId),
+      };
+    });
+  }
+
+  async function getCompanyHumanMember(companyId: string, userId: string) {
+    const membership = await getMembership(companyId, "user", userId);
+    if (!membership) return null;
+
+    const user = await db
+      .select()
+      .from(authUsers)
+      .where(eq(authUsers.id, userId))
+      .then((rows) => rows[0] ?? null);
+    if (!user) return null;
+
+    return {
+      membershipId: membership.id,
+      companyId: membership.companyId,
+      userId,
+      email: user.email ?? null,
+      name: user.name ?? null,
+      membershipRole: membership.membershipRole,
+      status: membership.status,
+      isInstanceAdmin: await isInstanceAdmin(userId),
+    } satisfies CompanyHumanMember;
   }
 
   async function setMemberPermissions(
@@ -253,6 +334,8 @@ export function accessService(db: Db) {
 
   return {
     isInstanceAdmin,
+    listCompanyHumanMembers,
+    getCompanyHumanMember,
     canUser,
     hasPermission,
     getMembership,

@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { companiesApi } from "../api/companies";
-import { accessApi } from "../api/access";
+import { accessApi, type CompanyHumanMember } from "../api/access";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Settings, Check } from "lucide-react";
@@ -47,6 +47,10 @@ export function CompanySettings() {
   const [inviteSnippet, setInviteSnippet] = useState<string | null>(null);
   const [snippetCopied, setSnippetCopied] = useState(false);
   const [snippetCopyDelightId, setSnippetCopyDelightId] = useState(0);
+  const [selectedPasswordUserId, setSelectedPasswordUserId] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [passwordResetMessage, setPasswordResetMessage] = useState<string | null>(null);
+  const [passwordResetError, setPasswordResetError] = useState<string | null>(null);
 
   const generalDirty =
     !!selectedCompany &&
@@ -130,12 +134,55 @@ export function CompanySettings() {
     }
   });
 
+  const humanMembersQuery = useQuery({
+    queryKey: ["access", "company-human-members", selectedCompanyId],
+    queryFn: () => accessApi.listCompanyHumanMembers(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+    retry: false,
+  });
+
+  const passwordResetMutation = useMutation({
+    mutationFn: ({ userId, password }: { userId: string; password: string }) =>
+      accessApi.resetUserPassword(selectedCompanyId!, userId, password),
+    onSuccess: (_result, variables) => {
+      const member = humanMembersQuery.data?.find((entry) => entry.userId === variables.userId) ?? null;
+      setPasswordResetError(null);
+      setNewPassword("");
+      setPasswordResetMessage(
+        `${formatMemberLabel(member)} must sign in again with the new password.`,
+      );
+    },
+    onError: (err) => {
+      setPasswordResetMessage(null);
+      setPasswordResetError(
+        err instanceof Error ? err.message : "Failed to reset password",
+      );
+    },
+  });
+
   useEffect(() => {
     setInviteError(null);
     setInviteSnippet(null);
     setSnippetCopied(false);
     setSnippetCopyDelightId(0);
+    setSelectedPasswordUserId("");
+    setNewPassword("");
+    setPasswordResetMessage(null);
+    setPasswordResetError(null);
   }, [selectedCompanyId]);
+
+  useEffect(() => {
+    if (humanMembersQuery.data && humanMembersQuery.data.length > 0) {
+      setSelectedPasswordUserId((current) => {
+        if (current && humanMembersQuery.data.some((member) => member.userId === current)) {
+          return current;
+        }
+        return humanMembersQuery.data[0]?.userId ?? "";
+      });
+      return;
+    }
+    setSelectedPasswordUserId("");
+  }, [humanMembersQuery.data]);
   const archiveMutation = useMutation({
     mutationFn: ({
       companyId,
@@ -179,6 +226,11 @@ export function CompanySettings() {
       brandColor: brandColor || null
     });
   }
+
+  const selectedPasswordMember = humanMembersQuery.data?.find(
+    (member) => member.userId === selectedPasswordUserId,
+  ) ?? null;
+  const canResetPassword = selectedPasswordUserId.length > 0 && newPassword.trim().length >= 8;
 
   return (
     <div className="max-w-2xl space-y-6">
@@ -381,6 +433,103 @@ export function CompanySettings() {
         </div>
       </div>
 
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          User Access
+        </div>
+        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+          <div className="space-y-1">
+            <div className="text-sm font-medium">Reset a member password</div>
+            <p className="text-sm text-muted-foreground">
+              Instance admins can set a new password for any human member in this company. Existing sessions are revoked immediately.
+            </p>
+          </div>
+          {humanMembersQuery.isLoading ? (
+            <p className="text-sm text-muted-foreground">Loading human members...</p>
+          ) : humanMembersQuery.error ? (
+            <p className="text-sm text-destructive">
+              {humanMembersQuery.error instanceof Error
+                ? humanMembersQuery.error.message
+                : "Failed to load human members"}
+            </p>
+          ) : (humanMembersQuery.data?.length ?? 0) === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No authenticated human members are attached to this company yet.
+            </p>
+          ) : (
+            <>
+              <Field
+                label="Member"
+                hint="Only authenticated human members of this company can be reset here."
+              >
+                <select
+                  className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                  value={selectedPasswordUserId}
+                  onChange={(event) => {
+                    setSelectedPasswordUserId(event.target.value);
+                    setPasswordResetMessage(null);
+                    setPasswordResetError(null);
+                  }}
+                >
+                  {humanMembersQuery.data?.map((member) => (
+                    <option key={member.userId} value={member.userId}>
+                      {formatMemberLabel(member)}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              {selectedPasswordMember && (
+                <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                  <div>User ID: <span className="font-mono">{selectedPasswordMember.userId}</span></div>
+                  <div>Status: {selectedPasswordMember.status}</div>
+                  <div>
+                    Role: {selectedPasswordMember.membershipRole ?? "member"}
+                    {selectedPasswordMember.isInstanceAdmin ? " - instance admin" : ""}
+                  </div>
+                </div>
+              )}
+              <Field
+                label="New password"
+                hint="Use at least 8 characters. The member must sign in again with this new password."
+              >
+                <input
+                  className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                  type="password"
+                  value={newPassword}
+                  autoComplete="new-password"
+                  onChange={(event) => {
+                    setNewPassword(event.target.value);
+                    setPasswordResetMessage(null);
+                    setPasswordResetError(null);
+                  }}
+                />
+              </Field>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    if (!canResetPassword || !selectedPasswordUserId) return;
+                    passwordResetMutation.mutate({
+                      userId: selectedPasswordUserId,
+                      password: newPassword,
+                    });
+                  }}
+                  disabled={!canResetPassword || passwordResetMutation.isPending}
+                >
+                  {passwordResetMutation.isPending ? "Resetting..." : "Set new password"}
+                </Button>
+                {passwordResetMessage && (
+                  <span className="text-xs text-muted-foreground">{passwordResetMessage}</span>
+                )}
+                {passwordResetError && (
+                  <span className="text-xs text-destructive">{passwordResetError}</span>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
       {/* Danger Zone */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-destructive uppercase tracking-wide">
@@ -435,6 +584,14 @@ export function CompanySettings() {
       </div>
     </div>
   );
+}
+
+function formatMemberLabel(member: CompanyHumanMember | null) {
+  if (!member) return "Selected user";
+  if (member.name && member.email) return `${member.name} <${member.email}>`;
+  if (member.email) return member.email;
+  if (member.name) return member.name;
+  return member.userId;
 }
 
 function buildAgentSnippet(input: AgentSnippetInput) {

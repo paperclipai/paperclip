@@ -17,6 +17,7 @@ import {
   claimJoinRequestApiKeySchema,
   createCompanyInviteSchema,
   listJoinRequestsQuerySchema,
+  resetUserPasswordSchema,
   updateMemberPermissionsSchema,
   updateUserCompanyAccessSchema,
   PERMISSION_KEYS
@@ -31,6 +32,10 @@ import {
 } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { validate } from "../middleware/validate.js";
+import {
+  setBetterAuthUserPassword,
+  type BetterAuthInstance,
+} from "../auth/better-auth.js";
 import {
   accessService,
   agentService,
@@ -937,6 +942,7 @@ function buildInviteOnboardingManifest(
     deploymentExposure: DeploymentExposure;
     bindHost: string;
     allowedHostnames: string[];
+    betterAuth?: BetterAuthInstance;
   }
 ) {
   const baseUrl = requestBaseUrl(req);
@@ -1041,6 +1047,7 @@ export function buildInviteOnboardingTextDocument(
     deploymentExposure: DeploymentExposure;
     bindHost: string;
     allowedHostnames: string[];
+    betterAuth?: BetterAuthInstance;
   }
 ) {
   const manifest = buildInviteOnboardingManifest(req, token, invite, opts);
@@ -1504,6 +1511,7 @@ export function accessRoutes(
     deploymentExposure: DeploymentExposure;
     bindHost: string;
     allowedHostnames: string[];
+    betterAuth?: BetterAuthInstance;
   }
 ) {
   const router = Router();
@@ -2610,6 +2618,52 @@ export function accessRoutes(
         req.body.companyIds ?? []
       );
       res.json(memberships);
+    }
+  );
+
+  router.get("/admin/companies/:companyId/human-members", async (req, res) => {
+    await assertInstanceAdmin(req);
+    const companyId = req.params.companyId as string;
+    const members = await access.listCompanyHumanMembers(companyId);
+    res.json(members);
+  });
+
+  router.post(
+    "/admin/companies/:companyId/users/:userId/reset-password",
+    validate(resetUserPasswordSchema),
+    async (req, res) => {
+      await assertInstanceAdmin(req);
+      if (!opts.betterAuth) {
+        throw conflict("Password reset is unavailable because authenticated mode is not enabled");
+      }
+
+      const companyId = req.params.companyId as string;
+      const userId = req.params.userId as string;
+      const member = await access.getCompanyHumanMember(companyId, userId);
+      if (!member) {
+        throw notFound("User is not an authenticated member of this company");
+      }
+
+      await setBetterAuthUserPassword(opts.betterAuth, {
+        userId,
+        newPassword: req.body.newPassword,
+      });
+
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "user.password_reset",
+        entityType: "user",
+        entityId: userId,
+        details: {
+          email: member.email,
+          membershipRole: member.membershipRole,
+          sessionsRevoked: true,
+        },
+      });
+
+      res.json({ status: true });
     }
   );
 

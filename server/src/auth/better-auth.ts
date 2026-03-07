@@ -11,6 +11,7 @@ import {
   authVerifications,
 } from "@paperclipai/db";
 import type { Config } from "../config.js";
+import { badRequest, notFound } from "../errors.js";
 
 export type BetterAuthSessionUser = {
   id: string;
@@ -23,7 +24,7 @@ export type BetterAuthSessionResult = {
   user: BetterAuthSessionUser | null;
 };
 
-type BetterAuthInstance = ReturnType<typeof betterAuth>;
+export type BetterAuthInstance = ReturnType<typeof betterAuth>;
 
 function headersFromNodeHeaders(rawHeaders: IncomingHttpHeaders): Headers {
   const headers = new Headers();
@@ -139,4 +140,43 @@ export async function resolveBetterAuthSession(
   req: Request,
 ): Promise<BetterAuthSessionResult | null> {
   return resolveBetterAuthSessionFromHeaders(auth, headersFromExpressRequest(req));
+}
+
+export async function setBetterAuthUserPassword(
+  auth: BetterAuthInstance,
+  input: { userId: string; newPassword: string },
+): Promise<void> {
+  const ctx = await auth.$context;
+  const user = await ctx.internalAdapter.findUserById(input.userId);
+  if (!user) {
+    throw notFound("User not found");
+  }
+
+  const { newPassword } = input;
+  const minPasswordLength = ctx.password.config.minPasswordLength;
+  if (newPassword.length < minPasswordLength) {
+    throw badRequest(`Password must be at least ${minPasswordLength} characters`);
+  }
+
+  const maxPasswordLength = ctx.password.config.maxPasswordLength;
+  if (newPassword.length > maxPasswordLength) {
+    throw badRequest(`Password must be at most ${maxPasswordLength} characters`);
+  }
+
+  const hashedPassword = await ctx.password.hash(newPassword);
+  const accounts = await ctx.internalAdapter.findAccounts(input.userId);
+  const credentialAccount = accounts.find((account) => account.providerId === "credential");
+
+  if (credentialAccount) {
+    await ctx.internalAdapter.updatePassword(input.userId, hashedPassword);
+  } else {
+    await ctx.internalAdapter.linkAccount({
+      userId: input.userId,
+      providerId: "credential",
+      accountId: input.userId,
+      password: hashedPassword,
+    });
+  }
+
+  await ctx.internalAdapter.deleteSessions(input.userId);
 }

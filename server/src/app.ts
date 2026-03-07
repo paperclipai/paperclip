@@ -24,7 +24,7 @@ import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { llmRoutes } from "./routes/llms.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
-import type { BetterAuthSessionResult } from "./auth/better-auth.js";
+import type { BetterAuthInstance, BetterAuthSessionResult } from "./auth/better-auth.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 
@@ -40,6 +40,7 @@ export async function createApp(
     authReady: boolean;
     companyDeletionEnabled: boolean;
     betterAuthHandler?: express.RequestHandler;
+    betterAuth?: BetterAuthInstance;
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
   },
 ) {
@@ -118,6 +119,7 @@ export async function createApp(
       deploymentExposure: opts.deploymentExposure,
       bindHost: opts.bindHost,
       allowedHostnames: opts.allowedHostnames,
+      betterAuth: opts.betterAuth,
     }),
   );
   app.use("/api", api);

@@ -21,6 +21,7 @@ import {
 } from "@paperclipai/db";
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
+import type { BetterAuthInstance } from "./auth/better-auth.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
@@ -399,6 +400,7 @@ if (config.deploymentMode === "authenticated") {
 
 let authReady = config.deploymentMode === "local_trusted";
 let betterAuthHandler: RequestHandler | undefined;
+let betterAuth: BetterAuthInstance | undefined;
 let resolveSession:
   | ((req: ExpressRequest) => Promise<BetterAuthSessionResult | null>)
   | undefined;
@@ -442,6 +444,7 @@ if (config.deploymentMode === "authenticated") {
     "Authenticated mode auth origin configuration",
   );
   const auth = createBetterAuthInstance(db as any, config, effectiveTrustedOrigins);
+  betterAuth = auth;
   betterAuthHandler = createBetterAuthHandler(auth);
   resolveSession = (req) => resolveBetterAuthSession(auth, req);
   resolveSessionFromHeaders = (headers) => resolveBetterAuthSessionFromHeaders(auth, headers);
@@ -461,6 +464,7 @@ const app = await createApp(db as any, {
   authReady,
   companyDeletionEnabled: config.companyDeletionEnabled,
   betterAuthHandler,
+  betterAuth,
   resolveSession,
 });
 const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
