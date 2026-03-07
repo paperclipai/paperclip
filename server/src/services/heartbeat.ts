@@ -76,7 +76,7 @@ interface ParsedIssueAssigneeAdapterOverrides {
 
 export type ResolvedWorkspaceForRun = {
   cwd: string;
-  source: "project_primary" | "task_session" | "agent_home";
+  source: "project_primary" | "task_session" | "agent_adapter_cwd" | "agent_home";
   projectId: string | null;
   workspaceId: string | null;
   repoUrl: string | null;
@@ -590,6 +590,33 @@ export function heartbeatService(db: Db) {
           warnings: [],
         };
       }
+    }
+
+    const agentCwd = readNonEmptyString(parseObject(agent.adapterConfig)?.cwd);
+    const agentCwdExists = agentCwd
+      ? await fs
+          .stat(agentCwd)
+          .then((stats) => stats.isDirectory())
+          .catch(() => false)
+      : false;
+
+    if (agentCwdExists) {
+      const warnings: string[] = [];
+      if (sessionCwd) {
+        warnings.push(
+          `Saved session workspace "${sessionCwd}" is not available. Falling back to agent cwd "${agentCwd}".`,
+        );
+      }
+      return {
+        cwd: agentCwd!,
+        source: "agent_adapter_cwd" as const,
+        projectId: resolvedProjectId,
+        workspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+        workspaceHints,
+        warnings,
+      };
     }
 
     const cwd = resolveDefaultAgentWorkspaceDir(agent.id);
