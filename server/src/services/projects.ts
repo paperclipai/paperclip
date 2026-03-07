@@ -12,7 +12,7 @@ import {
 
 type ProjectRow = typeof projects.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
-const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
+export const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 type CreateWorkspaceInput = {
   name?: string | null;
   cwd?: string | null;
@@ -634,6 +634,35 @@ export function projectService(db: Db) {
       });
 
       return removed ? toWorkspace(removed) : null;
+    },
+
+    getWorkspaceById: async (projectId: string, workspaceId: string): Promise<ProjectWorkspace | null> => {
+      const row = await db
+        .select()
+        .from(projectWorkspaces)
+        .where(
+          and(
+            eq(projectWorkspaces.id, workspaceId),
+            eq(projectWorkspaces.projectId, projectId),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+      return row ? toWorkspace(row) : null;
+    },
+
+    /**
+     * Fetches a single workspace by ID without requiring a projectId.
+     *
+     * Used by the workspace-files routes which perform their own authorization
+     * via assertCompanyAccess after loading the workspace's parent project.
+     */
+    getWorkspaceByIdOnly: async (workspaceId: string): Promise<ProjectWorkspace | null> => {
+      const row = await db
+        .select()
+        .from(projectWorkspaces)
+        .where(eq(projectWorkspaces.id, workspaceId))
+        .then((rows) => rows[0] ?? null);
+      return row ? toWorkspace(row) : null;
     },
 
     resolveByReference: async (companyId: string, reference: string) => {

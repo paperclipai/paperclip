@@ -37,3 +37,7 @@ tmp/
 .vscode/
 .claude/settings.local.json
 .paperclip-local/
+.automaker/
+
+# Test results
+test-results/

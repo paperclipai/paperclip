@@ -36,6 +36,17 @@ export const queryKeys = {
   projects: {
     list: (companyId: string) => ["projects", companyId] as const,
     detail: (id: string) => ["projects", "detail", id] as const,
+    workspaces: (projectId: string) => ["projects", "workspaces", projectId] as const,
+    workspace: (projectId: string, workspaceId: string) =>
+      ["projects", "workspaces", projectId, workspaceId] as const,
+  },
+  workspaceFiles: {
+    list: (workspaceId: string, path: string = ".") =>
+      ["workspace-files", workspaceId, path] as const,
+    file: (workspaceId: string, path: string) =>
+      ["workspace-files", "file", workspaceId, path] as const,
+    gitInfo: (workspaceId: string) =>
+      ["workspace-files", "git-info", workspaceId] as const,
   },
   goals: {
     list: (companyId: string) => ["goals", companyId] as const,

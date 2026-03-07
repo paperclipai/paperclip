@@ -20,6 +20,10 @@ export const projectsApi = {
     api.patch<Project>(projectPath(id, companyId), data),
   listWorkspaces: (projectId: string, companyId?: string) =>
     api.get<ProjectWorkspace[]>(projectPath(projectId, companyId, "/workspaces")),
+  getWorkspace: (projectId: string, workspaceId: string, companyId?: string) =>
+    api.get<ProjectWorkspace>(
+      projectPath(projectId, companyId, `/workspaces/${encodeURIComponent(workspaceId)}`),
+    ),
   createWorkspace: (projectId: string, data: Record<string, unknown>, companyId?: string) =>
     api.post<ProjectWorkspace>(projectPath(projectId, companyId, "/workspaces"), data),
   updateWorkspace: (projectId: string, workspaceId: string, data: Record<string, unknown>, companyId?: string) =>

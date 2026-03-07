@@ -113,6 +113,8 @@
               "api/issues",
               "api/approvals",
               "api/goals-and-projects",
+              "api/workspaces",
+              "api/workspace-files",
               "api/costs",
               "api/secrets",
               "api/activity",
