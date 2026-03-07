@@ -870,8 +870,10 @@ describe("openclaw adapter execute", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("rejects /hooks/wake compatibility endpoints in SSE mode", async () => {
-    const fetchMock = vi.fn();
+  it("auto-routes /hooks/wake endpoints to webhook transport when SSE is default", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await execute(
@@ -880,13 +882,20 @@ describe("openclaw adapter execute", () => {
       }),
     );
 
-    expect(result.exitCode).toBe(1);
-    expect(result.errorCode).toBe("openclaw_sse_incompatible_endpoint");
-    expect(fetchMock).not.toHaveBeenCalled();
+    // Should succeed via webhook fallback, not reject with an error
+    expect(result.exitCode).toBe(0);
+    expect(result.errorCode).toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://agent.example/hooks/wake",
+      expect.objectContaining({ method: "POST" }),
+    );
   });
 
-  it("rejects /hooks/agent endpoints in SSE mode", async () => {
-    const fetchMock = vi.fn();
+  it("auto-routes /hooks/agent endpoints to webhook transport when SSE is default", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await execute(
@@ -895,9 +904,13 @@ describe("openclaw adapter execute", () => {
       }),
     );
 
-    expect(result.exitCode).toBe(1);
-    expect(result.errorCode).toBe("openclaw_sse_incompatible_endpoint");
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.exitCode).toBe(0);
+    expect(result.errorCode).toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://agent.example/hooks/agent",
+      expect.objectContaining({ method: "POST" }),
+    );
   });
 });
 

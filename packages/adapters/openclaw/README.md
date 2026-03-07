@@ -16,7 +16,7 @@ Configured via `adapterConfig.streamTransport` (or legacy `adapterConfig.transpo
 | streamTransport | configured URL path | behavior |
 | --- | --- | --- |
 | `sse` | `/v1/responses` | Sends OpenResponses request with `stream: true`, expects `text/event-stream` response until terminal event. |
-| `sse` | `/hooks/*` | Rejected (`openclaw_sse_incompatible_endpoint`). Hooks are not stream-capable. |
+| `sse` | `/hooks/*` | Automatically rerouted to webhook transport (fire-and-forget HTTP). A log line is emitted to indicate the override. |
 | `sse` | other endpoint | Sends generic streaming payload (`stream: true`, `text`, `paperclip`) and expects SSE response. |
 | `webhook` | `/hooks/wake` | Sends wake payload `{ text, mode }`. |
 | `webhook` | `/hooks/agent` | Sends agent payload `{ message, ...hook fields }`. |
