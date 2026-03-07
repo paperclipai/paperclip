@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
+import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
@@ -182,6 +183,79 @@ export function issueRoutes(db: Db, storage: StorageService) {
     } catch (err) {
       next(err);
     }
+  });
+
+  // ── Bulk update issues ───────────────────────────────────────────────
+  const bulkUpdateIssuesSchema = z.object({
+    issueIds: z.array(z.string().min(1)).min(1).max(100),
+    data: updateIssueSchema.omit({ comment: true, hiddenAt: true }),
+  });
+
+  router.patch("/issues/bulk", async (req, res) => {
+    const parsed = bulkUpdateIssuesSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid request body", details: parsed.error.issues });
+      return;
+    }
+    const { issueIds: rawIds, data } = parsed.data;
+
+    // Normalise identifiers (e.g. "PAP-39") to UUIDs
+    const issueIds = await Promise.all(rawIds.map(normalizeIssueIdentifier));
+
+    // Fetch all issues to verify they exist and belong to the same company
+    const issues = await Promise.all(issueIds.map((id) => svc.getById(id)));
+    const missing = issueIds.filter((_, i) => !issues[i]);
+    if (missing.length > 0) {
+      res.status(404).json({ error: "Issues not found", issueIds: missing });
+      return;
+    }
+
+    // All issues must belong to the same company
+    const companyIds = new Set(issues.map((issue) => issue!.companyId));
+    if (companyIds.size !== 1) {
+      res.status(422).json({ error: "All issues must belong to the same company" });
+      return;
+    }
+    const companyId = [...companyIds][0]!;
+    assertCompanyAccess(req, companyId);
+
+    // Check assignment permission if assignee is being changed
+    if (data.assigneeAgentId !== undefined || data.assigneeUserId !== undefined) {
+      await assertCanAssignTasks(req, companyId);
+    }
+
+    const actor = getActorInfo(req);
+    const results = [];
+    for (const issue of issues) {
+      const updated = await svc.update(issue!.id, data);
+      if (updated) {
+        const previous: Record<string, unknown> = {};
+        for (const key of Object.keys(data)) {
+          if (key in issue! && (issue as Record<string, unknown>)[key] !== (data as Record<string, unknown>)[key]) {
+            previous[key] = (issue as Record<string, unknown>)[key];
+          }
+        }
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.updated",
+          entityType: "issue",
+          entityId: updated.id,
+          details: {
+            ...data,
+            identifier: updated.identifier,
+            _previous: Object.keys(previous).length > 0 ? previous : undefined,
+            bulkUpdate: true,
+          },
+        });
+        results.push(updated);
+      }
+    }
+
+    res.json({ updated: results.length, issues: results });
   });
 
   router.get("/companies/:companyId/issues", async (req, res) => {
