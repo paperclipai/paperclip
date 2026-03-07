@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { projects, projectGoals, goals, projectWorkspaces } from "@paperclipai/db";
+import { projects, projectGoals, goals, projectWorkspaces, issues, costEvents } from "@paperclipai/db";
 import {
   PROJECT_COLORS,
   deriveProjectUrlKey,
@@ -322,16 +322,33 @@ export function projectService(db: Db) {
       return enriched ?? null;
     },
 
-    remove: (id: string) =>
-      db
-        .delete(projects)
-        .where(eq(projects.id, id))
-        .returning()
-        .then((rows) => {
-          const row = rows[0] ?? null;
-          if (!row) return null;
-          return { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) };
-        }),
+    remove: async (id: string) => {
+      return db.transaction(async (tx) => {
+        // Reject if any issues reference this project
+        const relatedIssues = await tx
+          .select({ id: issues.id })
+          .from(issues)
+          .where(eq(issues.projectId, id))
+          .limit(1);
+        if (relatedIssues.length > 0) {
+          return { rejected: true as const };
+        }
+
+        // Null out cost_events references before deleting
+        await tx
+          .update(costEvents)
+          .set({ projectId: null })
+          .where(eq(costEvents.projectId, id));
+
+        const rows = await tx
+          .delete(projects)
+          .where(eq(projects.id, id))
+          .returning();
+        const row = rows[0] ?? null;
+        if (!row) return null;
+        return { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) };
+      });
+    },
 
     listWorkspaces: async (projectId: string): Promise<ProjectWorkspace[]> => {
       const rows = await db

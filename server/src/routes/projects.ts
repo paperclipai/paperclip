@@ -266,24 +266,31 @@ export function projectRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
-    const project = await svc.remove(id);
-    if (!project) {
+    const result = await svc.remove(id);
+    if (!result) {
       res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    if ("rejected" in result) {
+      res.status(409).json({
+        error:
+          "Cannot delete a project that has issues. Set the project status to 'cancelled' instead.",
+      });
       return;
     }
 
     const actor = getActorInfo(req);
     await logActivity(db, {
-      companyId: project.companyId,
+      companyId: result.companyId,
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
       action: "project.deleted",
       entityType: "project",
-      entityId: project.id,
+      entityId: result.id,
     });
 
-    res.json(project);
+    res.json(result);
   });
 
   return router;
