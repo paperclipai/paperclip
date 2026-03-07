@@ -821,7 +821,7 @@ export function NewIssueDialog() {
         )}
 
         {/* Description */}
-        <div className={cn("px-4 pb-2 overflow-y-auto min-h-0 border-t border-border/60 pt-3", expanded ? "flex-1" : "")}>
+        <div className={cn("px-4 pb-2 overflow-y-auto min-h-0 border-t border-border/60 pt-3", expanded ? "flex-1" : "max-h-[320px]")}>
           <MarkdownEditor
             ref={descriptionEditorRef}
             value={description}
