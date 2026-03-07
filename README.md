@@ -190,6 +190,42 @@ This starts the API server at `http://localhost:3100`. An embedded PostgreSQL da
 
 > **Requirements:** Node.js 20+, pnpm 9.15+
 
+### Docker Compose
+
+```bash
+# 1. Configure secrets
+cp .env.example .env
+cat > .env <<EOF
+BETTER_AUTH_SECRET=$(openssl rand -hex 32)
+PAPERCLIP_AGENT_JWT_SECRET=$(openssl rand -hex 32)
+PAPERCLIP_PUBLIC_URL=http://localhost:3100
+EOF
+
+# 2. Build and start
+docker compose up -d --build
+
+# 3. Create your admin account
+DATABASE_URL=postgres://paperclip:paperclip@localhost:5432/paperclip \
+pnpm paperclipai auth bootstrap-ceo
+
+# 4. Log into Claude inside the container
+docker compose exec -it server claude login
+
+# 5. Set up SSH keys for agent Git access
+sudo ./scripts/docker-ssh-setup.sh
+# Then add the printed public key to GitHub
+```
+
+See [doc/DOCKER.md](doc/DOCKER.md) for the full Docker guide, including Tailscale setup, troubleshooting, and agent configuration.
+
+### Tailscale (remote access)
+
+Access Paperclip from any device on your Tailscale network.
+
+**Local dev:** `pnpm dev --tailscale-auth`
+
+**Docker:** Set `PAPERCLIP_PUBLIC_URL=http://your-tailscale-hostname:3100` in your `.env` and rebuild.
+
 <br/>
 
 ## FAQ
@@ -246,9 +282,7 @@ See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
 
 ## Contributing
 
-We welcome contributions. See the [contributing guide](CONTRIBUTING.md) for details.
-
-<!-- TODO: add CONTRIBUTING.md -->
+We welcome contributions! Open a PR or issue on [GitHub](https://github.com/paperclipai/paperclip).
 
 <br/>
 

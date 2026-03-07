@@ -1,5 +1,6 @@
 services:
   db:
+    restart: always
     image: postgres:17-alpine
     environment:
       POSTGRES_USER: paperclip
@@ -16,6 +17,7 @@ services:
       - pgdata:/var/lib/postgresql/data
 
   server:
+    restart: always
     build: .
     ports:
       - "3100:3100"
@@ -27,6 +29,7 @@ services:
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+      PAPERCLIP_AGENT_JWT_SECRET: "${PAPERCLIP_AGENT_JWT_SECRET:-}"
     volumes:
       - paperclip-data:/paperclip
     depends_on:
