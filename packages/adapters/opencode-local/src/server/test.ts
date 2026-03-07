@@ -180,6 +180,13 @@ export async function testEnvironment(
           detail: errMsg,
           hint: "Run `opencode models` and choose an available provider/model ID.",
         });
+      } else {
+        checks.push({
+          code: "opencode_models_discovery_failed",
+          level: "warn",
+          message: errMsg || "OpenCode model discovery failed (best-effort, no model configured).",
+          hint: "Run `opencode models` manually to verify provider auth and config.",
+        });
       }
     }
   }
