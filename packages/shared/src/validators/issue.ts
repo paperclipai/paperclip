@@ -66,3 +66,17 @@ export const createIssueAttachmentMetadataSchema = z.object({
 });
 
 export type CreateIssueAttachmentMetadata = z.infer<typeof createIssueAttachmentMetadataSchema>;
+
+const SCHEDULE_WAKE_MIN_DELAY_MS = 10_000;
+const SCHEDULE_WAKE_MAX_DELAY_MS = 24 * 60 * 60 * 1000;
+
+export const scheduleIssueWakeSchema = z.object({
+  delayMs: z
+    .number()
+    .int()
+    .min(SCHEDULE_WAKE_MIN_DELAY_MS)
+    .max(SCHEDULE_WAKE_MAX_DELAY_MS),
+  reason: z.string().optional().nullable(),
+});
+
+export type ScheduleIssueWake = z.infer<typeof scheduleIssueWakeSchema>;
