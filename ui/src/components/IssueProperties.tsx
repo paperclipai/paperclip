@@ -525,6 +525,23 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
       <Separator />
 
       <div className="space-y-1">
+        {(issue.createdByAgentId || issue.createdByUserId) && (
+          <PropertyRow label="Created by">
+            {issue.createdByAgentId ? (
+              <Link
+                to={`/agents/${issue.createdByAgentId}`}
+                className="hover:underline"
+              >
+                <Identity name={agentName(issue.createdByAgentId) ?? issue.createdByAgentId.slice(0, 8)} size="sm" />
+              </Link>
+            ) : (
+              <>
+                <User className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className="text-sm">{creatorUserLabel ?? "User"}</span>
+              </>
+            )}
+          </PropertyRow>
+        )}
         {issue.startedAt && (
           <PropertyRow label="Started">
             <span className="text-sm">{formatDate(issue.startedAt)}</span>
