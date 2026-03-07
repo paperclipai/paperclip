@@ -1219,6 +1219,9 @@ export function issueService(db: Db) {
         tokens.add(raw.toLowerCase());
         const urlKey = normalizeAgentUrlKey(raw);
         if (urlKey) tokens.add(urlKey);
+        // Split CamelCase so @FoundingEngineer → founding-engineer
+        const camelSplit = normalizeAgentUrlKey(raw.replace(/([a-z])([A-Z])/g, "$1-$2"));
+        if (camelSplit && camelSplit !== urlKey) tokens.add(camelSplit);
       }
       if (tokens.size === 0) return [];
       const rows = await db.select({ id: agents.id, name: agents.name })
