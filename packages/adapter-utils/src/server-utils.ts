@@ -219,7 +219,12 @@ export async function runChildProcess(
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
 
   return new Promise<RunProcessResult>((resolve, reject) => {
-    const mergedEnv = ensurePathInEnv({ ...process.env, ...opts.env });
+    // Strip Claude Code env vars to prevent "cannot launch inside another session" errors
+    const claudeEnvKeys = new Set(["CLAUDECODE", "CLAUDE_CODE_SSE_PORT", "CLAUDE_CODE_ENTRYPOINT", "CK_CLAUDE_SETTINGS_DIR"]);
+    const baseEnv = Object.fromEntries(
+      Object.entries(process.env).filter(([k]) => !k.startsWith("CLAUDE_") && !claudeEnvKeys.has(k))
+    );
+    const mergedEnv = ensurePathInEnv({ ...baseEnv, ...opts.env });
     const child = spawn(command, args, {
       cwd: opts.cwd,
       env: mergedEnv,
