@@ -1,5 +1,5 @@
 #!/bin/sh
-set -e
+set -euo pipefail
 
 CONTAINER="${1:-paperclip-server-1}"
 KEY_COMMENT="${2:-paperclip-agent}"

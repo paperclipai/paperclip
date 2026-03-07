@@ -8,3 +8,9 @@ coverage
 data
 tmp
 *.log
+.env
+.env.*
+dist/
+.vscode/
+.idea/
+docker/.ssh/

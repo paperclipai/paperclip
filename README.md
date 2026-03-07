@@ -119,8 +119,9 @@ Agents connect to Paperclip via an adapter. Each adapter translates Paperclip's 
 | Claude Code (local) | `packages/adapters/claude-local` | Spawns `claude` CLI locally |
 | OpenClaw | `packages/adapters/openclaw` | SSE or webhook transport |
 | Codex (local) | `packages/adapters/codex-local` | Spawns `codex` CLI locally |
-| Cursor (local) | `packages/adapters/cursor-local` | |
-| OpenCode (local) | `packages/adapters/opencode-local` | |
+| Cursor (local) | `packages/adapters/cursor-local` | Spawns `cursor` CLI locally |
+| OpenCode (local) | `packages/adapters/opencode-local` | Spawns `opencode` CLI locally |
+| Pi (local) | `packages/adapters/pi-local` | Spawns `pi` CLI locally |
 | Bash | built-in | Runs shell scripts |
 | HTTP | built-in | Generic HTTP webhook |
 

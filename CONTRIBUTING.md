@@ -1,41 +1,56 @@
-# Contributing Guide
+# Contributing
 
-Thanks for wanting to contribute!
+## Setup
 
-We really appreciate both small fixes and thoughtful larger changes.
+```sh
+git clone https://github.com/paperclipai/paperclip.git
+cd paperclip
+pnpm install
+pnpm dev
+```
 
-## Two Paths to Get Your Pull Request Accepted
+API server starts at `http://localhost:3100`. Embedded PGlite is used automatically —
+no external database needed for local dev.
 
-### Path 1: Small, Focused Changes (Fastest way to get merged)
-- Pick **one** clear thing to fix/improve
-- Touch the **smallest possible number of files**
-- Make sure the change is very targeted and easy to review
-- All automated checks pass (including Greptile comments)
-- No new lint/test failures
+## Verification
 
-These almost always get merged quickly when they're clean.
+Before submitting a PR, run the full check:
 
-### Path 2: Bigger or Impactful Changes
-- **First** talk about it in Discord → #dev channel  
-  → Describe what you're trying to solve  
-  → Share rough ideas / approach
-- Once there's rough agreement, build it
-- In your PR include:
-  - Before / After screenshots (or short video if UI/behavior change)
-  - Clear description of what & why
-  - Proof it works (manual testing notes)
-  - All tests passing
-  - All Greptile + other PR comments addressed
+```sh
+pnpm -r typecheck   # no type errors
+pnpm test:run       # all tests pass
+pnpm build          # full build succeeds
+docker build .      # Docker image builds clean
+```
 
-PRs that follow this path are **much** more likely to be accepted, even when they're large.
+## Pull Request Guidelines
 
-## General Rules (both paths)
-- Write clear commit messages
-- Keep PR title + description meaningful
-- One PR = one logical change (unless it's a small related group)
-- Run tests locally first
-- Be kind in discussions 😄
+- Branch off `master`
+- Keep commits focused; one logical change per commit
+- Link to the relevant section of `doc/SPEC-implementation.md` when implementing spec behavior
+- Include before/after notes or screenshots for UI or behavior changes
+- Run verification above before opening the PR
+- For large or impactful changes, discuss in [Discord #dev](https://discord.gg/m4HZY7xNG3) first
 
-Questions? Just ask in #dev — we're happy to help.
+## Adding an Adapter
 
-Happy hacking!
+See the "Adding a New Adapter" section in [AGENTS.md](AGENTS.md) for step-by-step
+instructions. Each adapter lives in `packages/adapters/<name>/` and must include a
+`README.md`.
+
+## Docker Testing
+
+To test the full Docker stack locally:
+
+```sh
+cp .env.example .env
+# Edit .env to fill in required secrets (BETTER_AUTH_SECRET, PAPERCLIP_AGENT_JWT_SECRET)
+docker compose up -d --build
+curl http://localhost:3100/api/health
+```
+
+See [doc/DOCKER.md](doc/DOCKER.md) for the full Docker guide.
+
+## Questions?
+
+Ask in [Discord #dev](https://discord.gg/m4HZY7xNG3) or open a [GitHub Discussion](https://github.com/paperclipai/paperclip/discussions).
