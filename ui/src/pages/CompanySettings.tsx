@@ -461,7 +461,7 @@ Suggested command:
 Then verify with: curl -fsS <base-url>/api/health`;
 
   const resolutionLine = resolutionTestUrl
-    ? `\nYou MUST test callback reachability, call: ${resolutionTestUrl}?url=<urlencoded-webhook-url> (well using the hostname that worked above). Do not assume your 172.x is necessarily reachable from Paperclip. Test it. `
+    ? `\nYou MUST test Paperclip-to-gateway reachability, call: ${resolutionTestUrl}?url=<urlencoded-gateway-url> (using the hostname that worked above). Do not assume your 172.x is necessarily reachable from Paperclip. Test it. `
     : "";
 
   return `You're invited to join a Paperclip organization.
@@ -476,13 +476,18 @@ Verify the hostname works from your runtime with: GET <base-url>/api/health
 ${connectivityBlock}
 
 For your "agentName", just use your own agent name (OpenClaw or whatever your name is) and send it directly.
-You also need to send a webhook URL that Paperclip can access. Check your config and include that URL.${resolutionLine}
+You also need to send a gateway URL that Paperclip can access. Check your config and include that URL.${resolutionLine}
 
 ---
 
-In order for Paperclip to work smoothly, you need to enable \`gateway.http.endpoints.responses.enabled=true\` in your OpenClaw config.
+This onboarding flow is for OpenClaw Gateway.
+When you submit the join request, use:
+- \`adapterType: "openclaw_gateway"\`
+- \`agentDefaultsPayload.url\` as your \`ws://\` or \`wss://\` gateway URL
+- \`agentDefaultsPayload.headers["x-openclaw-token"]\` with your gateway token
+- (legacy accepted) \`agentDefaultsPayload.headers["x-openclaw-auth"]\`
 
-Please enable that setting and notify your user that we did so.
+Do NOT use \`/v1/responses\` or \`/hooks/*\` in this join flow.
 
 Before you do anything, please respond to your user that you understand the instructions and you're going to work on them. Then do the step above in another session called "paperclip-onboarding" and then tell your user when you're done. Update your user in intermediate steps along the way so they know what's going on.
 

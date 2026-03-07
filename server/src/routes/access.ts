@@ -950,10 +950,6 @@ function buildInviteOnboardingManifest(
   const onboardingTextUrl = baseUrl
     ? `${baseUrl}${onboardingTextPath}`
     : onboardingTextPath;
-  const testResolutionPath = `/api/invites/${token}/test-resolution`;
-  const testResolutionUrl = baseUrl
-    ? `${baseUrl}${testResolutionPath}`
-    : testResolutionPath;
   const discoveryDiagnostics = buildOnboardingDiscoveryDiagnostics({
     apiBaseUrl: baseUrl,
     deploymentMode: opts.deploymentMode,
@@ -971,16 +967,16 @@ function buildInviteOnboardingManifest(
     invite: toInviteSummaryResponse(req, token, invite),
     onboarding: {
       instructions:
-        "Join as an OpenClaw agent, save your one-time claim secret, wait for board approval, then claim your API key. Save the claim response token to ~/.openclaw/workspace/paperclip-claimed-api-key.json and load PAPERCLIP_API_KEY from that file before starting heartbeat loops. You MUST include agentDefaultsPayload.headers.x-openclaw-auth in your join request so Paperclip can authenticate callback requests.",
+        "Join as an OpenClaw Gateway agent, save your one-time claim secret, wait for board approval, then claim your API key. Save the claim response token to ~/.openclaw/workspace/paperclip-claimed-api-key.json and load PAPERCLIP_API_KEY from that file before starting heartbeat loops. You MUST submit adapterType='openclaw_gateway', set agentDefaultsPayload.url to your ws:// or wss:// OpenClaw gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token (or legacy x-openclaw-auth).",
       inviteMessage: extractInviteMessage(invite),
-      recommendedAdapterType: "openclaw",
+      recommendedAdapterType: "openclaw_gateway",
       requiredFields: {
         requestType: "agent",
         agentName: "Display name for this agent",
-        adapterType: "Use 'openclaw' for OpenClaw agents",
+        adapterType: "Use 'openclaw_gateway' for OpenClaw Gateway agents",
         capabilities: "Optional capability summary",
         agentDefaultsPayload:
-          "Adapter config for OpenClaw endpoint. MUST include headers.x-openclaw-auth; include streamTransport ('sse' or 'webhook') plus url/method/paperclipApiUrl (and optional webhookAuthHeader/timeoutSec/payloadTemplate)."
+          "Adapter config for OpenClaw gateway. MUST include url (ws:// or wss://) and headers.x-openclaw-token (or legacy x-openclaw-auth). Optional fields: paperclipApiUrl, waitTimeoutMs, sessionKeyStrategy, sessionKey, role, scopes, disableDeviceAuth."
       },
       registrationEndpoint: {
         method: "POST",
@@ -1001,21 +997,12 @@ function buildInviteOnboardingManifest(
         bindHost: opts.bindHost,
         allowedHostnames: opts.allowedHostnames,
         connectionCandidates,
-        testResolutionEndpoint: {
-          method: "GET",
-          path: testResolutionPath,
-          url: testResolutionUrl,
-          query: {
-            url: "https://your-openclaw-agent.example/v1/responses",
-            timeoutMs: 5000
-          }
-        },
         diagnostics: discoveryDiagnostics,
         guidance:
           opts.deploymentMode === "authenticated" &&
           opts.deploymentExposure === "private"
             ? "If OpenClaw runs on another machine, ensure the Paperclip hostname is reachable and allowed via `pnpm paperclipai allowed-hostname <host>`."
-            : "Ensure OpenClaw can reach this Paperclip API base URL for callbacks and claims."
+            : "Ensure OpenClaw can reach this Paperclip API base URL for invite, claim, and skill bootstrap calls."
       },
       textInstructions: {
         path: onboardingTextPath,
@@ -1076,7 +1063,7 @@ export function buildInviteOnboardingTextDocument(
   };
 
   appendBlock(`
-    # Paperclip OpenClaw Onboarding
+    # Paperclip OpenClaw Gateway Onboarding
 
     This document is meant to be readable by both humans and agents.
 
@@ -1116,15 +1103,17 @@ export function buildInviteOnboardingTextDocument(
       const body = {
         requestType: "agent",
         agentName: "OpenClaw",
-        adapterType: "openclaw",
+        adapterType: "openclaw_gateway",
         capabilities: "OpenClaw agent adapter",
         agentDefaultsPayload: {
-          url: "http://127.0.0.1:18789/v1/responses",
+          url: "ws://127.0.0.1:18789",
           paperclipApiUrl: "http://host.docker.internal:3100",
-          streamTransport: "sse",
-          method: "POST",
-          headers: { "x-openclaw-auth": token },
-          timeoutSec: 0
+          headers: { "x-openclaw-token": token },
+          waitTimeoutMs: 120000,
+          sessionKeyStrategy: "fixed",
+          sessionKey: "paperclip",
+          role: "operator",
+          scopes: ["operator.admin"]
         }
       };
       process.stdout.write(JSON.stringify(body));
@@ -1135,23 +1124,26 @@ export function buildInviteOnboardingTextDocument(
     onboarding.registrationEndpoint.url
   }
 
-    IMPORTANT: You MUST include agentDefaultsPayload.headers.x-openclaw-auth with your gateway token.
-    Without this token, Paperclip callback requests to your OpenClaw endpoint will fail with 401 Unauthorized.
-    Set "streamTransport" to "sse" for streaming /v1/responses endpoints, or "webhook" for wake-style callbacks.
+    IMPORTANT: You MUST include agentDefaultsPayload.headers.x-openclaw-token with your gateway token.
+    Legacy x-openclaw-auth is also accepted, but x-openclaw-token is preferred.
+    Use adapterType "openclaw_gateway" and a ws:// or wss:// gateway URL.
+    Do NOT use /v1/responses or /hooks/* in this gateway join flow.
 
     Body (JSON):
     {
       "requestType": "agent",
       "agentName": "My OpenClaw Agent",
-      "adapterType": "openclaw",
+      "adapterType": "openclaw_gateway",
       "capabilities": "Optional summary",
       "agentDefaultsPayload": {
-        "url": "https://your-openclaw-agent.example/v1/responses",
+        "url": "wss://your-openclaw-gateway.example",
         "paperclipApiUrl": "https://paperclip-hostname-your-agent-can-reach:3100",
-        "streamTransport": "sse",
-        "method": "POST",
-        "headers": { "x-openclaw-auth": "replace-me" },
-        "timeoutSec": 0
+        "headers": { "x-openclaw-token": "replace-me" },
+        "waitTimeoutMs": 120000,
+        "sessionKeyStrategy": "fixed",
+        "sessionKey": "paperclip",
+        "role": "operator",
+        "scopes": ["operator.admin"]
       }
     }
 
@@ -1159,11 +1151,6 @@ export function buildInviteOnboardingTextDocument(
     - request id
     - one-time claimSecret
     - claimApiKeyPath
-
-    Verify the response diagnostics include:
-    'openclaw_auth_header_configured'
-    and do not include:
-    'openclaw_auth_header_missing'
 
     ## Step 2: Wait for board approval
     The board approves the join request in Paperclip before key claim is allowed.
@@ -1218,17 +1205,6 @@ export function buildInviteOnboardingTextDocument(
     }
   `);
 
-  if (onboarding.connectivity?.testResolutionEndpoint?.url) {
-    appendBlock(`
-      ## Optional: test callback resolution from Paperclip
-      ${onboarding.connectivity.testResolutionEndpoint.method ?? "GET"} ${
-      onboarding.connectivity.testResolutionEndpoint.url
-    }?url=https%3A%2F%2Fyour-openclaw-agent.example%2Fv1%2Fresponses
-
-      This endpoint checks whether Paperclip can reach your OpenClaw endpoint and reports reachable, timeout, or unreachable.
-    `);
-  }
-
   const connectionCandidates = Array.isArray(
     onboarding.connectivity?.connectionCandidates
   )
@@ -1271,9 +1247,6 @@ export function buildInviteOnboardingTextDocument(
     ${onboarding.skill.path}
     ${manifest.invite.onboardingPath}
   `);
-  if (onboarding.connectivity?.testResolutionEndpoint?.path) {
-    lines.push(`${onboarding.connectivity.testResolutionEndpoint.path}`);
-  }
 
   return `${lines.join("\n")}\n`;
 }
