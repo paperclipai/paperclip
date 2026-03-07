@@ -45,7 +45,7 @@ export function sidebarBadgeRoutes(db: Db) {
     const alertsCount =
       (summary.agents.error > 0 && !hasFailedRuns ? 1 : 0) +
       (summary.costs.monthBudgetCents > 0 && summary.costs.monthUtilizationPercent >= 80 ? 1 : 0);
-    badges.inbox = badges.failedRuns + alertsCount + staleIssueCount + joinRequestCount;
+    badges.inbox = badges.failedRuns + alertsCount + staleIssueCount + joinRequestCount + badges.approvals;
 
     res.json(badges);
   });
