@@ -2483,10 +2483,13 @@ export function accessRoutes(
         )
         .then((rows) => rows[0] ?? null);
       if (!existing) throw notFound("Join request not found");
+      if (existing.status === "approved") {
+        throw badRequest("Cannot delete an already-approved join request");
+      }
 
       await db
         .delete(joinRequests)
-        .where(eq(joinRequests.id, requestId));
+        .where(and(eq(joinRequests.companyId, companyId), eq(joinRequests.id, requestId)));
 
       await logActivity(db, {
         companyId,
