@@ -36,6 +36,7 @@ RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/cod
 # Create non-root user so Claude Code allows --dangerously-skip-permissions
 RUN groupadd -r paperclip && useradd -r -g paperclip -m -d /paperclip -s /bin/bash paperclip
 RUN mkdir -p /paperclip/instances/default && chown -R paperclip:paperclip /paperclip
+RUN mkdir -p /app/data && chown -R paperclip:paperclip /app
 
 ENV NODE_ENV=production \
   HOME=/paperclip \
