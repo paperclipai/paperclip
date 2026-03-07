@@ -220,13 +220,54 @@ export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
     return map;
   }, [issues]);
 
-  const runById = useMemo(() => new Map(runs.map((r) => [r.id, r])), [runs]);
-  const activeRunIds = useMemo(() => new Set(runs.filter(isRunActive).map((r) => r.id)), [runs]);
+  const runIdsKey = useMemo(() => runs.map((run) => run.id).join("|"), [runs]);
+  const activeRuns = useMemo(() => runs.filter(isRunActive), [runs]);
+  const activeRunIdsKey = useMemo(() => activeRuns.map((run) => run.id).join("|"), [activeRuns]);
+  const runByIdRef = useRef(new Map<string, LiveRunForIssue>());
+  const activeRunIdsRef = useRef(new Set<string>());
+
+  useEffect(() => {
+    runByIdRef.current = new Map(runs.map((run) => [run.id, run]));
+    activeRunIdsRef.current = new Set(activeRuns.map((run) => run.id));
+  }, [runs, activeRuns]);
+
+  useEffect(() => {
+    const visibleRunIds = new Set(runs.map((run) => run.id));
+    setFeedByRun((prev) => {
+      let changed = prev.size !== visibleRunIds.size;
+      const next = new Map<string, FeedItem[]>();
+      for (const run of runs) {
+        const existing = prev.get(run.id);
+        if (existing) {
+          next.set(run.id, existing);
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+
+    for (const key of pendingByRunRef.current.keys()) {
+      const runId = key.split(":", 1)[0];
+      if (!visibleRunIds.has(runId)) {
+        pendingByRunRef.current.delete(key);
+      }
+    }
+  }, [runIdsKey]);
+
+  useEffect(() => {
+    setFeedByRun(new Map());
+    seenKeysRef.current.clear();
+    pendingByRunRef.current.clear();
+    nextIdRef.current = 1;
+    runByIdRef.current = new Map();
+    activeRunIdsRef.current = new Set();
+  }, [companyId]);
 
   // Clean up pending buffers for runs that ended
   useEffect(() => {
     const stillActive = new Set<string>();
-    for (const runId of activeRunIds) {
+    for (const runId of activeRunIdsRef.current) {
       stillActive.add(`${runId}:stdout`);
       stillActive.add(`${runId}:stderr`);
     }
@@ -235,11 +276,11 @@ export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
         pendingByRunRef.current.delete(key);
       }
     }
-  }, [activeRunIds]);
+  }, [activeRunIdsKey]);
 
   // WebSocket connection for streaming
   useEffect(() => {
-    if (activeRunIds.size === 0) return;
+    if (activeRuns.length === 0) return;
 
     let closed = false;
     let reconnectTimer: number | null = null;
@@ -310,9 +351,9 @@ export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
         if (event.companyId !== companyId) return;
         const payload = event.payload ?? {};
         const runId = readString(payload["runId"]);
-        if (!runId || !activeRunIds.has(runId)) return;
+        if (!runId || !activeRunIdsRef.current.has(runId)) return;
 
-        const run = runById.get(runId);
+        const run = runByIdRef.current.get(runId);
         if (!run) return;
 
         if (event.type === "heartbeat.run.event") {
@@ -374,7 +415,7 @@ export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
         socket.close(1000, "active_agents_panel_unmount");
       }
     };
-  }, [activeRunIds, companyId, runById]);
+  }, [activeRunIdsKey, companyId]);
 
   return (
     <div>
