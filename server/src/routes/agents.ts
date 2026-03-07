@@ -578,8 +578,12 @@ export function agentRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, agent.companyId);
+    if (req.actor.type === "agent" && req.actor.agentId !== id) {
+      throw forbidden("Agents can only read their own notifications");
+    }
 
-    const limit = req.query.limit ? Math.min(Number(req.query.limit), 200) : 50;
+    const parsedLimit = Number(req.query.limit);
+    const limit = req.query.limit && Number.isFinite(parsedLimit) ? Math.min(Math.max(1, parsedLimit), 200) : 50;
     const status = typeof req.query.status === "string" ? req.query.status : undefined;
     const reason = typeof req.query.reason === "string" ? req.query.reason : undefined;
 
