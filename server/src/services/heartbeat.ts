@@ -28,6 +28,72 @@ const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+
+// PostgreSQL integer column max is 2147483647. Windows NTSTATUS codes can exceed this.
+function safeExitCode(code: number | null | undefined): number | null {
+  if (code === null || code === undefined) return null;
+  if (code > 2147483647) {
+    logger.warn({ rawExitCode: code }, "Capping exit code to 2147483647 for database storage");
+    return 2147483647;
+  }
+  return code;
+}
+
+// Sanitize strings for WIN1252 encoding (Windows PostgreSQL compatibility)
+// Replaces UTF-8 characters that don't exist in WIN1252 with ASCII equivalents
+const WIN1252_CHAR_MAP: [RegExp, string][] = [
+  [/→/g, "->"],           // right arrow
+  [/←/g, "<-"],           // left arrow
+  [/↔/g, "<->"],          // left-right arrow
+  [/↑/g, "^"],            // up arrow
+  [/↓/g, "v"],            // down arrow
+  [/✓/g, "[OK]"],         // check mark
+  [/✗/g, "[X]"],          // ballot x
+  [/•/g, "-"],            // bullet
+  [/–/g, "-"],            // en dash
+  [/—/g, "--"],           // em dash
+  [/'/g, "'"],            // left single quote
+  [/'/g, "'"],            // right single quote
+  [/"/g, '"'],            // left double quote
+  [/"/g, '"'],            // right double quote
+  [/…/g, "..."],          // ellipsis
+  [/°/g, " deg"],         // degree sign
+  [/×/g, "x"],            // multiplication sign
+  [/÷/g, "/"],            // division sign
+  [/±/g, "+/-"],          // plus-minus
+  [/©/g, "(c)"],          // copyright
+  [/®/g, "(R)"],          // registered
+  [/™/g, "(TM)"],         // trademark
+];
+
+function sanitizeForWin1252(str: string): string {
+  if (!str) return str;
+  let result = str;
+  for (const [pattern, replacement] of WIN1252_CHAR_MAP) {
+    result = result.replace(pattern, replacement);
+  }
+  // Remove any remaining non-WIN1252 characters
+  // WIN1252 covers 0x00-0xFF with some gaps
+  return result.replace(/[^\x00-\xFF]/g, (char) => {
+    // Try to keep common useful chars, replace others with ?
+    return "?";
+  });
+}
+
+function sanitizeRecordForWin1252<T extends Record<string, unknown>>(obj: T): T {
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (typeof value === "string") {
+      result[key] = sanitizeForWin1252(value);
+    } else if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+      result[key] = sanitizeRecordForWin1252(value as Record<string, unknown>);
+    } else {
+      result[key] = value;
+    }
+  }
+  return result as T;
+}
+
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 
@@ -1322,12 +1388,17 @@ export function heartbeatService(db: Db) {
             } as Record<string, unknown>)
           : null;
 
+      // Sanitize strings for WIN1252 compatibility (Windows PostgreSQL)
+      const sanitizedError = outcome === "succeeded"
+        ? null
+        : sanitizeForWin1252(adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"));
+      const sanitizedStdoutExcerpt = sanitizeForWin1252(stdoutExcerpt);
+      const sanitizedStderrExcerpt = sanitizeForWin1252(stderrExcerpt);
+      const sanitizedResultJson = adapterResult.resultJson ? sanitizeRecordForWin1252(adapterResult.resultJson) : null;
+
       await setRunStatus(run.id, status, {
         finishedAt: new Date(),
-        error:
-          outcome === "succeeded"
-            ? null
-            : adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
+        error: sanitizedError,
         errorCode:
           outcome === "timed_out"
             ? "timeout"
@@ -1336,13 +1407,13 @@ export function heartbeatService(db: Db) {
               : outcome === "failed"
                 ? (adapterResult.errorCode ?? "adapter_failed")
                 : null,
-        exitCode: adapterResult.exitCode,
+        exitCode: safeExitCode(adapterResult.exitCode),
         signal: adapterResult.signal,
         usageJson,
-        resultJson: adapterResult.resultJson ?? null,
+        resultJson: sanitizedResultJson,
         sessionIdAfter: nextSessionState.displayId ?? nextSessionState.legacySessionId,
-        stdoutExcerpt,
-        stderrExcerpt,
+        stdoutExcerpt: sanitizedStdoutExcerpt,
+        stderrExcerpt: sanitizedStderrExcerpt,
         logBytes: logSummary?.bytes,
         logSha256: logSummary?.sha256,
         logCompressed: logSummary?.compressed ?? false,
@@ -1362,7 +1433,7 @@ export function heartbeatService(db: Db) {
           message: `run ${outcome}`,
           payload: {
             status,
-            exitCode: adapterResult.exitCode,
+            exitCode: safeExitCode(adapterResult.exitCode),
           },
         });
         await releaseIssueExecutionAndPromote(finalizedRun);
@@ -1406,19 +1477,24 @@ export function heartbeatService(db: Db) {
         }
       }
 
+      // Sanitize for WIN1252 compatibility
+      const sanitizedMessage = sanitizeForWin1252(message);
+      const sanitizedStdoutExcerpt = sanitizeForWin1252(stdoutExcerpt);
+      const sanitizedStderrExcerpt = sanitizeForWin1252(stderrExcerpt);
+
       const failedRun = await setRunStatus(run.id, "failed", {
-        error: message,
+        error: sanitizedMessage,
         errorCode: "adapter_failed",
         finishedAt: new Date(),
-        stdoutExcerpt,
-        stderrExcerpt,
+        stdoutExcerpt: sanitizedStdoutExcerpt,
+        stderrExcerpt: sanitizedStderrExcerpt,
         logBytes: logSummary?.bytes,
         logSha256: logSummary?.sha256,
         logCompressed: logSummary?.compressed ?? false,
       });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: new Date(),
-        error: message,
+        error: sanitizedMessage,
       });
 
       if (failedRun) {
@@ -1426,7 +1502,7 @@ export function heartbeatService(db: Db) {
           eventType: "error",
           stream: "system",
           level: "error",
-          message,
+          message: sanitizedMessage,
         });
         await releaseIssueExecutionAndPromote(failedRun);
 
@@ -1434,7 +1510,7 @@ export function heartbeatService(db: Db) {
           exitCode: null,
           signal: null,
           timedOut: false,
-          errorMessage: message,
+          errorMessage: sanitizedMessage,
         }, {
           legacySessionId: runtimeForAdapter.sessionId,
         });

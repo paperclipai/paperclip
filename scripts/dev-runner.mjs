@@ -44,10 +44,16 @@ if (tailscaleAuth) {
 
 const pnpmBin = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 const serverScript = mode === "watch" ? "dev:watch" : "dev";
+const spawnOptions = {
+  stdio: "inherit",
+  env,
+  // On Windows, need shell: true to spawn .cmd files
+  ...(process.platform === "win32" ? { shell: true } : {}),
+};
 const child = spawn(
   pnpmBin,
   ["--filter", "@paperclipai/server", serverScript, ...forwardedArgs],
-  { stdio: "inherit", env },
+  spawnOptions,
 );
 
 child.on("exit", (code, signal) => {

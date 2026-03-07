@@ -284,8 +284,11 @@ export async function runChildProcess(
       if (timeout) clearTimeout(timeout);
       runningProcesses.delete(runId);
       void logChain.finally(() => {
+        // Windows NTSTATUS codes can exceed PostgreSQL's 32-bit integer max (2147483647)
+        // Cap the exit code to a safe range for database storage
+        const safeExitCode = code !== null && code > 2147483647 ? 2147483647 : code;
         resolve({
-          exitCode: code,
+          exitCode: safeExitCode,
           signal,
           timedOut,
           stdout,
