@@ -8,6 +8,7 @@ import {
   checkoutIssueSchema,
   createIssueSchema,
   linkIssueApprovalSchema,
+  scheduleIssueWakeSchema,
   updateIssueSchema,
 } from "@paperclipai/shared";
 import type { StorageService } from "../storage/types.js";
@@ -747,6 +748,48 @@ export function issueRoutes(db: Db, storage: StorageService) {
     });
 
     res.json(released);
+  });
+
+  router.post("/issues/:id/schedule-wake", validate(scheduleIssueWakeSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+
+    if (req.actor.type !== "agent" && req.actor.type !== "board") {
+      res.status(403).json({ error: "Only agents or board users can schedule wakes" });
+      return;
+    }
+
+    const agentId = issue.assigneeAgentId;
+    if (!agentId) {
+      res.status(400).json({ error: "Issue has no assigned agent to wake" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const wakeup = await heartbeat.scheduleWake(agentId, id, req.body.delayMs, {
+      reason: req.body.reason ?? "scheduled_wake",
+      requestedByActorType: actor.actorType,
+      requestedByActorId: actor.actorId,
+    });
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.wake_scheduled",
+      entityType: "issue",
+      entityId: issue.id,
+      details: { delayMs: req.body.delayMs, reason: req.body.reason },
+    });
+
+    res.status(202).json(wakeup);
   });
 
   router.get("/issues/:id/comments", async (req, res) => {

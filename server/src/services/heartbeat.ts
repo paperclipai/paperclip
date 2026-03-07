@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, lte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -2067,6 +2067,99 @@ export function heartbeatService(db: Db) {
     return newRun;
   }
 
+  async function scheduleWake(
+    agentId: string,
+    issueId: string,
+    delayMs: number,
+    opts: {
+      reason?: string | null;
+      requestedByActorType?: "user" | "agent" | "system";
+      requestedByActorId?: string | null;
+    } = {},
+  ) {
+    const agent = await getAgent(agentId);
+    if (!agent) throw notFound("Agent not found");
+
+    const scheduledFor = new Date(Date.now() + delayMs);
+
+    const wakeupRequest = await db
+      .insert(agentWakeupRequests)
+      .values({
+        companyId: agent.companyId,
+        agentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: opts.reason ?? "scheduled_wake",
+        payload: { issueId },
+        status: "scheduled",
+        scheduledFor,
+        requestedByActorType: opts.requestedByActorType ?? null,
+        requestedByActorId: opts.requestedByActorId ?? null,
+      })
+      .returning()
+      .then((rows) => rows[0]);
+
+    return wakeupRequest;
+  }
+
+  async function promoteScheduledWakes(now = new Date()) {
+    const dueWakes = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.status, "scheduled"),
+          lte(agentWakeupRequests.scheduledFor, now),
+        ),
+      )
+      .orderBy(asc(agentWakeupRequests.scheduledFor))
+      .limit(50);
+
+    let promoted = 0;
+    for (const wake of dueWakes) {
+      const issueId = readNonEmptyString((wake.payload as Record<string, unknown>)?.issueId);
+      try {
+        const run = await enqueueWakeup(wake.agentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: wake.reason ?? "scheduled_wake",
+          payload: wake.payload,
+          requestedByActorType: "system",
+          requestedByActorId: "scheduled_wake_promoter",
+          contextSnapshot: {
+            source: "scheduled_wake",
+            reason: wake.reason ?? "scheduled_wake",
+            ...(issueId ? { issueId } : {}),
+          },
+        });
+
+        await db
+          .update(agentWakeupRequests)
+          .set({
+            status: run ? "completed" : "skipped",
+            finishedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(agentWakeupRequests.id, wake.id));
+
+        if (run) promoted += 1;
+      } catch (err) {
+        logger.warn({ err, wakeId: wake.id }, "failed to promote scheduled wake");
+        await db
+          .update(agentWakeupRequests)
+          .set({
+            status: "failed",
+            error: err instanceof Error ? err.message : String(err),
+            finishedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(agentWakeupRequests.id, wake.id));
+      }
+    }
+
+    return { checked: dueWakes.length, promoted };
+  }
+
   return {
     list: (companyId: string, agentId?: string, limit?: number) => {
       const query = db
@@ -2198,6 +2291,8 @@ export function heartbeatService(db: Db) {
 
     wakeup: enqueueWakeup,
 
+    scheduleWake,
+
     reapOrphanedRuns,
 
     tickTimers: async (now = new Date()) => {
@@ -2232,7 +2327,9 @@ export function heartbeatService(db: Db) {
         else skipped += 1;
       }
 
-      return { checked, enqueued, skipped };
+      const scheduled = await promoteScheduledWakes(now);
+
+      return { checked, enqueued, skipped, scheduledPromoted: scheduled.promoted };
     },
 
     cancelRun: async (runId: string) => {
