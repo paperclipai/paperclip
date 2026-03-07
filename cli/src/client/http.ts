@@ -104,8 +104,10 @@ export class PaperclipApiClient {
 
 function buildUrl(apiBase: string, path: string): string {
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  const [pathname, search] = normalizedPath.split("?", 2);
   const url = new URL(apiBase);
-  url.pathname = `${url.pathname.replace(/\/+$/, "")}${normalizedPath}`;
+  url.pathname = `${url.pathname.replace(/\/+$/, "")}${pathname}`;
+  if (search) url.search = search;
   return url.toString();
 }
 
