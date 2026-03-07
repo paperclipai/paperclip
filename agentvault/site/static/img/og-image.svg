@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" role="img" aria-labelledby="title desc">
+  <title id="title">Agent Vault Open Graph Image</title>
+  <desc id="desc">Agent Vault branding for social previews</desc>
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#05070f" />
+      <stop offset="55%" stop-color="#0b1020" />
+      <stop offset="100%" stop-color="#07111e" />
+    </linearGradient>
+    <linearGradient id="line" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#22d3ee" />
+      <stop offset="50%" stop-color="#8b5cf6" />
+      <stop offset="100%" stop-color="#ec4899" />
+    </linearGradient>
+    <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse" patternTransform="rotate(40)">
+      <line x1="0" y1="0" x2="0" y2="48" stroke="#2a3550" stroke-opacity="0.26" stroke-width="1" />
+    </pattern>
+  </defs>
+
+  <rect width="1200" height="630" fill="url(#bg)" />
+  <rect width="1200" height="630" fill="url(#grid)" />
+
+  <rect x="82" y="72" width="104" height="104" rx="16" fill="#060811" stroke="url(#line)" stroke-width="4" />
+  <path d="M110 146L124 92H133L147 146H138L135 136H122L119 146Z" fill="#eff7ff" />
+  <path d="M124 128H132L128 113Z" fill="#0a1222" />
+  <path d="M150 92H164L157 146H145L140 124H149L153 136L156 108H150Z" fill="#eff7ff" />
+
+  <text x="210" y="136" fill="#d5e7ff" font-family="Inter, Arial, sans-serif" font-size="40" letter-spacing="8">AGENT_VAULT_V1</text>
+  <text x="82" y="302" fill="#ffffff" font-family="Inter, Arial, sans-serif" font-size="116" font-weight="800" letter-spacing="6">AGENT VAULT</text>
+  <text x="82" y="372" fill="#22d3ee" font-family="Inter, Arial, sans-serif" font-size="34" letter-spacing="6">NEURAL SOVEREIGNTY</text>
+  <text x="82" y="440" fill="#b8c9e6" font-family="Inter, Arial, sans-serif" font-size="34">Protecting your agent's neural sovereignty through cryptographic decentralization.</text>
+
+  <line x1="82" y1="492" x2="1118" y2="492" stroke="url(#line)" stroke-opacity="0.6" stroke-width="2" />
+  <text x="82" y="550" fill="#c4d3ee" font-family="Inter, Arial, sans-serif" font-size="28">github.com/johnnyclem/agentvault</text>
+</svg>

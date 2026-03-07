@@ -15,6 +15,37 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
 
+  vault:
+    image: hashicorp/vault:1.17
+    container_name: paperclip-vault
+    restart: unless-stopped
+    ports:
+      - "8200:8200"
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: paperclip-dev-token
+      VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+      VAULT_LOG_LEVEL: info
+    cap_add:
+      - IPC_LOCK
+    healthcheck:
+      test: ["CMD", "sh", "-c", "vault status -address=http://127.0.0.1:8200 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    volumes:
+      - vault-logs:/vault/logs
+    entrypoint: >
+      sh -c "
+        vault server -dev &
+        sleep 3 &&
+        export VAULT_ADDR=http://127.0.0.1:8200 &&
+        export VAULT_TOKEN=paperclip-dev-token &&
+        vault secrets enable -path=companies -version=2 kv 2>/dev/null || true &&
+        vault secrets enable -path=paperclip -version=2 kv 2>/dev/null || true &&
+        wait
+      "
+
   server:
     build: .
     ports:
@@ -27,12 +58,17 @@ services:
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+      VAULT_ADDR: "http://vault:8200"
+      VAULT_TOKEN: "paperclip-dev-token"
     volumes:
       - paperclip-data:/paperclip
     depends_on:
       db:
         condition: service_healthy
+      vault:
+        condition: service_healthy
 
 volumes:
   pgdata:
   paperclip-data:
+  vault-logs:

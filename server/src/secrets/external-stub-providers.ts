@@ -2,7 +2,7 @@ import { unprocessable } from "../errors.js";
 import type { SecretProviderModule } from "./types.js";
 
 function unavailableProvider(
-  id: "aws_secrets_manager" | "gcp_secret_manager" | "vault",
+  id: "aws_secrets_manager" | "gcp_secret_manager",
   label: string,
 ): SecretProviderModule {
   return {
@@ -29,4 +29,3 @@ export const gcpSecretManagerProvider = unavailableProvider(
   "gcp_secret_manager",
   "GCP Secret Manager",
 );
-export const vaultProvider = unavailableProvider("vault", "HashiCorp Vault");

@@ -1,0 +1,771 @@
+.main {
+  display: flex;
+  flex-direction: column;
+}
+
+.heroBanner {
+  position: relative;
+  overflow: hidden;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 7rem 0 5.25rem;
+}
+
+.heroGrid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.heroGrid::before,
+.heroGrid::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+}
+
+.heroGrid::before {
+  background:
+    repeating-linear-gradient(
+      138deg,
+      transparent 0,
+      transparent 56px,
+      rgba(34, 211, 238, 0.11) 57px,
+      transparent 58px
+    );
+  opacity: 0.36;
+  animation: hero-grid-drift 14s ease-in-out infinite;
+}
+
+.heroGrid::after {
+  background:
+    linear-gradient(96deg, transparent 12%, rgba(139, 92, 246, 0.2) 48%, rgba(34, 211, 238, 0.2) 52%, transparent 88%);
+  filter: blur(8px);
+  opacity: 0.45;
+  animation: hero-sweep 9s ease-in-out infinite alternate;
+}
+
+.heroInner {
+  position: relative;
+  z-index: 1;
+  text-align: center;
+  max-width: 980px;
+  animation: hero-enter 0.68s ease-out both;
+}
+
+.protocolTag {
+  display: inline-block;
+  font-family: 'Syncopate', sans-serif;
+  font-size: 0.66rem;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: #22d3ee;
+  margin-bottom: 0.95rem;
+}
+
+.heroKicker {
+  margin: 0 0 0.45rem;
+  font-family: 'Syncopate', sans-serif;
+  font-size: 0.65rem;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: #8fa6c8;
+}
+
+.heroTitle {
+  font-size: clamp(2.5rem, 8vw, 5rem);
+  letter-spacing: 0.13em;
+  margin-bottom: 1.1rem;
+  text-shadow:
+    0 0 18px rgba(34, 211, 238, 0.36),
+    0 0 38px rgba(139, 92, 246, 0.22);
+}
+
+.heroSubtitle {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: clamp(1.05rem, 3vw, 1.36rem);
+  color: #d9e8ff;
+  margin: 0 auto 1rem;
+  letter-spacing: 0.03em;
+  text-transform: none;
+}
+
+.heroDescription {
+  max-width: 760px;
+  margin: 0 auto 2.1rem;
+  font-size: 1.04rem;
+  color: #b9c8e2;
+}
+
+.heroButtons {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 0.9rem;
+  flex-wrap: wrap;
+}
+
+.signalGrid {
+  margin-top: 2.4rem;
+  display: grid;
+  gap: 0.8rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.signalItem {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.66rem;
+  background: rgba(12, 15, 22, 0.74);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 0.62rem 0.8rem;
+  font-family: 'Syncopate', sans-serif;
+  font-size: 0.58rem;
+  letter-spacing: 0.1em;
+  color: #8fa6c8;
+  backdrop-filter: blur(8px);
+}
+
+.signalDiamond {
+  width: 8px;
+  height: 8px;
+  border: 1px solid #22d3ee;
+  transform: rotate(45deg);
+  box-shadow: 0 0 10px rgba(34, 211, 238, 0.45);
+}
+
+.manifestSection {
+  padding: 4.6rem 0 1.7rem;
+}
+
+.manifestCard {
+  background: rgba(15, 15, 15, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  padding: 2.6rem;
+  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.44);
+  backdrop-filter: blur(12px);
+}
+
+.sectionTitle {
+  font-size: clamp(1.35rem, 3vw, 2rem);
+  margin-bottom: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.72rem;
+}
+
+.sacredBullet {
+  width: 10px;
+  height: 10px;
+  border: 1px solid #22d3ee;
+  transform: rotate(45deg);
+  box-shadow: 0 0 12px rgba(34, 211, 238, 0.42);
+}
+
+.sectionLead {
+  color: #c5d3ea;
+  font-size: 1.04rem;
+  line-height: 1.74;
+  margin-bottom: 1.7rem;
+}
+
+.admonition {
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-left: 4px solid #22d3ee;
+  padding: 1.2rem 1.2rem;
+  margin: 1.35rem 0;
+  background: rgba(255, 255, 255, 0.03);
+  position: relative;
+  overflow: hidden;
+}
+
+.admonition::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 120px;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.04));
+  pointer-events: none;
+}
+
+.admonitionLabel {
+  margin: 0 0 0.5rem;
+  font-family: 'Syncopate', sans-serif;
+  font-size: 0.62rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.admonitionNote {
+  border-left-color: #22d3ee;
+}
+
+.admonitionNote .admonitionLabel {
+  color: #22d3ee;
+}
+
+.admonitionTip {
+  border-left-color: #d4af37;
+}
+
+.admonitionTip .admonitionLabel {
+  color: #d4af37;
+}
+
+.sequenceTitle {
+  margin-top: 2rem;
+  margin-bottom: 0.8rem;
+  font-size: clamp(1.02rem, 2.4vw, 1.3rem);
+}
+
+.sequenceText {
+  margin-bottom: 1.2rem;
+  color: #b6c6df;
+}
+
+.codeVessel {
+  background: #0d0d0d;
+  border: 1px solid #1a1a1a;
+  border-radius: 12px;
+  margin: 1.6rem 0;
+  position: relative;
+  overflow: hidden;
+}
+
+.codeVessel::before {
+  content: 'CODE_ENTITY';
+  position: absolute;
+  top: 10px;
+  right: 14px;
+  font-family: 'Syncopate', sans-serif;
+  font-size: 0.56rem;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.codeVessel pre {
+  margin: 0;
+  padding: 1.2rem;
+  color: #9aefff;
+  overflow-x: auto;
+}
+
+.pathwaysSection {
+  padding: 1.4rem 0 5.1rem;
+}
+
+.pathGrid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.pathCard {
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 1.5rem;
+  background: rgba(11, 11, 17, 0.75);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.35);
+}
+
+.pathCardCyan {
+  border-left: 4px solid #8b5cf6;
+}
+
+.pathCardPink {
+  border-left: 4px solid #ec4899;
+}
+
+.pathLabel {
+  margin: 0 0 0.65rem;
+  font-family: 'Syncopate', sans-serif;
+  text-transform: uppercase;
+  font-size: 0.62rem;
+  letter-spacing: 0.1em;
+  color: #7f92b0;
+}
+
+.pathTitle {
+  margin-bottom: 0.65rem;
+  font-size: clamp(1rem, 2vw, 1.2rem);
+}
+
+.pathBody {
+  margin: 0 0 1rem;
+  color: #a9bad6;
+}
+
+.pathAction {
+  display: inline-block;
+  font-family: 'Syncopate', sans-serif;
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #22d3ee;
+  text-decoration: none;
+  transition: transform var(--ifm-transition-fast), color var(--ifm-transition-fast);
+}
+
+.pathAction:hover {
+  color: #ffffff;
+  transform: translate3d(6px, 0, 0);
+}
+
+.instantControlSection {
+  padding: 0.6rem 0 2.9rem;
+}
+
+.instantControlHeader {
+  text-align: center;
+  margin-bottom: 1.3rem;
+}
+
+.instantControlLabel {
+  margin: 0;
+  font-family: 'Syncopate', sans-serif;
+  text-transform: uppercase;
+  font-size: 0.62rem;
+  letter-spacing: 0.16em;
+  color: #22d3ee;
+}
+
+.instantControlTitle {
+  margin-top: 0.72rem;
+  margin-bottom: 0.9rem;
+  font-size: clamp(1.3rem, 3vw, 2rem);
+}
+
+.instantControlLead {
+  max-width: 760px;
+  margin: 0 auto;
+  color: #a8bbd9;
+  line-height: 1.75;
+}
+
+.instantControlGrid {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr;
+  gap: 1rem;
+}
+
+.instantPanel {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  background: rgba(11, 11, 17, 0.76);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.32);
+  padding: 1.2rem;
+}
+
+.panelHeader {
+  margin-bottom: 0.95rem;
+}
+
+.panelKicker {
+  margin: 0 0 0.4rem;
+  font-family: 'Syncopate', sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.58rem;
+  color: #7e93b8;
+}
+
+.panelTitle {
+  margin: 0;
+  font-size: clamp(0.95rem, 2vw, 1.2rem);
+}
+
+.walletList {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.walletButton {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  background: rgba(20, 22, 32, 0.72);
+  text-align: left;
+  color: #d6e4fb;
+  padding: 0.8rem;
+  cursor: pointer;
+  display: grid;
+  gap: 0.25rem;
+  transition:
+    border-color var(--ifm-transition-fast),
+    transform var(--ifm-transition-fast),
+    box-shadow var(--ifm-transition-fast);
+}
+
+.walletButton:hover {
+  transform: translate3d(0, -2px, 0);
+  border-color: rgba(34, 211, 238, 0.38);
+  box-shadow: 0 0 18px rgba(34, 211, 238, 0.14);
+}
+
+.walletButton:disabled {
+  cursor: wait;
+  opacity: 0.85;
+}
+
+.walletButtonActive {
+  border-color: rgba(34, 211, 238, 0.56);
+  box-shadow: 0 0 18px rgba(34, 211, 238, 0.18);
+}
+
+.walletName {
+  font-weight: 700;
+}
+
+.walletMeta {
+  color: #90a7cd;
+  font-size: 0.84rem;
+}
+
+.walletState {
+  color: #22d3ee;
+  font-family: 'Syncopate', sans-serif;
+  font-size: 0.56rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.walletStatus {
+  margin-top: 0.75rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding-top: 0.7rem;
+}
+
+.walletHint,
+.walletError,
+.walletSuccess {
+  margin: 0;
+  font-size: 0.88rem;
+}
+
+.walletHint {
+  color: #94a8ca;
+}
+
+.walletSuccess {
+  color: #b8d7ff;
+}
+
+.walletSuccess code {
+  color: #22d3ee;
+}
+
+.walletError {
+  color: #ff8fa2;
+  margin-top: 0.35rem;
+}
+
+.configGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.68rem;
+}
+
+.field {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.fieldLabel {
+  color: #8ba2c8;
+  font-size: 0.68rem;
+  font-family: 'Syncopate', sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.fieldInput {
+  width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  background: rgba(7, 9, 14, 0.78);
+  color: #dde8ff;
+  min-height: 2.2rem;
+  padding: 0.45rem 0.6rem;
+  font-family: 'Fira Code', monospace;
+  font-size: 0.82rem;
+}
+
+.fieldInput:focus {
+  outline: none;
+  border-color: rgba(34, 211, 238, 0.55);
+  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.14);
+}
+
+.commandBlock {
+  margin-top: 0.9rem;
+}
+
+.commandLabel {
+  margin: 0 0 0.38rem;
+  color: #93a7ca;
+  font-family: 'Syncopate', sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  font-size: 0.58rem;
+}
+
+.commandShell {
+  margin: 0;
+  border-radius: 12px;
+  border: 1px solid rgba(34, 211, 238, 0.18);
+  background: rgba(6, 10, 17, 0.88);
+  padding: 0.82rem;
+  overflow-x: auto;
+}
+
+.commandShell code {
+  color: #9ee6ff;
+  font-size: 0.8rem;
+  line-height: 1.58;
+}
+
+.commandButton {
+  margin-top: 0.58rem;
+  width: 100%;
+}
+
+.deployLinks {
+  margin-top: 0.92rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+}
+
+.backupStudioSection {
+  padding: 0.2rem 0 2.8rem;
+}
+
+.backupStudioHeader {
+  text-align: center;
+  margin-bottom: 1.25rem;
+}
+
+.backupStudioGrid {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.profileList {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.profileButton {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  background: rgba(20, 22, 32, 0.72);
+  text-align: left;
+  color: #d6e4fb;
+  padding: 0.8rem;
+  cursor: pointer;
+  display: grid;
+  gap: 0.25rem;
+  transition:
+    border-color var(--ifm-transition-fast),
+    transform var(--ifm-transition-fast),
+    box-shadow var(--ifm-transition-fast);
+}
+
+.profileButton:hover {
+  transform: translate3d(0, -2px, 0);
+  border-color: rgba(34, 211, 238, 0.38);
+  box-shadow: 0 0 18px rgba(34, 211, 238, 0.14);
+}
+
+.profileButtonActive {
+  border-color: rgba(34, 211, 238, 0.56);
+  box-shadow: 0 0 18px rgba(34, 211, 238, 0.18);
+}
+
+.profilePath {
+  color: #22d3ee;
+  font-family: 'Fira Code', monospace;
+  font-size: 0.74rem;
+}
+
+.storagePillRow {
+  margin-top: 0.9rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.storagePill {
+  border-radius: 999px;
+  border: 1px solid rgba(34, 211, 238, 0.35);
+  background: rgba(8, 15, 24, 0.72);
+  color: #9ee6ff;
+  padding: 0.22rem 0.58rem;
+  font-family: 'Syncopate', sans-serif;
+  font-size: 0.52rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.protocolTimelineCard {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  background: rgba(11, 11, 17, 0.76);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.32);
+  padding: 1.2rem;
+}
+
+.protocolTimeline {
+  display: grid;
+  gap: 0.68rem;
+}
+
+.protocolTimelineItem {
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 12px;
+  background: rgba(7, 10, 16, 0.74);
+  padding: 0.7rem;
+  display: grid;
+  grid-template-columns: 2.2rem 1fr;
+  gap: 0.7rem;
+  align-items: flex-start;
+}
+
+.protocolTimelineId {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  width: 2.2rem;
+  height: 2.2rem;
+  border-radius: 999px;
+  border: 1px solid rgba(34, 211, 238, 0.42);
+  color: #22d3ee;
+  font-family: 'Syncopate', sans-serif;
+  font-size: 0.56rem;
+  letter-spacing: 0.08em;
+}
+
+.protocolTimelineLabel {
+  margin: 0;
+  color: #dbe8ff;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.protocolTimelineText {
+  margin: 0.3rem 0 0;
+  color: #a8bbd9;
+  font-size: 0.92rem;
+  line-height: 1.55;
+}
+
+.protocolTimelineOutput {
+  margin: 0.38rem 0 0;
+  color: #9ee6ff;
+  font-family: 'Fira Code', monospace;
+  font-size: 0.74rem;
+}
+
+.inlineLink {
+  display: inline-flex;
+  align-items: center;
+  color: #22d3ee;
+  font-family: 'Syncopate', sans-serif;
+  text-transform: uppercase;
+  font-size: 0.56rem;
+  letter-spacing: 0.1em;
+  text-decoration: none;
+}
+
+.inlineLink:hover {
+  color: #ffffff;
+}
+
+@keyframes hero-grid-drift {
+  0% {
+    transform: translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate3d(-2.5%, 1.5%, 0);
+  }
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes hero-sweep {
+  0% {
+    transform: translate3d(-10%, -12%, 0) rotate(-6deg);
+  }
+  100% {
+    transform: translate3d(10%, 10%, 0) rotate(-6deg);
+  }
+}
+
+@keyframes hero-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 18px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@media (max-width: 996px) {
+  .heroBanner {
+    padding: 6.2rem 0 4.6rem;
+  }
+
+  .signalGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .manifestCard {
+    padding: 1.55rem;
+  }
+
+  .pathGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .instantControlGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .backupStudioGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .heroButtons {
+    width: 100%;
+  }
+
+  .heroButtons :global(.button) {
+    width: 100%;
+  }
+
+  .protocolTag {
+    font-size: 0.6rem;
+  }
+
+  .heroKicker {
+    font-size: 0.58rem;
+  }
+
+  .configGrid {
+    grid-template-columns: 1fr;
+  }
+}

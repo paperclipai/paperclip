@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Hardened runtime -->
+    <key>com.apple.security.app-sandbox</key>
+    <false/>
+
+    <!-- Keychain access for storing wallet secrets -->
+    <key>com.apple.security.keychain-access-groups</key>
+    <array>
+        <string>$(AppIdentifierPrefix)com.agentvault.wallet</string>
+    </array>
+
+    <!-- Network access for balance checks and chain RPC calls -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+
+    <!-- File access for backups and JWK/PEM imports -->
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+
+    <!-- Allow spawning Node.js / CLI processes -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+</dict>
+</plist>

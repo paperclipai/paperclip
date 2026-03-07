@@ -1,0 +1,36 @@
+{
+  "settings": {
+    "model": "claude-3-5-sonnet-20241022",
+    "temperature": 0.7,
+    "maxTokens": 4096,
+    "timeout": 30000,
+    "retryAttempts": 3,
+    "retryDelay": 1000,
+    "maxConcurrentTasks": 3,
+    "logging": {
+      "level": "info",
+      "includeTimestamps": true,
+      "logToFile": false
+    },
+    "performance": {
+      "cacheResponses": true,
+      "cacheTTL": 3600000,
+      "prefetchTasks": true
+    },
+    "security": {
+      "validateInputs": true,
+      "sanitizeOutputs": true,
+      "rateLimiting": {
+        "enabled": true,
+        "maxRequests": 100,
+        "windowMs": 60000
+      }
+    },
+    "features": {
+      "autoCommit": false,
+      "pullRequestReview": true,
+      "documentationGeneration": true,
+      "testGeneration": true
+    }
+  }
+}

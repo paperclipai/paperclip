@@ -31,3 +31,7 @@ export { approvalComments } from "./approval_comments.js";
 export { activityLog } from "./activity_log.js";
 export { companySecrets } from "./company_secrets.js";
 export { companySecretVersions } from "./company_secret_versions.js";
+export { agentMemory } from "./agent_memory.js";
+export { knowledgeEntries } from "./knowledge_entries.js";
+export { agentMessages } from "./agent_messages.js";
+export { consensusProposals, consensusVotes } from "./consensus_proposals.js";

@@ -1,0 +1,15 @@
+name: "@agentvault/examples/goose"
+version: "1.0.0"
+description: "Example Goose agent configuration for AgentVault"
+type: "module"
+scripts:
+  package: "agentvault package"
+  deploy: "agentvault deploy"
+keywords:
+  - "agentvault"
+  - "goose"
+  - "example"
+  - "ai-agent"
+author: "AgentVault"
+license: "MIT"
+dependencies: {}

@@ -1,0 +1,133 @@
+.featuresSection {
+  position: relative;
+  padding: 2.1rem 0 2.8rem;
+}
+
+.featuresSection::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(900px 360px at 10% 20%, rgba(34, 211, 238, 0.11), transparent 68%),
+    radial-gradient(780px 320px at 96% 72%, rgba(236, 72, 153, 0.11), transparent 68%);
+}
+
+.blockHeader {
+  position: relative;
+  z-index: 1;
+  text-align: center;
+  margin-bottom: 1.2rem;
+}
+
+.blockLabel {
+  margin: 0;
+  font-family: 'Syncopate', sans-serif;
+  text-transform: uppercase;
+  font-size: 0.62rem;
+  letter-spacing: 0.14em;
+  color: #22d3ee;
+}
+
+.blockTitle {
+  margin-top: 0.65rem;
+  margin-bottom: 1.3rem;
+  font-size: clamp(1.2rem, 2.9vw, 1.8rem);
+  letter-spacing: 0.1em;
+}
+
+.featureGrid,
+.protocolGrid {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 1rem;
+}
+
+.featureGrid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: 2.4rem;
+}
+
+.protocolGrid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.featureCard {
+  position: relative;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  background: rgba(12, 12, 18, 0.78);
+  padding: 1.3rem;
+  overflow: hidden;
+  box-shadow:
+    0 14px 34px rgba(0, 0, 0, 0.36),
+    inset 0 0 0 1px rgba(34, 211, 238, 0.06);
+  backdrop-filter: blur(12px);
+  transition:
+    transform var(--ifm-transition-fast),
+    border-color var(--ifm-transition-fast),
+    box-shadow var(--ifm-transition-fast);
+}
+
+.featureCard::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 120px;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.04));
+  pointer-events: none;
+}
+
+.featureCard:hover {
+  transform: translate3d(0, -4px, 0);
+  border-color: rgba(34, 211, 238, 0.4);
+  box-shadow:
+    0 16px 38px rgba(0, 0, 0, 0.46),
+    0 0 20px rgba(34, 211, 238, 0.2);
+}
+
+.cardId {
+  margin: 0 0 0.7rem;
+  font-family: 'Syncopate', sans-serif;
+  font-size: 0.58rem;
+  letter-spacing: 0.1em;
+  color: #7f95b8;
+}
+
+.cardTitle {
+  margin-bottom: 0.68rem;
+  font-size: clamp(0.9rem, 1.8vw, 1.1rem);
+  letter-spacing: 0.08em;
+}
+
+.cardBody {
+  margin: 0 0 0.95rem;
+  color: #aebfda;
+  line-height: 1.65;
+}
+
+.cardAction {
+  display: inline-block;
+  font-family: 'Syncopate', sans-serif;
+  text-transform: uppercase;
+  font-size: 0.58rem;
+  letter-spacing: 0.09em;
+  color: #22d3ee;
+  text-decoration: none;
+  transition: transform var(--ifm-transition-fast), color var(--ifm-transition-fast);
+}
+
+.cardAction:hover {
+  color: #ffffff;
+  transform: translate3d(6px, 0, 0);
+}
+
+@media (max-width: 996px) {
+  .featureGrid,
+  .protocolGrid {
+    grid-template-columns: 1fr;
+  }
+}

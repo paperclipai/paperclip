@@ -1,0 +1,18 @@
+{
+  "name": "vale",
+  "type": "autonomous",
+  "version": "1.0.0",
+  "description": "Vale — Autonomous blockchain agent with version-controlled memory",
+  "soulFile": "soul.md",
+  "memoryRepo": {
+    "enabled": true,
+    "defaultBranch": "main",
+    "autoCommit": false
+  },
+  "capabilities": [
+    "memory-repo",
+    "wallet-management",
+    "transaction-signing",
+    "health-monitoring"
+  ]
+}

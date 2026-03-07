@@ -1,0 +1,22 @@
+{
+  "$schema": "https://agentvault.dev/schemas/generic-config-v1.json",
+  "name": "example-generic",
+  "type": "generic",
+  "description": "Example Generic agent for AgentVault",
+  "version": "1.0.0",
+  "entryPoint": "index.js",
+  "workingDirectory": ".",
+  "environment": {
+    "NODE_ENV": "production",
+    "LOG_LEVEL": "info",
+    "API_KEY": "sk-xxx"
+  },
+  "allowedFiles": [
+    "*.js",
+    "*.ts",
+    "*.json",
+    "src/**",
+    "lib/**"
+  ],
+  "maxFileSize": 10485760
+}

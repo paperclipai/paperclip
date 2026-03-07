@@ -37,3 +37,6 @@ tmp/
 .vscode/
 .claude/settings.local.json
 .paperclip-local/
+
+# Duplicate AgentVault clone (source repo reference)
+agentvault-repo/

@@ -1,0 +1,56 @@
+{
+  "$schema": "https://agentvault.dev/schemas/guild-config-v1.json",
+  "name": "ios-video-timeline-guild",
+  "type": "guild",
+  "domain": "ios",
+  "description": "iOS Guild for a scrolling video-timeline feature. Demonstrates correct AVPlayer cell reuse, SwiftUI LazyVStack patterns, and App Store privacy compliance.",
+  "version": "1.0.0",
+  "skills": {
+    "domain": "ios",
+    "skillsPath": "../../../skills/ios/",
+    "required": [
+      "swiftui-cell-reuse",
+      "avplayer-best-practices",
+      "privacy-policy-template",
+      "xcode-project-structure"
+    ]
+  },
+  "qualityGates": ["cell-reuse", "avplayer-reuse", "memory-profile", "privacy-flags"],
+  "agents": [
+    {
+      "ref": "ios-coder.json",
+      "role": "coder"
+    },
+    {
+      "ref": "ios-tester.json",
+      "role": "tester"
+    },
+    {
+      "ref": "privacy-guardian.json",
+      "role": "reviewer"
+    }
+  ],
+  "orchestration": {
+    "strategy": "sequential",
+    "steps": [
+      {
+        "agent": "coder",
+        "task": "Implement the scrolling video timeline feature following iOS skill guidelines"
+      },
+      {
+        "agent": "tester",
+        "task": "Write unit and UI tests; run the iOS Quality Gate checks"
+      },
+      {
+        "agent": "reviewer",
+        "task": "Audit privacy declarations and generate PrivacyInfo.xcprivacy"
+      }
+    ],
+    "passThreshold": 0.85
+  },
+  "environment": {
+    "AGENTVAULT_DOMAIN": "ios",
+    "IOS_DEPLOYMENT_TARGET": "16.0",
+    "SWIFT_VERSION": "5.9"
+  }
+}

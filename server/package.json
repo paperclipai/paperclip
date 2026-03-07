@@ -40,6 +40,7 @@
     "@paperclipai/adapter-utils": "workspace:*",
     "@paperclipai/db": "workspace:*",
     "@paperclipai/shared": "workspace:*",
+    "agentvault": "workspace:*",
     "better-auth": "1.4.18",
     "detect-port": "^2.1.0",
     "dotenv": "^17.0.1",

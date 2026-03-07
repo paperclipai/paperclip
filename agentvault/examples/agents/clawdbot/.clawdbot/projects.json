@@ -1,0 +1,41 @@
+{
+  "projects": [
+    {
+      "id": "project-1",
+      "name": "Web App Refactor",
+      "description": "Refactor legacy web application code",
+      "status": "active",
+      "createdAt": "2024-01-15T10:00:00Z",
+      "rootPath": "/Users/dev/web-app",
+      "settings": {
+        "priority": "high",
+        "estimatedHours": 40
+      }
+    },
+    {
+      "id": "project-2",
+      "name": "API Integration",
+      "description": "Integrate third-party payment API",
+      "status": "pending",
+      "createdAt": "2024-01-20T14:30:00Z",
+      "rootPath": "/Users/dev/api-integration",
+      "settings": {
+        "priority": "medium",
+        "estimatedHours": 20
+      }
+    },
+    {
+      "id": "project-3",
+      "name": "Database Migration",
+      "description": "Migrate from PostgreSQL to MongoDB",
+      "status": "completed",
+      "createdAt": "2024-01-10T09:00:00Z",
+      "completedAt": "2024-01-18T17:00:00Z",
+      "rootPath": "/Users/dev/db-migration",
+      "settings": {
+        "priority": "low",
+        "estimatedHours": 15
+      }
+    }
+  ]
+}

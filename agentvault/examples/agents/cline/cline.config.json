@@ -1,0 +1,19 @@
+{
+  "name": "cline-agent",
+  "type": "cline",
+  "description": "Alternative Cline agent configuration",
+  "version": "2.0.0",
+  "mode": "request",
+  "claudeVersion": "3.5",
+  "workingDirectory": "./workspace",
+  "autoConfirm": true,
+  "useReadline": false,
+  "allowedCommands": [
+    "python",
+    "pip",
+    "ls",
+    "cat",
+    "cd",
+    "echo"
+  ]
+}

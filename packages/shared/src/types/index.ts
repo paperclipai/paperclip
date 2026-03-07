@@ -70,3 +70,10 @@ export type {
   CompanyPortabilityImportResult,
   CompanyPortabilityExportRequest,
 } from "./company-portability.js";
+export type {
+  AgentMemoryEntry,
+  KnowledgeEntry,
+  AgentMessage,
+  ConsensusProposal,
+  ConsensusVote,
+} from "./backbone.js";

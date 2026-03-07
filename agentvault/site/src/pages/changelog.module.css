@@ -1,0 +1,132 @@
+.main {
+  padding: 3rem 0 4.2rem;
+}
+
+.headerCard,
+.releaseCard {
+  background: rgba(12, 12, 18, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  padding: 2rem;
+  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.42);
+  backdrop-filter: blur(12px);
+}
+
+.headerCard {
+  margin-bottom: 1rem;
+}
+
+.protocolTag {
+  margin: 0 0 0.7rem;
+  font-family: 'Syncopate', sans-serif;
+  font-size: 0.62rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #22d3ee;
+}
+
+.pageTitle {
+  margin-bottom: 0.7rem;
+  font-size: clamp(1.9rem, 4vw, 3rem);
+}
+
+.pageLead {
+  margin: 0;
+  color: #b8c8e2;
+}
+
+.releaseTitle {
+  margin-bottom: 0.55rem;
+  font-size: clamp(1.15rem, 2.6vw, 1.55rem);
+}
+
+.releaseSubtitle {
+  margin-top: 0;
+  margin-bottom: 1.4rem;
+  color: #9fb1cc;
+}
+
+.subTitle {
+  margin-top: 1.3rem;
+  margin-bottom: 0.65rem;
+  font-size: clamp(0.95rem, 2.2vw, 1.16rem);
+}
+
+.itemList {
+  margin: 0;
+  padding-left: 1.25rem;
+  color: #c7d6ed;
+}
+
+.itemList li {
+  margin: 0.35rem 0;
+}
+
+.codeVessel {
+  background: #0d0d0d;
+  border-radius: 12px;
+  border: 1px solid #1a1a1a;
+  position: relative;
+  overflow: hidden;
+}
+
+.codeVessel::before {
+  content: 'CODE_ENTITY';
+  position: absolute;
+  top: 9px;
+  right: 12px;
+  font-family: 'Syncopate', sans-serif;
+  font-size: 0.54rem;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.codeVessel pre {
+  margin: 0;
+  padding: 1rem;
+}
+
+.linkGrid {
+  display: grid;
+  gap: 0.58rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.linkGrid a {
+  display: block;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-left: 3px solid rgba(34, 211, 238, 0.6);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 0.7rem 0.8rem;
+  text-decoration: none;
+  color: #b8cdef;
+  transition:
+    transform var(--ifm-transition-fast),
+    border-color var(--ifm-transition-fast),
+    color var(--ifm-transition-fast);
+}
+
+.linkGrid a:hover {
+  transform: translate3d(4px, 0, 0);
+  border-color: rgba(34, 211, 238, 0.45);
+  color: #ffffff;
+}
+
+.actions {
+  margin-top: 1rem;
+  display: flex;
+  gap: 0.8rem;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 996px) {
+  .headerCard,
+  .releaseCard {
+    padding: 1.4rem;
+  }
+
+  .linkGrid {
+    grid-template-columns: 1fr;
+  }
+}

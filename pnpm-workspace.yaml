@@ -4,3 +4,4 @@ packages:
   - server
   - ui
   - cli
+  - agentvault

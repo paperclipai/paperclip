@@ -1,0 +1,24 @@
+{
+  "$schema": "https://agentvault.dev/schemas/cline-config-v1.json",
+  "name": "example-cline",
+  "type": "cline",
+  "description": "Example Cline agent for AgentVault",
+  "version": "1.0.0",
+  "mode": "auto",
+  "claudeVersion": "3.5",
+  "workingDirectory": ".",
+  "autoConfirm": false,
+  "useReadline": true,
+  "allowedCommands": [
+    "git",
+    "npm",
+    "node",
+    "ls",
+    "cat",
+    "mkdir",
+    "rm",
+    "cp",
+    "mv",
+    "grep"
+  ]
+}

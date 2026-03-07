@@ -1,0 +1,29 @@
+# Goose Agent Configuration
+# This file configures a Goose AI agent for AgentVault
+
+name: example-goose
+type: goose
+description: Example Goose agent for AgentVault
+version: 1.0.0
+
+# Model Configuration
+model: gpt-4
+temperature: 0.7
+maxTokens: 2048
+
+# System Prompt
+systemPrompt: >
+  You are a helpful AI assistant that specializes in code analysis,
+  refactoring, and documentation generation. You work in the working
+  directory specified below.
+
+# Working Directory (relative to agent root)
+workingDirectory: .
+
+# Available Tools
+tools:
+  - file-read
+  - file-write
+  - directory-list
+  - git-commands
+  - code-search

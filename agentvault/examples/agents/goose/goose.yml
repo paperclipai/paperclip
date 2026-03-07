@@ -1,0 +1,23 @@
+# Alternative Goose Configuration (YAML extension)
+# This is another valid Goose configuration file format
+
+name: goose-agent
+type: goose
+description: An alternative Goose agent configuration
+version: 2.0.0
+
+model: gpt-3.5-turbo
+temperature: 0.5
+maxTokens: 1024
+
+systemPrompt: >
+  You are a helpful AI assistant focused on automation and
+  productivity. Use the available tools to help complete tasks.
+
+workingDirectory: ./workspace
+
+tools:
+  - file-read
+  - file-write
+  - execute-command
+  - web-search
