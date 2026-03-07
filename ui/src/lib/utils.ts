@@ -48,6 +48,18 @@ export function formatTokens(n: number): string {
   return String(n);
 }
 
+/** Map a raw provider slug to a display-friendly name. */
+export function providerDisplayName(provider: string): string {
+  const map: Record<string, string> = {
+    anthropic: "Anthropic",
+    openai: "OpenAI",
+    google: "Google",
+    cursor: "Cursor",
+    jetbrains: "JetBrains AI",
+  };
+  return map[provider.toLowerCase()] ?? provider;
+}
+
 /** Build an issue URL using the human-readable identifier when available. */
 export function issueUrl(issue: { id: string; identifier?: string | null }): string {
   return `/issues/${issue.identifier ?? issue.id}`;

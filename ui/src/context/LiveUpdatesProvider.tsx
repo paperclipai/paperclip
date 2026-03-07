@@ -410,6 +410,8 @@ function invalidateActivityQueries(
 
   if (entityType === "cost_event") {
     queryClient.invalidateQueries({ queryKey: queryKeys.costs(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.usageByProvider(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.usageWindowSpend(companyId) });
     return;
   }
 

@@ -34,3 +34,27 @@ export interface CostByAgent {
   subscriptionInputTokens: number;
   subscriptionOutputTokens: number;
 }
+
+export interface CostByProviderModel {
+  provider: string;
+  model: string;
+  costCents: number;
+  inputTokens: number;
+  outputTokens: number;
+  apiRunCount: number;
+  subscriptionRunCount: number;
+  subscriptionInputTokens: number;
+  subscriptionOutputTokens: number;
+}
+
+/** spend per provider for a fixed rolling time window */
+export interface CostWindowSpendRow {
+  provider: string;
+  /** duration label, e.g. "5h", "24h", "7d" */
+  window: string;
+  /** rolling window duration in hours */
+  windowHours: number;
+  costCents: number;
+  inputTokens: number;
+  outputTokens: number;
+}
