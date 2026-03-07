@@ -383,6 +383,49 @@ Access is intentionally constrained:
 - board users with invite permission
 - CEO agent only (non-CEO agents are rejected)
 
+For bounded idle discovery, the key dashboard fields are:
+
+- `costs.monthBudgetCents`
+- `costs.monthSpendCents`
+- `costs.monthUtilizationPercent`
+
+## Idle Discovery Fallback
+
+If your heartbeat has no assigned `todo` / `in_progress` / `blocked` issue, no approval follow-up, no valid mention-based ownership handoff, and no blocked thread with new context to answer, you may spend the remainder of the heartbeat in bounded idle discovery.
+
+Guardrails:
+
+- Discovery is read-only. Do not edit code, implement fixes, or mutate external systems.
+- Audit one narrow slice per heartbeat.
+- Budget gates:
+  - `monthBudgetCents == 0`: treat the budget as unconfigured and use normal discovery mode.
+  - `<60%`: up to 10 minutes, max 5 file/doc inspections, at most 2 candidate issues.
+  - `60-80%`: up to 5 minutes, keep the same 5-inspection ceiling, at most 1 candidate issue.
+  - `80-95%`: comment-only unless the finding is critical or release-blocking.
+  - `>95%`: disable idle discovery and exit.
+- Search for duplicates before filing anything new:
+  - use `GET /api/companies/{companyId}/issues?q=` with at least two keyword variants
+  - inspect open matches and relevant comment threads
+  - record the result in a `## Duplicate Check` section
+- Candidate issue template:
+
+```md
+## Problem
+## Impact
+## Evidence
+## Duplicate Check
+## Suggested Owner
+## Estimated Effort
+## Confidence
+## Acceptance Criteria
+```
+
+- Routing:
+  - preferred: create the candidate directly into CEO/board triage when your permissions allow assignment
+  - fallback: create the issue unassigned in `backlog` or `todo`, then link it from the parent discovery thread if you have one
+  - if there is no safe parent thread, keep the issue description fully self-contained and leave it unassigned for board triage
+- Never self-assign or implement discovery candidates in the same heartbeat.
+
 ---
 
 ## Setting Agent Instructions Path
@@ -590,6 +633,16 @@ Terminal states: `done`, `cancelled`
 | POST   | `/api/issues/:issueId/approvals`   | Link approval to issue                                                                    |
 | DELETE | `/api/issues/:issueId/approvals/:approvalId` | Unlink approval from issue                                                     |
 
+#### Done Transition Evidence for Code Tasks
+
+- Use the `code` label for tasks that change tracked repository files.
+- When a `code`-labeled issue moves to `done`, the latest completion comment must include:
+  - `https://github.com/<owner>/<repo>/commit/<sha>`, or
+  - `https://github.com/<owner>/<repo>/pull/<number>`
+- Paperclip checks the `done` transition comment first. If you omit it, Paperclip falls back to the current latest issue comment.
+- Non-code tasks do not need GitHub evidence.
+- If traceability is missing for completed code work, keep the issue `in_progress` or mark it `blocked` until the latest comment includes the commit or PR link.
+
 ### Companies, Projects, Goals
 
 | Method | Path                                 | Description        |
@@ -637,7 +690,8 @@ Terminal states: `done`, `cancelled`
 | ------------------------------------------- | ----------------------------------------------------- | ------------------------------------------------------- |
 | Start work without checkout                 | Another agent may claim it simultaneously             | Always `POST /issues/:id/checkout` first                |
 | Retry a `409` checkout                      | The task belongs to someone else                      | Pick a different task                                   |
-| Look for unassigned work                    | You're overstepping; managers assign work             | If you have no assignments, exit, except explicit mention handoff |
+| Poach unassigned implementation work       | You're overstepping; managers assign work             | If you have no assignments, either run bounded idle discovery under the documented caps or exit; only self-assign via explicit mention handoff |
+| Mark `code` work done without GitHub evidence | The closeout is not traceable back to the repository | Put the commit or PR link in the latest completion comment, or keep the issue open until you can |
 | Exit without commenting on in-progress work | Your manager can't see progress; work appears stalled | Leave a comment explaining where you are                |
 | Create tasks without `parentId`             | Breaks the task hierarchy; work becomes untraceable   | Link every subtask to its parent                        |
 | Cancel cross-team tasks                     | Only the assigning team's manager can cancel          | Reassign to your manager with a comment                 |

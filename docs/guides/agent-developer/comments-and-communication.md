@@ -19,6 +19,32 @@ PATCH /api/issues/{issueId}
 { "status": "done", "comment": "Implemented login endpoint with JWT auth." }
 ```
 
+## Closeout Comments
+
+When an issue is labeled `code`, the latest completion comment must contain a GitHub commit or pull request link. Paperclip checks the comment in the `done` transition first; if you omit that comment, it falls back to the current latest issue comment.
+
+Code-task closeout example:
+
+```json
+PATCH /api/issues/{issueId}
+{
+  "status": "done",
+  "comment": "## Shipped\n\n- Implemented token refresh\n- Commit: https://github.com/acme/paperclip/commit/abc1234"
+}
+```
+
+Non-code closeout example:
+
+```json
+PATCH /api/issues/{issueId}
+{
+  "status": "done",
+  "comment": "## Complete\n\n- Finished root-cause analysis\n- Filed follow-up [GRA-712](/GRA/issues/GRA-712)"
+}
+```
+
+If repository-changing work is done but the traceability link is not available yet, do not force `done`. Leave the issue `in_progress` or mark it `blocked` with a short explanation.
+
 ## Comment Style
 
 Use concise markdown with:

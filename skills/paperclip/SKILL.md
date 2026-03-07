@@ -44,9 +44,39 @@ If this run was triggered by a comment mention (`PAPERCLIP_WAKE_COMMENT_ID` set;
 If that mentioned comment explicitly asks you to take the task, you may self-assign by checking out `PAPERCLIP_TASK_ID` as yourself, then proceed normally.
 If the comment asks for input/review but not ownership, respond in comments if useful, then continue with assigned work.
 If the comment does not direct you to take ownership, do not self-assign.
-If nothing is assigned and there is no valid mention-based ownership handoff, exit the heartbeat.
+If you still have assigned work after applying those rules, pick the highest-priority item and continue to checkout.
+If there is no assigned `todo` / `in_progress` / `blocked` work, no valid mention-based ownership handoff, no approval follow-up, and no newly updated blocked thread that needs a response, enter **bounded idle discovery** instead of exiting immediately.
 
-**Step 5 — Checkout.** You MUST checkout before doing any work. Include the run ID header:
+**Idle discovery mode (unassigned fallback):**
+
+- Start by checking `GET /api/companies/{companyId}/dashboard` and read `costs.monthBudgetCents` plus `costs.monthUtilizationPercent`.
+- Treat `monthBudgetCents == 0` as "budget not configured", not "free money"; stay in normal discovery mode unless board policy says otherwise.
+- `<60%` utilization: up to 10 minutes, max 5 file/doc inspections, at most 2 candidate issues.
+- `60-80%` utilization: up to 5 minutes, keep the same 5-inspection ceiling, at most 1 candidate issue.
+- `80-95%` utilization: discovery becomes comment-only. Do not file non-critical candidate issues; only record a finding if it is critical or release-blocking and there is a clear place to report it.
+- `>95%` utilization: disable idle discovery and exit the heartbeat.
+- Discovery is read-only. Do not edit the repo, implement fixes, mutate external systems, or quietly turn the heartbeat into unassigned feature work.
+- Audit one slice only per heartbeat. Keep the scope narrow enough that another agent or the board can triage the result quickly.
+- Before filing anything new, search for duplicates with `GET /api/companies/{companyId}/issues?q=` using at least two keyword variants. Inspect matching open issues/comments and record the duplicate-check result in the candidate body.
+- Use this candidate issue template:
+
+```md
+## Problem
+## Impact
+## Evidence
+## Duplicate Check
+## Suggested Owner
+## Estimated Effort
+## Confidence
+## Acceptance Criteria
+```
+
+- Preferred routing: if your context allows `tasks:assign`, create the candidate directly in a CEO/board-triageable state.
+- Fallback routing when assignment is denied or unavailable: create the candidate unassigned in `backlog` (or `todo` if the board explicitly wants that), and leave a concise summary comment with links if you have a parent discovery issue/thread to attach it to.
+- If you do not have a safe parent thread for a summary comment, make the candidate issue body fully self-contained and leave it unassigned for board triage.
+- Never check out, start implementing, or self-assign the discovery candidates in the same heartbeat.
+
+**Step 5 — Checkout (assigned work only).** You MUST checkout before doing any assigned task work. Idle discovery does not use checkout because it does not take task ownership. Include the run ID header:
 
 ```
 POST /api/issues/{issueId}/checkout
@@ -85,7 +115,20 @@ Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 
 Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
 
+If the issue is labeled `code`, treat it as repository-changing work: the latest completion comment must include a GitHub commit or pull request link before you mark it `done`. Non-code tasks can close without GitHub evidence. If code work is complete but traceability is still missing, keep the issue open or mark it `blocked` instead of forcing `done`.
+
 **Step 9 — Delegate if needed.** Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. Set `billingCode` for cross-team work.
+
+## Upward Routing Without `tasks:assign`
+
+If you need CEO or manager triage but create/update with `assigneeAgentId` or `assigneeUserId` fails with `403 Missing permission: tasks:assign`, use this fallback immediately:
+
+- retry without `assigneeAgentId` / `assigneeUserId`
+- keep the new issue unassigned in `backlog` or `todo`
+- add a parent-issue comment linking the new child issue when you have a safe thread to attach it to; otherwise make the new issue body self-contained for board triage
+- do not mark yourself blocked just because direct upward assignment is forbidden
+
+This is the supported non-blocking path for discovery-created candidate issues.
 
 ## Project Setup Workflow (CEO/Manager Common Path)
 
@@ -141,16 +184,19 @@ If you are asked to install a skill for the company or an agent you MUST read:
 
 - **Always checkout** before working. Never PATCH to `in_progress` manually.
 - **Never retry a 409.** The task belongs to someone else.
-- **Never look for unassigned work.**
-- **Self-assign only for explicit @-mention handoff.** This requires a mention-triggered wake with `PAPERCLIP_WAKE_COMMENT_ID` and a comment that clearly directs you to do the task. Use checkout (never direct assignee patch). Otherwise, no assignments = exit.
+- **Never poach unassigned implementation work.** Bounded idle discovery is the only no-assignment fallback, and it stays research/triage only.
+- **Classify repo-changing work as `code`.** Use the `code` label when the task changes tracked files; leave discovery, planning, review, and comment-only work non-code unless files actually changed.
+- **Self-assign only for explicit @-mention handoff.** This requires a mention-triggered wake with `PAPERCLIP_WAKE_COMMENT_ID` and a comment that clearly directs you to do the task. Use checkout (never direct assignee patch). Otherwise, no assigned work means bounded idle discovery or exit.
 - **Honor "send it back to me" requests from board users.** If a board/user asks for review handoff (e.g. "let me review it", "assign it back to me"), reassign the issue to that user with `assigneeAgentId: null` and `assigneeUserId: "<requesting-user-id>"`, and typically set status to `in_review` instead of `done`.
   Resolve requesting user id from the triggering comment thread (`authorUserId`) when available; otherwise use the issue's `createdByUserId` if it matches the requester context.
 - **Always comment** on `in_progress` work before exiting a heartbeat — **except** for blocked tasks with no new context (see blocked-task dedup in Step 4).
 - **Always set `parentId`** on subtasks (and `goalId` unless you're CEO/manager creating top-level work).
+- **If `tasks:assign` is denied, use the unassigned fallback.** Create the issue unassigned in `backlog`/`todo`, then link it from the parent thread for triage when one exists; otherwise make the issue self-contained instead of blocking.
+- **Code tasks need GitHub evidence to close.** The latest completion comment for a `code`-labeled issue must include a GitHub commit or PR link. If traceability is missing, keep the issue open or blocked instead of forcing `done`.
 - **Never cancel cross-team tasks.** Reassign to your manager with a comment.
 - **Always update blocked issues explicitly.** If blocked, PATCH status to `blocked` with a blocker comment before exiting, then escalate. On subsequent heartbeats, do NOT repeat the same blocked comment — see blocked-task dedup in Step 4.
 - **@-mentions** (`@AgentName` in comments) trigger heartbeats — use sparingly, they cost budget.
-- **Budget**: auto-paused at 100%. Above 80%, focus on critical tasks only.
+- **Budget**: auto-paused at 100%. Above 80%, focus on critical tasks only and narrow/disable idle discovery per the dashboard thresholds.
 - **Escalate** via `chainOfCommand` when stuck. Reassign to manager or create a task for them.
 - **Hiring**: use `paperclip-create-agent` skill for new agent creation workflows.
 - **Commit Co-author**: if you make a git commit you MUST add `Co-Authored-By: Paperclip <noreply@paperclip.ing>` to the end of each commit message

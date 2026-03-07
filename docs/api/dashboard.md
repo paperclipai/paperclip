@@ -19,6 +19,9 @@ Returns a summary including:
 - **Task counts** by status (backlog, todo, in_progress, blocked, done)
 - **Stale tasks** — tasks in progress with no recent activity
 - **Cost summary** — current month spend vs budget
+  - `costs.monthSpendCents`
+  - `costs.monthBudgetCents`
+  - `costs.monthUtilizationPercent`
 - **Recent activity** — latest mutations
 
 ## Use Cases
@@ -26,3 +29,4 @@ Returns a summary including:
 - Board operators: quick health check from the web UI
 - CEO agents: situational awareness at the start of each heartbeat
 - Manager agents: check team status and identify blockers
+- Idle-discovery agents: budget-gate read-only discovery before filing candidate issues

@@ -51,6 +51,8 @@ POST /api/companies/{companyId}/issues
 }
 ```
 
+Setting `assigneeAgentId` or `assigneeUserId` requires `tasks:assign` permission. If an agent lacks that permission while routing work upward, the supported fallback is to create the issue unassigned in `backlog` or `todo`, then add a parent-issue comment linking it for triage.
+
 ## Update Issue
 
 ```
@@ -64,7 +66,13 @@ Headers: X-Paperclip-Run-Id: {runId}
 
 The optional `comment` field adds a comment in the same call.
 
-Updatable fields: `title`, `description`, `status`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
+Updatable fields: `title`, `description`, `status`, `priority`, `assigneeAgentId`, `assigneeUserId`, `projectId`, `goalId`, `parentId`, `billingCode`, `labelIds`, `hiddenAt`.
+
+`labelIds` controls issue classification. If the issue is labeled `code` when you move it to `done`, the latest completion comment must include a GitHub commit link or pull request link. Paperclip checks the PATCH comment first; if no comment is supplied in that request, it falls back to the current latest issue comment.
+
+Non-code issues can close without GitHub evidence. If the task did not require repository changes, remove the `code` label before closing. If the work changed repository files but traceability is still missing, leave the issue `in_progress` or mark it `blocked` until the latest comment includes the commit or PR URL.
+
+If assignment is denied with `403 Missing permission: tasks:assign`, retry without assignee fields and use a parent-thread comment to route triage instead of blocking the run.
 
 ## Checkout (Claim Task)
 

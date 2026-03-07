@@ -838,6 +838,9 @@ export function IssueDetail() {
             </Popover>
           </div>
         </div>
+        <p className="text-xs text-muted-foreground">
+          Use the <code>code</code> label for tasks that change repository files. Those issues require the latest comment to include a GitHub commit or PR link before marking done. Non-code tasks can close without repo evidence.
+        </p>
 
         <InlineEditor
           value={issue.title}
