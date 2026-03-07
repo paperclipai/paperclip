@@ -2465,6 +2465,46 @@ export function accessRoutes(
     }
   );
 
+  router.delete(
+    "/companies/:companyId/join-requests/:requestId",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const requestId = req.params.requestId as string;
+      await assertCompanyPermission(req, companyId, "joins:approve");
+
+      const existing = await db
+        .select()
+        .from(joinRequests)
+        .where(
+          and(
+            eq(joinRequests.companyId, companyId),
+            eq(joinRequests.id, requestId)
+          )
+        )
+        .then((rows) => rows[0] ?? null);
+      if (!existing) throw notFound("Join request not found");
+      if (existing.status === "approved") {
+        throw badRequest("Cannot delete an already-approved join request");
+      }
+
+      await db
+        .delete(joinRequests)
+        .where(and(eq(joinRequests.companyId, companyId), eq(joinRequests.id, requestId)));
+
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "join.deleted",
+        entityType: "join_request",
+        entityId: requestId,
+        details: { requestType: existing.requestType, status: existing.status }
+      });
+
+      res.json({ deleted: true, id: requestId });
+    }
+  );
+
   router.post(
     "/join-requests/:requestId/claim-api-key",
     validate(claimJoinRequestApiKeySchema),
