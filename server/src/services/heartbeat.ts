@@ -21,6 +21,7 @@ import { getServerAdapter, runningProcesses } from "../adapters/index.js";
 import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
+import { isPaperclipWorktree, gitRepoRoot, removeGitWorktree, pruneGitWorktrees } from "@paperclipai/adapter-utils/git-worktree";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 
@@ -1378,6 +1379,26 @@ export function heartbeatService(db: Db) {
               taskKey,
               adapterType: agent.adapterType,
             });
+            // Clean up worktree when session is explicitly cleared
+            const prevCwd = readNonEmptyString(previousSessionParams?.cwd);
+            if (adapterResult.clearSession && prevCwd && isPaperclipWorktree(prevCwd)) {
+              try {
+                // Use git to resolve the main repo root from within the worktree.
+                // path.dirname heuristics are fragile; `git rev-parse --git-common-dir`
+                // reliably returns the main repo's .git directory.
+                const repoRoot = await gitRepoRoot(prevCwd);
+                await removeGitWorktree({
+                  repoCwd: repoRoot,
+                  worktreePath: prevCwd,
+                  onLog: async (_stream, msg) => {
+                    logger.info({ runId, agentId: agent.id }, msg.trim());
+                  },
+                });
+                await pruneGitWorktrees(repoRoot);
+              } catch (wtErr) {
+                logger.warn({ err: wtErr, runId }, "failed to clean up worktree after session clear");
+              }
+            }
           } else {
             await upsertTaskSession({
               companyId: agent.companyId,
