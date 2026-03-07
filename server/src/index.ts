@@ -495,12 +495,13 @@ if (config.heartbeatSchedulerEnabled) {
   void heartbeat
     .reapOrphanedRuns()
     .then(() => {
-      startupReapComplete = true;
       logger.info("startup reap complete — heartbeat scheduler accepting wakes");
     })
     .catch((err) => {
-      startupReapComplete = true; // unblock scheduler even on reap failure
       logger.error({ err }, "startup reap of orphaned heartbeat runs failed");
+    })
+    .finally(() => {
+      startupReapComplete = true; // unblock scheduler regardless of outcome
     });
 
   setInterval(() => {
