@@ -34,6 +34,7 @@ import {
   AlertTriangle,
   Tag,
   Calendar,
+  ListTree,
   Paperclip,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -200,6 +201,14 @@ export function NewIssueDialog() {
   const assigneeSelectorRef = useRef<HTMLButtonElement | null>(null);
   const projectSelectorRef = useRef<HTMLButtonElement | null>(null);
 
+  const parentId = newIssueDefaults.parentId ?? null;
+
+  const { data: parentIssue } = useQuery({
+    queryKey: queryKeys.issues.detail(parentId!),
+    queryFn: () => issuesApi.get(parentId!),
+    enabled: !!parentId && newIssueOpen,
+  });
+
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(effectiveCompanyId!),
     queryFn: () => agentsApi.list(effectiveCompanyId!),
@@ -264,6 +273,9 @@ export function NewIssueDialog() {
       issuesApi.create(companyId, data),
     onSuccess: (issue) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(effectiveCompanyId!) });
+      if (parentId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(parentId) });
+      }
       if (draftTimer.current) clearTimeout(draftTimer.current);
       clearDraft();
       reset();
@@ -434,6 +446,7 @@ export function NewIssueDialog() {
       priority: priority || "medium",
       ...(assigneeId ? { assigneeAgentId: assigneeId } : {}),
       ...(projectId ? { projectId } : {}),
+      ...(parentId ? { parentId } : {}),
       ...(assigneeAdapterOverrides ? { assigneeAdapterOverrides } : {}),
     });
   }
@@ -607,7 +620,7 @@ export function NewIssueDialog() {
               </PopoverContent>
             </Popover>
             <span className="text-muted-foreground/60">&rsaquo;</span>
-            <span>New issue</span>
+            <span>{parentId ? "New sub-issue" : "New issue"}</span>
           </div>
           <div className="flex items-center gap-1">
             <Button
@@ -628,6 +641,22 @@ export function NewIssueDialog() {
             </Button>
           </div>
         </div>
+
+        {/* Parent badge */}
+        {parentId && (
+          <div className="px-4 pt-3 pb-0 shrink-0">
+            <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-accent/30 px-2 py-1 text-xs text-muted-foreground">
+              <ListTree className="h-3 w-3" />
+              Sub-issue of
+              <span className="font-mono">
+                {parentIssue?.identifier ?? parentId.slice(0, 8)}
+              </span>
+              {parentIssue?.title && (
+                <span className="truncate max-w-[200px]">{parentIssue.title}</span>
+              )}
+            </span>
+          </div>
+        )}
 
         {/* Title */}
         <div className="px-4 pt-4 pb-2 shrink-0">

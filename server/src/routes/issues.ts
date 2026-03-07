@@ -797,7 +797,20 @@ export function issueRoutes(db: Db, storage: StorageService) {
     let interruptedRunId: string | null = null;
     let currentIssue = issue;
 
-    if (reopenRequested && isClosed) {
+    // Resolve @mentions early so we can decide whether reopen should proceed.
+    // If the comment @mentions agents other than the assignee, the user is
+    // directing a conversation — not reopening work for the assignee.
+    let earlyMentionedIds: string[] = [];
+    try {
+      earlyMentionedIds = await svc.findMentionedAgents(issue.companyId, req.body.body);
+    } catch (err) {
+      logger.warn({ err, issueId: id }, "failed to resolve @-mentions for reopen check");
+    }
+    const assigneeId = issue.assigneeAgentId;
+    const mentionsNonAssignee = earlyMentionedIds.length > 0 && (!assigneeId || !earlyMentionedIds.includes(assigneeId));
+    const shouldReopen = reopenRequested && isClosed && !mentionsNonAssignee;
+
+    if (shouldReopen) {
       const reopenedIssue = await svc.update(id, { status: "todo" });
       if (!reopenedIssue) {
         res.status(404).json({ error: "Issue not found" });
@@ -903,7 +916,23 @@ export function issueRoutes(db: Db, storage: StorageService) {
       const actorIsAgent = actor.actorType === "agent";
       const selfComment = actorIsAgent && actor.actorId === assigneeId;
       const skipWake = selfComment || isClosed;
-      if (assigneeId && (reopened || !skipWake)) {
+
+      // Resolve @mentions first so we can decide whether the assignee should also wake.
+      let mentionedIds: string[] = [];
+      try {
+        mentionedIds = await svc.findMentionedAgents(issue.companyId, req.body.body);
+      } catch (err) {
+        logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
+      }
+
+      // On reopen: if the comment @mentions specific agents, wake only those —
+      // the @mention is an explicit intent signal that overrides the implicit
+      // "wake the old assignee" behavior. Without this, commenting "@teamlead"
+      // on a done issue assigned to devops would wake both devops and teamlead.
+      const hasMentions = mentionedIds.length > 0;
+      const skipAssigneeOnReopen = reopened && hasMentions && assigneeId && !mentionedIds.includes(assigneeId);
+
+      if (assigneeId && !skipAssigneeOnReopen && (reopened || !skipWake)) {
         if (reopened) {
           wakeups.set(assigneeId, {
             source: "automation",
@@ -951,13 +980,6 @@ export function issueRoutes(db: Db, storage: StorageService) {
             },
           });
         }
-      }
-
-      let mentionedIds: string[] = [];
-      try {
-        mentionedIds = await svc.findMentionedAgents(issue.companyId, req.body.body);
-      } catch (err) {
-        logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
       }
 
       for (const mentionedId of mentionedIds) {

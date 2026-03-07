@@ -207,7 +207,7 @@ export function CommentThread({
   mentions: providedMentions,
 }: CommentThreadProps) {
   const [body, setBody] = useState("");
-  const [reopen, setReopen] = useState(true);
+  const [reopen, setReopen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [attaching, setAttaching] = useState(false);
   const [reassignTarget, setReassignTarget] = useState(currentAssigneeValue);

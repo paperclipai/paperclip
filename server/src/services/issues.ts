@@ -1211,7 +1211,7 @@ export function issueService(db: Db) {
       }),
 
     findMentionedAgents: async (companyId: string, body: string) => {
-      const re = /\B@([^\s@,!?.]+)/g;
+      const re = /\B@([^\s@,!?.&]+)/g;
       const tokens = new Set<string>();
       let m: RegExpExecArray | null;
       while ((m = re.exec(body)) !== null) tokens.add(m[1].toLowerCase());
