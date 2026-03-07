@@ -15,6 +15,14 @@ Current implementation status:
 - Node.js 20+
 - pnpm 9+
 
+## Dependency Lockfile Policy
+
+GitHub Actions owns `pnpm-lock.yaml`.
+
+- Do not commit `pnpm-lock.yaml` in pull requests.
+- Pull request CI validates dependency resolution when manifests change.
+- Pushes to `master` regenerate `pnpm-lock.yaml` with `pnpm install --lockfile-only --no-frozen-lockfile`, commit it back if needed, and then run verification with `--frozen-lockfile`.
+
 ## Start Dev
 
 From repo root:
