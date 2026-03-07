@@ -29,6 +29,7 @@ import {
 } from "@mdxeditor/editor";
 import { buildProjectMentionHref, parseProjectMentionHref } from "@paperclipai/shared";
 import { cn } from "../lib/utils";
+import { normalizeMarkdownArtifacts } from "../lib/markdown";
 
 /* ---- Mention types ---- */
 
@@ -203,7 +204,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
 }: MarkdownEditorProps, forwardedRef) {
   const containerRef = useRef<HTMLDivElement>(null);
   const ref = useRef<MDXEditorMethods>(null);
-  const latestValueRef = useRef(value);
+  const latestValueRef = useRef(normalizeMarkdownArtifacts(value));
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const dragDepthRef = useRef(0);
@@ -281,9 +282,10 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   }, [hasImageUpload]);
 
   useEffect(() => {
-    if (value !== latestValueRef.current) {
-      ref.current?.setMarkdown(value);
-      latestValueRef.current = value;
+    const normalizedValue = normalizeMarkdownArtifacts(value);
+    if (normalizedValue !== latestValueRef.current) {
+      ref.current?.setMarkdown(normalizedValue);
+      latestValueRef.current = normalizedValue;
     }
   }, [value]);
 
@@ -554,11 +556,15 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     >
       <MDXEditor
         ref={ref}
-        markdown={value}
+        markdown={normalizeMarkdownArtifacts(value)}
         placeholder={placeholder}
         onChange={(next) => {
-          latestValueRef.current = next;
-          onChange(next);
+          const normalizedNext = normalizeMarkdownArtifacts(next);
+          latestValueRef.current = normalizedNext;
+          if (normalizedNext !== next) {
+            ref.current?.setMarkdown(normalizedNext);
+          }
+          onChange(normalizedNext);
         }}
         onBlur={() => onBlur?.()}
         className={cn("paperclip-mdxeditor", !bordered && "paperclip-mdxeditor--borderless")}

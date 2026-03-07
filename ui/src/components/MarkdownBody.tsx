@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 import { parseProjectMentionHref } from "@paperclipai/shared";
 import { cn } from "../lib/utils";
 import { useTheme } from "../context/ThemeContext";
+import { normalizeMarkdownArtifacts } from "../lib/markdown";
 
 interface MarkdownBodyProps {
   children: string;
@@ -114,6 +115,7 @@ function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: b
 
 export function MarkdownBody({ children, className }: MarkdownBodyProps) {
   const { theme } = useTheme();
+  const normalizedMarkdown = normalizeMarkdownArtifacts(children);
   return (
     <div
       className={cn(
@@ -154,7 +156,7 @@ export function MarkdownBody({ children, className }: MarkdownBodyProps) {
           },
         }}
       >
-        {children}
+        {normalizedMarkdown}
       </Markdown>
     </div>
   );
