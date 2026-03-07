@@ -792,8 +792,9 @@ run_case_c() {
 
   local marker="OPENCLAW_CASE_C_CREATED_$(date +%s)"
   local ack_marker="OPENCLAW_CASE_C_ACK_$(date +%s)"
+  local original_issue_reference="the original case issue you are currently reading"
   local description
-  description="Case C validation.\n\nTreat this run as a fresh/new session.\nCreate a NEW Paperclip issue in this same company with title exactly:\n${marker}\nUse description: 'created by case C smoke'.\n\nThen post a comment on this issue containing exactly: ${ack_marker}\nThen mark this issue done."
+  description="Case C validation.\n\nTreat this run as a fresh/new session.\nCreate a NEW Paperclip issue in this same company with title exactly:\n${marker}\nUse description: 'created by case C smoke'.\n\nThen post a comment on ${original_issue_reference} containing exactly: ${ack_marker}\nDo NOT post the ACK comment on the newly created issue.\nThen mark the original case issue done."
 
   local created
   created="$(create_issue_for_case "[OpenClaw Gateway Smoke] Case C" "$description")"
