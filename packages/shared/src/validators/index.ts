@@ -131,3 +131,20 @@ export {
   type UpdateMemberPermissions,
   type UpdateUserCompanyAccess,
 } from "./access.js";
+
+export {
+  setMemorySchema,
+  createKnowledgeEntrySchema,
+  updateKnowledgeEntrySchema,
+  sendMessageSchema,
+  acknowledgeMessageSchema,
+  createProposalSchema,
+  castVoteSchema,
+  type SetMemory,
+  type CreateKnowledgeEntry,
+  type UpdateKnowledgeEntry,
+  type SendMessage,
+  type AcknowledgeMessage,
+  type CreateProposal,
+  type CastVote,
+} from "./backbone.js";

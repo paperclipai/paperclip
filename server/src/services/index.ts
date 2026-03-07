@@ -18,3 +18,8 @@ export { logActivity, type LogActivityInput } from "./activity-log.js";
 export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js";
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
+export { memoryService } from "./memory.js";
+export { knowledgeService } from "./knowledge.js";
+export { communicationService } from "./communication.js";
+export { consensusService } from "./consensus.js";
+export { vaultService } from "./vault.js";

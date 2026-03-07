@@ -1,0 +1,91 @@
+{
+  "name": "agentvault",
+  "version": "1.0.3",
+  "description": "Persistent On-Chain AI Agent Platform - Sovereign, Reconstructible, Autonomous",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    },
+    "./vault": {
+      "types": "./dist/src/vault/index.d.ts",
+      "import": "./dist/src/vault/index.js"
+    }
+  },
+  "bin": {
+    "agentvault": "dist/cli/index.js"
+  },
+  "type": "module",
+  "scripts": {
+    "dev": "npm run dev:core",
+    "dev:core": "tsx watch src/index.ts",
+    "dev:webapp": "npm --prefix webapp run dev",
+    "dev:dashboard": "node scripts/dev-dashboard.mjs",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "typecheck:webapp": "npm --prefix webapp run typecheck",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "lint:webapp": "npm --prefix webapp run lint"
+  },
+  "keywords": [
+    "agent",
+    "ai",
+    "icp",
+    "wasm",
+    "blockchain",
+    "sovereign",
+    "canister",
+    "internet-computer",
+    "clawdbot",
+    "goose",
+    "cline",
+    "codeline",
+    "autonomous",
+    "persistent",
+    "reconstructible"
+  ],
+  "author": "AgentVault Contributors",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.18.0",
+    "@types/inquirer": "^9.0.9",
+    "@types/node": "^22.10.0",
+    "eslint": "^9.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.20.0",
+    "vitest": "^4.0.18",
+    "zod": "^4.3.6"
+  },
+  "dependencies": {
+    "@dfinity/agent": "^3.4.3",
+    "@dfinity/candid": "^3.4.3",
+    "@dfinity/principal": "^3.4.3",
+    "@noble/curves": "^1.7.0",
+    "@polkadot/api": "^16.5.4",
+    "@polkadot/keyring": "^14.0.1",
+    "@polkadot/util": "^14.0.1",
+    "@polkadot/util-crypto": "^14.0.1",
+    "@solana/web3.js": "^1.98.4",
+    "bip39": "^3.1.0",
+    "bs58": "^6.0.0",
+    "cbor-x": "^1.6.0",
+    "chalk": "^5.4.1",
+    "commander": "^12.1.0",
+    "esbuild": "^0.27.3",
+    "ethers": "^6.16.0",
+    "execa": "^8.0.0",
+    "inquirer": "^9.3.0",
+    "ora": "^8.1.0",
+    "yaml": "^2.8.2"
+  }
+}

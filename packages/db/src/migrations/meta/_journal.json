@@ -183,6 +183,13 @@
       "when": 1772807461603,
       "tag": "0025_nasty_salo",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1772910912019,
+      "tag": "0026_wealthy_reavers",
+      "breakpoints": true
     }
   ]
 }

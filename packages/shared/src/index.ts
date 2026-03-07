@@ -60,6 +60,22 @@ export {
   type JoinRequestType,
   type JoinRequestStatus,
   type PermissionKey,
+  KNOWLEDGE_STATUSES,
+  KNOWLEDGE_CATEGORIES,
+  MESSAGE_TYPES,
+  MESSAGE_PRIORITIES,
+  PROPOSAL_TYPES,
+  PROPOSAL_STATUSES,
+  QUORUM_TYPES,
+  VOTE_VALUES,
+  type KnowledgeStatus,
+  type KnowledgeCategory,
+  type MessageType,
+  type MessagePriority,
+  type ProposalType,
+  type ProposalStatus,
+  type QuorumType,
+  type VoteValue,
 } from "./constants.js";
 
 export type {
@@ -121,6 +137,11 @@ export type {
   AgentEnvConfig,
   CompanySecret,
   SecretProviderDescriptor,
+  AgentMemoryEntry,
+  KnowledgeEntry,
+  AgentMessage,
+  ConsensusProposal,
+  ConsensusVote,
 } from "./types/index.js";
 
 export {
@@ -226,6 +247,20 @@ export {
   type CompanyPortabilityExport,
   type CompanyPortabilityPreview,
   type CompanyPortabilityImport,
+  setMemorySchema,
+  createKnowledgeEntrySchema,
+  updateKnowledgeEntrySchema,
+  sendMessageSchema,
+  acknowledgeMessageSchema,
+  createProposalSchema,
+  castVoteSchema,
+  type SetMemory,
+  type CreateKnowledgeEntry,
+  type UpdateKnowledgeEntry,
+  type SendMessage,
+  type AcknowledgeMessage,
+  type CreateProposal,
+  type CastVote,
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";

@@ -1,0 +1,51 @@
+# AgentVault – Local Development Stack
+#
+# Spins up a self-hosted HashiCorp Vault in dev-mode for local secret management.
+# Dev mode starts unsealed with the root token below and enables the KV-v2
+# secrets engine at "secret/".  NEVER use dev-mode in production.
+#
+# Usage:
+#   docker compose up -d        # start Vault
+#   docker compose logs -f      # tail logs
+#   docker compose down -v      # stop and remove volumes
+
+services:
+  vault:
+    image: hashicorp/vault:1.17
+    container_name: agentvault-vault
+    restart: unless-stopped
+    ports:
+      - "8200:8200"
+    environment:
+      # Dev-mode root token – change for any environment beyond local dev
+      VAULT_DEV_ROOT_TOKEN_ID: agentvault-dev-token
+      VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+      VAULT_LOG_LEVEL: info
+    cap_add:
+      - IPC_LOCK   # required by Vault to prevent secrets from being swapped
+    healthcheck:
+      test:
+        - CMD
+        - sh
+        - -c
+        - "vault status -address=http://127.0.0.1:8200 || exit 1"
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    volumes:
+      - vault-logs:/vault/logs
+    # Run the built-in dev server, then bootstrap the KV engine for agents
+    entrypoint: >
+      sh -c "
+        vault server -dev &
+        sleep 3 &&
+        export VAULT_ADDR=http://127.0.0.1:8200 &&
+        export VAULT_TOKEN=agentvault-dev-token &&
+        vault secrets enable -path=agents -version=2 kv 2>/dev/null || true &&
+        wait
+      "
+
+volumes:
+  vault-logs:
+    driver: local

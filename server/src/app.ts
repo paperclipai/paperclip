@@ -24,6 +24,11 @@ import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { llmRoutes } from "./routes/llms.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
+import { memoryRoutes } from "./routes/memory.js";
+import { knowledgeRoutes } from "./routes/knowledge.js";
+import { messageRoutes } from "./routes/messages.js";
+import { consensusRoutes } from "./routes/consensus.js";
+import { vaultRoutes } from "./routes/vault.js";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 
 type UiMode = "none" | "static" | "vite-dev";
@@ -112,6 +117,12 @@ export async function createApp(
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
   api.use(sidebarBadgeRoutes(db));
+  // AgentVault backbone routes
+  api.use(memoryRoutes(db));
+  api.use(knowledgeRoutes(db));
+  api.use(messageRoutes(db));
+  api.use(consensusRoutes(db));
+  api.use(vaultRoutes());
   api.use(
     accessRoutes(db, {
       deploymentMode: opts.deploymentMode,
