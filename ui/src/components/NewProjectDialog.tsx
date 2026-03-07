@@ -341,7 +341,10 @@ export function NewProjectDialog() {
                   onChange={(e) => setWorkspaceLocalPath(e.target.value)}
                   placeholder="/absolute/path/to/workspace"
                 />
-                <ChoosePathButton />
+                <ChoosePathButton
+                    onSelect={setWorkspaceLocalPath}
+                    currentPath={workspaceLocalPath || undefined}
+                  />
               </div>
             </div>
           )}
