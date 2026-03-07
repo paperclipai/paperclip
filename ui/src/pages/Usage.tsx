@@ -9,7 +9,7 @@ import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { ProviderQuotaCard } from "../components/ProviderQuotaCard";
 import { PageTabBar } from "../components/PageTabBar";
-import { formatCents, formatTokens } from "../lib/utils";
+import { formatCents, formatTokens, providerDisplayName } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { Gauge } from "lucide-react";
@@ -50,17 +50,6 @@ function computeRange(preset: DatePreset): { from: string; to: string } {
     case "custom":
       return { from: "", to: "" };
   }
-}
-
-function providerDisplayName(provider: string): string {
-  const map: Record<string, string> = {
-    anthropic: "Anthropic",
-    openai: "OpenAI",
-    google: "Google",
-    cursor: "Cursor",
-    jetbrains: "JetBrains AI",
-  };
-  return map[provider.toLowerCase()] ?? provider;
 }
 
 /** current week mon-sun boundaries as iso strings */
@@ -121,7 +110,9 @@ export function Usage() {
     return range;
   }, [preset, customFrom, customTo]);
 
-  const weekRange = useMemo(() => currentWeekRange(), []);
+  // key to today's date string so the range auto-refreshes after midnight on the next 30s refetch
+  const today = new Date().toDateString();
+  const weekRange = useMemo(() => currentWeekRange(), [today]);
 
   // for custom preset, only fetch once both dates are selected
   const customReady = preset !== "custom" || (!!customFrom && !!customTo);
@@ -190,21 +181,23 @@ export function Usage() {
     return map;
   }, [windowData]);
 
-  // deficit notch: projected spend exceeds remaining budget — only meaningful for mtd preset
-  // (other presets use a different date range than the monthly budget, so the projection is nonsensical)
-  const showDeficitNotch = useMemo(() => {
+  // compute deficit notch per provider: only meaningful for mtd — projects spend to month end
+  // and flags when that projection exceeds the provider's pro-rata budget share.
+  function providerDeficitNotch(providerKey: string): boolean {
     if (preset !== "mtd") return false;
     const budget = summary?.budgetCents ?? 0;
     if (budget <= 0) return false;
-    const spend = summary?.spendCents ?? 0;
-    const today = new Date();
-    const daysElapsed = today.getDate();
-    const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
-    const daysRemaining = daysInMonth - daysElapsed;
-    const burnRatePerDay = spend / Math.max(daysElapsed, 1);
-    const projected = spend + burnRatePerDay * daysRemaining;
-    return projected > budget;
-  }, [summary, preset]);
+    const totalSpend = summary?.spendCents ?? 0;
+    const providerCostCents = (byProvider.get(providerKey) ?? []).reduce((s, r) => s + r.costCents, 0);
+    const providerShare = totalSpend > 0 ? providerCostCents / totalSpend : 0;
+    const providerBudget = budget * providerShare;
+    if (providerBudget <= 0) return false;
+    const now = new Date();
+    const daysElapsed = now.getDate();
+    const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    const burnRate = providerCostCents / Math.max(daysElapsed, 1);
+    return providerCostCents + burnRate * (daysInMonth - daysElapsed) > providerBudget;
+  }
 
   const providers = Array.from(byProvider.keys());
 
@@ -298,7 +291,7 @@ export function Usage() {
                     totalCompanySpendCents={summary?.spendCents ?? 0}
                     weekSpendCents={weekSpendByProvider.get(p) ?? 0}
                     windowRows={windowSpendByProvider.get(p) ?? []}
-                    showDeficitNotch={showDeficitNotch}
+                    showDeficitNotch={providerDeficitNotch(p)}
                   />
                 ))}
               </div>
@@ -314,7 +307,7 @@ export function Usage() {
                 totalCompanySpendCents={summary?.spendCents ?? 0}
                 weekSpendCents={weekSpendByProvider.get(p) ?? 0}
                 windowRows={windowSpendByProvider.get(p) ?? []}
-                showDeficitNotch={showDeficitNotch}
+                showDeficitNotch={providerDeficitNotch(p)}
               />
             </TabsContent>
           ))}

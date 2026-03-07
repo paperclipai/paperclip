@@ -1,7 +1,7 @@
 import type { CostByProviderModel, CostWindowSpendRow } from "@paperclipai/shared";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { QuotaBar } from "./QuotaBar";
-import { formatCents, formatTokens } from "@/lib/utils";
+import { formatCents, formatTokens, providerDisplayName } from "@/lib/utils";
 
 interface ProviderQuotaCardProps {
   provider: string;
@@ -15,17 +15,6 @@ interface ProviderQuotaCardProps {
   /** rolling window rows for this provider: 5h, 24h, 7d */
   windowRows: CostWindowSpendRow[];
   showDeficitNotch: boolean;
-}
-
-function providerLabel(provider: string): string {
-  const map: Record<string, string> = {
-    anthropic: "Anthropic",
-    openai: "OpenAI",
-    google: "Google",
-    cursor: "Cursor",
-    jetbrains: "JetBrains AI",
-  };
-  return map[provider.toLowerCase()] ?? provider;
 }
 
 export function ProviderQuotaCard({
@@ -76,7 +65,7 @@ export function ProviderQuotaCard({
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <CardTitle className="text-sm font-semibold">
-              {providerLabel(provider)}
+              {providerDisplayName(provider)}
             </CardTitle>
             <CardDescription className="text-xs mt-0.5">
               <span className="font-mono">{formatTokens(totalInputTokens)}</span> in

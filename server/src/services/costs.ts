@@ -172,8 +172,8 @@ export function costService(db: Db) {
         .orderBy(desc(sql`coalesce(sum(${costEvents.costCents}), 0)::int`));
 
       const runConditions: ReturnType<typeof eq>[] = [eq(heartbeatRuns.companyId, companyId)];
-      if (range?.from) runConditions.push(gte(heartbeatRuns.finishedAt, range.from));
-      if (range?.to) runConditions.push(lte(heartbeatRuns.finishedAt, range.to));
+      if (range?.from) runConditions.push(gte(heartbeatRuns.startedAt, range.from));
+      if (range?.to) runConditions.push(lte(heartbeatRuns.startedAt, range.to));
 
       const runRows = await db
         .select({
