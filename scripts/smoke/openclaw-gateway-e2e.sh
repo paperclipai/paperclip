@@ -53,6 +53,7 @@ AUTO_INSTALL_SKILL="${AUTO_INSTALL_SKILL:-1}"
 OPENCLAW_DIAG_DIR="${OPENCLAW_DIAG_DIR:-/tmp/openclaw-gateway-e2e-diag-$(date +%Y%m%d-%H%M%S)}"
 OPENCLAW_ADAPTER_TIMEOUT_SEC="${OPENCLAW_ADAPTER_TIMEOUT_SEC:-120}"
 OPENCLAW_ADAPTER_WAIT_TIMEOUT_MS="${OPENCLAW_ADAPTER_WAIT_TIMEOUT_MS:-120000}"
+PAIRING_AUTO_APPROVE="${PAIRING_AUTO_APPROVE:-1}"
 PAYLOAD_TEMPLATE_MESSAGE_APPEND="${PAYLOAD_TEMPLATE_MESSAGE_APPEND:-}"
 
 AUTH_HEADERS=()
@@ -418,7 +419,6 @@ create_and_approve_gateway_join() {
         headers: { "x-openclaw-token": $token },
         role: "operator",
         scopes: ["operator.admin"],
-        disableDeviceAuth: true,
         sessionKeyStrategy: "fixed",
         sessionKey: "paperclip",
         timeoutSec: $timeoutSec,
@@ -530,10 +530,12 @@ validate_joined_gateway_agent() {
   api_request "GET" "/agents/${AGENT_ID}"
   assert_status "200"
 
-  local adapter_type gateway_url configured_token
+  local adapter_type gateway_url configured_token disable_device_auth device_key_len
   adapter_type="$(jq -r '.adapterType // empty' <<<"$RESPONSE_BODY")"
   gateway_url="$(jq -r '.adapterConfig.url // empty' <<<"$RESPONSE_BODY")"
   configured_token="$(jq -r '.adapterConfig.headers["x-openclaw-token"] // .adapterConfig.headers["x-openclaw-auth"] // empty' <<<"$RESPONSE_BODY")"
+  disable_device_auth="$(jq -r 'if .adapterConfig.disableDeviceAuth == true then "true" else "false" end' <<<"$RESPONSE_BODY")"
+  device_key_len="$(jq -r '(.adapterConfig.devicePrivateKeyPem // "" | length)' <<<"$RESPONSE_BODY")"
 
   [[ "$adapter_type" == "openclaw_gateway" ]] || fail "joined agent adapterType is '${adapter_type}', expected 'openclaw_gateway'"
   [[ "$gateway_url" =~ ^wss?:// ]] || fail "joined agent gateway url is invalid: '${gateway_url}'"
@@ -549,7 +551,44 @@ validate_joined_gateway_agent() {
     fail "joined agent gateway token hash mismatch (expected ${expected_hash}, got ${configured_hash})"
   fi
 
+  [[ "$disable_device_auth" == "false" ]] || fail "joined agent has disableDeviceAuth=true; smoke requires device auth enabled with persistent key"
+  if (( device_key_len < 32 )); then
+    fail "joined agent missing persistent devicePrivateKeyPem (length=${device_key_len})"
+  fi
+
   log "validated joined gateway agent config (token sha256 prefix ${configured_hash})"
+}
+
+run_log_contains_pairing_required() {
+  local run_id="$1"
+  api_request "GET" "/heartbeat-runs/${run_id}/log?limitBytes=262144"
+  if [[ "$RESPONSE_CODE" != "200" ]]; then
+    return 1
+  fi
+  local content
+  content="$(jq -r '.content // ""' <<<"$RESPONSE_BODY")"
+  grep -qi "pairing required" <<<"$content"
+}
+
+approve_latest_pairing_request() {
+  local gateway_token="$1"
+  local container
+  container="$(detect_openclaw_container || true)"
+  [[ -n "$container" ]] || return 1
+
+  log "approving latest gateway pairing request in ${container}"
+  local output
+  if output="$(docker exec \
+    -e OPENCLAW_GATEWAY_URL="$OPENCLAW_GATEWAY_URL" \
+    -e OPENCLAW_GATEWAY_TOKEN="$gateway_token" \
+    "$container" \
+    sh -lc 'openclaw devices approve --latest --json --url "$OPENCLAW_GATEWAY_URL" --token "$OPENCLAW_GATEWAY_TOKEN"' 2>&1)"; then
+    log "pairing approval response: $(printf "%s" "$output" | tr '\n' ' ' | cut -c1-400)"
+    return 0
+  fi
+
+  warn "pairing auto-approve failed: $(printf "%s" "$output" | tr '\n' ' ' | cut -c1-400)"
+  return 1
 }
 
 trigger_wakeup() {
@@ -871,13 +910,30 @@ main() {
   log "joined/approved agent ${AGENT_ID} invite=${INVITE_ID} joinRequest=${JOIN_REQUEST_ID}"
   validate_joined_gateway_agent "$gateway_token"
 
-  trigger_wakeup "openclaw_gateway_smoke_connectivity"
-  if [[ -n "$RUN_ID" ]]; then
-    local connect_status
+  local connect_status="unknown"
+  local connect_attempt
+  for connect_attempt in 1 2; do
+    trigger_wakeup "openclaw_gateway_smoke_connectivity_attempt_${connect_attempt}"
+    if [[ -z "$RUN_ID" ]]; then
+      connect_status="unknown"
+      break
+    fi
     connect_status="$(wait_for_run_terminal "$RUN_ID" "$RUN_TIMEOUT_SEC")"
-    [[ "$connect_status" == "succeeded" ]] || fail "connectivity wake run failed: ${connect_status}"
-    log "connectivity wake run ${RUN_ID} succeeded"
-  fi
+    if [[ "$connect_status" == "succeeded" ]]; then
+      log "connectivity wake run ${RUN_ID} succeeded (attempt=${connect_attempt})"
+      break
+    fi
+
+    if [[ "$PAIRING_AUTO_APPROVE" == "1" && "$connect_attempt" -eq 1 ]] && run_log_contains_pairing_required "$RUN_ID"; then
+      log "connectivity run hit pairing gate; attempting one-time pairing approval"
+      approve_latest_pairing_request "$gateway_token" || fail "pairing approval failed after pairing-required run ${RUN_ID}"
+      sleep 2
+      continue
+    fi
+
+    fail "connectivity wake run failed: ${connect_status} (attempt=${connect_attempt}, runId=${RUN_ID})"
+  done
+  [[ "$connect_status" == "succeeded" ]] || fail "connectivity wake run did not succeed after retries"
 
   run_case_a
   run_case_b

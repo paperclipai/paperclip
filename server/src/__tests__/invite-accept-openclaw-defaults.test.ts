@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { buildJoinDefaultsPayloadForAccept } from "../routes/access.js";
+import {
+  buildJoinDefaultsPayloadForAccept,
+  normalizeAgentDefaultsForJoin,
+} from "../routes/access.js";
 
 describe("buildJoinDefaultsPayloadForAccept", () => {
   it("maps OpenClaw compatibility fields into agent defaults", () => {
@@ -244,5 +247,48 @@ describe("buildJoinDefaultsPayloadForAccept", () => {
         "x-openclaw-token": "gateway-token-1234567890",
       },
     });
+  });
+
+  it("generates persistent device key for openclaw_gateway when device auth is enabled", () => {
+    const normalized = normalizeAgentDefaultsForJoin({
+      adapterType: "openclaw_gateway",
+      defaultsPayload: {
+        url: "ws://127.0.0.1:18789",
+        headers: {
+          "x-openclaw-token": "gateway-token-1234567890",
+        },
+        disableDeviceAuth: false,
+      },
+      deploymentMode: "authenticated",
+      deploymentExposure: "private",
+      bindHost: "127.0.0.1",
+      allowedHostnames: [],
+    });
+
+    expect(normalized.fatalErrors).toEqual([]);
+    expect(normalized.normalized?.disableDeviceAuth).toBe(false);
+    expect(typeof normalized.normalized?.devicePrivateKeyPem).toBe("string");
+    expect((normalized.normalized?.devicePrivateKeyPem as string).length).toBeGreaterThan(64);
+  });
+
+  it("does not generate device key when openclaw_gateway has disableDeviceAuth=true", () => {
+    const normalized = normalizeAgentDefaultsForJoin({
+      adapterType: "openclaw_gateway",
+      defaultsPayload: {
+        url: "ws://127.0.0.1:18789",
+        headers: {
+          "x-openclaw-token": "gateway-token-1234567890",
+        },
+        disableDeviceAuth: true,
+      },
+      deploymentMode: "authenticated",
+      deploymentExposure: "private",
+      bindHost: "127.0.0.1",
+      allowedHostnames: [],
+    });
+
+    expect(normalized.fatalErrors).toEqual([]);
+    expect(normalized.normalized?.disableDeviceAuth).toBe(true);
+    expect(normalized.normalized?.devicePrivateKeyPem).toBeUndefined();
   });
 });

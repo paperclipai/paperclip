@@ -1,4 +1,9 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import {
+  createHash,
+  generateKeyPairSync,
+  randomBytes,
+  timingSafeEqual
+} from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -330,6 +335,13 @@ function parseBooleanLike(value: unknown): boolean | null {
   return null;
 }
 
+function generateEd25519PrivateKeyPem(): string {
+  const generated = generateKeyPairSync("ed25519");
+  return generated.privateKey
+    .export({ type: "pkcs8", format: "pem" })
+    .toString();
+}
+
 export function buildJoinDefaultsPayloadForAccept(input: {
   adapterType: string | null;
   defaultsPayload: unknown;
@@ -611,10 +623,16 @@ function summarizeOpenClawGatewayDefaultsForLog(defaultsPayload: unknown) {
     sessionKeyStrategy: defaults
       ? nonEmptyTrimmedString(defaults.sessionKeyStrategy)
       : null,
+    disableDeviceAuth: defaults
+      ? parseBooleanLike(defaults.disableDeviceAuth)
+      : null,
     waitTimeoutMs:
       defaults && typeof defaults.waitTimeoutMs === "number"
         ? defaults.waitTimeoutMs
         : null,
+    devicePrivateKeyPem: defaults
+      ? summarizeSecretForLog(defaults.devicePrivateKeyPem)
+      : null,
     gatewayToken: summarizeSecretForLog(gatewayTokenValue)
   };
 }
@@ -692,7 +710,7 @@ function buildJoinConnectivityDiagnostics(input: {
   return diagnostics;
 }
 
-function normalizeAgentDefaultsForJoin(input: {
+export function normalizeAgentDefaultsForJoin(input: {
   adapterType: string | null;
   defaultsPayload: unknown;
   deploymentMode: DeploymentMode;
@@ -828,8 +846,45 @@ function normalizeAgentDefaultsForJoin(input: {
     }
 
     const parsedDisableDeviceAuth = parseBooleanLike(defaults.disableDeviceAuth);
+    const disableDeviceAuth = parsedDisableDeviceAuth === true;
     if (parsedDisableDeviceAuth !== null) {
       normalized.disableDeviceAuth = parsedDisableDeviceAuth;
+    }
+
+    const configuredDevicePrivateKeyPem = nonEmptyTrimmedString(
+      defaults.devicePrivateKeyPem
+    );
+    if (configuredDevicePrivateKeyPem) {
+      normalized.devicePrivateKeyPem = configuredDevicePrivateKeyPem;
+      diagnostics.push({
+        code: "openclaw_gateway_device_key_configured",
+        level: "info",
+        message:
+          "Gateway device key configured. Pairing approvals should persist for this agent."
+      });
+    } else if (!disableDeviceAuth) {
+      try {
+        normalized.devicePrivateKeyPem = generateEd25519PrivateKeyPem();
+        diagnostics.push({
+          code: "openclaw_gateway_device_key_generated",
+          level: "info",
+          message:
+            "Generated persistent gateway device key for this join. Pairing approvals should persist for this agent."
+        });
+      } catch (err) {
+        diagnostics.push({
+          code: "openclaw_gateway_device_key_generate_failed",
+          level: "warn",
+          message: `Failed to generate gateway device key: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+          hint:
+            "Set agentDefaultsPayload.devicePrivateKeyPem explicitly or set disableDeviceAuth=true."
+        });
+        fatalErrors.push(
+          "Failed to generate gateway device key. Set devicePrivateKeyPem or disableDeviceAuth=true."
+        );
+      }
     }
 
     const waitTimeoutMs =
@@ -1293,7 +1348,7 @@ function buildInviteOnboardingManifest(
         adapterType: "Use 'openclaw_gateway' for OpenClaw Gateway agents",
         capabilities: "Optional capability summary",
         agentDefaultsPayload:
-          "Adapter config for OpenClaw gateway. MUST include url (ws:// or wss://) and headers.x-openclaw-token (or legacy x-openclaw-auth). Optional fields: paperclipApiUrl, waitTimeoutMs, sessionKeyStrategy, sessionKey, role, scopes, disableDeviceAuth."
+          "Adapter config for OpenClaw gateway. MUST include url (ws:// or wss://) and headers.x-openclaw-token (or legacy x-openclaw-auth). Optional fields: paperclipApiUrl, waitTimeoutMs, sessionKeyStrategy, sessionKey, role, scopes, disableDeviceAuth, devicePrivateKeyPem."
       },
       registrationEndpoint: {
         method: "POST",
@@ -1430,7 +1485,6 @@ export function buildInviteOnboardingTextDocument(
           waitTimeoutMs: 120000,
           sessionKeyStrategy: "fixed",
           sessionKey: "paperclip",
-          disableDeviceAuth: true,
           role: "operator",
           scopes: ["operator.admin"]
         }
@@ -1447,8 +1501,9 @@ export function buildInviteOnboardingTextDocument(
     Legacy x-openclaw-auth is also accepted, but x-openclaw-token is preferred.
     Use adapterType "openclaw_gateway" and a ws:// or wss:// gateway URL.
     Pairing mode requirement:
-    - For smoke/dev, set "disableDeviceAuth": true to avoid interactive pairing blocks.
-    - If device auth remains enabled, set a stable "devicePrivateKeyPem"; otherwise each run may generate a new device identity and trigger pairing again.
+    - Keep device auth enabled (recommended). If devicePrivateKeyPem is omitted, Paperclip generates and persists one during join so pairing approvals are stable.
+    - You may set disableDeviceAuth=true only for special environments that cannot support pairing.
+    - First run may return "pairing required" once; approve the pending pairing request in OpenClaw, then retry.
     Do NOT use /v1/responses or /hooks/* in this gateway join flow.
 
     Body (JSON):
@@ -1464,7 +1519,6 @@ export function buildInviteOnboardingTextDocument(
         "waitTimeoutMs": 120000,
         "sessionKeyStrategy": "fixed",
         "sessionKey": "paperclip",
-        "disableDeviceAuth": true,
         "role": "operator",
         "scopes": ["operator.admin"]
       }

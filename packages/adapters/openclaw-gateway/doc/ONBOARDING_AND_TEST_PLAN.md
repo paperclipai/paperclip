@@ -250,7 +250,6 @@ POST /api/companies/$CLA_COMPANY_ID/invites
     "headers": { "x-openclaw-token": "<gateway-token>" },
     "role": "operator",
     "scopes": ["operator.admin"],
-    "disableDeviceAuth": true,
     "sessionKeyStrategy": "fixed",
     "sessionKey": "paperclip",
     "waitTimeoutMs": 120000
@@ -265,13 +264,17 @@ POST /api/companies/$CLA_COMPANY_ID/invites
 - `adapterConfig.headers.x-openclaw-token` exists and is not placeholder/too-short (`len >= 16`)
 - token hash matches the OpenClaw `gateway.auth.token` used for join
 - pairing mode is explicit:
-  - smoke/dev: `adapterConfig.disableDeviceAuth == true` (no interactive pairing gate)
-  - otherwise: stable `adapterConfig.devicePrivateKeyPem` is set so approvals persist across runs
-5. Claim API key with `claimSecret`.
-6. Save claimed token to OpenClaw expected file path (`~/.openclaw/workspace/paperclip-claimed-api-key.json`) and ensure `PAPERCLIP_API_KEY` + `PAPERCLIP_API_URL` are available for OpenClaw skill execution context.
+  - default path: `adapterConfig.disableDeviceAuth` is false/absent and stable `adapterConfig.devicePrivateKeyPem` is set so approvals persist across runs
+  - fallback path: `disableDeviceAuth=true` only for environments that cannot support pairing
+5. Trigger one connectivity run. If it returns `pairing required`, approve the pending device request in OpenClaw and retry once.
+  - Local docker automation path:
+    - `openclaw devices approve --latest --json --url ws://127.0.0.1:18789 --token <gateway-token>`
+  - After approval, retries should succeed using the persisted `devicePrivateKeyPem`.
+6. Claim API key with `claimSecret`.
+7. Save claimed token to OpenClaw expected file path (`~/.openclaw/workspace/paperclip-claimed-api-key.json`) and ensure `PAPERCLIP_API_KEY` + `PAPERCLIP_API_URL` are available for OpenClaw skill execution context.
   - Write compatibility JSON keys (`token` and `apiKey`) to avoid runtime parser mismatch.
-7. Ensure Paperclip skill is installed for OpenClaw runtime.
-8. Send one bootstrap prompt to OpenClaw containing all setup instructions needed for this run (auth file usage, heartbeat procedure, required tools). If needed, send one follow-up nudge only.
+8. Ensure Paperclip skill is installed for OpenClaw runtime.
+9. Send one bootstrap prompt to OpenClaw containing all setup instructions needed for this run (auth file usage, heartbeat procedure, required tools). If needed, send one follow-up nudge only.
 
 ## 6) E2E Validation Cases
 
@@ -322,7 +325,7 @@ Responsibilities:
 - Old OpenClaw agent cleanup.
 - Invite/join/approve/claim orchestration.
 - Gateway agent config/token preflight validation before connectivity or case execution.
-- Pairing-mode preflight (`disableDeviceAuth=true` for smoke/dev or stable `devicePrivateKeyPem`).
+- Pairing-mode preflight (`disableDeviceAuth=false` + stable `devicePrivateKeyPem` by default).
 - E2E case execution + assertions.
 - Final summary with run IDs, issue IDs, agent ID.
 

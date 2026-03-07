@@ -30,14 +30,22 @@ Open the printed `Dashboard URL` (includes `#token=...`) in your browser.
 - Confirm gateway URL is `ws://...` or `wss://...`.
 - Confirm gateway token is non-trivial (not empty / not 1-char placeholder).
 - Confirm pairing mode is explicit:
-  - smoke/dev default: set `adapterConfig.disableDeviceAuth=true` to avoid interactive pairing prompts on each run
-  - if keeping device auth enabled: set a stable `adapterConfig.devicePrivateKeyPem` so pairing is approved once and reused
+  - recommended default: `adapterConfig.disableDeviceAuth` is false/absent and `adapterConfig.devicePrivateKeyPem` is present
+  - fallback only: `adapterConfig.disableDeviceAuth=true` when pairing cannot be supported in that environment
 - If you can run API checks with board auth:
 ```bash
 AGENT_ID="<newly-created-agent-id>"
 curl -sS -H "Cookie: $PAPERCLIP_COOKIE" "http://127.0.0.1:3100/api/agents/$AGENT_ID" | jq '{adapterType,adapterConfig:{url:.adapterConfig.url,tokenLen:(.adapterConfig.headers["x-openclaw-token"] // .adapterConfig.headers["x-openclaw-auth"] // "" | length),disableDeviceAuth:(.adapterConfig.disableDeviceAuth // false),hasDeviceKey:(.adapterConfig.devicePrivateKeyPem // "" | length > 0)}}'
 ```
-- Expected: `adapterType=openclaw_gateway`, `tokenLen >= 16`, and (`disableDeviceAuth=true` OR `hasDeviceKey=true`).
+- Expected: `adapterType=openclaw_gateway`, `tokenLen >= 16`, `hasDeviceKey=true`, and `disableDeviceAuth=false`.
+
+Pairing handshake note:
+- The first gateway run may return `pairing required` once for a new device key.
+- Approve it in OpenClaw, then retry the task.
+- For local docker smoke, you can approve from host:
+```bash
+docker exec openclaw-docker-openclaw-gateway-1 sh -lc 'openclaw devices approve --latest --json --url "ws://127.0.0.1:18789" --token "$(node -p \"require(process.env.HOME+\\\"/.openclaw/openclaw.json\\\").gateway.auth.token\")"'
+```
 
 7. Case A (manual issue test).
 - Create an issue assigned to the OpenClaw agent.
@@ -63,7 +71,7 @@ docker compose -f /tmp/openclaw-docker/docker-compose.yml -f /tmp/openclaw-docke
 
 11. Expected pass criteria.
 - Preflight: `openclaw_gateway` + non-placeholder token (`tokenLen >= 16`).
-- Pairing mode: either `disableDeviceAuth=true` (smoke/dev) or stable `devicePrivateKeyPem` configured.
+- Pairing mode: stable `devicePrivateKeyPem` configured with device auth enabled (default path).
 - Case A: `done` + marker comment.
 - Case B: `done` + marker comment + main-chat message visible.
 - Case C: original task done and new issue created from `/new` session.
