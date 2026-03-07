@@ -56,6 +56,10 @@ function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean 
   return typeof raw === "string" && raw.trim().length > 0;
 }
 
+function nonEmptyTrimmedString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
 function resolveCodexBillingType(env: Record<string, string>): "api" | "subscription" {
   // Codex uses API-key auth when OPENAI_API_KEY is present; otherwise rely on local login/session auth.
   return hasNonEmptyEnvValue(env, "OPENAI_API_KEY") ? "api" : "subscription";
@@ -104,6 +108,99 @@ async function ensureCodexSkillsInjected(onLog: AdapterExecutionContext["onLog"]
   }
 }
 
+async function detectAgentHomeFromInstructionsFilePath(instructionsFilePath: string): Promise<string | null> {
+  const candidate = path.dirname(instructionsFilePath);
+  const basename = path.basename(instructionsFilePath).toLowerCase();
+  if (basename !== "agents.md") {
+    return null;
+  }
+
+  const siblingChecks = await Promise.all(
+    ["HEARTBEAT.md", "SOUL.md", "TOOLS.md"].map(async (entry) => {
+      const sibling = path.join(candidate, entry);
+      return await fs.stat(sibling).then((stat) => stat.isFile()).catch(() => false);
+    }),
+  );
+
+  return siblingChecks.some(Boolean) ? candidate : null;
+}
+
+function renderPaperclipHeartbeatBrief(params: {
+  env: Record<string, string>;
+  runId: string;
+  agentHome: string | null;
+  wakeTaskId: string | null;
+  wakeReason: string | null;
+  wakeCommentId: string | null;
+  approvalId: string | null;
+  approvalStatus: string | null;
+  linkedIssueIds: string[];
+  workspaceCwd: string;
+  workspaceSource: string;
+  workspaceId: string;
+  workspaceRepoUrl: string;
+  workspaceRepoRef: string;
+}): string {
+  const lines = [
+    "Paperclip heartbeat directive:",
+    "This run was started by Paperclip. It is not a generic chat session and not a cold-start bootstrap.",
+    "Immediately follow the Paperclip heartbeat workflow using the available Paperclip API and PAPERCLIP_* environment variables.",
+    "Treat AGENTS.md, HEARTBEAT.md, SOUL.md, and TOOLS.md as supporting reference only. Do not stop after reading them.",
+  ];
+
+  const contextLines = [
+    `- Run ID: ${params.runId}`,
+    params.agentHome ? `- Effective agent home: ${params.agentHome}` : null,
+    params.wakeReason ? `- Wake reason: ${params.wakeReason}` : null,
+    params.wakeTaskId ? `- Task / issue ID: ${params.wakeTaskId}` : null,
+    params.wakeCommentId ? `- Wake comment ID: ${params.wakeCommentId}` : null,
+    params.approvalId ? `- Approval ID: ${params.approvalId}` : null,
+    params.approvalStatus ? `- Approval status: ${params.approvalStatus}` : null,
+    params.linkedIssueIds.length > 0 ? `- Linked issue IDs: ${params.linkedIssueIds.join(", ")}` : null,
+    params.workspaceCwd ? `- Workspace cwd: ${params.workspaceCwd}` : null,
+    params.workspaceSource ? `- Workspace source: ${params.workspaceSource}` : null,
+    params.workspaceId ? `- Workspace ID: ${params.workspaceId}` : null,
+    params.workspaceRepoUrl ? `- Workspace repo URL: ${params.workspaceRepoUrl}` : null,
+    params.workspaceRepoRef ? `- Workspace repo ref: ${params.workspaceRepoRef}` : null,
+  ].filter((entry): entry is string => Boolean(entry));
+
+  if (contextLines.length > 0) {
+    lines.push("", "Current wake context:", ...contextLines);
+  }
+
+  const paperclipKeys = Object.keys(params.env)
+    .filter((key) => key.startsWith("PAPERCLIP_"))
+    .sort();
+  if (paperclipKeys.length > 0) {
+    lines.push("", "Available Paperclip env keys:", `- ${paperclipKeys.join(", ")}`);
+  }
+
+  lines.push("", "Execution requirements:");
+  lines.push("- Start with Paperclip identity/context and assignment handling, then checkout or respond through Paperclip before doing any other work.");
+  lines.push("- Use Paperclip APIs for identity lookup, assignment lookup, checkout, comments, and status updates.");
+  if (params.agentHome) {
+    lines.push(`- Use PAPERCLIP_AGENT_HOME=${params.agentHome} as the effective agent home for this run. If shell AGENT_HOME differs, ignore the shell value and do not spend a turn re-resolving it.`);
+  }
+  lines.push("- Do not ask the user for the task again when the task is already present in Paperclip issue/context.");
+  lines.push("- Never end with phrases such as 'ready for the concrete assignment', 'send the task', or 'provide the first objective'.");
+
+  if (params.wakeTaskId) {
+    lines.push(`- PAPERCLIP_TASK_ID ${params.wakeTaskId} is the first priority if it is assigned to you.`);
+  }
+
+  if (params.wakeReason === "issue_assigned") {
+    lines.push("- Because wake reason is issue_assigned, this run must not end as bootstrap-only output.");
+    lines.push("- For this wake, do one of the following before exiting:");
+    lines.push("  1. checkout the task and begin work,");
+    lines.push("  2. update/comment and mark it blocked with a concrete unblock owner, or");
+    lines.push("  3. explain via a Paperclip comment or status update that a higher-priority in_progress assignment was handled first.");
+  } else {
+    lines.push("- If no direct task context is provided, run the normal heartbeat workflow and select assigned in_progress work before todo work.");
+  }
+
+  return `${lines.join("\n")}\n\n`;
+}
+
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, authToken } = ctx;
 
@@ -135,6 +232,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       )
     : [];
   const configuredCwd = asString(config.cwd, "");
+  const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
+  const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
   const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
@@ -210,6 +309,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
+  const inferredAgentHome = instructionsFilePath
+    ? await detectAgentHomeFromInstructionsFilePath(instructionsFilePath)
+    : null;
+  if (inferredAgentHome) {
+    env.PAPERCLIP_AGENT_HOME = inferredAgentHome;
+  }
+  if (!nonEmptyTrimmedString(env.AGENT_HOME) && inferredAgentHome) {
+    env.AGENT_HOME = inferredAgentHome;
+  }
   const billingType = resolveCodexBillingType(env);
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   await ensureCommandResolvable(command, cwd, runtimeEnv);
@@ -235,8 +343,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       `[paperclip] Codex session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
     );
   }
-  const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
-  const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
   let instructionsPrefix = "";
   if (instructionsFilePath) {
     try {
@@ -261,14 +367,34 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (!instructionsFilePath) return [] as string[];
     if (instructionsPrefix.length > 0) {
       return [
+        "Prepended mandatory Paperclip heartbeat brief to stdin prompt.",
         `Loaded agent instructions from ${instructionsFilePath}`,
         `Prepended instructions + path directive to stdin prompt (relative references from ${instructionsDir}).`,
+        ...(inferredAgentHome ? [`Exported AGENT_HOME and PAPERCLIP_AGENT_HOME=${inferredAgentHome} from instructions file context.`] : []),
       ];
     }
     return [
+      "Prepended mandatory Paperclip heartbeat brief to stdin prompt.",
       `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
+      ...(inferredAgentHome ? [`Exported AGENT_HOME and PAPERCLIP_AGENT_HOME=${inferredAgentHome} from instructions file context.`] : []),
     ];
   })();
+  const heartbeatPrefix = renderPaperclipHeartbeatBrief({
+    env,
+    runId,
+    agentHome: inferredAgentHome,
+    wakeTaskId,
+    wakeReason,
+    wakeCommentId,
+    approvalId,
+    approvalStatus,
+    linkedIssueIds,
+    workspaceCwd: effectiveWorkspaceCwd,
+    workspaceSource,
+    workspaceId,
+    workspaceRepoUrl,
+    workspaceRepoRef,
+  });
   const renderedPrompt = renderTemplate(promptTemplate, {
     agentId: agent.id,
     companyId: agent.companyId,
@@ -278,7 +404,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     run: { id: runId, source: "on_demand" },
     context,
   });
-  const prompt = `${instructionsPrefix}${renderedPrompt}`;
+  const prompt = `${heartbeatPrefix}${instructionsPrefix}${renderedPrompt}`;
 
   const buildArgs = (resumeSessionId: string | null) => {
     const args = ["exec", "--json"];
