@@ -14,6 +14,7 @@ import { EntityRow } from "../components/EntityRow";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
+import { roleLabels } from "../components/agent-config-primitives";
 import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -28,12 +29,6 @@ const adapterLabels: Record<string, string> = {
   openclaw: "OpenClaw",
   process: "Process",
   http: "HTTP",
-};
-
-const roleLabels: Record<string, string> = {
-  ceo: "CEO", cto: "CTO", cmo: "CMO", cfo: "CFO",
-  engineer: "Engineer", designer: "Designer", pm: "PM",
-  qa: "QA", devops: "DevOps", researcher: "Researcher", general: "General",
 };
 
 type FilterTab = "all" | "active" | "paused" | "error";
@@ -230,7 +225,7 @@ export function Agents() {
               <EntityRow
                 key={agent.id}
                 title={agent.name}
-                subtitle={`${agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
+                subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
                 to={agentUrl(agent)}
                 leading={
                   <span className="relative flex h-2.5 w-2.5">
