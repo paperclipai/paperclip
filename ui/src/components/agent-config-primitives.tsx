@@ -32,7 +32,7 @@ export const help: Record<string, string> = {
   dangerouslySkipPermissions: "Run Claude without permission prompts. Required for unattended operation.",
   dangerouslyBypassSandbox: "Run Codex without sandbox restrictions. Required for filesystem/network access.",
   search: "Enable Codex web search capability during runs.",
-  maxTurnsPerRun: "Maximum number of agentic turns (tool calls) per heartbeat run.",
+  maxTurnsPerRun: "Maximum number of agentic turns (tool calls) per heartbeat run. Set to 0 for unlimited. Default is 200. For agents doing complex multi-step work (engineering, research, long-form content), consider setting to 0 to avoid mid-task cutoffs.",
   command: "The command to execute (e.g. node, python).",
   localCommand: "Override the path to the CLI command you want the adapter to call (e.g. /usr/local/bin/claude, codex, opencode).",
   args: "Command-line arguments, comma-separated.",

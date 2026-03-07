@@ -480,11 +480,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       exitCode: proc.exitCode,
       signal: proc.signal,
       timedOut: false,
-      errorMessage:
-        (proc.exitCode ?? 0) === 0
+      errorMessage: clearSessionForMaxTurns
+        ? "Agent reached the maximum turns limit for this run. The task may be incomplete. Raise maxTurnsPerRun in the agent config, or set it to 0 for unlimited turns."
+        : (proc.exitCode ?? 0) === 0
           ? null
           : describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`,
-      errorCode: loginMeta.requiresLogin ? "claude_auth_required" : null,
+      errorCode: clearSessionForMaxTurns
+        ? "error_max_turns"
+        : loginMeta.requiresLogin
+          ? "claude_auth_required"
+          : null,
       errorMeta,
       usage,
       sessionId: resolvedSessionId,
