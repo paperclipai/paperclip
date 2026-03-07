@@ -570,6 +570,27 @@ export function agentRoutes(db: Db) {
     );
   });
 
+  router.get("/agents/:id/notifications", async (req, res) => {
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, agent.companyId);
+    if (req.actor.type === "agent" && req.actor.agentId !== id) {
+      throw forbidden("Agents can only read their own notifications");
+    }
+
+    const parsedLimit = Number(req.query.limit);
+    const limit = req.query.limit && Number.isFinite(parsedLimit) ? Math.min(Math.max(1, parsedLimit), 200) : 50;
+    const status = typeof req.query.status === "string" ? req.query.status : undefined;
+    const reason = typeof req.query.reason === "string" ? req.query.reason : undefined;
+
+    const notifications = await heartbeat.listNotifications(id, { limit, status, reason });
+    res.json(notifications);
+  });
+
   router.post("/agents/:id/runtime-state/reset-session", validate(resetAgentSessionSchema), async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;

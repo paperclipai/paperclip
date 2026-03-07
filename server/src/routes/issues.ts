@@ -608,6 +608,33 @@ export function issueRoutes(db: Db, storage: StorageService) {
         }
       }
 
+      // Subtask completion: wake parent task's assignee agent when a subtask is marked done
+      const statusChanged = existing.status !== issue.status;
+      if (statusChanged && issue.status === "done" && issue.parentId) {
+        try {
+          const parent = await svc.getById(issue.parentId);
+          if (parent?.assigneeAgentId && !wakeups.has(parent.assigneeAgentId)) {
+            wakeups.set(parent.assigneeAgentId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "subtask_completed",
+              payload: { issueId: parent.id, subtaskId: issue.id, subtaskIdentifier: issue.identifier },
+              requestedByActorType: actor.actorType,
+              requestedByActorId: actor.actorId,
+              contextSnapshot: {
+                issueId: parent.id,
+                taskId: parent.id,
+                wakeReason: "subtask_completed",
+                source: "issue.subtask.completed",
+                subtaskId: issue.id,
+              },
+            });
+          }
+        } catch (err) {
+          logger.warn({ err, issueId: id, parentId: issue.parentId }, "failed to wake parent assignee on subtask completion");
+        }
+      }
+
       for (const [agentId, wakeup] of wakeups.entries()) {
         heartbeat
           .wakeup(agentId, wakeup)

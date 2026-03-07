@@ -1668,9 +1668,10 @@ export function heartbeatService(db: Db) {
       return null;
     }
 
+    const bypassReasons = new Set(["issue_comment_mentioned", "subtask_completed"]);
     const bypassIssueExecutionLock =
-      reason === "issue_comment_mentioned" ||
-      readNonEmptyString(enrichedContextSnapshot.wakeReason) === "issue_comment_mentioned";
+      bypassReasons.has(reason ?? "") ||
+      bypassReasons.has(readNonEmptyString(enrichedContextSnapshot.wakeReason) ?? "");
 
     if (issueId && !bypassIssueExecutionLock) {
       const agentNameKey = normalizeAgentNameKey(agent.name);
@@ -2305,6 +2306,34 @@ export function heartbeatService(db: Db) {
       }
 
       return runs.length;
+    },
+
+    listNotifications: async (
+      agentId: string,
+      opts?: { limit?: number; status?: string; reason?: string },
+    ) => {
+      const limit = Math.max(1, Math.min(opts?.limit ?? 50, 200));
+      const agent = await getAgent(agentId);
+      if (!agent) throw notFound("Agent not found");
+
+      const conditions = [
+        eq(agentWakeupRequests.companyId, agent.companyId),
+        eq(agentWakeupRequests.agentId, agentId),
+      ];
+
+      if (opts?.status) {
+        conditions.push(eq(agentWakeupRequests.status, opts.status));
+      }
+      if (opts?.reason) {
+        conditions.push(eq(agentWakeupRequests.reason, opts.reason));
+      }
+
+      return db
+        .select()
+        .from(agentWakeupRequests)
+        .where(and(...conditions))
+        .orderBy(desc(agentWakeupRequests.requestedAt))
+        .limit(limit);
     },
 
     getActiveRunForAgent: async (agentId: string) => {
