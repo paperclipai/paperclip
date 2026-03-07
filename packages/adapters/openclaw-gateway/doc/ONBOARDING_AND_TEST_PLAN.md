@@ -25,6 +25,28 @@ These are mandatory for onboarding and smoke testing:
 - Lane A (stock pass lane): unmodified/clean OpenClaw image and config flow. This lane is the release gate.
 - Lane B (instrumentation lane): temporary test instrumentation is allowed only to diagnose failures; it cannot be the final passing path.
 
+## Execution Findings (2026-03-07)
+Observed from running `scripts/smoke/openclaw-gateway-e2e.sh` against `CLA` in authenticated/private dev mode:
+
+1. **Baseline failure (before wake-text fix)**
+- Stock lane had run-level success but failed functional assertions:
+  - connectivity run `64a72d8b-f5b3-4f62-9147-1c60932f50ad` succeeded
+  - case A run `fd29e361-a6bd-4bc6-9270-36ef96e3bd8e` succeeded
+  - issue `CLA-6` (`dad7b967-29d2-4317-8c9d-425b4421e098`) stayed `todo` with `0` comments
+- Root symptom: OpenClaw reported missing concrete heartbeat procedure and guessed non-existent `/api/*heartbeat` endpoints.
+
+2. **Post-fix validation (stock-clean lane passes)**
+- After updating adapter wake text to include explicit Paperclip API workflow steps and explicit endpoint bans:
+  - connectivity run `c297e2d0-020b-4b30-95d3-a4c04e1373bb`: `succeeded`
+  - case A run `baac403e-8d86-48e5-b7d5-239c4755ce7e`: `succeeded`, issue `CLA-7` done with marker
+  - case B run `521fc8ad-2f5a-4bd8-9ddd-c491401c9158`: `succeeded`, issue `CLA-8` done with marker
+  - case C run `a03d86b6-91a8-48b4-8813-758f6bf11aec`: `succeeded`, issue `CLA-9` done, created issue `CLA-10`
+- Stock release-gate lane now passes scripted checks.
+
+3. **Instrumentation lane note**
+- Prompt-augmented diagnostics lane previously timed out (`7537e5d2-a76a-44c5-bf9f-57f1b21f5fc3`) with missing tool runtime utilities (`jq`, `python`) inside the stock container.
+- Keep this lane for diagnostics only; stock lane remains the acceptance gate.
+
 ## External Protocol Constraints
 OpenClaw docs to anchor behavior:
 - Webhook mode requires `hooks.enabled=true` and exposes `/hooks/wake` + `/hooks/agent`: https://docs.openclaw.ai/automation/webhook
