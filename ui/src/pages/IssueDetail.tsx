@@ -8,7 +8,6 @@ import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
-import { useToast } from "../context/ToastContext";
 import { usePanel } from "../context/PanelContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -146,7 +145,6 @@ function ActorIdentity({ evt, agentMap }: { evt: ActivityEvent; agentMap: Map<st
 export function IssueDetail() {
   const { issueId } = useParams<{ issueId: string }>();
   const { selectedCompanyId } = useCompany();
-  const { pushToast } = useToast();
   const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -403,16 +401,8 @@ export function IssueDetail() {
 
   const updateIssue = useMutation({
     mutationFn: (data: Record<string, unknown>) => issuesApi.update(issueId!, data),
-    onSuccess: (updated) => {
+    onSuccess: () => {
       invalidateIssue();
-      const issueRef = updated.identifier ?? `Issue ${updated.id.slice(0, 8)}`;
-      pushToast({
-        dedupeKey: `activity:issue.updated:${updated.id}`,
-        title: `${issueRef} updated`,
-        body: truncate(updated.title, 96),
-        tone: "success",
-        action: { label: `View ${issueRef}`, href: `/issues/${updated.identifier ?? updated.id}` },
-      });
     },
   });
 
@@ -441,17 +431,9 @@ export function IssueDetail() {
         assigneeUserId: reassignment.assigneeUserId,
         ...(reopen ? { status: "todo" } : {}),
       }),
-    onSuccess: (updated) => {
+    onSuccess: () => {
       invalidateIssue();
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId!) });
-      const issueRef = updated.identifier ?? (issueId ? `Issue ${issueId.slice(0, 8)}` : "Issue");
-      pushToast({
-        dedupeKey: `activity:issue.reassigned:${updated.id}`,
-        title: `${issueRef} reassigned`,
-        body: issue?.title ? truncate(issue.title, 96) : undefined,
-        tone: "success",
-        action: issueId ? { label: `View ${issueRef}`, href: `/issues/${issue?.identifier ?? issueId}` } : undefined,
-      });
     },
   });
 

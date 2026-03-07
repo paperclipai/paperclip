@@ -168,6 +168,10 @@ function buildActivityToast(
 
   const issue = resolveIssueToastContext(queryClient, companyId, entityId, details);
   const actor = resolveActorLabel(queryClient, companyId, actorType, actorId);
+  const isSelfActivity =
+    (actorType === "user" && !!currentActor.userId && actorId === currentActor.userId) ||
+    (actorType === "agent" && !!currentActor.agentId && actorId === currentActor.agentId);
+  if (isSelfActivity) return null;
 
   if (action === "issue.created") {
     return {
@@ -202,11 +206,6 @@ function buildActivityToast(
   }
 
   const commentId = readString(details?.commentId);
-  const isSelfComment =
-    action === "issue.comment_added" &&
-    ((actorType === "user" && !!currentActor.userId && actorId === currentActor.userId) ||
-      (actorType === "agent" && !!currentActor.agentId && actorId === currentActor.agentId));
-  if (isSelfComment) return null;
   const bodySnippet = readString(details?.bodySnippet);
   const reopened = details?.reopened === true;
   const reopenedFrom = readString(details?.reopenedFrom);
