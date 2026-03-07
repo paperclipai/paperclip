@@ -47,6 +47,7 @@ import {
   ChevronDown,
   X
 } from "lucide-react";
+import ceoAgentsMd from "../../../companies/default/ceo/AGENTS.md?raw";
 
 type Step = 1 | 2 | 3 | 4;
 type AdapterType =
@@ -59,11 +60,15 @@ type AdapterType =
   | "http"
   | "openclaw";
 
-const DEFAULT_TASK_DESCRIPTION = `Setup yourself as the CEO. Use the ceo persona found here: [https://github.com/paperclipai/companies/blob/main/default/ceo/AGENTS.md](https://github.com/paperclipai/companies/blob/main/default/ceo/AGENTS.md)
+const DEFAULT_TASK_DESCRIPTION = `Setup yourself as the CEO.
 
-Ensure you have a folder agents/ceo and then download this AGENTS.md as well as the sibling HEARTBEAT.md, SOUL.md, and TOOLS.md. and set that AGENTS.md as the path to your agents instruction file
+Create a local folder \`agents/ceo\` and place this exact \`AGENTS.md\` content there:
 
-And after you've finished that, hire yourself a Founding Engineer agent`;
+\`\`\`md
+${ceoAgentsMd.trim()}
+\`\`\`
+
+Then add the sibling files \`HEARTBEAT.md\`, \`SOUL.md\`, and \`TOOLS.md\` in the same folder, set \`agents/ceo/AGENTS.md\` as your agent instructions path, and after that hire yourself a Founding Engineer agent.`;
 
 export function OnboardingWizard() {
   const { onboardingOpen, onboardingOptions, closeOnboarding } = useDialog();
