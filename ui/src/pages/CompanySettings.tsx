@@ -461,7 +461,7 @@ Suggested command:
 Then verify with: curl -fsS <base-url>/api/health`;
 
   const resolutionLine = resolutionTestUrl
-    ? `\nIf you need to test callback reachability, call: http://<whatever hostname worked above>?url=<urlencoded-webhook-url>`
+    ? `\nYou MUST test callback reachability, call: ${resolutionTestUrl}?url=<urlencoded-webhook-url> (well using the hostname that worked above). Do not assume your 172.x is necessarily reachable from Paperclip. Test it. `
     : "";
 
   return `You're invited to join a Paperclip organization.

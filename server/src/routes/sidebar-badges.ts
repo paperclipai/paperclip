@@ -41,10 +41,11 @@ export function sidebarBadgeRoutes(db: Db) {
     });
     const summary = await dashboard.summary(companyId);
     const staleIssueCount = await issueSvc.staleCount(companyId, 24 * 60);
+    const hasFailedRuns = badges.failedRuns > 0;
     const alertsCount =
-      (summary.agents.error > 0 ? 1 : 0) +
+      (summary.agents.error > 0 && !hasFailedRuns ? 1 : 0) +
       (summary.costs.monthBudgetCents > 0 && summary.costs.monthUtilizationPercent >= 80 ? 1 : 0);
-    badges.inbox = badges.failedRuns + alertsCount + staleIssueCount;
+    badges.inbox = badges.failedRuns + alertsCount + staleIssueCount + joinRequestCount;
 
     res.json(badges);
   });

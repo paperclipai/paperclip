@@ -28,6 +28,12 @@ function resolveDbUrl(configPath?: string) {
 
 function resolveBaseUrl(configPath?: string, explicitBaseUrl?: string) {
   if (explicitBaseUrl) return explicitBaseUrl.replace(/\/+$/, "");
+  const fromEnv =
+    process.env.PAPERCLIP_PUBLIC_URL ??
+    process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL ??
+    process.env.BETTER_AUTH_URL ??
+    process.env.BETTER_AUTH_BASE_URL;
+  if (fromEnv?.trim()) return fromEnv.trim().replace(/\/+$/, "");
   const config = readConfig(configPath);
   if (config?.auth.baseUrlMode === "explicit" && config.auth.publicBaseUrl) {
     return config.auth.publicBaseUrl.replace(/\/+$/, "");

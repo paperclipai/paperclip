@@ -43,6 +43,13 @@ export function companyRoutes(db: Db) {
     res.json(filtered);
   });
 
+  // Common malformed path when companyId is empty in "/api/companies/{companyId}/issues".
+  router.get("/issues", (_req, res) => {
+    res.status(400).json({
+      error: "Missing companyId in path. Use /api/companies/{companyId}/issues.",
+    });
+  });
+
   router.get("/:companyId", async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;

@@ -159,7 +159,7 @@ describe("openclaw ui stdout parser", () => {
 });
 
 describe("openclaw adapter execute", () => {
-  it("uses strict SSE and includes canonical PAPERCLIP context in text payload", async () => {
+  it("uses SSE transport and includes canonical PAPERCLIP context in text payload", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       sseResponse([
         "event: response.completed\n",
@@ -196,6 +196,8 @@ describe("openclaw adapter execute", () => {
     expect(text).toContain("PAPERCLIP_TASK_ID=task-123");
     expect(text).toContain("PAPERCLIP_WAKE_REASON=issue_assigned");
     expect(text).toContain("PAPERCLIP_LINKED_ISSUE_IDS=issue-123");
+    expect(text).toContain("PAPERCLIP_API_KEY=<token from ~/.openclaw/workspace/paperclip-claimed-api-key.json>");
+    expect(text).toContain("Load PAPERCLIP_API_KEY from ~/.openclaw/workspace/paperclip-claimed-api-key.json");
   });
 
   it("uses paperclipApiUrl override when provided", async () => {
@@ -256,6 +258,55 @@ describe("openclaw adapter execute", () => {
     ).toBe(true);
   });
 
+  it("logs outbound payload with sensitive fields redacted", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      sseResponse([
+        "event: response.completed\n",
+        'data: {"type":"response.completed","status":"completed"}\n\n',
+      ]),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const logs: string[] = [];
+    const result = await execute(
+      buildContext(
+        {
+          url: "https://agent.example/sse",
+          method: "POST",
+          headers: {
+            "x-openclaw-auth": "gateway-token",
+          },
+          payloadTemplate: {
+            text: "task prompt",
+            nested: {
+              token: "secret-token",
+              visible: "keep-me",
+            },
+          },
+        },
+        {
+          onLog: async (_stream, chunk) => {
+            logs.push(chunk);
+          },
+        },
+      ),
+    );
+
+    expect(result.exitCode).toBe(0);
+
+    const headerLog = logs.find((line) => line.includes("[openclaw] outbound headers (redacted):"));
+    expect(headerLog).toBeDefined();
+    expect(headerLog).toContain("\"x-openclaw-auth\":\"[redacted");
+    expect(headerLog).toContain("\"authorization\":\"[redacted");
+    expect(headerLog).not.toContain("gateway-token");
+
+    const payloadLog = logs.find((line) => line.includes("[openclaw] outbound payload (redacted):"));
+    expect(payloadLog).toBeDefined();
+    expect(payloadLog).toContain("\"token\":\"[redacted");
+    expect(payloadLog).not.toContain("secret-token");
+    expect(payloadLog).toContain("\"visible\":\"keep-me\"");
+  });
+
   it("derives Authorization header from x-openclaw-auth when webhookAuthHeader is unset", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       sseResponse([
@@ -278,6 +329,31 @@ describe("openclaw adapter execute", () => {
     expect(result.exitCode).toBe(0);
     const headers = (fetchMock.mock.calls[0]?.[1]?.headers ?? {}) as Record<string, string>;
     expect(headers["x-openclaw-auth"]).toBe("gateway-token");
+    expect(headers.authorization).toBe("Bearer gateway-token");
+  });
+
+  it("derives Authorization header from x-openclaw-token when webhookAuthHeader is unset", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      sseResponse([
+        "event: response.completed\n",
+        'data: {"type":"response.completed","status":"completed"}\n\n',
+      ]),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(
+      buildContext({
+        url: "https://agent.example/sse",
+        method: "POST",
+        headers: {
+          "x-openclaw-token": "gateway-token",
+        },
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    const headers = (fetchMock.mock.calls[0]?.[1]?.headers ?? {}) as Record<string, string>;
+    expect(headers["x-openclaw-token"]).toBe("gateway-token");
     expect(headers.authorization).toBe("Bearer gateway-token");
   });
 
@@ -330,6 +406,7 @@ describe("openclaw adapter execute", () => {
     expect(body.model).toBe("openclaw");
     expect(typeof body.input).toBe("string");
     expect(String(body.input)).toContain("PAPERCLIP_RUN_ID=run-123");
+    expect(String(body.input)).toContain("PAPERCLIP_API_KEY=<token from ~/.openclaw/workspace/paperclip-claimed-api-key.json>");
     expect(body.metadata).toBeTypeOf("object");
     expect((body.metadata as Record<string, unknown>).PAPERCLIP_RUN_ID).toBe("run-123");
     expect(body.text).toBeUndefined();
@@ -338,6 +415,34 @@ describe("openclaw adapter execute", () => {
 
     const headers = (fetchMock.mock.calls[0]?.[1]?.headers ?? {}) as Record<string, string>;
     expect(headers["x-openclaw-session-key"]).toBe("paperclip");
+  });
+
+  it("does not treat response.output_text.done as a terminal OpenResponses event", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      sseResponse([
+        "event: response.output_text.done\n",
+        'data: {"type":"response.output_text.done","text":"partial"}\n\n',
+        "event: response.completed\n",
+        'data: {"type":"response.completed","status":"completed"}\n\n',
+      ]),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(
+      buildContext({
+        url: "https://agent.example/v1/responses",
+        method: "POST",
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.resultJson).toEqual(
+      expect.objectContaining({
+        terminal: true,
+        eventCount: 2,
+        lastEventType: "response.completed",
+      }),
+    );
   });
 
   it("appends wake text when OpenResponses input is provided as a message object", async () => {
@@ -454,14 +559,309 @@ describe("openclaw adapter execute", () => {
     expect(result.errorCode).toBe("openclaw_text_required");
   });
 
-  it("rejects non-sse transport configuration", async () => {
+  it("supports webhook transport and sends Paperclip webhook payloads", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        statusText: "OK",
+        headers: {
+          "content-type": "application/json",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(
+      buildContext({
+        url: "https://agent.example/webhook",
+        streamTransport: "webhook",
+        payloadTemplate: { foo: "bar" },
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body ?? "{}")) as Record<string, unknown>;
+    expect(body.foo).toBe("bar");
+    expect(body.stream).toBe(false);
+    expect(body.sessionKey).toBe("paperclip");
+    expect(String(body.text ?? "")).toContain("PAPERCLIP_RUN_ID=run-123");
+    expect((body.paperclip as Record<string, unknown>).streamTransport).toBe("webhook");
+  });
+
+  it("remaps legacy /v1/responses URLs to /hooks/agent in webhook transport", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        statusText: "OK",
+        headers: {
+          "content-type": "application/json",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(
+      buildContext({
+        url: "https://agent.example/v1/responses",
+        streamTransport: "webhook",
+        payloadTemplate: { foo: "bar" },
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]?.[0] ?? "")).toBe("https://agent.example/hooks/agent");
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body ?? "{}")) as Record<string, unknown>;
+    expect(typeof body.message).toBe("string");
+    expect(String(body.message ?? "")).toContain("PAPERCLIP_RUN_ID=run-123");
+    expect(body.stream).toBeUndefined();
+    expect(body.input).toBeUndefined();
+    expect(body.metadata).toBeUndefined();
+    expect(body.paperclip).toBeUndefined();
+    const headers = (fetchMock.mock.calls[0]?.[1]?.headers ?? {}) as Record<string, string>;
+    expect(headers["x-openclaw-session-key"]).toBeUndefined();
+  });
+
+  it("falls back to legacy /v1/responses when remapped /hooks/agent returns 404", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response("Not Found", {
+          status: 404,
+          statusText: "Not Found",
+          headers: {
+            "content-type": "text/plain",
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          statusText: "OK",
+          headers: {
+            "content-type": "application/json",
+          },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(
+      buildContext({
+        url: "https://agent.example/v1/responses",
+        streamTransport: "webhook",
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[0]?.[0] ?? "")).toBe("https://agent.example/hooks/agent");
+    expect(String(fetchMock.mock.calls[1]?.[0] ?? "")).toBe("https://agent.example/v1/responses");
+
+    const firstBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body ?? "{}")) as Record<string, unknown>;
+    expect(typeof firstBody.message).toBe("string");
+    expect(String(firstBody.message ?? "")).toContain("PAPERCLIP_RUN_ID=run-123");
+
+    const secondBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body ?? "{}")) as Record<string, unknown>;
+    expect(secondBody.stream).toBe(false);
+    expect(typeof secondBody.input).toBe("string");
+    expect(String(secondBody.input ?? "")).toContain("PAPERCLIP_RUN_ID=run-123");
+
+    const secondHeaders = (fetchMock.mock.calls[1]?.[1]?.headers ?? {}) as Record<string, string>;
+    expect(secondHeaders["x-openclaw-session-key"]).toBe("paperclip");
+    expect(result.resultJson).toEqual(
+      expect.objectContaining({
+        usedLegacyResponsesFallback: true,
+      }),
+    );
+  });
+
+  it("uses wake compatibility payloads for /hooks/wake when transport=webhook", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        statusText: "OK",
+        headers: {
+          "content-type": "application/json",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(
+      buildContext({
+        url: "https://agent.example/hooks/wake",
+        streamTransport: "webhook",
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body ?? "{}")) as Record<string, unknown>;
+    expect(body.mode).toBe("now");
+    expect(String(body.text ?? "")).toContain("PAPERCLIP_RUN_ID=run-123");
+    expect(body.paperclip).toBeUndefined();
+  });
+
+  it("uses /hooks/agent payloads for webhook transport and omits sessionKey by default", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        statusText: "OK",
+        headers: {
+          "content-type": "application/json",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(
+      buildContext({
+        url: "https://agent.example/hooks/agent",
+        streamTransport: "webhook",
+        payloadTemplate: {
+          name: "Paperclip Hook",
+          wakeMode: "next-heartbeat",
+          deliver: true,
+          channel: "last",
+          model: "openai/gpt-5.2-mini",
+        },
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body ?? "{}")) as Record<string, unknown>;
+    expect(typeof body.message).toBe("string");
+    expect(String(body.message)).toContain("PAPERCLIP_RUN_ID=run-123");
+    expect(body.name).toBe("Paperclip Hook");
+    expect(body.wakeMode).toBe("next-heartbeat");
+    expect(body.deliver).toBe(true);
+    expect(body.channel).toBe("last");
+    expect(body.model).toBe("openai/gpt-5.2-mini");
+    expect(body.sessionKey).toBeUndefined();
+    expect(body.text).toBeUndefined();
+    expect(body.paperclip).toBeUndefined();
+  });
+
+  it("includes sessionKey for /hooks/agent payloads only when hookIncludeSessionKey=true", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        statusText: "OK",
+        headers: {
+          "content-type": "application/json",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(
+      buildContext({
+        url: "https://agent.example/hooks/agent",
+        streamTransport: "webhook",
+        hookIncludeSessionKey: true,
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body ?? "{}")) as Record<string, unknown>;
+    expect(body.sessionKey).toBe("paperclip");
+  });
+
+  it("retries webhook payloads with wake compatibility format on text-required errors", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: "text required" }), {
+          status: 400,
+          statusText: "Bad Request",
+          headers: {
+            "content-type": "application/json",
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          statusText: "OK",
+          headers: {
+            "content-type": "application/json",
+          },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(
+      buildContext({
+        url: "https://agent.example/webhook",
+        streamTransport: "webhook",
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const firstBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body ?? "{}")) as Record<string, unknown>;
+    const secondBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body ?? "{}")) as Record<string, unknown>;
+    expect(String(firstBody.text ?? "")).toContain("PAPERCLIP_RUN_ID=run-123");
+    expect(firstBody.paperclip).toBeTypeOf("object");
+    expect(secondBody.mode).toBe("now");
+    expect(String(secondBody.text ?? "")).toContain("PAPERCLIP_RUN_ID=run-123");
+  });
+
+  it("retries webhook payloads when /v1/responses reports missing string input", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: {
+              message: "model: Invalid input: expected string, received undefined",
+              type: "invalid_request_error",
+            },
+          }),
+          {
+            status: 400,
+            statusText: "Bad Request",
+            headers: {
+              "content-type": "application/json",
+            },
+          },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          statusText: "OK",
+          headers: {
+            "content-type": "application/json",
+          },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(
+      buildContext({
+        url: "https://agent.example/webhook",
+        streamTransport: "webhook",
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const secondBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body ?? "{}")) as Record<string, unknown>;
+    expect(secondBody.mode).toBe("now");
+    expect(String(secondBody.text ?? "")).toContain("PAPERCLIP_RUN_ID=run-123");
+  });
+
+  it("rejects unsupported transport configuration", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await execute(
       buildContext({
         url: "https://agent.example/sse",
-        streamTransport: "webhook",
+        streamTransport: "invalid",
       }),
     );
 
@@ -470,7 +870,7 @@ describe("openclaw adapter execute", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("rejects /hooks/wake compatibility endpoints in strict SSE mode", async () => {
+  it("rejects /hooks/wake compatibility endpoints in SSE mode", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
@@ -484,10 +884,25 @@ describe("openclaw adapter execute", () => {
     expect(result.errorCode).toBe("openclaw_sse_incompatible_endpoint");
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it("rejects /hooks/agent endpoints in SSE mode", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(
+      buildContext({
+        url: "https://agent.example/hooks/agent",
+      }),
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("openclaw_sse_incompatible_endpoint");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
 
 describe("openclaw adapter environment checks", () => {
-  it("reports /hooks/wake endpoints as incompatible for strict SSE mode", async () => {
+  it("reports /hooks/wake endpoints as incompatible for SSE mode", async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValue(new Response(null, { status: 405, statusText: "Method Not Allowed" }));
@@ -511,6 +926,24 @@ describe("openclaw adapter environment checks", () => {
     expect(check?.level).toBe("error");
   });
 
+  it("reports /hooks/agent endpoints as incompatible for SSE mode", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 405, statusText: "Method Not Allowed" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await testEnvironment({
+      companyId: "company-123",
+      adapterType: "openclaw",
+      config: {
+        url: "https://agent.example/hooks/agent",
+      },
+    });
+
+    const check = result.checks.find((entry) => entry.code === "openclaw_wake_endpoint_incompatible");
+    expect(check?.level).toBe("error");
+  });
+
   it("reports unsupported streamTransport settings", async () => {
     const fetchMock = vi
       .fn()
@@ -522,12 +955,35 @@ describe("openclaw adapter environment checks", () => {
       adapterType: "openclaw",
       config: {
         url: "https://agent.example/sse",
-        streamTransport: "webhook",
+        streamTransport: "invalid",
       },
     });
 
     const check = result.checks.find((entry) => entry.code === "openclaw_stream_transport_unsupported");
     expect(check?.level).toBe("error");
+  });
+
+  it("accepts webhook streamTransport settings", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 405, statusText: "Method Not Allowed" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await testEnvironment({
+      companyId: "company-123",
+      adapterType: "openclaw",
+      config: {
+        url: "https://agent.example/hooks/wake",
+        streamTransport: "webhook",
+      },
+    });
+
+    const unsupported = result.checks.find((entry) => entry.code === "openclaw_stream_transport_unsupported");
+    const configured = result.checks.find((entry) => entry.code === "openclaw_stream_transport_configured");
+    const wakeIncompatible = result.checks.find((entry) => entry.code === "openclaw_wake_endpoint_incompatible");
+    expect(unsupported).toBeUndefined();
+    expect(configured?.level).toBe("info");
+    expect(wakeIncompatible).toBeUndefined();
   });
 });
 

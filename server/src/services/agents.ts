@@ -165,6 +165,22 @@ export function hasAgentShortnameCollision(
   });
 }
 
+export function deduplicateAgentName(
+  candidateName: string,
+  existingAgents: AgentShortnameRow[],
+): string {
+  if (!hasAgentShortnameCollision(candidateName, existingAgents)) {
+    return candidateName;
+  }
+  for (let i = 2; i <= 100; i++) {
+    const suffixed = `${candidateName} ${i}`;
+    if (!hasAgentShortnameCollision(suffixed, existingAgents)) {
+      return suffixed;
+    }
+  }
+  return `${candidateName} ${Date.now()}`;
+}
+
 export function agentService(db: Db) {
   function withUrlKey<T extends { id: string; name: string }>(row: T) {
     return {

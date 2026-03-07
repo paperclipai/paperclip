@@ -498,6 +498,31 @@ export function Inbox() {
     },
   });
 
+  const [fadingOutIssues, setFadingOutIssues] = useState<Set<string>>(new Set());
+
+  const markReadMutation = useMutation({
+    mutationFn: (id: string) => issuesApi.markRead(id),
+    onMutate: (id) => {
+      setFadingOutIssues((prev) => new Set(prev).add(id));
+    },
+    onSuccess: () => {
+      if (selectedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
+      }
+    },
+    onSettled: (_data, _error, id) => {
+      setTimeout(() => {
+        setFadingOutIssues((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+      }, 300);
+    },
+  });
+
   if (!selectedCompanyId) {
     return <EmptyState icon={InboxIcon} message="Select a company to view inbox." />;
   }
@@ -867,35 +892,53 @@ export function Inbox() {
               My Recent Issues
             </h3>
             <div className="divide-y divide-border border border-border">
-              {touchedIssues.map((issue) => (
-                <Link
-                  key={issue.id}
-                  to={`/issues/${issue.identifier ?? issue.id}`}
-                  className="flex cursor-pointer items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50 no-underline text-inherit"
-                >
-                  <span className="flex w-4 shrink-0 justify-center">
-                    <span
-                      className={`h-2.5 w-2.5 rounded-full ${
-                        issue.isUnreadForMe
-                          ? "bg-blue-600 dark:bg-blue-400"
-                          : "border border-muted-foreground/40 bg-transparent"
-                      }`}
-                      aria-label={issue.isUnreadForMe ? "Unread" : "Read"}
-                    />
-                  </span>
-                  <PriorityIcon priority={issue.priority} />
-                  <StatusIcon status={issue.status} />
-                  <span className="text-xs font-mono text-muted-foreground">
-                    {issue.identifier ?? issue.id.slice(0, 8)}
-                  </span>
-                  <span className="flex-1 truncate text-sm">{issue.title}</span>
-                  <span className="shrink-0 text-xs text-muted-foreground">
-                    {issue.lastExternalCommentAt
-                      ? `commented ${timeAgo(issue.lastExternalCommentAt)}`
-                      : `updated ${timeAgo(issue.updatedAt)}`}
-                  </span>
-                </Link>
-              ))}
+              {touchedIssues.map((issue) => {
+                const isUnread = issue.isUnreadForMe && !fadingOutIssues.has(issue.id);
+                const isFading = fadingOutIssues.has(issue.id);
+                return (
+                  <div
+                    key={issue.id}
+                    className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50"
+                  >
+                    <span className="flex w-4 shrink-0 justify-center">
+                      {(isUnread || isFading) && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            markReadMutation.mutate(issue.id);
+                          }}
+                          className="group/dot flex h-4 w-4 items-center justify-center rounded-full transition-colors hover:bg-blue-500/20"
+                          aria-label="Mark as read"
+                        >
+                          <span
+                            className={`h-2.5 w-2.5 rounded-full bg-blue-600 dark:bg-blue-400 transition-opacity duration-300 ${
+                              isFading ? "opacity-0" : "opacity-100"
+                            }`}
+                          />
+                        </button>
+                      )}
+                    </span>
+                    <Link
+                      to={`/issues/${issue.identifier ?? issue.id}`}
+                      className="flex flex-1 min-w-0 cursor-pointer items-center gap-3 no-underline text-inherit"
+                    >
+                      <PriorityIcon priority={issue.priority} />
+                      <StatusIcon status={issue.status} />
+                      <span className="text-xs font-mono text-muted-foreground">
+                        {issue.identifier ?? issue.id.slice(0, 8)}
+                      </span>
+                      <span className="flex-1 truncate text-sm">{issue.title}</span>
+                      <span className="shrink-0 text-xs text-muted-foreground">
+                        {issue.lastExternalCommentAt
+                          ? `commented ${timeAgo(issue.lastExternalCommentAt)}`
+                          : `updated ${timeAgo(issue.updatedAt)}`}
+                      </span>
+                    </Link>
+                  </div>
+                );
+              })}
             </div>
           </div>
         </>

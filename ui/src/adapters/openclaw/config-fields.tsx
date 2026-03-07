@@ -1,3 +1,5 @@
+import { useState } from "react";
+import { Eye, EyeOff } from "lucide-react";
 import type { AdapterConfigFieldsProps } from "../types";
 import {
   Field,
@@ -7,6 +9,41 @@ import {
 
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
+
+function SecretField({
+  label,
+  value,
+  onCommit,
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onCommit: (v: string) => void;
+  placeholder?: string;
+}) {
+  const [visible, setVisible] = useState(false);
+  return (
+    <Field label={label}>
+      <div className="relative">
+        <button
+          type="button"
+          onClick={() => setVisible((v) => !v)}
+          className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground/50 hover:text-muted-foreground transition-colors"
+        >
+          {visible ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+        </button>
+        <DraftInput
+          value={value}
+          onCommit={onCommit}
+          immediate
+          type={visible ? "text" : "password"}
+          className={inputClass + " pl-8"}
+          placeholder={placeholder}
+        />
+      </div>
+    </Field>
+  );
+}
 
 export function OpenClawConfigFields({
   isCreate,
@@ -120,27 +157,19 @@ export function OpenClawConfigFields({
             </Field>
           )}
 
-          <Field label="Webhook auth header (optional)">
-            <DraftInput
-              value={
-                eff("adapterConfig", "webhookAuthHeader", String(config.webhookAuthHeader ?? ""))
-              }
-              onCommit={(v) => mark("adapterConfig", "webhookAuthHeader", v || undefined)}
-              immediate
-              className={inputClass}
-              placeholder="Bearer <token>"
-            />
-          </Field>
+          <SecretField
+            label="Webhook auth header (optional)"
+            value={eff("adapterConfig", "webhookAuthHeader", String(config.webhookAuthHeader ?? ""))}
+            onCommit={(v) => mark("adapterConfig", "webhookAuthHeader", v || undefined)}
+            placeholder="Bearer <token>"
+          />
 
-          <Field label="Gateway auth token (x-openclaw-auth)">
-            <DraftInput
-              value={effectiveGatewayAuthHeader}
-              onCommit={commitGatewayAuthHeader}
-              immediate
-              className={inputClass}
-              placeholder="OpenClaw gateway token"
-            />
-          </Field>
+          <SecretField
+            label="Gateway auth token (x-openclaw-auth)"
+            value={effectiveGatewayAuthHeader}
+            onCommit={commitGatewayAuthHeader}
+            placeholder="OpenClaw gateway token"
+          />
         </>
       )}
     </>

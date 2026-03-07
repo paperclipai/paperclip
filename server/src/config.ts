@@ -130,9 +130,12 @@ export function loadConfig(): Config {
     AUTH_BASE_URL_MODES.includes(authBaseUrlModeFromEnvRaw as AuthBaseUrlMode)
       ? (authBaseUrlModeFromEnvRaw as AuthBaseUrlMode)
       : null;
+  const publicUrlFromEnv = process.env.PAPERCLIP_PUBLIC_URL;
   const authPublicBaseUrlRaw =
     process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL ??
     process.env.BETTER_AUTH_URL ??
+    process.env.BETTER_AUTH_BASE_URL ??
+    publicUrlFromEnv ??
     fileConfig?.auth?.publicBaseUrl;
   const authPublicBaseUrl = authPublicBaseUrlRaw?.trim() || undefined;
   const authBaseUrlMode: AuthBaseUrlMode =
@@ -146,8 +149,24 @@ export function loadConfig(): Config {
       .map((value) => value.trim().toLowerCase())
       .filter((value) => value.length > 0)
     : null;
+  const publicUrlHostname = authPublicBaseUrl
+    ? (() => {
+      try {
+        return new URL(authPublicBaseUrl).hostname.trim().toLowerCase();
+      } catch {
+        return null;
+      }
+    })()
+    : null;
   const allowedHostnames = Array.from(
-    new Set((allowedHostnamesFromEnv ?? fileConfig?.server.allowedHostnames ?? []).map((value) => value.trim().toLowerCase()).filter(Boolean)),
+    new Set(
+      [
+        ...(allowedHostnamesFromEnv ?? fileConfig?.server.allowedHostnames ?? []),
+        ...(publicUrlHostname ? [publicUrlHostname] : []),
+      ]
+        .map((value) => value.trim().toLowerCase())
+        .filter(Boolean),
+    ),
   );
   const companyDeletionEnvRaw = process.env.PAPERCLIP_ENABLE_COMPANY_DELETION;
   const companyDeletionEnabled =

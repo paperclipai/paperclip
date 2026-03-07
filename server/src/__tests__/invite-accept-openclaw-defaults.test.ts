@@ -70,6 +70,133 @@ describe("buildJoinDefaultsPayloadForAccept", () => {
     });
   });
 
+  it("accepts auth from agentDefaultsPayload.headers.x-openclaw-auth", () => {
+    const result = buildJoinDefaultsPayloadForAccept({
+      adapterType: "openclaw",
+      defaultsPayload: {
+        url: "http://127.0.0.1:18789/v1/responses",
+        method: "POST",
+        headers: {
+          "x-openclaw-auth": "gateway-token",
+        },
+      },
+    }) as Record<string, unknown>;
+
+    expect(result).toMatchObject({
+      headers: {
+        "x-openclaw-auth": "gateway-token",
+      },
+      webhookAuthHeader: "Bearer gateway-token",
+    });
+  });
+
+  it("accepts auth from agentDefaultsPayload.headers.x-openclaw-token", () => {
+    const result = buildJoinDefaultsPayloadForAccept({
+      adapterType: "openclaw",
+      defaultsPayload: {
+        url: "http://127.0.0.1:18789/hooks/agent",
+        method: "POST",
+        headers: {
+          "x-openclaw-token": "gateway-token",
+        },
+      },
+    }) as Record<string, unknown>;
+
+    expect(result).toMatchObject({
+      headers: {
+        "x-openclaw-token": "gateway-token",
+      },
+      webhookAuthHeader: "Bearer gateway-token",
+    });
+  });
+
+  it("accepts inbound x-openclaw-token compatibility header", () => {
+    const result = buildJoinDefaultsPayloadForAccept({
+      adapterType: "openclaw",
+      defaultsPayload: null,
+      inboundOpenClawTokenHeader: "gateway-token",
+    }) as Record<string, unknown>;
+
+    expect(result).toMatchObject({
+      headers: {
+        "x-openclaw-token": "gateway-token",
+      },
+      webhookAuthHeader: "Bearer gateway-token",
+    });
+  });
+
+  it("accepts wrapped auth values in headers for compatibility", () => {
+    const result = buildJoinDefaultsPayloadForAccept({
+      adapterType: "openclaw",
+      defaultsPayload: {
+        headers: {
+          "x-openclaw-auth": {
+            value: "gateway-token",
+          },
+        },
+      },
+    }) as Record<string, unknown>;
+
+    expect(result).toMatchObject({
+      headers: {
+        "x-openclaw-auth": "gateway-token",
+      },
+      webhookAuthHeader: "Bearer gateway-token",
+    });
+  });
+
+  it("accepts auth headers provided as tuple entries", () => {
+    const result = buildJoinDefaultsPayloadForAccept({
+      adapterType: "openclaw",
+      defaultsPayload: {
+        headers: [["x-openclaw-auth", "gateway-token"]],
+      },
+    }) as Record<string, unknown>;
+
+    expect(result).toMatchObject({
+      headers: {
+        "x-openclaw-auth": "gateway-token",
+      },
+      webhookAuthHeader: "Bearer gateway-token",
+    });
+  });
+
+  it("accepts auth headers provided as name/value entries", () => {
+    const result = buildJoinDefaultsPayloadForAccept({
+      adapterType: "openclaw",
+      defaultsPayload: {
+        headers: [{ name: "x-openclaw-auth", value: { authToken: "gateway-token" } }],
+      },
+    }) as Record<string, unknown>;
+
+    expect(result).toMatchObject({
+      headers: {
+        "x-openclaw-auth": "gateway-token",
+      },
+      webhookAuthHeader: "Bearer gateway-token",
+    });
+  });
+
+  it("accepts auth headers wrapped in a single unknown key", () => {
+    const result = buildJoinDefaultsPayloadForAccept({
+      adapterType: "openclaw",
+      defaultsPayload: {
+        headers: {
+          "x-openclaw-auth": {
+            gatewayToken: "gateway-token",
+          },
+        },
+      },
+    }) as Record<string, unknown>;
+
+    expect(result).toMatchObject({
+      headers: {
+        "x-openclaw-auth": "gateway-token",
+      },
+      webhookAuthHeader: "Bearer gateway-token",
+    });
+  });
+
   it("leaves non-openclaw payloads unchanged", () => {
     const defaultsPayload = { command: "echo hello" };
     const result = buildJoinDefaultsPayloadForAccept({
