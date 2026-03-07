@@ -21,6 +21,14 @@ import { getServerAdapter, runningProcesses } from "../adapters/index.js";
 import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
+import {
+  isGitRepository,
+  gitRepoRoot,
+  ensureGitWorktree,
+  agentSlug,
+  worktreeBranch,
+  isPaperclipWorktree,
+} from "@paperclipai/adapter-utils/git-worktree";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 
@@ -76,11 +84,12 @@ interface ParsedIssueAssigneeAdapterOverrides {
 
 export type ResolvedWorkspaceForRun = {
   cwd: string;
-  source: "project_primary" | "task_session" | "agent_home";
+  source: "project_primary" | "task_session" | "agent_home" | "worktree";
   projectId: string | null;
   workspaceId: string | null;
   repoUrl: string | null;
   repoRef: string | null;
+  worktreeBranch: string | null;
   workspaceHints: Array<{
     workspaceId: string;
     cwd: string | null;
@@ -537,6 +546,7 @@ export function heartbeatService(db: Db) {
             workspaceId: workspace.id,
             repoUrl: workspace.repoUrl,
             repoRef: workspace.repoRef,
+            worktreeBranch: null,
             workspaceHints,
             warnings: [],
           };
@@ -567,6 +577,7 @@ export function heartbeatService(db: Db) {
         workspaceId: projectWorkspaceRows[0]?.id ?? null,
         repoUrl: projectWorkspaceRows[0]?.repoUrl ?? null,
         repoRef: projectWorkspaceRows[0]?.repoRef ?? null,
+        worktreeBranch: null,
         workspaceHints,
         warnings,
       };
@@ -586,6 +597,7 @@ export function heartbeatService(db: Db) {
           workspaceId: readNonEmptyString(previousSessionParams?.workspaceId),
           repoUrl: readNonEmptyString(previousSessionParams?.repoUrl),
           repoRef: readNonEmptyString(previousSessionParams?.repoRef),
+          worktreeBranch: readNonEmptyString(previousSessionParams?.worktreeBranch),
           workspaceHints,
           warnings: [],
         };
@@ -615,6 +627,7 @@ export function heartbeatService(db: Db) {
       workspaceId: null,
       repoUrl: null,
       repoRef: null,
+      worktreeBranch: null,
       workspaceHints,
       warnings,
     };
@@ -1093,12 +1106,52 @@ export function heartbeatService(db: Db) {
     const previousSessionParams = normalizeSessionParams(
       sessionCodec.deserialize(taskSessionForRun?.sessionParamsJson ?? null),
     );
-    const resolvedWorkspace = await resolveWorkspaceForRun(
+    let resolvedWorkspace = await resolveWorkspaceForRun(
       agent,
       context,
       previousSessionParams,
       { useProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null },
     );
+
+    // Worktree isolation: when enabled in adapter config, wrap the resolved cwd
+    // in a dedicated git worktree so each agent+task gets its own working copy.
+    // This applies to ALL adapters (codex-local, claude-local, cursor-local, etc.).
+    const adapterConfig = parseObject(agent.adapterConfig);
+    if (asBoolean(adapterConfig.worktreeIsolation, false)) {
+      const baseCwd = resolvedWorkspace.cwd;
+      const isRepo = await isGitRepository(baseCwd);
+      if (isRepo && !isPaperclipWorktree(baseCwd)) {
+        try {
+          const repoRoot = await gitRepoRoot(baseCwd);
+          const issueId = readNonEmptyString(context.issueId);
+          const branch = worktreeBranch(agent.name, issueId);
+          const slug = agentSlug(agent.name);
+          const suffix = issueId ? issueId.replace(/[^a-zA-Z0-9-]/g, "-").slice(0, 20) : "general";
+          const wtPath = path.join(path.dirname(repoRoot), ".paperclip-worktrees", `${slug}-${suffix}`);
+          const wt = await ensureGitWorktree({
+            repoCwd: repoRoot,
+            branchName: branch,
+            worktreePath: wtPath,
+            onLog: async (_stream, msg) => {
+              logger.info({ runId, agentId: agent.id }, msg.trim());
+            },
+          });
+          resolvedWorkspace = {
+            ...resolvedWorkspace,
+            cwd: wt.cwd,
+            source: "worktree",
+            worktreeBranch: wt.branch,
+          };
+        } catch (wtErr) {
+          const reason = wtErr instanceof Error ? wtErr.message : String(wtErr);
+          resolvedWorkspace.warnings.push(
+            `Failed to create worktree for agent "${agent.name}": ${reason}. Running in original workspace.`,
+          );
+          logger.warn({ err: wtErr, runId, agentId: agent.id }, "worktree creation failed; falling back");
+        }
+      }
+    }
+
     const runtimeSessionResolution = resolveRuntimeSessionParamsForWorkspace({
       agentId: agent.id,
       previousSessionParams,
@@ -1123,6 +1176,7 @@ export function heartbeatService(db: Db) {
       workspaceId: resolvedWorkspace.workspaceId,
       repoUrl: resolvedWorkspace.repoUrl,
       repoRef: resolvedWorkspace.repoRef,
+      ...(resolvedWorkspace.worktreeBranch ? { worktreeBranch: resolvedWorkspace.worktreeBranch } : {}),
     };
     context.paperclipWorkspaces = resolvedWorkspace.workspaceHints;
     if (resolvedWorkspace.projectId && !readNonEmptyString(context.projectId)) {
