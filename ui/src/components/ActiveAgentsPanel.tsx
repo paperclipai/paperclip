@@ -242,22 +242,27 @@ export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
   // "Waiting for output..." indefinitely even though log data is available.
   useEffect(() => {
     if (runs.length === 0) return;
+    const hydrationTimestamp = new Date().toISOString();
+    const updates = new Map<string, FeedItem[]>();
+    for (const run of runs) {
+      if (!isRunActive(run)) continue;
+      if (feedByRun.has(run.id)) continue; // already hydrated or receiving live events
+      const excerpt = run.stdoutExcerpt;
+      if (!excerpt) continue;
+      // Compute items outside setFeedByRun to avoid mutating refs inside a React state updater.
+      // This prevents StrictMode double-invocation from corrupting pendingByRunRef.
+      const items = parseStdoutChunk(run, excerpt, hydrationTimestamp, pendingByRunRef.current, nextIdRef);
+      if (items.length === 0) continue;
+      updates.set(run.id, items.slice(-MAX_FEED_ITEMS));
+    }
+    if (updates.size === 0) return;
     setFeedByRun((prev) => {
       const next = new Map(prev);
-      let changed = false;
-      for (const run of runs) {
-        if (!isRunActive(run)) continue;
-        if (next.has(run.id)) continue; // already hydrated or receiving live events
-        const excerpt = run.stdoutExcerpt;
-        if (!excerpt) continue;
-        const items = parseStdoutChunk(run, excerpt, run.createdAt, pendingByRunRef.current, nextIdRef);
-        if (items.length === 0) continue;
-        next.set(run.id, items.slice(-MAX_FEED_ITEMS));
-        changed = true;
+      for (const [runId, items] of updates) {
+        next.set(runId, items);
       }
-      return changed ? next : prev;
+      return next;
     });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runs]);
 
   // WebSocket connection for streaming
