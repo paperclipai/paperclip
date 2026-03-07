@@ -158,7 +158,7 @@ export function projectRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
-    const workspace = (await svc.listWorkspaces(id)).find((w) => w.id === workspaceId);
+    const workspace = await svc.getWorkspaceById(id, workspaceId);
     if (!workspace) {
       res.status(404).json({ error: "Project workspace not found" });
       return;
@@ -212,8 +212,8 @@ export function projectRoutes(db: Db) {
         return;
       }
       assertCompanyAccess(req, existing.companyId);
-      const workspaceExists = (await svc.listWorkspaces(id)).some((workspace) => workspace.id === workspaceId);
-      if (!workspaceExists) {
+      const existingWorkspace = await svc.getWorkspaceById(id, workspaceId);
+      if (!existingWorkspace) {
         res.status(404).json({ error: "Project workspace not found" });
         return;
       }

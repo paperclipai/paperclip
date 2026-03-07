@@ -10,6 +10,7 @@ const execFileAsync = promisify(execFile);
 import type { Db } from "@paperclipai/db";
 import { badRequest } from "../errors.js";
 import { projectService } from "../services/index.js";
+import { REPO_ONLY_CWD_SENTINEL } from "../services/projects.js";
 import { assertCompanyAccess } from "./authz.js";
 
 /**
@@ -79,7 +80,7 @@ export function workspaceFilesRoutes(db: Db) {
   async function getAuthorizedWorkspace(req: Parameters<typeof assertCompanyAccess>[0], workspaceId: string) {
     const workspace = await projectSvc.getWorkspaceByIdOnly(workspaceId);
     if (!workspace) return null;
-    if (!workspace.cwd || workspace.cwd === "/__paperclip_repo_only__") return null;
+    if (!workspace.cwd || workspace.cwd === REPO_ONLY_CWD_SENTINEL) return null;
     const project = await projectSvc.getById(workspace.projectId);
     if (!project) return null;
     assertCompanyAccess(req, project.companyId);
@@ -413,7 +414,7 @@ export function workspaceFilesRoutes(db: Db) {
       return;
     }
 
-    const fileName = path.basename(targetPath);
+    const fileName = path.basename(targetPath).replace(/[\x00-\x1f\x7f"\\]/g, "_");
     res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
     res.setHeader("Content-Length", stat.size);
     createReadStream(targetPath).pipe(res);
@@ -449,13 +450,18 @@ export function workspaceFilesRoutes(db: Db) {
       return;
     }
 
-    const dirName = relativePath === "." ? "workspace" : path.basename(targetPath);
+    const dirName = (relativePath === "." ? "workspace" : path.basename(targetPath)).replace(/[\x00-\x1f\x7f"\\]/g, "_");
     res.setHeader("Content-Type", "application/zip");
     res.setHeader("Content-Disposition", `attachment; filename="${dirName}.zip"`);
 
     const archive = archiver("zip", { zlib: { level: 6 } });
-    archive.on("error", () => {
-      if (!res.headersSent) res.status(500).json({ error: "Failed to create archive" });
+    archive.on("error", (err: Error) => {
+      console.error("ZIP archive error:", err);
+      if (!res.headersSent) {
+        res.status(500).json({ error: "Failed to create archive" });
+      } else {
+        res.end();
+      }
     });
     archive.pipe(res);
     archive.directory(targetPath, dirName);

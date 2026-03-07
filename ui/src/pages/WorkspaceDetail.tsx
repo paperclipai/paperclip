@@ -181,15 +181,15 @@ export function WorkspaceDetail() {
   }, [fileData]);
 
   const saveFile = useMutation({
-    mutationFn: () =>
-      workspaceFilesApi.write(workspaceId!, selectedFilePath!, editorContent),
-    onSuccess: () => {
+    mutationFn: ({ path, content }: { path: string; content: string }) =>
+      workspaceFilesApi.write(workspaceId!, path, content),
+    onSuccess: (_, { path, content }) => {
       setEditorDirty(false);
       queryClient.setQueryData(
-        queryKeys.workspaceFiles.file(workspaceId!, selectedFilePath!),
-        { path: selectedFilePath!, content: editorContent },
+        queryKeys.workspaceFiles.file(workspaceId!, path),
+        { path, content },
       );
-      pushToast({ title: "File saved", body: selectedFilePath ?? undefined, tone: "success" });
+      pushToast({ title: "File saved", body: path, tone: "success" });
     },
     onError: () => {
       pushToast({ title: "Failed to save file", tone: "error" });
@@ -204,8 +204,10 @@ export function WorkspaceDetail() {
   useEffect(() => {
     if (!autoSave || !editorDirty || !selectedFilePath) return;
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    const savePath = selectedFilePath;
+    const saveContent = editorContent;
     autoSaveTimerRef.current = setTimeout(() => {
-      saveFileRef.current.mutate();
+      saveFileRef.current.mutate({ path: savePath, content: saveContent });
     }, AUTO_SAVE_DELAY);
     return () => {
       if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
@@ -236,8 +238,10 @@ export function WorkspaceDetail() {
   }, []);
 
   const handleEditorSave = useCallback(() => {
-    saveFile.mutate();
-  }, [saveFile]);
+    if (selectedFilePath) {
+      saveFile.mutate({ path: selectedFilePath, content: editorContent });
+    }
+  }, [saveFile, selectedFilePath, editorContent]);
 
   // Build breadcrumb segments for the current file path
   const pathSegments = useMemo(() => {
@@ -577,7 +581,7 @@ export function WorkspaceDetail() {
                       )}
                       <Button
                         size="xs"
-                        onClick={() => saveFile.mutate()}
+                        onClick={() => selectedFilePath && saveFile.mutate({ path: selectedFilePath, content: editorContent })}
                         disabled={!editorDirty || saveFile.isPending}
                       >
                         <Save className="h-3.5 w-3.5 mr-1" />
