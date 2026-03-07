@@ -187,6 +187,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
   // ── Bulk update issues ───────────────────────────────────────────────
   const bulkUpdateIssuesSchema = z.object({
+    companyId: z.string().min(1),
     issueIds: z.array(z.string().min(1)).min(1).max(100),
     data: updateIssueSchema.omit({ comment: true, hiddenAt: true }),
   });
@@ -197,12 +198,20 @@ export function issueRoutes(db: Db, storage: StorageService) {
       res.status(400).json({ error: "Invalid request body", details: parsed.error.issues });
       return;
     }
-    const { issueIds: rawIds, data } = parsed.data;
+    const { companyId, issueIds: rawIds, data } = parsed.data;
+
+    // ── Access check FIRST (before any DB lookups) ──────────────────
+    assertCompanyAccess(req, companyId);
+
+    // Check assignment permission early if assignee is being changed
+    if (data.assigneeAgentId !== undefined || data.assigneeUserId !== undefined) {
+      await assertCanAssignTasks(req, companyId);
+    }
 
     // Normalise identifiers (e.g. "PAP-39") to UUIDs
     const issueIds = await Promise.all(rawIds.map(normalizeIssueIdentifier));
 
-    // Fetch all issues to verify they exist and belong to the same company
+    // Fetch all issues to verify they exist and belong to the stated company
     const issues = await Promise.all(issueIds.map((id) => svc.getById(id)));
     const missing = issueIds.filter((_, i) => !issues[i]);
     if (missing.length > 0) {
@@ -210,25 +219,28 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
 
-    // All issues must belong to the same company
-    const companyIds = new Set(issues.map((issue) => issue!.companyId));
-    if (companyIds.size !== 1) {
-      res.status(422).json({ error: "All issues must belong to the same company" });
+    // All issues must belong to the declared company
+    const mismatch = issues.filter((issue) => issue!.companyId !== companyId);
+    if (mismatch.length > 0) {
+      res.status(422).json({
+        error: "All issues must belong to the specified company",
+        issueIds: mismatch.map((i) => i!.id),
+      });
       return;
-    }
-    const companyId = [...companyIds][0]!;
-    assertCompanyAccess(req, companyId);
-
-    // Check assignment permission if assignee is being changed
-    if (data.assigneeAgentId !== undefined || data.assigneeUserId !== undefined) {
-      await assertCanAssignTasks(req, companyId);
     }
 
     const actor = getActorInfo(req);
-    const results = [];
+    const results: Array<typeof issues[number]> = [];
+    const failed: Array<{ issueId: string; error: string }> = [];
+
     for (const issue of issues) {
-      const updated = await svc.update(issue!.id, data);
-      if (updated) {
+      try {
+        const updated = await svc.update(issue!.id, data);
+        if (!updated) {
+          failed.push({ issueId: issue!.id, error: "update_returned_null" });
+          continue;
+        }
+
         const previous: Record<string, unknown> = {};
         for (const key of Object.keys(data)) {
           if (key in issue! && (issue as Record<string, unknown>)[key] !== (data as Record<string, unknown>)[key]) {
@@ -252,10 +264,13 @@ export function issueRoutes(db: Db, storage: StorageService) {
           },
         });
         results.push(updated);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "unknown_error";
+        failed.push({ issueId: issue!.id, error: message });
       }
     }
 
-    res.json({ updated: results.length, issues: results });
+    res.json({ updated: results.length, failed, issues: results });
   });
 
   router.get("/companies/:companyId/issues", async (req, res) => {

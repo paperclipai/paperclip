@@ -136,12 +136,14 @@ export async function createApp(
         const indexPath = path.join(uiDist, "index.html");
         res.sendFile(indexPath, (err) => {
           if (err) {
+            if (res.headersSent) return;
             // Fallback: read and send index.html directly when sendFile fails
             // (e.g. certain SPA catch-all routes trigger sendFile errors)
             try {
               const html = fs.readFileSync(indexPath, "utf-8");
               res.status(200).set({ "Content-Type": "text/html" }).end(html);
             } catch {
+              if (res.headersSent) return;
               res.status(500).end();
             }
           }
