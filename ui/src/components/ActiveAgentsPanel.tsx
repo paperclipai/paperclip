@@ -237,6 +237,29 @@ export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
     }
   }, [activeRunIds]);
 
+  // Hydrate the live feed from stdoutExcerpt for runs that were already in progress when
+  // the panel mounted. Without this, runs started before the WebSocket connected show
+  // "Waiting for output..." indefinitely even though log data is available.
+  useEffect(() => {
+    if (runs.length === 0) return;
+    setFeedByRun((prev) => {
+      const next = new Map(prev);
+      let changed = false;
+      for (const run of runs) {
+        if (!isRunActive(run)) continue;
+        if (next.has(run.id)) continue; // already hydrated or receiving live events
+        const excerpt = run.stdoutExcerpt;
+        if (!excerpt) continue;
+        const items = parseStdoutChunk(run, excerpt, run.createdAt, pendingByRunRef.current, nextIdRef);
+        if (items.length === 0) continue;
+        next.set(run.id, items.slice(-MAX_FEED_ITEMS));
+        changed = true;
+      }
+      return changed ? next : prev;
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runs]);
+
   // WebSocket connection for streaming
   useEffect(() => {
     if (activeRunIds.size === 0) return;

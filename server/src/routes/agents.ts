@@ -1271,6 +1271,7 @@ export function agentRoutes(db: Db) {
       agentName: agentsTable.name,
       adapterType: agentsTable.adapterType,
       issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("issueId"),
+      stdoutExcerpt: heartbeatRuns.stdoutExcerpt,
     };
 
     const liveRuns = await db
