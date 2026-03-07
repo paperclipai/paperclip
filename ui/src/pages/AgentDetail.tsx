@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, Link, useBeforeUnload } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { agentsApi, type AgentKey, type ClaudeLoginResult } from "../api/agents";
+import { accessApi, type MemberPermissions } from "../api/access";
 import { heartbeatsApi } from "../api/heartbeats";
 import { ApiError } from "../api/client";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
@@ -56,7 +57,8 @@ import {
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
-import { isUuidLike, type Agent, type HeartbeatRun, type HeartbeatRunEvent, type AgentRuntimeState, type LiveEvent } from "@paperclipai/shared";
+import { isUuidLike, type Agent, type HeartbeatRun, type HeartbeatRunEvent, type AgentRuntimeState, type LiveEvent, type PermissionKey } from "@paperclipai/shared";
+import { PermissionEditor } from "../components/PermissionEditor";
 import { agentRouteRef } from "../lib/utils";
 
 const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string }> = {
@@ -375,22 +377,6 @@ export function AgentDetail() {
     },
   });
 
-  const updatePermissions = useMutation({
-    mutationFn: (canCreateAgents: boolean) =>
-      agentsApi.updatePermissions(agentLookupRef, { canCreateAgents }, resolvedCompanyId ?? undefined),
-    onSuccess: () => {
-      setActionError(null);
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(routeAgentRef) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentLookupRef) });
-      if (resolvedCompanyId) {
-        queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
-      }
-    },
-    onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to update permissions");
-    },
-  });
-
   useEffect(() => {
     const crumbs: { label: string; href?: string }[] = [
       { label: "Agents", href: "/agents" },
@@ -644,7 +630,6 @@ export function AgentDetail() {
           onSaveActionChange={setSaveConfigAction}
           onCancelActionChange={setCancelConfigAction}
           onSavingChange={setConfigSaving}
-          updatePermissions={updatePermissions}
         />
       )}
 
@@ -1036,7 +1021,6 @@ function AgentConfigurePage({
   onSaveActionChange,
   onCancelActionChange,
   onSavingChange,
-  updatePermissions,
 }: {
   agent: Agent;
   agentId: string;
@@ -1045,7 +1029,6 @@ function AgentConfigurePage({
   onSaveActionChange: (save: (() => void) | null) => void;
   onCancelActionChange: (cancel: (() => void) | null) => void;
   onSavingChange: (saving: boolean) => void;
-  updatePermissions: { mutate: (canCreate: boolean) => void; isPending: boolean };
 }) {
   const queryClient = useQueryClient();
   const [revisionsOpen, setRevisionsOpen] = useState(false);
@@ -1064,6 +1047,24 @@ function AgentConfigurePage({
     },
   });
 
+  const { data: agentPermissions } = useQuery({
+    queryKey: queryKeys.access.agentPermissions(companyId ?? "", agent.id),
+    queryFn: () => accessApi.getAgentPermissions(companyId!, agent.id),
+    enabled: Boolean(companyId),
+  });
+
+  const setMemberPermissions = useMutation({
+    mutationFn: (grants: { permissionKey: PermissionKey }[]) => {
+      if (!agentPermissions?.member) throw new Error("No agent membership found");
+      return accessApi.setMemberPermissions(companyId!, agentPermissions.member.id, grants);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.access.agentPermissions(companyId ?? "", agent.id),
+      });
+    },
+  });
+
   return (
     <div className="max-w-3xl space-y-6">
       <ConfigurationTab
@@ -1072,7 +1073,8 @@ function AgentConfigurePage({
         onSaveActionChange={onSaveActionChange}
         onCancelActionChange={onCancelActionChange}
         onSavingChange={onSavingChange}
-        updatePermissions={updatePermissions}
+        memberPermissions={agentPermissions ?? null}
+        setMemberPermissions={setMemberPermissions}
         companyId={companyId}
       />
       <div>
@@ -1143,7 +1145,8 @@ function ConfigurationTab({
   onSaveActionChange,
   onCancelActionChange,
   onSavingChange,
-  updatePermissions,
+  memberPermissions,
+  setMemberPermissions,
 }: {
   agent: Agent;
   companyId?: string;
@@ -1151,7 +1154,8 @@ function ConfigurationTab({
   onSaveActionChange: (save: (() => void) | null) => void;
   onCancelActionChange: (cancel: (() => void) | null) => void;
   onSavingChange: (saving: boolean) => void;
-  updatePermissions: { mutate: (canCreate: boolean) => void; isPending: boolean };
+  memberPermissions: MemberPermissions | null;
+  setMemberPermissions: { mutate: (grants: { permissionKey: PermissionKey }[]) => void; isPending: boolean };
 }) {
   const queryClient = useQueryClient();
 
@@ -1194,22 +1198,19 @@ function ConfigurationTab({
 
       <div>
         <h3 className="text-sm font-medium mb-3">Permissions</h3>
-        <div className="border border-border rounded-lg p-4">
-          <div className="flex items-center justify-between text-sm">
-            <span>Can create new agents</span>
-            <Button
-              variant={agent.permissions?.canCreateAgents ? "default" : "outline"}
-              size="sm"
-              className="h-7 px-2.5 text-xs"
-              onClick={() =>
-                updatePermissions.mutate(!Boolean(agent.permissions?.canCreateAgents))
-              }
-              disabled={updatePermissions.isPending}
-            >
-              {agent.permissions?.canCreateAgents ? "Enabled" : "Disabled"}
-            </Button>
-          </div>
-        </div>
+        <PermissionEditor
+          grants={
+            memberPermissions
+              ? memberPermissions.grants.map((g) => g.permissionKey)
+              : []
+          }
+          onChange={(nextKeys) =>
+            setMemberPermissions.mutate(
+              nextKeys.map((permissionKey) => ({ permissionKey }))
+            )
+          }
+          isPending={setMemberPermissions.isPending || !memberPermissions}
+        />
       </div>
     </div>
   );
@@ -2233,6 +2234,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           )}
         </div>
       </div>
+      <div className="overflow-y-auto max-h-[calc(100vh-20rem)]">
       <div className="bg-neutral-100 dark:bg-neutral-950 rounded-lg p-3 font-mono text-xs space-y-0.5 overflow-x-hidden">
         {transcript.length === 0 && !run.logRef && (
           <div className="text-neutral-500">No persisted transcript for this run.</div>
@@ -2350,7 +2352,6 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           )
         })}
         {logError && <div className="text-red-600 dark:text-red-300">{logError}</div>}
-        <div ref={logEndRef} />
       </div>
 
       {(run.status === "failed" || run.status === "timed_out") && (
@@ -2416,6 +2417,8 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           </div>
         </div>
       )}
+        <div ref={logEndRef} />
+      </div>
     </div>
   );
 }
