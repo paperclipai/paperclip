@@ -153,9 +153,9 @@ export function Costs() {
                 </span>
               </p>
               {data.summary.budgetCents > 0 && (
-                <div className="w-full h-2 bg-muted rounded-full overflow-hidden">
+                <div className="w-full h-2 border border-border overflow-hidden">
                   <div
-                    className={`h-full rounded-full transition-[width,background-color] duration-150 ${
+                    className={`h-full transition-[width,background-color] duration-150 ${
                       data.summary.utilizationPercent > 90
                         ? "bg-red-400"
                         : data.summary.utilizationPercent > 70
