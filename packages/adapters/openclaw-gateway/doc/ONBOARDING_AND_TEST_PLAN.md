@@ -21,6 +21,10 @@ These are mandatory for onboarding and smoke testing:
 - If a kick is needed, allow at most one follow-up message (for example: “how is it going?”).
 - Required OpenClaw configuration (transport enablement, auth loading, skill usage) must be embedded in prompt instructions, not manual hidden steps.
 
+3. **Two-lane validation is required**
+- Lane A (stock pass lane): unmodified/clean OpenClaw image and config flow. This lane is the release gate.
+- Lane B (instrumentation lane): temporary test instrumentation is allowed only to diagnose failures; it cannot be the final passing path.
+
 ## External Protocol Constraints
 OpenClaw docs to anchor behavior:
 - Webhook mode requires `hooks.enabled=true` and exposes `/hooks/wake` + `/hooks/agent`: https://docs.openclaw.ai/automation/webhook
@@ -233,6 +237,7 @@ POST /api/companies/$CLA_COMPANY_ID/invites
 3. Approve join request.
 4. Claim API key with `claimSecret`.
 5. Save claimed token to OpenClaw expected file path (`~/.openclaw/workspace/paperclip-claimed-api-key.json`) and ensure `PAPERCLIP_API_KEY` + `PAPERCLIP_API_URL` are available for OpenClaw skill execution context.
+  - Write compatibility JSON keys (`token` and `apiKey`) to avoid runtime parser mismatch.
 6. Ensure Paperclip skill is installed for OpenClaw runtime.
 7. Send one bootstrap prompt to OpenClaw containing all setup instructions needed for this run (auth file usage, heartbeat procedure, required tools). If needed, send one follow-up nudge only.
 

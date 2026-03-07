@@ -50,6 +50,10 @@ CASE_TIMEOUT_SEC="${CASE_TIMEOUT_SEC:-420}"
 RUN_TIMEOUT_SEC="${RUN_TIMEOUT_SEC:-300}"
 STRICT_CASES="${STRICT_CASES:-1}"
 AUTO_INSTALL_SKILL="${AUTO_INSTALL_SKILL:-1}"
+OPENCLAW_DIAG_DIR="${OPENCLAW_DIAG_DIR:-/tmp/openclaw-gateway-e2e-diag-$(date +%Y%m%d-%H%M%S)}"
+OPENCLAW_ADAPTER_TIMEOUT_SEC="${OPENCLAW_ADAPTER_TIMEOUT_SEC:-120}"
+OPENCLAW_ADAPTER_WAIT_TIMEOUT_MS="${OPENCLAW_ADAPTER_WAIT_TIMEOUT_MS:-120000}"
+PAYLOAD_TEMPLATE_MESSAGE_APPEND="${PAYLOAD_TEMPLATE_MESSAGE_APPEND:-}"
 
 AUTH_HEADERS=()
 if [[ -n "${PAPERCLIP_AUTH_HEADER:-}" ]]; then
@@ -107,6 +111,57 @@ api_request() {
 
   RESPONSE_BODY="$(cat "$tmp")"
   rm -f "$tmp"
+}
+
+capture_run_diagnostics() {
+  local run_id="$1"
+  local label="${2:-run}"
+  [[ -n "$run_id" ]] || return 0
+
+  mkdir -p "$OPENCLAW_DIAG_DIR"
+
+  api_request "GET" "/heartbeat-runs/${run_id}/events?limit=1000"
+  if [[ "$RESPONSE_CODE" == "200" ]]; then
+    printf "%s\n" "$RESPONSE_BODY" > "${OPENCLAW_DIAG_DIR}/${label}-${run_id}-events.json"
+  else
+    warn "could not fetch events for run ${run_id} (HTTP ${RESPONSE_CODE})"
+  fi
+
+  api_request "GET" "/heartbeat-runs/${run_id}/log?limitBytes=524288"
+  if [[ "$RESPONSE_CODE" == "200" ]]; then
+    printf "%s\n" "$RESPONSE_BODY" > "${OPENCLAW_DIAG_DIR}/${label}-${run_id}-log.json"
+    jq -r '.content // ""' <<<"$RESPONSE_BODY" > "${OPENCLAW_DIAG_DIR}/${label}-${run_id}-log.txt" 2>/dev/null || true
+  else
+    warn "could not fetch log for run ${run_id} (HTTP ${RESPONSE_CODE})"
+  fi
+}
+
+capture_issue_diagnostics() {
+  local issue_id="$1"
+  local label="${2:-issue}"
+  [[ -n "$issue_id" ]] || return 0
+  mkdir -p "$OPENCLAW_DIAG_DIR"
+
+  api_request "GET" "/issues/${issue_id}"
+  if [[ "$RESPONSE_CODE" == "200" ]]; then
+    printf "%s\n" "$RESPONSE_BODY" > "${OPENCLAW_DIAG_DIR}/${label}-${issue_id}.json"
+  fi
+
+  api_request "GET" "/issues/${issue_id}/comments"
+  if [[ "$RESPONSE_CODE" == "200" ]]; then
+    printf "%s\n" "$RESPONSE_BODY" > "${OPENCLAW_DIAG_DIR}/${label}-${issue_id}-comments.json"
+  fi
+}
+
+capture_openclaw_container_logs() {
+  mkdir -p "$OPENCLAW_DIAG_DIR"
+  local container
+  container="$(detect_openclaw_container || true)"
+  if [[ -z "$container" ]]; then
+    warn "could not detect OpenClaw container for diagnostics"
+    return 0
+  fi
+  docker logs --tail=1200 "$container" > "${OPENCLAW_DIAG_DIR}/openclaw-container.log" 2>&1 || true
 }
 
 assert_status() {
@@ -351,6 +406,8 @@ create_and_approve_gateway_join() {
     --arg url "$OPENCLAW_GATEWAY_URL" \
     --arg token "$gateway_token" \
     --arg paperclipApiUrl "$PAPERCLIP_API_URL_FOR_OPENCLAW" \
+    --argjson timeoutSec "$OPENCLAW_ADAPTER_TIMEOUT_SEC" \
+    --argjson waitTimeoutMs "$OPENCLAW_ADAPTER_WAIT_TIMEOUT_MS" \
     '{
       requestType: "agent",
       agentName: $name,
@@ -364,7 +421,8 @@ create_and_approve_gateway_join() {
         disableDeviceAuth: true,
         sessionKeyStrategy: "fixed",
         sessionKey: "paperclip",
-        waitTimeoutMs: 120000,
+        timeoutSec: $timeoutSec,
+        waitTimeoutMs: $waitTimeoutMs,
         paperclipApiUrl: $paperclipApiUrl
       }
     }')"
@@ -404,10 +462,27 @@ persist_claimed_key_artifacts() {
   local workspace_dir="${OPENCLAW_CONFIG_DIR%/}/workspace"
   local skill_dir="${OPENCLAW_CONFIG_DIR%/}/skills/paperclip"
   local claimed_file="${workspace_dir}/paperclip-claimed-api-key.json"
+  local claimed_raw_file="${workspace_dir}/paperclip-claimed-api-key.raw.json"
 
   mkdir -p "$workspace_dir" "$skill_dir"
-  printf "%s\n" "$claim_json" > "$claimed_file"
-  chmod 600 "$claimed_file"
+  local token
+  token="$(jq -r '.token // .apiKey // empty' <<<"$claim_json")"
+  [[ -n "$token" ]] || fail "claim response missing token/apiKey"
+
+  printf "%s\n" "$claim_json" > "$claimed_raw_file"
+  chmod 600 "$claimed_raw_file"
+
+  jq -nc --arg token "$token" '{ token: $token, apiKey: $token }' > "$claimed_file"
+  # Keep this readable for OpenClaw runtime users across sandbox/container contexts.
+  chmod 644 "$claimed_file"
+
+  local container
+  container="$(detect_openclaw_container || true)"
+  if [[ -n "$container" ]]; then
+    docker exec "$container" sh -lc "mkdir -p /home/node/.openclaw/workspace" >/dev/null 2>&1 || true
+    docker cp "$claimed_file" "${container}:/home/node/.openclaw/workspace/paperclip-claimed-api-key.json" >/dev/null 2>&1 || true
+    docker exec "$container" sh -lc "chmod 644 /home/node/.openclaw/workspace/paperclip-claimed-api-key.json" >/dev/null 2>&1 || true
+  fi
 
   if [[ "$AUTO_INSTALL_SKILL" == "1" ]]; then
     api_request "GET" "/skills/paperclip"
@@ -420,7 +495,7 @@ persist_claimed_key_artifacts() {
     chmod 600 "${skill_dir}/SKILL.md"
   fi
 
-  log "wrote claimed key to ${claimed_file}"
+  log "wrote claimed key artifacts to ${claimed_file} and ${claimed_raw_file}"
 }
 
 inject_agent_api_key_payload_template() {
@@ -430,11 +505,17 @@ inject_agent_api_key_payload_template() {
   api_request "GET" "/agents/${AGENT_ID}"
   assert_status "200"
 
+  local base_message
+  base_message="Set PAPERCLIP_API_KEY=${AGENT_API_KEY} in your run context before running Paperclip heartbeat steps."
+  if [[ -n "$PAYLOAD_TEMPLATE_MESSAGE_APPEND" ]]; then
+    base_message="${base_message}\n\n${PAYLOAD_TEMPLATE_MESSAGE_APPEND}"
+  fi
+
   local patch_payload
-  patch_payload="$(jq -c --arg token "$AGENT_API_KEY" '
+  patch_payload="$(jq -c --arg message "$base_message" '
     {adapterConfig: ((.adapterConfig // {}) + {
       payloadTemplate: (((.adapterConfig // {}).payloadTemplate // {}) + {
-        message: ("Set PAPERCLIP_API_KEY=" + $token + " in your run context before running Paperclip heartbeat steps.")
+        message: $message
       })
     })}
   ' <<<"$RESPONSE_BODY")"
@@ -487,12 +568,18 @@ wait_for_run_terminal() {
   while true; do
     status="$(get_run_status "$run_id")"
     if [[ "$status" == "succeeded" || "$status" == "failed" || "$status" == "timed_out" || "$status" == "cancelled" ]]; then
+      if [[ "$status" != "succeeded" ]]; then
+        capture_run_diagnostics "$run_id" "run-nonsuccess"
+        capture_openclaw_container_logs
+      fi
       echo "$status"
       return 0
     fi
 
     now="$(date +%s)"
     if (( now - started >= timeout_sec )); then
+      capture_run_diagnostics "$run_id" "run-timeout"
+      capture_openclaw_container_logs
       echo "timeout"
       return 0
     fi
@@ -614,6 +701,14 @@ run_case_a() {
   marker_found="$(issue_comments_contain "$CASE_A_ISSUE_ID" "$marker")"
   log "case A issue_status=${issue_status} marker_found=${marker_found}"
 
+  if [[ "$issue_status" != "done" || "$marker_found" != "true" ]]; then
+    capture_issue_diagnostics "$CASE_A_ISSUE_ID" "case-a"
+    if [[ -n "$RUN_ID" ]]; then
+      capture_run_diagnostics "$RUN_ID" "case-a"
+    fi
+    capture_openclaw_container_logs
+  fi
+
   if [[ "$STRICT_CASES" == "1" ]]; then
     [[ "$run_status" == "succeeded" ]] || fail "case A run did not succeed"
     [[ "$issue_status" == "done" ]] || fail "case A issue did not reach done"
@@ -646,6 +741,14 @@ run_case_b() {
   issue_status="$(wait_for_issue_terminal "$CASE_B_ISSUE_ID" "$CASE_TIMEOUT_SEC")"
   marker_found="$(issue_comments_contain "$CASE_B_ISSUE_ID" "$marker")"
   log "case B issue_status=${issue_status} marker_found=${marker_found}"
+
+  if [[ "$issue_status" != "done" || "$marker_found" != "true" ]]; then
+    capture_issue_diagnostics "$CASE_B_ISSUE_ID" "case-b"
+    if [[ -n "$RUN_ID" ]]; then
+      capture_run_diagnostics "$RUN_ID" "case-b"
+    fi
+    capture_openclaw_container_logs
+  fi
 
   warn "case B requires manual UX confirmation in OpenClaw main webchat: message '${message_text}' appears in main chat"
 
@@ -689,6 +792,17 @@ run_case_c() {
   CASE_C_CREATED_ISSUE_ID="$created_issue"
   log "case C issue_status=${issue_status} marker_found=${marker_found} created_issue_id=${CASE_C_CREATED_ISSUE_ID:-none}"
 
+  if [[ "$issue_status" != "done" || "$marker_found" != "true" || -z "$CASE_C_CREATED_ISSUE_ID" ]]; then
+    capture_issue_diagnostics "$CASE_C_ISSUE_ID" "case-c"
+    if [[ -n "$CASE_C_CREATED_ISSUE_ID" ]]; then
+      capture_issue_diagnostics "$CASE_C_CREATED_ISSUE_ID" "case-c-created"
+    fi
+    if [[ -n "$RUN_ID" ]]; then
+      capture_run_diagnostics "$RUN_ID" "case-c"
+    fi
+    capture_openclaw_container_logs
+  fi
+
   if [[ "$STRICT_CASES" == "1" ]]; then
     [[ "$run_status" == "succeeded" ]] || fail "case C run did not succeed"
     [[ "$issue_status" == "done" ]] || fail "case C issue did not reach done"
@@ -699,6 +813,8 @@ run_case_c() {
 
 main() {
   log "starting OpenClaw gateway E2E smoke"
+  mkdir -p "$OPENCLAW_DIAG_DIR"
+  log "diagnostics dir: ${OPENCLAW_DIAG_DIR}"
 
   wait_http_ready "${PAPERCLIP_API_URL%/}/api/health" 15 || fail "Paperclip API health endpoint not reachable"
   api_request "GET" "/health"
