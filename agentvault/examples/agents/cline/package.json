@@ -1,0 +1,19 @@
+{
+  "name": "@agentvault/examples/cline",
+  "version": "1.0.0",
+  "description": "Example Cline agent configuration for AgentVault",
+  "type": "module",
+  "scripts": {
+    "package": "agentvault package",
+    "deploy": "agentvault deploy"
+  },
+  "keywords": [
+    "agentvault",
+    "cline",
+    "example",
+    "ai-agent"
+  ],
+  "author": "AgentVault",
+  "license": "MIT",
+  "dependencies": {}
+}

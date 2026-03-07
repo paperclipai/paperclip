@@ -1,0 +1,69 @@
+{
+  "tasks": [
+    {
+      "id": "task-1",
+      "projectId": "project-1",
+      "title": "Extract Components",
+      "description": "Extract monolithic components into smaller, reusable modules",
+      "status": "in_progress",
+      "priority": "high",
+      "createdAt": "2024-01-16T09:00:00Z",
+      "assignee": "clawdbot",
+      "tags": ["refactoring", "components"],
+      "dependencies": [],
+      "estimatedMinutes": 120,
+      "settings": {
+        "autoApprove": false
+      }
+    },
+    {
+      "id": "task-2",
+      "projectId": "project-1",
+      "title": "Update Dependencies",
+      "description": "Update all npm packages to latest stable versions",
+      "status": "pending",
+      "priority": "medium",
+      "createdAt": "2024-01-17T10:30:00Z",
+      "assignee": "clawdbot",
+      "tags": ["maintenance", "dependencies"],
+      "dependencies": ["task-1"],
+      "estimatedMinutes": 30,
+      "settings": {
+        "autoApprove": true
+      }
+    },
+    {
+      "id": "task-3",
+      "projectId": "project-2",
+      "title": "Implement Stripe Integration",
+      "description": "Add Stripe payment processing to checkout flow",
+      "status": "pending",
+      "priority": "high",
+      "createdAt": "2024-01-21T11:00:00Z",
+      "assignee": "clawdbot",
+      "tags": ["api", "payments"],
+      "dependencies": [],
+      "estimatedMinutes": 180,
+      "settings": {
+        "autoApprove": false
+      }
+    },
+    {
+      "id": "task-4",
+      "projectId": "project-3",
+      "title": "Export Data",
+      "description": "Export all PostgreSQL data to JSON format",
+      "status": "completed",
+      "priority": "high",
+      "createdAt": "2024-01-11T08:00:00Z",
+      "completedAt": "2024-01-12T16:00:00Z",
+      "assignee": "clawdbot",
+      "tags": ["migration", "export"],
+      "dependencies": [],
+      "estimatedMinutes": 60,
+      "settings": {
+        "autoApprove": true
+      }
+    }
+  ]
+}

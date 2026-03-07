@@ -1,0 +1,66 @@
+# Development files
+*.test.ts
+*.spec.ts
+tests/
+__tests__/
+coverage/
+
+# Source maps
+*.map
+*.d.ts.map
+*.js.map
+
+# Development directories
+src/
+cli/
+webapp/
+site/
+scripts/
+examples/
+docs/
+AI_DOCS/
+.github/
+.agentvault/
+backups/
+output/
+
+# Config files
+tsconfig.json
+vitest.config.ts
+eslint.config.js
+dfx.json
+icp.yaml
+.pnpm-*
+
+# Build artifacts
+dist-cli/
+test-build/
+*.tgz
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Misc
+*.bak
+*.tmp
+*.temp

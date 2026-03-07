@@ -1,0 +1,18 @@
+# AgentVault dependencies
+node_modules/
+dist/
+*.log
+.env
+*.local
+.DS_Store
+
+# AgentVault generated files
+*.wasm
+*.backup
+*.state.json
+
+# AgentVault project structure
+.agentvault/
+src/
+canister/
+config/

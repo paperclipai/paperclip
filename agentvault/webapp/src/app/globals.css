@@ -1,0 +1,88 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 252 56% 5%;
+    --foreground: 224 67% 96%;
+    --card: 254 53% 9%;
+    --card-foreground: 224 67% 96%;
+    --popover: 254 53% 8%;
+    --popover-foreground: 224 67% 96%;
+    --primary: 194 100% 62%;
+    --primary-foreground: 248 70% 8%;
+    --secondary: 252 40% 17%;
+    --secondary-foreground: 220 50% 95%;
+    --muted: 248 35% 15%;
+    --muted-foreground: 223 29% 74%;
+    --accent: 325 100% 62%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 79% 59%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 250 47% 24%;
+    --input: 250 47% 24%;
+    --ring: 194 100% 62%;
+    --radius: 0.75rem;
+  }
+
+  .dark {
+    --background: 252 56% 5%;
+    --foreground: 224 67% 96%;
+    --card: 254 53% 9%;
+    --card-foreground: 224 67% 96%;
+    --popover: 254 53% 8%;
+    --popover-foreground: 224 67% 96%;
+    --primary: 194 100% 62%;
+    --primary-foreground: 248 70% 8%;
+    --secondary: 252 40% 17%;
+    --secondary-foreground: 220 50% 95%;
+    --muted: 248 35% 15%;
+    --muted-foreground: 223 29% 74%;
+    --accent: 325 100% 62%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 65% 38%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 250 47% 24%;
+    --input: 250 47% 24%;
+    --ring: 194 100% 62%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    background:
+      radial-gradient(1000px 500px at 5% -10%, rgba(63, 220, 255, 0.18), transparent 55%),
+      radial-gradient(800px 420px at 95% -10%, rgba(255, 72, 180, 0.16), transparent 55%),
+      hsl(var(--background));
+  }
+}
+
+@layer components {
+  .retro-surface {
+    background: linear-gradient(160deg, rgba(14, 9, 38, 0.88), rgba(9, 6, 28, 0.8));
+    border: 1px solid rgba(111, 217, 255, 0.28);
+    box-shadow:
+      0 0 0 1px rgba(255, 69, 184, 0.12) inset,
+      0 0 24px rgba(76, 200, 255, 0.15);
+    backdrop-filter: blur(6px);
+  }
+
+  .retro-chip {
+    border-radius: 999px;
+    border: 1px solid rgba(106, 218, 255, 0.35);
+    background: rgba(28, 19, 64, 0.75);
+    box-shadow: 0 0 14px rgba(91, 210, 255, 0.18);
+  }
+
+  .retro-active {
+    background: linear-gradient(90deg, rgba(72, 225, 255, 0.95), rgba(137, 116, 255, 0.95), rgba(255, 67, 182, 0.95));
+    color: #090514;
+    box-shadow: 0 0 18px rgba(97, 227, 255, 0.45);
+  }
+}

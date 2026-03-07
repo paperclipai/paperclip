@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">Agent Vault Logo</title>
+  <desc id="desc">Neon framed AV monogram</desc>
+  <defs>
+    <linearGradient id="ring" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#22d3ee" />
+      <stop offset="52%" stop-color="#8b5cf6" />
+      <stop offset="100%" stop-color="#ec4899" />
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="2.6" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="128" height="128" rx="18" fill="#060811" />
+  <rect x="10" y="10" width="108" height="108" rx="14" fill="none" stroke="url(#ring)" stroke-width="4" filter="url(#glow)" />
+
+  <path d="M33 90L50 38H60L77 90H66L62 78H48L44 90Z" fill="#eff7ff" />
+  <path d="M51 68H59L55 53Z" fill="#0a1222" />
+  <path d="M79 38H96L87 90H72L66 62H77L82 80L86 56H79Z" fill="#eff7ff" />
+
+  <circle cx="21" cy="21" r="2" fill="#22d3ee" opacity="0.7" />
+  <circle cx="107" cy="104" r="2" fill="#ec4899" opacity="0.7" />
+</svg>

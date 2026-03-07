@@ -1,0 +1,115 @@
+// ──────────────────────────────────────────────────────────────────────────────
+//  MemoryRepo Canister — Candid Interface (Hardened)
+// ──────────────────────────────────────────────────────────────────────────────
+
+// ─── Shared Types ────────────────────────────────────────────────────────────
+
+type Commit = record {
+  id        : text;
+  timestamp : int;
+  message   : text;
+  diff      : text;
+  tags      : vec text;
+  parent    : opt text;
+  branch    : text;
+};
+
+type RepoStatus = record {
+  initialized   : bool;
+  currentBranch : text;
+  totalCommits  : nat;
+  totalBranches : nat;
+  owner         : text;
+};
+
+type SecurityStatus = record {
+  owner           : text;
+  frozenMode      : bool;
+  canisterKilled  : bool;
+  authorizedCount : nat;
+  heapBytes       : nat;
+};
+
+type RebaseResult = variant {
+  ok  : record { newBranch : text; commitsReplayed : nat };
+  err : text;
+};
+
+type MergeStrategy = variant {
+  auto   : null;
+  manual : null;
+};
+
+type ConflictEntry = record {
+  commitId : text;
+  message  : text;
+  tags     : vec text;
+  diff     : text;
+};
+
+type MergeResult = variant {
+  ok        : record { merged : nat; message : text };
+  conflicts : vec ConflictEntry;
+  err       : text;
+};
+
+type ThoughtFormStore = record {
+  json      : text;
+  timestamp : nat64;
+  hash      : text;
+};
+
+// ─── Service ─────────────────────────────────────────────────────────────────
+
+service : {
+
+  // ── Owner & Security Management ─────────────────────────────────────────
+
+  freeze                    : () -> (variant { ok : text; err : text });
+  manualUnlock              : () -> (variant { ok : text; err : text });
+  killCanister              : () -> (variant { ok : text; err : text });
+  reviveCanister            : () -> (variant { ok : text; err : text });
+  addAuthorizedPrincipal    : (principal) -> (variant { ok : text; err : text });
+  removeAuthorizedPrincipal : (principal) -> (variant { ok : text; err : text });
+  getSecurityStatus         : () -> (SecurityStatus) query;
+
+  // ── Repository Lifecycle ────────────────────────────────────────────────
+
+  initRepo     : (text) -> (variant { ok : text; err : text });
+
+  // ── Commit Operations ───────────────────────────────────────────────────
+
+  commit       : (text, text, vec text) -> (variant { ok : text; err : text });
+  getCommit    : (text) -> (opt Commit) query;
+
+  // ── Log & State Queries ─────────────────────────────────────────────────
+
+  log            : (opt text) -> (vec Commit) query;
+  getCurrentState: () -> (opt text) query;
+  getRepoStatus  : () -> (RepoStatus) query;
+
+  // ── Branch Operations ───────────────────────────────────────────────────
+
+  getBranches  : () -> (vec record { text; text }) query;
+  createBranch : (text) -> (variant { ok : text; err : text });
+  switchBranch : (text) -> (variant { ok : text; err : text });
+
+  // ── ThoughtForm Queries ────────────────────────────────────────────────
+
+  fetch_thoughtforms : (opt int) -> (vec text) query;
+
+  // ── Rebase (PRD 3) ─────────────────────────────────────────────────────
+
+  rebase : (text, opt text) -> (RebaseResult);
+
+  // ── Merge & Cherry-Pick (PRD 4) ────────────────────────────────────────
+
+  merge     : (text, MergeStrategy) -> (MergeResult);
+  cherryPick: (text) -> (variant { ok : text; err : text });
+
+  // ── ThoughtForm Memory (PRD 5) ──────────────────────────────────────
+
+  storeThoughtForm    : (text, nat64, text) -> (variant { ok : text; err : text });
+  getThoughtForms     : () -> (vec ThoughtFormStore) query;
+  getThoughtFormByHash: (text) -> (opt ThoughtFormStore) query;
+};

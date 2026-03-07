@@ -1,0 +1,50 @@
+{
+  "context": {
+    "agentName": "Clawdbot",
+    "capabilities": [
+      "code_generation",
+      "code_review",
+      "refactoring",
+      "documentation",
+      "testing"
+    ],
+    "preferences": {
+      "language": "TypeScript",
+      "framework": "React",
+      "style": "functional"
+    },
+    "constraints": {
+      "maxFileSize": 1048576,
+      "allowedFileTypes": [
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx",
+        ".json",
+        ".md"
+      ]
+    },
+    "knowledgeBase": {
+      "topics": [
+        "React best practices",
+        "TypeScript patterns",
+        "API design",
+        "Testing strategies"
+      ],
+      "lastUpdated": "2024-01-25T00:00:00Z"
+    },
+    "integrations": {
+      "github": {
+        "enabled": true,
+        "repository": "https://github.com/example/repo"
+      },
+      "slack": {
+        "enabled": false
+      },
+      "jira": {
+        "enabled": true,
+        "url": "https://example.atlassian.net"
+      }
+    }
+  }
+}

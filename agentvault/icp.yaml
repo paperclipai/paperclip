@@ -1,0 +1,37 @@
+environments:
+  local:
+    network:
+      type: local
+    replicaCount: 4
+    cycles:
+      initial: 100T
+
+  # PRD-004: Private ICP Replica for Company Guild
+  # Customized per-company via `agentvault pilot init --company <name> --replica local`
+  # The bind address and port are overridden at runtime from ~/.agentvault/pilots/<company>/pilot.json
+  private:
+    network:
+      type: private
+      bind: "127.0.0.1:8080"
+    replicaCount: 1
+    cycles:
+      initial: 100T
+    # All external calls are optional and proxy-able via pilot config
+    proxy:
+      anthropic: ""   # set via --anthropic-proxy or ANTHROPIC_BASE_URL
+      arweave: ""     # set via --arweave-proxy or ARWEAVE_GATEWAY
+      bittensor: ""   # set via --bittensor-proxy or BITTENSOR_ENDPOINT
+    airGap:
+      enabled: false  # set via `agentvault pilot air-gap enable`
+
+  ic:
+    network:
+      type: ic
+    replicaCount: 28
+    cycles:
+      initial: 1T
+
+optimization:
+  level: 3
+  shrink: true
+  removeDebug: true

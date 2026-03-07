@@ -1,0 +1,19 @@
+{
+  "name": "@agentvault/examples/generic",
+  "version": "1.0.0",
+  "description": "Example Generic agent configuration for AgentVault",
+  "type": "module",
+  "scripts": {
+    "package": "agentvault package",
+    "deploy": "agentvault deploy"
+  },
+  "keywords": [
+    "agentvault",
+    "generic",
+    "example",
+    "ai-agent"
+  ],
+  "author": "AgentVault",
+  "license": "MIT",
+  "dependencies": {}
+}

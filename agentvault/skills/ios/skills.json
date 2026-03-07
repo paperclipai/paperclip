@@ -1,0 +1,50 @@
+{
+  "$schema": "https://agentvault.dev/schemas/skills-manifest-v1.json",
+  "domain": "ios",
+  "version": "1.0.0",
+  "updatedAt": "2026-02-24",
+  "description": "iOS engineering domain skills for AgentVault Guild agents",
+  "skills": [
+    {
+      "id": "swiftui-cell-reuse",
+      "file": "SwiftUI-CellReuse.md",
+      "title": "SwiftUI Cell Reuse Patterns",
+      "tags": ["swiftui", "list", "lazyvstack", "performance", "cell-reuse"],
+      "qualityGates": ["cell-reuse", "memory-profile"]
+    },
+    {
+      "id": "avplayer-best-practices",
+      "file": "AVPlayer-BestPractices.md",
+      "title": "AVPlayer Lifecycle & Reuse Best Practices",
+      "tags": ["avplayer", "avfoundation", "video", "memory", "lifecycle"],
+      "qualityGates": ["avplayer-reuse", "memory-profile"]
+    },
+    {
+      "id": "privacy-policy-template",
+      "file": "PrivacyPolicy-Template.md",
+      "title": "App Store Privacy Policy Template",
+      "tags": ["privacy", "app-store", "compliance", "legal"],
+      "qualityGates": ["privacy-flags"]
+    },
+    {
+      "id": "xcode-project-structure",
+      "file": "Xcode-Project-Structure.md",
+      "title": "Xcode Project Structure Conventions",
+      "tags": ["xcode", "project-structure", "spm", "targets", "schemes"],
+      "qualityGates": []
+    }
+  ],
+  "qualityGates": {
+    "cell-reuse": "Generated list/scroll code must use LazyVStack or List with stable IDs, never re-create views unnecessarily.",
+    "avplayer-reuse": "AVPlayer instances must be pooled or reused; never create a new AVPlayer per cell without cleanup.",
+    "memory-profile": "No retain cycles; weak/unowned references used for closures that outlive their enclosing scope.",
+    "privacy-flags": "App must declare all data-collection practices; NSPrivacyCollectedDataTypes must be set in PrivacyInfo.xcprivacy."
+  },
+  "updateCommand": "agentvault skills update --ios",
+  "loadOrder": [
+    "xcode-project-structure",
+    "swiftui-cell-reuse",
+    "avplayer-best-practices",
+    "privacy-policy-template"
+  ]
+}

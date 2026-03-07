@@ -1,0 +1,24 @@
+# Generic Agent Configuration (YAML format)
+name: generic-agent
+type: generic
+description: Alternative Generic agent configuration
+version: 2.0.0
+entryPoint: src/index.ts
+workingDirectory: ./workspace
+
+# Environment variables
+environment:
+  NODE_ENV: development
+  LOG_LEVEL: debug
+  PORT: "3000"
+
+# Allowed file patterns (glob patterns)
+allowedFiles:
+  - "*.ts"
+  - "*.js"
+  - "*.json"
+  - "src/**/*.ts"
+  - "test/**/*.ts"
+
+# Maximum file size in bytes (10MB)
+maxFileSize: 10485760

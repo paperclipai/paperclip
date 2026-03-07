@@ -1,0 +1,40 @@
+name: AgentVaultWallet
+options:
+  bundleIdPrefix: com.agentvault
+  deploymentTarget:
+    macOS: "14.0"
+  xcodeVersion: "15.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_HARDENED_RUNTIME: YES
+
+targets:
+  AgentVaultWallet:
+    type: application
+    platform: macOS
+    sources:
+      - path: AgentVaultWallet
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.agentvault.wallet
+        PRODUCT_NAME: AgentVault Wallet
+        INFOPLIST_FILE: AgentVaultWallet/Resources/Info.plist
+        CODE_SIGN_ENTITLEMENTS: AgentVaultWallet/Resources/AgentVaultWallet.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    info:
+      path: AgentVaultWallet/Resources/Info.plist
+      properties:
+        CFBundleName: AgentVault Wallet
+        CFBundleDisplayName: AgentVault Wallet
+        CFBundleShortVersionString: "1.0.0"
+        CFBundleVersion: "1"
+        LSMinimumSystemVersion: "14.0"
+        LSApplicationCategoryType: public.app-category.finance
+        NSMainNibFile: ""
+        NSPrincipalClass: NSApplication

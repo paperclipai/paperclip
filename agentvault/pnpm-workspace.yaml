@@ -1,0 +1,5 @@
+ignoredBuiltDependencies:
+  - bufferutil
+  - cbor-extract
+  - esbuild
+  - utf-8-validate
