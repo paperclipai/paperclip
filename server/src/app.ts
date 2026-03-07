@@ -133,7 +133,7 @@ export async function createApp(
     if (uiDist) {
       app.use(express.static(uiDist));
       app.get(/.*/, (_req, res) => {
-        res.sendFile(path.join(uiDist, "index.html"));
+        res.sendFile("index.html", { root: uiDist });
       });
     } else {
       console.warn("[paperclip] UI dist not found; running in API-only mode");

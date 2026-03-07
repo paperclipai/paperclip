@@ -27,6 +27,7 @@ export const AGENT_ADAPTER_TYPES = [
   "claude_local",
   "codex_local",
   "opencode_local",
+  "pi_local",
   "cursor",
   "openclaw",
 ] as const;

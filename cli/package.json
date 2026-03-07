@@ -38,6 +38,7 @@
     "@paperclipai/adapter-codex-local": "workspace:*",
     "@paperclipai/adapter-cursor-local": "workspace:*",
     "@paperclipai/adapter-opencode-local": "workspace:*",
+    "@paperclipai/adapter-pi-local": "workspace:*",
     "@paperclipai/adapter-openclaw": "workspace:*",
     "@paperclipai/adapter-utils": "workspace:*",
     "@paperclipai/db": "workspace:*",

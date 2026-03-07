@@ -44,7 +44,7 @@ ENV NODE_ENV=production \
   PAPERCLIP_DEPLOYMENT_MODE=authenticated \
   PAPERCLIP_DEPLOYMENT_EXPOSURE=private
 
-RUN apt-get update && apt-get install -y --no-install-recommends su-exec && rm -rf /var/lib/apt/lists/* \
+RUN apt-get update && apt-get install -y --no-install-recommends gosu && rm -rf /var/lib/apt/lists/* \
   && useradd -m -d /paperclip -s /bin/bash paperclip \
   && chown -R paperclip:paperclip /app /paperclip
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
