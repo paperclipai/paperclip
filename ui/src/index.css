@@ -426,6 +426,40 @@
   font-weight: 500;
 }
 
+.paperclip-mermaid {
+  margin: 0.5rem 0;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 3px);
+  background-color: color-mix(in oklab, var(--accent) 35%, transparent);
+  overflow-x: auto;
+}
+
+.paperclip-mermaid svg {
+  display: block;
+  width: max-content;
+  max-width: none;
+  min-width: 100%;
+  height: auto;
+}
+
+.paperclip-mermaid-status {
+  margin: 0 0 0.45rem;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+
+.paperclip-mermaid-status-error {
+  color: var(--destructive);
+}
+
+.paperclip-mermaid-source {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
 /* Project mention chips rendered inside MarkdownBody */
 a.paperclip-project-mention-chip {
   display: inline-flex;
