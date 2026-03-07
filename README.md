@@ -169,6 +169,12 @@ Paperclip handles the hard orchestration details correctly.
 
 <br/>
 
+## Tech stack used
+
+![Stack Fingerprint](https://stackfingerprint.vercel.app/api/card?repo=paperclipai/paperclip&theme=arctic&layout=classic&size=md&icons=mono&pills=round)
+
+<br/>
+
 ## Quickstart
 
 Open source. Self-hosted. No Paperclip account required.
