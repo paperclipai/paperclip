@@ -29,6 +29,7 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const startLocksByAgent = new Map<string, Promise<void>>();
+const activeRunExecutions = new Set<string>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 
 function appendExcerpt(prev: string, chunk: string) {
@@ -898,16 +899,18 @@ export function heartbeatService(db: Db) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
 
-    // Find all runs in "queued" or "running" state
+    // Only running runs should exist in runningProcesses. Queued runs may be
+    // waiting on concurrency limits or issue locks, so treating them as orphaned
+    // creates false process_lost failures.
     const activeRuns = await db
       .select()
       .from(heartbeatRuns)
-      .where(inArray(heartbeatRuns.status, ["queued", "running"]));
+      .where(eq(heartbeatRuns.status, "running"));
 
     const reaped: string[] = [];
 
     for (const run of activeRuns) {
-      if (runningProcesses.has(run.id)) continue;
+      if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
 
       // Apply staleness threshold to avoid false positives
       if (staleThresholdMs > 0) {
@@ -1033,6 +1036,28 @@ export function heartbeatService(db: Db) {
     });
   }
 
+  async function resumeQueuedRuns() {
+    const queuedAgents = await db
+      .select({ agentId: heartbeatRuns.agentId })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.status, "queued"))
+      .groupBy(heartbeatRuns.agentId)
+      .orderBy(asc(heartbeatRuns.agentId));
+
+    const resumed: string[] = [];
+    for (const { agentId } of queuedAgents) {
+      // Do not resume runs for agents that are no longer invokable.
+      const agent = await getAgent(agentId);
+      if (!agent) continue;
+      if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
+
+      const started = await startNextQueuedRunForAgent(agentId);
+      if (started.length > 0) resumed.push(agentId);
+    }
+
+    return resumed;
+  }
+
   async function executeRun(runId: string) {
     let run = await getRun(runId);
     if (!run) return;
@@ -1047,100 +1072,104 @@ export function heartbeatService(db: Db) {
       run = claimed;
     }
 
-    const agent = await getAgent(run.agentId);
-    if (!agent) {
-      await setRunStatus(runId, "failed", {
-        error: "Agent not found",
-        errorCode: "agent_not_found",
-        finishedAt: new Date(),
-      });
-      await setWakeupStatus(run.wakeupRequestId, "failed", {
-        finishedAt: new Date(),
-        error: "Agent not found",
-      });
-      const failedRun = await getRun(runId);
-      if (failedRun) await releaseIssueExecutionAndPromote(failedRun);
-      return;
-    }
+    activeRunExecutions.add(run.id);
 
-    const runtime = await ensureRuntimeState(agent);
-    const context = parseObject(run.contextSnapshot);
-    const taskKey = deriveTaskKey(context, null);
-    const sessionCodec = getAdapterSessionCodec(agent.adapterType);
-    const issueId = readNonEmptyString(context.issueId);
-    const issueAssigneeConfig = issueId
-      ? await db
-          .select({
-            assigneeAgentId: issues.assigneeAgentId,
-            assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
-          })
-          .from(issues)
-          .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
-          .then((rows) => rows[0] ?? null)
-      : null;
-    const issueAssigneeOverrides =
-      issueAssigneeConfig && issueAssigneeConfig.assigneeAgentId === agent.id
-        ? parseIssueAssigneeAdapterOverrides(
-            issueAssigneeConfig.assigneeAdapterOverrides,
-          )
+    try {
+
+      const agent = await getAgent(run.agentId);
+      if (!agent) {
+        await setRunStatus(runId, "failed", {
+          error: "Agent not found",
+          errorCode: "agent_not_found",
+          finishedAt: new Date(),
+        });
+        await setWakeupStatus(run.wakeupRequestId, "failed", {
+          finishedAt: new Date(),
+          error: "Agent not found",
+        });
+        const failedRun = await getRun(runId);
+        if (failedRun) await releaseIssueExecutionAndPromote(failedRun);
+        return;
+      }
+
+      const runtime = await ensureRuntimeState(agent);
+      const context = parseObject(run.contextSnapshot);
+      const taskKey = deriveTaskKey(context, null);
+      const sessionCodec = getAdapterSessionCodec(agent.adapterType);
+      const issueId = readNonEmptyString(context.issueId);
+      const issueAssigneeConfig = issueId
+        ? await db
+            .select({
+              assigneeAgentId: issues.assigneeAgentId,
+              assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
+            })
+            .from(issues)
+            .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
+            .then((rows) => rows[0] ?? null)
         : null;
-    const taskSession = taskKey
-      ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, taskKey)
-      : null;
-    const resetTaskSession = shouldResetTaskSessionForWake(context);
-    const sessionResetReason = describeSessionResetReason(context);
-    const taskSessionForRun = resetTaskSession ? null : taskSession;
-    const previousSessionParams = normalizeSessionParams(
-      sessionCodec.deserialize(taskSessionForRun?.sessionParamsJson ?? null),
-    );
-    const resolvedWorkspace = await resolveWorkspaceForRun(
-      agent,
-      context,
-      previousSessionParams,
-      { useProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null },
-    );
-    const runtimeSessionResolution = resolveRuntimeSessionParamsForWorkspace({
-      agentId: agent.id,
-      previousSessionParams,
-      resolvedWorkspace,
-    });
-    const runtimeSessionParams = runtimeSessionResolution.sessionParams;
-    const runtimeWorkspaceWarnings = [
-      ...resolvedWorkspace.warnings,
-      ...(runtimeSessionResolution.warning ? [runtimeSessionResolution.warning] : []),
-      ...(resetTaskSession && sessionResetReason
-        ? [
-            taskKey
-              ? `Skipping saved session resume for task "${taskKey}" because ${sessionResetReason}.`
-              : `Skipping saved session resume because ${sessionResetReason}.`,
-          ]
-        : []),
-    ];
-    context.paperclipWorkspace = {
-      cwd: resolvedWorkspace.cwd,
-      source: resolvedWorkspace.source,
-      projectId: resolvedWorkspace.projectId,
-      workspaceId: resolvedWorkspace.workspaceId,
-      repoUrl: resolvedWorkspace.repoUrl,
-      repoRef: resolvedWorkspace.repoRef,
-    };
-    context.paperclipWorkspaces = resolvedWorkspace.workspaceHints;
-    if (resolvedWorkspace.projectId && !readNonEmptyString(context.projectId)) {
-      context.projectId = resolvedWorkspace.projectId;
-    }
-    const runtimeSessionFallback = taskKey || resetTaskSession ? null : runtime.sessionId;
-    const previousSessionDisplayId = truncateDisplayId(
-      taskSessionForRun?.sessionDisplayId ??
-        (sessionCodec.getDisplayId ? sessionCodec.getDisplayId(runtimeSessionParams) : null) ??
-        readNonEmptyString(runtimeSessionParams?.sessionId) ??
-        runtimeSessionFallback,
-    );
-    const runtimeForAdapter = {
-      sessionId: readNonEmptyString(runtimeSessionParams?.sessionId) ?? runtimeSessionFallback,
-      sessionParams: runtimeSessionParams,
-      sessionDisplayId: previousSessionDisplayId,
-      taskKey,
-    };
+      const issueAssigneeOverrides =
+        issueAssigneeConfig && issueAssigneeConfig.assigneeAgentId === agent.id
+          ? parseIssueAssigneeAdapterOverrides(
+              issueAssigneeConfig.assigneeAdapterOverrides,
+            )
+          : null;
+      const taskSession = taskKey
+        ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, taskKey)
+        : null;
+      const resetTaskSession = shouldResetTaskSessionForWake(context);
+      const sessionResetReason = describeSessionResetReason(context);
+      const taskSessionForRun = resetTaskSession ? null : taskSession;
+      const previousSessionParams = normalizeSessionParams(
+        sessionCodec.deserialize(taskSessionForRun?.sessionParamsJson ?? null),
+      );
+      const resolvedWorkspace = await resolveWorkspaceForRun(
+        agent,
+        context,
+        previousSessionParams,
+        { useProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null },
+      );
+      const runtimeSessionResolution = resolveRuntimeSessionParamsForWorkspace({
+        agentId: agent.id,
+        previousSessionParams,
+        resolvedWorkspace,
+      });
+      const runtimeSessionParams = runtimeSessionResolution.sessionParams;
+      const runtimeWorkspaceWarnings = [
+        ...resolvedWorkspace.warnings,
+        ...(runtimeSessionResolution.warning ? [runtimeSessionResolution.warning] : []),
+        ...(resetTaskSession && sessionResetReason
+          ? [
+              taskKey
+                ? `Skipping saved session resume for task "${taskKey}" because ${sessionResetReason}.`
+                : `Skipping saved session resume because ${sessionResetReason}.`,
+            ]
+          : []),
+      ];
+      context.paperclipWorkspace = {
+        cwd: resolvedWorkspace.cwd,
+        source: resolvedWorkspace.source,
+        projectId: resolvedWorkspace.projectId,
+        workspaceId: resolvedWorkspace.workspaceId,
+        repoUrl: resolvedWorkspace.repoUrl,
+        repoRef: resolvedWorkspace.repoRef,
+      };
+      context.paperclipWorkspaces = resolvedWorkspace.workspaceHints;
+      if (resolvedWorkspace.projectId && !readNonEmptyString(context.projectId)) {
+        context.projectId = resolvedWorkspace.projectId;
+      }
+      const runtimeSessionFallback = taskKey || resetTaskSession ? null : runtime.sessionId;
+      const previousSessionDisplayId = truncateDisplayId(
+        taskSessionForRun?.sessionDisplayId ??
+          (sessionCodec.getDisplayId ? sessionCodec.getDisplayId(runtimeSessionParams) : null) ??
+          readNonEmptyString(runtimeSessionParams?.sessionId) ??
+          runtimeSessionFallback,
+      );
+      const runtimeForAdapter = {
+        sessionId: readNonEmptyString(runtimeSessionParams?.sessionId) ?? runtimeSessionFallback,
+        sessionParams: runtimeSessionParams,
+        sessionDisplayId: previousSessionDisplayId,
+        taskKey,
+      };
 
     let seq = 1;
     let handle: RunLogHandle | null = null;
@@ -1454,8 +1483,26 @@ export function heartbeatService(db: Db) {
       }
 
       await finalizeAgentStatus(agent.id, "failed");
+    }
+    } catch (outerErr) {
+      // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
+      // The inner catch did not fire, so we must record the failure here.
+      const message = outerErr instanceof Error ? outerErr.message : "Unknown setup failure";
+      logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
+      await setRunStatus(runId, "failed", {
+        error: message,
+        errorCode: "adapter_failed",
+        finishedAt: new Date(),
+      }).catch(() => undefined);
+      await setWakeupStatus(run.wakeupRequestId, "failed", {
+        finishedAt: new Date(),
+        error: message,
+      }).catch(() => undefined);
+      const failedRun = await getRun(runId).catch(() => null);
+      if (failedRun) await releaseIssueExecutionAndPromote(failedRun).catch(() => undefined);
     } finally {
-      await startNextQueuedRunForAgent(agent.id);
+      activeRunExecutions.delete(run.id);
+      await startNextQueuedRunForAgent(run.agentId);
     }
   }
 
@@ -2199,6 +2246,8 @@ export function heartbeatService(db: Db) {
     wakeup: enqueueWakeup,
 
     reapOrphanedRuns,
+
+    resumeQueuedRuns,
 
     tickTimers: async (now = new Date()) => {
       const allAgents = await db.select().from(agents);
