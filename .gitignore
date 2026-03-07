@@ -36,4 +36,4 @@ tmp/
 *.tmp
 .vscode/
 .claude/settings.local.json
-.paperclip-local/
+.paperclip-local/.worktrees/
