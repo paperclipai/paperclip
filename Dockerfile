@@ -44,7 +44,8 @@ ENV NODE_ENV=production \
   PAPERCLIP_DEPLOYMENT_MODE=authenticated \
   PAPERCLIP_DEPLOYMENT_EXPOSURE=private
 
+WORKDIR /paperclip
 VOLUME ["/paperclip"]
 EXPOSE 3100
 
-CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
+CMD ["node", "--import", "/app/server/node_modules/tsx/dist/loader.mjs", "/app/server/dist/index.js"]
