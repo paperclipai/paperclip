@@ -129,6 +129,11 @@ export function printStartupBanner(opts: StartupBannerOptions): void {
   const heartbeat = opts.heartbeatSchedulerEnabled
     ? `enabled ${color(`(${opts.heartbeatSchedulerIntervalMs}ms)`, "dim")}`
     : color("disabled", "yellow");
+  const isExposedLocalTrusted = opts.deploymentMode === "local_trusted" && opts.host !== "localhost" && opts.host !== "127.0.0.1" && opts.host !== "::1";
+
+  const deployWarning = isExposedLocalTrusted
+    ? color("\n⚠️ WARNING: local_trusted mode on exposed host (" + opts.host + ")! Anyone can access it as admin. Use authenticated mode for production. ⚠️", "yellow")
+    : null;
   const dbBackup = opts.databaseBackupEnabled
     ? `enabled ${color(`(every ${opts.databaseBackupIntervalMinutes}m, keep ${opts.databaseBackupRetentionDays}d)`, "dim")}`
     : color("disabled", "yellow");
@@ -148,6 +153,7 @@ export function printStartupBanner(opts: StartupBannerOptions): void {
     color("  ───────────────────────────────────────────────────────", "blue"),
     row("Mode", `${dbMode}  |  ${uiMode}`),
     row("Deploy", `${opts.deploymentMode} (${opts.deploymentExposure})`),
+    isExposedLocalTrusted ? deployWarning : null,
     row("Auth", opts.authReady ? color("ready", "green") : color("not-ready", "yellow")),
     row("Server", portValue),
     row("API", `${apiUrl} ${color(`(health: ${apiUrl}/health)`, "dim")}`),

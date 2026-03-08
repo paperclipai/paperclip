@@ -1,3 +1,5 @@
+import os from "node:os";
+import { promises as fsp } from "node:fs";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import type { Db } from "@paperclipai/db";
@@ -18,8 +20,10 @@ const ALLOWED_IMAGE_CONTENT_TYPES = new Set([
 export function assetRoutes(db: Db, storage: StorageService) {
   const router = Router();
   const svc = assetService(db);
-  const upload = multer({
-    storage: multer.memoryStorage(),
+    const upload = multer({
+    storage: multer.diskStorage({
+      destination: os.tmpdir(),
+    }),
     limits: { fileSize: MAX_ASSET_IMAGE_BYTES, files: 1 },
   });
 
@@ -50,7 +54,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
       throw err;
     }
 
-    const file = (req as Request & { file?: { mimetype: string; buffer: Buffer; originalname: string } }).file;
+    const file = (req as Request & { file?: { mimetype: string; path: string; originalname: string; size: number } }).file;
     if (!file) {
       res.status(400).json({ error: "Missing file field 'file'" });
       return;
@@ -58,29 +62,34 @@ export function assetRoutes(db: Db, storage: StorageService) {
 
     const contentType = (file.mimetype || "").toLowerCase();
     if (!ALLOWED_IMAGE_CONTENT_TYPES.has(contentType)) {
+      await fsp.unlink(file.path).catch(() => {});
       res.status(422).json({ error: `Unsupported image type: ${contentType || "unknown"}` });
       return;
     }
-    if (file.buffer.length <= 0) {
+    if (file.size <= 0) {
+      await fsp.unlink(file.path).catch(() => {});
       res.status(422).json({ error: "Image is empty" });
       return;
     }
 
     const parsedMeta = createAssetImageMetadataSchema.safeParse(req.body ?? {});
     if (!parsedMeta.success) {
+      await fsp.unlink(file.path).catch(() => {});
       res.status(400).json({ error: "Invalid image metadata", details: parsedMeta.error.issues });
       return;
     }
 
     const namespaceSuffix = parsedMeta.data.namespace ?? "general";
     const actor = getActorInfo(req);
+    const fileBuffer = await fsp.readFile(file.path);
     const stored = await storage.putFile({
       companyId,
       namespace: `assets/${namespaceSuffix}`,
       originalFilename: file.originalname || null,
       contentType,
-      body: file.buffer,
+      body: fileBuffer,
     });
+    await fsp.unlink(file.path).catch(() => {});
 
     const asset = await svc.create(companyId, {
       provider: stored.provider,
