@@ -38,7 +38,7 @@
     "build": "tsc",
     "prepack": "pnpm run prepare:ui-dist",
     "postpack": "rm -rf ui-dist",
-    "clean": "rm -rf dist",
+    "clean": "node -e \"require('fs').rmSync('dist', {recursive: true, force: true})\"",
     "start": "node dist/index.js",
     "typecheck": "pnpm --filter @paperclipai/plugin-sdk build && tsc --noEmit"
   },

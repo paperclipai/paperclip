@@ -35,8 +35,8 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc && cp -r src/migrations dist/migrations",
-    "clean": "rm -rf dist",
+    "build": "tsc && node -e \"require('node:fs').cpSync('src/migrations', 'dist/migrations', { recursive: true })\"",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "typecheck": "tsc --noEmit",
     "generate": "tsc -p tsconfig.json && drizzle-kit generate",
     "migrate": "tsx src/migrate.ts",

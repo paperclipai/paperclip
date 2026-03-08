@@ -5,8 +5,12 @@ import path from "node:path";
 import { testEnvironment } from "@paperclipai/adapter-cursor-local/server";
 
 async function writeFakeAgentCommand(binDir: string, argsCapturePath: string): Promise<string> {
-  const commandPath = path.join(binDir, "agent");
-  const script = `#!/usr/bin/env node
+  const isWindows = process.platform === "win32";
+  const commandPath = path.join(binDir, isWindows ? "agent.cmd" : "agent");
+  const script = isWindows
+    ? `@echo off
+node -e "const fs = require('node:fs'); const outPath = process.env.PAPERCLIP_TEST_ARGS_PATH; if (outPath) { fs.writeFileSync(outPath, JSON.stringify(process.argv.slice(2)), 'utf8'); } console.log(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'output_text', text: 'hello' }] } })); console.log(JSON.stringify({ type: 'result', subtype: 'success', result: 'hello' }));" -- %*`
+    : `#!/usr/bin/env node
 const fs = require("node:fs");
 const outPath = process.env.PAPERCLIP_TEST_ARGS_PATH;
 if (outPath) {
@@ -23,7 +27,9 @@ console.log(JSON.stringify({
 }));
 `;
   await fs.writeFile(commandPath, script, "utf8");
-  await fs.chmod(commandPath, 0o755);
+  if (!isWindows) {
+    await fs.chmod(commandPath, 0o755);
+  }
   return commandPath;
 }
 
@@ -68,7 +74,7 @@ describe("cursor environment diagnostics", () => {
       companyId: "company-1",
       adapterType: "cursor",
       config: {
-        command: "agent",
+        command: process.platform === "win32" ? "agent.cmd" : "agent",
         cwd,
         env: {
           CURSOR_API_KEY: "test-key",
@@ -99,7 +105,7 @@ describe("cursor environment diagnostics", () => {
       companyId: "company-1",
       adapterType: "cursor",
       config: {
-        command: "agent",
+        command: process.platform === "win32" ? "agent.cmd" : "agent",
         cwd,
         extraArgs: ["--yolo"],
         env: {

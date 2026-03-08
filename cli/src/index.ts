@@ -1,3 +1,6 @@
+process.stdout.setDefaultEncoding("utf8");
+process.stderr.setDefaultEncoding("utf8");
+
 import { Command } from "commander";
 import { onboard } from "./commands/onboard.js";
 import { doctor } from "./commands/doctor.js";

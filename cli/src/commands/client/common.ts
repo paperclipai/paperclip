@@ -81,7 +81,7 @@ export function resolveCommandContext(
 
 export function printOutput(data: unknown, opts: { json?: boolean; label?: string } = {}): void {
   if (opts.json) {
-    console.log(JSON.stringify(data, null, 2));
+    process.stdout.write(JSON.stringify(data, null, 2) + "\n", "utf8");
     return;
   }
 
@@ -105,7 +105,7 @@ export function printOutput(data: unknown, opts: { json?: boolean; label?: strin
   }
 
   if (typeof data === "object" && data !== null) {
-    console.log(JSON.stringify(data, null, 2));
+    process.stdout.write(JSON.stringify(data, null, 2) + "\n", "utf8");
     return;
   }
 
