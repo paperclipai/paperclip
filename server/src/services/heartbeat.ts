@@ -1576,6 +1576,22 @@ export function heartbeatService(db: Db) {
       delete context.paperclipPreviousSessionId;
     }
 
+    // Enrich context with agent identity and task summary so adapters can
+    // inject them directly into the LLM prompt, eliminating the "who am I?"
+    // API discovery phase that wastes 30-60s of agent startup time.
+    context.agentIdentity = {
+      name: agent.name,
+      role: agent.role,
+      title: agent.title,
+    };
+    if (issueRef && issueId) {
+      context.taskSummary = {
+        id: issueId,
+        identifier: issueRef.identifier,
+        title: issueRef.title,
+      };
+    }
+
     const runtimeForAdapter = {
       sessionId: runtimeSessionIdForAdapter,
       sessionParams: runtimeSessionParamsForAdapter,
