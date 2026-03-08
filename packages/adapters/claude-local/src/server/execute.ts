@@ -147,6 +147,10 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     (typeof context.wakeCommentId === "string" && context.wakeCommentId.trim().length > 0 && context.wakeCommentId.trim()) ||
     (typeof context.commentId === "string" && context.commentId.trim().length > 0 && context.commentId.trim()) ||
     null;
+  const wakeCommentBody =
+    typeof context.wakeCommentBody === "string" && context.wakeCommentBody.trim().length > 0
+      ? context.wakeCommentBody.trim()
+      : null;
   const approvalId =
     typeof context.approvalId === "string" && context.approvalId.trim().length > 0
       ? context.approvalId.trim()
@@ -331,7 +335,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       `[paperclip] Claude session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
     );
   }
-  const prompt = renderTemplate(promptTemplate, {
+  const renderedPrompt = renderTemplate(promptTemplate, {
     agentId: agent.id,
     companyId: agent.companyId,
     runId,
@@ -340,6 +344,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     run: { id: runId, source: "on_demand" },
     context,
   });
+  const commentNote = wakeCommentBody
+    ? `\n\nNew comment on this issue:\n${wakeCommentBody}\n`
+    : "";
+  const prompt = `${renderedPrompt}${commentNote}`;
 
   const buildClaudeArgs = (resumeSessionId: string | null) => {
     const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];

@@ -13,6 +13,7 @@ type WakePayload = {
   issueId: string | null;
   wakeReason: string | null;
   wakeCommentId: string | null;
+  wakeCommentBody: string | null;
   approvalId: string | null;
   approvalStatus: string | null;
   issueIds: string[];
@@ -287,6 +288,7 @@ function buildWakePayload(ctx: AdapterExecutionContext): WakePayload {
     issueId: nonEmpty(context.issueId),
     wakeReason: nonEmpty(context.wakeReason),
     wakeCommentId: nonEmpty(context.wakeCommentId) ?? nonEmpty(context.commentId),
+    wakeCommentBody: nonEmpty(context.wakeCommentBody),
     approvalId: nonEmpty(context.approvalId),
     approvalStatus: nonEmpty(context.approvalStatus),
     issueIds: Array.isArray(context.issueIds)
@@ -375,6 +377,7 @@ function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string
     `approval_id=${payload.approvalId ?? ""}`,
     `approval_status=${payload.approvalStatus ?? ""}`,
     `linked_issue_ids=${payload.issueIds.join(",")}`,
+    ...(payload.wakeCommentBody ? ["", `New comment on this issue:\n${payload.wakeCommentBody}`] : []),
     "",
     "HTTP rules:",
     "- Use Authorization: Bearer $PAPERCLIP_API_KEY on every API call.",

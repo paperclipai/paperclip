@@ -155,6 +155,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     (typeof context.wakeCommentId === "string" && context.wakeCommentId.trim().length > 0 && context.wakeCommentId.trim()) ||
     (typeof context.commentId === "string" && context.commentId.trim().length > 0 && context.commentId.trim()) ||
     null;
+  const wakeCommentBody =
+    typeof context.wakeCommentBody === "string" && context.wakeCommentBody.trim().length > 0
+      ? context.wakeCommentBody.trim()
+      : null;
   const approvalId =
     typeof context.approvalId === "string" && context.approvalId.trim().length > 0
       ? context.approvalId.trim()
@@ -284,6 +288,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
 
   // User prompt is simple - just the rendered prompt template without instructions
+  const commentNote = wakeCommentBody
+    ? `\n\nNew comment on this issue:\n${wakeCommentBody}\n`
+    : "";
   const userPrompt = renderTemplate(promptTemplate, {
     agentId: agent.id,
     companyId: agent.companyId,
@@ -292,7 +299,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     agent,
     run: { id: runId, source: "on_demand" },
     context,
-  });
+  }) + commentNote;
 
   const commandNotes = (() => {
     if (!resolvedInstructionsFilePath) return [] as string[];
