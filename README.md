@@ -35,7 +35,7 @@ It looks like a task manager — but under the hood it has org charts, budgets, 
 
 **Manage business goals, not pull requests.**
 
-|        | Step            | Example                                                            |
+|        | Step            | Example cc                                                           |
 | ------ | --------------- | ------------------------------------------------------------------ |
 | **01** | Define the goal | _"Build the #1 AI note-taking app to $1M MRR."_                    |
 | **02** | Hire the team   | CEO, CTO, engineers, designers, marketers — any bot, any provider. |
