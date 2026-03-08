@@ -1211,10 +1211,12 @@ export function issueService(db: Db) {
       }),
 
     findMentionedAgents: async (companyId: string, body: string) => {
+      // Strip fenced code blocks and inline code spans so @mentions in examples don't trigger wakes
+      const stripped = body.replace(/```[\s\S]*?```/g, "").replace(/`[^`]+`/g, "");
       const re = /\B@([^\s@,!?.]+)/g;
       const tokens = new Set<string>();
       let m: RegExpExecArray | null;
-      while ((m = re.exec(body)) !== null) {
+      while ((m = re.exec(stripped)) !== null) {
         const raw = m[1];
         tokens.add(raw.toLowerCase());
         const urlKey = normalizeAgentUrlKey(raw);
@@ -1225,7 +1227,7 @@ export function issueService(db: Db) {
       }
       const rows = await db.select({ id: agents.id, name: agents.name, urlKey: agents.urlKey })
         .from(agents).where(eq(agents.companyId, companyId));
-      const bodyLower = body.toLowerCase();
+      const bodyLower = stripped.toLowerCase();
       return rows.filter(a => {
         // Token-based match (handles @ceo, @founding-engineer, @CodeReviewer)
         const nameKey = normalizeAgentUrlKey(a.name);
