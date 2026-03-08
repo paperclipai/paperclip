@@ -1,6 +1,6 @@
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, approvals, companies, costEvents, issues } from "@paperclipai/db";
+import { agents, approvals, companies, costEvents, heartbeatRuns, issues } from "@paperclipai/db";
 import { notFound } from "../errors.js";
 
 export function dashboardService(db: Db) {
@@ -92,6 +92,48 @@ export function dashboardService(db: Db) {
           ? (monthSpendCents / company.budgetMonthlyCents) * 100
           : 0;
 
+      const runSeriesStart = new Date();
+      runSeriesStart.setUTCHours(0, 0, 0, 0);
+      runSeriesStart.setUTCDate(runSeriesStart.getUTCDate() - 13);
+
+      const runSeriesRows = await db
+        .select({
+          day: sql<string>`to_char(date_trunc('day', ${heartbeatRuns.createdAt}), 'YYYY-MM-DD')`,
+          status: heartbeatRuns.status,
+          count: sql<number>`count(*)::int`,
+        })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            gte(heartbeatRuns.createdAt, runSeriesStart),
+            inArray(heartbeatRuns.status, ["succeeded", "failed", "cancelled", "timed_out"]),
+          ),
+        )
+        .groupBy(sql`date_trunc('day', ${heartbeatRuns.createdAt})`, heartbeatRuns.status);
+
+      const successFailureSeries = Array.from({ length: 14 }, (_value, index) => {
+        const day = new Date(runSeriesStart);
+        day.setUTCDate(runSeriesStart.getUTCDate() + index);
+        return {
+          date: day.toISOString().slice(0, 10),
+          succeeded: 0,
+          failed: 0,
+        };
+      });
+      const runSeriesByDate = new Map(successFailureSeries.map((entry) => [entry.date, entry]));
+
+      for (const row of runSeriesRows) {
+        const bucket = runSeriesByDate.get(row.day);
+        if (!bucket) continue;
+        const count = Number(row.count);
+        if (row.status === "succeeded") {
+          bucket.succeeded += count;
+          continue;
+        }
+        bucket.failed += count;
+      }
+
       return {
         companyId,
         agents: {
@@ -108,6 +150,9 @@ export function dashboardService(db: Db) {
         },
         pendingApprovals,
         staleTasks,
+        runs: {
+          successFailureSeries,
+        },
       };
     },
   };

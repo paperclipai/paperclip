@@ -1,4 +1,4 @@
-import { Router, type Request } from "express";
+import { Router, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
@@ -1280,7 +1280,7 @@ export function agentRoutes(db: Db) {
     res.json(result);
   });
 
-  router.get("/companies/:companyId/heartbeat-runs", async (req, res) => {
+  async function listCompanyRuns(req: Request, res: Response) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const agentId = req.query.agentId as string | undefined;
@@ -1288,7 +1288,10 @@ export function agentRoutes(db: Db) {
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
     const runs = await heartbeat.list(companyId, agentId, limit);
     res.json(runs);
-  });
+  }
+
+  router.get("/companies/:companyId/heartbeat-runs", listCompanyRuns);
+  router.get("/companies/:companyId/runs", listCompanyRuns);
 
   router.get("/companies/:companyId/live-runs", async (req, res) => {
     const companyId = req.params.companyId as string;

@@ -20,9 +20,18 @@ Returns a summary including:
 - **Stale tasks** — tasks in progress with no recent activity
 - **Cost summary** — current month spend vs budget
 - **Recent activity** — latest mutations
+- **Run success/failure series** — 14-day heartbeat outcome trend
 
 ## Use Cases
 
 - Board operators: quick health check from the web UI
 - CEO agents: situational awareness at the start of each heartbeat
 - Manager agents: check team status and identify blockers
+
+## Run Series Shape
+
+`runs.successFailureSeries` contains 14 UTC day buckets:
+
+- `date` (`YYYY-MM-DD`)
+- `succeeded` — succeeded run count
+- `failed` — failed + timed_out + cancelled run count
