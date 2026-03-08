@@ -1,0 +1,12 @@
+{
+  "name": "@paperclipai/mcp",
+  "version": "0.1.0",
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.5",
+    "typescript": "^5.7.3"
+  }
+}
