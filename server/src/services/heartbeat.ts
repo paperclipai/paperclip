@@ -195,6 +195,76 @@ function deriveTaskKey(
   );
 }
 
+/**
+ * Resolve and validate issueId from wake context.
+ * If the original issue is cancelled, attempt to find another active assigned issue.
+ * Returns the resolved issueId and the source of resolution.
+ */
+async function resolveValidIssueId(input: {
+  contextIssueId: string | null;
+  agentId: string;
+  companyId: string;
+  wakeReason: string | null;
+}): Promise<{
+  issueId: string | null;
+  source: "event_id" | "re-resolved" | "none";
+}> {
+  const { contextIssueId, agentId, companyId, wakeReason } = input;
+
+  // If no issueId in context, nothing to resolve
+  if (!contextIssueId) {
+    return { issueId: null, source: "none" };
+  }
+
+  // Check if the original issue is still valid (exists, not cancelled, assigned to this agent)
+  const originalIssue = await db
+    .select({
+      id: issues.id,
+      status: issues.status,
+      cancelledAt: issues.cancelledAt,
+      assigneeAgentId: issues.assigneeAgentId,
+    })
+    .from(issues)
+    .where(and(eq(issues.id, contextIssueId), eq(issues.companyId, companyId)))
+    .then((rows) => rows[0] ?? null);
+
+  const isOriginalValid =
+    originalIssue &&
+    originalIssue.status !== "cancelled" &&
+    !originalIssue.cancelledAt &&
+    originalIssue.assigneeAgentId === agentId;
+
+  if (isOriginalValid) {
+    return { issueId: contextIssueId, source: "event_id" };
+  }
+
+  // Original issue is invalid (cancelled or unassigned).
+  // For issue_assigned wakes, try to find another active assigned issue.
+  if (wakeReason === "issue_assigned") {
+    const activeAssignedIssue = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.assigneeAgentId, agentId),
+          inArray(issues.status, ["todo", "in_progress", "blocked"]),
+          sql`${issues.cancelledAt} IS NULL`,
+        ),
+      )
+      .orderBy(desc(issues.updatedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    if (activeAssignedIssue) {
+      return { issueId: activeAssignedIssue.id, source: "re-resolved" };
+    }
+  }
+
+  // No valid issue found
+  return { issueId: null, source: "none" };
+}
+
 export function shouldResetTaskSessionForWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
@@ -1067,7 +1137,31 @@ export function heartbeatService(db: Db) {
     const context = parseObject(run.contextSnapshot);
     const taskKey = deriveTaskKey(context, null);
     const sessionCodec = getAdapterSessionCodec(agent.adapterType);
-    const issueId = readNonEmptyString(context.issueId);
+
+    // Resolve and validate issueId from context, re-resolving if stale/cancelled
+    const contextIssueId = readNonEmptyString(context.issueId);
+    const wakeReason = readNonEmptyString(context.wakeReason);
+    const { issueId, source: resolvedIssueIdSource } = await resolveValidIssueId({
+      contextIssueId,
+      agentId: agent.id,
+      companyId: agent.companyId,
+      wakeReason,
+    });
+
+    // Update context with resolved issueId and log the resolution source
+    if (issueId !== contextIssueId) {
+      if (issueId) {
+        context.issueId = issueId;
+      } else {
+        delete context.issueId;
+      }
+    }
+    // Record the resolution source for debugging and auditing
+    context._resolvedIssueIdSource = resolvedIssueIdSource;
+    if (contextIssueId && issueId !== contextIssueId) {
+      context._originalIssueId = contextIssueId;
+    }
+
     const issueAssigneeConfig = issueId
       ? await db
           .select({
@@ -1154,6 +1248,7 @@ export function heartbeatService(db: Db) {
         .set({
           startedAt,
           sessionIdBefore: runtimeForAdapter.sessionDisplayId ?? runtimeForAdapter.sessionId,
+          contextSnapshot: context, // Persist updated context with resolved issueId
           updatedAt: new Date(),
         })
         .where(eq(heartbeatRuns.id, run.id))
@@ -2202,6 +2297,17 @@ export function heartbeatService(db: Db) {
 
     tickTimers: async (now = new Date()) => {
       const allAgents = await db.select().from(agents);
+
+      // Fetch busy agents in a single query to avoid N+1 per-agent lookups.
+      const busyAgentIds = new Set(
+        (
+          await db
+            .select({ agentId: heartbeatRuns.agentId })
+            .from(heartbeatRuns)
+            .where(inArray(heartbeatRuns.status, ["queued", "running"]))
+        ).map((r) => r.agentId),
+      );
+
       let checked = 0;
       let enqueued = 0;
       let skipped = 0;
@@ -2215,6 +2321,15 @@ export function heartbeatService(db: Db) {
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
+
+        // Skip timer wakes for agents that already have running or queued runs.
+        // Timer wakes just check for new work — redundant when the agent is busy.
+        // On-demand wakes (assignments, comments) bypass this and use enqueueWakeup's
+        // coalescing logic directly.
+        if (busyAgentIds.has(agent.id)) {
+          skipped += 1;
+          continue;
+        }
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",

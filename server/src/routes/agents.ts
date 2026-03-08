@@ -1112,6 +1112,20 @@ export function agentRoutes(db: Db) {
     res.json({ ok: true });
   });
 
+  router.get("/agents/:id/runs", async (req, res) => {
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, agent.companyId);
+    const limitParam = req.query.limit as string | undefined;
+    const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
+    const runs = await heartbeat.list(agent.companyId, id, limit);
+    res.json(runs);
+  });
+
   router.get("/agents/:id/keys", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
