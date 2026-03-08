@@ -28,6 +28,7 @@ import { heartbeatService } from "./services/index.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
+import { createShutdown } from "./shutdown.js";
 
 type BetterAuthSessionUser = {
   id: string;
@@ -487,8 +488,9 @@ setupLiveEventsWebSocketServer(server, db as any, {
 if (config.heartbeatSchedulerEnabled) {
   const heartbeat = heartbeatService(db as any);
 
-  // Reap orphaned runs at startup (no threshold -- runningProcesses is empty)
-  void heartbeat.reapOrphanedRuns().catch((err) => {
+  // Reap orphaned runs at startup with a staleness threshold so that
+  // recently-started runs survive a tsx watch restart cycle.
+  void heartbeat.reapOrphanedRuns({ staleThresholdMs: 2 * 60 * 1000 }).catch((err) => {
     logger.error({ err }, "startup reap of orphaned heartbeat runs failed");
   });
 
@@ -610,36 +612,12 @@ server.listen(listenPort, config.host, () => {
   }
 });
 
-const SHUTDOWN_TIMEOUT_MS = 5000;
-
-const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
-  logger.info({ signal }, "Shutting down server");
-
-  // Force-exit safety valve in case graceful shutdown hangs
-  const forceExitTimer = setTimeout(() => {
-    logger.error("Graceful shutdown timed out; forcing exit");
-    process.exit(1);
-  }, SHUTDOWN_TIMEOUT_MS);
-  forceExitTimer.unref();
-
-  try {
-    await new Promise<void>((resolve, reject) => {
-      server.close((err) => (err ? reject(err) : resolve()));
-    });
-  } catch (err) {
-    logger.error({ err }, "Error closing HTTP server");
-  }
-
-  if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
-    try {
-      await embeddedPostgres.stop();
-    } catch (err) {
-      logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
-    }
-  }
-
-  process.exit(0);
-};
+const shutdown = createShutdown({
+  server,
+  logger,
+  embeddedPostgres,
+  embeddedPostgresStartedByThisProcess,
+});
 
 process.once("SIGINT", () => {
   void shutdown("SIGINT");
