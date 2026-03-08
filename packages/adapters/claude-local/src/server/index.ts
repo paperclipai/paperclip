@@ -1,4 +1,4 @@
-export { execute, runClaudeLogin } from "./execute.js";
+export { execute, runClaudeLogin, buildSkillsDir, _resetSkillsDirCache } from "./execute.js";
 export { testEnvironment } from "./test.js";
 export {
   parseClaudeStreamJson,

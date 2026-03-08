@@ -56,7 +56,14 @@ async function resolvePaperclipSkillsDir(): Promise<string | null> {
 let _cachedSkillsDir: string | null = null;
 let _cachedSkillsFingerprint: string | null = null;
 
-async function buildSkillsDir(): Promise<string> {
+/** @internal — exported for testing only. */
+export function _resetSkillsDirCache() {
+  _cachedSkillsDir = null;
+  _cachedSkillsFingerprint = null;
+}
+
+/** @internal — exported for testing only. */
+export async function buildSkillsDir(): Promise<string> {
   const skillsDir = await resolvePaperclipSkillsDir();
 
   // Build a fingerprint from the sorted list of skill directory names so we
@@ -92,11 +99,8 @@ async function buildSkillsDir(): Promise<string> {
     }
   }
 
-  // Clean up previous cached dir (best-effort).
-  if (_cachedSkillsDir) {
-    fs.rm(_cachedSkillsDir, { recursive: true, force: true }).catch(() => {});
-  }
-
+  // Previous cached dir (if any) is left for OS temp cleanup rather than
+  // eagerly deleted — concurrent runs may still reference it.
   _cachedSkillsDir = tmp;
   _cachedSkillsFingerprint = fingerprint;
   return tmp;
