@@ -48,6 +48,15 @@ function summarizeProbeDetail(stdout: string, stderr: string, parsedError: strin
   return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
 }
 
+function normalizeEnv(input: unknown): Record<string, string> {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return {};
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
+    if (typeof value === "string") env[key] = value;
+  }
+  return env;
+}
+
 const CODEX_AUTH_REQUIRED_RE =
   /(?:not\s+logged\s+in|login\s+required|authentication\s+required|unauthorized|invalid(?:\s+or\s+missing)?\s+api(?:[_\s-]?key)?|openai[_\s-]?api[_\s-]?key|api[_\s-]?key.*required|please\s+run\s+`?codex\s+login`?)/i;
 
@@ -80,7 +89,7 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
-  const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...env }));
   try {
     await ensureCommandResolvable(command, cwd, runtimeEnv);
     checks.push({
@@ -160,7 +169,7 @@ export async function testEnvironment(
         args,
         {
           cwd,
-          env,
+          env: runtimeEnv,
           timeoutSec: 45,
           graceSec: 5,
           stdin: "Respond with hello.",

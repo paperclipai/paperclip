@@ -49,6 +49,15 @@ function summarizeProbeDetail(stdout: string, stderr: string): string | null {
   return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
 }
 
+function normalizeEnv(input: unknown): Record<string, string> {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return {};
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
+    if (typeof value === "string") env[key] = value;
+  }
+  return env;
+}
+
 export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
@@ -78,7 +87,7 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
-  const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...env }));
   try {
     await ensureCommandResolvable(command, cwd, runtimeEnv);
     checks.push({
@@ -152,7 +161,7 @@ export async function testEnvironment(
         args,
         {
           cwd,
-          env,
+          env: runtimeEnv,
           timeoutSec: 45,
           graceSec: 5,
           stdin: "Respond with hello.",
