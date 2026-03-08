@@ -10,7 +10,7 @@ Paperclip can be deployed to Vercel as a serverless application.
 ## Prerequisites
 
 1. A [Vercel account](https://vercel.com)
-2. A PostgreSQL database (recommended: [Supabase](https://supabase.com), [Neon](https://neon.tech), or [PlanetScale](https://planetscale.com))
+2. A PostgreSQL database (recommended: [Supabase](https://supabase.com), [Neon](https://neon.tech), or [Railway](https://railway.app))
 3. A storage solution (optional: S3-compatible storage for file uploads)
 
 ## Deployment Steps
@@ -36,8 +36,7 @@ BETTER_AUTH_SECRET=...         # Random 32+ char secret
 PAPERCLIP_AGENT_JWT_SECRET=... # Random 32+ char secret
 
 # Deployment mode
-DEPLOYMENT_MODE=authenticated
-SERVER_EXPOSURE=public
+PAPERCLIP_DEPLOYMENT_MODE=authenticated
 
 # Auth URLs (replace with your Vercel URL)
 PAPERCLIP_AUTH_BASE_URL_MODE=explicit
@@ -75,12 +74,12 @@ PAPERCLIP_AUTH_DISABLE_SIGN_UP=true
 By default, Paperclip uses local disk storage which won't work on Vercel's ephemeral filesystem. Configure S3-compatible storage:
 
 ```bash
-STORAGE_PROVIDER=s3
-STORAGE_S3_BUCKET=your-bucket
-STORAGE_S3_REGION=us-east-1
-STORAGE_S3_ENDPOINT=https://s3.amazonaws.com
+PAPERCLIP_STORAGE_PROVIDER=s3
+PAPERCLIP_STORAGE_S3_BUCKET=your-bucket
+PAPERCLIP_STORAGE_S3_REGION=us-east-1
+PAPERCLIP_STORAGE_S3_ENDPOINT=https://s3.amazonaws.com
 # For cloudflare R2, backblaze, etc:
-# STORAGE_S3_ENDPOINT=https://your-endpoint.com
+# PAPERCLIP_STORAGE_S3_ENDPOINT=https://your-endpoint.com
 ```
 
 ### Custom Domain
