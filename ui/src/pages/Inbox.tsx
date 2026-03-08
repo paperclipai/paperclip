@@ -898,9 +898,9 @@ export function Inbox() {
                 return (
                   <div
                     key={issue.id}
-                    className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50"
+                    className="flex items-start gap-3 px-4 py-3 transition-colors hover:bg-accent/50"
                   >
-                    <span className="flex w-4 shrink-0 justify-center">
+                    <span className="flex h-5 w-4 shrink-0 items-center justify-center">
                       {(isUnread || isFading) && (
                         <button
                           type="button"
@@ -922,18 +922,20 @@ export function Inbox() {
                     </span>
                     <Link
                       to={`/issues/${issue.identifier ?? issue.id}`}
-                      className="flex flex-1 min-w-0 cursor-pointer items-center gap-3 no-underline text-inherit"
+                      className="flex flex-1 min-w-0 cursor-pointer flex-wrap items-center gap-x-3 gap-y-0.5 no-underline text-inherit sm:flex-nowrap"
                     >
                       <PriorityIcon priority={issue.priority} />
                       <StatusIcon status={issue.status} />
                       <span className="text-xs font-mono text-muted-foreground">
                         {issue.identifier ?? issue.id.slice(0, 8)}
                       </span>
-                      <span className="flex-1 truncate text-sm">{issue.title}</span>
-                      <span className="shrink-0 text-xs text-muted-foreground">
+                      <span className="ml-auto shrink-0 text-xs text-muted-foreground sm:order-last">
                         {issue.lastExternalCommentAt
                           ? `commented ${timeAgo(issue.lastExternalCommentAt)}`
                           : `updated ${timeAgo(issue.updatedAt)}`}
+                      </span>
+                      <span className="w-full line-clamp-2 text-sm sm:w-0 sm:flex-1 sm:line-clamp-none sm:truncate">
+                        {issue.title}
                       </span>
                     </Link>
                   </div>
