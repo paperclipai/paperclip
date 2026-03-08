@@ -24,7 +24,9 @@ import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { llmRoutes } from "./routes/llms.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
+import { backupRoutes } from "./routes/backups.js";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
+import type { BackupManager } from "./services/backups.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 
@@ -39,6 +41,7 @@ export async function createApp(
     bindHost: string;
     authReady: boolean;
     companyDeletionEnabled: boolean;
+    backupManager: BackupManager;
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
   },
@@ -90,6 +93,45 @@ export async function createApp(
 
   // Mount API routes
   const api = Router();
+  api.use((req, res, next) => {
+    if (!opts.backupManager.isRestoreRunning()) {
+      if (!opts.backupManager.isSnapshotBarrierActive()) {
+        next();
+        return;
+      }
+      if (
+        req.method === "GET" ||
+        req.method === "HEAD" ||
+        req.method === "OPTIONS" ||
+        req.path === "/health" ||
+        req.path === "/auth/get-session" ||
+        req.path.startsWith("/auth/") ||
+        req.path.startsWith("/backups")
+      ) {
+        next();
+        return;
+      }
+
+      res.status(503).json({
+        error: "Backup snapshot consistency window is active. Mutating API routes are temporarily paused until the snapshot finishes.",
+      });
+      return;
+    }
+
+    if (
+      req.path === "/health" ||
+      req.path === "/auth/get-session" ||
+      req.path.startsWith("/auth/") ||
+      req.path.startsWith("/backups")
+    ) {
+      next();
+      return;
+    }
+
+    res.status(503).json({
+      error: "Backup restore in progress. Most API routes are temporarily unavailable until it finishes.",
+    });
+  });
   api.use(boardMutationGuard());
   api.use(
     "/health",
@@ -112,6 +154,7 @@ export async function createApp(
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
   api.use(sidebarBadgeRoutes(db));
+  api.use(backupRoutes(opts.backupManager));
   api.use(
     accessRoutes(db, {
       deploymentMode: opts.deploymentMode,

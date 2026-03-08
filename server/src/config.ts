@@ -45,6 +45,18 @@ export interface Config {
   databaseBackupIntervalMinutes: number;
   databaseBackupRetentionDays: number;
   databaseBackupDir: string;
+  backupRequireSignedBackupsDefault: boolean;
+  backupSigningSecret: string | undefined;
+  backupSigningKeyId: string | undefined;
+  backupRemoteProviderDefault: "none" | "s3";
+  backupRemoteS3BucketDefault: string;
+  backupRemoteS3RegionDefault: string;
+  backupRemoteS3EndpointDefault: string | undefined;
+  backupRemoteS3PrefixDefault: string;
+  backupRemoteS3ForcePathStyleDefault: boolean;
+  backupRemoteS3DeleteOnDeleteDefault: boolean;
+  backupRemoteS3ServerSideEncryptionDefault: "none" | "AES256" | "aws:kms";
+  backupRemoteS3KmsKeyIdDefault: string | undefined;
   serveUi: boolean;
   uiDevMiddleware: boolean;
   secretsProvider: SecretProvider;
@@ -194,6 +206,25 @@ export function loadConfig(): Config {
       fileDatabaseBackup?.dir ??
       resolveDefaultBackupDir(),
   );
+  const backupRequireSignedBackupsDefault = process.env.PAPERCLIP_BACKUP_REQUIRE_SIGNED === "true";
+  const backupSigningSecret = process.env.PAPERCLIP_BACKUP_SIGNING_SECRET?.trim() || undefined;
+  const backupSigningKeyId = process.env.PAPERCLIP_BACKUP_SIGNING_KEY_ID?.trim() || undefined;
+  const backupRemoteProviderDefault =
+    process.env.PAPERCLIP_BACKUP_REMOTE_PROVIDER === "s3"
+      ? "s3" as const
+      : "none" as const;
+  const backupRemoteS3BucketDefault = process.env.PAPERCLIP_BACKUP_REMOTE_S3_BUCKET?.trim() ?? "";
+  const backupRemoteS3RegionDefault = process.env.PAPERCLIP_BACKUP_REMOTE_S3_REGION?.trim() ?? "us-east-1";
+  const backupRemoteS3EndpointDefault = process.env.PAPERCLIP_BACKUP_REMOTE_S3_ENDPOINT?.trim() || undefined;
+  const backupRemoteS3PrefixDefault = process.env.PAPERCLIP_BACKUP_REMOTE_S3_PREFIX?.trim() ?? "";
+  const backupRemoteS3ForcePathStyleDefault = process.env.PAPERCLIP_BACKUP_REMOTE_S3_FORCE_PATH_STYLE === "true";
+  const backupRemoteS3DeleteOnDeleteDefault = process.env.PAPERCLIP_BACKUP_REMOTE_S3_DELETE_ON_DELETE === "true";
+  const backupRemoteS3ServerSideEncryptionEnv = process.env.PAPERCLIP_BACKUP_REMOTE_S3_SSE?.trim();
+  const backupRemoteS3ServerSideEncryptionDefault =
+    backupRemoteS3ServerSideEncryptionEnv === "AES256" || backupRemoteS3ServerSideEncryptionEnv === "aws:kms"
+      ? backupRemoteS3ServerSideEncryptionEnv
+      : "none";
+  const backupRemoteS3KmsKeyIdDefault = process.env.PAPERCLIP_BACKUP_REMOTE_S3_KMS_KEY_ID?.trim() || undefined;
 
   return {
     deploymentMode,
@@ -213,6 +244,18 @@ export function loadConfig(): Config {
     databaseBackupIntervalMinutes,
     databaseBackupRetentionDays,
     databaseBackupDir,
+    backupRequireSignedBackupsDefault,
+    backupSigningSecret,
+    backupSigningKeyId,
+    backupRemoteProviderDefault,
+    backupRemoteS3BucketDefault,
+    backupRemoteS3RegionDefault,
+    backupRemoteS3EndpointDefault,
+    backupRemoteS3PrefixDefault,
+    backupRemoteS3ForcePathStyleDefault,
+    backupRemoteS3DeleteOnDeleteDefault,
+    backupRemoteS3ServerSideEncryptionDefault,
+    backupRemoteS3KmsKeyIdDefault,
     serveUi:
       process.env.SERVE_UI !== undefined
         ? process.env.SERVE_UI === "true"

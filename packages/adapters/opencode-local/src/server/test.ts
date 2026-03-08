@@ -12,6 +12,7 @@ import {
   ensurePathInEnv,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
+import path from "node:path";
 import { discoverOpenCodeModels, ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
 import { parseOpenCodeJsonl } from "./parse.js";
 
@@ -47,8 +48,19 @@ function normalizeEnv(input: unknown): Record<string, string> {
   return env;
 }
 
+function isNonEmpty(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function commandLooksLike(command: string, expected: string): boolean {
+  const base = path.basename(command).toLowerCase();
+  return base === expected || base === `${expected}.cmd` || base === `${expected}.exe`;
+}
+
 const OPENCODE_AUTH_REQUIRED_RE =
   /(?:auth(?:entication)?\s+required|api\s*key|invalid\s*api\s*key|not\s+logged\s+in|opencode\s+auth\s+login|free\s+usage\s+exceeded)/i;
+const OPENCODE_MODEL_UNAVAILABLE_RE =
+  /(?:providermodelnotfounderror|model\s+unavailable|model\s+not\s+found|unknown\s+model)/i;
 
 export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
@@ -59,7 +71,7 @@ export async function testEnvironment(
   const cwd = asString(config.cwd, process.cwd());
 
   try {
-    await ensureAbsoluteDirectory(cwd, { createIfMissing: false });
+    await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
     checks.push({
       code: "opencode_cwd_valid",
       level: "info",
@@ -80,6 +92,32 @@ export async function testEnvironment(
     if (typeof value === "string") env[key] = value;
   }
   const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...env }));
+
+  const configOpenAiKey = env.OPENAI_API_KEY;
+  const hostOpenAiKey = process.env.OPENAI_API_KEY;
+  if (typeof configOpenAiKey === "string" && configOpenAiKey.trim().length === 0) {
+    checks.push({
+      code: "opencode_openai_api_key_missing",
+      level: "warn",
+      message: "OPENAI_API_KEY override is present but empty, so host credentials will be ignored.",
+      hint: "Remove the empty OPENAI_API_KEY override or set a real key value.",
+    });
+  } else if (isNonEmpty(configOpenAiKey) || isNonEmpty(hostOpenAiKey)) {
+    const source = isNonEmpty(configOpenAiKey) ? "adapter config env" : "server environment";
+    checks.push({
+      code: "opencode_openai_api_key_present",
+      level: "info",
+      message: "OPENAI_API_KEY is set for OpenCode provider authentication.",
+      detail: `Detected in ${source}.`,
+    });
+  } else {
+    checks.push({
+      code: "opencode_openai_api_key_missing",
+      level: "warn",
+      message: "OPENAI_API_KEY is not set. OpenCode runs may fail until provider authentication is configured.",
+      hint: "Set OPENAI_API_KEY in adapter env or shell environment, or log in with the OpenCode provider you plan to use.",
+    });
+  }
 
   const cwdInvalid = checks.some((check) => check.code === "opencode_cwd_invalid");
   if (cwdInvalid) {
@@ -112,6 +150,22 @@ export async function testEnvironment(
 
   let modelValidationPassed = false;
   if (canRunProbe) {
+    if (!commandLooksLike(command, "opencode")) {
+      checks.push({
+        code: "opencode_probe_skipped_custom_command",
+        level: "info",
+        message: "Skipped OpenCode model discovery and hello probe because command is not `opencode`.",
+        detail: command,
+        hint: "Use the `opencode` CLI command to run the automatic provider and model probe.",
+      });
+      return {
+        adapterType: ctx.adapterType,
+        status: summarizeStatus(checks),
+        checks,
+        testedAt: new Date().toISOString(),
+      };
+    }
+
     try {
       const discovered = await discoverOpenCodeModels({ command, cwd, env: runtimeEnv });
       if (discovered.length > 0) {
@@ -233,6 +287,14 @@ export async function testEnvironment(
           message: "OpenCode is installed, but provider authentication is not ready.",
           ...(detail ? { detail } : {}),
           hint: "Run `opencode auth login` or set provider credentials, then retry the probe.",
+        });
+      } else if (OPENCODE_MODEL_UNAVAILABLE_RE.test(authEvidence)) {
+        checks.push({
+          code: "opencode_hello_probe_model_unavailable",
+          level: "warn",
+          message: "OpenCode is installed, but the configured model is unavailable.",
+          ...(detail ? { detail } : {}),
+          hint: "Run `opencode models`, pick an available provider/model ID, and retry the probe.",
         });
       } else {
         checks.push({

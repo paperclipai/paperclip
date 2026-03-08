@@ -23,11 +23,11 @@ export function parseOpenCodeJsonl(stdout: string) {
   let sessionId: string | null = null;
   const messages: string[] = [];
   const errors: string[] = [];
+  let totalCostUsd = 0;
   const usage = {
     inputTokens: 0,
     cachedInputTokens: 0,
     outputTokens: 0,
-    costUsd: 0,
   };
 
   for (const rawLine of stdout.split(/\r?\n/)) {
@@ -56,7 +56,7 @@ export function parseOpenCodeJsonl(stdout: string) {
       usage.inputTokens += asNumber(tokens.input, 0);
       usage.cachedInputTokens += asNumber(cache.read, 0);
       usage.outputTokens += asNumber(tokens.output, 0) + asNumber(tokens.reasoning, 0);
-      usage.costUsd += asNumber(part.cost, 0);
+      totalCostUsd += asNumber(part.cost, 0);
       continue;
     }
 
@@ -81,6 +81,7 @@ export function parseOpenCodeJsonl(stdout: string) {
     sessionId,
     summary: messages.join("\n\n").trim(),
     usage,
+    costUsd: totalCostUsd > 0 ? totalCostUsd : null,
     errorMessage: errors.length > 0 ? errors.join("\n") : null,
   };
 }
@@ -92,7 +93,7 @@ export function isOpenCodeUnknownSessionError(stdout: string, stderr: string): b
     .filter(Boolean)
     .join("\n");
 
-  return /unknown\s+session|session\s+.*\s+not\s+found|resource\s+not\s+found:.*[\\/]session[\\/].*\.json|notfounderror|no session/i.test(
+  return /unknown\s+session|session(?:\s+id)?\s+not\s+found|session\s+.*not\s+found|resource\s+not\s+found:.*[\\/]session[\\/].*\.json|notfounderror|no session/i.test(
     haystack,
   );
 }

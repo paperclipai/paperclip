@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import postgres from "postgres";
 
@@ -15,6 +15,18 @@ export type RunDatabaseBackupResult = {
   backupFile: string;
   sizeBytes: number;
   prunedCount: number;
+};
+
+export type RestoreDatabaseBackupOptions = {
+  connectionString: string;
+  backupFile: string;
+  dropExistingSchema?: boolean;
+  connectTimeoutSeconds?: number;
+};
+
+export type RestoreDatabaseBackupResult = {
+  backupFile: string;
+  sizeBytes: number;
 };
 
 function timestamp(date: Date = new Date()): string {
@@ -45,6 +57,104 @@ function formatBackupSize(sizeBytes: number): string {
   if (sizeBytes < 1024) return `${sizeBytes}B`;
   if (sizeBytes < 1024 * 1024) return `${(sizeBytes / 1024).toFixed(1)}K`;
   return `${(sizeBytes / (1024 * 1024)).toFixed(1)}M`;
+}
+
+function quoteIdentifier(value: string): string {
+  return `"${value.replace(/"/g, "\"\"")}"`;
+}
+
+function extractReferencedSequenceNames(content: string): string[] {
+  const names = new Set<string>();
+  for (const match of content.matchAll(/nextval\('([^']+)'::regclass\)/g)) {
+    const rawName = match[1]?.trim();
+    if (!rawName) continue;
+
+    let normalized = rawName
+      .replace(/^"public"\./i, "")
+      .replace(/^public\./i, "");
+    if (normalized.startsWith("\"") && normalized.endsWith("\"")) {
+      normalized = normalized.slice(1, -1).replace(/""/g, "\"");
+    }
+    if (!normalized || normalized.includes(".")) continue;
+    names.add(normalized);
+  }
+  return Array.from(names).sort((left, right) => left.localeCompare(right));
+}
+
+function reorderDeferredStatements(content: string): string {
+  const lines = content.split("\n");
+  const main: string[] = [];
+  const foreignKeys: string[] = [];
+  const uniqueConstraints: string[] = [];
+  const indexes: string[] = [];
+  const tail: string[] = [];
+
+  let section: "main" | "foreignKeys" | "uniqueConstraints" | "indexes" | "tail" = "main";
+  for (const line of lines) {
+    if (line === "-- Foreign keys") {
+      section = "foreignKeys";
+      foreignKeys.push(line);
+      continue;
+    }
+    if (line === "-- Unique constraints") {
+      section = "uniqueConstraints";
+      uniqueConstraints.push(line);
+      continue;
+    }
+    if (line === "-- Indexes") {
+      section = "indexes";
+      indexes.push(line);
+      continue;
+    }
+    if (line === "-- Sequence values") {
+      section = "tail";
+      tail.push(line);
+      continue;
+    }
+    if (line.startsWith("-- Data for:") && section !== "main" && section !== "tail") {
+      section = "main";
+    }
+    if (line === "COMMIT;" && section !== "tail") {
+      section = "tail";
+      tail.push(line);
+      continue;
+    }
+
+    switch (section) {
+      case "main":
+        main.push(line);
+        break;
+      case "foreignKeys":
+        foreignKeys.push(line);
+        break;
+      case "uniqueConstraints":
+        uniqueConstraints.push(line);
+        break;
+      case "indexes":
+        indexes.push(line);
+        break;
+      case "tail":
+        tail.push(line);
+        break;
+    }
+  }
+
+  const ordered = [...main];
+  for (const block of [foreignKeys, uniqueConstraints, indexes]) {
+    if (block.length === 0) continue;
+    if (ordered.length > 0 && ordered[ordered.length - 1] !== "") {
+      ordered.push("");
+    }
+    ordered.push(...block);
+  }
+  if (tail.length > 0) {
+    if (ordered.length > 0 && ordered[ordered.length - 1] !== "") {
+      ordered.push("");
+    }
+    ordered.push(...tail);
+  }
+
+  return ordered.join("\n");
 }
 
 export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise<RunDatabaseBackupResult> {
@@ -81,6 +191,38 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       emit(`CREATE TYPE "public"."${e.typname}" AS ENUM (${labels});`);
     }
     if (enums.length > 0) emit("");
+
+    const sequenceDefinitions = await sql<{
+      sequencename: string;
+      start_value: string;
+      min_value: string;
+      max_value: string;
+      increment_by: string;
+      cache_size: string;
+      cycle: boolean;
+    }[]>`
+      SELECT
+        sequencename,
+        start_value::text,
+        min_value::text,
+        max_value::text,
+        increment_by::text,
+        cache_size::text,
+        cycle
+      FROM pg_sequences
+      WHERE schemaname = 'public'
+      ORDER BY sequencename
+    `;
+
+    if (sequenceDefinitions.length > 0) {
+      emit("-- Sequences");
+      for (const seq of sequenceDefinitions) {
+        emit(
+          `CREATE SEQUENCE IF NOT EXISTS "public".${quoteIdentifier(seq.sequencename)} START WITH ${seq.start_value} INCREMENT BY ${seq.increment_by} MINVALUE ${seq.min_value} MAXVALUE ${seq.max_value} CACHE ${seq.cache_size} ${seq.cycle ? "CYCLE" : "NO CYCLE"};`,
+        );
+      }
+      emit("");
+    }
 
     // Get tables in dependency order (referenced tables first)
     const tables = await sql<{ tablename: string }[]>`
@@ -192,16 +334,17 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       ORDER BY src.relname, c.conname
     `;
 
+    const foreignKeyLines: string[] = [];
     if (fks.length > 0) {
-      emit("-- Foreign keys");
+      foreignKeyLines.push("-- Foreign keys");
       for (const fk of fks) {
         const srcCols = fk.source_columns.map((c) => `"${c}"`).join(", ");
         const tgtCols = fk.target_columns.map((c) => `"${c}"`).join(", ");
-        emit(
+        foreignKeyLines.push(
           `ALTER TABLE "${fk.source_table}" ADD CONSTRAINT "${fk.constraint_name}" FOREIGN KEY (${srcCols}) REFERENCES "${fk.target_table}" (${tgtCols}) ON UPDATE ${fk.update_rule} ON DELETE ${fk.delete_rule};`,
         );
       }
-      emit("");
+      foreignKeyLines.push("");
     }
 
     // Unique constraints
@@ -222,13 +365,14 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       ORDER BY t.relname, c.conname
     `;
 
+    const uniqueConstraintLines: string[] = [];
     if (uniques.length > 0) {
-      emit("-- Unique constraints");
+      uniqueConstraintLines.push("-- Unique constraints");
       for (const u of uniques) {
         const cols = u.column_names.map((c) => `"${c}"`).join(", ");
-        emit(`ALTER TABLE "${u.tablename}" ADD CONSTRAINT "${u.constraint_name}" UNIQUE (${cols});`);
+        uniqueConstraintLines.push(`ALTER TABLE "${u.tablename}" ADD CONSTRAINT "${u.constraint_name}" UNIQUE (${cols});`);
       }
-      emit("");
+      uniqueConstraintLines.push("");
     }
 
     // Indexes (non-primary, non-unique-constraint)
@@ -243,12 +387,13 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       ORDER BY tablename, indexname
     `;
 
+    const indexLines: string[] = [];
     if (indexes.length > 0) {
-      emit("-- Indexes");
+      indexLines.push("-- Indexes");
       for (const idx of indexes) {
-        emit(`${idx.indexdef};`);
+        indexLines.push(`${idx.indexdef};`);
       }
-      emit("");
+      indexLines.push("");
     }
 
     // Dump data for each table
@@ -284,17 +429,21 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       emit("");
     }
 
+    for (const line of foreignKeyLines) emit(line);
+    for (const line of uniqueConstraintLines) emit(line);
+    for (const line of indexLines) emit(line);
+
     // Sequence values
-    const sequences = await sql<{ sequence_name: string }[]>`
+    const sequenceValues = await sql<{ sequence_name: string }[]>`
       SELECT sequence_name
       FROM information_schema.sequences
       WHERE sequence_schema = 'public'
       ORDER BY sequence_name
     `;
 
-    if (sequences.length > 0) {
+    if (sequenceValues.length > 0) {
       emit("-- Sequence values");
-      for (const seq of sequences) {
+      for (const seq of sequenceValues) {
         const val = await sql<{ last_value: string }[]>`
           SELECT last_value::text FROM ${sql(seq.sequence_name)}
         `;
@@ -320,6 +469,34 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       backupFile,
       sizeBytes,
       prunedCount,
+    };
+  } finally {
+    await sql.end();
+  }
+}
+
+export async function restoreDatabaseBackup(
+  opts: RestoreDatabaseBackupOptions,
+): Promise<RestoreDatabaseBackupResult> {
+  const connectTimeout = Math.max(1, Math.trunc(opts.connectTimeoutSeconds ?? 5));
+  const sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
+
+  try {
+    const content = await readFile(opts.backupFile, "utf8");
+    const sizeBytes = Buffer.byteLength(content, "utf8");
+
+    await sql`SELECT 1`;
+    if (opts.dropExistingSchema !== false) {
+      await sql.unsafe("DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;");
+    }
+    for (const sequenceName of extractReferencedSequenceNames(content)) {
+      await sql.unsafe(`CREATE SEQUENCE IF NOT EXISTS "public".${quoteIdentifier(sequenceName)};`);
+    }
+    await sql.unsafe(reorderDeferredStatements(content));
+
+    return {
+      backupFile: opts.backupFile,
+      sizeBytes,
     };
   } finally {
     await sql.end();

@@ -12,8 +12,6 @@ import {
   inspectMigrations,
   applyPendingMigrations,
   reconcilePendingMigrationHistory,
-  formatDatabaseBackupResult,
-  runDatabaseBackup,
   authUsers,
   companies,
   companyMemberships,
@@ -24,7 +22,7 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
-import { heartbeatService } from "./services/index.js";
+import { createBackupManager, heartbeatService } from "./services/index.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
@@ -451,6 +449,11 @@ if (config.deploymentMode === "authenticated") {
 
 const uiMode = config.uiDevMiddleware ? "vite-dev" : config.serveUi ? "static" : "none";
 const storageService = createStorageServiceFromConfig(config);
+const backupManager = createBackupManager({
+  connectionString: activeDatabaseConnectionString,
+  config,
+});
+const backupOverview = await backupManager.getOverview();
 const app = await createApp(db as any, {
   uiMode,
   storageService,
@@ -460,6 +463,7 @@ const app = await createApp(db as any, {
   bindHost: config.host,
   authReady,
   companyDeletionEnabled: config.companyDeletionEnabled,
+  backupManager,
   betterAuthHandler,
   resolveSession,
 });
@@ -493,6 +497,9 @@ if (config.heartbeatSchedulerEnabled) {
   });
 
   setInterval(() => {
+    if (backupManager.isRestoreRunning() || backupManager.isSnapshotBarrierActive()) {
+      return;
+    }
     void heartbeat
       .tickTimers(new Date())
       .then((result) => {
@@ -513,53 +520,21 @@ if (config.heartbeatSchedulerEnabled) {
   }, config.heartbeatSchedulerIntervalMs);
 }
 
-if (config.databaseBackupEnabled) {
-  const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
-  let backupInFlight = false;
-
-  const runScheduledBackup = async () => {
-    if (backupInFlight) {
-      logger.warn("Skipping scheduled database backup because a previous backup is still running");
-      return;
-    }
-
-    backupInFlight = true;
-    try {
-      const result = await runDatabaseBackup({
-        connectionString: activeDatabaseConnectionString,
-        backupDir: config.databaseBackupDir,
-        retentionDays: config.databaseBackupRetentionDays,
-        filenamePrefix: "paperclip",
-      });
-      logger.info(
-        {
-          backupFile: result.backupFile,
-          sizeBytes: result.sizeBytes,
-          prunedCount: result.prunedCount,
-          backupDir: config.databaseBackupDir,
-          retentionDays: config.databaseBackupRetentionDays,
-        },
-        `Automatic database backup complete: ${formatDatabaseBackupResult(result)}`,
-      );
-    } catch (err) {
-      logger.error({ err, backupDir: config.databaseBackupDir }, "Automatic database backup failed");
-    } finally {
-      backupInFlight = false;
-    }
-  };
-
-  logger.info(
-    {
-      intervalMinutes: config.databaseBackupIntervalMinutes,
-      retentionDays: config.databaseBackupRetentionDays,
-      backupDir: config.databaseBackupDir,
-    },
-    "Automatic database backups enabled",
-  );
-  setInterval(() => {
-    void runScheduledBackup();
-  }, backupIntervalMs);
-}
+logger.info(
+  {
+    enabled: backupOverview.settings.enabled,
+    intervalMinutes: backupOverview.settings.intervalMinutes,
+    retentionDays: backupOverview.settings.retentionDays,
+    backupDir: backupOverview.settings.directory,
+    components: backupOverview.settings.components,
+  },
+  "Backup manager ready",
+);
+setInterval(() => {
+  void backupManager.tick().catch((err) => {
+    logger.error({ err }, "backup scheduler tick failed");
+  });
+}, 30_000);
 
 server.listen(listenPort, config.host, () => {
   logger.info(`Server listening on ${config.host}:${listenPort}`);
@@ -587,10 +562,10 @@ server.listen(listenPort, config.host, () => {
     migrationSummary,
     heartbeatSchedulerEnabled: config.heartbeatSchedulerEnabled,
     heartbeatSchedulerIntervalMs: config.heartbeatSchedulerIntervalMs,
-    databaseBackupEnabled: config.databaseBackupEnabled,
-    databaseBackupIntervalMinutes: config.databaseBackupIntervalMinutes,
-    databaseBackupRetentionDays: config.databaseBackupRetentionDays,
-    databaseBackupDir: config.databaseBackupDir,
+    databaseBackupEnabled: backupOverview.settings.enabled,
+    databaseBackupIntervalMinutes: backupOverview.settings.intervalMinutes,
+    databaseBackupRetentionDays: backupOverview.settings.retentionDays,
+    databaseBackupDir: backupOverview.settings.directory,
   });
 
   const boardClaimUrl = getBoardClaimWarningUrl(config.host, listenPort);

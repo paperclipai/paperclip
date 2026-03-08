@@ -143,14 +143,69 @@ pnpm dev
 
 If you set `DATABASE_URL`, the server will use that instead of embedded PostgreSQL.
 
-## Automatic DB Backups
+## Backups Manager
 
-Paperclip can run automatic DB backups on a timer. Defaults:
+Paperclip includes an instance-level backup manager. Each snapshot is written as a bundle under the backup directory with a `manifest.json` plus the selected components.
+
+Default snapshot contents:
+
+- database SQL snapshot
+- local storage files (`local_disk` only)
+- instance `config.json`
+
+Optional snapshot contents:
+
+- instance `.env`
+- local secrets master key (`local_encrypted` only)
+- agent workspaces
+
+Defaults:
 
 - enabled
 - every 60 minutes
 - retain 30 days
 - backup dir: `~/.paperclip/instances/default/data/backups`
+- signed-backup enforcement: off
+- remote replication: off
+- `.env` and secrets key export: off by default because they are highly sensitive
+
+UI:
+
+- open the `Backups` tab in the board UI to run a snapshot manually
+- inspect backup history and per-component status from the manifest data
+- preview restore actions, destinations, and integrity verification before applying a snapshot
+- download any completed snapshot bundle as a `tar.gz`
+- import a downloaded `tar.gz` bundle on another instance from the same `Backups` tab
+- archive a snapshot out of active history without deleting the bundle
+- unarchive a previously archived snapshot back into active history
+- delete a snapshot bundle from disk when it is no longer needed
+- restore the current instance from a successful snapshot bundle
+- update scheduler/retention/component settings without leaving the app
+
+Restore notes:
+
+- imported bundles are tagged in history and retention is counted from the local import time
+- new snapshots record SHA-256 integrity hashes for each included component plus the whole bundle
+- new snapshots can also record an HMAC manifest signature when `PAPERCLIP_BACKUP_SIGNING_SECRET` is configured
+- the UI can require verified signed backups before import or restore
+- restore preview shows whether the current bundle still matches its recorded integrity
+- restore preview also reports manifest signature status and whether the current instance policy allows restore
+- downloaded bundles are portable; import them first on the destination machine, then restore from the imported history entry
+- restore runs a preflight validation first; if it fails, no instance data is modified
+- restore is destructive and replaces the current instance state
+- most `/api` routes return `503` while restore is running
+- mutating `/api` routes also pause briefly while a new snapshot is being captured, so file and DB state stay aligned
+- restore creates a rollback checkpoint before applying changes
+- successful restores and successful rollbacks delete their temporary checkpoint bundle automatically
+- failed rollback checkpoints stay on disk for manual recovery and are also subject to retention cleanup
+- if config, `.env`, or secrets key files are restored, restart the server to apply them fully
+
+Audit and remote-copy notes:
+
+- privileged backup actions append to `~/.paperclip/instances/default/logs/backup-audit.jsonl`
+- the audit log is append-only JSONL with chained hashes (`previousHash` -> `hash`)
+- S3-compatible remote replication is supported from the `Backups` settings UI
+- deleting a snapshot can also delete its remote copy when `deleteFromRemoteOnDelete` is enabled
 
 Configure these in:
 
@@ -158,7 +213,7 @@ Configure these in:
 pnpm paperclipai configure --section database
 ```
 
-Run a one-off backup manually:
+Run a one-off database-only backup manually from the CLI:
 
 ```sh
 pnpm paperclipai db:backup
@@ -172,6 +227,18 @@ Environment overrides:
 - `PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES=<minutes>`
 - `PAPERCLIP_DB_BACKUP_RETENTION_DAYS=<days>`
 - `PAPERCLIP_DB_BACKUP_DIR=/absolute/or/~/path`
+- `PAPERCLIP_BACKUP_REQUIRE_SIGNED=true|false`
+- `PAPERCLIP_BACKUP_SIGNING_SECRET=<shared-secret-for-hmac-signatures>`
+- `PAPERCLIP_BACKUP_SIGNING_KEY_ID=<label-shown-in-ui-and-manifest>`
+- `PAPERCLIP_BACKUP_REMOTE_PROVIDER=none|s3`
+- `PAPERCLIP_BACKUP_REMOTE_S3_BUCKET=<bucket>`
+- `PAPERCLIP_BACKUP_REMOTE_S3_REGION=<region>`
+- `PAPERCLIP_BACKUP_REMOTE_S3_ENDPOINT=http://host:port`
+- `PAPERCLIP_BACKUP_REMOTE_S3_PREFIX=<optional/key/prefix>`
+- `PAPERCLIP_BACKUP_REMOTE_S3_FORCE_PATH_STYLE=true|false`
+- `PAPERCLIP_BACKUP_REMOTE_S3_DELETE_ON_DELETE=true|false`
+- `PAPERCLIP_BACKUP_REMOTE_S3_SSE=none|AES256|aws:kms`
+- `PAPERCLIP_BACKUP_REMOTE_S3_KMS_KEY_ID=<kms-key-id>`
 
 ## Secrets in Dev
 
