@@ -37,6 +37,7 @@ RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/cod
 RUN groupadd -r paperclip && useradd -r -g paperclip -m -d /paperclip -s /bin/bash paperclip
 RUN mkdir -p /paperclip/instances/default && chown -R paperclip:paperclip /paperclip
 RUN mkdir -p /app/data && chown paperclip:paperclip /app/data
+RUN chmod 755 /app/entrypoint.sh
 
 ENV NODE_ENV=production \
   HOME=/paperclip \
@@ -48,8 +49,6 @@ ENV NODE_ENV=production \
   PAPERCLIP_CONFIG=/paperclip/instances/default/config.json \
   PAPERCLIP_DEPLOYMENT_MODE=authenticated \
   PAPERCLIP_DEPLOYMENT_EXPOSURE=private
-
-COPY entrypoint.sh /app/entrypoint.sh
 
 VOLUME ["/paperclip"]
 EXPOSE 3100
