@@ -1,5 +1,5 @@
 {
-  "id": "beafd21e-2453-4df4-9148-630e9dd62532",
+  "id": "8ed8ac47-0b3c-4473-ae02-7ee0e5b8f2fc",
   "prevId": "10b08f4e-4837-488c-a3ed-0d66a97d7257",
   "version": "7",
   "dialect": "postgresql",
@@ -4095,66 +4095,6 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "issue_comments_company_issue_created_at_idx": {
-          "name": "issue_comments_company_issue_created_at_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "issue_comments_company_author_issue_created_at_idx": {
-          "name": "issue_comments_company_author_issue_created_at_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "author_user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
       "foreignKeys": {
@@ -4476,6 +4416,25 @@
           "primaryKey": false,
           "notNull": false
         },
+        "backend_type": {
+          "name": "backend_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'paperclip'"
+        },
+        "external_id": {
+          "name": "external_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "external_metadata": {
+          "name": "external_metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "started_at": {
           "name": "started_at",
           "type": "timestamp with time zone",
@@ -4644,6 +4603,36 @@
             }
           ],
           "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "issues_backend_type_idx": {
+          "name": "issues_backend_type_idx",
+          "columns": [
+            {
+              "expression": "backend_type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "issues_external_id_idx": {
+          "name": "issues_external_id_idx",
+          "columns": [
+            {
+              "expression": "external_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
           "concurrently": false,
           "method": "btree",
           "with": {}
