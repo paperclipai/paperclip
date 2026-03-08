@@ -24,6 +24,8 @@ import {
   describeClaudeFailure,
   detectClaudeLoginRequired,
   isClaudeMaxTurnsResult,
+  isClaudeRateLimitResult,
+  hasRateLimitEvent,
   isClaudeUnknownSessionError,
 } from "./parse.js";
 
@@ -468,12 +470,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
 
     if (!parsed) {
+      const unparsedErrorCode = (() => {
+        if (loginMeta.requiresLogin) return "claude_auth_required";
+        if (hasRateLimitEvent(proc.stdout)) return "rate_limited";
+        if (proc.signal != null && (proc.exitCode ?? 0) !== 0) return "process_killed";
+        return null;
+      })();
       return {
         exitCode: proc.exitCode,
         signal: proc.signal,
         timedOut: false,
         errorMessage: parseFallbackErrorMessage(proc),
-        errorCode: loginMeta.requiresLogin ? "claude_auth_required" : null,
+        errorCode: unparsedErrorCode,
         errorMeta,
         resultJson: {
           stdout: proc.stdout,
@@ -507,6 +515,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       } as Record<string, unknown>)
       : null;
     const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
+    const isRateLimited = isClaudeRateLimitResult(parsed) || hasRateLimitEvent(proc.stdout);
+    const isMaxTurns = clearSessionForMaxTurns; // reuse the already-computed check
+    const isProcessKilled = proc.signal != null && (proc.exitCode ?? 0) !== 0;
+
+    const classifiedErrorCode = (() => {
+      if (loginMeta.requiresLogin) return "claude_auth_required";
+      if ((proc.exitCode ?? 0) === 0 && !isRateLimited) return null;
+      if (isRateLimited) return "rate_limited";
+      if (isMaxTurns) return "max_turns_exceeded";
+      if (isProcessKilled) return "process_killed";
+      return null;
+    })();
 
     return {
       exitCode: proc.exitCode,
@@ -516,7 +536,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (proc.exitCode ?? 0) === 0
           ? null
           : describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`,
-      errorCode: loginMeta.requiresLogin ? "claude_auth_required" : null,
+      errorCode: classifiedErrorCode,
       errorMeta,
       usage,
       sessionId: resolvedSessionId,
