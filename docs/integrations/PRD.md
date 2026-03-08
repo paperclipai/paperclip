@@ -5,6 +5,7 @@
 **Created:** 2026-03-08
 **Feature Branch:** `feat/openclaw-integration`
 **Repository:** `~/repos/paperclip/`
+**GitHub:** https://github.com/montelai/paperclip/tree/feat/openclaw-integration
 
 ---
 
