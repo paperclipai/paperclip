@@ -40,7 +40,7 @@ afterEach(() => {
 describe("notifyHireApproved", () => {
   it("writes success activity when adapter hook returns ok", async () => {
     vi.mocked(findServerAdapter).mockReturnValue({
-      type: "openclaw",
+      type: "openclaw_gateway",
       onHireApproved: vi.fn().mockResolvedValue({ ok: true }),
     } as any);
 
@@ -48,7 +48,7 @@ describe("notifyHireApproved", () => {
       id: "a1",
       companyId: "c1",
       name: "OpenClaw Agent",
-      adapterType: "openclaw",
+      adapterType: "openclaw_gateway",
     });
 
     await expect(
@@ -65,7 +65,7 @@ describe("notifyHireApproved", () => {
       expect.objectContaining({
         action: "hire_hook.succeeded",
         entityId: "a1",
-        details: expect.objectContaining({ source: "approval", sourceId: "ap1", adapterType: "openclaw" }),
+        details: expect.objectContaining({ source: "approval", sourceId: "ap1", adapterType: "openclaw_gateway" }),
       }),
     );
   });
@@ -116,7 +116,7 @@ describe("notifyHireApproved", () => {
 
   it("logs failed result when adapter onHireApproved returns ok=false", async () => {
     vi.mocked(findServerAdapter).mockReturnValue({
-      type: "openclaw",
+      type: "openclaw_gateway",
       onHireApproved: vi.fn().mockResolvedValue({ ok: false, error: "HTTP 500", detail: { status: 500 } }),
     } as any);
 
@@ -124,7 +124,7 @@ describe("notifyHireApproved", () => {
       id: "a1",
       companyId: "c1",
       name: "OpenClaw Agent",
-      adapterType: "openclaw",
+      adapterType: "openclaw_gateway",
     });
 
     await expect(
@@ -148,7 +148,7 @@ describe("notifyHireApproved", () => {
 
   it("does not throw when adapter onHireApproved throws (non-fatal)", async () => {
     vi.mocked(findServerAdapter).mockReturnValue({
-      type: "openclaw",
+      type: "openclaw_gateway",
       onHireApproved: vi.fn().mockRejectedValue(new Error("Network error")),
     } as any);
 
@@ -156,7 +156,7 @@ describe("notifyHireApproved", () => {
       id: "a1",
       companyId: "c1",
       name: "OpenClaw Agent",
-      adapterType: "openclaw",
+      adapterType: "openclaw_gateway",
     });
 
     await expect(

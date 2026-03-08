@@ -119,12 +119,14 @@ export {
 
 export {
   createCompanyInviteSchema,
+  createOpenClawInvitePromptSchema,
   acceptInviteSchema,
   listJoinRequestsQuerySchema,
   claimJoinRequestApiKeySchema,
   updateMemberPermissionsSchema,
   updateUserCompanyAccessSchema,
   type CreateCompanyInvite,
+  type CreateOpenClawInvitePrompt,
   type AcceptInvite,
   type ListJoinRequestsQuery,
   type ClaimJoinRequestApiKey,

@@ -13,7 +13,7 @@ Use when:
 - You want OpenCode session resume across heartbeats via --session
 
 Don't use when:
-- You need webhook-style external invocation (use openclaw or http)
+- You need webhook-style external invocation (use openclaw_gateway or http)
 - You only need one-shot shell commands (use process)
 - OpenCode CLI is not installed on the machine
 

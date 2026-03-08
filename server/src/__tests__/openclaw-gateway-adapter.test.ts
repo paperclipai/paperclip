@@ -167,6 +167,208 @@ async function createMockGatewayServer() {
   };
 }
 
+async function createMockGatewayServerWithPairing() {
+  const server = createServer();
+  const wss = new WebSocketServer({ server });
+
+  let agentPayload: Record<string, unknown> | null = null;
+  let approved = false;
+  let pendingRequestId = "req-1";
+  let lastSeenDeviceId: string | null = null;
+
+  wss.on("connection", (socket) => {
+    socket.send(
+      JSON.stringify({
+        type: "event",
+        event: "connect.challenge",
+        payload: { nonce: "nonce-123" },
+      }),
+    );
+
+    socket.on("message", (raw) => {
+      const text = Buffer.isBuffer(raw) ? raw.toString("utf8") : String(raw);
+      const frame = JSON.parse(text) as {
+        type: string;
+        id: string;
+        method: string;
+        params?: Record<string, unknown>;
+      };
+
+      if (frame.type !== "req") return;
+
+      if (frame.method === "connect") {
+        const device = frame.params?.device as Record<string, unknown> | undefined;
+        const deviceId = typeof device?.id === "string" ? device.id : null;
+        if (deviceId) {
+          lastSeenDeviceId = deviceId;
+        }
+
+        if (deviceId && !approved) {
+          socket.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: false,
+              error: {
+                code: "NOT_PAIRED",
+                message: "pairing required",
+                details: {
+                  code: "PAIRING_REQUIRED",
+                  requestId: pendingRequestId,
+                  reason: "not-paired",
+                },
+              },
+            }),
+          );
+          socket.close(1008, "pairing required");
+          return;
+        }
+
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: {
+              type: "hello-ok",
+              protocol: 3,
+              server: { version: "test", connId: "conn-1" },
+              features: {
+                methods: ["connect", "agent", "agent.wait", "device.pair.list", "device.pair.approve"],
+                events: ["agent"],
+              },
+              snapshot: { version: 1, ts: Date.now() },
+              policy: { maxPayload: 1_000_000, maxBufferedBytes: 1_000_000, tickIntervalMs: 30_000 },
+            },
+          }),
+        );
+        return;
+      }
+
+      if (frame.method === "device.pair.list") {
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: {
+              pending: approved
+                ? []
+                : [
+                    {
+                      requestId: pendingRequestId,
+                      deviceId: lastSeenDeviceId ?? "device-unknown",
+                    },
+                  ],
+              paired: approved && lastSeenDeviceId ? [{ deviceId: lastSeenDeviceId }] : [],
+            },
+          }),
+        );
+        return;
+      }
+
+      if (frame.method === "device.pair.approve") {
+        const requestId = frame.params?.requestId;
+        if (requestId !== pendingRequestId) {
+          socket.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: false,
+              error: { code: "INVALID_REQUEST", message: "unknown requestId" },
+            }),
+          );
+          return;
+        }
+        approved = true;
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: {
+              requestId: pendingRequestId,
+              device: {
+                deviceId: lastSeenDeviceId ?? "device-unknown",
+              },
+            },
+          }),
+        );
+        return;
+      }
+
+      if (frame.method === "agent") {
+        agentPayload = frame.params ?? null;
+        const runId =
+          typeof frame.params?.idempotencyKey === "string"
+            ? frame.params.idempotencyKey
+            : "run-123";
+
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: {
+              runId,
+              status: "accepted",
+              acceptedAt: Date.now(),
+            },
+          }),
+        );
+        socket.send(
+          JSON.stringify({
+            type: "event",
+            event: "agent",
+            payload: {
+              runId,
+              seq: 1,
+              stream: "assistant",
+              ts: Date.now(),
+              data: { delta: "ok" },
+            },
+          }),
+        );
+        return;
+      }
+
+      if (frame.method === "agent.wait") {
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: {
+              runId: frame.params?.runId,
+              status: "ok",
+              startedAt: 1,
+              endedAt: 2,
+            },
+          }),
+        );
+      }
+    });
+  });
+
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("Failed to resolve test server address");
+  }
+
+  return {
+    url: `ws://127.0.0.1:${address.port}`,
+    getAgentPayload: () => agentPayload,
+    close: async () => {
+      await new Promise<void>((resolve) => wss.close(() => resolve()));
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
+}
+
 afterEach(() => {
   // no global mocks
 });
@@ -222,7 +424,7 @@ describe("openclaw gateway adapter execute", () => {
       const payload = gateway.getAgentPayload();
       expect(payload).toBeTruthy();
       expect(payload?.idempotencyKey).toBe("run-123");
-      expect(payload?.sessionKey).toBe("paperclip");
+      expect(payload?.sessionKey).toBe("paperclip:issue:issue-123");
       expect(String(payload?.message ?? "")).toContain("wake now");
       expect(String(payload?.message ?? "")).toContain("PAPERCLIP_RUN_ID=run-123");
       expect(String(payload?.message ?? "")).toContain("PAPERCLIP_TASK_ID=task-123");
@@ -237,6 +439,43 @@ describe("openclaw gateway adapter execute", () => {
     const result = await execute(buildContext({}));
     expect(result.exitCode).toBe(1);
     expect(result.errorCode).toBe("openclaw_gateway_url_missing");
+  });
+
+  it("auto-approves pairing once and retries the run", async () => {
+    const gateway = await createMockGatewayServerWithPairing();
+    const logs: string[] = [];
+
+    try {
+      const result = await execute(
+        buildContext(
+          {
+            url: gateway.url,
+            headers: {
+              "x-openclaw-token": "gateway-token",
+            },
+            payloadTemplate: {
+              message: "wake now",
+            },
+            waitTimeoutMs: 2000,
+          },
+          {
+            onLog: async (_stream, chunk) => {
+              logs.push(chunk);
+            },
+          },
+        ),
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(result.summary).toContain("ok");
+      expect(logs.some((entry) => entry.includes("pairing required; attempting automatic pairing approval"))).toBe(
+        true,
+      );
+      expect(logs.some((entry) => entry.includes("auto-approved pairing request"))).toBe(true);
+      expect(gateway.getAgentPayload()).toBeTruthy();
+    } finally {
+      await gateway.close();
+    }
   });
 });
 

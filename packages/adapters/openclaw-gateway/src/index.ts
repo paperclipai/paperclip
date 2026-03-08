@@ -12,7 +12,7 @@ Use when:
 - You want native gateway auth/connect semantics instead of HTTP /v1/responses or /hooks/*.
 
 Don't use when:
-- You only expose OpenClaw HTTP endpoints (use openclaw adapter with sse/webhook transport).
+- You only expose OpenClaw HTTP endpoints.
 - Your deployment does not permit outbound WebSocket access from the Paperclip server.
 
 Core fields:
@@ -33,9 +33,10 @@ Request behavior fields:
 - payloadTemplate (object, optional): additional fields merged into gateway agent params
 - timeoutSec (number, optional): adapter timeout in seconds (default 120)
 - waitTimeoutMs (number, optional): agent.wait timeout override (default timeoutSec * 1000)
+- autoPairOnFirstConnect (boolean, optional): on first "pairing required", attempt device.pair.list/device.pair.approve via shared auth, then retry once (default true)
 - paperclipApiUrl (string, optional): absolute Paperclip base URL advertised in wake text
 
 Session routing fields:
-- sessionKeyStrategy (string, optional): fixed (default), issue, or run
+- sessionKeyStrategy (string, optional): issue (default), fixed, or run
 - sessionKey (string, optional): fixed session key when strategy=fixed (default paperclip)
 `;

@@ -56,7 +56,7 @@ Use when:
 - You want structured stream output in run logs via --output-format stream-json
 
 Don't use when:
-- You need webhook-style external invocation (use openclaw or http)
+- You need webhook-style external invocation (use openclaw_gateway or http)
 - You only need one-shot shell commands (use process)
 - Cursor Agent CLI is not installed on the machine
 

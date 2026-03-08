@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "@/lib/router";
+import { useNavigate, useSearchParams } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { agentsApi } from "../api/agents";
@@ -19,12 +19,45 @@ import { AgentConfigForm, type CreateConfigValues } from "../components/AgentCon
 import { defaultCreateValues } from "../components/agent-config-defaults";
 import { getUIAdapter } from "../adapters";
 import { AgentIcon } from "../components/AgentIconPicker";
+import {
+  DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
+  DEFAULT_CODEX_LOCAL_MODEL,
+} from "@paperclipai/adapter-codex-local";
+import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
+
+const SUPPORTED_ADVANCED_ADAPTER_TYPES = new Set<CreateConfigValues["adapterType"]>([
+  "claude_local",
+  "codex_local",
+  "opencode_local",
+  "pi_local",
+  "cursor",
+  "openclaw_gateway",
+]);
+
+function createValuesForAdapterType(
+  adapterType: CreateConfigValues["adapterType"],
+): CreateConfigValues {
+  const { adapterType: _discard, ...defaults } = defaultCreateValues;
+  const nextValues: CreateConfigValues = { ...defaults, adapterType };
+  if (adapterType === "codex_local") {
+    nextValues.model = DEFAULT_CODEX_LOCAL_MODEL;
+    nextValues.dangerouslyBypassSandbox =
+      DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
+  } else if (adapterType === "cursor") {
+    nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
+  } else if (adapterType === "opencode_local") {
+    nextValues.model = "";
+  }
+  return nextValues;
+}
 
 export function NewAgent() {
-  const { selectedCompanyId, selectedCompany } = useCompany();
+  const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const presetAdapterType = searchParams.get("adapterType");
 
   const [name, setName] = useState("");
   const [title, setTitle] = useState("");
@@ -70,6 +103,18 @@ export function NewAgent() {
       if (!title) setTitle("CEO");
     }
   }, [isFirstAgent]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const requested = presetAdapterType;
+    if (!requested) return;
+    if (!SUPPORTED_ADVANCED_ADAPTER_TYPES.has(requested as CreateConfigValues["adapterType"])) {
+      return;
+    }
+    setConfigValues((prev) => {
+      if (prev.adapterType === requested) return prev;
+      return createValuesForAdapterType(requested as CreateConfigValues["adapterType"]);
+    });
+  }, [presetAdapterType]);
 
   const createAgent = useMutation({
     mutationFn: (data: Record<string, unknown>) =>

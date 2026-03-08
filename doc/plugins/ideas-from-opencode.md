@@ -26,12 +26,13 @@ The main conclusion is:
 - Paperclip should use multiple extension classes instead of one generic plugin bag:
   - trusted in-process modules for low-level platform concerns like agent adapters, storage providers, secret providers, and possibly run-log backends
   - out-of-process plugins for most third-party integrations like Linear, GitHub Issues, Grafana, Stripe, and schedulers
-  - schema-driven UI contributions for dashboard widgets, settings panels, and company pages
-  - a typed event bus plus scheduled jobs for automation
+  - plugin-contributed agent tools (namespaced, not override-by-collision)
+  - plugin-shipped React UI loaded into host extension slots via a typed bridge
+  - a typed event bus with server-side filtering and plugin-to-plugin events, plus scheduled jobs for automation
 
 If Paperclip does this well, the examples you listed become straightforward:
 
-- file browser / terminal / git workflow / child process tracking become workspace-runtime plugins built on first-party primitives
+- file browser / terminal / git workflow / child process tracking become workspace plugins that resolve paths from the host and handle OS operations directly
 - Linear / GitHub / Grafana / Stripe become connector plugins
 - future knowledge base and accounting features can also fit the same model
 
@@ -192,6 +193,8 @@ The most aggressive part of the design:
 
 That is very powerful for a local coding assistant.
 It is too dangerous for Paperclip core actions.
+
+However, the concept of plugins contributing agent-usable tools is very valuable for Paperclip — as long as plugin tools are namespaced (cannot shadow core tools) and capability-gated.
 
 ## 7. Auth is also a plugin surface
 
@@ -400,8 +403,8 @@ Use distinct plugin classes with different trust models.
 |---|---|---|---|---|
 | Platform module | agent adapters, storage providers, secret providers, run-log backends | in-process | highly trusted | tight integration, performance, low-level APIs |
 | Connector plugin | Linear, GitHub Issues, Grafana, Stripe | out-of-process worker or sidecar | medium | external sync, safer isolation, clearer failure boundary |
-| Workspace plugin | file browser, terminal, git workflow, child process/server tracking | mixed: core workspace services plus plugin descriptors | high | needs local OS/workspace primitives but should reuse core services |
-| UI contribution | dashboard widgets, settings forms, company panels | schema-driven first, remote React later if needed | medium | safer than arbitrary frontend code |
+| Workspace plugin | file browser, terminal, git workflow, child process/server tracking | out-of-process, direct OS access | medium | resolves workspace paths from host, owns filesystem/git/PTY/process logic directly |
+| UI contribution | dashboard widgets, settings forms, company panels | plugin-shipped React bundles in host extension slots via bridge | medium | plugins own their rendering; host controls slot placement and bridge access |
 | Automation plugin | alerts, schedulers, sync jobs, webhook processors | out-of-process | medium | event-driven automation is a natural plugin fit |
 
 This split is the most important design recommendation in this report.
@@ -427,10 +430,12 @@ This avoids trying to force Stripe, a PTY terminal, and a new agent adapter into
 
 For third-party plugins, the primary API should be:
 
-- subscribe to typed domain events
+- subscribe to typed domain events (with optional server-side filtering)
+- emit plugin-namespaced events for cross-plugin communication
 - read instance state, including company-bound business records when relevant
 - register webhooks
 - run scheduled jobs
+- contribute tools that agents can use during runs
 - write plugin-owned state
 - add additive UI surfaces
 - invoke explicit Paperclip actions through the API
@@ -444,25 +449,32 @@ Do not make third-party plugins responsible for:
 
 Those are core invariants.
 
-## 4. Start with schema-driven UI contributions
+## 4. Plugins ship their own UI
 
-Arbitrary third-party React bundles inside the board UI are possible later, but they should not be the first version.
+Plugins ship their own React UI as a bundled module inside `dist/ui/`. The host loads plugin components into designated **extension slots** (pages, tabs, widgets, sidebar entries) and provides a **bridge** for the plugin frontend to talk to its own worker backend and to access host context.
 
-First version should let plugins contribute:
+**How it works:**
 
-- settings sections defined by JSON schema
-- dashboard widgets with server-provided data
-- sidebar entries with fixed shell rendering
-- detail-page tabs that render plugin data through core UI components
+1. The plugin's UI exports named components for each slot it fills (e.g. `DashboardWidget`, `IssueDetailTab`, `SettingsPage`).
+2. The host mounts the plugin component into the correct slot, passing a bridge object with hooks like `usePluginData(key, params)` and `usePluginAction(key)`.
+3. The plugin component fetches data from its own worker via the bridge and renders it however it wants.
+4. The host enforces capability gates through the bridge — if the worker doesn't have a capability, the bridge rejects the call.
 
-Why:
+**What the host controls:** where plugin components appear, the bridge API, capability enforcement, and shared UI primitives (`@paperclipai/plugin-sdk/ui`) with design tokens and common components.
 
-- simpler to secure
-- easier to keep visually coherent
-- easier to preserve context and auditability
-- easier to test
+**What the plugin controls:** how to render its data, what data to fetch, what actions to expose, and whether to use the host's shared components or build entirely custom UI.
 
-Later, if needed, Paperclip can support richer frontend extensions through versioned remote modules.
+First version extension slots:
+
+- dashboard widgets
+- settings pages
+- detail-page tabs (project, issue, agent, goal, run)
+- sidebar entries
+- company-context plugin pages
+
+The host SDK ships shared components (MetricCard, DataTable, StatusBadge, LogView, etc.) for visual consistency, but these are optional.
+
+Later, if untrusted third-party plugins become common, the host can move to iframe-based isolation without changing the plugin's source code (the bridge API stays the same).
 
 ## 5. Make installation global and keep mappings/config separate
 
@@ -500,6 +512,102 @@ In other words:
 - `project_workspace` is the local runtime anchor
 - plugins should build on that instead of creating an unrelated workspace model first
 
+## 7. Let plugins contribute agent tools
+
+`opencode` makes tools a first-class extension point. This is one of the highest-value surfaces for Paperclip too.
+
+A Linear plugin should be able to contribute a `search-linear-issues` tool that agents use during runs. A git plugin should contribute `create-branch` and `get-diff`. A file browser plugin should contribute `read-file` and `list-directory`.
+
+The key constraints:
+
+- plugin tools are namespaced by plugin ID (e.g. `linear:search-issues`) so they cannot shadow core tools
+- plugin tools require the `agent.tools.register` capability
+- tool execution goes through the same worker RPC boundary as everything else
+- tool results appear in run logs
+
+This is a natural fit — the plugin already has the SDK context, the external API credentials, and the domain logic. Wrapping that in a tool definition is minimal additional work for the plugin author.
+
+## 8. Support plugin-to-plugin events
+
+Plugins should be able to emit custom events that other plugins can subscribe to. For example, the git plugin detects a push and emits `plugin.@paperclip/plugin-git.push-detected`. The GitHub Issues plugin subscribes to that event and updates PR links.
+
+This avoids plugins needing to coordinate through shared state or external channels. The host routes plugin events through the same event bus with the same delivery semantics as core events.
+
+Plugin events use a `plugin.<pluginId>.*` namespace so they cannot collide with core events.
+
+## 9. Auto-generate settings UI from config schema
+
+Plugins that declare an `instanceConfigSchema` should get an auto-generated settings form for free. The host renders text inputs, dropdowns, toggles, arrays, and secret-ref pickers directly from the JSON Schema.
+
+For plugins that need richer settings UX, they can declare a `settingsPage` extension slot and ship a custom React component. Both approaches coexist.
+
+This matters because settings forms are boilerplate that every plugin needs. Auto-generating them from the schema that already exists removes a significant chunk of authoring friction.
+
+## 10. Design for graceful shutdown and upgrade
+
+The spec should be explicit about what happens when a plugin worker stops — during upgrades, uninstalls, or instance restarts.
+
+The recommended policy:
+
+- send `shutdown()` with a configurable deadline (default 10 seconds)
+- SIGTERM after deadline, SIGKILL after 5 more seconds
+- in-flight jobs marked `cancelled`
+- in-flight bridge calls return structured errors to the UI
+
+For upgrades specifically: the old worker drains, the new worker starts. If the new version adds capabilities, it enters `upgrade_pending` until the operator approves.
+
+## 11. Define uninstall data lifecycle
+
+When a plugin is uninstalled, its data (`plugin_state`, `plugin_entities`, `plugin_jobs`, etc.) should be retained for a grace period (default 30 days), not immediately deleted. The operator can reinstall within the grace period and recover state, or force-purge via CLI.
+
+This matters because accidental uninstalls should not cause irreversible data loss.
+
+## 12. Invest in plugin observability
+
+Plugin logs via `ctx.logger` should be stored and queryable from the plugin settings page. The host should also capture raw `stdout`/`stderr` from the worker process as fallback.
+
+The plugin health dashboard should show: worker status, uptime, recent logs, job success/failure rates, webhook delivery rates, and resource usage. The host should emit internal events (`plugin.health.degraded`, `plugin.worker.crashed`) that other plugins or dashboards can consume.
+
+This is critical for operators. Without observability, debugging plugin issues requires SSH access and manual log tailing.
+
+## 13. Ship a test harness and starter template
+
+A `@paperclipai/plugin-test-harness` package should provide a mock host with in-memory stores, synthetic event emission, and `getData`/`performAction`/`executeTool` simulation. Plugin authors should be able to write unit tests without a running Paperclip instance.
+
+A `create-paperclip-plugin` CLI should scaffold a working plugin with manifest, worker, UI bundle, test file, and build config.
+
+Low authoring friction was called out as one of `opencode`'s best qualities. The test harness and starter template are how Paperclip achieves the same.
+
+## 14. Support hot plugin lifecycle
+
+Plugin install, uninstall, upgrade, and config changes should take effect without restarting the Paperclip server. This is critical for developer workflow and operator experience.
+
+The out-of-process worker architecture makes this natural:
+
+- **Hot install**: spawn a new worker, register its event subscriptions, job schedules, webhook endpoints, and agent tools in live routing tables, load its UI bundle into the extension slot registry.
+- **Hot uninstall**: graceful shutdown of the worker, remove all registrations from routing tables, unmount UI components, start data retention grace period.
+- **Hot upgrade**: shut down old worker, start new worker, atomically swap routing table entries, invalidate UI bundle cache so the frontend loads the updated bundle.
+- **Hot config change**: write new config to `plugin_config`, notify the running worker via IPC (`configChanged`). The worker applies the change without restarting. If it doesn't handle `configChanged`, the host restarts just that worker.
+
+Frontend cache invalidation uses versioned or content-hashed bundle URLs and a `plugin.ui.updated` event that triggers re-import without a full page reload.
+
+Each worker process is independent — starting, stopping, or replacing one worker never affects any other plugin or the host itself.
+
+## 15. Define SDK versioning and compatibility
+
+`opencode` does not have a formal SDK versioning story because plugins run in-process and are effectively pinned to the current runtime. Paperclip's out-of-process model means plugins may be built against one SDK version and run on a host that has moved forward. This needs explicit rules.
+
+Recommended approach:
+
+- **Single SDK package**: `@paperclipai/plugin-sdk` with subpath exports — root for worker code, `/ui` for frontend code. One dependency, one version, one changelog.
+- **SDK major version = API version**: `@paperclipai/plugin-sdk@2.x` targets `apiVersion: 2`. Plugins built with SDK 1.x declare `apiVersion: 1` and continue to work.
+- **Host multi-version support**: The host supports at least the current and one previous `apiVersion` simultaneously with separate IPC protocol handlers per version.
+- **`sdkVersion` in manifest**: Plugins declare a semver range (e.g. `">=1.4.0 <2.0.0"`). The host validates this at install time.
+- **Deprecation timeline**: Previous API versions get at least 6 months of continued support after a new version ships. The host logs deprecation warnings and shows a banner on the plugin settings page.
+- **Migration guides**: Each major SDK release ships with a step-by-step migration guide covering every breaking change.
+- **UI surface versioned with worker**: Both worker and UI surfaces are in the same package, so they version together. Breaking changes to shared UI components require a major version bump just like worker API changes.
+- **Published compatibility matrix**: The host publishes a matrix of supported API versions and SDK ranges, queryable via API.
+
 ## A Concrete SDK Shape For Paperclip
 
 An intentionally narrow first pass could look like this:
@@ -510,13 +618,13 @@ import { definePlugin, z } from "@paperclipai/plugin-sdk";
 export default definePlugin({
   id: "@paperclip/plugin-linear",
   version: "0.1.0",
-  kind: ["connector", "ui"],
+  categories: ["connector", "ui"],
   capabilities: [
     "events.subscribe",
     "jobs.schedule",
     "http.outbound",
-    "instance.settings",
-    "dashboard.widget",
+    "instance.settings.register",
+    "ui.dashboardWidget.register",
     "secrets.read-ref",
   ],
   instanceConfigSchema: z.object({
@@ -534,17 +642,59 @@ export default definePlugin({
       // sync Linear issues into plugin-owned state or explicit Paperclip entities
     });
 
-    ctx.events.on("issue.created", async (event) => {
-      // optional outbound sync
+    // subscribe with optional server-side filter
+    ctx.events.on("issue.created", { projectId: "proj-1" }, async (event) => {
+      // only receives issue.created events for project proj-1
     });
 
-    ctx.ui.registerDashboardWidget({
-      id: "linear-health",
-      title: "Linear",
-      loader: async ({ companyId }) => ({ status: "ok" }),
+    // subscribe to events from another plugin
+    ctx.events.on("plugin.@paperclip/plugin-git.push-detected", async (event) => {
+      // react to the git plugin detecting a push
+    });
+
+    // contribute a tool that agents can use during runs
+    ctx.tools.register("search-linear-issues", {
+      displayName: "Search Linear Issues",
+      description: "Search for Linear issues by query",
+      parametersSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+    }, async (params, runCtx) => {
+      // search Linear API and return results
+      return { content: JSON.stringify(results) };
+    });
+
+    // getData is called by the plugin's own UI components via the host bridge
+    ctx.data.register("sync-health", async ({ companyId }) => {
+      // return typed JSON that the plugin's DashboardWidget component renders
+      return { syncedCount: 142, trend: "+12 today", mappings: [...] };
+    });
+
+    ctx.actions.register("resync", async ({ companyId }) => {
+      // run sync logic
     });
   },
 });
+```
+
+The plugin's UI bundle (separate from the worker) might look like:
+
+```tsx
+// dist/ui/index.tsx
+import { usePluginData, usePluginAction, MetricCard, ErrorBoundary } from "@paperclipai/plugin-sdk/ui";
+
+export function DashboardWidget({ context }: PluginWidgetProps) {
+  const { data, loading, error } = usePluginData("sync-health", { companyId: context.companyId });
+  const resync = usePluginAction("resync");
+
+  if (loading) return <Spinner />;
+  if (error) return <div>Plugin error: {error.message} ({error.code})</div>;
+
+  return (
+    <ErrorBoundary fallback={<div>Widget failed to render</div>}>
+      <MetricCard label="Synced Issues" value={data.syncedCount} trend={data.trend} />
+      <button onClick={() => resync({ companyId: context.companyId })}>Resync Now</button>
+    </ErrorBoundary>
+  );
+}
 ```
 
 The important point is not the exact syntax.
@@ -553,9 +703,12 @@ The important point is the contract shape:
 - typed manifest
 - explicit capabilities
 - explicit global config with optional company mappings
-- event subscriptions
+- event subscriptions with optional server-side filtering
+- plugin-to-plugin events via namespaced event types
+- agent tool contributions
 - jobs
-- additive UI contributions
+- plugin-shipped UI that communicates with its worker through the host bridge
+- structured error propagation from worker to UI
 
 ## Recommended Core Extension Surfaces
 
@@ -569,7 +722,6 @@ Candidates:
 - `registerStorageProvider()`
 - `registerSecretProvider()`
 - `registerRunLogStore()`
-- maybe `registerWorkspaceRuntime()` later
 
 These are trusted platform modules, not casual plugins.
 
@@ -596,9 +748,7 @@ Examples:
 
 ## 3. Workspace-runtime surfaces
 
-Your local-ops examples need first-party primitives plus plugin contributions.
-
-Examples:
+Workspace plugins handle local tooling directly:
 
 - file browser
 - terminal
@@ -606,42 +756,9 @@ Examples:
 - child process tracking
 - local dev server tracking
 
-These should not be arbitrary third-party code directly poking the host filesystem and PTY layer through ad-hoc hooks.
-Instead, Paperclip should add first-party services such as:
+Plugins resolve workspace paths through host APIs (`ctx.projects` provides workspace metadata including `cwd`, `repoUrl`, etc.) and then operate on the filesystem, spawn processes, shell out to `git`, or open PTY sessions using standard Node APIs or any libraries they choose.
 
-- project workspace service built on `project_workspaces`
-- PTY session service
-- process registry
-- git service
-- dev-server registry
-
-Then plugins can add:
-
-- UI panels on top of those services
-- automations
-- annotations
-- external sync logic
-
-This keeps sensitive local-machine behavior centralized and auditable.
-
-## 4. UI contribution surfaces
-
-Recommended first version:
-
-- dashboard widgets
-- settings panels
-- detail-page tabs
-- sidebar sections
-- action buttons that invoke plugin routes
-
-Recommended later version:
-
-- richer remote UI modules
-
-Recommended never or only with extreme caution:
-
-- arbitrary override of core pages
-- arbitrary replacement of routing/auth/layout logic
+The host does not wrap or proxy these operations. This keeps the core lean — no need to maintain a parallel API surface for every OS-level operation a plugin might need. Plugins own their own implementations.
 
 ## Governance And Safety Requirements
 
@@ -666,15 +783,16 @@ Every plugin declares a static capability set such as:
 - `issues.read`
 - `issues.write`
 - `events.subscribe`
+- `events.emit`
 - `jobs.schedule`
 - `http.outbound`
 - `webhooks.receive`
 - `assets.read`
 - `assets.write`
-- `workspace.pty`
-- `workspace.fs.read`
-- `workspace.fs.write`
 - `secrets.read-ref`
+- `agent.tools.register`
+- `plugin.state.read`
+- `plugin.state.write`
 
 The board/operator sees this before installation.
 
@@ -685,12 +803,10 @@ If it needs mappings over specific Paperclip objects, those are plugin data, not
 
 ## 3. Activity logging
 
-Plugin-originated mutations should flow through the same activity log mechanism, with actor identity like:
+Plugin-originated mutations should flow through the same activity log mechanism, with a dedicated `plugin` actor type:
 
-- `actor_type = system`
-- `actor_id = plugin:@paperclip/plugin-linear`
-
-or a dedicated `plugin` actor type if you want stronger semantics later.
+- `actor_type = plugin`
+- `actor_id = <plugin-id>` (e.g. `@paperclip/plugin-linear`)
 
 ## 4. Health and failure reporting
 
@@ -787,7 +903,7 @@ Suggested fields:
 - `id`
 - `package_name`
 - `version`
-- `kind`
+- `categories`
 - `manifest_json`
 - `installed_at`
 - `status`
@@ -801,7 +917,7 @@ Suggested fields:
 - `id`
 - `plugin_id`
 - `config_json`
-- `installed_at`
+- `created_at`
 - `updated_at`
 - `last_error`
 
@@ -886,16 +1002,16 @@ This is a useful middle ground:
 
 ## How The Requested Examples Map To This Model
 
-| Use case | Best fit | Core primitives needed | Notes |
+| Use case | Best fit | Host primitives needed | Notes |
 |---|---|---|---|
-| File browser | workspace plugin + schema UI | project workspaces, file API, audit rules | best anchored on project detail pages |
-| Terminal | workspace plugin + PTY service | project workspaces, PTY/session service, process limits, audit events | should launch against a project workspace by default |
-| Git workflow | workspace plugin | project workspaces, git service, repo/worktree model | project workspace is the natural repo anchor |
+| File browser | workspace plugin | project workspace metadata | plugin owns filesystem ops directly |
+| Terminal | workspace plugin | project workspace metadata | plugin spawns PTY sessions directly |
+| Git workflow | workspace plugin | project workspace metadata | plugin shells out to git directly |
 | Linear issue tracking | connector plugin | jobs, webhooks, secret refs, issue sync API | very strong plugin candidate |
 | GitHub issue tracking | connector plugin | jobs, webhooks, secret refs | very strong plugin candidate |
-| Grafana metrics | connector plugin + dashboard widget | outbound HTTP, widget API | probably read-only first |
-| Child process/server tracking | workspace plugin | project workspaces, process registry, server heartbeat model | should attach processes to project workspaces when possible |
-| Stripe revenue tracking | connector plugin | secret refs, scheduled sync, company metrics API | strong plugin candidate and aligns with future spec direction |
+| Grafana metrics | connector plugin + dashboard widget | outbound HTTP | probably read-only first |
+| Child process/server tracking | workspace plugin | project workspace metadata | plugin manages processes directly |
+| Stripe revenue tracking | connector plugin | secret refs, scheduled sync, company metrics API | strong plugin candidate |
 
 # Plugin Examples
 
@@ -965,24 +1081,16 @@ Recommended capabilities and extension points:
 - `ui.detailTab.register` for `project`, `issue`, and `agent`
 - `projects.read`
 - `project.workspaces.read`
-- `workspace.fs.read`
-- optional `workspace.fs.write`
-- `workspace.fs.stat`
-- `workspace.fs.search`
 - optional `assets.write`
 - `activity.log.write`
+
+The plugin resolves workspace paths through `ctx.projects` and handles all filesystem operations (read, write, stat, search, list directory) directly using Node APIs.
 
 Optional event subscriptions:
 
 - `events.subscribe(agent.run.started)`
 - `events.subscribe(agent.run.finished)`
 - `events.subscribe(issue.attachment.created)`
-
-Important constraint:
-
-- the plugin should never read arbitrary host paths directly
-- it should treat project workspaces as the canonical local file roots when a project is present
-- it should only use first-party workspace/file APIs that enforce approved workspace roots
 
 ## Workspace Terminal
 
@@ -1045,24 +1153,15 @@ Recommended capabilities and extension points:
 - `ui.detailTab.register` for `project`, `agent`, and `run`
 - `projects.read`
 - `project.workspaces.read`
-- `workspace.pty.open`
-- `workspace.pty.input`
-- `workspace.pty.resize`
-- `workspace.pty.terminate`
-- `workspace.pty.subscribe`
-- `workspace.process.read`
 - `activity.log.write`
+
+The plugin resolves workspace paths through `ctx.projects` and handles PTY session management (open, input, resize, terminate, subscribe) directly using Node PTY libraries.
 
 Optional event subscriptions:
 
 - `events.subscribe(agent.run.started)`
 - `events.subscribe(agent.run.failed)`
 - `events.subscribe(agent.run.cancelled)`
-
-Important constraint:
-
-- shell spawning must stay in a first-party PTY service
-- the plugin should orchestrate and render sessions, not spawn raw host processes by itself
 
 ## Git Workflow
 
@@ -1132,14 +1231,11 @@ Recommended capabilities and extension points:
 - `ui.action.register`
 - `projects.read`
 - `project.workspaces.read`
-- `workspace.git.status`
-- `workspace.git.diff`
-- `workspace.git.log`
-- `workspace.git.branch.create`
-- optional `workspace.git.commit`
-- optional `workspace.git.worktree.create`
-- optional `workspace.git.push`
+- optional `agent.tools.register` (e.g. `create-branch`, `get-diff`, `get-status`)
+- optional `events.emit` (e.g. `plugin.@paperclip/plugin-git.push-detected`)
 - `activity.log.write`
+
+The plugin resolves workspace paths through `ctx.projects` and handles all git operations (status, diff, log, branch create, commit, worktree create, push) directly using git CLI or a git library.
 
 Optional event subscriptions:
 
@@ -1147,9 +1243,9 @@ Optional event subscriptions:
 - `events.subscribe(issue.updated)`
 - `events.subscribe(agent.run.finished)`
 
-Important constraint:
+The git plugin can emit `plugin.@paperclip/plugin-git.push-detected` events that other plugins (e.g. GitHub Issues) subscribe to for cross-plugin coordination.
 
-- GitHub/GitLab PR creation should likely live in a separate connector plugin rather than overloading the local git plugin
+Note: GitHub/GitLab PR creation should likely live in a separate connector plugin rather than overloading the local git plugin.
 
 ## Linear Issue Tracking
 
@@ -1223,6 +1319,7 @@ Recommended capabilities and extension points:
 - optional `issues.create`
 - optional `issues.update`
 - optional `issue.comments.create`
+- optional `agent.tools.register` (e.g. `search-linear-issues`, `get-linear-issue`)
 - `activity.log.write`
 
 Important constraint:
@@ -1290,6 +1387,7 @@ Recommended capabilities and extension points:
 - `events.subscribe(issue.created)`
 - `events.subscribe(issue.updated)`
 - `events.subscribe(issue.comment.created)`
+- `events.subscribe(plugin.@paperclip/plugin-git.push-detected)` (cross-plugin coordination)
 - `jobs.schedule`
 - `webhooks.receive`
 - `http.outbound`
@@ -1303,7 +1401,7 @@ Recommended capabilities and extension points:
 
 Important constraint:
 
-- keep "local git state" and "remote GitHub issue state" in separate plugins even if they work together
+- keep "local git state" and "remote GitHub issue state" in separate plugins even if they work together — cross-plugin events handle coordination
 
 ## Grafana Metrics
 
@@ -1422,7 +1520,7 @@ Main screens and interactions:
 
 Core workflows:
 
-- An agent starts a dev server; the first-party process service registers it and the plugin renders it.
+- An agent starts a dev server; the plugin detects and tracks it.
 - Board opens a project and immediately sees the processes attached to that project's workspace.
 - Board sees a crashed process on the dashboard and restarts it from the plugin page.
 - Board attaches process logs to an issue when debugging a failure.
@@ -1438,28 +1536,16 @@ Recommended capabilities and extension points:
 - `ui.detailTab.register` for `project` and `agent`
 - `projects.read`
 - `project.workspaces.read`
-- `workspace.process.register`
-- `workspace.process.list`
-- `workspace.process.read`
-- optional `workspace.process.terminate`
-- optional `workspace.process.restart`
-- `workspace.process.logs.read`
-- optional `workspace.http.probe`
 - `plugin.state.read`
 - `plugin.state.write`
 - `activity.log.write`
+
+The plugin resolves workspace paths through `ctx.projects` and handles process management (register, list, terminate, restart, read logs, health probes) directly using Node APIs.
 
 Optional event subscriptions:
 
 - `events.subscribe(agent.run.started)`
 - `events.subscribe(agent.run.finished)`
-- `events.subscribe(process.started)`
-- `events.subscribe(process.exited)`
-
-Important constraint:
-
-- this should be built on a first-party process registry
-- the plugin should not own raw child-process spawning on its own
 
 ## Stripe Revenue Tracking
 
@@ -1519,7 +1605,7 @@ Recommended capabilities and extension points:
 - `secrets.read-ref`
 - `plugin.state.read`
 - `plugin.state.write`
-- `company.metrics.write`
+- `metrics.write`
 - optional `issues.create`
 - `activity.log.write`
 
@@ -1536,9 +1622,13 @@ Important constraint:
 - deterministic load order and precedence
 - very small authoring API
 - typed schemas for plugin inputs/config/tools
+- tools as a first-class plugin extension point (namespaced, not override-by-collision)
 - internal extensions using the same registration shapes as external ones when reasonable
 - plugin load errors isolated from host startup when possible
 - explicit community-facing plugin docs and example templates
+- test harness and starter template for low authoring friction
+- hot plugin lifecycle without server restart (enabled by out-of-process workers)
+- formal SDK versioning with multi-version host support
 
 ## Adapt, not copy
 
@@ -1577,7 +1667,19 @@ Build:
 - scheduled jobs
 - webhook endpoints
 - activity logging helpers
-- dashboard widget and settings-panel contributions
+- plugin UI bundle loading, host bridge, `@paperclipai/plugin-sdk/ui`
+- extension slot mounting for pages, tabs, widgets, sidebar entries
+- auto-generated settings form from `instanceConfigSchema`
+- bridge error propagation (`PluginBridgeError`)
+- plugin-contributed agent tools
+- plugin-to-plugin events (`plugin.<pluginId>.*` namespace)
+- event filtering (server-side, per-subscription)
+- graceful shutdown with configurable deadlines
+- plugin logging and health dashboard
+- uninstall with data retention grace period
+- `@paperclipai/plugin-test-harness` and `create-paperclip-plugin` starter template
+- hot plugin lifecycle (install, uninstall, upgrade, config change without server restart)
+- SDK versioning with multi-version host support and deprecation policy
 
 This phase would immediately cover:
 
@@ -1585,31 +1687,18 @@ This phase would immediately cover:
 - GitHub
 - Grafana
 - Stripe
-
-## Phase 2: Add workspace services and workspace plugins
-
-Build first-party primitives:
-
-- project workspace service built on `project_workspaces`
-- PTY/session service
-- file service
-- git service
-- process/service tracker
-
-Then expose additive plugin/UI surfaces on top.
-
-This phase covers:
-
 - file browser
 - terminal
 - git workflow
 - child process/server tracking
 
-## Phase 3: Consider richer UI and plugin packaging
+Workspace plugins do not require additional host APIs — they resolve workspace paths through `ctx.projects` and handle filesystem, git, PTY, and process operations directly.
 
-Only after phases 1 and 2 are stable:
+## Phase 2: Consider richer UI and plugin packaging
 
-- richer frontend extension support
+Only after Phase 1 is stable:
+
+- iframe-based isolation for untrusted third-party plugin UI bundles
 - signed/verified plugin packages
 - plugin marketplace
 - optional custom plugin storage backends or migrations
@@ -1623,8 +1712,14 @@ Paperclip should implement "a plugin platform with multiple trust tiers":
 
 - trusted platform modules for low-level runtime integration
 - typed out-of-process plugins for instance-wide integrations and automation
-- schema-driven UI contributions
+- plugin-contributed agent tools (namespaced, capability-gated)
+- plugin-shipped UI bundles rendered in host extension slots via a typed bridge with structured error propagation
+- plugin-to-plugin events for cross-plugin coordination
+- auto-generated settings UI from config schema
 - core-owned invariants that plugins can observe and act around, but not replace
+- plugin observability, graceful lifecycle management, and a test harness for low authoring friction
+- hot plugin lifecycle — no server restart for install, uninstall, upgrade, or config changes
+- SDK versioning with multi-version host support and clear deprecation policy
 
 That gets the upside of `opencode`'s extensibility without importing the wrong threat model.
 
@@ -1632,6 +1727,12 @@ That gets the upside of `opencode`'s extensibility without importing the wrong t
 
 1. Write a short extension architecture RFC that formalizes the distinction between `platform modules` and `plugins`.
 2. Introduce a small plugin manifest type in `packages/shared` and a `plugins` install/config section in the instance config.
-3. Build a typed domain event bus around existing activity/live-event patterns, but keep core invariants non-hookable.
-4. Implement connector-plugin MVP only: global install/config, secret refs, jobs, webhooks, settings panel, dashboard widget.
-5. Treat workspace features as a separate track that starts by building core workspace primitives, not raw plugin hooks.
+3. Build a typed domain event bus around existing activity/live-event patterns, with server-side event filtering and a `plugin.*` namespace for cross-plugin events. Keep core invariants non-hookable.
+4. Implement plugin MVP: global install/config, secret refs, jobs, webhooks, plugin UI bundles, extension slots, auto-generated settings forms, bridge error propagation.
+5. Add agent tool contributions — plugins register namespaced tools that agents can call during runs.
+6. Add plugin observability: structured logging via `ctx.logger`, health dashboard, internal health events.
+7. Add graceful shutdown policy and uninstall data lifecycle with retention grace period.
+8. Ship `@paperclipai/plugin-test-harness` and `create-paperclip-plugin` starter template.
+9. Implement hot plugin lifecycle — install, uninstall, upgrade, and config changes without server restart.
+10. Define SDK versioning policy — semver, multi-version host support, deprecation timeline, migration guides, published compatibility matrix.
+11. Build workspace plugins (file browser, terminal, git, process tracking) that resolve workspace paths from the host and handle OS-level operations directly.

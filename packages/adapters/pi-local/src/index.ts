@@ -14,7 +14,7 @@ Use when:
 - You need Pi's tool set (read, bash, edit, write, grep, find, ls)
 
 Don't use when:
-- You need webhook-style external invocation (use openclaw or http)
+- You need webhook-style external invocation (use openclaw_gateway or http)
 - You only need one-shot shell commands (use process)
 - Pi CLI is not installed on the machine
 

@@ -204,15 +204,11 @@ export function OpenClawGatewayConfigFields({
             />
           </Field>
 
-          <Field label="Disable device auth">
-            <select
-              value={String(eff("adapterConfig", "disableDeviceAuth", Boolean(config.disableDeviceAuth ?? false)))}
-              onChange={(e) => mark("adapterConfig", "disableDeviceAuth", e.target.value === "true")}
-              className={inputClass}
-            >
-              <option value="false">No (recommended)</option>
-              <option value="true">Yes</option>
-            </select>
+          <Field label="Device auth">
+            <div className="text-xs text-muted-foreground leading-relaxed">
+              Always enabled for gateway agents. Paperclip persists a device key during onboarding so pairing approvals
+              remain stable across runs.
+            </div>
           </Field>
         </>
       )}

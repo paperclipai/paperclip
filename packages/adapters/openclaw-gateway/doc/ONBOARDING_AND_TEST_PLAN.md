@@ -1,367 +1,109 @@
 # OpenClaw Gateway Onboarding and Test Plan
 
-## Objective
-Define a reliable, repeatable onboarding and E2E test workflow for OpenClaw integration in authenticated/private Paperclip dev mode (`pnpm dev --tailscale-auth`) with a strong UX path for users and a scriptable path for Codex.
-
-This plan covers:
-- Current onboarding flow behavior and gaps.
-- Recommended UX for `openclaw` (HTTP `sse/webhook`) and `openclaw_gateway` (WebSocket gateway protocol).
-- A concrete automation plan for Codex to run cleanup, onboarding, and E2E validation against the `CLA` company.
-
-## Hard Requirements (Testing Contract)
-These are mandatory for onboarding and smoke testing:
-
-1. **Stock/clean OpenClaw boot every run**
-- Use a fresh, unmodified OpenClaw Docker image path each test cycle.
-- Do not rely on persistent/manual in-UI tweaks from prior runs.
-- Recreate runtime state each run so results represent first-time user experience.
-
-2. **One-command/prompt setup inside OpenClaw**
-- OpenClaw should be bootstrapped by one primary instruction/prompt (copy/paste-able).
-- If a kick is needed, allow at most one follow-up message (for example: “how is it going?”).
-- Required OpenClaw configuration (transport enablement, auth loading, skill usage) must be embedded in prompt instructions, not manual hidden steps.
-
-3. **Two-lane validation is required**
-- Lane A (stock pass lane): unmodified/clean OpenClaw image and config flow. This lane is the release gate.
-- Lane B (instrumentation lane): temporary test instrumentation is allowed only to diagnose failures; it cannot be the final passing path.
-
-## Execution Findings (2026-03-07)
-Observed from running `scripts/smoke/openclaw-gateway-e2e.sh` against `CLA` in authenticated/private dev mode:
-
-1. **Baseline failure (before wake-text fix)**
-- Stock lane had run-level success but failed functional assertions:
-  - connectivity run `64a72d8b-f5b3-4f62-9147-1c60932f50ad` succeeded
-  - case A run `fd29e361-a6bd-4bc6-9270-36ef96e3bd8e` succeeded
-  - issue `CLA-6` (`dad7b967-29d2-4317-8c9d-425b4421e098`) stayed `todo` with `0` comments
-- Root symptom: OpenClaw reported missing concrete heartbeat procedure and guessed non-existent `/api/*heartbeat` endpoints.
-
-2. **Post-fix validation (stock-clean lane passes)**
-- After updating adapter wake text to include explicit Paperclip API workflow steps and explicit endpoint bans:
-  - connectivity run `c297e2d0-020b-4b30-95d3-a4c04e1373bb`: `succeeded`
-  - case A run `baac403e-8d86-48e5-b7d5-239c4755ce7e`: `succeeded`, issue `CLA-7` done with marker
-  - case B run `521fc8ad-2f5a-4bd8-9ddd-c491401c9158`: `succeeded`, issue `CLA-8` done with marker
-  - case C run `a03d86b6-91a8-48b4-8813-758f6bf11aec`: `succeeded`, issue `CLA-9` done, created issue `CLA-10`
-- Stock release-gate lane now passes scripted checks.
-
-3. **Instrumentation lane note**
-- Prompt-augmented diagnostics lane previously timed out (`7537e5d2-a76a-44c5-bf9f-57f1b21f5fc3`) with missing tool runtime utilities (`jq`, `python`) inside the stock container.
-- Keep this lane for diagnostics only; stock lane remains the acceptance gate.
-
-## External Protocol Constraints
-OpenClaw docs to anchor behavior:
-- Webhook mode requires `hooks.enabled=true` and exposes `/hooks/wake` + `/hooks/agent`: https://docs.openclaw.ai/automation/webhook
-- Gateway protocol is WebSocket challenge/response plus request/event frames: https://docs.openclaw.ai/gateway/protocol
-- OpenResponses HTTP endpoint is separate (`gateway.http.endpoints.responses.enabled=true`): https://docs.openclaw.ai/openapi/responses
-
-Implication:
-- `webhook` transport should target `/hooks/*` and requires hook server enablement.
-- `sse` transport should target `/v1/responses`.
-- `openclaw_gateway` should use `ws://` or `wss://` and should not depend on `/v1/responses` or `/hooks/*`.
-
-## Current Implementation Map (What Exists)
-
-### Invite + onboarding pipeline
-- Invite create: `POST /api/companies/:companyId/invites`
-- Invite onboarding manifest: `GET /api/invites/:token/onboarding`
-- Agent-readable text: `GET /api/invites/:token/onboarding.txt`
-- Accept join: `POST /api/invites/:token/accept`
-- Approve join: `POST /api/companies/:companyId/join-requests/:requestId/approve`
-- Claim key: `POST /api/join-requests/:requestId/claim-api-key`
-
-### Adapter state
-- `openclaw` adapter supports `sse|webhook` and has remap/fallback behavior for webhook mode.
-- `openclaw_gateway` adapter is implemented and working for direct gateway invocation (`connect -> agent -> agent.wait`).
-
-### Existing smoke foundation
-- `scripts/smoke/openclaw-docker-ui.sh` builds/starts OpenClaw Docker and polls readiness on `http://127.0.0.1:18789/`.
-- Current local OpenClaw smoke config commonly enables `gateway.http.endpoints.responses.enabled=true`, but not hooks (`gateway.hooks`).
-
-## Deep Code Findings (Gaps)
-
-### 1) Onboarding manifest/text gateway path (resolved)
-Resolved in `server/src/routes/access.ts`:
-- `recommendedAdapterType` now points to `openclaw_gateway`.
-- Onboarding examples now require `adapterType: "openclaw_gateway"` + `ws://`/`wss://` URL + gateway token header.
-- Added fail-fast guidance for short/placeholder tokens.
-
-### 2) Company settings snippet gateway path (resolved)
-Resolved in `ui/src/pages/CompanySettings.tsx`:
-- Snippet now instructs OpenClaw Gateway onboarding.
-- Snippet explicitly says not to use `/v1/responses` or `/hooks/*` for this flow.
-
-### 3) Invite landing “agent join” UX is not wired for OpenClaw adapters (open)
-`ui/src/pages/InviteLanding.tsx` shows `openclaw` and `openclaw_gateway` as disabled (“Coming soon”) in join UI.
-
-### 4) Join normalization/replay logic parity (partially resolved)
-Resolved:
-- `buildJoinDefaultsPayloadForAccept` now normalizes wrapped gateway token headers for `openclaw_gateway`.
-- `normalizeAgentDefaultsForJoin` now validates `openclaw_gateway` URL/token and rejects short placeholder tokens at invite-accept time.
-
-Still open:
-- Invite replay path is still special-cased to legacy `openclaw` joins.
-
-### 5) Webhook confusion is expected in current setup
-For `openclaw` + `streamTransport=webhook`:
-- Adapter may remap `/v1/responses -> /hooks/agent`.
-- If `/hooks/agent` returns `404`, it falls back to `/v1/responses`.
-
-If OpenClaw hooks are disabled, users still see successful `/v1/responses` runs even with webhook selected.
-
-### 6) Auth/testing ergonomics mismatch in tailscale-auth dev mode
-- Runtime can be `authenticated/private` via env overrides (`pnpm dev --tailscale-auth`).
-- CLI bootstrap/admin helpers read config file (`config.json`), which may still say `local_trusted`.
-- Board setup actions require session cookies; CLI `--api-key` cannot replace board session for invite/approval routes.
-
-### 7) Gateway adapter lacks hire-approved callback parity
-`openclaw` has `onHireApproved`; `openclaw_gateway` currently does not.
-Not a blocker for core routing, but creates inconsistent onboarding feedback behavior.
-
-## UX Intention (Target Experience)
-
-### Product goal
-Users should pick one clear onboarding path:
-- `Invite OpenClaw (HTTP)` for existing webhook/SSE installs.
-- `Invite OpenClaw Gateway` for gateway-native installs.
-
-### UX design requirements
-- One-click invite action per mode in `/CLA/company/settings` (or equivalent company settings route).
-- Mode-specific generated snippet and mode-specific onboarding text.
-- Clear compatibility checks before user copies anything.
-
-### Proposed UX structure
-1. Add invite buttons:
-- `Invite OpenClaw (SSE/Webhook)`
-- `Invite OpenClaw Gateway`
-
-2. For HTTP invite:
-- Require transport choice (`sse` or `webhook`).
-- Validate endpoint expectations:
-  - `sse` with `/v1/responses`.
-  - `webhook` with `/hooks/*` and hooks enablement guidance.
-
-3. For Gateway invite:
-- Ask only for `ws://`/`wss://` and token source guidance.
-- No callback URL/paperclipApiUrl complexity in onboarding.
-
-4. Always show:
-- Preflight diagnostics.
-- Copy-ready command/snippet.
-- Expected next steps (join -> approve -> claim -> skill install).
-
-## Why Gateway Improves Onboarding
-Compared to webhook/SSE onboarding:
-- Fewer network assumptions: Paperclip dials outbound WebSocket to OpenClaw; avoids callback reachability pitfalls.
-- Less transport ambiguity: no `/v1/responses` vs `/hooks/*` fallback confusion.
-- Better run observability: gateway event frames stream lifecycle/delta events in one protocol.
-
-Tradeoff:
-- Requires stable WS endpoint and gateway token handling.
-
-## Codex-Executable E2E Workflow
-
 ## Scope
-Run this full flow per test cycle against company `CLA`:
-1. Assign task to OpenClaw agent -> agent executes -> task closes.
-2. Task asks OpenClaw to send message to user main chat via message tool -> message appears in main chat.
-3. OpenClaw in a fresh/new session can still create a Paperclip task.
-4. Use one primary OpenClaw bootstrap prompt (plus optional single follow-up ping) to perform setup.
+This plan is now **gateway-only**. Paperclip supports OpenClaw through `openclaw_gateway` only.
 
-## 0) Cleanup Before Each Run
-Use deterministic reset to avoid stale agents/runs/state.
+- Removed path: legacy `openclaw` adapter (`/v1/responses`, `/hooks/*`, SSE/webhook transport switching)
+- Supported path: `openclaw_gateway` over WebSocket (`ws://` or `wss://`)
 
-1. OpenClaw Docker cleanup:
+## Requirements
+1. OpenClaw test image must be stock/clean every run.
+2. Onboarding must work from one primary prompt pasted into OpenClaw (optional one follow-up ping allowed).
+3. Device auth stays enabled by default; pairing is persisted via `adapterConfig.devicePrivateKeyPem`.
+4. Invite/access flow must be secure:
+- invite prompt endpoint is board-permission protected
+- CEO agent is allowed to invoke the invite prompt endpoint for their own company
+5. E2E pass criteria must include the 3 functional task cases.
+
+## Current Product Flow
+1. Board/CEO opens company settings.
+2. Click `Generate OpenClaw Invite Prompt`.
+3. Paste generated prompt into OpenClaw chat.
+4. OpenClaw submits invite acceptance with:
+- `adapterType: "openclaw_gateway"`
+- `agentDefaultsPayload.url: ws://... | wss://...`
+- `agentDefaultsPayload.headers["x-openclaw-token"]`
+5. Board approves join request.
+6. OpenClaw claims API key and installs/uses Paperclip skill.
+7. First task run may trigger pairing approval once; after approval, pairing persists via stored device key.
+
+## Technical Contract (Gateway)
+`agentDefaultsPayload` minimum:
+```json
+{
+  "url": "ws://127.0.0.1:18789",
+  "headers": { "x-openclaw-token": "<gateway-token>" }
+}
+```
+
+Recommended fields:
+```json
+{
+  "paperclipApiUrl": "http://host.docker.internal:3100",
+  "waitTimeoutMs": 120000,
+  "sessionKeyStrategy": "issue",
+  "role": "operator",
+  "scopes": ["operator.admin"]
+}
+```
+
+Security/pairing defaults:
+- `disableDeviceAuth`: default false
+- `devicePrivateKeyPem`: generated during join if missing
+
+## Codex Automation Workflow
+
+### 0) Reset and boot
 ```bash
-# stop/remove OpenClaw compose services
 OPENCLAW_DOCKER_DIR=/tmp/openclaw-docker
 if [ -d "$OPENCLAW_DOCKER_DIR" ]; then
   docker compose -f "$OPENCLAW_DOCKER_DIR/docker-compose.yml" down --remove-orphans || true
 fi
 
-# remove old image (as requested)
 docker image rm openclaw:local || true
-```
-
-2. Recreate OpenClaw cleanly:
-```bash
 OPENCLAW_RESET_STATE=1 OPENCLAW_BUILD=1 ./scripts/smoke/openclaw-docker-ui.sh
 ```
-This must remain a stock/clean image boot path, with no hidden manual state carried from prior runs.
 
-3. Remove prior CLA OpenClaw agents:
-- List `CLA` agents via API.
-- Terminate/delete agents with `adapterType in ("openclaw", "openclaw_gateway")` before new onboarding.
-
-4. Reject/clear stale pending join requests for CLA (optional but recommended).
-
-## 1) Start Paperclip in Required Mode
+### 1) Start Paperclip
 ```bash
 pnpm dev --tailscale-auth
-```
-Verify:
-```bash
 curl -fsS http://127.0.0.1:3100/api/health
-# expect deploymentMode=authenticated, deploymentExposure=private
 ```
 
-## 2) Acquire Board Session for Automation
-Board operations (create invite, approve join, terminate agents) require board session cookie.
+### 2) Invite + join + approval
+- create invite prompt via `POST /api/companies/:companyId/openclaw/invite-prompt`
+- paste prompt to OpenClaw
+- approve join request
+- assert created agent:
+  - `adapterType == openclaw_gateway`
+  - token header exists and length >= 16
+  - `devicePrivateKeyPem` exists
 
-Short-term practical options:
-1. Preferred immediate path: reuse an existing signed-in board browser cookie and export as `PAPERCLIP_COOKIE`.
-2. Scripted fallback: sign-up/sign-in via `/api/auth/*`, then use a dedicated admin promotion/bootstrap utility for dev (recommended to add as a small internal script).
+### 3) Pairing stabilization
+- if first run returns `pairing required`, approve pending device in OpenClaw
+- rerun task and confirm success
+- assert later runs do not require re-pairing for same agent
 
-Note:
-- CLI `--api-key` is for agent auth and is not enough for board-only routes in this flow.
+### 4) Functional E2E assertions
+1. Task assigned to OpenClaw is completed and closed.
+2. Task asking OpenClaw to send main-webchat message succeeds (message visible in main chat).
+3. In `/new` OpenClaw session, OpenClaw can still create a Paperclip task.
 
-## 3) Resolve CLA Company ID
-With board cookie:
+## Manual Smoke Checklist
+Use [doc/OPENCLAW_ONBOARDING.md](../../../../doc/OPENCLAW_ONBOARDING.md) as the operator runbook.
+
+## Regression Gates
+Required before merge:
 ```bash
-curl -sS -H "Cookie: $PAPERCLIP_COOKIE" http://127.0.0.1:3100/api/companies
+pnpm -r typecheck
+pnpm test:run
+pnpm build
 ```
-Pick company where identifier/code is `CLA` and store `CLA_COMPANY_ID`.
 
-## 4) Preflight OpenClaw Endpoint Capability
-From host (using current OpenClaw token):
-- For HTTP SSE mode: confirm `/v1/responses` behavior.
-- For HTTP webhook mode: confirm `/hooks/agent` exists; if 404, hooks are disabled.
-- For gateway mode: confirm WS challenge appears from `ws://127.0.0.1:18789`.
-
-Expected in current docker smoke config:
-- `/hooks/agent` likely `404` unless hooks explicitly enabled.
-- WS gateway protocol works.
-
-## 5) Gateway Join Flow (Primary Path)
-
-1. Create agent-only invite in CLA:
+If full suite is too heavy locally, run at least:
 ```bash
-POST /api/companies/$CLA_COMPANY_ID/invites
-{ "allowedJoinTypes": "agent" }
+pnpm --filter @paperclipai/server test:run -- openclaw-gateway
+pnpm --filter @paperclipai/server typecheck
+pnpm --filter @paperclipai/ui typecheck
+pnpm --filter paperclipai typecheck
 ```
-
-2. Submit join request with gateway defaults:
-```json
-{
-  "requestType": "agent",
-  "agentName": "OpenClaw Gateway",
-  "adapterType": "openclaw_gateway",
-  "capabilities": "OpenClaw gateway agent",
-  "agentDefaultsPayload": {
-    "url": "ws://127.0.0.1:18789",
-    "headers": { "x-openclaw-token": "<gateway-token>" },
-    "role": "operator",
-    "scopes": ["operator.admin"],
-    "sessionKeyStrategy": "fixed",
-    "sessionKey": "paperclip",
-    "waitTimeoutMs": 120000
-  }
-}
-```
-
-3. Approve join request.
-4. **Hard gate before any task run:** fetch created agent config and validate:
-- `adapterType == "openclaw_gateway"`
-- `adapterConfig.url` uses `ws://` or `wss://`
-- `adapterConfig.headers.x-openclaw-token` exists and is not placeholder/too-short (`len >= 16`)
-- token hash matches the OpenClaw `gateway.auth.token` used for join
-- pairing mode is explicit:
-  - default path: `adapterConfig.disableDeviceAuth` is false/absent and stable `adapterConfig.devicePrivateKeyPem` is set so approvals persist across runs
-  - fallback path: `disableDeviceAuth=true` only for environments that cannot support pairing
-5. Trigger one connectivity run. If it returns `pairing required`, approve the pending device request in OpenClaw and retry once.
-  - Local docker automation path:
-    - `openclaw devices approve --latest --json --url ws://127.0.0.1:18789 --token <gateway-token>`
-  - After approval, retries should succeed using the persisted `devicePrivateKeyPem`.
-6. Claim API key with `claimSecret`.
-7. Save claimed token to OpenClaw expected file path (`~/.openclaw/workspace/paperclip-claimed-api-key.json`) and ensure `PAPERCLIP_API_KEY` + `PAPERCLIP_API_URL` are available for OpenClaw skill execution context.
-  - Write compatibility JSON keys (`token` and `apiKey`) to avoid runtime parser mismatch.
-8. Ensure Paperclip skill is installed for OpenClaw runtime.
-9. Send one bootstrap prompt to OpenClaw containing all setup instructions needed for this run (auth file usage, heartbeat procedure, required tools). If needed, send one follow-up nudge only.
-
-## 6) E2E Validation Cases
-
-### Case A: Assigned task execution/closure
-1. Create issue in CLA assigned to joined OpenClaw agent.
-2. Poll issue + heartbeat runs until terminal.
-3. Pass criteria:
-- At least one run invoked for that agent/issue.
-- Run status `succeeded`.
-- Issue reaches `done` (or documented expected terminal state if policy differs).
-
-### Case B: Message tool to main chat
-1. Create issue instructing OpenClaw: “send a message to the user’s main chat session in webchat using message tool”.
-2. Trigger/poll run completion.
-3. Validate output:
-- Automated minimum: run log/transcript confirms tool invocation success.
-- UX-level validation: message visibly appears in main chat UI.
-
-Current recommendation:
-- Keep this checkpoint as manual/assisted until a browser automation harness is added for OpenClaw control UI verification.
-
-### Case C: Fresh session still creates Paperclip task
-1. Force fresh-session behavior for test:
-- set agent `sessionKeyStrategy` to `run` (or explicitly rotate session key).
-2. Create issue asking agent to create a new Paperclip task.
-3. Pass criteria:
-- New issue appears in CLA with expected title/body.
-- Agent succeeds without re-onboarding.
-
-## 7) Observability and Assertions
-Use these APIs for deterministic assertions:
-- `GET /api/companies/:companyId/heartbeat-runs?agentId=...`
-- `GET /api/heartbeat-runs/:runId/events`
-- `GET /api/heartbeat-runs/:runId/log`
-- `GET /api/issues/:id`
-- `GET /api/companies/:companyId/issues?q=...`
-
-Include explicit timeout budgets per poll loop and hard failure reasons in output.
-
-## 8) Automation Artifact
-Implemented smoke harness:
-- `scripts/smoke/openclaw-gateway-e2e.sh`
-
-Responsibilities:
-- OpenClaw docker cleanup/rebuild/start.
-- Paperclip health/auth preflight.
-- CLA company resolution.
-- Old OpenClaw agent cleanup.
-- Invite/join/approve/claim orchestration.
-- Gateway agent config/token preflight validation before connectivity or case execution.
-- Pairing-mode preflight (`disableDeviceAuth=false` + stable `devicePrivateKeyPem` by default).
-- E2E case execution + assertions.
-- Final summary with run IDs, issue IDs, agent ID.
-
-## 9) Required Product/Code Changes to Support This Plan Cleanly
-
-### Access/onboarding backend
-- Make onboarding manifest/text adapter-aware (`openclaw` vs `openclaw_gateway`).
-- Add gateway-specific required fields and examples.
-- Add gateway-specific diagnostics (WS URL/token/role/scopes/device-auth hints).
-
-### Company settings UX
-- Replace single generic snippet with mode-specific invite actions.
-- Add “Invite OpenClaw Gateway” path with concise copy/paste onboarding.
-
-### Invite landing UX
-- Enable OpenClaw adapter options when invite allows agent join.
-- Allow `agentDefaultsPayload` entry for advanced joins where needed.
-
-### Adapter parity
-- Consider `onHireApproved` support for `openclaw_gateway` for consistency.
-
-### Test coverage
-- Add integration tests for adapter-aware onboarding manifest generation.
-- Add route tests for gateway join/approve/claim path.
-- Add smoke test target for gateway E2E flow.
-
-## 10) Execution Order
-1. Implement onboarding manifest/text split by adapter mode.
-2. Add company settings invite UX split (HTTP vs Gateway).
-3. Add gateway E2E smoke script.
-4. Run full CLA workflow in authenticated/private mode.
-5. Iterate on message-tool verification automation.
-
-## Acceptance Criteria
-- No webhook-mode ambiguity: webhook path does not silently appear as SSE success without explicit compatibility signal.
-- Gateway onboarding is first-class and copy/pasteable from company settings.
-- Gateway join fails fast if token is missing/placeholder, and smoke preflight verifies adapter/token parity before task runs.
-- Codex can run end-to-end onboarding and validation against CLA with repeatable cleanup.
-- All three validation cases are documented with pass/fail criteria and reproducible evidence paths.

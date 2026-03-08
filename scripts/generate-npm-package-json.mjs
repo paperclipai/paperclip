@@ -33,7 +33,7 @@ const workspacePaths = [
   "packages/adapters/claude-local",
   "packages/adapters/codex-local",
   "packages/adapters/opencode-local",
-  "packages/adapters/openclaw",
+  "packages/adapters/openclaw-gateway",
 ];
 
 // Workspace packages that are NOT bundled and must stay as npm dependencies.
