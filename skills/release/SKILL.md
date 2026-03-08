@@ -253,7 +253,7 @@ npm dist-tag add @paperclipai/db@{version} latest
 npm dist-tag add @paperclipai/adapter-utils@{version} latest
 npm dist-tag add @paperclipai/adapter-claude-local@{version} latest
 npm dist-tag add @paperclipai/adapter-codex-local@{version} latest
-npm dist-tag add @paperclipai/adapter-openclaw@{version} latest
+npm dist-tag add @paperclipai/adapter-openclaw-gateway@{version} latest
 ```
 
 **Script option:** Add `./scripts/release.sh --promote {version}` to automate

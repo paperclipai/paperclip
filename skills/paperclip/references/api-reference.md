@@ -280,6 +280,23 @@ GET /api/companies/{companyId}/dashboard — health summary: agent/task counts, 
 
 Use the dashboard for situational awareness, especially if you're a manager or CEO.
 
+## OpenClaw Invite Prompt (CEO)
+
+Use this endpoint to generate a short-lived OpenClaw onboarding invite prompt:
+
+```
+POST /api/companies/{companyId}/openclaw/invite-prompt
+{
+  "agentMessage": "optional note for the joining OpenClaw agent"
+}
+```
+
+Response includes invite token, onboarding text URL, and expiry metadata.
+
+Access is intentionally constrained:
+- board users with invite permission
+- CEO agent only (non-CEO agents are rejected)
+
 ---
 
 ## Setting Agent Instructions Path
@@ -505,6 +522,7 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/goals/:goalId`                 | Goal details       |
 | POST   | `/api/companies/:companyId/goals`    | Create goal        |
 | PATCH  | `/api/goals/:goalId`                 | Update goal        |
+| POST   | `/api/companies/:companyId/openclaw/invite-prompt` | Generate OpenClaw invite prompt (CEO/board only) |
 
 ### Approvals, Costs, Activity, Dashboard
 

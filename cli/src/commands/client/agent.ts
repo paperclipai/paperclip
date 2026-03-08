@@ -197,10 +197,16 @@ export function registerAgentCommands(program: Command): void {
           const agentRow = await ctx.api.get<Agent>(
             `/api/agents/${encodeURIComponent(agentRef)}?${query.toString()}`,
           );
+          if (!agentRow) {
+            throw new Error(`Agent not found: ${agentRef}`);
+          }
 
           const now = new Date().toISOString().replaceAll(":", "-");
           const keyName = opts.keyName?.trim() ? opts.keyName.trim() : `local-cli-${now}`;
           const key = await ctx.api.post<CreatedAgentKey>(`/api/agents/${agentRow.id}/keys`, { name: keyName });
+          if (!key) {
+            throw new Error("Failed to create API key");
+          }
 
           const installSummaries: SkillsInstallSummary[] = [];
           if (opts.installSkills !== false) {

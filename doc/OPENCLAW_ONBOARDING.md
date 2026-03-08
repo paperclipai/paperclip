@@ -18,10 +18,17 @@ Open the printed `Dashboard URL` (includes `#token=...`) in your browser.
 
 3. In Paperclip UI, go to `http://127.0.0.1:3100/CLA/company/settings`.
 
-4. Use the agent snippet flow.
-- Copy the snippet from company settings.
+4. Use the OpenClaw invite prompt flow.
+- In the Invites section, click `Generate OpenClaw Invite Prompt`.
+- Copy the generated prompt from `OpenClaw Invite Prompt`.
 - Paste it into OpenClaw main chat as one message.
 - If it stalls, send one follow-up: `How is onboarding going? Continue setup now.`
+
+Security/control note:
+- The OpenClaw invite prompt is created from a controlled endpoint:
+  - `POST /api/companies/{companyId}/openclaw/invite-prompt`
+  - board users with invite permission can call it
+  - agent callers are limited to the company CEO agent
 
 5. Approve the join request in Paperclip UI, then confirm the OpenClaw agent appears in CLA agents.
 
@@ -29,9 +36,10 @@ Open the printed `Dashboard URL` (includes `#token=...`) in your browser.
 - Confirm the created agent uses `openclaw_gateway` (not `openclaw`).
 - Confirm gateway URL is `ws://...` or `wss://...`.
 - Confirm gateway token is non-trivial (not empty / not 1-char placeholder).
+- The OpenClaw Gateway adapter UI should not expose `disableDeviceAuth` for normal onboarding.
 - Confirm pairing mode is explicit:
-  - recommended default: `adapterConfig.disableDeviceAuth` is false/absent and `adapterConfig.devicePrivateKeyPem` is present
-  - fallback only: `adapterConfig.disableDeviceAuth=true` when pairing cannot be supported in that environment
+  - required default: device auth enabled (`adapterConfig.disableDeviceAuth` false/absent) with persisted `adapterConfig.devicePrivateKeyPem`
+  - do not rely on `disableDeviceAuth` for normal onboarding
 - If you can run API checks with board auth:
 ```bash
 AGENT_ID="<newly-created-agent-id>"
@@ -40,11 +48,18 @@ curl -sS -H "Cookie: $PAPERCLIP_COOKIE" "http://127.0.0.1:3100/api/agents/$AGENT
 - Expected: `adapterType=openclaw_gateway`, `tokenLen >= 16`, `hasDeviceKey=true`, and `disableDeviceAuth=false`.
 
 Pairing handshake note:
-- The first gateway run may return `pairing required` once for a new device key.
+- Clean run expectation: first task should succeed without manual pairing commands.
+- The adapter attempts one automatic pairing approval + retry on first `pairing required` (when shared gateway auth token/password is valid).
+- If auto-pair cannot complete (for example token mismatch or no pending request), the first gateway run may still return `pairing required`.
+- This is a separate approval from Paperclip invite approval. You must approve the pending device in OpenClaw itself.
 - Approve it in OpenClaw, then retry the task.
 - For local docker smoke, you can approve from host:
 ```bash
 docker exec openclaw-docker-openclaw-gateway-1 sh -lc 'openclaw devices approve --latest --json --url "ws://127.0.0.1:18789" --token "$(node -p \"require(process.env.HOME+\\\"/.openclaw/openclaw.json\\\").gateway.auth.token\")"'
+```
+- You can inspect pending vs paired devices:
+```bash
+docker exec openclaw-docker-openclaw-gateway-1 sh -lc 'TOK="$(node -e \"const fs=require(\\\"fs\\\");const c=JSON.parse(fs.readFileSync(\\\"/home/node/.openclaw/openclaw.json\\\",\\\"utf8\\\"));process.stdout.write(c.gateway?.auth?.token||\\\"\\\");\")\"; openclaw devices list --json --url \"ws://127.0.0.1:18789\" --token \"$TOK\"'
 ```
 
 7. Case A (manual issue test).

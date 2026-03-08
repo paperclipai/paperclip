@@ -15,6 +15,14 @@ export const createCompanyInviteSchema = z.object({
 
 export type CreateCompanyInvite = z.infer<typeof createCompanyInviteSchema>;
 
+export const createOpenClawInvitePromptSchema = z.object({
+  agentMessage: z.string().max(4000).optional().nullable(),
+});
+
+export type CreateOpenClawInvitePrompt = z.infer<
+  typeof createOpenClawInvitePromptSchema
+>;
+
 export const acceptInviteSchema = z.object({
   requestType: z.enum(JOIN_REQUEST_TYPES),
   agentName: z.string().min(1).max(120).optional(),
