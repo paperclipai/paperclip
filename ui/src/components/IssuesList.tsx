@@ -594,7 +594,7 @@ export function IssuesList({
                   className="flex items-start gap-2 py-2.5 pl-2 pr-3 text-sm border-b border-border last:border-b-0 cursor-pointer hover:bg-accent/50 transition-colors no-underline text-inherit sm:items-center sm:py-2 sm:pl-1"
                 >
                   {/* Status icon - left column on mobile, inline on desktop */}
-                  <span className="shrink-0 sm:hidden" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+                  <span className="shrink-0 pt-px sm:hidden" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
                     <StatusIcon
                       status={issue.status}
                       onChange={(s) => onUpdateIssue(issue.id, { status: s })}
