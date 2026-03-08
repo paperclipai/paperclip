@@ -331,7 +331,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
   const paperclipEnvNote = renderPaperclipEnvNote(env);
   const commentNote = wakeCommentBody
-    ? `\n\nNew comment on this issue:\n${wakeCommentBody}\n`
+    ? `\n\n<user_comment>\n${wakeCommentBody}\n</user_comment>\n`
     : "";
   const prompt = `${instructionsPrefix}${paperclipEnvNote}${renderedPrompt}${commentNote}`;
 

@@ -289,7 +289,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   // User prompt is simple - just the rendered prompt template without instructions
   const commentNote = wakeCommentBody
-    ? `\n\nNew comment on this issue:\n${wakeCommentBody}\n`
+    ? `\n\n<user_comment>\n${wakeCommentBody}\n</user_comment>\n`
     : "";
   const userPrompt = renderTemplate(promptTemplate, {
     agentId: agent.id,

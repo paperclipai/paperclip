@@ -283,7 +283,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     context,
   });
   const commentNote = wakeCommentBody
-    ? `\n\nNew comment on this issue:\n${wakeCommentBody}\n`
+    ? `\n\n<user_comment>\n${wakeCommentBody}\n</user_comment>\n`
     : "";
   const prompt = `${instructionsPrefix}${renderedPrompt}${commentNote}`;
 

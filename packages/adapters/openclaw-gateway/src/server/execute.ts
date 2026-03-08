@@ -377,7 +377,7 @@ function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string
     `approval_id=${payload.approvalId ?? ""}`,
     `approval_status=${payload.approvalStatus ?? ""}`,
     `linked_issue_ids=${payload.issueIds.join(",")}`,
-    ...(payload.wakeCommentBody ? ["", `New comment on this issue:\n${payload.wakeCommentBody}`] : []),
+    ...(payload.wakeCommentBody ? ["", `<user_comment>\n${payload.wakeCommentBody}\n</user_comment>`] : []),
     "",
     "HTTP rules:",
     "- Use Authorization: Bearer $PAPERCLIP_API_KEY on every API call.",
