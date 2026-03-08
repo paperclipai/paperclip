@@ -31,6 +31,7 @@ RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" &
 FROM base AS production
 WORKDIR /app
 COPY --from=build /app /app
+RUN apt-get update && apt-get install -y --no-install-recommends gosu && rm -rf /var/lib/apt/lists/*
 RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest
 
 # Create non-root user so Claude Code allows --dangerously-skip-permissions
@@ -53,5 +54,4 @@ ENV NODE_ENV=production \
 VOLUME ["/paperclip"]
 EXPOSE 3100
 
-USER paperclip
 ENTRYPOINT ["/app/entrypoint.sh"]
