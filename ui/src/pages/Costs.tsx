@@ -149,6 +149,10 @@ export function Costs() {
     staleTime: 10_000,
   });
 
+  // weekData intentionally omits the customReady guard — it always uses the
+  // fixed current-week range (weekRange), not the user's custom date selection.
+  // running it unconditionally (when the providers tab is active) ensures the
+  // week-over-week spend column is always populated on tab mount.
   const { data: weekData } = useQuery({
     queryKey: queryKeys.usageByProvider(companyId, weekRange.from, weekRange.to),
     queryFn: () => costsApi.byProvider(companyId, weekRange.from, weekRange.to),
@@ -524,7 +528,7 @@ export function Costs() {
                       <ProviderQuotaCard
                         key={p}
                         provider={p}
-                        rows={byProvider.get(p)!}
+                        rows={byProvider.get(p) ?? []}
                         budgetMonthlyCents={spendData?.summary.budgetCents ?? 0}
                         totalCompanySpendCents={spendData?.summary.spendCents ?? 0}
                         weekSpendCents={weekSpendByProvider.get(p) ?? 0}
@@ -541,7 +545,7 @@ export function Costs() {
                 <TabsContent key={p} value={p} className="mt-4">
                   <ProviderQuotaCard
                     provider={p}
-                    rows={byProvider.get(p)!}
+                    rows={byProvider.get(p) ?? []}
                     budgetMonthlyCents={spendData?.summary.budgetCents ?? 0}
                     totalCompanySpendCents={spendData?.summary.spendCents ?? 0}
                     weekSpendCents={weekSpendByProvider.get(p) ?? 0}
