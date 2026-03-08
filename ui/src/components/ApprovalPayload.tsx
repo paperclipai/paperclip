@@ -13,7 +13,7 @@ export const typeIcon: Record<string, typeof UserPlus> = {
 export const defaultTypeIcon = ShieldCheck;
 
 function PayloadField({ label, value }: { label: string; value: unknown }) {
-  if (!value) return null;
+  if (value == null) return null;
   return (
     <div className="flex items-center gap-2">
       <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-xs">{label}</span>
@@ -71,7 +71,7 @@ function PayloadValue({ label, value }: { label: string; value: unknown }) {
                 <button
                   type="button"
                   className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-                  onClick={() => navigator.clipboard.writeText(item)}
+                  onClick={() => navigator.clipboard?.writeText(item).catch(() => {})}
                 >
                   Copy
                 </button>
@@ -110,7 +110,8 @@ function PayloadValue({ label, value }: { label: string; value: unknown }) {
 }
 
 function formatLabel(key: string): string {
-  return key.replace(/([A-Z])/g, " $1").replace(/[_-]/g, " ").trim();
+  const spaced = key.replace(/([A-Z])/g, " $1").replace(/[_-]/g, " ").trim();
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
 
 function GenericPayload({ payload }: { payload: Record<string, unknown> }) {
