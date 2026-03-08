@@ -287,13 +287,15 @@ function DragOverlayCard({ node, agent }: { node: LayoutNode; agent: Agent | und
 
   return (
     <div
-      className="bg-card border border-blue-500 rounded-lg shadow-xl select-none"
+      className="bg-card border border-blue-500 rounded-lg shadow-xl select-none relative"
       style={{ width: CARD_W, minHeight: CARD_H }}
     >
+      {/* Drag handle — same absolute top-left position as OrgCard */}
+      <div className="absolute -top-2 -left-2 z-10 w-6 h-6 rounded-full bg-background border border-blue-500 shadow-sm flex items-center justify-center text-blue-500">
+        <GripVertical className="h-3 w-3" />
+      </div>
+
       <div className="flex items-center px-4 py-3 gap-3">
-        <div className="shrink-0 text-blue-500">
-          <GripVertical className="h-4 w-4" />
-        </div>
         <div className="relative shrink-0">
           <div className="w-9 h-9 rounded-full bg-muted flex items-center justify-center">
             <AgentIcon icon={agent?.icon} className="h-4.5 w-4.5 text-foreground/70" />
