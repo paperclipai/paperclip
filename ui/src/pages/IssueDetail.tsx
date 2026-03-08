@@ -783,8 +783,8 @@ export function IssueDetail() {
               const attachment = await uploadAttachment.mutateAsync({ file });
               return attachment.contentPath;
             }}
-            onAttachImage={async (file) => {
-              await uploadAttachment.mutateAsync({ file });
+            onAttachImage={async (file, commentId) => {
+              await uploadAttachment.mutateAsync({ file, commentId });
             }}
             liveRunSlot={<LiveRunWidget issueId={issueId!} companyId={issue.companyId} />}
           />

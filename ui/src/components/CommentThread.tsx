@@ -396,6 +396,18 @@ export function CommentThread({
                 <Paperclip className="h-4 w-4" />
               </Button>
             </div>
+            {pendingFile && (
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground bg-muted/50 px-2 py-1 rounded">
+                <span className="truncate max-w-[150px]">{pendingFile.name}</span>
+                <button
+                  type="button"
+                  onClick={() => setPendingFile(null)}
+                  className="hover:text-foreground"
+                >
+                  ×
+                </button>
+              </div>
+            )}
           )}
           {isClosed && (
             <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
