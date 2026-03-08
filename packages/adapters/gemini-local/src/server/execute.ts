@@ -1,5 +1,7 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
   asString,
@@ -17,6 +19,12 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { parseGeminiStreamJson, isGeminiSessionNotFoundError } from "./parse.js";
 
+const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
+const PAPERCLIP_SKILLS_CANDIDATES = [
+  path.resolve(__moduleDir, "../../skills"),
+  path.resolve(__moduleDir, "../../../../../skills"),
+];
+
 function firstNonEmptyLine(text: string): string {
   return (
     text
@@ -24,6 +32,51 @@ function firstNonEmptyLine(text: string): string {
       .map((line) => line.trim())
       .find(Boolean) ?? ""
   );
+}
+
+function renderPaperclipEnvNote(env: Record<string, string>): string {
+  const paperclipKeys = Object.keys(env)
+    .filter((key) => key.startsWith("PAPERCLIP_"))
+    .sort();
+  if (paperclipKeys.length === 0) return "";
+  return [
+    "Paperclip runtime note:",
+    `The following PAPERCLIP_* environment variables are available in this run: ${paperclipKeys.join(", ")}`,
+    "Do not assume these variables are missing without checking your shell environment.",
+    "",
+    "",
+  ].join("\n");
+}
+
+async function resolvePaperclipSkillsDir(): Promise<string | null> {
+  for (const candidate of PAPERCLIP_SKILLS_CANDIDATES) {
+    const isDir = await fs.stat(candidate).then((s) => s.isDirectory()).catch(() => false);
+    if (isDir) return candidate;
+  }
+  return null;
+}
+
+/**
+ * Create a tmpdir with `.gemini/skills/` containing symlinks to skills from
+ * the repo's `skills/` directory, so `GEMINI_CLI_HOME` makes Gemini CLI discover
+ * them as proper registered skills without polluting `~/.gemini`.
+ */
+async function buildSkillsDir(): Promise<string> {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-skills-"));
+  const target = path.join(tmp, ".gemini", "skills");
+  await fs.mkdir(target, { recursive: true });
+  const skillsDir = await resolvePaperclipSkillsDir();
+  if (!skillsDir) return tmp;
+  const entries = await fs.readdir(skillsDir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      await fs.symlink(
+        path.join(skillsDir, entry.name),
+        path.join(target, entry.name),
+      );
+    }
+  }
+  return tmp;
 }
 
 function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
@@ -63,12 +116,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+  const tmpHome = await buildSkillsDir();
 
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
     typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
   const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
   env.PAPERCLIP_RUN_ID = runId;
+  if (tmpHome) env.GEMINI_CLI_HOME = tmpHome;
 
   const wakeTaskId =
     (typeof context.taskId === "string" && context.taskId.trim().length > 0 && context.taskId.trim()) ||
@@ -175,6 +230,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ];
   })();
 
+  const paperclipEnvNote = renderPaperclipEnvNote(env);
   const renderedPrompt = renderTemplate(promptTemplate, {
     agentId: agent.id,
     companyId: agent.companyId,
@@ -184,7 +240,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     run: { id: runId, source: "on_demand" },
     context,
   });
-  const prompt = `${instructionsPrefix}${renderedPrompt}`;
+  const prompt = `${paperclipEnvNote}${instructionsPrefix}${renderedPrompt}`;
 
   const buildArgs = (resumeSessionId: string | null) => {
     const args: string[] = [];
@@ -292,20 +348,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   };
 
-  const initial = await runAttempt(sessionId);
-  if (
-    sessionId &&
-    !initial.proc.timedOut &&
-    (initial.proc.exitCode ?? 0) !== 0 &&
-    isGeminiSessionNotFoundError(initial.proc.stdout, initial.proc.stderr)
-  ) {
-    await onLog(
-      "stderr",
-      `[paperclip] Gemini resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
-    );
-    const retry = await runAttempt(null);
-    return toResult(retry, true, true);
-  }
+  try {
+    const initial = await runAttempt(sessionId);
+    if (
+      sessionId &&
+      !initial.proc.timedOut &&
+      (initial.proc.exitCode ?? 0) !== 0 &&
+      isGeminiSessionNotFoundError(initial.proc.stdout, initial.proc.stderr)
+    ) {
+      await onLog(
+        "stderr",
+        `[paperclip] Gemini resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
+      );
+      const retry = await runAttempt(null);
+      return toResult(retry, true, true);
+    }
 
-  return toResult(initial);
+    return toResult(initial);
+  } finally {
+    if (tmpHome) {
+      fs.rm(tmpHome, { recursive: true, force: true }).catch(() => {});
+    }
+  }
 }
