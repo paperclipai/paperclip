@@ -19,11 +19,4 @@ export interface DashboardSummary {
   };
   pendingApprovals: number;
   staleTasks: number;
-  runs: {
-    successFailureSeries: Array<{
-      date: string;
-      succeeded: number;
-      failed: number;
-    }>;
-  };
 }
