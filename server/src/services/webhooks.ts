@@ -2,7 +2,10 @@ import crypto from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import { webhooks } from "@paperclipai/db";
 import type { WebhookEventType } from "@paperclipai/shared";
-import { eq, and } from "drizzle-orm";
+import { eq, and, count } from "drizzle-orm";
+import { unprocessable } from "../errors.js";
+
+const MAX_WEBHOOKS_PER_COMPANY = 20;
 
 export interface WebhookPayload {
   event: string;
@@ -97,6 +100,14 @@ export function webhookService(db: Db) {
       companyId: string,
       input: { url: string; secret?: string | null; events: string[]; description?: string | null; enabled?: boolean },
     ) {
+      const [{ total }] = await db
+        .select({ total: count() })
+        .from(webhooks)
+        .where(eq(webhooks.companyId, companyId));
+      if (total >= MAX_WEBHOOKS_PER_COMPANY) {
+        throw unprocessable(`Maximum of ${MAX_WEBHOOKS_PER_COMPANY} webhooks per company`);
+      }
+
       const rows = await db
         .insert(webhooks)
         .values({
