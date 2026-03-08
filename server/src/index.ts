@@ -1,12 +1,12 @@
 /// <reference path="./types/express.d.ts" />
+process.stdout.setDefaultEncoding("utf8");
+process.stderr.setDefaultEncoding("utf8");
+
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
-
-process.stdout.setDefaultEncoding("utf8");
-process.stderr.setDefaultEncoding("utf8");
 import type { Request as ExpressRequest, RequestHandler } from "express";
 import { and, eq } from "drizzle-orm";
 import {

@@ -1,11 +1,10 @@
+process.stdout.setDefaultEncoding("utf8");
+process.stderr.setDefaultEncoding("utf8");
+
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-
-process.stdout.setDefaultEncoding("utf8");
-process.stderr.setDefaultEncoding("utf8");
-
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 import {

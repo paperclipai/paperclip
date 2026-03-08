@@ -191,6 +191,11 @@ function isWindowsBatchScript(commandPath: string): boolean {
   return ext === ".cmd" || ext === ".bat";
 }
 
+function escapeForCmd(arg: string): string {
+  // Escape CMD metacharacters: & | < > ^ ( ) %
+  return arg.replace(/[&|<>^()%]/g, "^$&");
+}
+
 async function getSpawnPlan(
   command: string,
   args: string[],
@@ -209,7 +214,7 @@ async function getSpawnPlan(
   const commandProcessor = env.ComSpec ?? env.COMSPEC ?? "cmd.exe";
   return {
     command: commandProcessor,
-    args: ["/d", "/s", "/c", resolvedCommand, ...args],
+    args: ["/d", "/s", "/c", resolvedCommand, ...args.map(escapeForCmd)],
     shell: false,
   };
 }

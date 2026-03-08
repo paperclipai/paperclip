@@ -9,7 +9,7 @@ async function writeFakeAgentCommand(binDir: string, argsCapturePath: string): P
   const commandPath = path.join(binDir, isWindows ? "agent.cmd" : "agent");
   const script = isWindows
     ? `@echo off
-node -e "const fs = require('node:fs'); const outPath = process.env.PAPERCLIP_TEST_ARGS_PATH; if (outPath) { fs.writeFileSync(outPath, JSON.stringify(process.argv.slice(1)), 'utf8'); } console.log(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'output_text', text: 'hello' }] } })); console.log(JSON.stringify({ type: 'result', subtype: 'success', result: 'hello' }));" -- %*`
+node -e "const fs = require('node:fs'); const outPath = process.env.PAPERCLIP_TEST_ARGS_PATH; if (outPath) { fs.writeFileSync(outPath, JSON.stringify(process.argv.slice(2)), 'utf8'); } console.log(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'output_text', text: 'hello' }] } })); console.log(JSON.stringify({ type: 'result', subtype: 'success', result: 'hello' }));" -- %*`
     : `#!/usr/bin/env node
 const fs = require("node:fs");
 const outPath = process.env.PAPERCLIP_TEST_ARGS_PATH;
