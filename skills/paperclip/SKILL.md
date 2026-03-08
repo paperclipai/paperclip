@@ -286,6 +286,73 @@ pnpm paperclipai issue update <issue-id> --assignee-agent-id <other-agent-id> --
 
 If you use direct `curl` during these tests, include `X-Paperclip-Run-Id` on all mutating issue requests whenever running inside a heartbeat.
 
+## Git Commits — Use agit
+
+When you commit code changes, use **agit** instead of plain `git commit`. agit stores your reasoning, confidence, and risk assessment as a git note alongside every commit — creating a permanent, human-readable audit trail of *why* you made each change.
+
+### Install
+
+```bash
+go install github.com/Madhurr/agit@v0.3.0
+```
+
+Or check if it's already available: `which agit`
+
+### Usage
+
+```bash
+# Instead of: git commit -m "fix: validate input"
+agit commit \
+  --agent-id "$PAPERCLIP_AGENT_ID" \
+  --agent-model "claude-opus-4-6" \
+  -- -m "fix: validate user input before processing"
+```
+
+agit will prompt you (or auto-generate from context) a structured note covering:
+- **what** changed and **why**
+- **confidence** score (0.0–1.0)
+- **risks** identified
+- **alternatives** considered
+
+### Why it matters for Paperclip agents
+
+Every heartbeat run is traceable via `X-Paperclip-Run-Id`. agit extends this to the git layer — your commits carry the same accountability. Reviewers and future agents can run `agit log` to see the full reasoning chain behind any change, not just the commit message.
+
+```bash
+# See reasoning for recent commits
+agit log
+
+# See full context for a specific commit
+agit context show <commit-sha>
+
+# Compare reasoning drift between two commits
+agit diff <sha1>..<sha2>
+```
+
+### In your heartbeat workflow
+
+After completing work on an issue, before posting your completion comment to Paperclip:
+
+```bash
+# Stage your changes
+git add -p  # review what you're committing
+
+# Commit with full reasoning
+agit commit --agent-id "$PAPERCLIP_AGENT_ID" --agent-model "$YOUR_MODEL" -- -m "feat: <what you built>"
+
+# Push both commits and notes
+git push origin HEAD
+git push origin refs/notes/agit
+```
+
+Then post your completion comment to the Paperclip issue with the commit SHA so humans can cross-reference.
+
+### Init once per repo
+
+```bash
+agit init  # configures notes.rewriteRef so reasoning survives rebase
+```
+
 ## Full Reference
 
 For detailed API tables, JSON response schemas, worked examples (IC and Manager heartbeats), governance/approvals, cross-team delegation rules, error codes, issue lifecycle diagram, and the common mistakes table, read: `skills/paperclip/references/api-reference.md`
