@@ -390,3 +390,28 @@ POST /api/companies/{id}/cost-events
 | 2026-03-08 | Added multi-channel architecture |
 | 2026-03-08 | Added Phase 4: Channel Routing |
 | 2026-03-08 | **Added Phase 1.5: Dependencies (BLOCKER)** |
+| 2026-03-08 | **Added Plane integration option** (alternative to building dependencies) |
+
+---
+
+## Alternative: Plane Integration
+
+Instead of building dependencies into Paperclip, we can integrate with **Plane** (plane.so), which already has:
+
+- ✅ Task dependencies (blocking/blocked by)
+- ✅ Timeline view with connectors
+- ✅ Cycles/sprints
+- ✅ Full REST API
+- ✅ Self-hosted option (MIT license)
+
+**See:** `PLANE-INTEGRATION.md` for full design
+
+**Architecture:**
+```
+Paperclip (Agent Orchestration) ←sync→ Plane (Task Management)
+         │                                    │
+         └──────────── OpenClaw ──────────────┘
+                    (Execution)
+```
+
+**Decision:** Build dependencies into Paperclip (Phase 1.5) OR integrate with Plane (new Phase 1.5-alt)
