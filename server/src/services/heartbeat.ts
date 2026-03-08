@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, gt, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -848,9 +848,30 @@ export function heartbeatService(db: Db) {
     return claimed;
   }
 
+
+  async function shouldAutoRetry(agentId: string, taskKey: string | null): Promise<boolean> {
+    if (!taskKey) return false;
+    const MAX_AUTO_RETRIES = 2; // 3 total attempts before escalating to error
+
+    // Count both failed and timed_out runs
+    const recentFailures = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.agentId, agentId),
+        inArray(heartbeatRuns.status, ["failed", "timed_out"]),
+        sql`${heartbeatRuns.contextSnapshot} ->> 'taskKey' = ${taskKey}`,
+        gte(heartbeatRuns.finishedAt, new Date(Date.now() - 24 * 60 * 60 * 1000)),
+      ))
+      .limit(MAX_AUTO_RETRIES + 1);
+
+    return recentFailures.length <= MAX_AUTO_RETRIES;
+  }
+
   async function finalizeAgentStatus(
     agentId: string,
     outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
+    taskKey?: string | null,
   ) {
     const existing = await getAgent(agentId);
     if (!existing) return;
@@ -860,12 +881,15 @@ export function heartbeatService(db: Db) {
     }
 
     const runningCount = await countRunningRunsForAgent(agentId);
+    const shouldRetry = (outcome === "failed" || outcome === "timed_out") && await shouldAutoRetry(agentId, taskKey ?? null);
     const nextStatus =
       runningCount > 0
         ? "running"
         : outcome === "succeeded" || outcome === "cancelled"
           ? "idle"
-          : "error";
+          : shouldRetry
+            ? "idle"   // auto-retry: stay idle so scheduler picks it up
+            : "error";
 
     const updated = await db
       .update(agents)
@@ -891,6 +915,18 @@ export function heartbeatService(db: Db) {
           outcome,
         },
       });
+      
+      // Auto-requeue on failure if under retry limit
+      // Use source: "timer" to bypass wakeOnDemand policy check
+      // This ensures auto-retry works even when wakeOnDemand is disabled
+      if (nextStatus === "idle" && shouldRetry && taskKey) {
+        await enqueueWakeup(agentId, {
+          source: "timer",
+          reason: "auto_retry_after_failure",
+          triggerDetail: "auto_retry",
+          payload: { taskKey },
+        });
+      }
     }
   }
 
@@ -934,7 +970,8 @@ export function heartbeatService(db: Db) {
         });
         await releaseIssueExecutionAndPromote(updatedRun);
       }
-      await finalizeAgentStatus(run.agentId, "failed");
+      const runTaskKey = run.contextSnapshot?.taskKey ?? null;
+      await finalizeAgentStatus(run.agentId, "failed", runTaskKey);
       await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
@@ -1392,7 +1429,7 @@ export function heartbeatService(db: Db) {
           }
         }
       }
-      await finalizeAgentStatus(agent.id, outcome);
+      await finalizeAgentStatus(agent.id, outcome, taskKey);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown adapter failure";
       logger.error({ err, runId }, "heartbeat execution failed");
@@ -1453,7 +1490,7 @@ export function heartbeatService(db: Db) {
         }
       }
 
-      await finalizeAgentStatus(agent.id, "failed");
+      await finalizeAgentStatus(agent.id, "failed", taskKey);
     } finally {
       await startNextQueuedRunForAgent(agent.id);
     }
@@ -2273,7 +2310,8 @@ export function heartbeatService(db: Db) {
       }
 
       runningProcesses.delete(run.id);
-      await finalizeAgentStatus(run.agentId, "cancelled");
+      const cancelTaskKey = run.contextSnapshot?.taskKey ?? null;
+      await finalizeAgentStatus(run.agentId, "cancelled", cancelTaskKey);
       await startNextQueuedRunForAgent(run.agentId);
       return cancelled;
     },
