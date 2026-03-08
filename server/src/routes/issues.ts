@@ -369,7 +369,8 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
     // Idempotency dedup: return existing issue without side-effects
     if ("_deduplicated" in issue && issue._deduplicated) {
-      res.status(200).json(issue);
+      const { _deduplicated: _, ...issueBody } = issue as typeof issue & { _deduplicated: true };
+      res.status(200).json(issueBody);
       return;
     }
 

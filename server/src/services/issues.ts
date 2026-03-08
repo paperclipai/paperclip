@@ -383,22 +383,10 @@ export function issueService(db: Db) {
       data: Omit<typeof issues.$inferInsert, "companyId"> & { labelIds?: string[] },
     ) => {
       const { labelIds: inputLabelIds, ...issueData } = data;
-      if (data.assigneeAgentId && data.assigneeUserId) {
-        throw unprocessable("Issue can only have one assignee");
-      }
-      if (data.assigneeAgentId) {
-        await assertAssignableAgent(companyId, data.assigneeAgentId);
-      }
-      if (data.assigneeUserId) {
-        await assertAssignableUser(companyId, data.assigneeUserId);
-      }
-      if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
-        throw unprocessable("in_progress issues require an assignee");
-      }
-
       // Idempotency: if a key is provided and an open issue with that key
       // already exists in this company, return the existing issue instead of
-      // creating a duplicate.
+      // creating a duplicate. Checked before assignee validation so dedup
+      // works even if the requested assignee has since been deactivated.
       const OPEN_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
       const idempotencyKey = typeof issueData.idempotencyKey === "string" && issueData.idempotencyKey.trim().length > 0
         ? issueData.idempotencyKey.trim()
@@ -423,40 +411,77 @@ export function issueService(db: Db) {
         }
       }
 
-      return db.transaction(async (tx) => {
-        const [company] = await tx
-          .update(companies)
-          .set({ issueCounter: sql`${companies.issueCounter} + 1` })
-          .where(eq(companies.id, companyId))
-          .returning({ issueCounter: companies.issueCounter, issuePrefix: companies.issuePrefix });
+      if (data.assigneeAgentId && data.assigneeUserId) {
+        throw unprocessable("Issue can only have one assignee");
+      }
+      if (data.assigneeAgentId) {
+        await assertAssignableAgent(companyId, data.assigneeAgentId);
+      }
+      if (data.assigneeUserId) {
+        await assertAssignableUser(companyId, data.assigneeUserId);
+      }
+      if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
+        throw unprocessable("in_progress issues require an assignee");
+      }
 
-        const issueNumber = company.issueCounter;
-        const identifier = `${company.issuePrefix}-${issueNumber}`;
+      try {
+        return await db.transaction(async (tx) => {
+          const [company] = await tx
+            .update(companies)
+            .set({ issueCounter: sql`${companies.issueCounter} + 1` })
+            .where(eq(companies.id, companyId))
+            .returning({ issueCounter: companies.issueCounter, issuePrefix: companies.issuePrefix });
 
-        const values = {
-          ...issueData,
-          companyId,
-          issueNumber,
-          identifier,
-          idempotencyKey,
-        } as typeof issues.$inferInsert;
-        if (values.status === "in_progress" && !values.startedAt) {
-          values.startedAt = new Date();
-        }
-        if (values.status === "done") {
-          values.completedAt = new Date();
-        }
-        if (values.status === "cancelled") {
-          values.cancelledAt = new Date();
-        }
+          const issueNumber = company.issueCounter;
+          const identifier = `${company.issuePrefix}-${issueNumber}`;
 
-        const [issue] = await tx.insert(issues).values(values).returning();
-        if (inputLabelIds) {
-          await syncIssueLabels(issue.id, companyId, inputLabelIds, tx);
+          const values = {
+            ...issueData,
+            companyId,
+            issueNumber,
+            identifier,
+            idempotencyKey,
+          } as typeof issues.$inferInsert;
+          if (values.status === "in_progress" && !values.startedAt) {
+            values.startedAt = new Date();
+          }
+          if (values.status === "done") {
+            values.completedAt = new Date();
+          }
+          if (values.status === "cancelled") {
+            values.cancelledAt = new Date();
+          }
+
+          const [issue] = await tx.insert(issues).values(values).returning();
+          if (inputLabelIds) {
+            await syncIssueLabels(issue.id, companyId, inputLabelIds, tx);
+          }
+          const [enriched] = await withIssueLabels(tx, [issue]);
+          return enriched;
+        });
+      } catch (err: unknown) {
+        // TOCTOU safety net: if a concurrent request won the race and inserted
+        // with the same idempotency key, the unique partial index will reject
+        // this insert with a unique_violation (23505). Retry the lookup.
+        if (idempotencyKey && err instanceof Error && "code" in err && (err as { code: string }).code === "23505") {
+          const existing = await db
+            .select()
+            .from(issues)
+            .where(
+              and(
+                eq(issues.companyId, companyId),
+                eq(issues.idempotencyKey, idempotencyKey),
+                inArray(issues.status, OPEN_STATUSES),
+              ),
+            )
+            .then((rows) => rows[0] ?? null);
+          if (existing) {
+            const [enriched] = await withIssueLabels(db, [existing]);
+            return Object.assign(enriched, { _deduplicated: true as const });
+          }
         }
-        const [enriched] = await withIssueLabels(tx, [issue]);
-        return enriched;
-      });
+        throw err;
+      }
     },
 
     update: async (id: string, data: Partial<typeof issues.$inferInsert> & { labelIds?: string[] }) => {

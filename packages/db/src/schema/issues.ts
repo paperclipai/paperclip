@@ -64,8 +64,8 @@ export const issues = pgTable(
     parentIdx: index("issues_company_parent_idx").on(table.companyId, table.parentId),
     projectIdx: index("issues_company_project_idx").on(table.companyId, table.projectId),
     identifierIdx: uniqueIndex("issues_identifier_idx").on(table.identifier),
-    idempotencyKeyIdx: index("issues_company_idempotency_key_idx")
+    idempotencyKeyIdx: uniqueIndex("issues_company_idempotency_key_open_idx")
       .on(table.companyId, table.idempotencyKey)
-      .where(sql`${table.idempotencyKey} IS NOT NULL`),
+      .where(sql`${table.idempotencyKey} IS NOT NULL AND ${table.status} NOT IN ('done', 'cancelled')`),
   }),
 );
