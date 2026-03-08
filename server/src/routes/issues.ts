@@ -132,7 +132,28 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
     const runId = requireAgentRunId(req, res);
     if (!runId) return false;
-    const ownership = await svc.assertCheckoutOwner(issue.id, actorAgentId, runId);
+    let ownership: Awaited<ReturnType<typeof svc.assertCheckoutOwner>>;
+    try {
+      ownership = await svc.assertCheckoutOwner(issue.id, actorAgentId, runId);
+    } catch (err) {
+      if (
+        err instanceof HttpError &&
+        err.status === 409 &&
+        err.message === "Issue run ownership conflict"
+      ) {
+        const checkoutRunId =
+          err.details && typeof err.details === "object"
+            ? (err.details as Record<string, unknown>).checkoutRunId
+            : null;
+        if (typeof checkoutRunId === "string" && checkoutRunId.length > 0) {
+          res.status(403).json({ error: `Issue is checked out by run ${checkoutRunId}` });
+          return false;
+        }
+        res.status(403).json({ error: "Issue run ownership conflict" });
+        return false;
+      }
+      throw err;
+    }
     if (ownership.adoptedFromRunId) {
       const actor = getActorInfo(req);
       await logActivity(db, {
