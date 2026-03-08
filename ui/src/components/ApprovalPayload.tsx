@@ -50,26 +50,84 @@ export function HireAgentPayload({ payload }: { payload: Record<string, unknown>
   );
 }
 
-export function CeoStrategyPayload({ payload }: { payload: Record<string, unknown> }) {
-  const plan = payload.plan ?? payload.description ?? payload.strategy ?? payload.text;
-  return (
-    <div className="mt-3 space-y-1.5 text-sm">
-      <PayloadField label="Title" value={payload.title} />
-      {!!plan && (
-        <div className="mt-2 rounded-md bg-muted/40 px-3 py-2 text-sm text-muted-foreground whitespace-pre-wrap font-mono text-xs max-h-48 overflow-y-auto">
-          {String(plan)}
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.length > 0 && value.every((v) => typeof v === "string");
+}
+
+function PayloadValue({ label, value }: { label: string; value: unknown }) {
+  if (value == null || value === "") return null;
+
+  if (isStringArray(value)) {
+    return (
+      <div>
+        <span className="text-muted-foreground text-xs">{label}</span>
+        <div className="mt-1 space-y-2">
+          {value.map((item, i) => (
+            <div key={i} className="rounded-md border bg-card px-3 py-2">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs text-muted-foreground font-medium">
+                  {value.length > 1 ? `${i + 1} of ${value.length}` : label}
+                </span>
+                <button
+                  type="button"
+                  className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                  onClick={() => navigator.clipboard.writeText(item)}
+                >
+                  Copy
+                </button>
+              </div>
+              <div className="text-sm whitespace-pre-wrap">{item}</div>
+            </div>
+          ))}
         </div>
-      )}
-      {!plan && (
-        <pre className="mt-2 rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground overflow-x-auto max-h-48">
-          {JSON.stringify(payload, null, 2)}
-        </pre>
-      )}
+      </div>
+    );
+  }
+
+  if (typeof value === "string" && value.length > 80) {
+    return (
+      <div>
+        <span className="text-muted-foreground text-xs">{label}</span>
+        <div className="mt-1 rounded-md bg-muted/40 px-3 py-2 text-sm whitespace-pre-wrap max-h-48 overflow-y-auto">
+          {value}
+        </div>
+      </div>
+    );
+  }
+
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return <PayloadField label={label} value={value} />;
+  }
+
+  return (
+    <div>
+      <span className="text-muted-foreground text-xs">{label}</span>
+      <pre className="mt-1 rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground overflow-x-auto max-h-32">
+        {JSON.stringify(value, null, 2)}
+      </pre>
+    </div>
+  );
+}
+
+function formatLabel(key: string): string {
+  return key.replace(/([A-Z])/g, " $1").replace(/[_-]/g, " ").trim();
+}
+
+function GenericPayload({ payload }: { payload: Record<string, unknown> }) {
+  const entries = Object.entries(payload).filter(([, v]) => v != null && v !== "");
+  if (entries.length === 0) {
+    return <p className="mt-3 text-sm text-muted-foreground">No payload data.</p>;
+  }
+  return (
+    <div className="mt-3 space-y-2 text-sm">
+      {entries.map(([key, value]) => (
+        <PayloadValue key={key} label={formatLabel(key)} value={value} />
+      ))}
     </div>
   );
 }
 
 export function ApprovalPayloadRenderer({ type, payload }: { type: string; payload: Record<string, unknown> }) {
   if (type === "hire_agent") return <HireAgentPayload payload={payload} />;
-  return <CeoStrategyPayload payload={payload} />;
+  return <GenericPayload payload={payload} />;
 }
