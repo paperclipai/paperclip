@@ -18,6 +18,7 @@ import {
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
   ensurePathInEnv,
+  deriveAgentHomeFromInstructionsFilePath,
   renderTemplate,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -224,6 +225,12 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   }
   if (runtimePrimaryUrl) {
     env.PAPERCLIP_RUNTIME_PRIMARY_URL = runtimePrimaryUrl;
+  const agentHome = deriveAgentHomeFromInstructionsFilePath(
+    asString(config.instructionsFilePath, ""),
+    cwd,
+  );
+  if (agentHome) {
+    env.AGENT_HOME = agentHome;
   }
 
   for (const [key, value] of Object.entries(envConfig)) {
