@@ -897,12 +897,16 @@ export function Inbox() {
                 const isUnread = issue.isUnreadForMe && !fadingOutIssues.has(issue.id);
                 const isFading = fadingOutIssues.has(issue.id);
                 return (
-                  <div
+                  <Link
                     key={issue.id}
-                    className="flex items-start gap-3 px-4 py-3 transition-colors hover:bg-accent/50"
+                    to={`/issues/${issue.identifier ?? issue.id}`}
+                    className="flex min-w-0 cursor-pointer flex-col gap-1 px-3 py-3 no-underline text-inherit transition-colors hover:bg-accent/50 sm:flex-row sm:items-center sm:gap-3 sm:px-4"
                   >
-                    <span className="flex h-5 w-4 shrink-0 items-center justify-center mt-0.5 sm:mt-0">
-                      {(isUnread || isFading) && (
+                    <span className="line-clamp-2 text-sm sm:order-2 sm:flex-1 sm:min-w-0 sm:line-clamp-none sm:truncate">
+                      {issue.title}
+                    </span>
+                    <span className="flex items-center gap-2 sm:order-1 sm:shrink-0">
+                      {(isUnread || isFading) ? (
                         <button
                           type="button"
                           onClick={(e) => {
@@ -910,7 +914,7 @@ export function Inbox() {
                             e.stopPropagation();
                             markReadMutation.mutate(issue.id);
                           }}
-                          className="group/dot flex h-4 w-4 items-center justify-center rounded-full transition-colors hover:bg-blue-500/20"
+                          className="group/dot flex h-4 w-4 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-blue-500/20"
                           aria-label="Mark as read"
                         >
                           <span
@@ -919,32 +923,24 @@ export function Inbox() {
                             }`}
                           />
                         </button>
+                      ) : (
+                        <span className="h-4 w-4 shrink-0" />
                       )}
+                      <PriorityIcon priority={issue.priority} />
+                      <StatusIcon status={issue.status} />
+                      <span className="text-xs font-mono text-muted-foreground">
+                        {issue.identifier ?? issue.id.slice(0, 8)}
+                      </span>
+                      <span className="text-xs text-muted-foreground sm:hidden">
+                        &middot;
+                      </span>
+                      <span className="text-xs text-muted-foreground sm:order-last">
+                        {issue.lastExternalCommentAt
+                          ? `commented ${timeAgo(issue.lastExternalCommentAt)}`
+                          : `updated ${timeAgo(issue.updatedAt)}`}
+                      </span>
                     </span>
-                    <Link
-                      to={`/issues/${issue.identifier ?? issue.id}`}
-                      className="flex flex-1 min-w-0 cursor-pointer flex-col gap-1 no-underline text-inherit sm:flex-row sm:items-center sm:gap-3"
-                    >
-                      <span className="line-clamp-2 text-sm sm:order-2 sm:flex-1 sm:min-w-0 sm:line-clamp-none sm:truncate">
-                        {issue.title}
-                      </span>
-                      <span className="flex items-center gap-2 sm:order-1 sm:shrink-0">
-                        <PriorityIcon priority={issue.priority} />
-                        <StatusIcon status={issue.status} />
-                        <span className="text-xs font-mono text-muted-foreground">
-                          {issue.identifier ?? issue.id.slice(0, 8)}
-                        </span>
-                        <span className="text-xs text-muted-foreground sm:hidden">
-                          &middot;
-                        </span>
-                        <span className="text-xs text-muted-foreground sm:order-last">
-                          {issue.lastExternalCommentAt
-                            ? `commented ${timeAgo(issue.lastExternalCommentAt)}`
-                            : `updated ${timeAgo(issue.updatedAt)}`}
-                        </span>
-                      </span>
-                    </Link>
-                  </div>
+                  </Link>
                 );
               })}
             </div>
