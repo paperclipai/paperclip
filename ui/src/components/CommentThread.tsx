@@ -334,8 +334,8 @@ export function CommentThread({
           await onAttachImage(pendingFile, commentId);
         } finally {
           setAttaching(false);
+          setPendingFile(null);
         }
-        setPendingFile(null);
       }
       
       setBody("");

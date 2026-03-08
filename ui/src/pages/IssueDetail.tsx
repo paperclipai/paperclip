@@ -777,7 +777,7 @@ export function IssueDetail() {
                 await addCommentAndReassign.mutateAsync({ body, reopen, reassignment });
                 return;
               }
-              await addComment.mutateAsync({ body, reopen });
+              return await addComment.mutateAsync({ body, reopen });
             }}
             imageUploadHandler={async (file) => {
               const attachment = await uploadAttachment.mutateAsync({ file });
