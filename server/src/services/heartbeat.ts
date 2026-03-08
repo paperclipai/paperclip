@@ -30,6 +30,8 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
+const AUTO_RETRY_MAX_ATTEMPTS = 2; // 3 total (original + 2 retries) before escalating to error
+const AUTO_RETRY_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 function appendExcerpt(prev: string, chunk: string) {
   return appendWithCap(prev, chunk, MAX_EXCERPT_BYTES);
@@ -854,7 +856,9 @@ export function heartbeatService(db: Db) {
    *
    * Conditions:
    * - taskKey must be set (i.e. the run was scoped to a specific issue)
-   * - fewer than MAX_AUTO_RETRIES failed runs for this agent+task in the last 24h
+   * - fewer than AUTO_RETRY_MAX_ATTEMPTS prior failure-like runs for this
+   *   agent+task in the last AUTO_RETRY_WINDOW_MS (counts both "failed" and
+   *   "timed_out" statuses so that repeated timeouts also hit the ceiling)
    *
    * This gives transient failures (process_lost, adapter crash, timeout) a few
    * chances to self-heal before requiring human intervention.
@@ -862,8 +866,7 @@ export function heartbeatService(db: Db) {
   async function shouldAutoRetry(agentId: string, taskKey: string | null): Promise<boolean> {
     if (!taskKey) return false;
 
-    const MAX_AUTO_RETRIES = 2; // 3 total attempts (original + 2 retries) before escalating to error
-    const windowStart = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const windowStart = new Date(Date.now() - AUTO_RETRY_WINDOW_MS);
 
     const recentFailures = await db
       .select({ id: heartbeatRuns.id })
@@ -871,14 +874,14 @@ export function heartbeatService(db: Db) {
       .where(
         and(
           eq(heartbeatRuns.agentId, agentId),
-          eq(heartbeatRuns.status, "failed"),
+          inArray(heartbeatRuns.status, ["failed", "timed_out"]),
           sql`${heartbeatRuns.contextSnapshot} ->> 'taskKey' = ${taskKey}`,
           gte(heartbeatRuns.finishedAt, windowStart),
         ),
       )
-      .limit(MAX_AUTO_RETRIES + 1);
+      .limit(AUTO_RETRY_MAX_ATTEMPTS + 1);
 
-    return recentFailures.length <= MAX_AUTO_RETRIES;
+    return recentFailures.length <= AUTO_RETRY_MAX_ATTEMPTS;
   }
 
   async function finalizeAgentStatus(
@@ -940,7 +943,7 @@ export function heartbeatService(db: Db) {
         source: "automation",
         reason: "auto_retry_after_failure",
         triggerDetail: "system",
-        payload: taskKey ? { issueId: taskKey } : null,
+        payload: { issueId: taskKey },
       }).catch((err) => {
         logger.warn({ err, agentId, taskKey }, "auto-retry wakeup enqueue failed");
       });
