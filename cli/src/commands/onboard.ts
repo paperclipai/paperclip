@@ -186,6 +186,7 @@ function quickstartDefaultsFromEnv(): {
     auth: {
       baseUrlMode: authBaseUrlMode,
       ...(authPublicBaseUrl ? { publicBaseUrl: authPublicBaseUrl } : {}),
+      disableSignUp: parseBooleanFromEnv(process.env.PAPERCLIP_AUTH_DISABLE_SIGN_UP) ?? false,
     },
     storage: {
       provider: storageProvider,
