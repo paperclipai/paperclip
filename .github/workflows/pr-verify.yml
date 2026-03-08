@@ -10,7 +10,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  verify:
+  typecheck-and-test:
+    name: Typecheck & Test
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -40,3 +41,167 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+  bundle-size:
+    name: Bundle Size
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      pull-requests: write
+
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install and build PR
+        run: |
+          pnpm install --no-frozen-lockfile
+          pnpm build
+
+      - name: Measure PR bundle
+        id: pr_size
+        run: |
+          if [ -d ui/dist/assets ]; then
+            js_bytes=$(find ui/dist/assets -name '*.js' -exec cat {} + | wc -c)
+            css_bytes=$(find ui/dist/assets -name '*.css' -exec cat {} + | wc -c)
+          else
+            js_bytes=0
+            css_bytes=0
+          fi
+          echo "js_bytes=$js_bytes" >> "$GITHUB_OUTPUT"
+          echo "css_bytes=$css_bytes" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout base
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          clean: false
+
+      - name: Install and build base
+        run: |
+          pnpm install --no-frozen-lockfile
+          pnpm build
+        continue-on-error: true
+
+      - name: Measure base bundle
+        id: base_size
+        run: |
+          if [ -d ui/dist/assets ]; then
+            js_bytes=$(find ui/dist/assets -name '*.js' -exec cat {} + | wc -c)
+            css_bytes=$(find ui/dist/assets -name '*.css' -exec cat {} + | wc -c)
+          else
+            js_bytes=0
+            css_bytes=0
+          fi
+          echo "js_bytes=$js_bytes" >> "$GITHUB_OUTPUT"
+          echo "css_bytes=$css_bytes" >> "$GITHUB_OUTPUT"
+
+      - name: Comment bundle size
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prJS = Number('${{ steps.pr_size.outputs.js_bytes }}');
+            const prCSS = Number('${{ steps.pr_size.outputs.css_bytes }}');
+            const baseJS = Number('${{ steps.base_size.outputs.js_bytes }}');
+            const baseCSS = Number('${{ steps.base_size.outputs.css_bytes }}');
+
+            const fmt = (bytes) => {
+              if (bytes >= 1024 * 1024) return (bytes / 1024 / 1024).toFixed(2) + ' MB';
+              return (bytes / 1024).toFixed(1) + ' kB';
+            };
+            const delta = (now, before) => {
+              const diff = now - before;
+              if (before === 0) return 'new';
+              const pct = ((diff / before) * 100).toFixed(1);
+              const sign = diff >= 0 ? '+' : '';
+              return `${sign}${fmt(diff)} (${sign}${pct}%)`;
+            };
+
+            const body = [
+              '## Bundle Size Report',
+              '',
+              '| Asset | Base | PR | Delta |',
+              '|-------|------|----|-------|',
+              `| JS | ${fmt(baseJS)} | ${fmt(prJS)} | ${delta(prJS, baseJS)} |`,
+              `| CSS | ${fmt(baseCSS)} | ${fmt(prCSS)} | ${delta(prCSS, baseCSS)} |`,
+              `| **Total** | **${fmt(baseJS + baseCSS)}** | **${fmt(prJS + prCSS)}** | **${delta(prJS + prCSS, baseJS + baseCSS)}** |`,
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body?.startsWith('## Bundle Size Report'));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+  migration-check:
+    name: Migration Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: paperclip
+          POSTGRES_PASSWORD: paperclip
+          POSTGRES_DB: paperclip_migrate
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U paperclip"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Build packages
+        run: pnpm build
+
+      - name: Verify migrations apply cleanly
+        env:
+          DATABASE_URL: postgres://paperclip:paperclip@localhost:5432/paperclip_migrate
+        run: pnpm db:migrate
