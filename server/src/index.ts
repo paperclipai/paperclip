@@ -372,10 +372,19 @@ if (config.databaseUrl) {
   startupDbInfo = { mode: "embedded-postgres", dataDir, port };
 }
 
-if (config.deploymentMode === "local_trusted" && !isLoopbackHost(config.host)) {
-  throw new Error(
-    `local_trusted mode requires loopback host binding (received: ${config.host}). ` +
-      "Use authenticated mode for non-loopback deployments.",
+if (
+  config.deploymentMode === "local_trusted" &&
+  !isLoopbackHost(config.host)
+) {
+  if (process.env.PAPERCLIP_ALLOW_LOCAL_TRUSTED_NON_LOOPBACK !== "true") {
+    throw new Error(
+      `local_trusted mode requires loopback host binding (received: ${config.host}). ` +
+        "Use authenticated mode for non-loopback deployments, or set PAPERCLIP_ALLOW_LOCAL_TRUSTED_NON_LOOPBACK=true to override.",
+    );
+  }
+  logger.warn(
+    { host: config.host },
+    "PAPERCLIP_ALLOW_LOCAL_TRUSTED_NON_LOOPBACK is set: local_trusted mode is running on a non-loopback interface without authentication. Ensure this is intentional.",
   );
 }
 

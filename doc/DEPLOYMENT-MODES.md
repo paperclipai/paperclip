@@ -32,6 +32,7 @@ This keeps one authenticated auth stack while still separating low-friction priv
 - loopback-only host binding
 - no human login flow
 - optimized for fastest local startup
+- to bind to a non-loopback interface (e.g. when using exe.dev as a host), set `PAPERCLIP_ALLOW_LOCAL_TRUSTED_NON_LOOPBACK=true` — a startup warning will be emitted
 
 ## `authenticated + private`
 
