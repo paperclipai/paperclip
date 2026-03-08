@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <!-- Deep indigo → violet gradient background -->
+    <linearGradient id="bg" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0%"   stop-color="#1a1040"/>
+      <stop offset="50%"  stop-color="#2d1b69"/>
+      <stop offset="100%" stop-color="#4c1d95"/>
+    </linearGradient>
+
+    <!-- Soft inner highlight (top-left to give depth) -->
+    <radialGradient id="highlight" cx="30%" cy="20%" r="55%" gradientUnits="objectBoundingBox">
+      <stop offset="0%"   stop-color="#ffffff" stop-opacity="0.10"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Glow filter for the paperclip stroke -->
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="14" in="SourceGraphic" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <!-- Clip path for rounded-square shape -->
+    <clipPath id="rounded-square">
+      <rect width="1024" height="1024" rx="224" ry="224"/>
+    </clipPath>
+  </defs>
+
+  <!-- Background rounded square -->
+  <rect width="1024" height="1024" rx="224" ry="224" fill="url(#bg)"/>
+
+  <!-- Radial highlight overlay -->
+  <rect width="1024" height="1024" rx="224" ry="224" fill="url(#highlight)"/>
+
+  <!-- Subtle bottom shadow strip -->
+  <rect x="0" y="820" width="1024" height="204" rx="0" ry="0"
+        fill="black" fill-opacity="0.12" clip-path="url(#rounded-square)"/>
+
+  <!-- Paperclip icon
+       Original Lucide path in a 24×24 viewBox.
+       Scaled ×28 → 672px area, centered: translate((1024-672)/2, (1024-672)/2) = translate(176,176)
+       Result: paperclip fills ~65% of the icon canvas — ideal for macOS app icons.
+  -->
+  <g transform="translate(176, 176) scale(28)" filter="url(#glow)">
+    <path
+      d="m16 6-8.414 8.586a2 2 0 0 0 2.829 2.829l8.414-8.586a4 4 0 1 0-5.657-5.657l-8.379 8.551a6 6 0 1 0 8.485 8.485l8.379-8.551"
+      fill="none"
+      stroke="white"
+      stroke-width="1.55"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      stroke-opacity="0.96"
+    />
+  </g>
+</svg>

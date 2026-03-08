@@ -1,0 +1,14 @@
+{
+  "name": "@paperclipai/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "icon": "node scripts/generate-icon.mjs && tauri icon src-tauri/icons/app-icon.png"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0",
+    "@resvg/resvg-js": "^2.6.0"
+  }
+}
