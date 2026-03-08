@@ -12,35 +12,6 @@ const NORMALIZED_BILLING_TYPE_EXPR = sql`lower(trim(coalesce((${heartbeatRuns.us
 const NON_BILLABLE_RUN_EXPR = sql`${NORMALIZED_BILLING_TYPE_EXPR} in ('subscription', 'oauth')`;
 const API_BILLING_TYPE_EXPR = sql`${NORMALIZED_BILLING_TYPE_EXPR} = 'api'`;
 
-type AgentCostRollupRow = {
-  agentId: string;
-  agentName: string | null;
-  agentStatus: string | null;
-  costCents: number;
-  inputTokens: number;
-  outputTokens: number;
-};
-
-type AgentRunUsageRow = {
-  apiRunCount: number;
-  nonBillableMeteredRunCount: number;
-  nonBillableMeteredInputTokens: number;
-  nonBillableMeteredOutputTokens: number;
-};
-
-export function mergeAgentCostAndUsageRollups(
-  costRow: AgentCostRollupRow,
-  runRow?: Partial<AgentRunUsageRow>,
-) {
-  return {
-    ...costRow,
-    apiRunCount: runRow?.apiRunCount ?? 0,
-    nonBillableMeteredRunCount: runRow?.nonBillableMeteredRunCount ?? 0,
-    nonBillableMeteredInputTokens: runRow?.nonBillableMeteredInputTokens ?? 0,
-    nonBillableMeteredOutputTokens: runRow?.nonBillableMeteredOutputTokens ?? 0,
-  };
-}
-
 export function costService(db: Db) {
   return {
     createEvent: async (companyId: string, data: Omit<typeof costEvents.$inferInsert, "companyId">) => {
@@ -194,7 +165,16 @@ export function costService(db: Db) {
         .groupBy(heartbeatRuns.agentId);
 
       const runRowsByAgent = new Map(runRows.map((row) => [row.agentId, row]));
-      return costRows.map((row) => mergeAgentCostAndUsageRollups(row, runRowsByAgent.get(row.agentId)));
+      return costRows.map((row) => {
+        const runRow = runRowsByAgent.get(row.agentId);
+        return {
+          ...row,
+          apiRunCount: runRow?.apiRunCount ?? 0,
+          nonBillableMeteredRunCount: runRow?.nonBillableMeteredRunCount ?? 0,
+          nonBillableMeteredInputTokens: runRow?.nonBillableMeteredInputTokens ?? 0,
+          nonBillableMeteredOutputTokens: runRow?.nonBillableMeteredOutputTokens ?? 0,
+        };
+      });
     },
 
     byProject: async (companyId: string, range?: CostDateRange) => {
