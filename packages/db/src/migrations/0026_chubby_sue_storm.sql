@@ -1,0 +1,1 @@
+ALTER TABLE "heartbeat_runs" ALTER COLUMN "exit_code" SET DATA TYPE bigint;
