@@ -317,7 +317,7 @@ export function Dashboard() {
                     >
                       <div className="flex items-start gap-2 sm:items-center sm:gap-3">
                         {/* Status icon - left column on mobile */}
-                        <span className="shrink-0 pt-0.5 sm:hidden">
+                        <span className="shrink-0 sm:hidden">
                           <StatusIcon status={issue.status} />
                         </span>
 

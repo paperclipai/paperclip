@@ -844,7 +844,7 @@ export function Inbox() {
                   className="group/stale relative flex items-start gap-2 overflow-hidden px-3 py-3 transition-colors hover:bg-accent/50 sm:items-center sm:gap-3 sm:px-4"
                 >
                   {/* Status icon - left column on mobile; Clock icon on desktop */}
-                  <span className="shrink-0 pt-0.5 sm:hidden">
+                  <span className="shrink-0 sm:hidden">
                     <StatusIcon status={issue.status} />
                   </span>
                   <Clock className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground hidden sm:block sm:mt-0" />
@@ -908,7 +908,7 @@ export function Inbox() {
                     className="flex min-w-0 cursor-pointer items-start gap-2 px-3 py-3 no-underline text-inherit transition-colors hover:bg-accent/50 sm:items-center sm:gap-3 sm:px-4"
                   >
                     {/* Status icon - left column on mobile, inline on desktop */}
-                    <span className="shrink-0 pt-0.5 sm:hidden">
+                    <span className="shrink-0 sm:hidden">
                       <StatusIcon status={issue.status} />
                     </span>
 
