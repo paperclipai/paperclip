@@ -4,12 +4,15 @@ import {
   companies,
   agents,
   agentApiKeys,
+  agentConfigRevisions,
   agentRuntimeState,
   agentTaskSessions,
   agentWakeupRequests,
   issues,
   issueComments,
   projects,
+  projectWorkspaces,
+  projectGoals,
   goals,
   heartbeatRuns,
   heartbeatRunEvents,
@@ -99,15 +102,20 @@ export function companyService(db: Db) {
 
     remove: (id: string) =>
       db.transaction(async (tx) => {
-        // Delete from child tables in dependency order
+        // Delete from child tables in correct FK dependency order.
+        // activity_log.run_id -> heartbeat_runs must be deleted first.
+        await tx.delete(activityLog).where(eq(activityLog.companyId, id));
         await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.companyId, id));
+        await tx.delete(costEvents).where(eq(costEvents.companyId, id));
+        // Null out FK before deleting referenced table
+        await tx.update(agentTaskSessions).set({ lastRunId: null }).where(eq(agentTaskSessions.companyId, id));
         await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.companyId, id));
         await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, id));
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, id));
+        await tx.delete(agentConfigRevisions).where(eq(agentConfigRevisions.companyId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.companyId, id));
         await tx.delete(agentRuntimeState).where(eq(agentRuntimeState.companyId, id));
         await tx.delete(issueComments).where(eq(issueComments.companyId, id));
-        await tx.delete(costEvents).where(eq(costEvents.companyId, id));
         await tx.delete(approvalComments).where(eq(approvalComments.companyId, id));
         await tx.delete(approvals).where(eq(approvals.companyId, id));
         await tx.delete(companySecrets).where(eq(companySecrets.companyId, id));
@@ -116,10 +124,12 @@ export function companyService(db: Db) {
         await tx.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, id));
         await tx.delete(companyMemberships).where(eq(companyMemberships.companyId, id));
         await tx.delete(issues).where(eq(issues.companyId, id));
+        await tx.delete(projectGoals).where(eq(projectGoals.companyId, id));
+        await tx.update(projects).set({ goalId: null }).where(eq(projects.companyId, id));
         await tx.delete(goals).where(eq(goals.companyId, id));
+        await tx.delete(projectWorkspaces).where(eq(projectWorkspaces.companyId, id));
         await tx.delete(projects).where(eq(projects.companyId, id));
         await tx.delete(agents).where(eq(agents.companyId, id));
-        await tx.delete(activityLog).where(eq(activityLog.companyId, id));
         const rows = await tx
           .delete(companies)
           .where(eq(companies.id, id))
