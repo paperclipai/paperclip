@@ -313,26 +313,28 @@ export function Dashboard() {
                     <Link
                       key={issue.id}
                       to={`/issues/${issue.identifier ?? issue.id}`}
-                      className="px-4 py-2 text-sm cursor-pointer hover:bg-accent/50 transition-colors no-underline text-inherit block"
+                      className="px-4 py-2.5 text-sm cursor-pointer hover:bg-accent/50 transition-colors no-underline text-inherit block"
                     >
-                      <div className="flex gap-3">
-                        <div className="flex items-start gap-2 min-w-0 flex-1">
-                          <div className="flex items-center gap-2 shrink-0 mt-0.5">
-                            <PriorityIcon priority={issue.priority} />
-                            <StatusIcon status={issue.status} />
-                          </div>
-                          <p className="min-w-0 flex-1 truncate">
-                            <span>{issue.title}</span>
-                            {issue.assigneeAgentId && (() => {
-                              const name = agentName(issue.assigneeAgentId);
-                              return name
-                                ? <span className="hidden sm:inline"><Identity name={name} size="sm" className="ml-2 inline-flex" /></span>
-                                : null;
-                            })()}
-                          </p>
-                        </div>
-                        <span className="text-xs text-muted-foreground shrink-0 pt-0.5">
-                          {timeAgo(issue.updatedAt)}
+                      <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-3">
+                        <span className="line-clamp-2 text-sm sm:order-2 sm:flex-1 sm:min-w-0 sm:line-clamp-none sm:truncate">
+                          {issue.title}
+                        </span>
+                        <span className="flex items-center gap-2 sm:order-1 sm:shrink-0">
+                          <PriorityIcon priority={issue.priority} />
+                          <StatusIcon status={issue.status} />
+                          <span className="text-xs font-mono text-muted-foreground">
+                            {issue.identifier ?? issue.id.slice(0, 8)}
+                          </span>
+                          {issue.assigneeAgentId && (() => {
+                            const name = agentName(issue.assigneeAgentId);
+                            return name
+                              ? <span className="hidden sm:inline-flex"><Identity name={name} size="sm" /></span>
+                              : null;
+                          })()}
+                          <span className="text-xs text-muted-foreground sm:hidden">&middot;</span>
+                          <span className="text-xs text-muted-foreground shrink-0 sm:order-last">
+                            {timeAgo(issue.updatedAt)}
+                          </span>
                         </span>
                       </div>
                     </Link>
