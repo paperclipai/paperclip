@@ -53,7 +53,10 @@ export interface IssueFilters {
   touchedByUserId?: string;
   unreadForUserId?: string;
   projectId?: string;
+  goalId?: string;
+  priority?: string;
   labelId?: string;
+  limit?: number;
   q?: string;
 }
 
@@ -458,6 +461,8 @@ export function issueService(db: Db) {
         conditions.push(unreadForUserCondition(companyId, unreadForUserId));
       }
       if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
+      if (filters?.goalId) conditions.push(eq(issues.goalId, filters.goalId));
+      if (filters?.priority) conditions.push(eq(issues.priority, filters.priority));
       if (filters?.labelId) {
         const labeledIssueIds = await db
           .select({ issueId: issueLabels.issueId })
@@ -490,11 +495,14 @@ export function issueService(db: Db) {
           ELSE 6
         END
       `;
-      const rows = await db
+      const baseQuery = db
         .select()
         .from(issues)
         .where(and(...conditions))
         .orderBy(hasSearch ? asc(searchOrder) : asc(priorityOrder), asc(priorityOrder), desc(issues.updatedAt));
+      const rows = filters?.limit && Number.isFinite(filters.limit) && filters.limit > 0
+        ? await baseQuery.limit(filters.limit)
+        : await baseQuery;
       const withLabels = await withIssueLabels(db, rows);
       const runMap = await activeRunMapForIssues(db, withLabels);
       const withRuns = withActiveRuns(withLabels, runMap);

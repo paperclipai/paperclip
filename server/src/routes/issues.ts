@@ -223,6 +223,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
 
+    const limitParam = req.query.limit as string | undefined;
+    const parsedLimit = limitParam ? Number.parseInt(limitParam, 10) : undefined;
+    const limit = typeof parsedLimit === "number" && Number.isFinite(parsedLimit)
+      ? Math.max(1, Math.min(1000, parsedLimit))
+      : undefined;
+
     const result = await svc.list(companyId, {
       status: req.query.status as string | undefined,
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
@@ -230,7 +236,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
       touchedByUserId,
       unreadForUserId,
       projectId: req.query.projectId as string | undefined,
+      goalId: req.query.goalId as string | undefined,
+      priority: req.query.priority as string | undefined,
       labelId: req.query.labelId as string | undefined,
+      limit,
       q: req.query.q as string | undefined,
     });
     res.json(result);
