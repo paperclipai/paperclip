@@ -121,7 +121,7 @@ jobs:
             const baseCSS = Number('${{ steps.base_size.outputs.css_bytes }}');
 
             const fmt = (bytes) => {
-              if (bytes >= 1024 * 1024) return (bytes / 1024 / 1024).toFixed(2) + ' MB';
+              if (Math.abs(bytes) >= 1024 * 1024) return (bytes / 1024 / 1024).toFixed(2) + ' MB';
               return (bytes / 1024).toFixed(1) + ' kB';
             };
             const delta = (now, before) => {
@@ -146,6 +146,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
+              per_page: 100,
             });
             const existing = comments.find(c => c.body?.startsWith('## Bundle Size Report'));
             if (existing) {
@@ -168,6 +169,8 @@ jobs:
     name: Migration Check
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
 
     services:
       postgres:
