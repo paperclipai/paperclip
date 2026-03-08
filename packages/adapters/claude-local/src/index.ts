@@ -29,4 +29,7 @@ Core fields:
 Operational fields:
 - timeoutSec (number, optional): run timeout in seconds
 - graceSec (number, optional): SIGTERM grace period in seconds
+Agentic Proactive Prompting:
+- If \`proactivePrompting\` is true in the runtime config, the agent will be instructed to automatically ask the user or orchestrator for the next task when it finishes the current one, keeping the process moving without manual intervention.
+
 `;

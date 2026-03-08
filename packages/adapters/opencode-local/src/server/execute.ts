@@ -242,7 +242,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     run: { id: runId, source: "on_demand" },
     context,
   });
-  const prompt = `${instructionsPrefix}${renderedPrompt}`;
+  const proactiveAddition = config.proactivePrompting ? `
+
+[PROACTIVE AGENT INSTRUCTION]
+When you have successfully completed your current task, do not just stop. You must proactively ask for the next task or notify the master model/user that you are ready for more work.
+` : "";
+  const prompt = `${instructionsPrefix}${renderedPrompt}${proactiveAddition}`;
 
   const buildArgs = (resumeSessionId: string | null) => {
     const args = ["run", "--format", "json"];

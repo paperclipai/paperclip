@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import {
   createHash,
   generateKeyPairSync,
@@ -51,7 +52,11 @@ import {
 } from "../board-claim.js";
 
 function hashToken(token: string) {
-  return createHash("sha256").update(token).digest("hex");
+  const secret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
+  if (!secret) {
+    throw new Error("PAPERCLIP_AGENT_JWT_SECRET must be configured to secure API keys.");
+  }
+  return createHmac("sha256", secret).update(token).digest("hex");
 }
 
 const INVITE_TOKEN_PREFIX = "pcp_invite_";

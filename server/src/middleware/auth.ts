@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import type { Request, RequestHandler } from "express";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -9,7 +9,11 @@ import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 
 function hashToken(token: string) {
-  return createHash("sha256").update(token).digest("hex");
+  const secret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
+  if (!secret) {
+    throw new Error("PAPERCLIP_AGENT_JWT_SECRET must be configured to secure API keys.");
+  }
+  return createHmac("sha256", secret).update(token).digest("hex");
 }
 
 interface ActorMiddlewareOptions {
