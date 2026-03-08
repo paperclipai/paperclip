@@ -2902,6 +2902,11 @@ export function agentRoutes(
       return;
     }
 
+    if (adapterConfigKey === "__proto__" || adapterConfigKey === "constructor" || adapterConfigKey === "prototype") {
+      res.status(400).json({ error: "Invalid adapterConfigKey" });
+      return;
+    }
+
     const nextAdapterConfig: Record<string, unknown> = { ...existingAdapterConfig };
     if (req.body.path === null) {
       delete nextAdapterConfig[adapterConfigKey];
