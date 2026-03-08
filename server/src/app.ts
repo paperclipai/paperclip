@@ -28,6 +28,16 @@ import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 
+export function mountStaticUi(app: express.Express, uiDist: string) {
+  // Read the file from disk once so fallback routing does not depend on sendFile
+  // semantics for install paths that may contain dotfile segments such as ".npm".
+  const indexHtml = fs.readFileSync(path.join(uiDist, "index.html"), "utf-8");
+  app.use(express.static(uiDist));
+  app.get(/.*/, (_req, res) => {
+    res.status(200).set("Content-Type", "text/html").end(indexHtml);
+  });
+}
+
 export async function createApp(
   db: Db,
   opts: {
@@ -134,11 +144,7 @@ export async function createApp(
     ];
     const uiDist = candidates.find((p) => fs.existsSync(path.join(p, "index.html")));
     if (uiDist) {
-      const indexHtml = fs.readFileSync(path.join(uiDist, "index.html"), "utf-8");
-      app.use(express.static(uiDist));
-      app.get(/.*/, (_req, res) => {
-        res.status(200).set("Content-Type", "text/html").end(indexHtml);
-      });
+      mountStaticUi(app, uiDist);
     } else {
       console.warn("[paperclip] UI dist not found; running in API-only mode");
     }
