@@ -31,14 +31,18 @@ vi.mock("../services/index.js", () => {
           updatedAt: new Date().toISOString(),
         };
         store.set(hook.id, hook);
-        return hook;
+        // Mimic real service: strip secret from response
+        const { secret: _, ...rest } = hook;
+        return rest;
       }),
       update: vi.fn(async (id: string, input: any) => {
         const existing = store.get(id);
         if (!existing) return null;
         const updated = { ...existing, ...input, updatedAt: new Date().toISOString() };
         store.set(id, updated);
-        return updated;
+        // Mimic real service: strip secret from response
+        const { secret: _, ...rest } = updated;
+        return rest;
       }),
       remove: vi.fn(async (id: string) => {
         const existing = store.get(id);
@@ -46,6 +50,7 @@ vi.mock("../services/index.js", () => {
         store.delete(id);
         return existing;
       }),
+      deliverTo: vi.fn().mockResolvedValue(undefined),
       dispatch: vi.fn().mockResolvedValue(undefined),
     }),
     _testStore: store,
@@ -107,7 +112,7 @@ describe("webhook routes", () => {
       });
     });
 
-    it("creates a webhook with secret for HMAC signing", async () => {
+    it("creates a webhook with secret but does not expose it in response", async () => {
       const res = await request(app)
         .post("/companies/comp-1/webhooks")
         .send({
@@ -117,7 +122,7 @@ describe("webhook routes", () => {
         });
 
       expect(res.status).toBe(201);
-      expect(res.body.secret).toBe("my-secret-key");
+      expect(res.body.secret).toBeUndefined();
     });
 
     it("rejects invalid URL", async () => {
@@ -258,6 +263,34 @@ describe("webhook HMAC signing", () => {
     const expected = crypto.createHmac("sha256", secret).update(payload).digest("hex");
 
     expect(signature).toBe(expected);
+  });
+});
+
+describe("webhook SSRF protection", () => {
+  it("blocks localhost URLs", async () => {
+    const { _isBlockedUrlForTest: isBlocked } = await import("../services/webhooks.js");
+    expect(isBlocked("http://localhost:3100/api/secrets")).toBe(true);
+    expect(isBlocked("http://127.0.0.1/internal")).toBe(true);
+    expect(isBlocked("http://0.0.0.0/")).toBe(true);
+  });
+
+  it("blocks private IP ranges", async () => {
+    const { _isBlockedUrlForTest: isBlocked } = await import("../services/webhooks.js");
+    expect(isBlocked("http://10.0.0.1/")).toBe(true);
+    expect(isBlocked("http://192.168.1.1/")).toBe(true);
+    expect(isBlocked("http://172.16.0.1/")).toBe(true);
+  });
+
+  it("blocks cloud metadata endpoints", async () => {
+    const { _isBlockedUrlForTest: isBlocked } = await import("../services/webhooks.js");
+    expect(isBlocked("http://169.254.169.254/latest/meta-data/")).toBe(true);
+    expect(isBlocked("http://metadata.google.internal/")).toBe(true);
+  });
+
+  it("allows public URLs", async () => {
+    const { _isBlockedUrlForTest: isBlocked } = await import("../services/webhooks.js");
+    expect(isBlocked("https://hooks.slack.com/services/T123/B456")).toBe(false);
+    expect(isBlocked("https://example.com/webhook")).toBe(false);
   });
 });
 

@@ -118,7 +118,8 @@ export function webhookRoutes(db: Db) {
     }
     assertCompanyAccess(req, existing.companyId);
 
-    await svc.dispatch(existing.companyId, "approval.created", {
+    const event = (existing.events as string[])[0] as import("@paperclipai/shared").WebhookEventType;
+    await svc.deliverTo(existing, event, {
       test: true,
       message: "This is a test webhook from Paperclip.",
     });
