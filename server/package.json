@@ -23,7 +23,7 @@
   ],
   "scripts": {
     "dev": "tsx src/index.ts",
-    "dev:watch": "PAPERCLIP_MIGRATION_PROMPT=never tsx watch --ignore ../ui/node_modules --ignore ../ui/.vite --ignore ../ui/dist src/index.ts",
+    "dev:watch": "tsx watch --ignore ../ui/node_modules --ignore ../ui/.vite --ignore ../ui/dist src/index.ts",
     "build": "tsc",
     "clean": "rm -rf dist",
     "start": "node dist/index.js",

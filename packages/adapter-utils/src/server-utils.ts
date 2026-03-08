@@ -125,6 +125,22 @@ export function defaultPathForPlatform() {
   return "/usr/local/bin:/opt/homebrew/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin";
 }
 
+/**
+ * Filters an object to only string-valued entries, discarding undefined/non-string values.
+ * Useful for converting NodeJS.ProcessEnv (Record<string, string | undefined>) to Record<string, string>.
+ */
+export function normalizeEnv(input: unknown): Record<string, string> {
+  if (typeof input !== "object" || input === null || Array.isArray(input))
+    return {};
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(
+    input as Record<string, unknown>,
+  )) {
+    if (typeof value === "string") env[key] = value;
+  }
+  return env;
+}
+
 export function ensurePathInEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   if (typeof env.PATH === "string" && env.PATH.length > 0) return env;
   if (typeof env.Path === "string" && env.Path.length > 0) return env;
@@ -223,7 +239,7 @@ export async function runChildProcess(
     const child = spawn(command, args, {
       cwd: opts.cwd,
       env: mergedEnv,
-      shell: false,
+      shell: process.platform === "win32",
       stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
     }) as ChildProcessWithEvents;
 

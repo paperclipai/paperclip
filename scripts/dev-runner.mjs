@@ -30,6 +30,7 @@ if (process.env.npm_config_authenticated_private === "true") {
 const env = {
   ...process.env,
   PAPERCLIP_UI_DEV_MIDDLEWARE: "true",
+  PAPERCLIP_MIGRATION_PROMPT: "never",
 };
 
 if (tailscaleAuth) {
