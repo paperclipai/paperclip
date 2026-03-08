@@ -1051,8 +1051,13 @@ export function heartbeatService(db: Db) {
       // Do not resume runs for agents that are no longer invokable.
       if (agentStatus === "paused" || agentStatus === "terminated" || agentStatus === "pending_approval") continue;
 
-      const started = await startNextQueuedRunForAgent(agentId);
-      if (started.length > 0) resumed.push(agentId);
+      try {
+        const started = await startNextQueuedRunForAgent(agentId);
+        if (started.length > 0) resumed.push(agentId);
+      } catch (err) {
+        // A transient error for one agent must not abort recovery for the remaining agents.
+        logger.error({ err, agentId }, "resumeQueuedRuns: failed to resume queued run for agent");
+      }
     }
 
     return resumed;
@@ -1499,7 +1504,17 @@ export function heartbeatService(db: Db) {
         error: message,
       }).catch(() => undefined);
       const failedRun = await getRun(runId).catch(() => null);
-      if (failedRun) await releaseIssueExecutionAndPromote(failedRun).catch(() => undefined);
+      if (failedRun) {
+        // Emit a run-log event so the failure is visible in the run timeline,
+        // consistent with what the inner catch block does for adapter failures.
+        await appendRunEvent(failedRun, 1, {
+          eventType: "error",
+          stream: "system",
+          level: "error",
+          message,
+        }).catch(() => undefined);
+        await releaseIssueExecutionAndPromote(failedRun).catch(() => undefined);
+      }
       // Ensure the agent is not left stuck in "running" if the inner catch handler's
       // DB calls threw (e.g. a transient DB error in finalizeAgentStatus).
       await finalizeAgentStatus(run.agentId, "failed").catch(() => undefined);
