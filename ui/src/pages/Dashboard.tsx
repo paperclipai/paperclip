@@ -242,9 +242,9 @@ export function Dashboard() {
               to="/costs"
               description={
                 <span>
-                  {data.costs.monthBudgetCents > 0
+                  {data.costs.budgetConfigured
                     ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
-                    : "Unlimited budget"}
+                    : "Budget not configured"}
                 </span>
               }
             />

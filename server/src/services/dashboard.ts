@@ -87,10 +87,10 @@ export function dashboardService(db: Db) {
         );
 
       const monthSpendCents = Number(monthSpend);
-      const utilization =
-        company.budgetMonthlyCents > 0
-          ? (monthSpendCents / company.budgetMonthlyCents) * 100
-          : 0;
+      const budgetConfigured = company.budgetMonthlyCents > 0;
+      const utilization = budgetConfigured
+        ? (monthSpendCents / company.budgetMonthlyCents) * 100
+        : null;
 
       return {
         companyId,
@@ -104,7 +104,8 @@ export function dashboardService(db: Db) {
         costs: {
           monthSpendCents,
           monthBudgetCents: company.budgetMonthlyCents,
-          monthUtilizationPercent: Number(utilization.toFixed(2)),
+          monthUtilizationPercent: utilization !== null ? Number(utilization.toFixed(2)) : null,
+          budgetConfigured,
         },
         pendingApprovals,
         staleTasks,

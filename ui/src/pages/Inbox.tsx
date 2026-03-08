@@ -438,7 +438,8 @@ export function Inbox() {
   const showAggregateAgentError = !!dashboard && dashboard.agents.error > 0 && !hasRunFailures;
   const showBudgetAlert =
     !!dashboard &&
-    dashboard.costs.monthBudgetCents > 0 &&
+    dashboard.costs.budgetConfigured &&
+    dashboard.costs.monthUtilizationPercent !== null &&
     dashboard.costs.monthUtilizationPercent >= 80;
   const hasAlerts = showAggregateAgentError || showBudgetAlert;
   const hasStale = staleIssues.length > 0;
