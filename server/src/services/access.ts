@@ -42,6 +42,22 @@ export function accessService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
+  async function getMemberById(
+    companyId: string,
+    memberId: string,
+  ): Promise<MembershipRow | null> {
+    return db
+      .select()
+      .from(companyMemberships)
+      .where(
+        and(
+          eq(companyMemberships.companyId, companyId),
+          eq(companyMemberships.id, memberId),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function hasPermission(
     companyId: string,
     principalType: PrincipalType,
@@ -256,6 +272,7 @@ export function accessService(db: Db) {
     canUser,
     hasPermission,
     getMembership,
+    getMemberById,
     ensureMembership,
     listMembers,
     setMemberPermissions,

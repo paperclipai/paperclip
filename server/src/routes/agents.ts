@@ -119,8 +119,15 @@ export function agentRoutes(db: Db) {
       actorAgent.id,
       "agents:create",
     );
-    if (allowedByGrant || canCreateAgents(actorAgent)) return;
-    throw forbidden("Only CEO or agent creators can modify other agents");
+    if (!allowedByGrant && !canCreateAgents(actorAgent)) {
+      throw forbidden("Only CEO or agent creators can modify other agents");
+    }
+
+    // Non-CEO agents can only update agents within their subtree
+    const inSubtree = await svc.isInSubtree(actorAgent.id, targetAgent.id);
+    if (!inSubtree) {
+      throw forbidden("Cannot modify agents outside your org chart subtree");
+    }
   }
 
   async function resolveCompanyIdForAgentReference(req: Request): Promise<string | null> {
@@ -845,9 +852,19 @@ export function agentRoutes(db: Db) {
         res.status(403).json({ error: "Forbidden" });
         return;
       }
-      if (actorAgent.role !== "ceo") {
-        res.status(403).json({ error: "Only CEO can manage permissions" });
-        return;
+      if (actorAgent.role === "ceo") {
+        // CEO can manage any agent's permissions
+      } else {
+        const allowedByGrant = await access.hasPermission(
+          existing.companyId, "agent", actorAgent.id, "agents:create",
+        );
+        if (!allowedByGrant && !canCreateAgents(actorAgent)) {
+          throw forbidden("Only CEO or agent creators can manage agent permissions");
+        }
+        const inSubtree = await svc.isInSubtree(actorAgent.id, existing.id);
+        if (!inSubtree) {
+          throw forbidden("Cannot manage permissions for agents outside your org chart subtree");
+        }
       }
     }
 
@@ -959,6 +976,21 @@ export function agentRoutes(db: Db) {
     }
     await assertCanUpdateAgent(req, existing);
 
+    // Non-CEO agents can only reassign reportsTo within their subtree
+    if (
+      req.body.reportsTo !== undefined &&
+      req.actor.type === "agent" &&
+      req.actor.agentId
+    ) {
+      const actorAgent = await svc.getById(req.actor.agentId);
+      if (actorAgent && actorAgent.role !== "ceo" && req.body.reportsTo) {
+        const newManagerInSubtree = await svc.isInSubtree(actorAgent.id, req.body.reportsTo);
+        if (!newManagerInSubtree) {
+          throw forbidden("Cannot reassign reportsTo to a manager outside your org chart subtree");
+        }
+      }
+    }
+
     if (Object.prototype.hasOwnProperty.call(req.body, "permissions")) {
       res.status(422).json({ error: "Use /api/agents/:id/permissions for permission changes" });
       return;
@@ -1038,8 +1070,14 @@ export function agentRoutes(db: Db) {
   });
 
   router.post("/agents/:id/pause", async (req, res) => {
-    assertBoard(req);
     const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await assertCanUpdateAgent(req, existing);
+
     const agent = await svc.pause(id);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
@@ -1048,10 +1086,13 @@ export function agentRoutes(db: Db) {
 
     await heartbeat.cancelActiveForAgent(id);
 
+    const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: agent.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
       action: "agent.paused",
       entityType: "agent",
       entityId: agent.id,
@@ -1061,18 +1102,27 @@ export function agentRoutes(db: Db) {
   });
 
   router.post("/agents/:id/resume", async (req, res) => {
-    assertBoard(req);
     const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await assertCanUpdateAgent(req, existing);
+
     const agent = await svc.resume(id);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
 
+    const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: agent.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
       action: "agent.resumed",
       entityType: "agent",
       entityId: agent.id,
@@ -1082,8 +1132,14 @@ export function agentRoutes(db: Db) {
   });
 
   router.post("/agents/:id/terminate", async (req, res) => {
-    assertBoard(req);
     const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await assertCanUpdateAgent(req, existing);
+
     const agent = await svc.terminate(id);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
@@ -1092,10 +1148,13 @@ export function agentRoutes(db: Db) {
 
     await heartbeat.cancelActiveForAgent(id);
 
+    const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: agent.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
       action: "agent.terminated",
       entityType: "agent",
       entityId: agent.id,
@@ -1174,8 +1233,14 @@ export function agentRoutes(db: Db) {
     assertCompanyAccess(req, agent.companyId);
 
     if (req.actor.type === "agent" && req.actor.agentId !== id) {
-      res.status(403).json({ error: "Agent can only invoke itself" });
-      return;
+      const actorAgent = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
+      if (!actorAgent) {
+        throw forbidden("Agent authentication required");
+      }
+      const inSubtree = await svc.isInSubtree(actorAgent.id, id);
+      if (!inSubtree) {
+        throw forbidden("Cannot wake agents outside your org chart subtree");
+      }
     }
 
     const run = await heartbeat.wakeup(id, {
@@ -1223,8 +1288,14 @@ export function agentRoutes(db: Db) {
     assertCompanyAccess(req, agent.companyId);
 
     if (req.actor.type === "agent" && req.actor.agentId !== id) {
-      res.status(403).json({ error: "Agent can only invoke itself" });
-      return;
+      const actorAgent = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
+      if (!actorAgent) {
+        throw forbidden("Agent authentication required");
+      }
+      const inSubtree = await svc.isInSubtree(actorAgent.id, id);
+      if (!inSubtree) {
+        throw forbidden("Cannot invoke agents outside your org chart subtree");
+      }
     }
 
     const run = await heartbeat.invoke(

@@ -2547,6 +2547,21 @@ export function accessRoutes(
       const companyId = req.params.companyId as string;
       const memberId = req.params.memberId as string;
       await assertCompanyPermission(req, companyId, "users:manage_permissions");
+
+      // Non-CEO agents can only manage permissions for agents in their subtree
+      if (req.actor.type === "agent" && req.actor.agentId) {
+        const actorAgent = await agents.getById(req.actor.agentId);
+        if (actorAgent && actorAgent.role !== "ceo") {
+          const targetMember = await access.getMemberById(companyId, memberId);
+          if (targetMember && targetMember.principalType === "agent") {
+            const inSubtree = await agents.isInSubtree(actorAgent.id, targetMember.principalId);
+            if (!inSubtree) {
+              throw forbidden("Cannot manage permissions for agents outside your org chart subtree");
+            }
+          }
+        }
+      }
+
       const updated = await access.setMemberPermissions(
         companyId,
         memberId,
