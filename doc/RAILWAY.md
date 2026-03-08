@@ -87,7 +87,7 @@ npx @railway/cli up --ci
 
 The repository includes `railway.toml` with:
 
-- Dockerfile builds enabled
+- Railway-specific Dockerfile builds enabled
 - single replica
 - required mount path `/paperclip`
 - health check path `/api/health`
