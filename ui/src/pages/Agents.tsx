@@ -18,7 +18,7 @@ import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Bot, Plus, List, GitBranch, SlidersHorizontal } from "lucide-react";
-import type { Agent } from "@paperclipai/shared";
+import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
 
 const adapterLabels: Record<string, string> = {
   claude_local: "Claude",
@@ -30,11 +30,7 @@ const adapterLabels: Record<string, string> = {
   http: "HTTP",
 };
 
-const roleLabels: Record<string, string> = {
-  ceo: "CEO", cto: "CTO", cmo: "CMO", cfo: "CFO",
-  engineer: "Engineer", designer: "Designer", pm: "PM",
-  qa: "QA", devops: "DevOps", researcher: "Researcher", general: "General",
-};
+const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 
 type FilterTab = "all" | "active" | "paused" | "error";
 
@@ -230,7 +226,7 @@ export function Agents() {
               <EntityRow
                 key={agent.id}
                 title={agent.name}
-                subtitle={`${agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
+                subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
                 to={agentUrl(agent)}
                 leading={
                   <span className="relative flex h-2.5 w-2.5">

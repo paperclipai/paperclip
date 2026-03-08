@@ -15,6 +15,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { HelpCircle, ChevronDown, ChevronRight } from "lucide-react";
 import { cn } from "../lib/utils";
+import { AGENT_ROLE_LABELS } from "@paperclipai/shared";
 
 /* ---- Help text for (?) tooltips ---- */
 export const help: Record<string, string> = {
@@ -59,11 +60,7 @@ export const adapterLabels: Record<string, string> = {
   http: "HTTP",
 };
 
-export const roleLabels: Record<string, string> = {
-  ceo: "CEO", cto: "CTO", cmo: "CMO", cfo: "CFO",
-  engineer: "Engineer", designer: "Designer", pm: "PM",
-  qa: "QA", devops: "DevOps", researcher: "Researcher", general: "General",
-};
+export const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 
 /* ---- Primitive components ---- */
 
