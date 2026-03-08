@@ -399,7 +399,7 @@ export function OrgChart() {
     setActiveDragId(event.active.id as string);
   }, []);
 
-  const handleDragOver = useCallback((event: { over: { id: string | number } | null }) => {
+  const handleDragOver = useCallback((event: DragOverEvent) => {
     if (event.over) {
       // Strip `drop-` prefix
       const dropId = String(event.over.id).replace(/^drop-/, "");
