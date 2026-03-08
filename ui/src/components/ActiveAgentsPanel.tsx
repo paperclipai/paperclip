@@ -8,7 +8,7 @@ import { getUIAdapter } from "../adapters";
 import type { TranscriptEntry } from "../adapters";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, relativeTime } from "../lib/utils";
-import { ExternalLink } from "lucide-react";
+import { Activity, Bot, ExternalLink } from "lucide-react";
 import { Identity } from "./Identity";
 
 type FeedTone = "info" | "warn" | "error" | "assistant" | "tool";
@@ -222,6 +222,8 @@ export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
 
   const runById = useMemo(() => new Map(runs.map((r) => [r.id, r])), [runs]);
   const activeRunIds = useMemo(() => new Set(runs.filter(isRunActive).map((r) => r.id)), [runs]);
+  const liveCount = activeRunIds.size;
+  const completedCount = Math.max(runs.length - liveCount, 0);
 
   // Clean up pending buffers for runs that ended
   useEffect(() => {
@@ -377,16 +379,40 @@ export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
   }, [activeRunIds, companyId, runById]);
 
   return (
-    <div>
-      <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-        Agents
-      </h3>
+    <section className="space-y-4">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <p className="section-kicker">Live fleet</p>
+          <h3 className="editorial-title mt-3 text-[2rem] leading-none text-foreground">
+            Agent runs and command output
+          </h3>
+          <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">
+            Keep the active operators visible without dropping into a detail page. Running lanes stay highlighted and the latest transcript lines stay pinned in view.
+          </p>
+        </div>
+        <div className="grid grid-cols-2 gap-3 sm:w-[23rem]">
+          <div className="command-metric rounded-[1.15rem] px-4 py-4">
+            <p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Live now</p>
+            <p className="mt-2 text-2xl font-semibold text-foreground">{liveCount}</p>
+            <p className="mt-1 text-xs text-muted-foreground">Queued or running</p>
+          </div>
+          <div className="command-metric rounded-[1.15rem] px-4 py-4">
+            <p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Recent lanes</p>
+            <p className="mt-2 text-2xl font-semibold text-foreground">{runs.length}</p>
+            <p className="mt-1 text-xs text-muted-foreground">{completedCount} completed</p>
+          </div>
+        </div>
+      </div>
+
       {runs.length === 0 ? (
-        <div className="border border-border rounded-lg p-4">
-          <p className="text-sm text-muted-foreground">No recent agent runs.</p>
+        <div className="command-card-soft rounded-[1.2rem] px-4 py-5">
+          <div className="flex items-center gap-3">
+            <Bot className="h-4 w-4 shrink-0 text-[var(--surface-highlight)]" />
+            <p className="text-sm text-muted-foreground">No recent agent runs.</p>
+          </div>
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2 sm:gap-4">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {runs.map((run) => (
             <AgentRunCard
               key={run.id}
@@ -398,7 +424,7 @@ export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
           ))}
         </div>
       )}
-    </div>
+    </section>
   );
 }
 
@@ -423,19 +449,20 @@ function AgentRunCard({
   }, [feed.length]);
 
   return (
-    <div className={cn(
-      "flex flex-col rounded-lg border overflow-hidden min-h-[200px]",
-      isActive
-        ? "border-blue-500/30 bg-background/80 shadow-[0_0_12px_rgba(59,130,246,0.08)]"
-        : "border-border bg-background/50",
-    )}>
-      {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-border/50">
+    <div
+      className={cn(
+        "page-frame flex min-h-[220px] flex-col overflow-hidden rounded-[1.2rem]",
+        isActive
+          ? "border-[color:var(--surface-highlight)] shadow-[0_20px_60px_-38px_rgba(178,111,62,0.75)]"
+          : "bg-background/65",
+      )}
+    >
+      <div className="flex items-center justify-between border-b border-border/60 px-3 py-2.5">
         <div className="flex items-center gap-2 min-w-0">
           {isActive ? (
             <span className="relative flex h-2 w-2 shrink-0">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[var(--surface-highlight)] opacity-75" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-[var(--surface-highlight)]" />
             </span>
           ) : (
             <span className="flex h-2 w-2 shrink-0">
@@ -443,26 +470,35 @@ function AgentRunCard({
             </span>
           )}
           <Identity name={run.agentName} size="sm" />
-          {isActive && (
-            <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">Live</span>
-          )}
+          <span
+            className={cn(
+              "rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em]",
+              isActive
+                ? "bg-[var(--surface-highlight)]/12 text-foreground"
+                : "bg-muted text-muted-foreground",
+            )}
+          >
+            {run.status}
+          </span>
         </div>
         <Link
           to={`/agents/${run.agentId}/runs/${run.id}`}
-          className="inline-flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground shrink-0"
+          className="inline-flex shrink-0 items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground"
         >
           <ExternalLink className="h-2.5 w-2.5" />
         </Link>
       </div>
 
-      {/* Issue context */}
       {run.issueId && (
-        <div className="px-3 py-1.5 border-b border-border/40 text-xs flex items-center gap-1 min-w-0">
+        <div className="flex min-w-0 items-center gap-1 border-b border-border/40 px-3 py-1.5 text-xs">
+          <Activity className="h-3 w-3 shrink-0 text-muted-foreground" />
           <Link
             to={`/issues/${issue?.identifier ?? run.issueId}`}
             className={cn(
               "hover:underline min-w-0 line-clamp-2 min-h-[2rem]",
-              isActive ? "text-blue-600 hover:text-blue-500 dark:text-blue-400 dark:hover:text-blue-300" : "text-muted-foreground hover:text-foreground",
+              isActive
+                ? "text-foreground"
+                : "text-muted-foreground hover:text-foreground",
             )}
             title={issue?.title ? `${issue?.identifier ?? run.issueId.slice(0, 8)} - ${issue.title}` : issue?.identifier ?? run.issueId.slice(0, 8)}
           >
@@ -472,8 +508,10 @@ function AgentRunCard({
         </div>
       )}
 
-      {/* Feed body */}
-      <div ref={bodyRef} className="flex-1 max-h-[140px] overflow-y-auto p-2 font-mono text-[11px] space-y-1">
+      <div
+        ref={bodyRef}
+        className="flex-1 max-h-[152px] space-y-1 overflow-y-auto bg-background/45 p-2 font-mono text-[11px]"
+      >
         {isActive && recent.length === 0 && (
           <div className="text-xs text-muted-foreground">Waiting for output...</div>
         )}
