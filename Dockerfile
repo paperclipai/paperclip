@@ -49,8 +49,10 @@ ENV NODE_ENV=production \
   PAPERCLIP_DEPLOYMENT_MODE=authenticated \
   PAPERCLIP_DEPLOYMENT_EXPOSURE=private
 
+COPY entrypoint.sh /app/entrypoint.sh
+
 VOLUME ["/paperclip"]
 EXPOSE 3100
 
 USER paperclip
-CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
+ENTRYPOINT ["/app/entrypoint.sh"]
