@@ -3,6 +3,7 @@
 **Project ID:** `paperclip-openclaw-integration`
 **Status:** Planning
 **Created:** 2026-03-08
+**Updated:** 2026-03-08
 **Feature Branch:** `feat/openclaw-integration`
 **Repository:** `~/repos/paperclip/`
 **GitHub:** https://github.com/montelai/paperclip/tree/feat/openclaw-integration
@@ -11,22 +12,109 @@
 
 ## Overview
 
-Consolidate Jarvis Workspace's custom agent orchestration (OpenCode Swarm + ClawDeck) with Paperclip's battle-tested platform, eliminating redundancy while preserving OpenClaw as the execution layer.
+Integrate Paperclip as the **control plane** for Jarvis Workspace (mimo app), enabling multi-channel user interaction (Telegram, web, etc.) while keeping mimo as the primary user interface.
+
+---
+
+## Architecture: Multi-Channel User Interaction
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        USER INTERACTION LAYER                           │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐   │
+│  │  Mimo App   │  │  Telegram   │  │   Discord   │  │   Web UI    │   │
+│  │  (Primary)  │  │  (Channel)  │  │  (Channel)  │  │  (Channel)  │   │
+│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘   │
+│         │                │                │                │           │
+│         └────────────────┴────────────────┴────────────────┘           │
+│                                   │                                     │
+│                          OpenClaw Gateway                                │
+│                        (Message Router)                                  │
+└───────────────────────────────────┬─────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        PAPERCLIP (Control Plane)                        │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐   │
+│  │  Agents     │  │  Issues     │  │  Scheduler  │  │  Governance │   │
+│  │  (org chart)│  │  (tasks)    │  │ (heartbeats)│  │ (approvals) │   │
+│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘   │
+│                                                                         │
+│  Single source of truth: PostgreSQL                                    │
+└───────────────────────────────────┬─────────────────────────────────────┘
+                                    │
+                                    │ Webhook / API
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        OPENCLAW (Execution Plane)                       │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐   │
+│  │  Jarvis     │  │  Coder      │  │  Sally      │  │  Mike       │   │
+│  │  (CEO)      │  │  (Backend)  │  │  (Frontend) │  │  (QA)       │   │
+│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘   │
+│                                                                         │
+│  Skills: MEMORY.md, tools, proactive-agent, etc.                       │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## User Interaction Flow
+
+### Scenario 1: User Sends Telegram Message
+
+```
+User ──Telegram──► OpenClaw Gateway ──► Route to Agent ──► Paperclip API
+                         │                      │
+                         │                      │ 1. Get/Create Issue
+                         │                      │ 2. Checkout Task
+                         │                      │ 3. Execute Work
+                         │                      │ 4. Update Status
+                         │                      │
+                         │◄───── Response ◄─────┘
+                         │
+                         ▼
+                 Telegram Reply
+```
+
+### Scenario 2: User Uses Mimo App
+
+```
+User ──Mimo App──► OpenClaw Gateway ──► Direct Agent Session
+                         │                      │
+                         │                      │ Execute with full context
+                         │                      │
+                         │◄───── Response ◄─────┘
+                         │
+                         ▼
+                    Mimo App UI
+```
+
+### Scenario 3: Scheduled Heartbeat (No User)
+
+```
+Paperclip Scheduler ──► Webhook ──► OpenClaw Agent
+         │                               │
+         │                               │ 1. Check assignments
+         │                               │ 2. Do work if task exists
+         │                               │ 3. Report result
+         │                               │
+         │◄───── Cost/Status ◄───────────┘
+```
 
 ---
 
 ## Goals
 
 ### Primary Goals
-1. **Eliminate redundancy** - Remove 5 duplicate systems (AGENTS.md, ClawDeck, active-tasks.json, monitoring scripts)
-2. **Single source of truth** - PostgreSQL replaces JSON files + SQLite
-3. **Add governance** - Built-in approvals, budgets, audit trail
-4. **Mobile access** - React UI works from anywhere
+1. **Multi-channel support** - Users can interact via Telegram, Mimo app, web UI
+2. **Unified task management** - All channels route through Paperclip
+3. **Eliminate redundancy** - Remove ClawDeck, AGENTS.md, bash scripts
+4. **Keep mimo as primary UI** - Mimo app remains the main interface
 
 ### Non-Goals
-- Changing OpenClaw execution behavior
-- Modifying agent skills or capabilities
-- Replacing OpenClaw with another runtime
+- Replacing mimo app with Paperclip UI
+- Changing OpenClaw's channel integrations
+- Modifying Telegram bot behavior
 
 ---
 
@@ -35,19 +123,20 @@ Consolidate Jarvis Workspace's custom agent orchestration (OpenCode Swarm + Claw
 ### Long-Running Feature Branch
 
 ```
-main (upstream paperclip)
+main (upstream paperclipai/paperclip)
   │
   └──► feat/openclaw-integration (OUR BASE)
          │
-         ├──► feat/pc-1-setup-paperclip          (Phase 1)
-         ├──► feat/pc-2-create-agents            (Phase 2)
-         ├──► feat/pc-3-webhook-integration      (Phase 3)
-         ├──► feat/pc-4-agent-skills             (Phase 4)
-         ├──► feat/pc-5-migrate-tasks            (Phase 5)
-         ├──► feat/pc-6-scheduling               (Phase 6)
-         ├──► feat/pc-7-governance               (Phase 7)
-         ├──► feat/pc-8-monitoring               (Phase 8)
-         └──► feat/pc-9-cleanup                  (Phase 9)
+         ├──► feat/pc-1-setup-paperclip
+         ├──► feat/pc-2-create-agents
+         ├──► feat/pc-3-webhook-integration
+         ├──► feat/pc-4-channel-routing
+         ├──► feat/pc-5-agent-skills
+         ├──► feat/pc-6-migrate-tasks
+         ├──► feat/pc-7-scheduling
+         ├──► feat/pc-8-governance
+         ├──► feat/pc-9-monitoring
+         └──► feat/pc-10-cleanup
 ```
 
 ### Rules
@@ -60,17 +149,168 @@ main (upstream paperclip)
 ### Creating Worktrees
 
 ```bash
-# Create worktree for a phase
 cd ~/repos/paperclip
-git worktree add ~/worktrees/pc-1-setup-paperclip -b feat/pc-1-setup-paperclip feat/openclaw-integration
-
-# Work in the worktree
-cd ~/worktrees/pc-1-setup-paperclip
-# ... make changes ...
-
-# Create PR targeting feature branch
-gh pr create --base feat/openclaw-integration --head feat/pc-1-setup-paperclip
+git worktree add ~/worktrees/pc-4-channel-routing -b feat/pc-4-channel-routing feat/openclaw-integration
 ```
+
+### Creating PRs
+
+```bash
+gh pr create --base feat/openclaw-integration --head feat/pc-4-channel-routing
+```
+
+---
+
+## Phase 4 (NEW): Channel Routing
+
+### Overview
+Implement multi-channel message routing through Paperclip.
+
+### Tasks
+- [ ] Design channel routing schema
+- [ ] Map Telegram topics → Paperclip issues
+- [ ] Map Mimo sessions → Paperclip sessions
+- [ ] Implement channel-aware agent dispatch
+- [ ] Test cross-channel task continuity
+
+### Channel Mapping
+
+| Channel | Identifier | Maps To |
+|---------|------------|---------|
+| Telegram Topic 2520 | `telegram:-1003893288797:2520` | Paperclip Issue |
+| Telegram DM | `telegram:261069981` | Paperclip Issue |
+| Mimo App Session | `mimo:session-abc123` | Paperclip Session |
+| Web UI | `web:user-xyz` | Paperclip Issue |
+
+### Routing Logic
+
+```typescript
+// In OpenClaw Gateway
+async function routeMessage(channel: string, sender: string, message: string) {
+  // 1. Identify or create Paperclip issue
+  const issue = await findOrCreateIssue(channel, sender, message);
+  
+  // 2. Determine which agent should handle
+  const agent = await assignAgent(issue);
+  
+  // 3. Trigger heartbeat or direct invocation
+  if (agent.status === 'idle') {
+    await triggerHeartbeat(agent.id, { issueId: issue.id, channel });
+  } else {
+    await invokeDirect(agent.id, { issueId: issue.id, message, channel });
+  }
+  
+  // 4. Return response channel
+  return { channel, agent: agent.name };
+}
+```
+
+---
+
+## Technical Architecture
+
+### OpenClaw Gateway (Message Router)
+
+```typescript
+// New component: routes messages from channels to agents
+class MessageRouter {
+  channels = {
+    telegram: new TelegramHandler(),
+    mimo: new MimoHandler(),
+    discord: new DiscordHandler(),
+    web: new WebHandler(),
+  };
+  
+  async route(incoming: IncomingMessage) {
+    // 1. Identify channel
+    const handler = this.channels[incoming.channel];
+    
+    // 2. Parse message
+    const parsed = await handler.parse(incoming);
+    
+    // 3. Check Paperclip for task context
+    const context = await paperclip.getContext(parsed.sessionKey);
+    
+    // 4. Route to appropriate agent
+    const agent = await paperclip.assignAgent(context);
+    
+    // 5. Execute
+    const response = await agent.execute(parsed.message, context);
+    
+    // 6. Report to Paperclip
+    await paperclip.reportCost(agent.id, response.usage);
+    
+    // 7. Send response via same channel
+    return handler.send(incoming.channelId, response);
+  }
+}
+```
+
+### Paperclip Integration Points
+
+```typescript
+// Paperclip API calls from OpenClaw
+
+// 1. Get or create issue for channel conversation
+POST /api/companies/{id}/issues
+{
+  "title": "Telegram: User request from @montelai",
+  "description": "User message...",
+  "metadata": {
+    "channel": "telegram",
+    "channelId": "-1003893288797:2520",
+    "senderId": "261069981"
+  }
+}
+
+// 2. Assign agent
+POST /api/issues/{id}/checkout
+{
+  "agentId": "jarvis-id",
+  "expectedStatuses": ["todo", "in_progress"]
+}
+
+// 3. Report cost after response
+POST /api/companies/{id}/cost-events
+{
+  "agentId": "jarvis-id",
+  "issueId": "issue-id",
+  "provider": "zai",
+  "model": "glm-5",
+  "inputTokens": 1500,
+  "outputTokens": 800,
+  "costCents": 12,
+  "occurredAt": "2026-03-08T04:00:00Z"
+}
+```
+
+---
+
+## Channel-Specific Behavior
+
+### Telegram (Existing)
+- **Trigger:** Incoming message → OpenClaw
+- **Context:** Topic ID maps to project
+- **Response:** Reply in same topic
+- **Cost:** Reported after each message
+
+### Mimo App (Primary)
+- **Trigger:** User action in app
+- **Context:** Full session context
+- **Response:** Stream to app UI
+- **Cost:** Batch reported
+
+### Discord (Future)
+- **Trigger:** Bot mention or DM
+- **Context:** Channel → Project mapping
+- **Response:** Reply in channel
+- **Cost:** Reported per interaction
+
+### Web UI (Future)
+- **Trigger:** Direct agent invocation
+- **Context:** User session
+- **Response:** WebSocket stream
+- **Cost:** Real-time display
 
 ---
 
@@ -78,304 +318,52 @@ gh pr create --base feat/openclaw-integration --head feat/pc-1-setup-paperclip
 
 | Metric | Current | Target |
 |--------|---------|--------|
-| Redundant systems | 5 | 0 |
-| Services running | 3 (OpenClaw, ClawDeck, monitoring) | 2 (OpenClaw, Paperclip) |
-| Task sync method | File-based (JSON) | Database (PostgreSQL) |
-| Governance | None | Full approvals + budgets |
-| Mobile access | No | Yes |
-| Maintenance scripts | 7 bash scripts | 0 |
-
----
-
-## Phases
-
-### Phase 1: Setup Paperclip (Day 1)
-
-**Branch:** `feat/pc-1-setup-paperclip`
-
-**Tasks:**
-- [ ] Install Paperclip locally
-- [ ] Run dev server
-- [ ] Complete onboarding
-- [ ] Create company structure
-- [ ] Verify dashboard works
-
-**Deliverable:** Paperclip running at `http://localhost:3100`
-
----
-
-### Phase 2: Create Agent Org Chart (Day 1-2)
-
-**Branch:** `feat/pc-2-create-agents`
-
-**Tasks:**
-- [ ] Create CEO (Jarvis) with OpenClaw adapter
-- [ ] Create CTO
-- [ ] Create engineering team (6 agents)
-- [ ] Configure reporting relationships
-- [ ] Set budgets
-
-**Deliverable:** Full org chart in Paperclip
-
-**Agent Mapping:**
-| Current | Paperclip Agent | Adapter |
-|---------|-----------------|---------|
-| Jarvis | CEO | `openclaw` |
-| Coder | BackendEngineer | `opencode_local` |
-| Sally | FrontendEngineer | `opencode_local` |
-| Mike | QAEngineer | `opencode_local` |
-| Richard | ResearchEngineer | `opencode_local` |
-| Nolan | DevOpsEngineer | `opencode_local` |
-| Elsa | MarketingEngineer | `opencode_local` |
-
----
-
-### Phase 3: Webhook Integration (Day 2-3)
-
-**Branch:** `feat/pc-3-webhook-integration`
-
-**Tasks:**
-- [ ] Create OpenClaw webhook receiver
-- [ ] Test Paperclip → OpenClaw connection
-- [ ] Verify heartbeat delivery
-- [ ] Test cost reporting
-
-**Deliverable:** Bidirectional communication working
-
----
-
-### Phase 4: Agent Skills Update (Day 3-4)
-
-**Branch:** `feat/pc-4-agent-skills`
-
-**Tasks:**
-- [ ] Add paperclip skill to agents
-- [ ] Update heartbeat protocol in agents
-- [ ] Test checkout/update cycle
-- [ ] Document new workflow
-
-**Deliverable:** Agents can interact with Paperclip API
-
----
-
-### Phase 5: Task Migration (Day 4-5)
-
-**Branch:** `feat/pc-5-migrate-tasks`
-
-**Tasks:**
-- [ ] Export tasks from ClawDeck
-- [ ] Transform to Paperclip issues format
-- [ ] Import to Paperclip
-- [ ] Verify task assignments
-- [ ] Test task creation flow
-
-**Deliverable:** All tasks migrated to Paperclip
-
----
-
-### Phase 6: Scheduling (Day 5-6)
-
-**Branch:** `feat/pc-6-scheduling`
-
-**Tasks:**
-- [ ] Configure heartbeat intervals per agent
-- [ ] Test scheduled heartbeats
-- [ ] Test event-driven heartbeats
-- [ ] Verify auto-assignment
-
-**Deliverable:** Heartbeats running on schedule
-
----
-
-### Phase 7: Governance (Day 6-7)
-
-**Branch:** `feat/pc-7-governance`
-
-**Tasks:**
-- [ ] Configure approval rules
-- [ ] Set up Telegram notifications
-- [ ] Test approval workflow
-- [ ] Document governance process
-
-**Deliverable:** Approvals working end-to-end
-
----
-
-### Phase 8: Monitoring (Day 7-8)
-
-**Branch:** `feat/pc-8-monitoring`
-
-**Tasks:**
-- [ ] Review Paperclip dashboard
-- [ ] Add custom metrics
-- [ ] Set up alerts
-- [ ] Test cost tracking
-
-**Deliverable:** Full visibility in Paperclip UI
-
----
-
-### Phase 9: Cleanup (Day 8-10)
-
-**Branch:** `feat/pc-9-cleanup`
-
-**Tasks:**
-- [ ] Disable old crontabs
-- [ ] Archive bash scripts
-- [ ] Stop ClawDeck service
-- [ ] Remove AGENTS.md
-- [ ] Update all documentation
-- [ ] Merge feature branch to main
-
-**Deliverable:** Old system fully retired
-
----
-
-## Technical Architecture
-
-### Before (Current)
-
-```
-Jarvis Workspace
-├── AGENTS.md (static agent definitions)
-├── ClawDeck (SQLite task management)
-├── active-tasks.json (task registry)
-├── check-agents.sh (monitoring cron)
-├── auto-spawn-tasks.sh (auto-assign cron)
-├── spawn-agent.sh (agent spawning)
-└── Linux crontab (scheduling)
-```
-
-### After (Target)
-
-```
-Paperclip (Control Plane)
-├── PostgreSQL (agents, issues, runs, costs)
-├── React UI (dashboard, org chart, approvals)
-├── Scheduler (heartbeats, event triggers)
-└── API (REST endpoints)
-
-OpenClaw (Execution Plane)
-├── MEMORY.md (long-term memory)
-├── skills/ (agent capabilities)
-└── Agent sessions (execution)
-```
-
----
-
-## OpenClaw Adapter Configuration
-
-```json
-{
-  "adapterType": "openclaw",
-  "adapterConfig": {
-    "url": "http://localhost:18789/api/webhook/{agentName}",
-    "method": "POST",
-    "webhookAuthHeader": "Bearer {OPENCLAW_TOKEN}",
-    "timeoutSec": 300,
-    "payloadTemplate": {
-      "source": "paperclip",
-      "version": "1.0"
-    }
-  }
-}
-```
-
----
-
-## Cost Tracking
-
-### Automatic (Heartbeats)
-- Paperclip adapter extracts usage from webhook response
-- Cost recorded to `cost_events` table
-- Budget auto-updated
-
-### Manual (Telegram Triggers)
-- Agent calls `POST /api/companies/{id}/cost-events` after response
-- Includes token counts and cost in cents
-- Paperclip updates budget
-
----
-
-## Risk Mitigation
-
-| Risk | Likelihood | Impact | Mitigation |
-|------|------------|--------|------------|
-| Data loss during migration | Low | High | Full backup before migrate |
-| Webhook failures | Medium | Medium | Retry logic + polling fallback |
-| Agent confusion | Low | Medium | Clear documentation + training |
-| Paperclip bugs | Low | Medium | Keep scripts archived for rollback |
-| Performance issues | Low | Medium | Test with full load before switch |
-
----
-
-## Rollback Plan
-
-If migration fails:
-
-1. **Re-enable crontabs**
-   ```bash
-   crontab -e
-   # Uncomment monitoring lines
-   ```
-
-2. **Restart ClawDeck**
-   ```bash
-   pm2 start clawdeck
-   ```
-
-3. **Restore AGENTS.md**
-   ```bash
-   git checkout AGENTS.md
-   ```
-
-4. **Archive Paperclip**
-   ```bash
-   pm2 stop paperclip
-   ```
+| Channels supported | 1 (Telegram) | 3+ |
+| Task continuity | Manual | Automatic |
+| Cost tracking | None | Per-channel |
+| User context | Per-session | Cross-channel |
 
 ---
 
 ## Dependencies
 
 ### Required
-- [x] Paperclip repo cloned (`~/repos/paperclip`)
-- [x] OpenClaw running (`localhost:18789`)
-- [x] Node.js 20+
-- [x] pnpm 9+
-- [x] PostgreSQL (embedded in Paperclip)
+- [x] Paperclip running locally
+- [x] OpenClaw gateway running
+- [x] Telegram integration working
+- [ ] Channel routing module (new)
 
 ### Optional
-- [ ] Telegram bot token (for notifications)
-- [ ] Tailscale (for remote access)
+- [ ] Discord bot token
+- [ ] Web UI for direct invocation
 
 ---
 
 ## Timeline
 
-| Day | Phase | Status |
-|-----|-------|--------|
-| 1 | Setup + Org Chart | 🔲 Not started |
-| 2 | Webhook Integration | 🔲 Not started |
-| 3 | Agent Skills | 🔲 Not started |
-| 4 | Task Migration | 🔲 Not started |
-| 5 | Scheduling | 🔲 Not started |
-| 6 | Governance | 🔲 Not started |
-| 7 | Monitoring | 🔲 Not started |
-| 8-10 | Cleanup + Merge | 🔲 Not started |
+| Day | Phase | Focus |
+|-----|-------|-------|
+| 1 | Setup | Install Paperclip, create org |
+| 2 | Agents | Create agent org chart |
+| 3 | Webhook | Test Paperclip ↔ OpenClaw |
+| 4 | **Channel Routing** | **Implement multi-channel** |
+| 5 | Skills | Add Paperclip skill to agents |
+| 6 | Migration | Migrate tasks from ClawDeck |
+| 7 | Scheduling | Configure heartbeats |
+| 8 | Governance | Set up approvals |
+| 9 | Monitoring | Dashboard + alerts |
+| 10 | Cleanup | Archive old system |
 
 ---
 
 ## Acceptance Criteria
 
-- [ ] All 7 agents created in Paperclip
-- [ ] Heartbeats working (scheduled + event-driven)
-- [ ] Tasks migrated from ClawDeck
-- [ ] Governance/approvals functional
-- [ ] Cost tracking working
-- [ ] Dashboard accessible from mobile
-- [ ] Old system fully retired
-- [ ] Documentation updated
+- [ ] Telegram messages route through Paperclip
+- [ ] Mimo app sessions route through Paperclip
+- [ ] Cross-channel task continuity works
+- [ ] Cost tracking per channel
+- [ ] Single source of truth (PostgreSQL)
+- [ ] Old system retired
 
 ---
 
@@ -395,3 +383,5 @@ If migration fails:
 |------|--------|
 | 2026-03-08 | Initial PRD created |
 | 2026-03-08 | Added branching strategy |
+| 2026-03-08 | **Added multi-channel architecture** |
+| 2026-03-08 | **Added Phase 4: Channel Routing** |
