@@ -9,12 +9,7 @@ export function printNanoClawGatewayStreamEvent(raw: string, debug: boolean): vo
     return;
   }
 
-  if (line.startsWith("[openclaw-gateway:event]") || line.startsWith("[nanoclaw-gateway:event]")) {
-    console.log(pc.cyan(line));
-    return;
-  }
-
-  if (line.startsWith("[openclaw-gateway]") || line.startsWith("[nanoclaw-gateway]")) {
+  if (line.startsWith("[nanoclaw-gateway]")) {
     console.log(pc.blue(line));
     return;
   }

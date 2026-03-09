@@ -11,26 +11,24 @@ export const agentConfigurationDoc = `# nanoclaw_gateway agent configuration
 Adapter: nanoclaw_gateway
 
 Use when:
-- You want Paperclip to invoke NanoClaw agents (Dozer, Scout, Myco, Sally) via the OpenClaw Gateway.
-- NanoClaw runs Docker-containerized Claude agents on top of the OpenClaw gateway.
+- You want Paperclip to invoke NanoClaw agents (Dozer, Scout, Myco, Sally) via NanoClaw's HTTP API.
+- NanoClaw runs Docker-containerized Claude agents with their own MCP server on port 18790.
 
 Don't use when:
 - You want to talk to the OpenClaw gateway directly (use openclaw_gateway instead).
-- Your NanoClaw instance is not running or the gateway is unreachable.
+- Your NanoClaw instance is not running.
 
 Core fields:
-- url (string, optional): Gateway WebSocket URL (default ws://127.0.0.1:18789)
+- url (string, optional): NanoClaw HTTP base URL (default http://127.0.0.1:18790)
 - agentName (string, required): NanoClaw agent to route to (dozer, scout, myco, sally, or custom)
-- authToken (string, optional): shared gateway token override
+- agentId (string, optional): Paperclip agent ID override (defaults to agentName)
 
 Request behavior fields:
-- timeoutSec (number, optional): adapter timeout in seconds (default 300 — NanoClaw agents run longer in Docker)
-- waitTimeoutMs (number, optional): agent.wait timeout override (default timeoutSec * 1000)
+- timeoutMs (number, optional): HTTP request timeout in milliseconds (default 30000)
 
-Session routing fields:
-- sessionKeyStrategy (string, optional): issue (default), fixed, or run
-- sessionKey (string, optional): fixed session key when strategy=fixed (default paperclip)
-
-All other OpenClaw gateway fields (headers, role, scopes, payloadTemplate, etc.) are also supported
-and passed through to the underlying openclaw_gateway adapter.
+How it works:
+- Paperclip POSTs to NanoClaw's /paperclip/wakeup endpoint with { agentId, runId, context }
+- NanoClaw maps agentId to a registered group via the paperclipAgentId field
+- The agent runs in a Docker container and delivers output via WhatsApp
+- This is fire-and-forget — results are delivered asynchronously via WhatsApp, not returned to Paperclip
 `;

@@ -1,32 +1,63 @@
 import type {
   AdapterEnvironmentTestContext,
   AdapterEnvironmentTestResult,
+  AdapterEnvironmentCheck,
 } from "@paperclipai/adapter-utils";
-import { testEnvironment as openclawTestEnvironment } from "@paperclipai/adapter-openclaw-gateway/server";
 
-const NANOCLAW_DEFAULT_URL = "ws://127.0.0.1:18789";
+const NANOCLAW_DEFAULT_URL = "http://127.0.0.1:18790";
 
 export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
-  // Apply NanoClaw default URL if none provided
   const config =
     typeof ctx.config === "object" && ctx.config !== null && !Array.isArray(ctx.config)
       ? (ctx.config as Record<string, unknown>)
       : {};
 
-  const url = typeof config.url === "string" && config.url.trim() ? config.url : NANOCLAW_DEFAULT_URL;
+  const baseUrl =
+    typeof config.url === "string" && config.url.trim() ? config.url.trim() : NANOCLAW_DEFAULT_URL;
 
-  const patchedCtx: AdapterEnvironmentTestContext = {
-    ...ctx,
-    config: { ...config, url },
-  };
+  const healthUrl = `${baseUrl.replace(/\/+$/, "")}/health`;
+  const checks: AdapterEnvironmentCheck[] = [];
+  const testedAt = new Date().toISOString();
 
-  const result = await openclawTestEnvironment(patchedCtx);
+  try {
+    const response = await fetch(healthUrl, {
+      method: "GET",
+      signal: AbortSignal.timeout(5_000),
+    });
 
-  // Re-label checks for NanoClaw context
+    if (response.ok) {
+      checks.push({
+        code: "nanoclaw_reachable",
+        level: "info",
+        message: `NanoClaw MCP server reachable at ${baseUrl}`,
+      });
+    } else {
+      checks.push({
+        code: "nanoclaw_unhealthy",
+        level: "error",
+        message: `NanoClaw health check returned HTTP ${response.status}`,
+        hint: "Verify NanoClaw is running and the URL is correct",
+      });
+    }
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    checks.push({
+      code: "nanoclaw_unreachable",
+      level: "error",
+      message: `Cannot reach NanoClaw at ${baseUrl}: ${message}`,
+      hint: "Check that NanoClaw service is running (launchctl list com.nanoclaw) and port 18790 is not blocked",
+    });
+  }
+
+  const hasError = checks.some((c) => c.level === "error");
+  const hasWarn = checks.some((c) => c.level === "warn");
+
   return {
-    ...result,
     adapterType: "nanoclaw_gateway",
+    status: hasError ? "fail" : hasWarn ? "warn" : "pass",
+    checks,
+    testedAt,
   };
 }

@@ -40,14 +40,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@paperclipai/adapter-openclaw-gateway": "workspace:*",
     "@paperclipai/adapter-utils": "workspace:*",
-    "picocolors": "^1.1.1",
-    "ws": "^8.19.0"
+    "picocolors": "^1.1.1"
   },
   "devDependencies": {
     "@types/node": "^24.6.0",
-    "@types/ws": "^8.18.1",
     "typescript": "^5.7.3"
   }
 }
