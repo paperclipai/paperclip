@@ -97,7 +97,7 @@ PATCH /api/projects/{projectId}
 
 ## Project Workspaces
 
-Workspaces link a project to a repository and directory:
+A workspace links a project to a local directory and/or a repository. Workspaces are used by both the file editor (via `cwd`) and agents (the primary workspace determines the working directory for project-scoped tasks). See [Workspaces](/api/workspaces) for the full CRUD reference.
 
 ```
 POST /api/projects/{projectId}/workspaces
@@ -110,12 +110,14 @@ POST /api/projects/{projectId}/workspaces
 }
 ```
 
-Agents use the primary workspace to determine their working directory for project-scoped tasks.
+At least one of `cwd` or `repoUrl` must be provided. Workspaces with a `cwd` can be used with the [Workspace Files](/api/workspace-files) API and the board UI file editor.
 
 ### Manage Workspaces
 
 ```
-GET /api/projects/{projectId}/workspaces
-PATCH /api/projects/{projectId}/workspaces/{workspaceId}
+GET    /api/projects/{projectId}/workspaces
+POST   /api/projects/{projectId}/workspaces
+GET    /api/projects/{projectId}/workspaces/{workspaceId}
+PATCH  /api/projects/{projectId}/workspaces/{workspaceId}
 DELETE /api/projects/{projectId}/workspaces/{workspaceId}
 ```

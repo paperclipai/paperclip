@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
 import { NavLink, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronRight, Plus } from "lucide-react";
+import { ChevronRight, FolderOpen, Plus } from "lucide-react";
 import {
   DndContext,
   PointerSensor,
@@ -25,19 +25,22 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import type { Project } from "@paperclipai/shared";
+import type { Project, ProjectWorkspace } from "@paperclipai/shared";
 
 function SortableProjectItem({
   activeProjectRef,
   isMobile,
   project,
   setSidebarOpen,
+  selectedCompanyId,
 }: {
   activeProjectRef: string | null;
   isMobile: boolean;
   project: Project;
   setSidebarOpen: (open: boolean) => void;
+  selectedCompanyId: string | null;
 }) {
+  const [expanded, setExpanded] = useState(false);
   const {
     attributes,
     listeners,
@@ -48,6 +51,13 @@ function SortableProjectItem({
   } = useSortable({ id: project.id });
 
   const routeRef = projectRouteRef(project);
+  const isActive = activeProjectRef === routeRef || activeProjectRef === project.id;
+
+  const { data: workspaces } = useQuery({
+    queryKey: queryKeys.projects.workspaces(project.id),
+    queryFn: () => projectsApi.listWorkspaces(project.id, selectedCompanyId ?? undefined),
+    enabled: expanded && !!selectedCompanyId,
+  });
 
   return (
     <div
@@ -61,24 +71,74 @@ function SortableProjectItem({
       {...attributes}
       {...listeners}
     >
-      <NavLink
-        to={`/projects/${routeRef}/issues`}
-        onClick={() => {
-          if (isMobile) setSidebarOpen(false);
-        }}
+      <div
         className={cn(
-          "flex items-center gap-2.5 px-3 py-1.5 text-[13px] font-medium transition-colors",
-          activeProjectRef === routeRef || activeProjectRef === project.id
+          "flex items-center gap-1 px-3 py-1.5 text-[13px] font-medium transition-colors",
+          isActive
             ? "bg-accent text-foreground"
             : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
         )}
       >
-        <span
-          className="shrink-0 h-3.5 w-3.5 rounded-sm"
-          style={{ backgroundColor: project.color ?? "#6366f1" }}
-        />
-        <span className="flex-1 truncate">{project.name}</span>
-      </NavLink>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            setExpanded((v) => !v);
+          }}
+          className="shrink-0 p-0.5 -ml-0.5"
+          aria-label={expanded ? "Collapse" : "Expand"}
+        >
+          <ChevronRight
+            className={cn(
+              "h-3 w-3 text-muted-foreground transition-transform",
+              expanded && "rotate-90",
+            )}
+          />
+        </button>
+        <NavLink
+          to={`/projects/${routeRef}/issues`}
+          onClick={() => {
+            if (isMobile) setSidebarOpen(false);
+          }}
+          className="flex items-center gap-2 flex-1 min-w-0"
+        >
+          <span
+            className="shrink-0 h-3.5 w-3.5 rounded-sm"
+            style={{ backgroundColor: project.color ?? "#6366f1" }}
+          />
+          <span className="flex-1 truncate">{project.name}</span>
+        </NavLink>
+      </div>
+
+      {expanded && (
+        <div className="flex flex-col">
+          {workspaces && workspaces.length > 0 ? (
+            workspaces.map((ws: ProjectWorkspace) => (
+              <NavLink
+                key={ws.id}
+                to={`/projects/${routeRef}/workspaces/${ws.id}`}
+                onClick={() => {
+                  if (isMobile) setSidebarOpen(false);
+                }}
+                className={({ isActive: linkActive }) =>
+                  cn(
+                    "flex items-center gap-2 pl-9 pr-3 py-1 text-[12px] transition-colors",
+                    linkActive
+                      ? "bg-accent text-foreground font-medium"
+                      : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                  )
+                }
+              >
+                <FolderOpen className="h-3.5 w-3.5 shrink-0" />
+                <span className="flex-1 truncate">{ws.name}</span>
+              </NavLink>
+            ))
+          ) : workspaces ? (
+            <span className="pl-9 pr-3 py-1 text-[11px] text-muted-foreground/60 italic">
+              No workspaces
+            </span>
+          ) : null}
+        </div>
+      )}
     </div>
   );
 }
@@ -181,6 +241,7 @@ export function SidebarProjects() {
                   isMobile={isMobile}
                   project={project}
                   setSidebarOpen={setSidebarOpen}
+                  selectedCompanyId={selectedCompanyId}
                 />
               ))}
             </div>

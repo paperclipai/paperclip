@@ -43,6 +43,7 @@
     "@paperclipai/adapter-utils": "workspace:*",
     "@paperclipai/db": "workspace:*",
     "@paperclipai/shared": "workspace:*",
+    "archiver": "^7.0.1",
     "better-auth": "1.4.18",
     "detect-port": "^2.1.0",
     "dotenv": "^17.0.1",
@@ -58,6 +59,7 @@
     "zod": "^3.24.2"
   },
   "devDependencies": {
+    "@types/archiver": "^7.0.0",
     "@types/express": "^5.0.0",
     "@types/express-serve-static-core": "^5.0.0",
     "@types/multer": "^2.0.0",

@@ -149,6 +149,23 @@ export function projectRoutes(db: Db) {
     res.json(workspaces);
   });
 
+  router.get("/projects/:id/workspaces/:workspaceId", async (req, res) => {
+    const id = req.params.id as string;
+    const workspaceId = req.params.workspaceId as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    const workspace = await svc.getWorkspaceById(id, workspaceId);
+    if (!workspace) {
+      res.status(404).json({ error: "Project workspace not found" });
+      return;
+    }
+    res.json(workspace);
+  });
+
   router.post("/projects/:id/workspaces", validate(createProjectWorkspaceSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
@@ -195,8 +212,8 @@ export function projectRoutes(db: Db) {
         return;
       }
       assertCompanyAccess(req, existing.companyId);
-      const workspaceExists = (await svc.listWorkspaces(id)).some((workspace) => workspace.id === workspaceId);
-      if (!workspaceExists) {
+      const existingWorkspace = await svc.getWorkspaceById(id, workspaceId);
+      if (!existingWorkspace) {
         res.status(404).json({ error: "Project workspace not found" });
         return;
       }

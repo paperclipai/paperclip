@@ -24,7 +24,7 @@ import { SlidersHorizontal } from "lucide-react";
 
 /* ── Top-level tab types ── */
 
-type ProjectTab = "overview" | "list";
+type ProjectTab = "overview" | "list" | "workspaces";
 
 function resolveProjectTab(pathname: string, projectId: string): ProjectTab | null {
   const segments = pathname.split("/").filter(Boolean);
@@ -33,6 +33,7 @@ function resolveProjectTab(pathname: string, projectId: string): ProjectTab | nu
   const tab = segments[projectsIdx + 2];
   if (tab === "overview") return "overview";
   if (tab === "issues") return "list";
+  if (tab === "workspaces") return "workspaces";
   return null;
 }
 
@@ -294,6 +295,8 @@ export function ProjectDetail() {
   const handleTabChange = (tab: ProjectTab) => {
     if (tab === "overview") {
       navigate(`/projects/${canonicalProjectRef}/overview`);
+    } else if (tab === "workspaces") {
+      navigate(`/projects/${canonicalProjectRef}/workspaces`);
     } else {
       navigate(`/projects/${canonicalProjectRef}/issues`);
     }
@@ -358,6 +361,16 @@ export function ProjectDetail() {
           onClick={() => handleTabChange("list")}
         >
           List
+        </button>
+        <button
+          className={`px-3 py-2 text-sm font-medium transition-colors border-b-2 ${
+            activeTab === "workspaces"
+              ? "border-foreground text-foreground"
+              : "border-transparent text-muted-foreground hover:text-foreground"
+          }`}
+          onClick={() => handleTabChange("workspaces")}
+        >
+          Workspaces
         </button>
       </div>
 
