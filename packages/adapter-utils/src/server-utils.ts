@@ -324,6 +324,7 @@ export async function runChildProcess(
               }, opts.timeoutSec * 1000)
             : null;
 
+
         child.stdout?.on("data", (chunk: unknown) => {
           const text = String(chunk);
           stdout = appendWithCap(stdout, text);

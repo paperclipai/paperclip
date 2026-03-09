@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "node scripts/dev-runner.mjs watch",
-    "dev:watch": "node scripts/dev-runner.mjs watch",
+    "dev:watch": "cross-env PAPERCLIP_MIGRATION_PROMPT=never node scripts/dev-runner.mjs watch",
     "dev:once": "node scripts/dev-runner.mjs dev",
     "dev:server": "pnpm --filter @paperclipai/server dev",
     "dev:ui": "pnpm --filter @paperclipai/ui dev",
@@ -35,8 +35,8 @@
   },
   "devDependencies": {
     "@changesets/cli": "^2.30.0",
-    "cross-env": "^10.1.0",
     "@playwright/test": "^1.58.2",
+    "cross-env": "^10.1.0",
     "esbuild": "^0.27.3",
     "typescript": "^5.7.3",
     "vitest": "^3.0.5"
