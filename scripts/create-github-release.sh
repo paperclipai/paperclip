@@ -2,6 +2,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PUBLISH_REMOTE="${PUBLISH_REMOTE:-public-gh}"
 
 dry_run=false
 version=""
@@ -72,8 +73,8 @@ if [ "$dry_run" = true ]; then
   exit 0
 fi
 
-if ! git -C "$REPO_ROOT" ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
-  echo "Error: remote tag $tag was not found on origin. Push the release commit and tag first." >&2
+if ! git -C "$REPO_ROOT" ls-remote --exit-code --tags "$PUBLISH_REMOTE" "refs/tags/$tag" >/dev/null 2>&1; then
+  echo "Error: remote tag $tag was not found on $PUBLISH_REMOTE. Push the release commit and tag first." >&2
   exit 1
 fi
 

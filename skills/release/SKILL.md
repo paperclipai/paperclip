@@ -200,7 +200,7 @@ Stable publish does **not** push the release for you.
 After stable publish succeeds:
 
 ```bash
-git push origin HEAD:master --follow-tags
+git push public-gh HEAD:master --follow-tags
 ./scripts/create-github-release.sh X.Y.Z
 ```
 

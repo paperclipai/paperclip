@@ -18,6 +18,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CLI_DIR="$REPO_ROOT/cli"
 TEMP_CHANGESET_FILE="$REPO_ROOT/.changeset/release-bump.md"
 TEMP_PRE_FILE="$REPO_ROOT/.changeset/pre.json"
+PUBLISH_REMOTE="${PUBLISH_REMOTE:-public-gh}"
 
 dry_run=false
 canary=false
@@ -479,6 +480,6 @@ elif [ "$canary" = true ]; then
 else
   info "Published stable v${TARGET_STABLE_VERSION}."
   info "Next steps:"
-  info "  git push origin HEAD:master --follow-tags"
+  info "  git push ${PUBLISH_REMOTE} HEAD:master --follow-tags"
   info "  ./scripts/create-github-release.sh $TARGET_STABLE_VERSION"
 fi
