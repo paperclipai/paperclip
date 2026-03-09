@@ -180,16 +180,16 @@ describe("trust evaluation logic", () => {
   });
 
   describe("neutral outcomes", () => {
-    it("cancelled runs do not affect promotion", () => {
-      // Neutral outcomes are not included in the decisive runs query
-      // They are filtered out at the DB level: inArray(status, ["succeeded", "failed"])
-      // So they never appear in the runs array passed to countConsecutiveSuccesses
-      expect(true).toBe(true); // Tested implicitly by DB query filter
+    it("cancelled does not trigger promotion or demotion", () => {
+      // evaluateTrust returns early for non-decisive outcomes (line 61 of trust.ts)
+      // so neither shouldPromote nor shouldDemote is reached
+      expect(shouldPromote("supervised", "cancelled", 20)).toBe(false);
+      expect(shouldDemote("autonomous", "cancelled", 5)).toBe(false);
     });
 
-    it("timed_out runs do not affect demotion", () => {
-      // Same as above — timed_out is filtered at query level
-      expect(true).toBe(true);
+    it("timed_out does not trigger promotion or demotion", () => {
+      expect(shouldPromote("supervised", "timed_out", 20)).toBe(false);
+      expect(shouldDemote("autonomous", "timed_out", 5)).toBe(false);
     });
   });
 
