@@ -327,6 +327,9 @@ importers:
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
+      cross-env:
+        specifier: ^10.1.0
+        version: 10.1.0
       supertest:
         specifier: ^7.0.0
         version: 7.2.2
