@@ -29,10 +29,24 @@ services:
       BETTER_AUTH_SECRET: "ns707Bg8fLg8nzLUTL1e4nN9cEu+jywxX7UkcJcWZH0="
     volumes:
       - paperclip-data:/paperclip
+      - ./bootstrap-output:/bootstrap-output 
     depends_on:
       db:
         condition: service_healthy
-
+    command: >-
+      sh -c "
+      rm -f /paperclip/instances/default/config.json || true;
+      pnpm paperclipai onboard --yes;
+      pnpm --filter @paperclipai/server dev &
+      until curl -sf http://localhost:3100/health > /dev/null 2>&1; do
+        echo 'Waiting for server...';
+        sleep 2;
+      done;
+      echo '=== BOOTSTRAPPING ADMIN ===';
+      pnpm paperclipai auth bootstrap-ceo --data-dir /paperclip --base-url \"http://localhost:3100\";
+      echo '=== DONE ===';
+      wait
+      "
 volumes:
   pgdata:
   paperclip-data:
