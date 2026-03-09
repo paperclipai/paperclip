@@ -13,7 +13,7 @@ const manifest: PaperclipPluginManifestV1 = {
   id: "paperclip.circuit-breaker",
   apiVersion: 1,
   version: "0.1.0",
-  displayName: "Circuit Breaker (Example)",
+  displayName: "Circuit Breaker",
   description:
     "Detects runaway agents via consecutive failures, no-progress runs, and token velocity spikes. Auto-pauses agents when configurable thresholds are tripped.",
   author: "Paperclip",

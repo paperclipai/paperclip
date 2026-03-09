@@ -1,5 +1,5 @@
 {
-  "name": "@paperclipai/plugin-circuit-breaker-example",
+  "name": "@paperclipai/plugin-circuit-breaker",
   "version": "0.1.0",
   "description": "Detects runaway agents and auto-pauses them via configurable circuit breaker thresholds",
   "type": "module",
@@ -12,7 +12,7 @@
     "worker": "./dist/worker.js"
   },
   "scripts": {
-    "prebuild": "node ../../../../scripts/ensure-plugin-build-deps.mjs",
+    "prebuild": "node ../../../scripts/ensure-plugin-build-deps.mjs",
     "build": "tsc",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
