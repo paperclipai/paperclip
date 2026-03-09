@@ -42,6 +42,7 @@
     "@paperclipai/notifier-discord": "workspace:*",
     "@paperclipai/notifier-ntfy": "workspace:*",
     "@paperclipai/db": "workspace:*",
+    "@paperclipai/plugin-sdk": "workspace:*",
     "@paperclipai/shared": "workspace:*",
     "better-auth": "1.4.18",
     "detect-port": "^2.1.0",

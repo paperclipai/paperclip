@@ -136,6 +136,7 @@ export {
   type UpdateUserCompanyAccess,
 } from "./access.js";
 
+
 export {
   createNotificationChannelSchema,
   updateNotificationChannelSchema,
@@ -144,3 +145,45 @@ export {
   type UpdateNotificationChannel,
   type TestNotificationChannelConfig,
 } from "./notification-channel.js";
+
+export {
+  jsonSchemaSchema,
+  pluginJobDeclarationSchema,
+  pluginWebhookDeclarationSchema,
+  pluginToolDeclarationSchema,
+  pluginUiSlotDeclarationSchema,
+  pluginLauncherActionDeclarationSchema,
+  pluginLauncherRenderDeclarationSchema,
+  pluginLauncherDeclarationSchema,
+  pluginManifestV1Schema,
+  installPluginSchema,
+  upsertPluginConfigSchema,
+  patchPluginConfigSchema,
+  upsertPluginCompanySettingsSchema,
+  updateCompanyPluginAvailabilitySchema,
+  listCompanyPluginAvailabilitySchema,
+  updatePluginStatusSchema,
+  uninstallPluginSchema,
+  pluginStateScopeKeySchema,
+  setPluginStateSchema,
+  listPluginStateSchema,
+  type PluginJobDeclarationInput,
+  type PluginWebhookDeclarationInput,
+  type PluginToolDeclarationInput,
+  type PluginUiSlotDeclarationInput,
+  type PluginLauncherActionDeclarationInput,
+  type PluginLauncherRenderDeclarationInput,
+  type PluginLauncherDeclarationInput,
+  type PluginManifestV1Input,
+  type InstallPlugin,
+  type UpsertPluginConfig,
+  type PatchPluginConfig,
+  type UpsertPluginCompanySettings,
+  type UpdateCompanyPluginAvailability,
+  type ListCompanyPluginAvailability,
+  type UpdatePluginStatus,
+  type UninstallPlugin,
+  type PluginStateScopeKey,
+  type SetPluginState,
+  type ListPluginState,
+} from "./plugin.js";

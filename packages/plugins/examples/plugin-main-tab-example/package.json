@@ -1,0 +1,32 @@
+{
+  "name": "@paperclipai/plugin-main-tab-example",
+  "version": "0.1.0",
+  "description": "Reference plugin that adds a detail tab to the Issue detail page (main UI)",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js",
+    "ui": "./dist/ui/"
+  },
+  "scripts": {
+    "prebuild": "node ../../../../scripts/ensure-plugin-build-deps.mjs",
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "@types/react": "^19.0.8",
+    "typescript": "^5.7.3"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  }
+}

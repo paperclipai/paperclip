@@ -18,6 +18,7 @@ import {
 } from "@paperclipai/db";
 import { extractProjectMentionIds } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { emitDomainEvent } from "./index.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 
@@ -660,6 +661,19 @@ export function issueService(db: Db) {
           await syncIssueLabels(issue.id, companyId, inputLabelIds, tx);
         }
         const [enriched] = await withIssueLabels(tx, [issue]);
+
+        if (enriched) {
+          emitDomainEvent({
+            type: "issue.created",
+            companyId,
+            entityType: "issue",
+            entityId: enriched.id,
+            actorType: enriched.createdByAgentId ? "agent" : enriched.createdByUserId ? "user" : "system",
+            actorId: enriched.createdByAgentId ?? enriched.createdByUserId ?? "system",
+            payload: enriched,
+          });
+        }
+
         return enriched;
       });
     },
@@ -730,6 +744,20 @@ export function issueService(db: Db) {
           await syncIssueLabels(updated.id, existing.companyId, nextLabelIds, tx);
         }
         const [enriched] = await withIssueLabels(tx, [updated]);
+
+        if (enriched) {
+          emitDomainEvent({
+            type: "issue.updated",
+            companyId: enriched.companyId,
+            entityType: "issue",
+            entityId: enriched.id,
+            payload: {
+              ...enriched,
+              _patch: data,
+            },
+          });
+        }
+
         return enriched;
       });
     },
@@ -1050,6 +1078,19 @@ export function issueService(db: Db) {
         .update(issues)
         .set({ updatedAt: new Date() })
         .where(eq(issues.id, issueId));
+
+      emitDomainEvent({
+        type: "issue.comment.created",
+        companyId: issue.companyId,
+        entityType: "issue_comment",
+        entityId: comment.id,
+        actorType: actor.agentId ? "agent" : actor.userId ? "user" : "system",
+        actorId: actor.agentId ?? actor.userId ?? "system",
+        payload: {
+          ...comment,
+          issueId,
+        },
+      });
 
       return comment;
     },

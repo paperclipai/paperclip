@@ -2,6 +2,9 @@ packages:
   - packages/*
   - packages/adapters/*
   - packages/notifiers/*
+  - packages/plugins/sdk
+  - packages/plugins/create-paperclip-plugin
+  - packages/plugins/examples/*
   - server
   - ui
   - cli

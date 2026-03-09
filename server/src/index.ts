@@ -451,7 +451,7 @@ if (config.deploymentMode === "authenticated") {
 
 const uiMode = config.uiDevMiddleware ? "vite-dev" : config.serveUi ? "static" : "none";
 const storageService = createStorageServiceFromConfig(config);
-const app = await createApp(db as any, {
+const { app, shutdownPlugins } = await createApp(db as any, {
   uiMode,
   storageService,
   deploymentMode: config.deploymentMode,
@@ -618,16 +618,28 @@ server.listen(listenPort, config.host, () => {
   }
 });
 
-if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
+{
   const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
-    logger.info({ signal }, "Stopping embedded PostgreSQL");
+    logger.info({ signal }, "Graceful shutdown initiated");
+
+    // Stop plugin runtime services (scheduler, workers, tool dispatcher)
     try {
-      await embeddedPostgres?.stop();
+      await shutdownPlugins();
     } catch (err) {
-      logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
-    } finally {
-      process.exit(0);
+      logger.error({ err }, "Failed to shut down plugin services cleanly");
     }
+
+    // Stop embedded PostgreSQL if this process started it
+    if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
+      logger.info({ signal }, "Stopping embedded PostgreSQL");
+      try {
+        await embeddedPostgres.stop();
+      } catch (err) {
+        logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
+      }
+    }
+
+    process.exit(0);
   };
 
   process.once("SIGINT", () => {

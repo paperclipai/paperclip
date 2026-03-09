@@ -113,7 +113,7 @@ export async function promptServer(opts?: {
   }
 
   const port = Number(portStr) || 3100;
-  let auth: AuthConfig = { baseUrlMode: "auto" };
+  let auth: AuthConfig = { baseUrlMode: "auto", disableSignUp: false };
   if (deploymentMode === "authenticated" && exposure === "public") {
     const urlInput = await p.text({
       message: "Public base URL",
@@ -140,11 +140,13 @@ export async function promptServer(opts?: {
     auth = {
       baseUrlMode: "explicit",
       publicBaseUrl: urlInput.trim().replace(/\/+$/, ""),
+      disableSignUp: false,
     };
   } else if (currentAuth?.baseUrlMode === "explicit" && currentAuth.publicBaseUrl) {
     auth = {
       baseUrlMode: "explicit",
       publicBaseUrl: currentAuth.publicBaseUrl,
+      disableSignUp: false,
     };
   }
 

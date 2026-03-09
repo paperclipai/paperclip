@@ -1,12 +1,40 @@
 # Paperclip Plugin System Specification
 
-Status: proposed complete spec for the post-V1 plugin system
+Status: **partially implemented** on the `feature/plugins` branch
 
 This document is the complete specification for Paperclip's plugin and extension architecture.
 It expands the brief plugin notes in [doc/SPEC.md](../SPEC.md) and should be read alongside the comparative analysis in [doc/plugins/ideas-from-opencode.md](./ideas-from-opencode.md).
 
-This is not part of the V1 implementation contract in [doc/SPEC-implementation.md](../SPEC-implementation.md).
-It is the full target architecture for the plugin system that should follow V1.
+### Implementation Status
+
+The following spec sections are implemented on `feature/plugins`:
+
+| Section | Status | Implementation |
+|---------|--------|----------------|
+| §8 Plugin Discovery | Done | `server/src/services/plugin-loader.ts` |
+| §10 Package Contract | Done | `packages/shared/src/validators/plugin.ts` |
+| §10.1 Manifest Shape | Done | `packages/shared/src/types/plugin.ts` |
+| §11 Agent Tools | Done | `server/src/services/plugin-tool-registry.ts`, `plugin-tool-dispatcher.ts` |
+| §12 Process Model | Done | `server/src/services/plugin-worker-manager.ts` (out-of-process, `child_process.fork`) |
+| §12.4 Failure Policy | Done | Exponential backoff, max 10 consecutive crashes |
+| §12.5 Graceful Shutdown | Done | Shutdown RPC → SIGTERM → SIGKILL with configurable timeouts |
+| §13 Host-Worker Protocol | Done | `packages/plugins/sdk/src/protocol.ts` (JSON-RPC 2.0 over NDJSON stdio) |
+| §14 SDK Surface | Done | `packages/plugins/sdk/src/worker-rpc-host.ts`, `host-client-factory.ts` |
+| §15 Capability Model | Done | `server/src/services/plugin-capability-validator.ts`, `host-client-factory.ts` |
+| §16 Event System | Done | `server/src/services/plugin-event-bus.ts` |
+| §17 Scheduled Jobs | Done | `server/src/services/plugin-job-scheduler.ts`, `cron.ts`, `plugin-job-store.ts` |
+| §18 Webhooks | Done | `server/src/routes/plugins.ts` (webhook ingestion route) |
+| §19 UI Extension Model | Done | `ui/src/plugins/slots.tsx`, `bridge.ts`, `bridge-init.ts` |
+| §19.8 Plugin Settings UI | Done | `ui/src/components/JsonSchemaForm.tsx`, `ui/src/pages/PluginSettings.tsx` |
+| §21 Persistence | Done | `packages/db/src/schema/plugins.ts` and related tables |
+| §22 Secrets | Done | `server/src/services/plugin-secrets-handler.ts` |
+| §24 Operator UX | Done | `ui/src/pages/PluginManager.tsx`, `PluginSettings.tsx` |
+
+Not yet implemented:
+- §20 Local Tooling (workspace plugins) — deferred
+- §25.4.5 Frontend Cache Invalidation — cache headers implemented, but no WebSocket push for live invalidation
+- §26 Plugin Observability — structured logging implemented, but no dedicated metrics/tracing export
+- §29 Compatibility / Versioning — single API version (v1) supported; migration tooling deferred
 
 ## 1. Scope
 
@@ -42,8 +70,8 @@ This spec does not cover:
 Paperclip plugin design is based on the following assumptions:
 
 1. Paperclip is single-tenant and self-hosted.
-2. Plugin installation is global to the instance.
-3. "Companies" remain core Paperclip business objects, but they are not plugin trust boundaries.
+2. Plugin installation is global to the instance, but plugin availability and company-specific settings are scoped per company.
+3. "Companies" remain core Paperclip business objects. They are not plugin code-execution trust boundaries, but they are enablement and configuration boundaries for company-context plugin surfaces.
 4. Board governance, approval gates, budget hard-stops, and core task invariants remain owned by Paperclip core.
 5. Projects already have a real workspace model via `project_workspaces`, and local/runtime plugins should build on that instead of inventing a separate workspace abstraction.
 
@@ -52,18 +80,19 @@ Paperclip plugin design is based on the following assumptions:
 The plugin system must:
 
 1. Let operators install global instance-wide plugins.
-2. Let plugins add major capabilities without editing Paperclip core.
-3. Keep core governance and auditing intact.
-4. Support both local/runtime plugins and external SaaS connectors.
-5. Support future plugin categories such as:
+2. Let operators enable or disable an installed plugin independently for each company.
+3. Let plugins add major capabilities without editing Paperclip core.
+4. Keep core governance and auditing intact.
+5. Support both local/runtime plugins and external SaaS connectors.
+6. Support future plugin categories such as:
    - new agent adapters
    - revenue tracking
    - knowledge base
    - issue tracker sync
    - metrics/dashboards
    - file/project tooling
-6. Use simple, explicit, typed contracts.
-7. Keep failures isolated so one plugin does not crash the entire instance.
+7. Use simple, explicit, typed contracts.
+8. Keep failures isolated so one plugin does not crash the entire instance.
 
 ## 4. Non-Goals
 
@@ -188,14 +217,29 @@ Plugins that need local tooling (file browsing, git, terminals, process tracking
 
 Plugin installation is global and operator-driven.
 
-There is no per-company install table and no per-company enable/disable switch.
+There is no per-company install table.
+
+However, availability is company-scoped:
+
+- a plugin is installed once per instance
+- each company independently enables or disables that installed plugin
+- company-specific plugin settings are stored separately from instance-wide plugin config
+- company-context UI, tools, and actions must respect company availability
+
+The host models company availability with default-on behavior plus explicit overrides:
+
+- if no `plugin_company_settings` row exists for `(company_id, plugin_id)`, the plugin is available to that company by default
+- if a row exists with `enabled = true`, the plugin remains available and the row stores company-specific settings
+- if a row exists with `enabled = false`, the plugin is disabled for that company without uninstalling it globally
 
 If a plugin needs business-object-specific mappings, those are stored as plugin configuration or plugin state.
 
 Examples:
 
 - one global Linear plugin install
-- mappings from company A to Linear team X and company B to Linear team Y
+- company A enables it with mapping to Linear team X
+- company B enables it with mapping to Linear team Y
+- company C leaves it disabled and sees no Linear plugin UI or tools
 - one global git plugin install
 - per-project workspace state stored under `project_workspace`
 
@@ -268,7 +312,7 @@ Suggested `package.json` keys:
 
 ```json
 {
-  "name": "@paperclip/plugin-linear",
+  "name": "@acme/plugin-linear",
   "version": "0.1.0",
   "paperclipPlugin": {
     "manifest": "./dist/manifest.js",
@@ -277,6 +321,32 @@ Suggested `package.json` keys:
   }
 }
 ```
+
+### 10.0.1 Launcher Entry Points
+
+Paperclip uses two package-level entry points today:
+
+- `paperclipPlugin.manifest` is the install/discovery entry point. The loader imports this file first so it can validate the manifest before the plugin is persisted or started.
+- `paperclipPlugin.worker` is the runtime launcher entry point. The host starts one worker process per installed plugin and executes this file inside the plugin worker runtime. The worker file must call `runWorker(plugin, import.meta.url)` so that when run as the process entrypoint it starts the JSON-RPC host and keeps the process alive; see §14.1 and the SDK docs.
+
+`paperclipPlugin.ui` and `manifest.entrypoints.ui` are UI bundle roots, not executable launchers. The current host serves `entrypoints.ui/index.js` as the plugin UI entry module and resolves named exports from that module using `ui.slots[].exportName`.
+
+Practical implications:
+
+- A plugin has exactly one worker launcher.
+- A plugin may have zero or one UI bundle root.
+- Multiple UI surfaces (tabs, sidebar items, settings pages, toolbar buttons) are multiplexed through the same UI bundle root rather than separate launcher files.
+- Operators reach plugin UI through host-owned routes and controls, not plugin-owned frontend routers.
+
+Launcher discovery is normalized through `GET /api/plugins/ui-contributions`. The
+response contains:
+
+- `slots` from `manifest.ui.slots`
+- `launchers` from both `manifest.ui.launchers` and the legacy top-level `manifest.launchers`
+- a company-filtered view when the caller supplies `?companyId=<uuid>`
+
+Launcher-backed bridge calls also carry `renderEnvironment` metadata so a worker
+can tell whether it was invoked from a page, modal, drawer, or popover host shell.
 
 ## 10.1 Manifest Shape
 
@@ -289,6 +359,8 @@ export interface PaperclipPluginManifestV1 {
   version: string;
   displayName: string;
   description: string;
+  /** Author name (max 200 chars). May include email: "Jane Doe <jane@example.com>". */
+  author: string;
   categories: Array<"connector" | "workspace" | "automation" | "ui">;
   minimumPaperclipVersion?: string;
   capabilities: string[];
@@ -307,12 +379,22 @@ export interface PaperclipPluginManifestV1 {
   }>;
   ui?: {
     slots: Array<{
-      type: "page" | "detailTab" | "dashboardWidget" | "sidebar" | "settingsPage";
+      type:
+        | "page"
+        | "detailTab"
+        | "taskDetailView"
+        | "dashboardWidget"
+        | "sidebar"
+        | "sidebarPanel"
+        | "projectSidebarItem"
+        | "toolbarButton"
+        | "contextMenuItem"
+        | "settingsPage";
       id: string;
       displayName: string;
       /** Which export name in the UI bundle provides this component */
       exportName: string;
-      /** For detailTab: which entity types this tab appears on */
+      /** For detailTab, taskDetailView, contextMenuItem, projectSidebarItem: which entity types this slot targets (required for these types; projectSidebarItem must include "project") */
       entityTypes?: Array<"project" | "issue" | "agent" | "goal" | "run">;
     }>;
   };
@@ -323,11 +405,21 @@ Rules:
 
 - `id` must be globally unique
 - `id` should normally equal the npm package name
-- `apiVersion` must match the host-supported plugin API version
+- `id` must start with a lowercase alphanumeric character and contain only lowercase letters, digits, dots (`-`), hyphens (`-`), or underscores (`_`)
+- `apiVersion` must match the host-supported plugin API version (currently `1`)
+- `version` must be a valid semver string (e.g. `"1.2.3"`)
+- `author` is required; max 200 characters; may include email in angle brackets (e.g. `"Jane Doe <jane@example.com>"`)
+- `displayName` must be 1–100 characters
+- `description` must be 1–500 characters
+- `minimumPaperclipVersion`, when provided, must be a valid semver string without a leading `v`
 - `capabilities` must be static and install-time visible
 - config schema must be JSON Schema compatible
 - `entrypoints.ui` points to the directory containing the built UI bundle
+- `entrypoints.ui` is required when `ui.slots` is declared
+- the current host expects `entrypoints.ui/index.js` to be the importable ESM entry module for all declared UI slots
 - `ui.slots` declares which extension slots the plugin fills, so the host knows what to mount without loading the bundle eagerly; each slot references an `exportName` from the UI bundle
+- declared features (tools, jobs, webhooks, UI slots) must be accompanied by the corresponding capability declaration
+- install must fail if `apiVersion` is unsupported or if `minimumPaperclipVersion` is greater than the running Paperclip host version
 
 ## 11. Agent Tools
 
@@ -358,7 +450,7 @@ The worker executes the tool logic and returns a typed result. The host enforces
 
 ### 11.3 Tool Availability
 
-By default, plugin tools are available to all agents. The operator may restrict tool availability per agent or per project through plugin configuration.
+Plugin tools are only available inside companies where the plugin is enabled. Within an enabled company, the operator may further restrict tool availability per agent or per project through plugin configuration.
 
 Plugin tools appear in the agent's tool list alongside core tools but are visually distinguished in the UI as plugin-contributed.
 
@@ -796,6 +888,18 @@ Rules:
 - Plugin events are not core domain events — they do not appear in the core activity log unless the emitting plugin explicitly logs them.
 - Plugin events follow the same at-least-once delivery semantics as core events.
 - The host must not allow plugins to emit events in the core namespace (events without the `plugin.` prefix).
+- Plugins must not pass the `plugin.` prefix when calling `ctx.events.emit()` — the host adds it automatically. Passing the prefix is an error.
+
+### 16.3 Wildcard Subscriptions
+
+The host supports trailing-wildcard subscriptions in the `plugin.*` namespace:
+
+- `"plugin.<pluginId>.*"` — subscribes to all events from a specific plugin.
+- `"plugin.*"` — subscribes to all plugin-emitted events regardless of source plugin.
+
+Wildcard patterns use `.*` as the only supported glob token. They must appear at the end of the pattern and may not be used within core domain event names (e.g. `"issue.*"` is not valid — subscribe by exact name).
+
+Wildcard subscriptions require the `events.subscribe` capability, same as exact subscriptions.
 
 ## 17. Scheduled Jobs
 
@@ -835,7 +939,7 @@ A plugin's `dist/ui/` directory contains a built React bundle. The host serves t
 
 **The host provides, the plugin renders:**
 
-1. The host defines **extension slots** — designated mount points in the UI where plugin components can appear (pages, tabs, widgets, sidebar entries, action bars).
+1. The host defines **extension slots** — designated mount points in the UI where plugin components can appear (pages, tabs, widgets, sidebar entries, sidebar link under each project (project sidebar item), action bars).
 2. The plugin's UI bundle exports named components for each slot it wants to fill.
 3. The host mounts the plugin component into the slot, passing it a **host bridge** object.
 4. The plugin component uses the bridge to fetch data from its own worker (via `getData`), call actions (via `performAction`), read host context (current company, project, entity), and use shared host UI primitives (design tokens, common components).
@@ -922,6 +1026,33 @@ When the host renders an extension slot, it dynamically imports the plugin's UI 
 
 In development, the host may support a `devUiUrl` override in plugin config that points to a local dev server (e.g. Vite) so plugin authors can use hot-reload during development without rebuilding.
 
+### 19.0.4 Current UI Support Matrix
+
+The manifest schema recognizes more slot types than the host currently mounts. Authors should treat the following matrix as the V1 contract for this branch.
+
+| Slot Type | Current Host Support | Current Mount Point | Typical Launcher / Navigation Path | Required Capability |
+|---|---|---|---|---|
+| `settingsPage` | Supported | Instance plugin detail page | `/settings/plugins/:pluginId` | `instance.settings.register` |
+| `sidebar` | Supported | Main sidebar navigation area | Always-visible host sidebar | `ui.sidebar.register` |
+| `sidebarPanel` | Supported | Main sidebar panel area | Always-visible host sidebar | `ui.sidebar.register` |
+| `projectSidebarItem` | Supported | Under each project row in the sidebar | Click-through to project route or plugin tab | `ui.sidebar.register` |
+| `toolbarButton` | Supported | Breadcrumb/header action area | Current page header | `ui.action.register` |
+| `detailTab` | Supported | Project detail and issue detail | Host tab bar or `?tab=plugin:<pluginKey>:<slotId>` | `ui.detailTab.register` |
+| `taskDetailView` | Supported | Project detail and issue detail plugin tab surfaces | Host tab bar or `?tab=plugin:<pluginKey>:<slotId>` | `ui.detailTab.register` |
+| `contextMenuItem` | Supported | Issue detail "More" menu | Issue actions popover | `ui.action.register` |
+| `page` | Supported | Company-context page at `/:companyPrefix/plugins/:pluginId` | `/:companyPrefix/plugins/:pluginId` | `ui.page.register` |
+| `dashboardWidget` | Supported | Dashboard (below chart cards) | Dashboard page | `ui.dashboardWidget.register` |
+
+Entity-type support is narrower than the manifest union:
+
+- `project`: supported for `detailTab`, `taskDetailView`, and `projectSidebarItem`
+- `issue`: supported for `detailTab`, `taskDetailView`, and `contextMenuItem`
+- `agent`: supported for `detailTab` and `taskDetailView` (Agent detail page; plugin tabs via `?tab=plugin:<pluginKey>:<slotId>`)
+- `goal`: supported for `detailTab` and `taskDetailView` (Goal detail page; plugin tabs via `?tab=plugin:<pluginKey>:<slotId>`)
+- `run`: accepted in manifest types for forward compatibility, but not mounted by the current UI
+
+When a slot type is "declared in schema, not mounted", install may still succeed, but the operator should expect no visible frontend surface until the host adds a matching mount point.
+
 ## 19.1 Global Operator Routes
 
 - `/settings/plugins`
@@ -933,7 +1064,7 @@ These routes are instance-level.
 
 - `/:companyPrefix/plugins/:pluginId`
 
-These routes exist because the board UI is organized around companies even though plugin installation is global.
+When a plugin declares a `page` slot and is enabled for that company, the host mounts the plugin's page component at this route. These routes exist because the board UI is organized around companies even though plugin installation is global.
 
 ## 19.3 Detail Tabs
 
@@ -949,9 +1080,17 @@ Recommended route pattern:
 
 - `/:companyPrefix/<entity>/:id?tab=<plugin-tab-id>`
 
+Launcher conventions in the current UI:
+
+- Project tabs launch from `/projects/:projectRef?tab=plugin:<pluginKey>:<slotId>`
+- Issue tabs launch from the issue detail tab strip; URL synchronization may vary by page
+- Agent tabs launch from `/agents/:agentId?tab=plugin:<pluginKey>:<slotId>`
+- Goal tabs launch from `/goals/:goalId?tab=plugin:<pluginKey>:<slotId>`
+- `projectSidebarItem` should usually deep-link to a corresponding `detailTab` or `taskDetailView`, not try to create a separate standalone page flow
+
 ## 19.4 Dashboard Widgets
 
-Plugins may add cards or sections to the dashboard.
+Plugins may add cards or sections to the dashboard. The host mounts a dashboard widget outlet on the Dashboard page (below the chart cards); each plugin that declares a `dashboardWidget` slot appears there with card-style layout.
 
 ## 19.5 Sidebar Entries
 
@@ -959,6 +1098,31 @@ Plugins may add sidebar links to:
 
 - global plugin settings
 - company-context plugin pages
+
+Plugins may also add sidebar links **under each project** via the `projectSidebarItem` slot type; see §19.5.1.
+
+### 19.5.1 Project sidebar items
+
+The `projectSidebarItem` slot type lets a plugin add a menu link under each project in the sidebar Projects list. The host renders one instance per project and passes that project’s id (and company context) in the slot context.
+
+- **Mount point:** Under each project row in the sidebar Projects list.
+- **Context:** The slot is project-entity-scoped. The host passes `entityType: "project"` and `entityId: <project id>` in the context when rendering. The plugin component receives the same bridge and host context as other slots; `context.entityId` is the current project id, `context.entityType` is `"project"`.
+- **Manifest:** In `ui.slots`, use `type: "projectSidebarItem"`. `entityTypes` is **required** and must include `"project"` (only project is meaningful for this slot). The plugin must declare the `ui.sidebar.register` capability.
+- **Recommended behaviour:** The component should render a single link (or compact row) to a plugin page or project tab (e.g. `/:companyPrefix/projects/:projectRef` or `?tab=<plugin-tab-id>`).
+
+### 19.5.2 Modal And Drawer Behavior
+
+V1 does not define a dedicated modal, dialog, or drawer slot type. Plugins are launched from existing host surfaces such as tabs, sidebar items, toolbar buttons, settings pages, and context menus.
+
+Current behavior expectations:
+
+- Plugin components render inline inside the host surface that mounted them.
+- A plugin may open its own modal or drawer from within that surface, but the host does not manage plugin modal lifecycle or routing.
+- Plugin UI must not assume it owns the page-level overlay stack. It may be rendered inside host-managed containers such as tabs, popovers, or pages that themselves can appear in sheets/drawers on mobile.
+- Plugin interactions must not rely on dismissing or mutating the host's parent dialog state except through explicit bridge actions exposed by the host.
+- If a plugin opens overlays, it should ensure keyboard escape handling, focus trapping, and portal/z-index behavior do not interfere with the host shell.
+
+For operator UX, plugins should prefer deep-linkable pages or tabs for primary workflows and reserve plugin-owned modals for short, local interactions such as confirmations, pickers, and compact editors.
 
 ## 19.6 Shared Components In `@paperclipai/plugin-sdk/ui`
 
@@ -1089,6 +1253,28 @@ Indexes:
 - `created_at` timestamptz not null
 - `updated_at` timestamptz not null
 - `last_error` text null
+
+### `plugin_company_settings`
+
+- `id` uuid pk
+- `company_id` uuid fk `companies.id` not null
+- `plugin_id` uuid fk `plugins.id` not null
+- `enabled` boolean not null default true
+- `settings_json` jsonb not null
+- `created_at` timestamptz not null
+- `updated_at` timestamptz not null
+- `last_error` text null
+
+Constraints:
+
+- unique `(company_id, plugin_id)`
+
+Semantics:
+
+- stores company-scoped plugin settings and availability
+- absence of the row means the plugin is enabled for that company by default
+- a row with `enabled = true` stores company settings while keeping the plugin enabled
+- a row with `enabled = false` explicitly disables the plugin for that company while preserving any company-scoped settings
 
 ### `plugin_state`
 
@@ -1258,7 +1444,35 @@ Global plugin settings page must show:
 - current errors
 - install/upgrade/remove actions
 
-## 24.2 Plugin Settings Page
+This page manages instance-wide lifecycle only:
+
+- install
+- uninstall
+- upgrade
+- global worker/runtime health
+- instance-wide config from `instanceConfigSchema`
+
+It does not control whether a plugin is available inside a specific company.
+
+## 24.2 Company Settings
+
+Company settings must show the installed plugin list for the currently selected company with:
+
+- enabled/disabled state for each installed plugin
+- company-scoped settings when the plugin is enabled for that company
+- company-scoped validation or availability errors
+
+Route:
+
+- `/company/settings`
+
+Behavior:
+
+- enabling a plugin for the selected company creates or updates `plugin_company_settings`
+- disabling a plugin for the selected company persists `plugin_company_settings.enabled = false`
+- company-scoped plugin UI surfaces and tool discovery use this availability state
+
+## 24.3 Plugin Settings Page
 
 Each plugin may expose:
 
@@ -1272,13 +1486,14 @@ Route:
 
 - `/settings/plugins/:pluginId`
 
-## 24.3 Company-Context Plugin Page
+## 24.4 Company-Context Plugin Page
 
 Each plugin may expose a company-context main page:
 
 - `/:companyPrefix/plugins/:pluginId`
 
 This page is where board users do most day-to-day work.
+The route must only be reachable when the plugin is enabled for that company.
 
 ## 25. Uninstall And Data Lifecycle
 
@@ -1288,7 +1503,7 @@ When a plugin is uninstalled, the host must handle plugin-owned data explicitly.
 
 1. The host sends `shutdown()` to the worker and follows the graceful shutdown policy.
 2. The host marks the plugin status `uninstalled` in the `plugins` table (soft delete).
-3. Plugin-owned data (`plugin_state`, `plugin_entities`, `plugin_jobs`, `plugin_job_runs`, `plugin_webhook_deliveries`, `plugin_config`) is retained for a configurable grace period (default: 30 days).
+3. Plugin-owned data (`plugin_state`, `plugin_entities`, `plugin_jobs`, `plugin_job_runs`, `plugin_webhook_deliveries`, `plugin_config`, `plugin_company_settings`) is retained for a configurable grace period (default: 30 days).
 4. During the grace period, the operator can reinstall the same plugin and recover its state.
 5. After the grace period, the host purges all plugin-owned data for the uninstalled plugin.
 6. The operator may force-purge immediately via CLI: `pnpm paperclipai plugin purge <plugin-id>`.
@@ -1494,6 +1709,13 @@ This spec directly supports the following plugin types:
 4. Plugin upgrades are explicit operator actions.
 5. Capability expansion requires explicit operator approval.
 
+Current branch behavior:
+
+- Only `apiVersion: 1` is accepted.
+- Manifest validation enforces `apiVersion` at parse time.
+- The loader rejects plugins whose `minimumPaperclipVersion` is newer than the running host version.
+- UI bundles are only served while the plugin is in `ready` status, so failed version gates also prevent incompatible UI from mounting.
+
 ### 29.2 SDK Versioning
 
 The host publishes a single SDK package for plugin authors:
@@ -1502,7 +1724,7 @@ The host publishes a single SDK package for plugin authors:
 
 The package uses subpath exports to separate worker and UI concerns:
 
-- `@paperclipai/plugin-sdk` — worker-side SDK (context, events, state, tools, logger, `definePlugin`, `z`)
+- `@paperclipai/plugin-sdk` — worker-side SDK (context, events, state, tools, logger, `definePlugin`, `runWorker`, `z`)
 - `@paperclipai/plugin-sdk/ui` — frontend SDK (bridge hooks, shared components, design tokens)
 
 A single package simplifies dependency management for plugin authors — one dependency, one version, one changelog. The subpath exports keep bundle separation clean: worker code imports from the root, UI code imports from `/ui`. Build tools tree-shake accordingly so the worker bundle does not include React components and the UI bundle does not include worker-only code.
@@ -1511,19 +1733,26 @@ Versioning rules:
 
 1. **Semver**: The SDK follows strict semantic versioning. Major version bumps indicate breaking changes to either the worker or UI surface; minor versions add new features backwards-compatibly; patch versions are bug fixes only.
 2. **Tied to API version**: Each major SDK version corresponds to exactly one plugin `apiVersion`. When `@paperclipai/plugin-sdk@2.x` ships, it targets `apiVersion: 2`. Plugins built with SDK 1.x continue to declare `apiVersion: 1`.
-3. **Host multi-version support**: The host must support at least the current and one previous `apiVersion` simultaneously. This means plugins built against the previous SDK major version continue to work without modification. The host maintains separate IPC protocol handlers for each supported API version.
-4. **Minimum SDK version in manifest**: Plugins declare `sdkVersion` in the manifest as a semver range (e.g. `">=1.4.0 <2.0.0"`). The host validates this at install time and warns if the plugin's declared range is outside the host's supported SDK versions.
-5. **Deprecation timeline**: When a new `apiVersion` ships, the previous version enters a deprecation period of at least 6 months. During this period:
+3. **Current implementation**: this branch does not yet support multi-version loading. The host currently accepts only `apiVersion: 1`, and manifest-level `sdkVersion` negotiation is deferred.
+4. **Future multi-version support**: when a later host release adds `apiVersion: 2+`, the host should support at least the current and one previous `apiVersion` simultaneously. This means plugins built against the previous SDK major version continue to work without modification. The host maintains separate IPC protocol handlers for each supported API version.
+5. **Future SDK range declaration**: once implemented, plugins will declare `sdkVersion` in the manifest as a semver range (e.g. `">=1.4.0 <2.0.0"`). The host will validate this at install time and warn if the plugin's declared range is outside the host's supported SDK versions.
+6. **Deprecation timeline**: When a new `apiVersion` ships, the previous version enters a deprecation period of at least 6 months. During this period:
    - The host continues to load plugins targeting the deprecated version.
    - The host logs a deprecation warning at plugin startup.
    - The plugin settings page shows a banner indicating the plugin should be upgraded.
    - After the deprecation period ends, the host may drop support for the old version in a future release.
-6. **SDK changelog and migration guides**: Each major SDK release must include a migration guide documenting every breaking change, the new API surface, and a step-by-step upgrade path for plugin authors.
-7. **UI surface stability**: Breaking changes to shared UI components (removing a component, changing required props) or design tokens require a major version bump just like worker API changes. The single-package model means both surfaces are versioned together, avoiding drift between worker and UI compatibility.
+7. **SDK changelog and migration guides**: Each major SDK release must include a migration guide documenting every breaking change, the new API surface, and a step-by-step upgrade path for plugin authors.
+8. **UI surface stability**: Breaking changes to shared UI components (removing a component, changing required props) or design tokens require a major version bump just like worker API changes. The single-package model means both surfaces are versioned together, avoiding drift between worker and UI compatibility.
 
 ### 29.3 Version Compatibility Matrix
 
-The host should publish a compatibility matrix:
+Target-state host docs should publish a compatibility matrix. For the current branch, the effective matrix is:
+
+| Host Version | Supported API Versions | Additional Gating |
+|---|---|---|
+| current `feature/plugins` branch | `1` | Rejects unsupported `apiVersion`; rejects `minimumPaperclipVersion` above host version |
+
+Future releases should expand this to:
 
 | Host Version | Supported API Versions | SDK Range |
 |---|---|---|
@@ -1531,7 +1760,7 @@ The host should publish a compatibility matrix:
 | 2.0 | 1, 2 | 1.x, 2.x |
 | 3.0 | 2, 3 | 2.x, 3.x |
 
-This matrix is published in the host docs and queryable via `GET /api/plugins/compatibility`.
+Publishing this matrix via host docs is required. A queryable `GET /api/plugins/compatibility` endpoint is desirable but not yet implemented on this branch.
 
 ### 29.4 Plugin Author Workflow
 
@@ -1539,7 +1768,7 @@ When a new SDK version is released:
 
 1. Plugin author updates `@paperclipai/plugin-sdk` dependency.
 2. Plugin author follows the migration guide to update code.
-3. Plugin author updates `apiVersion` and `sdkVersion` in the manifest.
+3. Plugin author updates `apiVersion` in the manifest and, once supported by the host, adds or updates `sdkVersion`.
 4. Plugin author publishes a new plugin version.
 5. Operators upgrade the plugin on their instances. The old version continues to work until explicitly upgraded.
 

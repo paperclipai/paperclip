@@ -71,3 +71,27 @@ export type {
   CompanyPortabilityExportRequest,
 } from "./company-portability.js";
 export type { NotificationChannel, NotificationEvent } from "./notification-channel.js";
+export type {
+  JsonSchema,
+  PluginJobDeclaration,
+  PluginWebhookDeclaration,
+  PluginToolDeclaration,
+  PluginUiSlotDeclaration,
+  PluginLauncherActionDeclaration,
+  PluginLauncherRenderDeclaration,
+  PluginLauncherRenderContextSnapshot,
+  PluginLauncherDeclaration,
+  PluginMinimumHostVersion,
+  PluginUiDeclaration,
+  PaperclipPluginManifestV1,
+  PluginRecord,
+  PluginStateRecord,
+  PluginConfig,
+  PluginCompanySettings,
+  CompanyPluginAvailability,
+  PluginEntityRecord,
+  PluginEntityQuery,
+  PluginJobRecord,
+  PluginJobRunRecord,
+  PluginWebhookDeliveryRecord,
+} from "./plugin.js";

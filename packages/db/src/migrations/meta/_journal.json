@@ -187,19 +187,40 @@
     {
       "idx": 26,
       "version": "7",
+      "when": 1772900000000,
+      "tag": "0026_plugin_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1772900001000,
+      "tag": "0027_plugin_package_path",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1772900002000,
+      "tag": "0028_plugin_company_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
       "when": 1773014851940,
       "tag": "0026_goofy_james_howlett",
       "breakpoints": true
     },
     {
-      "idx": 27,
+      "idx": 30,
       "version": "7",
       "when": 1773027607264,
       "tag": "0027_agent_trust_levels",
       "breakpoints": true
     },
     {
-      "idx": 28,
+      "idx": 31,
       "version": "7",
       "when": 1773037299434,
       "tag": "0028_skinny_vengeance",

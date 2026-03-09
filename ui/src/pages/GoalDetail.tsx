@@ -1,5 +1,5 @@
-import { useEffect } from "react";
-import { useParams } from "@/lib/router";
+import { useEffect, useMemo } from "react";
+import { useParams, useSearchParams, useNavigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { goalsApi } from "../api/goals";
 import { projectsApi } from "../api/projects";
@@ -20,9 +20,14 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Plus } from "lucide-react";
 import type { Goal, Project } from "@paperclipai/shared";
+import { usePluginSlots, PluginSlotMount } from "@/plugins/slots";
+import { PluginLauncherOutlet } from "@/plugins/launchers";
 
 export function GoalDetail() {
   const { goalId } = useParams<{ goalId: string }>();
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const tabParam = searchParams.get("tab");
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { openNewGoal } = useDialog();
   const { openPanel, closePanel } = usePanel();
@@ -39,6 +44,22 @@ export function GoalDetail() {
     enabled: !!goalId
   });
   const resolvedCompanyId = goal?.companyId ?? selectedCompanyId;
+
+  const { slots: goalPluginSlots } = usePluginSlots({
+    slotTypes: ["taskDetailView", "detailTab"],
+    entityType: "goal",
+    companyId: resolvedCompanyId ?? null,
+    enabled: !!resolvedCompanyId,
+  });
+  const pluginSlotContext = useMemo(
+    () => ({
+      companyId: resolvedCompanyId ?? null,
+      companyPrefix: null as string | null,
+      entityId: goal?.id ?? null,
+      entityType: "goal" as const,
+    }),
+    [resolvedCompanyId, goal?.id],
+  );
 
   const { data: allGoals } = useQuery({
     queryKey: queryKeys.goals.list(resolvedCompanyId!),
@@ -145,15 +166,34 @@ export function GoalDetail() {
         />
       </div>
 
-      <Tabs defaultValue="children">
-        <TabsList>
-          <TabsTrigger value="children">
-            Sub-Goals ({childGoals.length})
-          </TabsTrigger>
-          <TabsTrigger value="projects">
-            Projects ({linkedProjects.length})
-          </TabsTrigger>
-        </TabsList>
+      <Tabs
+        value={tabParam?.startsWith("plugin:") ? tabParam : (tabParam || "children")}
+        onValueChange={(v) => navigate(`/goals/${goalId}${v === "children" ? "" : `?tab=${encodeURIComponent(v)}`}`)}
+      >
+        <div className="flex items-center gap-2">
+          <TabsList>
+            <TabsTrigger value="children">
+              Sub-Goals ({childGoals.length})
+            </TabsTrigger>
+            <TabsTrigger value="projects">
+              Projects ({linkedProjects.length})
+            </TabsTrigger>
+            {goalPluginSlots.map((slot) => {
+              const value = `plugin:${slot.pluginKey}:${slot.id}`;
+              return (
+                <TabsTrigger key={value} value={value}>
+                  {slot.displayName}
+                </TabsTrigger>
+              );
+            })}
+          </TabsList>
+          <PluginLauncherOutlet
+            placementZones={["taskDetailView", "detailTab"]}
+            entityType="goal"
+            context={pluginSlotContext}
+            className="ml-auto flex items-center gap-1 shrink-0 py-1"
+          />
+        </div>
 
         <TabsContent value="children" className="mt-4 space-y-3">
           <div className="flex items-center justify-start">
@@ -190,6 +230,18 @@ export function GoalDetail() {
             </div>
           )}
         </TabsContent>
+        {goalPluginSlots.map((slot) => {
+          const value = `plugin:${slot.pluginKey}:${slot.id}`;
+          return (
+            <TabsContent key={value} value={value} className="mt-4">
+              <PluginSlotMount
+                slot={slot}
+                context={pluginSlotContext}
+                missingBehavior="placeholder"
+              />
+            </TabsContent>
+          );
+        })}
       </Tabs>
     </div>
   );

@@ -10,10 +10,12 @@
     "dev:ui": "pnpm --filter @paperclipai/ui dev",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
-    "test": "vitest",
-    "test:run": "vitest run",
+    "test": "NODE_ENV=test vitest run",
+    "test:run": "pnpm test",
+    "test:watch": "NODE_ENV=test vitest",
     "db:generate": "pnpm --filter @paperclipai/db generate",
     "db:migrate": "pnpm --filter @paperclipai/db migrate",
+    "db:migrate:embedded": "node scripts/migrate-embedded.mjs",
     "secrets:migrate-inline-env": "tsx scripts/migrate-inline-env-secrets.ts",
     "db:backup": "./scripts/backup-db.sh",
     "paperclipai": "node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts",
@@ -29,6 +31,7 @@
   },
   "devDependencies": {
     "@changesets/cli": "^2.30.0",
+    "embedded-postgres": "^18.1.0-beta.16",
     "esbuild": "^0.27.3",
     "typescript": "^5.7.3",
     "vitest": "^3.0.5"
