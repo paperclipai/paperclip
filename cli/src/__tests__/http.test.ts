@@ -58,4 +58,19 @@ describe("PaperclipApiClient", () => {
       details: { issueId: "1" },
     } satisfies Partial<ApiRequestError>);
   });
+
+  it("does not duplicate /api when apiBase already includes /api", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new PaperclipApiClient({ apiBase: "http://localhost:3100/api" });
+    await client.delete("/api/plugins/plugin-1");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("/api/plugins/plugin-1");
+    expect(url).not.toContain("/api/api/plugins/plugin-1");
+  });
 });

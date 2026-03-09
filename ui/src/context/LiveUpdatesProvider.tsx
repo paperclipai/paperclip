@@ -500,6 +500,18 @@ function handleLiveEvent(
       buildActivityToast(queryClient, expectedCompanyId, payload, currentActor) ??
       buildJoinRequestToast(payload);
     if (toast) gatedPushToast(gate, pushToast, `activity:${action ?? "unknown"}`, toast);
+    return;
+  }
+
+  // Instance-wide plugin lifecycle events — invalidate all plugin-related
+  // queries so other sessions see updated plugin UI slots without a page reload.
+  if (
+    event.type === "plugin.ui.updated" ||
+    event.type === "plugin.worker.crashed" ||
+    event.type === "plugin.worker.restarted"
+  ) {
+    queryClient.invalidateQueries({ queryKey: queryKeys.plugins.all });
+    return;
   }
 }
 

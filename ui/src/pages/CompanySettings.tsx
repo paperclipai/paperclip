@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
+import { pluginsApi } from "../api/plugins";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { Settings, Check } from "lucide-react";
+import { Settings, Check, Puzzle } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
@@ -73,6 +74,35 @@ export function CompanySettings() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     }
+  });
+
+  const {
+    data: companyPlugins,
+    isLoading: companyPluginsLoading,
+    error: companyPluginsError,
+  } = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.plugins.companyList(selectedCompanyId)
+      : queryKeys.plugins.companyList("__no-company__"),
+    queryFn: () => pluginsApi.listForCompany(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const pluginAvailabilityMutation = useMutation({
+    mutationFn: ({ pluginId, available }: { pluginId: string; available: boolean }) =>
+      pluginsApi.saveForCompany(selectedCompanyId!, pluginId, { available }),
+    onSuccess: async (_, variables) => {
+      const companyId = selectedCompanyId!;
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.plugins.company(companyId),
+      });
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.plugins.companyDetail(companyId, variables.pluginId),
+      });
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.plugins.uiContributions(companyId),
+      });
+    },
   });
 
   const inviteMutation = useMutation({
@@ -304,6 +334,112 @@ export function CompanySettings() {
             checked={!!selectedCompany.requireBoardApprovalForNewAgents}
             onChange={(v) => settingsMutation.mutate(v)}
           />
+        </div>
+      </div>
+
+      {/* Plugins */}
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Plugins
+        </div>
+        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs text-muted-foreground">
+              Control which installed plugins are enabled for this company.
+            </span>
+            <HintIcon text="Plugin installation is instance-wide. This section scopes each installed plugin on or off for the selected company." />
+          </div>
+
+          {companyPluginsLoading ? (
+            <p className="text-sm text-muted-foreground">Loading company plugins...</p>
+          ) : companyPluginsError ? (
+            <p className="text-sm text-destructive">
+              {companyPluginsError instanceof Error
+                ? companyPluginsError.message
+                : "Failed to load company plugins"}
+            </p>
+          ) : !companyPlugins || companyPlugins.length === 0 ? (
+            <div className="rounded-md border border-dashed border-border bg-muted/20 px-3 py-4 text-sm text-muted-foreground">
+              No installed plugins are available yet.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {/* Plugins default to enabled for the selected company. This list
+                  renders effective availability, including any explicit
+                  company override persisted in `plugin_company_settings`. */}
+              {companyPlugins
+                .slice()
+                .sort((a, b) => a.pluginDisplayName.localeCompare(b.pluginDisplayName))
+                .map((plugin) => {
+                  const isMutating =
+                    pluginAvailabilityMutation.isPending &&
+                    pluginAvailabilityMutation.variables?.pluginId === plugin.pluginId;
+                  const isGloballyReady = plugin.pluginStatus === "ready";
+                  return (
+                    <div
+                      key={plugin.pluginId}
+                      className="rounded-md border border-border bg-background px-3 py-3"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1 space-y-1">
+                          <div className="flex items-center gap-2">
+                            <Puzzle className="h-4 w-4 shrink-0 text-muted-foreground" />
+                            <div className="min-w-0">
+                              <div className="truncate text-sm font-medium">
+                                {plugin.pluginDisplayName}
+                              </div>
+                              <div className="truncate text-xs text-muted-foreground">
+                                {plugin.pluginKey}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            Instance status: <span className="font-mono">{plugin.pluginStatus}</span>
+                          </div>
+                          {!isGloballyReady && (
+                            <p className="text-xs text-muted-foreground">
+                              This plugin is not globally ready. Enable it in Plugin Manager before turning it on for this company.
+                            </p>
+                          )}
+                          {plugin.lastError && (
+                            <p className="text-xs text-destructive">{plugin.lastError}</p>
+                          )}
+                        </div>
+                        <div className="shrink-0">
+                          <ToggleField
+                            label={plugin.available ? "Enabled" : "Disabled"}
+                            checked={plugin.available}
+                            // A company cannot enable a plugin that is not
+                            // ready at the instance level; the plugin manager
+                            // remains the source of truth for global health.
+                            disabled={isMutating || !isGloballyReady}
+                            onChange={() =>
+                              pluginAvailabilityMutation.mutate({
+                                pluginId: plugin.pluginId,
+                                available: !plugin.available,
+                              })
+                            }
+                          />
+                        </div>
+                      </div>
+                      {isMutating && (
+                        <p className="mt-2 text-xs text-muted-foreground">
+                          Saving plugin availability...
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
+            </div>
+          )}
+
+          {pluginAvailabilityMutation.isError && (
+            <p className="text-sm text-destructive">
+              {pluginAvailabilityMutation.error instanceof Error
+                ? pluginAvailabilityMutation.error.message
+                : "Failed to update plugin availability"}
+            </p>
+          )}
         </div>
       </div>
 

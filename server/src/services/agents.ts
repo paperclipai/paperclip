@@ -325,9 +325,11 @@ export function agentService(db: Db) {
   }
 
   return {
-    list: async (companyId: string, options?: { includeTerminated?: boolean }) => {
+    list: async (companyId: string, options?: { status?: string; includeTerminated?: boolean }) => {
       const conditions = [eq(agents.companyId, companyId)];
-      if (!options?.includeTerminated) {
+      if (options?.status) {
+        conditions.push(eq(agents.status, options.status));
+      } else if (!options?.includeTerminated) {
         conditions.push(ne(agents.status, "terminated"));
       }
       const rows = await db.select().from(agents).where(and(...conditions));

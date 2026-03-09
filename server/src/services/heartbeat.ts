@@ -16,6 +16,7 @@ import {
 import { conflict, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
+import { emitDomainEvent } from "./index.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, runningProcesses } from "../adapters/index.js";
 import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec } from "../adapters/index.js";
@@ -891,6 +892,18 @@ export function heartbeatService(db: Db) {
           outcome,
         },
       });
+
+      emitDomainEvent({
+        type: "agent.status_changed",
+        companyId: updated.companyId,
+        entityType: "agent",
+        entityId: updated.id,
+        payload: {
+          agentId: updated.id,
+          status: updated.status,
+          outcome,
+        },
+      });
     }
   }
 
@@ -1178,6 +1191,34 @@ export function heartbeatService(db: Db) {
             outcome: "running",
           },
         });
+
+        emitDomainEvent({
+          type: "agent.status_changed",
+          companyId: runningAgent.companyId,
+          entityType: "agent",
+          entityId: runningAgent.id,
+          payload: {
+            agentId: runningAgent.id,
+            status: "running",
+            outcome: "running",
+          },
+        });
+
+        emitDomainEvent({
+          type: "agent.run.started",
+          companyId: runningAgent.companyId,
+          entityType: "run",
+          entityId: run.id,
+          actorType: "agent",
+          actorId: agent.id,
+          payload: {
+            agentId: agent.id,
+            runId: run.id,
+            invocationSource: run.invocationSource,
+            triggerDetail: run.triggerDetail,
+            context: context,
+          },
+        });
       }
 
       const currentRun = run;
@@ -1351,6 +1392,29 @@ export function heartbeatService(db: Db) {
         logBytes: logSummary?.bytes,
         logSha256: logSummary?.sha256,
         logCompressed: logSummary?.compressed ?? false,
+      });
+
+      emitDomainEvent({
+        type:
+          outcome === "succeeded"
+            ? "agent.run.finished"
+            : outcome === "cancelled"
+              ? "agent.run.cancelled"
+              : "agent.run.failed",
+        companyId: agent.companyId,
+        entityType: "run",
+        entityId: run.id,
+        actorType: "agent",
+        actorId: agent.id,
+        payload: {
+          agentId: agent.id,
+          runId: run.id,
+          status,
+          outcome,
+          exitCode: adapterResult.exitCode,
+          usage: usageJson,
+          error: adapterResult.errorMessage,
+        },
       });
 
       await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
