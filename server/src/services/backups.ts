@@ -61,6 +61,7 @@ import {
   resolvePaperclipInstanceRoot,
 } from "../home-paths.js";
 import { logger } from "../middleware/logger.js";
+import { inspectImportedArchive } from "./backup-archive.js";
 
 type SnapshotTarget = {
   key: Exclude<BackupComponentKey, "database">;
@@ -83,11 +84,6 @@ type BackupDownloadDescriptor = {
   bundlePath: string;
   bundleDirectory: string;
   archiveName: string;
-};
-
-type ImportedArchiveInspection = {
-  bundleName: string;
-  entryCount: number;
 };
 
 type RestorePathKind = "file" | "directory";
@@ -177,10 +173,6 @@ function joinNotes(...parts: Array<string | null | undefined>): string | null {
 
 function getRetentionReferenceTime(backup: BackupRun): string {
   return backup.importedAt ?? backup.finishedAt ?? backup.startedAt;
-}
-
-function isSafeBundleName(value: string): boolean {
-  return /^[A-Za-z0-9._-]+$/.test(value);
 }
 
 async function runCommand(
@@ -345,64 +337,6 @@ function verifyBackupSignature(opts: {
       issues: [error instanceof Error ? error.message : String(error)],
     };
   }
-}
-
-function inspectImportedArchiveEntries(
-  listOutput: string,
-  verboseOutput: string,
-): ImportedArchiveInspection {
-  const entries = listOutput
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => line.replace(/^\.\/+/, ""));
-
-  if (entries.length === 0) {
-    throw new Error("Backup archive is empty.");
-  }
-
-  const topLevelNames = new Set<string>();
-  for (const entry of entries) {
-    if (entry.startsWith("/") || entry.includes("\0")) {
-      throw new Error("Backup archive contains an unsafe absolute path.");
-    }
-
-    const normalized = path.posix.normalize(entry.replace(/\/+$/, ""));
-    if (!normalized || normalized === "." || normalized.startsWith("../") || normalized.includes("/../")) {
-      throw new Error("Backup archive contains a path traversal entry.");
-    }
-
-    const topLevel = normalized.split("/")[0];
-    if (!topLevel || topLevel === "." || topLevel === "..") {
-      throw new Error("Backup archive contains an invalid top-level directory.");
-    }
-    topLevelNames.add(topLevel);
-  }
-
-  if (topLevelNames.size !== 1) {
-    throw new Error("Backup archive must contain exactly one top-level bundle directory.");
-  }
-
-  const bundleName = Array.from(topLevelNames)[0]!;
-  if (!isSafeBundleName(bundleName)) {
-    throw new Error(`Backup bundle name '${bundleName}' is not allowed.`);
-  }
-
-  const verboseLines = verboseOutput
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-  for (const line of verboseLines) {
-    const typeMarker = line.match(/^(?:[A-Za-z@+])?([d-])/u)?.[1];
-    if (typeMarker !== "d" && typeMarker !== "-") {
-      throw new Error("Backup archive may only contain regular files and directories.");
-    }
-  }
-
-  return {
-    bundleName,
-    entryCount: entries.length,
-  };
 }
 
 async function assertNoSymlinks(rootPath: string): Promise<void> {
@@ -2432,7 +2366,7 @@ export function createBackupManager(opts: {
         remoteReplicationConfigured: settings.remote.provider !== "none",
         remoteReplicationHealthy:
           settings.remote.provider === "none"
-            ? true
+            ? null
             : Boolean(latestSuccess?.remoteCopies.some((copy) => copy.status === "uploaded")),
       },
       audit: backupAuditSummarySchema.parse({
@@ -2661,11 +2595,7 @@ export function createBackupManager(opts: {
     const existingIds = new Set(existingBackups.map((backup) => backup.id));
     const existingBundleNames = new Set(existingBackups.map((backup) => backup.bundleName));
 
-    const [{ stdout: listOutput }, { stdout: verboseOutput }] = await Promise.all([
-      runCommand("tar", ["-tzf", archivePath]),
-      runCommand("tar", ["-tvzf", archivePath]),
-    ]);
-    const inspection = inspectImportedArchiveEntries(listOutput, verboseOutput);
+    const inspection = await inspectImportedArchive(archivePath);
 
     if (existingBundleNames.has(inspection.bundleName)) {
       throw conflict(`Backup bundle '${inspection.bundleName}' already exists on this instance.`);

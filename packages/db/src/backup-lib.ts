@@ -157,6 +157,39 @@ function reorderDeferredStatements(content: string): string {
   return ordered.join("\n");
 }
 
+function stripOuterTransaction(content: string): string {
+  const lines = content.split("\n");
+  let firstSqlIndex = -1;
+  let lastSqlIndex = -1;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = lines[index]?.trim();
+    if (!trimmed || trimmed.startsWith("--")) continue;
+    firstSqlIndex = index;
+    break;
+  }
+
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const trimmed = lines[index]?.trim();
+    if (!trimmed || trimmed.startsWith("--")) continue;
+    lastSqlIndex = index;
+    break;
+  }
+
+  if (firstSqlIndex >= 0 && lines[firstSqlIndex]?.trim() === "BEGIN;") {
+    lines.splice(firstSqlIndex, 1);
+    if (lastSqlIndex >= firstSqlIndex) {
+      lastSqlIndex -= 1;
+    }
+  }
+
+  if (lastSqlIndex >= 0 && lines[lastSqlIndex]?.trim() === "COMMIT;") {
+    lines.splice(lastSqlIndex, 1);
+  }
+
+  return lines.join("\n");
+}
+
 export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise<RunDatabaseBackupResult> {
   const filenamePrefix = opts.filenamePrefix ?? "paperclip";
   const retentionDays = Math.max(1, Math.trunc(opts.retentionDays));
@@ -484,15 +517,18 @@ export async function restoreDatabaseBackup(
   try {
     const content = await readFile(opts.backupFile, "utf8");
     const sizeBytes = Buffer.byteLength(content, "utf8");
+    const restoreSql = stripOuterTransaction(reorderDeferredStatements(content));
 
     await sql`SELECT 1`;
-    if (opts.dropExistingSchema !== false) {
-      await sql.unsafe("DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;");
-    }
-    for (const sequenceName of extractReferencedSequenceNames(content)) {
-      await sql.unsafe(`CREATE SEQUENCE IF NOT EXISTS "public".${quoteIdentifier(sequenceName)};`);
-    }
-    await sql.unsafe(reorderDeferredStatements(content));
+    await sql.begin(async (tx) => {
+      if (opts.dropExistingSchema !== false) {
+        await tx.unsafe("DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;");
+      }
+      for (const sequenceName of extractReferencedSequenceNames(content)) {
+        await tx.unsafe(`CREATE SEQUENCE IF NOT EXISTS "public".${quoteIdentifier(sequenceName)};`);
+      }
+      await tx.unsafe(restoreSql);
+    });
 
     return {
       backupFile: opts.backupFile,

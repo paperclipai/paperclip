@@ -1129,13 +1129,13 @@ export function Backups() {
                   <StatusBadge
                     label={
                       overview.security.remoteReplicationConfigured
-                        ? overview.security.remoteReplicationHealthy ? "healthy" : "needs attention"
+                        ? overview.security.remoteReplicationHealthy === true ? "healthy" : "needs attention"
                         : "not configured"
                     }
                     status={
                       overview.security.remoteReplicationConfigured
-                        ? overview.security.remoteReplicationHealthy ? "verified" : "error"
-                        : "missing"
+                        ? overview.security.remoteReplicationHealthy === true ? "verified" : "error"
+                        : "skipped"
                     }
                   />
                 </div>

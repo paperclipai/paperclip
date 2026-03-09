@@ -200,6 +200,7 @@ Restore notes:
 - restore preview also reports manifest signature status and whether the current instance policy allows restore
 - downloaded bundles are portable; import them first on the destination machine, then restore from the imported history entry
 - restore runs a preflight validation first; if it fails, no instance data is modified
+- database restore replays the SQL snapshot inside a single transaction, so an interrupted replay does not leave the instance on an empty `public` schema
 - restore is destructive and replaces the current instance state
 - most `/api` routes return `503` while restore is running
 - mutating `/api` routes also pause briefly while a new snapshot is being captured, so file and DB state stay aligned

@@ -299,7 +299,7 @@ export const backupSecurityOverviewSchema = z.object({
   signingRequired: z.boolean(),
   writeBarrierMode: z.literal("pause_mutations"),
   remoteReplicationConfigured: z.boolean(),
-  remoteReplicationHealthy: z.boolean(),
+  remoteReplicationHealthy: z.boolean().nullable(),
 });
 
 export const backupAuditEventSchema = z.object({
