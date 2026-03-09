@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc -b"
+    "typecheck": "pnpm --filter @paperclipai/plugin-sdk build && tsc -b"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
