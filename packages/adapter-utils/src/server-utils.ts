@@ -220,6 +220,10 @@ export async function runChildProcess(
 
   return new Promise<RunProcessResult>((resolve, reject) => {
     const mergedEnv = ensurePathInEnv({ ...process.env, ...opts.env });
+    // Remove CLAUDECODE to prevent "cannot launch inside another session" errors
+    // when the Paperclip server itself runs inside Claude Code (e.g. during development).
+    // Each spawned agent run is independent, not nested.
+    delete mergedEnv.CLAUDECODE;
     const child = spawn(command, args, {
       cwd: opts.cwd,
       env: mergedEnv,
