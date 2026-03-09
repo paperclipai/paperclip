@@ -1,11 +1,20 @@
 import { z } from "zod";
-import { KNOWLEDGE_ITEM_KINDS } from "../constants.js";
+import {
+  KNOWLEDGE_ITEM_KINDS,
+  KNOWLEDGE_NOTE_BODY_MAX_BYTES,
+} from "../constants.js";
 
 export const knowledgeItemKindSchema = z.enum(KNOWLEDGE_ITEM_KINDS);
 
 const knowledgeTitleSchema = z.string().trim().min(1).max(200);
 const knowledgeSummarySchema = z.string().trim().min(1).max(2000).optional().nullable();
-const knowledgeBodySchema = z.string().min(1);
+const knowledgeBodySchema = z
+  .string()
+  .min(1)
+  .refine(
+    (value) => new TextEncoder().encode(value).length <= KNOWLEDGE_NOTE_BODY_MAX_BYTES,
+    `Note body must be at most ${KNOWLEDGE_NOTE_BODY_MAX_BYTES} bytes`,
+  );
 const knowledgeAssetIdSchema = z.string().uuid();
 const knowledgeSourceUrlSchema = z.string().trim().url().max(2048);
 

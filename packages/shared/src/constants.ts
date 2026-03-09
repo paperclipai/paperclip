@@ -123,6 +123,7 @@ export type IssuePriority = (typeof ISSUE_PRIORITIES)[number];
 
 export const KNOWLEDGE_ITEM_KINDS = ["note", "asset", "url"] as const;
 export type KnowledgeItemKind = (typeof KNOWLEDGE_ITEM_KINDS)[number];
+export const KNOWLEDGE_NOTE_BODY_MAX_BYTES = 100_000;
 
 export const GOAL_LEVELS = ["company", "team", "agent", "task"] as const;
 export type GoalLevel = (typeof GOAL_LEVELS)[number];

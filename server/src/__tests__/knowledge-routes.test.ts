@@ -66,6 +66,7 @@ function createServiceStub() {
   const issueId = "11111111-1111-4111-8111-111111111111";
   const companyKnowledgeId = "22222222-2222-4222-8222-222222222222";
   const foreignKnowledgeId = "33333333-3333-4333-8333-333333333333";
+  const userKnowledgeId = "44444444-4444-4444-8444-444444444444";
   const issues = new Map<string, IssueRecord>([[issueId, { id: issueId, companyId: "cmp-1" }]]);
   const agents = new Map<string, AgentRecord>([
     ["agent-author", { id: "agent-author", companyId: "cmp-1", role: "engineer" }],
@@ -109,6 +110,25 @@ function createServiceStub() {
         updatedByUserId: "user-2",
         createdAt: new Date("2026-03-07T12:10:00Z"),
         updatedAt: new Date("2026-03-07T12:10:00Z"),
+      },
+    ],
+    [
+      userKnowledgeId,
+      {
+        id: userKnowledgeId,
+        companyId: "cmp-1",
+        title: "Board-authored note",
+        kind: "note",
+        summary: "Created by a human session actor",
+        body: "This note verifies the board delete path.",
+        assetId: null,
+        sourceUrl: null,
+        createdByAgentId: null,
+        createdByUserId: "user-1",
+        updatedByAgentId: null,
+        updatedByUserId: "user-1",
+        createdAt: new Date("2026-03-07T12:15:00Z"),
+        updatedAt: new Date("2026-03-07T12:15:00Z"),
       },
     ],
   ]);
@@ -287,12 +307,21 @@ describe("knowledge routes", () => {
     const res = await request(app).get("/companies/cmp-1/knowledge-items");
 
     expect(res.status).toBe(200);
-    expect(res.body).toHaveLength(1);
-    expect(res.body[0]).toMatchObject({
-      id: "22222222-2222-4222-8222-222222222222",
-      companyId: "cmp-1",
-      title: "Existing API notes",
-    });
+    expect(res.body).toHaveLength(2);
+    expect(res.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "22222222-2222-4222-8222-222222222222",
+          companyId: "cmp-1",
+          title: "Existing API notes",
+        }),
+        expect.objectContaining({
+          id: "44444444-4444-4444-8444-444444444444",
+          companyId: "cmp-1",
+          title: "Board-authored note",
+        }),
+      ]),
+    );
   });
 
   it("passes the agent actor through updates and records updated authorship", async () => {
@@ -356,7 +385,32 @@ describe("knowledge routes", () => {
 
     const listed = await request(app).get("/companies/cmp-1/knowledge-items");
     expect(listed.status).toBe(200);
-    expect(listed.body).toEqual([]);
+    expect(listed.body).toEqual([
+      expect.objectContaining({
+        id: "44444444-4444-4444-8444-444444444444",
+        companyId: "cmp-1",
+        title: "Board-authored note",
+      }),
+    ]);
+  });
+
+  it("allows a board session actor to delete a knowledge item created by a human user", async () => {
+    const app = await createApp(boardActor());
+
+    const res = await request(app)
+      .delete("/knowledge-items/44444444-4444-4444-8444-444444444444");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true });
+
+    const listed = await request(app).get("/companies/cmp-1/knowledge-items");
+    expect(listed.status).toBe(200);
+    expect(listed.body).toHaveLength(1);
+    expect(listed.body[0]).toMatchObject({
+      id: "22222222-2222-4222-8222-222222222222",
+      companyId: "cmp-1",
+      title: "Existing API notes",
+    });
   });
 
   it("allows the ceo agent to delete another agent's knowledge item", async () => {
