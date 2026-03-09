@@ -75,6 +75,11 @@ export async function bootstrapCeoInvite(opts: {
   }
 
   const db = createDb(dbUrl);
+  const closableDb = db as typeof db & {
+    $client?: {
+      end?: (options?: { timeout?: number }) => Promise<void>;
+    };
+  };
   try {
     const existingAdminCount = await db
       .select()
@@ -122,5 +127,7 @@ export async function bootstrapCeoInvite(opts: {
   } catch (err) {
     p.log.error(`Could not create bootstrap invite: ${err instanceof Error ? err.message : String(err)}`);
     p.log.info("If using embedded-postgres, start the Paperclip server and run this command again.");
+  } finally {
+    await closableDb.$client?.end?.({ timeout: 5 }).catch(() => undefined);
   }
 }

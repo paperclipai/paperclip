@@ -49,20 +49,27 @@ wait_for_http() {
 
 generate_bootstrap_invite_url() {
   local bootstrap_output
-  bootstrap_output="$(
+  local bootstrap_status
+  if bootstrap_output="$(
     docker exec \
       -e PAPERCLIP_DEPLOYMENT_MODE="$PAPERCLIP_DEPLOYMENT_MODE" \
       -e PAPERCLIP_DEPLOYMENT_EXPOSURE="$PAPERCLIP_DEPLOYMENT_EXPOSURE" \
       -e PAPERCLIP_PUBLIC_URL="$PAPERCLIP_PUBLIC_URL" \
       -e PAPERCLIP_HOME="/paperclip" \
       "$CONTAINER_NAME" bash -lc \
-      'npx --yes "paperclipai@${PAPERCLIPAI_VERSION}" auth bootstrap-ceo --data-dir "$PAPERCLIP_HOME" --base-url "$PAPERCLIP_PUBLIC_URL"' \
+      'timeout 20s npx --yes "paperclipai@${PAPERCLIPAI_VERSION}" auth bootstrap-ceo --data-dir "$PAPERCLIP_HOME" --base-url "$PAPERCLIP_PUBLIC_URL"' \
       2>&1
-  )" || {
+  )"; then
+    bootstrap_status=0
+  else
+    bootstrap_status=$?
+  fi
+
+  if [[ $bootstrap_status -ne 0 && $bootstrap_status -ne 124 ]]; then
     echo "Smoke bootstrap failed: could not run bootstrap-ceo inside container" >&2
     printf '%s\n' "$bootstrap_output" >&2
     return 1
-  }
+  fi
 
   local invite_url
   invite_url="$(
@@ -75,6 +82,10 @@ generate_bootstrap_invite_url() {
     echo "Smoke bootstrap failed: bootstrap-ceo did not print an invite URL" >&2
     printf '%s\n' "$bootstrap_output" >&2
     return 1
+  fi
+
+  if [[ $bootstrap_status -eq 124 ]]; then
+    echo "    Smoke bootstrap: bootstrap-ceo timed out after printing invite URL; continuing" >&2
   fi
 
   printf '%s\n' "$invite_url"
