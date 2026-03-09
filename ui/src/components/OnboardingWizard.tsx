@@ -500,10 +500,6 @@ export function OnboardingWizard() {
     setLoading(false);
     reset();
     closeOnboarding();
-    if (createdCompanyPrefix && createdIssueRef) {
-      navigate(`/${createdCompanyPrefix}/issues/${createdIssueRef}`);
-      return;
-    }
     if (createdCompanyPrefix) {
       navigate(`/${createdCompanyPrefix}/dashboard`);
       return;
