@@ -3,6 +3,7 @@ import * as p from "@clack/prompts";
 import pc from "picocolors";
 import { and, eq, gt, isNull } from "drizzle-orm";
 import { createDb, instanceUserRoles, invites } from "@paperclipai/db";
+import { loadPaperclipEnvFile } from "../config/env.js";
 import { readConfig, resolveConfigPath } from "../config/store.js";
 
 function hashToken(token: string) {
@@ -13,7 +14,8 @@ function createInviteToken() {
   return `pcp_bootstrap_${randomBytes(24).toString("hex")}`;
 }
 
-function resolveDbUrl(configPath?: string) {
+function resolveDbUrl(configPath?: string, explicitDbUrl?: string) {
+  if (explicitDbUrl) return explicitDbUrl;
   const config = readConfig(configPath);
   if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
   if (config?.database.mode === "postgres" && config.database.connectionString) {
@@ -49,8 +51,10 @@ export async function bootstrapCeoInvite(opts: {
   force?: boolean;
   expiresHours?: number;
   baseUrl?: string;
+  dbUrl?: string;
 }) {
   const configPath = resolveConfigPath(opts.config);
+  loadPaperclipEnvFile(configPath);
   const config = readConfig(configPath);
   if (!config) {
     p.log.error(`No config found at ${configPath}. Run ${pc.cyan("paperclip onboard")} first.`);
@@ -62,7 +66,7 @@ export async function bootstrapCeoInvite(opts: {
     return;
   }
 
-  const dbUrl = resolveDbUrl(configPath);
+  const dbUrl = resolveDbUrl(configPath, opts.dbUrl);
   if (!dbUrl) {
     p.log.error(
       "Could not resolve database connection for bootstrap.",

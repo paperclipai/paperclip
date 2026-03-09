@@ -36,6 +36,10 @@ export function resolveAgentJwtEnvFile(configPath?: string): string {
   return resolveEnvFilePath(configPath);
 }
 
+export function loadPaperclipEnvFile(configPath?: string): void {
+  loadAgentJwtEnvFile(resolveEnvFilePath(configPath));
+}
+
 export function loadAgentJwtEnvFile(filePath = resolveEnvFilePath()): void {
   if (loadedEnvFiles.has(filePath)) return;
 

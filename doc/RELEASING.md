@@ -126,7 +126,7 @@ This is the best existing fit when you want:
 - a dedicated host port
 - an end-to-end `npx paperclipai ... onboard` check
 
-In authenticated/private mode, this smoke path also injects a smoke-only `BETTER_AUTH_SECRET` by default and prints the bootstrap CEO invite after the server becomes healthy.
+In authenticated/private mode, the expected result is a full authenticated onboarding flow, including printing the bootstrap CEO invite once startup completes.
 
 If you want to exercise onboarding from a fresh local checkout rather than npm, use:
 

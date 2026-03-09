@@ -37,4 +37,4 @@ WORKDIR /home/paperclip/workspace
 EXPOSE 3100
 USER paperclip
 
-CMD ["bash", "-lc", "set -euo pipefail; mkdir -p \"$PAPERCLIP_HOME\"; npx --yes \"paperclipai@${PAPERCLIPAI_VERSION}\" onboard --yes --data-dir \"$PAPERCLIP_HOME\" & app_pid=$!; cleanup() { if kill -0 \"$app_pid\" >/dev/null 2>&1; then kill \"$app_pid\" >/dev/null 2>&1 || true; fi; }; trap cleanup EXIT INT TERM; ready=0; for _ in $(seq 1 60); do if curl -fsS \"http://127.0.0.1:${PORT}/api/health\" >/dev/null 2>&1; then ready=1; break; fi; sleep 1; done; if [ \"$ready\" -eq 1 ]; then echo; echo \"==> Creating bootstrap CEO invite after server startup\"; npx --yes \"paperclipai@${PAPERCLIPAI_VERSION}\" auth bootstrap-ceo --data-dir \"$PAPERCLIP_HOME\" || true; else echo; echo \"==> Warning: server did not become healthy within 60s; skipping bootstrap invite\"; fi; wait \"$app_pid\""]
+CMD ["bash", "-lc", "set -euo pipefail; mkdir -p \"$PAPERCLIP_HOME\"; npx --yes \"paperclipai@${PAPERCLIPAI_VERSION}\" onboard --yes --data-dir \"$PAPERCLIP_HOME\""]
