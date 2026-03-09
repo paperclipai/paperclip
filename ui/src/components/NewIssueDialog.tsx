@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo, type ChangeEvent } from "react";
+import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -167,6 +168,7 @@ const priorities = [
 ];
 
 export function NewIssueDialog() {
+  const { t } = useTranslation();
   const { newIssueOpen, newIssueDefaults, closeNewIssue } = useDialog();
   const { companies, selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
@@ -469,12 +471,12 @@ export function NewIssueDialog() {
   const currentProject = orderedProjects.find((project) => project.id === projectId);
   const assigneeOptionsTitle =
     assigneeAdapterType === "claude_local"
-      ? "Claude options"
+      ? t('issues.claudeOptions')
       : assigneeAdapterType === "codex_local"
-        ? "Codex options"
+        ? t('issues.codexOptions')
         : assigneeAdapterType === "opencode_local"
-          ? "OpenCode options"
-        : "Agent options";
+          ? t('issues.openCodeOptions')
+        : t('issues.agentOptions');
   const thinkingEffortOptions =
     assigneeAdapterType === "codex_local"
       ? ISSUE_THINKING_EFFORT_OPTIONS.codex_local
@@ -609,7 +611,7 @@ export function NewIssueDialog() {
               </PopoverContent>
             </Popover>
             <span className="text-muted-foreground/60">&rsaquo;</span>
-            <span>New issue</span>
+            <span>{t('issues.newIssue')}</span>
           </div>
           <div className="flex items-center gap-1">
             <Button
@@ -635,7 +637,7 @@ export function NewIssueDialog() {
         <div className="px-4 pt-4 pb-2 shrink-0">
           <textarea
             className="w-full text-lg font-semibold bg-transparent outline-none resize-none overflow-hidden placeholder:text-muted-foreground/50"
-            placeholder="Issue title"
+            placeholder={t('issues.issueTitle')}
             rows={1}
             value={title}
             onChange={(e) => {
@@ -660,16 +662,16 @@ export function NewIssueDialog() {
         <div className="px-4 pb-2 shrink-0">
           <div className="overflow-x-auto overscroll-x-contain">
             <div className="inline-flex items-center gap-2 text-sm text-muted-foreground flex-wrap sm:flex-nowrap sm:min-w-max">
-              <span>For</span>
+              <span>{t('common.for')}</span>
               <InlineEntitySelector
                 ref={assigneeSelectorRef}
                 value={assigneeId}
                 options={assigneeOptions}
-                placeholder="Assignee"
+                placeholder={t('issues.assignee')}
                 disablePortal
-                noneLabel="No assignee"
-                searchPlaceholder="Search assignees..."
-                emptyMessage="No assignees found."
+                noneLabel={t('issues.noAssignee')}
+                searchPlaceholder={t('issues.searchAssignees')}
+                emptyMessage={t('issues.noAssigneesFound')}
                 onChange={(id) => { if (id) trackRecentAssignee(id); setAssigneeId(id); }}
                 onConfirm={() => {
                   projectSelectorRef.current?.focus();
@@ -681,7 +683,7 @@ export function NewIssueDialog() {
                       <span className="truncate">{option.label}</span>
                     </>
                   ) : (
-                    <span className="text-muted-foreground">Assignee</span>
+                    <span className="text-muted-foreground">{t('issues.assignee')}</span>
                   )
                 }
                 renderOption={(option) => {
@@ -695,16 +697,16 @@ export function NewIssueDialog() {
                   );
                 }}
               />
-              <span>in</span>
+              <span>{t('common.in')}</span>
               <InlineEntitySelector
                 ref={projectSelectorRef}
                 value={projectId}
                 options={projectOptions}
-                placeholder="Project"
+                placeholder={t('issues.project')}
                 disablePortal
-                noneLabel="No project"
-                searchPlaceholder="Search projects..."
-                emptyMessage="No projects found."
+                noneLabel={t('issues.noProject')}
+                searchPlaceholder={t('issues.searchProjects')}
+                emptyMessage={t('issues.noProjectsFound')}
                 onChange={setProjectId}
                 onConfirm={() => {
                   descriptionEditorRef.current?.focus();
@@ -719,7 +721,7 @@ export function NewIssueDialog() {
                       <span className="truncate">{option.label}</span>
                     </>
                   ) : (
-                    <span className="text-muted-foreground">Project</span>
+                    <span className="text-muted-foreground">{t('issues.project')}</span>
                   )
                 }
                 renderOption={(option) => {
@@ -752,20 +754,20 @@ export function NewIssueDialog() {
             {assigneeOptionsOpen && (
               <div className="mt-2 rounded-md border border-border p-3 bg-muted/20 space-y-3">
                 <div className="space-y-1.5">
-                  <div className="text-xs text-muted-foreground">Model</div>
+                  <div className="text-xs text-muted-foreground">{t('issues.model')}</div>
                   <InlineEntitySelector
                     value={assigneeModelOverride}
                     options={modelOverrideOptions}
-                    placeholder="Default model"
+                    placeholder={t('issues.defaultModel')}
                     disablePortal
-                    noneLabel="Default model"
-                    searchPlaceholder="Search models..."
-                    emptyMessage="No models found."
+                    noneLabel={t('issues.defaultModel')}
+                    searchPlaceholder={t('issues.searchModels')}
+                    emptyMessage={t('issues.noModelsFound')}
                     onChange={setAssigneeModelOverride}
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <div className="text-xs text-muted-foreground">Thinking effort</div>
+                  <div className="text-xs text-muted-foreground">{t('issues.thinkingEffort')}</div>
                   <div className="flex items-center gap-1.5 flex-wrap">
                     {thinkingEffortOptions.map((option) => (
                       <button
@@ -783,7 +785,7 @@ export function NewIssueDialog() {
                 </div>
                 {assigneeAdapterType === "claude_local" && (
                   <div className="flex items-center justify-between rounded-md border border-border px-2 py-1.5">
-                    <div className="text-xs text-muted-foreground">Enable Chrome (--chrome)</div>
+                    <div className="text-xs text-muted-foreground">{t('issues.enableChrome')}</div>
                     <button
                       className={cn(
                         "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
@@ -801,7 +803,7 @@ export function NewIssueDialog() {
                   </div>
                 )}
                 <div className="flex items-center justify-between rounded-md border border-border px-2 py-1.5">
-                  <div className="text-xs text-muted-foreground">Use project workspace</div>
+                  <div className="text-xs text-muted-foreground">{t('issues.useProjectWorkspace')}</div>
                   <button
                     className={cn(
                       "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
@@ -828,7 +830,7 @@ export function NewIssueDialog() {
             ref={descriptionEditorRef}
             value={description}
             onChange={setDescription}
-            placeholder="Add description..."
+            placeholder={t('issues.addDescription')}
             bordered={false}
             mentions={mentionOptions}
             contentClassName={cn("text-sm text-muted-foreground", expanded ? "min-h-[220px]" : "min-h-[120px]")}
@@ -878,7 +880,7 @@ export function NewIssueDialog() {
                 ) : (
                   <>
                     <Minus className="h-3 w-3 text-muted-foreground" />
-                    Priority
+                    {t('issues.priority')}
                   </>
                 )}
               </button>
@@ -903,7 +905,7 @@ export function NewIssueDialog() {
           {/* Labels chip (placeholder) */}
           <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground">
             <Tag className="h-3 w-3" />
-            Labels
+            {t('common.labels')}
           </button>
 
           {/* Attach image chip */}
@@ -920,7 +922,7 @@ export function NewIssueDialog() {
             disabled={uploadDescriptionImage.isPending}
           >
             <Paperclip className="h-3 w-3" />
-            {uploadDescriptionImage.isPending ? "Uploading..." : "Image"}
+            {uploadDescriptionImage.isPending ? t('common.uploading') : t('common.image')}
           </button>
 
           {/* More (dates) */}
@@ -933,11 +935,11 @@ export function NewIssueDialog() {
             <PopoverContent className="w-44 p-1" align="start">
               <button className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground">
                 <Calendar className="h-3 w-3" />
-                Start date
+                {t('issues.startDate')}
               </button>
               <button className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground">
                 <Calendar className="h-3 w-3" />
-                Due date
+                {t('issues.dueDate')}
               </button>
             </PopoverContent>
           </Popover>
@@ -952,14 +954,14 @@ export function NewIssueDialog() {
             onClick={discardDraft}
             disabled={!hasDraft && !loadDraft()}
           >
-            Discard Draft
+            {t('common.discardDraft')}
           </Button>
           <Button
             size="sm"
             disabled={!title.trim() || createIssue.isPending}
             onClick={handleSubmit}
           >
-            {createIssue.isPending ? "Creating..." : "Create Issue"}
+            {createIssue.isPending ? t('common.creating') : t('issues.createIssue')}
           </Button>
         </div>
       </DialogContent>

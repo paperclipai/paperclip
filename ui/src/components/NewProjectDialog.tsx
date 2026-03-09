@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -45,6 +46,7 @@ type WorkspaceSetup = "none" | "local" | "repo" | "both";
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 
 export function NewProjectDialog() {
+  const { t } = useTranslation();
   const { newProjectOpen, closeNewProject } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
@@ -226,7 +228,7 @@ export function NewProjectDialog() {
               </span>
             )}
             <span className="text-muted-foreground/60">&rsaquo;</span>
-            <span>New project</span>
+            <span>{t('projects.newProject')}</span>
           </div>
           <div className="flex items-center gap-1">
             <Button
@@ -252,7 +254,7 @@ export function NewProjectDialog() {
         <div className="px-4 pt-4 pb-2 shrink-0">
           <input
             className="w-full text-lg font-semibold bg-transparent outline-none placeholder:text-muted-foreground/50"
-            placeholder="Project name"
+            placeholder={t('projects.projectName')}
             value={name}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => {
@@ -271,7 +273,7 @@ export function NewProjectDialog() {
             ref={descriptionEditorRef}
             value={description}
             onChange={setDescription}
-            placeholder="Add description..."
+            placeholder={t('projects.addDescription')}
             bordered={false}
             contentClassName={cn("text-sm text-muted-foreground", expanded ? "min-h-[220px]" : "min-h-[120px]")}
             imageUploadHandler={async (file) => {
@@ -283,8 +285,8 @@ export function NewProjectDialog() {
 
         <div className="px-4 pb-3 space-y-3 border-t border-border">
           <div className="pt-3">
-            <p className="text-sm font-medium">Where will work be done on this project?</p>
-            <p className="text-xs text-muted-foreground">Add local folder and/or GitHub repo workspace hints.</p>
+            <p className="text-sm font-medium">{t('projects.workspaceQuestion')}</p>
+            <p className="text-xs text-muted-foreground">{t('projects.workspaceHint')}</p>
           </div>
           <div className="grid gap-2 sm:grid-cols-3">
             <button
@@ -297,9 +299,9 @@ export function NewProjectDialog() {
             >
               <div className="flex items-center gap-2 text-sm font-medium">
                 <FolderOpen className="h-4 w-4" />
-                A local folder
+                {t('projects.localFolder')}
               </div>
-              <p className="mt-1 text-xs text-muted-foreground">Use a full path on this machine.</p>
+              <p className="mt-1 text-xs text-muted-foreground">{t('projects.localFolderHint')}</p>
             </button>
             <button
               type="button"
@@ -311,9 +313,9 @@ export function NewProjectDialog() {
             >
               <div className="flex items-center gap-2 text-sm font-medium">
                 <Github className="h-4 w-4" />
-                A github repo
+                {t('projects.githubRepo')}
               </div>
-              <p className="mt-1 text-xs text-muted-foreground">Paste a GitHub URL.</p>
+              <p className="mt-1 text-xs text-muted-foreground">{t('projects.githubRepoHint')}</p>
             </button>
             <button
               type="button"
@@ -325,15 +327,15 @@ export function NewProjectDialog() {
             >
               <div className="flex items-center gap-2 text-sm font-medium">
                 <GitBranch className="h-4 w-4" />
-                Both
+                {t('projects.both')}
               </div>
-              <p className="mt-1 text-xs text-muted-foreground">Configure local + repo hints.</p>
+              <p className="mt-1 text-xs text-muted-foreground">{t('projects.bothHint')}</p>
             </button>
           </div>
 
           {(workspaceSetup === "local" || workspaceSetup === "both") && (
             <div className="rounded-md border border-border p-2">
-              <label className="mb-1 block text-xs text-muted-foreground">Local folder (full path)</label>
+              <label className="mb-1 block text-xs text-muted-foreground">{t('projects.localFolderLabel')}</label>
               <div className="flex items-center gap-2">
                 <input
                   className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
@@ -347,7 +349,7 @@ export function NewProjectDialog() {
           )}
           {(workspaceSetup === "repo" || workspaceSetup === "both") && (
             <div className="rounded-md border border-border p-2">
-              <label className="mb-1 block text-xs text-muted-foreground">GitHub repo URL</label>
+              <label className="mb-1 block text-xs text-muted-foreground">{t('projects.githubRepoLabel')}</label>
               <input
                 className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs outline-none"
                 value={workspaceRepoUrl}
@@ -411,7 +413,7 @@ export function NewProjectDialog() {
                 disabled={selectedGoals.length > 0 && availableGoals.length === 0}
               >
                 {selectedGoals.length > 0 ? <Plus className="h-3 w-3 text-muted-foreground" /> : <Target className="h-3 w-3 text-muted-foreground" />}
-                {selectedGoals.length > 0 ? "+ Goal" : "Goal"}
+                {selectedGoals.length > 0 ? t('projects.addGoal') : t('projects.goal')}
               </button>
             </PopoverTrigger>
             <PopoverContent className="w-56 p-1" align="start">
@@ -420,7 +422,7 @@ export function NewProjectDialog() {
                   className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground"
                   onClick={() => setGoalOpen(false)}
                 >
-                  No goal
+                  {t('projects.noGoal')}
                 </button>
               )}
               {availableGoals.map((g) => (
@@ -437,7 +439,7 @@ export function NewProjectDialog() {
               ))}
               {selectedGoals.length > 0 && availableGoals.length === 0 && (
                 <div className="px-2 py-1.5 text-xs text-muted-foreground">
-                  All goals already selected.
+                  {t('projects.allGoalsSelected')}
                 </div>
               )}
             </PopoverContent>
@@ -451,7 +453,7 @@ export function NewProjectDialog() {
               className="bg-transparent outline-none text-xs w-24"
               value={targetDate}
               onChange={(e) => setTargetDate(e.target.value)}
-              placeholder="Target date"
+              placeholder={t('projects.targetDate')}
             />
           </div>
         </div>
@@ -459,7 +461,7 @@ export function NewProjectDialog() {
         {/* Footer */}
         <div className="flex items-center justify-between px-4 py-2.5 border-t border-border">
           {createProject.isError ? (
-            <p className="text-xs text-destructive">Failed to create project.</p>
+            <p className="text-xs text-destructive">{t('projects.failedToCreate')}</p>
           ) : (
             <span />
           )}
@@ -468,7 +470,7 @@ export function NewProjectDialog() {
             disabled={!name.trim() || createProject.isPending}
             onClick={handleSubmit}
           >
-            {createProject.isPending ? "Creating…" : "Create project"}
+            {createProject.isPending ? t('common.creating') : t('projects.createProject')}
           </Button>
         </div>
       </DialogContent>

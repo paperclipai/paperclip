@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
+import { useTranslation } from "react-i18next";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import type { Issue, LiveEvent } from "@paperclipai/shared";
@@ -195,6 +196,7 @@ interface ActiveAgentsPanelProps {
 }
 
 export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
+  const { t } = useTranslation();
   const [feedByRun, setFeedByRun] = useState<Map<string, FeedItem[]>>(new Map());
   const seenKeysRef = useRef(new Set<string>());
   const pendingByRunRef = useRef(new Map<string, string>());
@@ -379,11 +381,11 @@ export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
   return (
     <div>
       <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-        Agents
+        {t('agents.heading')}
       </h3>
       {runs.length === 0 ? (
         <div className="border border-border rounded-lg p-4">
-          <p className="text-sm text-muted-foreground">No recent agent runs.</p>
+          <p className="text-sm text-muted-foreground">{t('agents.noRecentRuns')}</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2 sm:gap-4">
@@ -413,6 +415,7 @@ function AgentRunCard({
   feed: FeedItem[];
   isActive: boolean;
 }) {
+  const { t } = useTranslation();
   const bodyRef = useRef<HTMLDivElement>(null);
   const recent = feed.slice(-20);
 
@@ -444,7 +447,7 @@ function AgentRunCard({
           )}
           <Identity name={run.agentName} size="sm" />
           {isActive && (
-            <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">Live</span>
+            <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">{t('common.live')}</span>
           )}
         </div>
         <Link
@@ -475,11 +478,11 @@ function AgentRunCard({
       {/* Feed body */}
       <div ref={bodyRef} className="flex-1 max-h-[140px] overflow-y-auto p-2 font-mono text-[11px] space-y-1">
         {isActive && recent.length === 0 && (
-          <div className="text-xs text-muted-foreground">Waiting for output...</div>
+          <div className="text-xs text-muted-foreground">{t('agents.waitingForOutput')}</div>
         )}
         {!isActive && recent.length === 0 && (
           <div className="text-xs text-muted-foreground">
-            {run.finishedAt ? `Finished ${relativeTime(run.finishedAt)}` : `Started ${relativeTime(run.createdAt)}`}
+            {run.finishedAt ? t('agents.finishedTime', { time: relativeTime(run.finishedAt) }) : t('agents.startedTime', { time: relativeTime(run.createdAt) })}
           </div>
         )}
         {recent.map((item, index) => (

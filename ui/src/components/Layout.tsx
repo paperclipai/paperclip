@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type UIEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { BookOpen, Moon, Sun } from "lucide-react";
+import { BookOpen, Globe, Moon, Sun } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Outlet, useLocation, useNavigate, useParams } from "@/lib/router";
 import { CompanyRail } from "./CompanyRail";
 import { Sidebar } from "./Sidebar";
@@ -38,7 +39,11 @@ export function Layout() {
   const onboardingTriggered = useRef(false);
   const lastMainScrollTop = useRef(0);
   const [mobileNavVisible, setMobileNavVisible] = useState(true);
+  const { t, i18n } = useTranslation();
   const nextTheme = theme === "dark" ? "light" : "dark";
+  const toggleLanguage = () => {
+    i18n.changeLanguage(i18n.language === "zh" ? "en" : "zh");
+  };
   const { data: health } = useQuery({
     queryKey: queryKeys.health,
     queryFn: () => healthApi.get(),
@@ -189,7 +194,7 @@ export function Layout() {
         href="#main-content"
         className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[200] focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:shadow-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
-        Skip to Main Content
+        {t('common.skipToMainContent')}
       </a>
       {/* Mobile backdrop */}
       {isMobile && sidebarOpen && (
@@ -197,7 +202,7 @@ export function Layout() {
           type="button"
           className="fixed inset-0 z-40 bg-black/50"
           onClick={() => setSidebarOpen(false)}
-          aria-label="Close sidebar"
+          aria-label={t('common.closeSidebar')}
         />
       )}
 
@@ -217,10 +222,21 @@ export function Layout() {
             <div className="flex items-center gap-1">
               <SidebarNavItem
                 to="/docs"
-                label="Documentation"
+                label={t('nav.documentation')}
                 icon={BookOpen}
                 className="flex-1 min-w-0"
               />
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                className="text-muted-foreground shrink-0"
+                onClick={toggleLanguage}
+                aria-label={t('language.switchLanguage')}
+                title={t('language.switchLanguage')}
+              >
+                <Globe className="h-4 w-4" />
+              </Button>
               <Button
                 type="button"
                 variant="ghost"
@@ -252,10 +268,21 @@ export function Layout() {
             <div className="flex items-center gap-1">
               <SidebarNavItem
                 to="/docs"
-                label="Documentation"
+                label={t('nav.documentation')}
                 icon={BookOpen}
                 className="flex-1 min-w-0"
               />
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                className="text-muted-foreground shrink-0"
+                onClick={toggleLanguage}
+                aria-label={t('language.switchLanguage')}
+                title={t('language.switchLanguage')}
+              >
+                <Globe className="h-4 w-4" />
+              </Button>
               <Button
                 type="button"
                 variant="ghost"

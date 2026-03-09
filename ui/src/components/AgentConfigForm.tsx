@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AGENT_ADAPTER_TYPES } from "@paperclipai/shared";
 import type {
@@ -159,6 +160,7 @@ const claudeThinkingEffortOptions = [
 /* ---- Form ---- */
 
 export function AgentConfigForm(props: AgentConfigFormProps) {
+  const { t } = useTranslation();
   const { mode, adapterModels: externalModels } = props;
   const isCreate = mode === "create";
   const cards = props.sectionLayout === "cards";
@@ -380,13 +382,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       {isDirty && !props.hideInlineSave && (
         <div className="sticky top-0 z-10 flex items-center justify-end px-4 py-2 bg-background/90 backdrop-blur-sm border-b border-primary/20">
           <div className="flex items-center gap-3">
-            <span className="text-xs text-muted-foreground">Unsaved changes</span>
+            <span className="text-xs text-muted-foreground">{t('agents.unsavedChanges')}</span>
             <Button
               size="sm"
               onClick={handleSave}
               disabled={!isCreate && props.isSaving}
             >
-              {!isCreate && props.isSaving ? "Saving..." : "Save"}
+              {!isCreate && props.isSaving ? t('common.saving') : t('common.save')}
             </Button>
           </div>
         </div>
@@ -396,33 +398,33 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       {!isCreate && (
         <div className={cn(!cards && "border-b border-border")}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">Identity</h3>
-            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Identity</div>
+            ? <h3 className="text-sm font-medium mb-3">{t('agents.identity')}</h3>
+            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">{t('agents.identity')}</div>
           }
           <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
-            <Field label="Name" hint={help.name}>
+            <Field label={t('agents.name')} hint={help.name}>
               <DraftInput
                 value={eff("identity", "name", props.agent.name)}
                 onCommit={(v) => mark("identity", "name", v)}
                 immediate
                 className={inputClass}
-                placeholder="Agent name"
+                placeholder={t('agents.agentName')}
               />
             </Field>
-            <Field label="Title" hint={help.title}>
+            <Field label={t('agents.titleField')} hint={help.title}>
               <DraftInput
                 value={eff("identity", "title", props.agent.title ?? "")}
                 onCommit={(v) => mark("identity", "title", v || null)}
                 immediate
                 className={inputClass}
-                placeholder="e.g. VP of Engineering"
+                placeholder={t('agents.titlePlaceholder')}
               />
             </Field>
-            <Field label="Capabilities" hint={help.capabilities}>
+            <Field label={t('agents.capabilities')} hint={help.capabilities}>
               <MarkdownEditor
                 value={eff("identity", "capabilities", props.agent.capabilities ?? "")}
                 onChange={(v) => mark("identity", "capabilities", v || null)}
-                placeholder="Describe what this agent can do..."
+                placeholder={t('agents.capabilitiesPlaceholder')}
                 contentClassName="min-h-[44px] text-sm font-mono"
                 imageUploadHandler={async (file) => {
                   const asset = await uploadMarkdownImage.mutateAsync({
@@ -434,7 +436,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               />
             </Field>
             {isLocal && (
-              <Field label="Prompt Template" hint={help.promptTemplate}>
+              <Field label={t('agents.promptTemplate')} hint={help.promptTemplate}>
                 <MarkdownEditor
                   value={eff(
                     "adapterConfig",
@@ -460,8 +462,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
         <div className={cn(cards ? "flex items-center justify-between mb-3" : "px-4 py-2 flex items-center justify-between gap-2")}>
           {cards
-            ? <h3 className="text-sm font-medium">Adapter</h3>
-            : <span className="text-xs font-medium text-muted-foreground">Adapter</span>
+            ? <h3 className="text-sm font-medium">{t('agents.adapterSection')}</h3>
+            : <span className="text-xs font-medium text-muted-foreground">{t('agents.adapterSection')}</span>
           }
           <Button
             type="button"
@@ -471,11 +473,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             onClick={() => testEnvironment.mutate()}
             disabled={testEnvironment.isPending || !selectedCompanyId}
           >
-            {testEnvironment.isPending ? "Testing..." : "Test environment"}
+            {testEnvironment.isPending ? t('agents.testing') : t('agents.testEnvironment')}
           </Button>
         </div>
         <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
-          <Field label="Adapter type" hint={help.adapterType}>
+          <Field label={t('agents.adapterType')} hint={help.adapterType}>
             <AdapterTypeDropdown
               value={adapterType}
               onChange={(t) => {
@@ -527,7 +529,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
               {testEnvironment.error instanceof Error
                 ? testEnvironment.error.message
-                : "Environment test failed"}
+                : t('agents.environmentTestFailed')}
             </div>
           )}
 
@@ -537,7 +539,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
           {/* Working directory */}
           {isLocal && (
-            <Field label="Working directory" hint={help.cwd}>
+            <Field label={t('agents.workingDirectory')} hint={help.cwd}>
               <div className="flex items-center gap-2 rounded-md border border-border px-2.5 py-1.5">
                 <FolderOpen className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                 <DraftInput
@@ -562,7 +564,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
           {/* Prompt template (create mode only — edit mode shows this in Identity) */}
           {isLocal && isCreate && (
-            <Field label="Prompt Template" hint={help.promptTemplate}>
+            <Field label={t('agents.promptTemplate')} hint={help.promptTemplate}>
               <MarkdownEditor
                 value={val!.promptTemplate}
                 onChange={(v) => set!({ promptTemplate: v })}
@@ -587,11 +589,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       {isLocal && (
         <div className={cn(!cards && "border-b border-border")}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">Permissions &amp; Configuration</h3>
-            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Permissions &amp; Configuration</div>
+            ? <h3 className="text-sm font-medium mb-3">{t('agents.permissionsConfig')}</h3>
+            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">{t('agents.permissionsConfig')}</div>
           }
           <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
-              <Field label="Command" hint={help.localCommand}>
+              <Field label={t('agents.command')} hint={help.localCommand}>
                 <DraftInput
                   value={
                     isCreate
@@ -635,7 +637,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 <p className="text-xs text-destructive">
                   {fetchedModelsError instanceof Error
                     ? fetchedModelsError.message
-                    : "Failed to load adapter models."}
+                    : t('agents.failedToLoadModels')}
                 </p>
               )}
 
@@ -654,10 +656,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 codexSearchEnabled &&
                 currentThinkingEffort === "minimal" && (
                   <p className="text-xs text-amber-400">
-                    Codex may reject `minimal` thinking when search is enabled.
+                    {t('agents.codexMinimalWarning')}
                   </p>
                 )}
-              <Field label="Bootstrap prompt (first run)" hint={help.bootstrapPrompt}>
+              <Field label={t('agents.bootstrapPrompt')} hint={help.bootstrapPrompt}>
                 <MarkdownEditor
                   value={
                     isCreate
@@ -673,7 +675,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       ? set!({ bootstrapPrompt: v })
                       : mark("adapterConfig", "bootstrapPromptTemplate", v || undefined)
                   }
-                  placeholder="Optional initial setup prompt for the first run"
+                  placeholder={t('agents.bootstrapPlaceholder')}
                   contentClassName="min-h-[44px] text-sm font-mono"
                   imageUploadHandler={async (file) => {
                     const namespace = isCreate
