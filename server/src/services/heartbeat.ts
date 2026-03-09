@@ -2283,6 +2283,19 @@ export function heartbeatService(db: Db) {
       return cancelled;
     },
 
+    dismissRun: async (runId: string) => {
+      const run = await getRun(runId);
+      if (!run) return null;
+      if (run.dismissedAt) return run;
+
+      const [updated] = await db
+        .update(heartbeatRuns)
+        .set({ dismissedAt: new Date(), updatedAt: new Date() })
+        .where(eq(heartbeatRuns.id, runId))
+        .returning();
+      return updated ?? null;
+    },
+
     cancelActiveForAgent: async (agentId: string) => {
       const runs = await db
         .select()

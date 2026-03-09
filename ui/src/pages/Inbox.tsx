@@ -113,9 +113,11 @@ function getStaleIssues(issues: Issue[]): Issue[] {
 }
 
 function getLatestFailedRunsByAgent(runs: HeartbeatRun[]): HeartbeatRun[] {
-  const sorted = [...runs].sort(
-    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-  );
+  const sorted = [...runs]
+    .filter((r) => !r.dismissedAt)
+    .sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    );
   const latestByAgent = new Map<string, HeartbeatRun>();
 
   for (const run of sorted) {
@@ -416,8 +418,8 @@ export function Inbox() {
   }, [issues]);
 
   const failedRuns = useMemo(
-    () => getLatestFailedRunsByAgent(heartbeatRuns ?? []).filter((r) => !dismissed.has(`run:${r.id}`)),
-    [heartbeatRuns, dismissed],
+    () => getLatestFailedRunsByAgent(heartbeatRuns ?? []),
+    [heartbeatRuns],
   );
 
   const allApprovals = useMemo(
@@ -520,6 +522,20 @@ export function Inbox() {
           return next;
         });
       }, 300);
+    },
+  });
+
+  const dismissRunMutation = useMutation({
+    mutationFn: (runId: string) => heartbeatsApi.dismiss(runId),
+    onSuccess: () => {
+      setActionError(null);
+      if (selectedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(selectedCompanyId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
+      }
+    },
+    onError: (err) => {
+      setActionError(err instanceof Error ? err.message : "Failed to dismiss run");
     },
   });
 
@@ -764,7 +780,7 @@ export function Inbox() {
                   run={run}
                   issueById={issueById}
                   agentName={agentName(run.agentId)}
-                  onDismiss={() => dismiss(`run:${run.id}`)}
+                  onDismiss={() => dismissRunMutation.mutate(run.id)}
                 />
               ))}
             </div>

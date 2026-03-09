@@ -34,6 +34,7 @@ export interface HeartbeatRun {
   contextSnapshot: Record<string, unknown> | null;
   createdAt: Date;
   updatedAt: Date;
+  dismissedAt: Date | null;
 }
 
 export interface HeartbeatRunEvent {

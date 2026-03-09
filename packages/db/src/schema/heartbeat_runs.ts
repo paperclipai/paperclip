@@ -34,6 +34,7 @@ export const heartbeatRuns = pgTable(
     contextSnapshot: jsonb("context_snapshot").$type<Record<string, unknown>>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    dismissedAt: timestamp("dismissed_at", { withTimezone: true }),
   },
   (table) => ({
     companyAgentStartedIdx: index("heartbeat_runs_company_agent_started_idx").on(
