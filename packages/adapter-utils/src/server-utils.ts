@@ -192,11 +192,8 @@ function isWindowsBatchScript(commandPath: string): boolean {
 }
 
 function escapeForCmd(arg: string): string {
-  // Escape CMD metacharacters
-  // % requires %% (double-percent), others use ^ prefix
-  return arg
-    .replace(/%/g, "%%")
-    .replace(/[&|<>^()!]/g, "^$&");
+  // Escape % for CMD (Node.js handles quoting for spaces/metacharacters)
+  return arg.replace(/%/g, "%%");
 }
 
 async function getSpawnPlan(
@@ -217,7 +214,7 @@ async function getSpawnPlan(
   const commandProcessor = env.ComSpec ?? env.COMSPEC ?? "cmd.exe";
   return {
     command: commandProcessor,
-    args: ["/d", "/s", "/c", resolvedCommand, ...args.map(escapeForCmd)],
+    args: ["/d", "/s", "/c", escapeForCmd(resolvedCommand), ...args.map(escapeForCmd)],
     shell: false,
   };
 }
