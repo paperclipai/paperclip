@@ -57,6 +57,15 @@ function CloudAccessGate() {
     queryKey: queryKeys.health,
     queryFn: () => healthApi.get(),
     retry: false,
+    refetchInterval: (query) => {
+      const data = query.state.data as
+        | { deploymentMode?: "local_trusted" | "authenticated"; bootstrapStatus?: "ready" | "bootstrap_pending" }
+        | undefined;
+      return data?.deploymentMode === "authenticated" && data.bootstrapStatus === "bootstrap_pending"
+        ? 2000
+        : false;
+    },
+    refetchIntervalInBackground: true,
   });
 
   const isAuthenticatedMode = healthQuery.data?.deploymentMode === "authenticated";
