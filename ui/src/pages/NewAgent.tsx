@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
@@ -16,14 +16,12 @@ import { Shield, User } from "lucide-react";
 import { cn, agentUrl } from "../lib/utils";
 import { roleLabels } from "../components/agent-config-primitives";
 import { AgentConfigForm, type CreateConfigValues } from "../components/AgentConfigForm";
-import { defaultCreateValues } from "../components/agent-config-defaults";
+import {
+  createDefaultCreateValues,
+  resolveDefaultManagerId,
+} from "../components/agent-config-defaults";
 import { getUIAdapter } from "../adapters";
 import { AgentIcon } from "../components/AgentIconPicker";
-import {
-  DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
-  DEFAULT_CODEX_LOCAL_MODEL,
-} from "@paperclipai/adapter-codex-local";
-import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 
 const SUPPORTED_ADVANCED_ADAPTER_TYPES = new Set<CreateConfigValues["adapterType"]>([
   "claude_local",
@@ -33,23 +31,6 @@ const SUPPORTED_ADVANCED_ADAPTER_TYPES = new Set<CreateConfigValues["adapterType
   "cursor",
   "openclaw_gateway",
 ]);
-
-function createValuesForAdapterType(
-  adapterType: CreateConfigValues["adapterType"],
-): CreateConfigValues {
-  const { adapterType: _discard, ...defaults } = defaultCreateValues;
-  const nextValues: CreateConfigValues = { ...defaults, adapterType };
-  if (adapterType === "codex_local") {
-    nextValues.model = DEFAULT_CODEX_LOCAL_MODEL;
-    nextValues.dangerouslyBypassSandbox =
-      DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
-  } else if (adapterType === "cursor") {
-    nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
-  } else if (adapterType === "opencode_local") {
-    nextValues.model = "";
-  }
-  return nextValues;
-}
 
 export function NewAgent() {
   const { selectedCompanyId } = useCompany();
@@ -63,12 +44,15 @@ export function NewAgent() {
   const [title, setTitle] = useState("");
   const [role, setRole] = useState("general");
   const [reportsTo, setReportsTo] = useState("");
-  const [configValues, setConfigValues] = useState<CreateConfigValues>(defaultCreateValues);
+  const [configValues, setConfigValues] = useState<CreateConfigValues>(() =>
+    createDefaultCreateValues(),
+  );
+  const [hasInitializedReportsTo, setHasInitializedReportsTo] = useState(false);
   const [roleOpen, setRoleOpen] = useState(false);
   const [reportsToOpen, setReportsToOpen] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
-  const { data: agents } = useQuery({
+  const { data: agents, isSuccess: agentsLoaded } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
@@ -87,7 +71,11 @@ export function NewAgent() {
     enabled: Boolean(selectedCompanyId),
   });
 
-  const isFirstAgent = !agents || agents.length === 0;
+  const defaultManagerId = useMemo(
+    () => resolveDefaultManagerId(agents ?? []),
+    [agents],
+  );
+  const isFirstAgent = agentsLoaded && (agents?.length ?? 0) === 0;
   const effectiveRole = isFirstAgent ? "ceo" : role;
 
   useEffect(() => {
@@ -98,11 +86,31 @@ export function NewAgent() {
   }, [setBreadcrumbs]);
 
   useEffect(() => {
+    setReportsTo("");
+    setHasInitializedReportsTo(false);
+  }, [selectedCompanyId]);
+
+  useEffect(() => {
+    if (!agentsLoaded) return;
     if (isFirstAgent) {
       if (!name) setName("CEO");
       if (!title) setTitle("CEO");
+      return;
     }
-  }, [isFirstAgent]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (hasInitializedReportsTo) return;
+    setHasInitializedReportsTo(true);
+    if (!reportsTo && defaultManagerId) {
+      setReportsTo(defaultManagerId);
+    }
+  }, [
+    agentsLoaded,
+    defaultManagerId,
+    hasInitializedReportsTo,
+    isFirstAgent,
+    name,
+    reportsTo,
+    title,
+  ]);
 
   useEffect(() => {
     const requested = presetAdapterType;
@@ -112,7 +120,7 @@ export function NewAgent() {
     }
     setConfigValues((prev) => {
       if (prev.adapterType === requested) return prev;
-      return createValuesForAdapterType(requested as CreateConfigValues["adapterType"]);
+      return createDefaultCreateValues(requested as CreateConfigValues["adapterType"]);
     });
   }, [presetAdapterType]);
 
@@ -225,9 +233,9 @@ export function NewAgent() {
               <button
                 className={cn(
                   "inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors",
-                  isFirstAgent && "opacity-60 cursor-not-allowed"
+                  (!agentsLoaded || isFirstAgent) && "opacity-60 cursor-not-allowed"
                 )}
-                disabled={isFirstAgent}
+                disabled={!agentsLoaded || isFirstAgent}
               >
                 <Shield className="h-3 w-3 text-muted-foreground" />
                 {roleLabels[effectiveRole] ?? effectiveRole}
@@ -254,9 +262,9 @@ export function NewAgent() {
               <button
                 className={cn(
                   "inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors",
-                  isFirstAgent && "opacity-60 cursor-not-allowed"
+                  (!agentsLoaded || isFirstAgent) && "opacity-60 cursor-not-allowed"
                 )}
-                disabled={isFirstAgent}
+                disabled={!agentsLoaded || isFirstAgent}
               >
                 {currentReportsTo ? (
                   <>
@@ -266,7 +274,11 @@ export function NewAgent() {
                 ) : (
                   <>
                     <User className="h-3 w-3 text-muted-foreground" />
-                    {isFirstAgent ? "Reports to: N/A (CEO)" : "Reports to..."}
+                    {!agentsLoaded
+                      ? "Loading org…"
+                      : isFirstAgent
+                        ? "Reports to: N/A (CEO)"
+                        : "Reports to..."}
                   </>
                 )}
               </button>
@@ -315,13 +327,16 @@ export function NewAgent() {
           {formError && (
             <p className="text-xs text-destructive mb-2">{formError}</p>
           )}
+          {!agentsLoaded && (
+            <p className="text-xs text-muted-foreground mb-2">Loading org defaults…</p>
+          )}
           <div className="flex items-center justify-end gap-2">
             <Button variant="outline" size="sm" onClick={() => navigate("/agents")}>
               Cancel
             </Button>
             <Button
               size="sm"
-              disabled={!name.trim() || createAgent.isPending}
+              disabled={!name.trim() || createAgent.isPending || !agentsLoaded}
               onClick={handleSubmit}
             >
               {createAgent.isPending ? "Creating…" : "Create agent"}

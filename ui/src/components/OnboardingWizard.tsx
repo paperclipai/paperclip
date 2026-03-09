@@ -19,9 +19,11 @@ import { Button } from "@/components/ui/button";
 import { cn } from "../lib/utils";
 import { extractModelName, extractProviderIdWithFallback } from "../lib/model-utils";
 import { getUIAdapter } from "../adapters";
-import { defaultCreateValues } from "./agent-config-defaults";
 import {
-  DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
+  createDefaultCreateValues,
+  DEFAULT_SPECIALIST_CREATE_ADAPTER_TYPE,
+} from "./agent-config-defaults";
+import {
   DEFAULT_CODEX_LOCAL_MODEL
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
@@ -85,9 +87,11 @@ export function OnboardingWizard() {
 
   // Step 2
   const [agentName, setAgentName] = useState("CEO");
-  const [adapterType, setAdapterType] = useState<AdapterType>("claude_local");
+  const [adapterType, setAdapterType] = useState<AdapterType>(
+    DEFAULT_SPECIALIST_CREATE_ADAPTER_TYPE as AdapterType
+  );
   const [cwd, setCwd] = useState("");
-  const [model, setModel] = useState("");
+  const [model, setModel] = useState(DEFAULT_CODEX_LOCAL_MODEL);
   const [command, setCommand] = useState("");
   const [args, setArgs] = useState("");
   const [url, setUrl] = useState("");
@@ -235,9 +239,9 @@ export function OnboardingWizard() {
     setCompanyName("");
     setCompanyGoal("");
     setAgentName("CEO");
-    setAdapterType("claude_local");
+    setAdapterType(DEFAULT_SPECIALIST_CREATE_ADAPTER_TYPE as AdapterType);
     setCwd("");
-    setModel("");
+    setModel(DEFAULT_CODEX_LOCAL_MODEL);
     setCommand("");
     setArgs("");
     setUrl("");
@@ -262,7 +266,7 @@ export function OnboardingWizard() {
   function buildAdapterConfig(): Record<string, unknown> {
     const adapter = getUIAdapter(adapterType);
     const config = adapter.buildAdapterConfig({
-      ...defaultCreateValues,
+      ...createDefaultCreateValues(adapterType),
       adapterType,
       cwd,
       model:
@@ -274,11 +278,7 @@ export function OnboardingWizard() {
       command,
       args,
       url,
-      dangerouslySkipPermissions: adapterType === "claude_local",
-      dangerouslyBypassSandbox:
-        adapterType === "codex_local"
-          ? DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX
-          : defaultCreateValues.dangerouslyBypassSandbox
+      dangerouslySkipPermissions: adapterType === "claude_local"
     });
     if (adapterType === "claude_local" && forceUnsetAnthropicApiKey) {
       const env =
@@ -645,8 +645,7 @@ export function OnboardingWizard() {
                           value: "claude_local" as const,
                           label: "Claude Code",
                           icon: Sparkles,
-                          desc: "Local Claude agent",
-                          recommended: true
+                          desc: "Local Claude agent"
                         },
                         {
                           value: "codex_local" as const,
@@ -697,15 +696,16 @@ export function OnboardingWizard() {
                             if (opt.comingSoon) return;
                             const nextType = opt.value as AdapterType;
                             setAdapterType(nextType);
-                            if (nextType === "codex_local" && !model) {
-                              setModel(DEFAULT_CODEX_LOCAL_MODEL);
-                            } else if (nextType === "cursor" && !model) {
-                              setModel(DEFAULT_CURSOR_LOCAL_MODEL);
-                            }
                             if (nextType === "opencode_local") {
-                              if (!model.includes("/")) {
-                                setModel("");
-                              }
+                              setModel(model.includes("/") ? model : "");
+                              return;
+                            }
+                            if (nextType === "codex_local") {
+                              setModel(DEFAULT_CODEX_LOCAL_MODEL);
+                              return;
+                            }
+                            if (nextType === "cursor") {
+                              setModel(DEFAULT_CURSOR_LOCAL_MODEL);
                               return;
                             }
                             setModel("");
