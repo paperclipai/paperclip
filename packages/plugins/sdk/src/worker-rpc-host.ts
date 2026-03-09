@@ -631,6 +631,10 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         async resume(agentId: string, companyId: string) {
           return callHost("agents.resume", { agentId, companyId }) as any;
         },
+
+        async invoke(agentId: string, companyId: string, opts: { prompt: string; reason?: string }) {
+          return callHost("agents.invoke", { agentId, companyId, prompt: opts.prompt, reason: opts.reason }) as any;
+        },
       },
 
       goals: {

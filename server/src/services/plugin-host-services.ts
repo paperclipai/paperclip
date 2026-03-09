@@ -14,6 +14,7 @@ import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
 import { issueService } from "./issues.js";
 import { goalService } from "./goals.js";
+import { heartbeatService } from "./heartbeat.js";
 import { activityService } from "./activity.js";
 import { costService } from "./costs.js";
 import { assetService } from "./assets.js";
@@ -81,6 +82,7 @@ export function buildHostServices(
   const secretsHandler = createPluginSecretsHandler({ db, pluginId });
   const companies = companyService(db);
   const agents = agentService(db);
+  const heartbeat = heartbeatService(db);
   const projects = projectService(db);
   const issues = issueService(db);
   const goals = goalService(db);
@@ -332,6 +334,33 @@ export function buildHostServices(
         const companyId = ensureCompanyId(params.companyId);
         const agent = await agents.getById(params.agentId);
         return (inCompany(agent, companyId) ? agent : null) as Agent | null;
+      },
+      async pause(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        const agent = await agents.getById(params.agentId);
+        requireInCompany("Agent", agent, companyId);
+        return (await agents.pause(params.agentId)) as Agent;
+      },
+      async resume(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        const agent = await agents.getById(params.agentId);
+        requireInCompany("Agent", agent, companyId);
+        return (await agents.resume(params.agentId)) as Agent;
+      },
+      async invoke(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        const agent = await agents.getById(params.agentId);
+        requireInCompany("Agent", agent, companyId);
+        const run = await heartbeat.wakeup(params.agentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: params.reason ?? null,
+          payload: { prompt: params.prompt },
+          requestedByActorType: "system",
+          requestedByActorId: pluginId,
+        });
+        if (!run) throw new Error("Agent wakeup was skipped by heartbeat policy");
+        return { runId: run.id };
       },
     },
 

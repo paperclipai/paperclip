@@ -451,6 +451,20 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         agents.set(agentId, updated);
         return updated;
       },
+      async invoke(agentId, companyId, opts) {
+        requireCapability(manifest, capabilitySet, "agents.invoke");
+        const cid = requireCompanyId(companyId);
+        const agent = agents.get(agentId);
+        if (!isInCompany(agent, cid)) throw new Error(`Agent not found: ${agentId}`);
+        if (
+          agent!.status === "paused" ||
+          agent!.status === "terminated" ||
+          agent!.status === "pending_approval"
+        ) {
+          throw new Error(`Agent is not invokable in its current state: ${agent!.status}`);
+        }
+        return { runId: randomUUID() };
+      },
     },
     goals: {
       async list(input) {

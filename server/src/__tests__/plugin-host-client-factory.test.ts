@@ -26,6 +26,9 @@ const ALL_CAPABILITIES: PluginCapability[] = [
   "issues.read",
   "issue.comments.read",
   "agents.read",
+  "agents.pause",
+  "agents.resume",
+  "agents.invoke",
   "goals.read",
   "activity.read",
   "costs.read",
@@ -130,6 +133,9 @@ function createMockServices(): HostServices {
     agents: {
       list: vi.fn().mockResolvedValue([]),
       get: vi.fn().mockResolvedValue(null),
+      pause: vi.fn().mockResolvedValue({ id: "a1", status: "paused" }),
+      resume: vi.fn().mockResolvedValue({ id: "a1", status: "idle" }),
+      invoke: vi.fn().mockResolvedValue({ runId: "run-1" }),
     },
     goals: {
       list: vi.fn().mockResolvedValue([]),
@@ -172,7 +178,7 @@ describe("createHostClientHandlers", () => {
         "companies.list", "companies.get",
         "projects.list", "projects.get", "projects.listWorkspaces", "projects.getPrimaryWorkspace",
         "issues.list", "issues.get", "issues.create", "issues.update", "issues.listComments", "issues.createComment",
-        "agents.list", "agents.get",
+        "agents.list", "agents.get", "agents.pause", "agents.resume", "agents.invoke",
         "goals.list", "goals.get",
       ];
 
@@ -466,6 +472,42 @@ describe("createHostClientHandlers", () => {
 
       await expect(
         handlers["issues.createComment"]({ issueId: "i1", body: "hello", companyId: "c1" }),
+      ).rejects.toThrow(CapabilityDeniedError);
+    });
+
+    it("blocks agents.pause without agents.pause capability", async () => {
+      const handlers = createHostClientHandlers({
+        pluginId: "test.plugin",
+        capabilities: ["agents.read"],
+        services,
+      });
+
+      await expect(
+        handlers["agents.pause"]({ agentId: "a1", companyId: "c1" }),
+      ).rejects.toThrow(CapabilityDeniedError);
+    });
+
+    it("blocks agents.resume without agents.resume capability", async () => {
+      const handlers = createHostClientHandlers({
+        pluginId: "test.plugin",
+        capabilities: ["agents.read", "agents.pause"],
+        services,
+      });
+
+      await expect(
+        handlers["agents.resume"]({ agentId: "a1", companyId: "c1" }),
+      ).rejects.toThrow(CapabilityDeniedError);
+    });
+
+    it("blocks agents.invoke without agents.invoke capability", async () => {
+      const handlers = createHostClientHandlers({
+        pluginId: "test.plugin",
+        capabilities: ["agents.read", "agents.pause", "agents.resume"],
+        services,
+      });
+
+      await expect(
+        handlers["agents.invoke"]({ agentId: "a1", companyId: "c1", prompt: "test" }),
       ).rejects.toThrow(CapabilityDeniedError);
     });
 
@@ -862,6 +904,41 @@ describe("createHostClientHandlers", () => {
       expect(services.agents.get).toHaveBeenCalledWith({ agentId: "a1", companyId: "c1" });
     });
 
+    it("delegates agents.pause", async () => {
+      const handlers = createHostClientHandlers({
+        pluginId: "test.plugin",
+        capabilities: ALL_CAPABILITIES,
+        services,
+      });
+
+      await handlers["agents.pause"]({ agentId: "a1", companyId: "c1" });
+      expect(services.agents.pause).toHaveBeenCalledWith({ agentId: "a1", companyId: "c1" });
+    });
+
+    it("delegates agents.resume", async () => {
+      const handlers = createHostClientHandlers({
+        pluginId: "test.plugin",
+        capabilities: ALL_CAPABILITIES,
+        services,
+      });
+
+      await handlers["agents.resume"]({ agentId: "a1", companyId: "c1" });
+      expect(services.agents.resume).toHaveBeenCalledWith({ agentId: "a1", companyId: "c1" });
+    });
+
+    it("delegates agents.invoke", async () => {
+      const handlers = createHostClientHandlers({
+        pluginId: "test.plugin",
+        capabilities: ALL_CAPABILITIES,
+        services,
+      });
+
+      const params = { agentId: "a1", companyId: "c1", prompt: "Run health check", reason: "scheduled" };
+      const result = await handlers["agents.invoke"](params);
+      expect(services.agents.invoke).toHaveBeenCalledWith(params);
+      expect(result).toEqual({ runId: "run-1" });
+    });
+
     it("delegates goals.list", async () => {
       const handlers = createHostClientHandlers({
         pluginId: "test.plugin",
@@ -990,6 +1067,9 @@ describe("getRequiredCapability", () => {
     expect(getRequiredCapability("issues.createComment")).toBe("issue.comments.create");
     expect(getRequiredCapability("agents.list")).toBe("agents.read");
     expect(getRequiredCapability("agents.get")).toBe("agents.read");
+    expect(getRequiredCapability("agents.pause")).toBe("agents.pause");
+    expect(getRequiredCapability("agents.resume")).toBe("agents.resume");
+    expect(getRequiredCapability("agents.invoke")).toBe("agents.invoke");
     expect(getRequiredCapability("goals.list")).toBe("goals.read");
     expect(getRequiredCapability("goals.get")).toBe("goals.read");
   });

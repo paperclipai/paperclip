@@ -320,6 +320,7 @@ export const PLUGIN_CAPABILITIES = [
   "issue.comments.create",
   "agents.pause",
   "agents.resume",
+  "agents.invoke",
   "assets.write",
   "assets.read",
   "activity.log.write",

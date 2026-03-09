@@ -612,6 +612,10 @@ export interface WorkerToHostMethods {
     params: { agentId: string; companyId: string },
     result: unknown,
   ];
+  "agents.invoke": [
+    params: { agentId: string; companyId: string; prompt: string; reason?: string },
+    result: { runId: string },
+  ];
 
   // Goals (read)
   "goals.list": [
