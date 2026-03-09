@@ -117,7 +117,7 @@ export function Agents() {
   }, [setBreadcrumbs]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Bot} message="Select a company to view agents." />;
+    return <EmptyState icon={Bot} message="Select a system to view agents." />;
   }
 
   if (isLoading) {
@@ -129,82 +129,100 @@ export function Agents() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <Tabs value={tab} onValueChange={(v) => navigate(`/agents/${v}`)}>
-          <PageTabBar
-            items={[
-              { value: "all", label: "All" },
-              { value: "active", label: "Active" },
-              { value: "paused", label: "Paused" },
-              { value: "error", label: "Error" },
-            ]}
-            value={tab}
-            onValueChange={(v) => navigate(`/agents/${v}`)}
-          />
-        </Tabs>
-        <div className="flex items-center gap-2">
-          {/* Filters */}
-          <div className="relative">
-            <button
-              className={cn(
-                "flex items-center gap-1.5 px-2 py-1.5 text-xs transition-colors border border-border",
-                filtersOpen || showTerminated ? "text-foreground bg-accent" : "text-muted-foreground hover:bg-accent/50"
+      <section className="command-card rounded-[1.6rem] px-5 py-5 sm:px-6">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <p className="section-kicker">Fleet control</p>
+            <h2 className="editorial-title mt-3 text-[2.3rem] leading-none text-foreground">Agents, runtime state, and live command lanes</h2>
+            <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">
+              Move between org view and list view, watch live runs, and keep terminated agents out of the way until you need them.
+            </p>
+          </div>
+          <Button size="sm" variant="outline" onClick={openNewAgent} className="rounded-full">
+            <Plus className="mr-1.5 h-3.5 w-3.5" />
+            New Agent
+          </Button>
+        </div>
+      </section>
+
+      <div className="command-card-soft rounded-[1.2rem] p-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <Tabs value={tab} onValueChange={(v) => navigate(`/agents/${v}`)}>
+            <PageTabBar
+              items={[
+                { value: "all", label: "All" },
+                { value: "active", label: "Active" },
+                { value: "paused", label: "Paused" },
+                { value: "error", label: "Error" },
+              ]}
+              value={tab}
+              onValueChange={(v) => navigate(`/agents/${v}`)}
+            />
+          </Tabs>
+          <div className="flex items-center gap-2">
+            {/* Filters */}
+            <div className="relative">
+              <button
+                className={cn(
+                  "flex items-center gap-1.5 px-2 py-1.5 text-xs transition-colors border border-border",
+                  filtersOpen || showTerminated ? "text-foreground bg-accent" : "text-muted-foreground hover:bg-accent/50"
+                )}
+                onClick={() => setFiltersOpen(!filtersOpen)}
+              >
+                <SlidersHorizontal className="h-3 w-3" />
+                Filters
+                {showTerminated && <span className="ml-0.5 px-1 bg-foreground/10 rounded text-[10px]">1</span>}
+              </button>
+              {filtersOpen && (
+                <div className="absolute right-0 top-full mt-1 z-50 w-48 border border-border bg-popover shadow-md p-1">
+                  <button
+                    className="flex items-center gap-2 w-full px-2 py-1.5 text-xs text-left hover:bg-accent/50 transition-colors"
+                    onClick={() => setShowTerminated(!showTerminated)}
+                  >
+                    <span className={cn(
+                      "flex items-center justify-center h-3.5 w-3.5 border border-border rounded-sm",
+                      showTerminated && "bg-foreground"
+                    )}>
+                      {showTerminated && <span className="text-background text-[10px] leading-none">&#10003;</span>}
+                    </span>
+                    Show terminated
+                  </button>
+                </div>
               )}
-              onClick={() => setFiltersOpen(!filtersOpen)}
-            >
-              <SlidersHorizontal className="h-3 w-3" />
-              Filters
-              {showTerminated && <span className="ml-0.5 px-1 bg-foreground/10 rounded text-[10px]">1</span>}
-            </button>
-            {filtersOpen && (
-              <div className="absolute right-0 top-full mt-1 z-50 w-48 border border-border bg-popover shadow-md p-1">
+            </div>
+            {/* View toggle */}
+            {!forceListView && (
+              <div className="flex items-center border border-border">
                 <button
-                  className="flex items-center gap-2 w-full px-2 py-1.5 text-xs text-left hover:bg-accent/50 transition-colors"
-                  onClick={() => setShowTerminated(!showTerminated)}
+                  className={cn(
+                    "p-1.5 transition-colors",
+                    effectiveView === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
+                  )}
+                  onClick={() => setView("list")}
                 >
-                  <span className={cn(
-                    "flex items-center justify-center h-3.5 w-3.5 border border-border rounded-sm",
-                    showTerminated && "bg-foreground"
-                  )}>
-                    {showTerminated && <span className="text-background text-[10px] leading-none">&#10003;</span>}
-                  </span>
-                  Show terminated
+                  <List className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  className={cn(
+                    "p-1.5 transition-colors",
+                    effectiveView === "org" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
+                  )}
+                  onClick={() => setView("org")}
+                >
+                  <GitBranch className="h-3.5 w-3.5" />
                 </button>
               </div>
             )}
+            <Button size="sm" variant="outline" onClick={openNewAgent} className="rounded-full sm:hidden">
+              <Plus className="h-3.5 w-3.5 mr-1.5" />
+              New Agent
+            </Button>
           </div>
-          {/* View toggle */}
-          {!forceListView && (
-            <div className="flex items-center border border-border">
-              <button
-                className={cn(
-                  "p-1.5 transition-colors",
-                  effectiveView === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
-                )}
-                onClick={() => setView("list")}
-              >
-                <List className="h-3.5 w-3.5" />
-              </button>
-              <button
-                className={cn(
-                  "p-1.5 transition-colors",
-                  effectiveView === "org" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
-                )}
-                onClick={() => setView("org")}
-              >
-                <GitBranch className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          )}
-          <Button size="sm" variant="outline" onClick={openNewAgent}>
-            <Plus className="h-3.5 w-3.5 mr-1.5" />
-            New Agent
-          </Button>
         </div>
       </div>
 
       {filtered.length > 0 && (
-        <p className="text-xs text-muted-foreground">{filtered.length} agent{filtered.length !== 1 ? "s" : ""}</p>
+        <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">{filtered.length} agent{filtered.length !== 1 ? "s" : ""}</p>
       )}
 
       {error && <p className="text-sm text-destructive">{error.message}</p>}
@@ -220,7 +238,7 @@ export function Agents() {
 
       {/* List view */}
       {effectiveView === "list" && filtered.length > 0 && (
-        <div className="border border-border">
+        <div className="page-frame overflow-hidden rounded-[1.3rem]">
           {filtered.map((agent) => {
             return (
               <EntityRow

@@ -29,7 +29,7 @@ export function Projects() {
   });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Hexagon} message="Select a company to view projects." />;
+    return <EmptyState icon={Hexagon} message="Select a system to view projects." />;
   }
 
   if (isLoading) {
@@ -38,8 +38,27 @@ export function Projects() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-end">
-        <Button size="sm" variant="outline" onClick={openNewProject}>
+      <section className="command-card rounded-[1.6rem] px-5 py-5 sm:px-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <p className="section-kicker">Project ledger</p>
+            <h2 className="editorial-title mt-3 text-[2.3rem] leading-none text-foreground">Projects and execution tracks</h2>
+            <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">
+              Each project can carry multiple folders and linked repos. Keep the working surface compact and operational.
+            </p>
+          </div>
+          <Button size="sm" variant="outline" onClick={openNewProject} className="rounded-full">
+            <Plus className="mr-1 h-4 w-4" />
+            Add Project
+          </Button>
+        </div>
+      </section>
+
+      <div className="flex items-center justify-between">
+        <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">
+          {projects?.length ?? 0} projects
+        </p>
+        <Button size="sm" variant="outline" onClick={openNewProject} className="rounded-full sm:hidden">
           <Plus className="h-4 w-4 mr-1" />
           Add Project
         </Button>
@@ -57,7 +76,7 @@ export function Projects() {
       )}
 
       {projects && projects.length > 0 && (
-        <div className="border border-border">
+        <div className="page-frame overflow-hidden rounded-[1.3rem]">
           {projects.map((project) => (
             <EntityRow
               key={project.id}
@@ -66,6 +85,11 @@ export function Projects() {
               to={projectUrl(project)}
               trailing={
                 <div className="flex items-center gap-3">
+                  {(project.workspaces?.length ?? 0) > 0 && (
+                    <span className="text-xs text-muted-foreground">
+                      {project.workspaces.length} folder{project.workspaces.length === 1 ? "" : "s"}
+                    </span>
+                  )}
                   {project.targetDate && (
                     <span className="text-xs text-muted-foreground">
                       {formatDate(project.targetDate)}

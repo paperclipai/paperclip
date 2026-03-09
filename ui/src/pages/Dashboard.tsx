@@ -19,7 +19,7 @@ import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard } from "lucide-react";
+import { ArrowRight, Bot, CircleDot, DollarSign, FolderOpen, LayoutDashboard, ShieldCheck } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -81,6 +81,10 @@ export function Dashboard() {
 
   const recentIssues = issues ? getRecentIssues(issues) : [];
   const recentActivity = useMemo(() => (activity ?? []).slice(0, 10), [activity]);
+  const folderCount = useMemo(
+    () => (projects ?? []).reduce((sum, project) => sum + (project.workspaces?.length ?? 0), 0),
+    [projects],
+  );
 
   useEffect(() => {
     for (const timer of activityAnimationTimersRef.current) {
@@ -167,14 +171,14 @@ export function Dashboard() {
       return (
         <EmptyState
           icon={LayoutDashboard}
-          message="Welcome to Paperclip. Set up your first company and agent to get started."
+          message="Welcome to Paperclip. Set up your first system and agent to get started."
           action="Get Started"
           onAction={openOnboarding}
         />
       );
     }
     return (
-      <EmptyState icon={LayoutDashboard} message="Create or select a company to view the dashboard." />
+      <EmptyState icon={LayoutDashboard} message="Create or select a system to view the dashboard." />
     );
   }
 
@@ -189,27 +193,86 @@ export function Dashboard() {
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       {hasNoAgents && (
-        <div className="flex items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 dark:border-amber-500/25 dark:bg-amber-950/60">
+        <div className="page-frame flex items-center justify-between gap-3 rounded-[1.2rem] px-4 py-3">
           <div className="flex items-center gap-2.5">
-            <Bot className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />
-            <p className="text-sm text-amber-900 dark:text-amber-100">
+            <Bot className="h-4 w-4 shrink-0 text-[var(--surface-highlight)]" />
+            <p className="text-sm text-foreground">
               You have no agents.
             </p>
           </div>
           <button
             onClick={() => openOnboarding({ initialStep: 2, companyId: selectedCompanyId! })}
-            className="text-sm font-medium text-amber-700 hover:text-amber-900 dark:text-amber-300 dark:hover:text-amber-100 underline underline-offset-2 shrink-0"
+            className="shrink-0 text-sm font-medium text-foreground underline underline-offset-2"
           >
             Create one here
           </button>
         </div>
       )}
 
-      <ActiveAgentsPanel companyId={selectedCompanyId!} />
-
       {data && (
         <>
-          <div className="grid grid-cols-2 xl:grid-cols-4 gap-1 sm:gap-2">
+          <section className="command-card rounded-[1.8rem] px-5 py-5 sm:px-6 sm:py-6">
+            <div className="grid gap-5 xl:grid-cols-[1.25fr_0.95fr]">
+              <div>
+                <p className="section-kicker">System overview</p>
+                <h2 className="editorial-title mt-3 text-[2.4rem] leading-none text-foreground sm:text-[3.4rem]">
+                  Agents, projects, and folders on one operational board.
+                </h2>
+                <p className="mt-4 max-w-2xl text-sm leading-6 text-muted-foreground">
+                  Paperclip should behave like a control surface, not a stack of generic lists. Start from the live fleet, move into active work, then drop into folders and approvals.
+                </p>
+
+                <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                  <CommandLink
+                    to="/agents/all"
+                    label="Open fleet"
+                    detail={`${data.agents.running} running · ${data.agents.active} active`}
+                  />
+                  <CommandLink
+                    to="/projects"
+                    label="Review projects"
+                    detail={`${projects?.length ?? 0} tracked · ${folderCount} folders`}
+                  />
+                  <CommandLink
+                    to="/folders"
+                    label="Inspect folders"
+                    detail="Local paths and linked repos"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <HeroStat
+                  icon={Bot}
+                  label="Live agents"
+                  value={data.agents.active + data.agents.running}
+                  detail={`${data.agents.paused} paused · ${data.agents.error} error`}
+                />
+                <HeroStat
+                  icon={CircleDot}
+                  label="Tasks in motion"
+                  value={data.tasks.inProgress}
+                  detail={`${data.tasks.open} open · ${data.tasks.blocked} blocked`}
+                />
+                <HeroStat
+                  icon={FolderOpen}
+                  label="Linked folders"
+                  value={folderCount}
+                  detail={`${projects?.length ?? 0} projects`}
+                />
+                <HeroStat
+                  icon={ShieldCheck}
+                  label="Approvals waiting"
+                  value={data.pendingApprovals}
+                  detail={`${data.staleTasks} stale tasks`}
+                />
+              </div>
+            </div>
+          </section>
+
+          <ActiveAgentsPanel companyId={selectedCompanyId!} />
+
+          <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
             <MetricCard
               icon={Bot}
               value={data.agents.active + data.agents.running + data.agents.paused + data.agents.error}
@@ -261,7 +324,7 @@ export function Dashboard() {
             />
           </div>
 
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
             <ChartCard title="Run Activity" subtitle="Last 14 days">
               <RunActivityChart runs={runs ?? []} />
             </ChartCard>
@@ -276,14 +339,14 @@ export function Dashboard() {
             </ChartCard>
           </div>
 
-          <div className="grid md:grid-cols-2 gap-4">
+          <div className="grid gap-4 md:grid-cols-2">
             {/* Recent Activity */}
             {recentActivity.length > 0 && (
-              <div className="min-w-0">
-                <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+              <div className="command-card-soft min-w-0 rounded-[1.4rem] p-4">
+                <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
                   Recent Activity
                 </h3>
-                <div className="border border-border divide-y divide-border overflow-hidden">
+                <div className="overflow-hidden rounded-[1rem] border border-border divide-y divide-border bg-background/40">
                   {recentActivity.map((event) => (
                     <ActivityRow
                       key={event.id}
@@ -299,16 +362,16 @@ export function Dashboard() {
             )}
 
             {/* Recent Tasks */}
-            <div className="min-w-0">
-              <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+            <div className="command-card-soft min-w-0 rounded-[1.4rem] p-4">
+              <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
                 Recent Tasks
               </h3>
               {recentIssues.length === 0 ? (
-                <div className="border border-border p-4">
+                <div className="rounded-[1rem] border border-border bg-background/40 p-4">
                   <p className="text-sm text-muted-foreground">No tasks yet.</p>
                 </div>
               ) : (
-                <div className="border border-border divide-y divide-border overflow-hidden">
+                <div className="overflow-hidden rounded-[1rem] border border-border divide-y divide-border bg-background/40">
                   {recentIssues.slice(0, 10).map((issue) => (
                     <Link
                       key={issue.id}
@@ -345,5 +408,47 @@ export function Dashboard() {
         </>
       )}
     </div>
+  );
+}
+
+function HeroStat({
+  icon: Icon,
+  label,
+  value,
+  detail,
+}: {
+  icon: typeof Bot;
+  label: string;
+  value: string | number;
+  detail: string;
+}) {
+  return (
+    <div className="command-metric rounded-[1.25rem] p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">{label}</p>
+          <p className="mt-2 text-3xl font-semibold tracking-tight text-foreground">{value}</p>
+          <p className="mt-2 text-xs leading-5 text-muted-foreground">{detail}</p>
+        </div>
+        <div className="rounded-full border border-border bg-background/55 p-2">
+          <Icon className="h-4 w-4 text-muted-foreground" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CommandLink({ to, label, detail }: { to: string; label: string; detail: string }) {
+  return (
+    <Link
+      to={to}
+      className="command-metric flex items-center justify-between rounded-[1.1rem] px-4 py-3 no-underline text-inherit transition-all hover:-translate-y-0.5 hover:bg-accent/55"
+    >
+      <div>
+        <p className="text-sm font-semibold text-foreground">{label}</p>
+        <p className="mt-1 text-xs text-muted-foreground">{detail}</p>
+      </div>
+      <ArrowRight className="h-4 w-4 text-muted-foreground" />
+    </Link>
   );
 }

@@ -261,10 +261,11 @@ export function CompanyRail() {
   );
 
   return (
-    <div className="flex flex-col items-center w-[72px] shrink-0 h-full bg-background border-r border-border">
-      {/* Paperclip icon - aligned with top sections (implied line, no visible border) */}
-      <div className="flex items-center justify-center h-12 w-full shrink-0">
-        <Paperclip className="h-5 w-5 text-foreground" />
+    <div className="sidebar-surface flex h-full w-[72px] shrink-0 flex-col items-center border-r border-border">
+      <div className="flex h-16 w-full shrink-0 items-center justify-center">
+        <div className="rounded-full border border-border bg-background/55 p-2">
+          <Paperclip className="h-4 w-4 text-foreground" />
+        </div>
       </div>
 
       {/* Company list */}
@@ -292,23 +293,21 @@ export function CompanyRail() {
         </DndContext>
       </div>
 
-      {/* Separator before add button */}
-      <div className="w-8 h-px bg-border mx-auto shrink-0" />
+      <div className="mx-auto h-px w-8 shrink-0 bg-border" />
 
-      {/* Add company button */}
       <div className="flex items-center justify-center py-2 shrink-0">
         <Tooltip delayDuration={300}>
           <TooltipTrigger asChild>
             <button
               onClick={() => openOnboarding()}
-              className="flex items-center justify-center w-11 h-11 rounded-[22px] hover:rounded-[14px] border-2 border-dashed border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground transition-[border-color,color,border-radius] duration-150"
-              aria-label="Add company"
+              className="flex h-11 w-11 items-center justify-center rounded-[22px] border-2 border-dashed border-border text-muted-foreground transition-[border-color,color,border-radius] duration-150 hover:rounded-[14px] hover:border-foreground/30 hover:text-foreground"
+              aria-label="Add system"
             >
               <Plus className="h-5 w-5" />
             </button>
           </TooltipTrigger>
           <TooltipContent side="right" sideOffset={8}>
-            <p>Add company</p>
+            <p>Add system</p>
           </TooltipContent>
         </Tooltip>
       </div>

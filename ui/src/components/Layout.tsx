@@ -184,7 +184,7 @@ export function Layout() {
   );
 
   return (
-    <div className="flex h-dvh bg-background text-foreground overflow-hidden pt-[env(safe-area-inset-top)]">
+    <div className="relative z-10 flex h-dvh overflow-hidden bg-transparent text-foreground pt-[env(safe-area-inset-top)]">
       <a
         href="#main-content"
         className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[200] focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:shadow-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -205,7 +205,7 @@ export function Layout() {
       {isMobile ? (
         <div
           className={cn(
-            "fixed inset-y-0 left-0 z-50 flex flex-col overflow-hidden pt-[env(safe-area-inset-top)] transition-transform duration-100 ease-out",
+            "fixed inset-y-0 left-0 z-50 flex flex-col overflow-hidden border-r border-border pt-[env(safe-area-inset-top)] transition-transform duration-100 ease-out sidebar-surface",
             sidebarOpen ? "translate-x-0" : "-translate-x-full"
           )}
         >
@@ -213,7 +213,7 @@ export function Layout() {
             <CompanyRail />
             <Sidebar />
           </div>
-          <div className="border-t border-r border-border px-3 py-2 bg-background">
+          <div className="border-t border-border px-3 py-2">
             <div className="flex items-center gap-1">
               <SidebarNavItem
                 to="/docs"
@@ -236,7 +236,7 @@ export function Layout() {
           </div>
         </div>
       ) : (
-        <div className="flex flex-col shrink-0 h-full">
+        <div className="sidebar-surface flex h-full shrink-0 border-r border-border">
           <div className="flex flex-1 min-h-0">
             <CompanyRail />
             <div
@@ -248,7 +248,7 @@ export function Layout() {
               <Sidebar />
             </div>
           </div>
-          <div className="border-t border-r border-border px-3 py-2">
+          <div className="border-t border-border px-3 py-2">
             <div className="flex items-center gap-1">
               <SidebarNavItem
                 to="/docs"
@@ -273,13 +273,16 @@ export function Layout() {
       )}
 
       {/* Main content */}
-      <div className="flex-1 flex flex-col min-w-0 h-full">
+      <div className="flex min-w-0 flex-1 flex-col h-full">
         <BreadcrumbBar />
         <div className="flex flex-1 min-h-0">
           <main
             id="main-content"
             tabIndex={-1}
-            className={cn("flex-1 overflow-auto p-4 md:p-6", isMobile && "pb-[calc(5rem+env(safe-area-inset-bottom))]")}
+            className={cn(
+              "flex-1 overflow-auto px-4 py-4 md:px-6 md:py-6 lg:px-8",
+              isMobile && "pb-[calc(5rem+env(safe-area-inset-bottom))]"
+            )}
             onScroll={handleMainScroll}
           >
             <Outlet />

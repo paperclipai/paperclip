@@ -35,10 +35,10 @@ export function SidebarNavItem({
       onClick={() => { if (isMobile) setSidebarOpen(false); }}
       className={({ isActive }) =>
         cn(
-          "flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors",
+          "flex items-center gap-2.5 rounded-[0.95rem] px-3 py-2.5 text-[13px] font-medium transition-all",
           isActive
-            ? "bg-accent text-foreground"
-            : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
+            ? "bg-primary text-primary-foreground shadow-[0_12px_30px_rgba(22,60,51,0.18)]"
+            : "text-foreground/80 hover:bg-accent/65 hover:text-foreground",
           className,
         )
       }
@@ -56,7 +56,7 @@ export function SidebarNavItem({
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
             <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
           </span>
-          <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">{liveCount} live</span>
+          <span className="text-[11px] font-medium text-blue-600 dark:text-blue-300">{liveCount} live</span>
         </span>
       )}
       {badge != null && badge > 0 && (

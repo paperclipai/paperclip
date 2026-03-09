@@ -163,7 +163,7 @@ export function ProjectProperties({ project, onUpdate }: ProjectPropertiesProps)
   const deriveWorkspaceNameFromPath = (value: string) => {
     const normalized = value.trim().replace(/[\\/]+$/, "");
     const segments = normalized.split(/[\\/]/).filter(Boolean);
-    return segments[segments.length - 1] ?? "Local folder";
+    return segments[segments.length - 1] ?? "Folder";
   };
 
   const deriveWorkspaceNameFromRepo = (value: string) => {
@@ -194,7 +194,7 @@ export function ProjectProperties({ project, onUpdate }: ProjectPropertiesProps)
   const submitLocalWorkspace = () => {
     const cwd = workspaceCwd.trim();
     if (!isAbsolutePath(cwd)) {
-      setWorkspaceError("Local folder must be a full absolute path.");
+      setWorkspaceError("Folder path must be a full absolute path.");
       return;
     }
     setWorkspaceError(null);
@@ -207,7 +207,7 @@ export function ProjectProperties({ project, onUpdate }: ProjectPropertiesProps)
   const submitRepoWorkspace = () => {
     const repoUrl = workspaceRepoUrl.trim();
     if (!isGitHubRepoUrl(repoUrl)) {
-      setWorkspaceError("Repo workspace must use a valid GitHub repo URL.");
+      setWorkspaceError("Linked repo must use a valid GitHub URL.");
       return;
     }
     setWorkspaceError(null);
@@ -221,8 +221,8 @@ export function ProjectProperties({ project, onUpdate }: ProjectPropertiesProps)
   const clearLocalWorkspace = (workspace: Project["workspaces"][number]) => {
     const confirmed = window.confirm(
       workspace.repoUrl
-        ? "Clear local folder from this workspace?"
-        : "Delete this workspace local folder?",
+        ? "Clear the local folder path from this folder?"
+        : "Delete this folder path?",
     );
     if (!confirmed) return;
     if (workspace.repoUrl) {
@@ -239,8 +239,8 @@ export function ProjectProperties({ project, onUpdate }: ProjectPropertiesProps)
     const hasLocalFolder = Boolean(workspace.cwd && workspace.cwd !== REPO_ONLY_CWD_SENTINEL);
     const confirmed = window.confirm(
       hasLocalFolder
-        ? "Clear GitHub repo from this workspace?"
-        : "Delete this workspace repo?",
+        ? "Clear the GitHub repo from this folder?"
+        : "Delete this linked repo?",
     );
     if (!confirmed) return;
     if (hasLocalFolder) {
@@ -348,7 +348,7 @@ export function ProjectProperties({ project, onUpdate }: ProjectPropertiesProps)
       <div className="space-y-1">
         <div className="py-1.5 space-y-2">
           <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <span>Workspaces</span>
+            <span>Folders</span>
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
@@ -360,13 +360,13 @@ export function ProjectProperties({ project, onUpdate }: ProjectPropertiesProps)
                 </button>
               </TooltipTrigger>
               <TooltipContent side="top">
-                Workspaces give your agents hints about where the work is
+                Folders tell your agents where this project lives
               </TooltipContent>
             </Tooltip>
           </div>
           {workspaces.length === 0 ? (
             <p className="rounded-md border border-dashed border-border px-3 py-2 text-sm text-muted-foreground">
-              No workspace configured.
+              No folders linked.
             </p>
           ) : (
             <div className="space-y-1">
@@ -379,7 +379,7 @@ export function ProjectProperties({ project, onUpdate }: ProjectPropertiesProps)
                         variant="ghost"
                         size="icon-xs"
                         onClick={() => clearLocalWorkspace(workspace)}
-                        aria-label="Delete local folder"
+                        aria-label="Delete folder path"
                       >
                         <Trash2 className="h-3 w-3" />
                       </Button>
@@ -401,7 +401,7 @@ export function ProjectProperties({ project, onUpdate }: ProjectPropertiesProps)
                         variant="ghost"
                         size="icon-xs"
                         onClick={() => clearRepoWorkspace(workspace)}
-                        aria-label="Delete workspace repo"
+                        aria-label="Delete linked repo"
                       >
                         <Trash2 className="h-3 w-3" />
                       </Button>
@@ -421,7 +421,7 @@ export function ProjectProperties({ project, onUpdate }: ProjectPropertiesProps)
                 setWorkspaceError(null);
               }}
             >
-              Add workspace local folder
+              Add folder path
             </Button>
             <Button
               variant="outline"
@@ -432,7 +432,7 @@ export function ProjectProperties({ project, onUpdate }: ProjectPropertiesProps)
                 setWorkspaceError(null);
               }}
             >
-              Add workspace repo
+              Link repo
             </Button>
           </div>
           {workspaceMode === "local" && (
@@ -442,7 +442,7 @@ export function ProjectProperties({ project, onUpdate }: ProjectPropertiesProps)
                   className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
                   value={workspaceCwd}
                   onChange={(e) => setWorkspaceCwd(e.target.value)}
-                  placeholder="/absolute/path/to/workspace"
+                  placeholder="/absolute/path/to/folder"
                 />
                 <ChoosePathButton />
               </div>
@@ -508,13 +508,13 @@ export function ProjectProperties({ project, onUpdate }: ProjectPropertiesProps)
             <p className="text-xs text-destructive">{workspaceError}</p>
           )}
           {createWorkspace.isError && (
-            <p className="text-xs text-destructive">Failed to save workspace.</p>
+            <p className="text-xs text-destructive">Failed to save folder.</p>
           )}
           {removeWorkspace.isError && (
-            <p className="text-xs text-destructive">Failed to delete workspace.</p>
+            <p className="text-xs text-destructive">Failed to delete folder.</p>
           )}
           {updateWorkspace.isError && (
-            <p className="text-xs text-destructive">Failed to update workspace.</p>
+            <p className="text-xs text-destructive">Failed to update folder.</p>
           )}
         </div>
 

@@ -15,20 +15,22 @@ export function MetricCard({ icon: Icon, value, label, description, to, onClick 
   const isClickable = !!(to || onClick);
 
   const inner = (
-    <div className={`h-full px-4 py-4 sm:px-5 sm:py-5 rounded-lg transition-colors${isClickable ? " hover:bg-accent/50 cursor-pointer" : ""}`}>
+    <div className={`command-metric h-full rounded-[1.25rem] px-4 py-4 sm:px-5 sm:py-5 transition-all${isClickable ? " cursor-pointer hover:-translate-y-0.5 hover:bg-accent/55" : ""}`}>
       <div className="flex items-start justify-between gap-3">
         <div className="flex-1 min-w-0">
-          <p className="text-2xl sm:text-3xl font-semibold tracking-tight">
+          <p className="text-2xl sm:text-3xl font-semibold tracking-tight text-foreground">
             {value}
           </p>
-          <p className="text-xs sm:text-sm font-medium text-muted-foreground mt-1">
+          <p className="mt-1 text-xs sm:text-sm font-medium text-muted-foreground">
             {label}
           </p>
           {description && (
-            <div className="text-xs text-muted-foreground/70 mt-1.5 hidden sm:block">{description}</div>
+            <div className="mt-1.5 hidden text-xs text-muted-foreground/80 sm:block">{description}</div>
           )}
         </div>
-        <Icon className="h-4 w-4 text-muted-foreground/50 shrink-0 mt-1.5" />
+        <div className="rounded-full border border-border bg-background/55 p-2">
+          <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
+        </div>
       </div>
     </div>
   );

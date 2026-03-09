@@ -111,7 +111,7 @@ export function NewProjectDialog() {
   const deriveWorkspaceNameFromPath = (value: string) => {
     const normalized = value.trim().replace(/[\\/]+$/, "");
     const segments = normalized.split(/[\\/]/).filter(Boolean);
-    return segments[segments.length - 1] ?? "Local folder";
+    return segments[segments.length - 1] ?? "Folder";
   };
 
   const deriveWorkspaceNameFromRepo = (value: string) => {
@@ -138,11 +138,11 @@ export function NewProjectDialog() {
     const repoUrl = workspaceRepoUrl.trim();
 
     if (localRequired && !isAbsolutePath(localPath)) {
-      setWorkspaceError("Local folder must be a full absolute path.");
+      setWorkspaceError("Folder path must be a full absolute path.");
       return;
     }
     if (repoRequired && !isGitHubRepoUrl(repoUrl)) {
-      setWorkspaceError("Repo workspace must use a valid GitHub repo URL.");
+      setWorkspaceError("Linked repo must use a valid GitHub URL.");
       return;
     }
 
@@ -283,8 +283,8 @@ export function NewProjectDialog() {
 
         <div className="px-4 pb-3 space-y-3 border-t border-border">
           <div className="pt-3">
-            <p className="text-sm font-medium">Where will work be done on this project?</p>
-            <p className="text-xs text-muted-foreground">Add local folder and/or GitHub repo workspace hints.</p>
+            <p className="text-sm font-medium">Where does this project live?</p>
+            <p className="text-xs text-muted-foreground">Add the folder path and/or GitHub repo your agents should use.</p>
           </div>
           <div className="grid gap-2 sm:grid-cols-3">
             <button
@@ -297,9 +297,9 @@ export function NewProjectDialog() {
             >
               <div className="flex items-center gap-2 text-sm font-medium">
                 <FolderOpen className="h-4 w-4" />
-                A local folder
+                A folder
               </div>
-              <p className="mt-1 text-xs text-muted-foreground">Use a full path on this machine.</p>
+              <p className="mt-1 text-xs text-muted-foreground">Use the full absolute path on this machine.</p>
             </button>
             <button
               type="button"
@@ -311,7 +311,7 @@ export function NewProjectDialog() {
             >
               <div className="flex items-center gap-2 text-sm font-medium">
                 <Github className="h-4 w-4" />
-                A github repo
+                A repo
               </div>
               <p className="mt-1 text-xs text-muted-foreground">Paste a GitHub URL.</p>
             </button>
@@ -339,7 +339,7 @@ export function NewProjectDialog() {
                   className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
                   value={workspaceLocalPath}
                   onChange={(e) => setWorkspaceLocalPath(e.target.value)}
-                  placeholder="/absolute/path/to/workspace"
+                  placeholder="/absolute/path/to/folder"
                 />
                 <ChoosePathButton />
               </div>

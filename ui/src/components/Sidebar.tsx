@@ -2,6 +2,7 @@ import {
   Inbox,
   CircleDot,
   Target,
+  FolderOpen,
   LayoutDashboard,
   DollarSign,
   History,
@@ -21,6 +22,7 @@ import { sidebarBadgesApi } from "../api/sidebarBadges";
 import { heartbeatsApi } from "../api/heartbeats";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
+import { CompanySwitcher } from "./CompanySwitcher";
 
 export function Sidebar() {
   const { openNewIssue } = useDialog();
@@ -43,37 +45,49 @@ export function Sidebar() {
   }
 
   return (
-    <aside className="w-60 h-full min-h-0 border-r border-border bg-background flex flex-col">
-      {/* Top bar: Company name (bold) + Search — aligned with top sections (no visible border) */}
-      <div className="flex items-center gap-1 px-3 h-12 shrink-0">
-        {selectedCompany?.brandColor && (
-          <div
-            className="w-4 h-4 rounded-sm shrink-0 ml-1"
-            style={{ backgroundColor: selectedCompany.brandColor }}
-          />
-        )}
-        <span className="flex-1 text-sm font-bold text-foreground truncate pl-1">
-          {selectedCompany?.name ?? "Select company"}
-        </span>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          className="text-muted-foreground shrink-0"
-          onClick={openSearch}
-        >
-          <Search className="h-4 w-4" />
-        </Button>
+    <aside className="sidebar-surface flex h-full min-h-0 w-64 flex-col">
+      <div className="shrink-0 border-b border-border px-3 pb-3 pt-4">
+        <div className="mb-3 flex items-center justify-between gap-3 px-1">
+          <div className="min-w-0">
+            <p className="section-kicker">Paperclip OS</p>
+            <p className="editorial-title truncate text-[1.55rem] leading-none text-foreground">
+              Command center
+            </p>
+          </div>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="shrink-0 rounded-full text-muted-foreground hover:bg-accent/70"
+            onClick={openSearch}
+          >
+            <Search className="h-4 w-4" />
+          </Button>
+        </div>
+
+        <div className="page-frame rounded-[1.1rem] p-2">
+          <CompanySwitcher />
+          {selectedCompany?.brandColor && (
+            <div className="mt-2 flex items-center gap-2 px-2">
+              <span
+                className="h-2.5 w-2.5 rounded-full border border-white/20"
+                style={{ backgroundColor: selectedCompany.brandColor }}
+              />
+              <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+                Active system
+              </span>
+            </div>
+          )}
+        </div>
       </div>
 
       <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide flex flex-col gap-4 px-3 py-2">
         <div className="flex flex-col gap-0.5">
-          {/* New Issue button aligned with nav items */}
           <button
             onClick={() => openNewIssue()}
-            className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
+            className="command-card flex items-center gap-2.5 rounded-[1rem] px-3 py-3 text-[13px] font-semibold text-foreground transition-colors hover:bg-accent/70"
           >
             <SquarePen className="h-4 w-4 shrink-0" />
-            <span className="truncate">New Issue</span>
+            <span className="truncate">Open new task</span>
           </button>
           <SidebarNavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
           <SidebarNavItem
@@ -89,13 +103,14 @@ export function Sidebar() {
         <SidebarSection label="Work">
           <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} />
           <SidebarNavItem to="/goals" label="Goals" icon={Target} />
+          <SidebarNavItem to="/folders" label="Folders" icon={FolderOpen} />
         </SidebarSection>
 
         <SidebarProjects />
 
         <SidebarAgents />
 
-        <SidebarSection label="Company">
+        <SidebarSection label="System">
           <SidebarNavItem to="/org" label="Org" icon={Network} />
           <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
           <SidebarNavItem to="/activity" label="Activity" icon={History} />
