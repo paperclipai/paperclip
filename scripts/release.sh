@@ -435,7 +435,7 @@ if [ "$dry_run" = true ]; then
 else
   if [ "$canary" = true ]; then
     info "==> Step 6/7: Publishing canary to npm..."
-    npx changeset publish --tag canary
+    npx changeset publish
     info "  ✓ Published ${TARGET_PUBLISH_VERSION} under dist-tag canary"
   else
     info "==> Step 6/7: Publishing stable release to npm..."
