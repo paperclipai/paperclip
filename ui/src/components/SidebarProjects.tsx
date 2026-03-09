@@ -20,6 +20,8 @@ import { projectsApi } from "../api/projects";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, projectRouteRef } from "../lib/utils";
 import { useProjectOrder } from "../hooks/useProjectOrder";
+import { PluginSlotOutlet } from "@/plugins/slots";
+import { PluginLauncherOutlet } from "@/plugins/launchers";
 import {
   Collapsible,
   CollapsibleContent,
@@ -32,11 +34,15 @@ function SortableProjectItem({
   isMobile,
   project,
   setSidebarOpen,
+  companyId,
+  companyPrefix,
 }: {
   activeProjectRef: string | null;
   isMobile: boolean;
   project: Project;
   setSidebarOpen: (open: boolean) => void;
+  companyId: string | null;
+  companyPrefix: string | null;
 }) {
   const {
     attributes,
@@ -79,13 +85,39 @@ function SortableProjectItem({
         />
         <span className="flex-1 truncate">{project.name}</span>
       </NavLink>
+      <div className="pl-6" role="group" aria-label={`Plugin links for ${project.name}`}>
+        <PluginLauncherOutlet
+          placementZones={["projectSidebarItem"]}
+          entityType="project"
+          context={{
+            companyId,
+            companyPrefix,
+            entityId: project.id,
+            entityType: "project",
+            projectId: project.id,
+            projectRef: routeRef,
+          }}
+        />
+        <PluginSlotOutlet
+          slotTypes={["projectSidebarItem"]}
+          entityType="project"
+          context={{
+            companyId,
+            companyPrefix,
+            entityId: project.id,
+            entityType: "project",
+            projectRef: routeRef,
+          }}
+        />
+      </div>
     </div>
   );
 }
 
 export function SidebarProjects() {
   const [open, setOpen] = useState(true);
-  const { selectedCompanyId } = useCompany();
+  const { selectedCompanyId, selectedCompany } = useCompany();
+  const companyPrefix = selectedCompany?.issuePrefix ?? null;
   const { openNewProject } = useDialog();
   const { isMobile, setSidebarOpen } = useSidebar();
   const location = useLocation();
@@ -181,6 +213,8 @@ export function SidebarProjects() {
                   isMobile={isMobile}
                   project={project}
                   setSidebarOpen={setSidebarOpen}
+                  companyId={selectedCompanyId}
+                  companyPrefix={companyPrefix}
                 />
               ))}
             </div>

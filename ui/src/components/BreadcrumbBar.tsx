@@ -1,7 +1,10 @@
-import { Link } from "@/lib/router";
+import { Link, useParams } from "@/lib/router";
 import { Menu } from "lucide-react";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
+import { useCompany } from "../context/CompanyContext";
+import { PluginSlotOutlet } from "@/plugins/slots";
+import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { Button } from "@/components/ui/button";
 import {
   Breadcrumb,
@@ -16,6 +19,8 @@ import { Fragment } from "react";
 export function BreadcrumbBar() {
   const { breadcrumbs } = useBreadcrumbs();
   const { toggleSidebar, isMobile } = useSidebar();
+  const { selectedCompanyId } = useCompany();
+  const { companyPrefix } = useParams<{ companyPrefix?: string }>();
 
   if (breadcrumbs.length === 0) return null;
 
@@ -39,6 +44,24 @@ export function BreadcrumbBar() {
         <h1 className="text-sm font-semibold uppercase tracking-wider truncate">
           {breadcrumbs[0].label}
         </h1>
+        <div className="ml-auto flex items-center gap-1">
+          <PluginLauncherOutlet
+            placementZones={["toolbarButton"]}
+            context={{
+              companyId: selectedCompanyId,
+              companyPrefix: companyPrefix ?? null,
+            }}
+            className="flex items-center gap-1"
+          />
+          <PluginSlotOutlet
+            slotTypes={["toolbarButton"]}
+            context={{
+              companyId: selectedCompanyId,
+              companyPrefix: companyPrefix ?? null,
+            }}
+            className="flex items-center gap-1"
+          />
+        </div>
       </div>
     );
   }
@@ -68,6 +91,24 @@ export function BreadcrumbBar() {
           })}
         </BreadcrumbList>
       </Breadcrumb>
+      <div className="ml-auto flex items-center gap-1">
+        <PluginLauncherOutlet
+          placementZones={["toolbarButton"]}
+          context={{
+            companyId: selectedCompanyId,
+            companyPrefix: companyPrefix ?? null,
+          }}
+          className="flex items-center gap-1"
+        />
+        <PluginSlotOutlet
+          slotTypes={["toolbarButton"]}
+          context={{
+            companyId: selectedCompanyId,
+            companyPrefix: companyPrefix ?? null,
+          }}
+          className="flex items-center gap-1"
+        />
+      </div>
     </div>
   );
 }

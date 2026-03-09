@@ -5,10 +5,10 @@ import type { Duplex } from "node:stream";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentApiKeys, companyMemberships, instanceUserRoles } from "@paperclipai/db";
-import type { DeploymentMode } from "@paperclipai/shared";
+import type { DeploymentMode, LiveEvent } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "../middleware/logger.js";
-import { subscribeCompanyLiveEvents } from "../services/live-events.js";
+import { subscribeCompanyLiveEvents, subscribeGlobalLiveEvents } from "../services/live-events.js";
 
 interface WsSocket {
   readyState: number;
@@ -205,10 +205,17 @@ export function setupLiveEventsWebSocketServer(
       return;
     }
 
-    const unsubscribe = subscribeCompanyLiveEvents(context.companyId, (event) => {
+    const sendEvent = (event: LiveEvent) => {
       if (socket.readyState !== WebSocket.OPEN) return;
       socket.send(JSON.stringify(event));
-    });
+    };
+
+    const unsubCompany = subscribeCompanyLiveEvents(context.companyId, sendEvent);
+    // Also subscribe to instance-wide events (e.g. plugin.ui.updated) so all
+    // connected sessions receive plugin lifecycle notifications regardless of
+    // which company they are viewing.
+    const unsubGlobal = subscribeGlobalLiveEvents(sendEvent);
+    const unsubscribe = () => { unsubCompany(); unsubGlobal(); };
 
     cleanupByClient.set(socket, unsubscribe);
     aliveByClient.set(socket, true);

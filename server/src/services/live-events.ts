@@ -34,7 +34,29 @@ export function publishLiveEvent(input: {
   return event;
 }
 
+/**
+ * Publish an instance-wide live event to all connected WS clients regardless
+ * of which company they belong to. Used for plugin lifecycle changes that
+ * affect all sessions (install, uninstall, upgrade, enable, disable).
+ */
+export function publishGlobalLiveEvent(input: {
+  type: LiveEventType;
+  payload?: LiveEventPayload;
+}) {
+  const event = toLiveEvent({ companyId: "*", type: input.type, payload: input.payload });
+  emitter.emit("*", event);
+  return event;
+}
+
 export function subscribeCompanyLiveEvents(companyId: string, listener: LiveEventListener) {
   emitter.on(companyId, listener);
   return () => emitter.off(companyId, listener);
+}
+
+/**
+ * Subscribe to instance-wide events that are not scoped to a specific company.
+ */
+export function subscribeGlobalLiveEvents(listener: LiveEventListener) {
+  emitter.on("*", listener);
+  return () => emitter.off("*", listener);
 }

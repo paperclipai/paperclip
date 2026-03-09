@@ -1,10 +1,16 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { goals } from "@paperclipai/db";
 
 export function goalService(db: Db) {
   return {
-    list: (companyId: string) => db.select().from(goals).where(eq(goals.companyId, companyId)),
+    list: (companyId: string, level?: string, status?: string) => {
+      const conditions = [eq(goals.companyId, companyId)];
+      if (level) conditions.push(eq(goals.level, level));
+      if (status) conditions.push(eq(goals.status, status));
+
+      return db.select().from(goals).where(and(...conditions));
+    },
 
     getById: (id: string) =>
       db
