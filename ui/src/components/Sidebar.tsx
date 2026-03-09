@@ -21,6 +21,8 @@ import { sidebarBadgesApi } from "../api/sidebarBadges";
 import { heartbeatsApi } from "../api/heartbeats";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
+import { PluginSlotOutlet } from "@/plugins/slots";
+import { PluginLauncherOutlet } from "@/plugins/launchers";
 
 export function Sidebar() {
   const { openNewIssue } = useDialog();
@@ -99,8 +101,26 @@ export function Sidebar() {
           <SidebarNavItem to="/org" label="Org" icon={Network} />
           <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
           <SidebarNavItem to="/activity" label="Activity" icon={History} />
-          <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
+          <SidebarNavItem to="/company/settings" label="Company Settings" icon={Settings} />
         </SidebarSection>
+        <div className="space-y-2">
+          <PluginLauncherOutlet
+            placementZones={["sidebarPanel", "sidebar"]}
+            context={{
+              companyId: selectedCompanyId,
+              companyPrefix: selectedCompany?.issuePrefix ?? null,
+            }}
+            className="space-y-2"
+          />
+          <PluginSlotOutlet
+            slotTypes={["sidebarPanel", "sidebar"]}
+            context={{
+              companyId: selectedCompanyId,
+              companyPrefix: selectedCompany?.issuePrefix ?? null,
+            }}
+            className="space-y-2"
+          />
+        </div>
       </nav>
     </aside>
   );

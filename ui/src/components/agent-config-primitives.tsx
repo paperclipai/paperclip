@@ -95,24 +95,29 @@ export function ToggleField({
   label,
   hint,
   checked,
+  disabled,
   onChange,
 }: {
   label: string;
   hint?: string;
   checked: boolean;
+  disabled?: boolean;
   onChange: (v: boolean) => void;
 }) {
   return (
-    <div className="flex items-center justify-between">
+    <div className="flex items-center justify-between gap-2">
       <div className="flex items-center gap-1.5">
         <span className="text-xs text-muted-foreground">{label}</span>
         {hint && <HintIcon text={hint} />}
       </div>
       <button
+        type="button"
         className={cn(
           "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-          checked ? "bg-green-600" : "bg-muted"
+          checked ? "bg-green-600" : "bg-muted",
+          disabled && "cursor-not-allowed opacity-60"
         )}
+        disabled={disabled}
         onClick={() => onChange(!checked)}
       >
         <span

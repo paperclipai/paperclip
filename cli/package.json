@@ -41,6 +41,7 @@
     "@paperclipai/adapter-pi-local": "workspace:*",
     "@paperclipai/adapter-openclaw-gateway": "workspace:*",
     "@paperclipai/adapter-utils": "workspace:*",
+    "@paperclipai/create-paperclip-plugin": "workspace:*",
     "@paperclipai/db": "workspace:*",
     "@paperclipai/server": "workspace:*",
     "@paperclipai/shared": "workspace:*",

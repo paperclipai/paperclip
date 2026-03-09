@@ -23,6 +23,8 @@ import { StatusIcon } from "../components/StatusIcon";
 import { PriorityIcon } from "../components/PriorityIcon";
 import { StatusBadge } from "../components/StatusBadge";
 import { Identity } from "../components/Identity";
+import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
+import { PluginLauncherButton, PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
@@ -304,11 +306,49 @@ export function IssueDetail() {
     return options;
   }, [agents, currentUserId]);
 
+  const slotCompanyId = issue?.companyId ?? null;
+
+  const { slots: taskDetailSlots, errorMessage: taskDetailSlotsError } = usePluginSlots({
+    slotTypes: ["taskDetailView", "detailTab"],
+    entityType: "issue",
+    companyId: slotCompanyId,
+    enabled: !!slotCompanyId,
+  });
+  const { slots: issueContextMenuSlots, errorMessage: contextMenuSlotsError } = usePluginSlots({
+    slotTypes: ["contextMenuItem"],
+    entityType: "issue",
+    companyId: slotCompanyId,
+    enabled: !!slotCompanyId,
+  });
+  const {
+    launchers: issueContextLaunchers,
+    contributionsByPluginId: issueLauncherContributions,
+    errorMessage: contextLauncherError,
+  } = usePluginLaunchers({
+    placementZones: ["contextMenuItem"],
+    entityType: "issue",
+    companyId: slotCompanyId,
+    enabled: !!slotCompanyId,
+  });
+  const pluginSlotError = taskDetailSlotsError ?? contextMenuSlotsError ?? contextLauncherError;
+
   const currentAssigneeValue = useMemo(() => {
     if (issue?.assigneeAgentId) return `agent:${issue.assigneeAgentId}`;
     if (issue?.assigneeUserId) return `user:${issue.assigneeUserId}`;
     return "";
   }, [issue?.assigneeAgentId, issue?.assigneeUserId]);
+
+  useEffect(() => {
+    const availableTabs = new Set<string>([
+      "comments",
+      "subissues",
+      "activity",
+      ...taskDetailSlots.map((slot) => `plugin:${slot.pluginKey}:${slot.id}`),
+    ]);
+    if (!availableTabs.has(detailTab)) {
+      setDetailTab("comments");
+    }
+  }, [detailTab, taskDetailSlots]);
 
   const commentsWithRunMeta = useMemo(() => {
     const runMetaByCommentId = new Map<string, { runId: string; runAgentId: string | null }>();
@@ -645,6 +685,39 @@ export function IssueDetail() {
                 <EyeOff className="h-3 w-3" />
                 Hide this Issue
               </button>
+              {(issueContextLaunchers.length > 0 || issueContextMenuSlots.length > 0) && (
+                <div className="mt-1 border-t border-border pt-1 space-y-1">
+                  {issueContextLaunchers.map((launcher) => {
+                    const contribution = issueLauncherContributions.get(launcher.pluginId);
+                    if (!contribution) return null;
+
+                    return (
+                      <PluginLauncherButton
+                        key={`${launcher.pluginKey}:${launcher.id}`}
+                        launcher={launcher}
+                        contribution={contribution}
+                        context={{
+                          companyId: issue.companyId,
+                          entityId: issue.id,
+                          entityType: "issue",
+                        }}
+                        onActivated={() => setMoreOpen(false)}
+                      />
+                    );
+                  })}
+                  {issueContextMenuSlots.map((slot) => (
+                    <PluginSlotMount
+                      key={`${slot.pluginKey}:${slot.id}`}
+                      slot={slot}
+                      context={{
+                        companyId: issue.companyId,
+                        entityId: issue.id,
+                        entityType: "issue",
+                      }}
+                    />
+                  ))}
+                </div>
+              )}
             </PopoverContent>
             </Popover>
           </div>
@@ -747,20 +820,46 @@ export function IssueDetail() {
       <Separator />
 
       <Tabs value={detailTab} onValueChange={setDetailTab} className="space-y-3">
-        <TabsList variant="line" className="w-full justify-start gap-1">
-          <TabsTrigger value="comments" className="gap-1.5">
-            <MessageSquare className="h-3.5 w-3.5" />
-            Comments
-          </TabsTrigger>
-          <TabsTrigger value="subissues" className="gap-1.5">
-            <ListTree className="h-3.5 w-3.5" />
-            Sub-issues
-          </TabsTrigger>
-          <TabsTrigger value="activity" className="gap-1.5">
-            <ActivityIcon className="h-3.5 w-3.5" />
-            Activity
-          </TabsTrigger>
-        </TabsList>
+        {pluginSlotError && (
+          <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+            Plugin extensions unavailable: {pluginSlotError}
+          </div>
+        )}
+        <div className="flex items-center gap-2 border-b border-border">
+          <TabsList variant="line" className="min-w-0 justify-start gap-1 overflow-x-auto scrollbar-auto-hide">
+            <TabsTrigger value="comments" className="gap-1.5">
+              <MessageSquare className="h-3.5 w-3.5" />
+              Comments
+            </TabsTrigger>
+            <TabsTrigger value="subissues" className="gap-1.5">
+              <ListTree className="h-3.5 w-3.5" />
+              Sub-issues
+            </TabsTrigger>
+            <TabsTrigger value="activity" className="gap-1.5">
+              <ActivityIcon className="h-3.5 w-3.5" />
+              Activity
+            </TabsTrigger>
+            {taskDetailSlots.map((slot) => (
+              <TabsTrigger
+                key={`${slot.pluginKey}:${slot.id}`}
+                value={`plugin:${slot.pluginKey}:${slot.id}`}
+                className="gap-1.5"
+              >
+                {slot.displayName}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+          <PluginLauncherOutlet
+            placementZones={["taskDetailView", "detailTab"]}
+            entityType="issue"
+            context={{
+              companyId: issue.companyId,
+              entityId: issue.id,
+              entityType: "issue",
+            }}
+            className="ml-auto flex items-center gap-1 shrink-0 py-1"
+          />
+        </div>
 
         <TabsContent value="comments">
           <CommentThread
@@ -837,6 +936,22 @@ export function IssueDetail() {
             </div>
           )}
         </TabsContent>
+        {taskDetailSlots.map((slot) => (
+          <TabsContent
+            key={`${slot.pluginKey}:${slot.id}`}
+            value={`plugin:${slot.pluginKey}:${slot.id}`}
+          >
+            <PluginSlotMount
+              slot={slot}
+              context={{
+                companyId: selectedCompanyId,
+                entityId: issue.id,
+                entityType: "issue",
+              }}
+              missingBehavior="placeholder"
+            />
+          </TabsContent>
+        ))}
       </Tabs>
 
       {linkedApprovals && linkedApprovals.length > 0 && (

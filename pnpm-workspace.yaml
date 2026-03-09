@@ -1,6 +1,7 @@
 packages:
   - packages/*
   - packages/adapters/*
+  - packages/plugins/*
   - server
   - ui
   - cli
