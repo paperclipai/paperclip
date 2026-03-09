@@ -274,7 +274,7 @@ export function OnboardingWizard() {
       command,
       args,
       url,
-      dangerouslySkipPermissions: adapterType === "claude_local",
+      dangerouslySkipPermissions: false,
       dangerouslyBypassSandbox:
         adapterType === "codex_local"
           ? DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX
@@ -399,9 +399,9 @@ export function OnboardingWizard() {
         adapterConfig: buildAdapterConfig(),
         runtimeConfig: {
           heartbeat: {
-            enabled: true,
+            enabled: false,
             intervalSec: 3600,
-            wakeOnDemand: true,
+            wakeOnDemand: false,
             cooldownSec: 10,
             maxConcurrentRuns: 1
           }
@@ -1034,10 +1034,11 @@ export function OnboardingWizard() {
                       <Rocket className="h-5 w-5 text-muted-foreground" />
                     </div>
                     <div>
-                      <h3 className="font-medium">Ready to launch</h3>
+                      <h3 className="font-medium">Almost ready</h3>
                       <p className="text-xs text-muted-foreground">
-                        Everything is set up. Your assigned task already woke
-                        the agent, so you can jump straight to the issue.
+                        Before your CEO starts working, configure which tools
+                        it's allowed to use. Then enable the heartbeat to begin
+                        execution.
                       </p>
                     </div>
                   </div>
@@ -1070,10 +1071,20 @@ export function OnboardingWizard() {
                         <p className="text-sm font-medium truncate">
                           {taskTitle}
                         </p>
-                        <p className="text-xs text-muted-foreground">Task</p>
+                        <p className="text-xs text-muted-foreground">
+                          Task assigned — waiting for tool config
+                        </p>
                       </div>
                       <Check className="h-4 w-4 text-green-500 shrink-0" />
                     </div>
+                  </div>
+                  <div className="rounded-md border border-border bg-muted/30 px-3 py-2.5">
+                    <p className="text-xs text-muted-foreground leading-relaxed">
+                      <span className="font-medium text-foreground">Next steps: </span>
+                      Open the agent settings to select allowed tools under
+                      Advanced → Tool access. Once configured, enable the
+                      heartbeat or manually trigger a run to start execution.
+                    </p>
                   </div>
                 </div>
               )}
@@ -1146,14 +1157,22 @@ export function OnboardingWizard() {
                     </Button>
                   )}
                   {step === 4 && (
-                    <Button size="sm" disabled={loading} onClick={handleLaunch}>
-                      {loading ? (
-                        <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-                      ) : (
-                        <ArrowRight className="h-3.5 w-3.5 mr-1" />
-                      )}
-                      {loading ? "Opening..." : "Open Issue"}
-                    </Button>
+                    <>
+                      <Button size="sm" disabled={loading} onClick={() => {
+                        const agentId = createdAgentId;
+                        const prefix = createdCompanyPrefix;
+                        reset();
+                        closeOnboarding();
+                        if (prefix && agentId) {
+                          navigate(`/${prefix}/agents/${agentId}`);
+                        } else {
+                          navigate("/agents");
+                        }
+                      }}>
+                        <Bot className="h-3.5 w-3.5 mr-1" />
+                        Configure Agent
+                      </Button>
+                    </>
                   )}
                 </div>
               </div>

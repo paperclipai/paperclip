@@ -13,6 +13,8 @@ export const defaultCreateValues: CreateConfigValues = {
   dangerouslyBypassSandbox: false,
   command: "",
   args: "",
+  allowedTools: "",
+  disallowedTools: "",
   extraArgs: "",
   envVars: "",
   envBindings: {},
