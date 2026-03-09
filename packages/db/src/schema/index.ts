@@ -23,6 +23,8 @@ export { issueComments } from "./issue_comments.js";
 export { issueReadStates } from "./issue_read_states.js";
 export { assets } from "./assets.js";
 export { issueAttachments } from "./issue_attachments.js";
+export { knowledgeItems } from "./knowledge_items.js";
+export { issueKnowledgeItems } from "./issue_knowledge_items.js";
 export { heartbeatRuns } from "./heartbeat_runs.js";
 export { heartbeatRunEvents } from "./heartbeat_run_events.js";
 export { costEvents } from "./cost_events.js";

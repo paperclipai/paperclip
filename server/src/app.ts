@@ -23,6 +23,7 @@ import { dashboardRoutes } from "./routes/dashboard.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { llmRoutes } from "./routes/llms.js";
 import { assetRoutes } from "./routes/assets.js";
+import { knowledgeRoutes } from "./routes/knowledge.js";
 import { accessRoutes } from "./routes/access.js";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 
@@ -103,6 +104,7 @@ export async function createApp(
   api.use("/companies", companyRoutes(db));
   api.use(agentRoutes(db));
   api.use(assetRoutes(db, opts.storageService));
+  api.use(knowledgeRoutes(db));
   api.use(projectRoutes(db));
   api.use(issueRoutes(db, opts.storageService));
   api.use(goalRoutes(db));

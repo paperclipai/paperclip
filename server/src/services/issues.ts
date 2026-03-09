@@ -28,6 +28,8 @@ function assertTransition(from: string, to: string) {
   }
 }
 
+type DbLike = Pick<Db, "select" | "insert" | "update" | "delete">;
+
 function applyStatusSideEffects(
   status: string | undefined,
   patch: Partial<typeof issues.$inferInsert>,
@@ -349,6 +351,40 @@ export function issueService(db: Db) {
     }
   }
 
+  async function createIssueInTx(
+    tx: DbLike,
+    companyId: string,
+    issueData: Omit<typeof issues.$inferInsert, "companyId">,
+    inputLabelIds?: string[],
+  ) {
+    const [company] = await tx
+      .update(companies)
+      .set({ issueCounter: sql`${companies.issueCounter} + 1` })
+      .where(eq(companies.id, companyId))
+      .returning({ issueCounter: companies.issueCounter, issuePrefix: companies.issuePrefix });
+
+    const issueNumber = company.issueCounter;
+    const identifier = `${company.issuePrefix}-${issueNumber}`;
+
+    const values = { ...issueData, companyId, issueNumber, identifier } as typeof issues.$inferInsert;
+    if (values.status === "in_progress" && !values.startedAt) {
+      values.startedAt = new Date();
+    }
+    if (values.status === "done") {
+      values.completedAt = new Date();
+    }
+    if (values.status === "cancelled") {
+      values.cancelledAt = new Date();
+    }
+
+    const [issue] = await tx.insert(issues).values(values).returning();
+    if (inputLabelIds) {
+      await syncIssueLabels(issue.id, companyId, inputLabelIds, tx);
+    }
+    const [enriched] = await withIssueLabels(tx, [issue]);
+    return enriched;
+  }
+
   async function syncIssueLabels(
     issueId: string,
     companyId: string,
@@ -634,34 +670,28 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
-      return db.transaction(async (tx) => {
-        const [company] = await tx
-          .update(companies)
-          .set({ issueCounter: sql`${companies.issueCounter} + 1` })
-          .where(eq(companies.id, companyId))
-          .returning({ issueCounter: companies.issueCounter, issuePrefix: companies.issuePrefix });
+      return db.transaction(async (tx) => createIssueInTx(tx, companyId, issueData, inputLabelIds));
+    },
 
-        const issueNumber = company.issueCounter;
-        const identifier = `${company.issuePrefix}-${issueNumber}`;
-
-        const values = { ...issueData, companyId, issueNumber, identifier } as typeof issues.$inferInsert;
-        if (values.status === "in_progress" && !values.startedAt) {
-          values.startedAt = new Date();
-        }
-        if (values.status === "done") {
-          values.completedAt = new Date();
-        }
-        if (values.status === "cancelled") {
-          values.cancelledAt = new Date();
-        }
-
-        const [issue] = await tx.insert(issues).values(values).returning();
-        if (inputLabelIds) {
-          await syncIssueLabels(issue.id, companyId, inputLabelIds, tx);
-        }
-        const [enriched] = await withIssueLabels(tx, [issue]);
-        return enriched;
-      });
+    createInTx: async (
+      tx: DbLike,
+      companyId: string,
+      data: Omit<typeof issues.$inferInsert, "companyId"> & { labelIds?: string[] },
+    ) => {
+      const { labelIds: inputLabelIds, ...issueData } = data;
+      if (data.assigneeAgentId && data.assigneeUserId) {
+        throw unprocessable("Issue can only have one assignee");
+      }
+      if (data.assigneeAgentId) {
+        await assertAssignableAgent(companyId, data.assigneeAgentId);
+      }
+      if (data.assigneeUserId) {
+        await assertAssignableUser(companyId, data.assigneeUserId);
+      }
+      if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
+        throw unprocessable("in_progress issues require an assignee");
+      }
+      return createIssueInTx(tx, companyId, issueData, inputLabelIds);
     },
 
     update: async (id: string, data: Partial<typeof issues.$inferInsert> & { labelIds?: string[] }) => {

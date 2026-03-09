@@ -1,5 +1,6 @@
 import type { IssuePriority, IssueStatus } from "../constants.js";
 import type { Goal } from "./goal.js";
+import type { IssueKnowledgeAttachment } from "./knowledge.js";
 import type { Project, ProjectWorkspace } from "./project.js";
 
 export interface IssueAncestorProject {
@@ -82,6 +83,7 @@ export interface Issue {
   project?: Project | null;
   goal?: Goal | null;
   mentionedProjects?: Project[];
+  knowledgeItems?: IssueKnowledgeAttachment[];
   myLastTouchAt?: Date | null;
   lastExternalCommentAt?: Date | null;
   isUnreadForMe?: boolean;

@@ -504,6 +504,19 @@ Terminal states: `done`, `cancelled`
 | POST   | `/api/issues/:issueId/approvals`   | Link approval to issue                                                                    |
 | DELETE | `/api/issues/:issueId/approvals/:approvalId` | Unlink approval from issue                                                     |
 
+### Knowledge
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| GET    | `/api/companies/:companyId/knowledge-items` | List company knowledge items |
+| POST   | `/api/companies/:companyId/knowledge-items` | Create knowledge item |
+| GET    | `/api/knowledge-items/:knowledgeItemId` | Get one knowledge item |
+| PATCH  | `/api/knowledge-items/:knowledgeItemId` | Update knowledge item |
+| DELETE | `/api/knowledge-items/:knowledgeItemId` | Delete knowledge item (creator / CEO / board only) |
+| GET    | `/api/issues/:issueId/knowledge-items` | List knowledge attached to issue |
+| POST   | `/api/issues/:issueId/knowledge-items` | Attach knowledge item to issue |
+| DELETE | `/api/issues/:issueId/knowledge-items/:knowledgeItemId` | Detach knowledge item from issue |
+
 ### Companies, Projects, Goals
 
 | Method | Path                                 | Description        |

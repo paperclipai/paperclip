@@ -22,6 +22,8 @@ import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { secretService } from "./secrets.js";
+import { knowledgeService } from "./knowledge.js";
+import { applyIssueKnowledgeContext } from "./knowledge-context.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
@@ -406,6 +408,7 @@ function resolveNextSessionState(input: {
 export function heartbeatService(db: Db) {
   const runLogStore = getRunLogStore();
   const secretsSvc = secretService(db);
+  const knowledgeSvc = knowledgeService(db);
 
   async function getAgent(agentId: string) {
     return db
@@ -1064,7 +1067,7 @@ export function heartbeatService(db: Db) {
     }
 
     const runtime = await ensureRuntimeState(agent);
-    const context = parseObject(run.contextSnapshot);
+    let context = parseObject(run.contextSnapshot);
     const taskKey = deriveTaskKey(context, null);
     const sessionCodec = getAdapterSessionCodec(agent.adapterType);
     const issueId = readNonEmptyString(context.issueId);
@@ -1127,6 +1130,10 @@ export function heartbeatService(db: Db) {
     context.paperclipWorkspaces = resolvedWorkspace.workspaceHints;
     if (resolvedWorkspace.projectId && !readNonEmptyString(context.projectId)) {
       context.projectId = resolvedWorkspace.projectId;
+    }
+    if (issueId) {
+      const attachments = await knowledgeSvc.listForIssue(issueId);
+      context = applyIssueKnowledgeContext(context, attachments);
     }
     const runtimeSessionFallback = taskKey || resetTaskSession ? null : runtime.sessionId;
     const previousSessionDisplayId = truncateDisplayId(

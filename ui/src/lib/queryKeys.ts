@@ -27,11 +27,16 @@ export const queryKeys = {
     detail: (id: string) => ["issues", "detail", id] as const,
     comments: (issueId: string) => ["issues", "comments", issueId] as const,
     attachments: (issueId: string) => ["issues", "attachments", issueId] as const,
+    knowledge: (issueId: string) => ["issues", "knowledge", issueId] as const,
     activity: (issueId: string) => ["issues", "activity", issueId] as const,
     runs: (issueId: string) => ["issues", "runs", issueId] as const,
     approvals: (issueId: string) => ["issues", "approvals", issueId] as const,
     liveRuns: (issueId: string) => ["issues", "live-runs", issueId] as const,
     activeRun: (issueId: string) => ["issues", "active-run", issueId] as const,
+  },
+  knowledge: {
+    list: (companyId: string) => ["knowledge", companyId] as const,
+    detail: (knowledgeItemId: string) => ["knowledge", "detail", knowledgeItemId] as const,
   },
   projects: {
     list: (companyId: string) => ["projects", companyId] as const,

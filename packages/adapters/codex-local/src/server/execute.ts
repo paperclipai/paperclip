@@ -75,11 +75,12 @@ async function resolvePaperclipSkillsDir(): Promise<string | null> {
   return null;
 }
 
-async function ensureCodexSkillsInjected(onLog: AdapterExecutionContext["onLog"]) {
-  const skillsDir = await resolvePaperclipSkillsDir();
-  if (!skillsDir) return;
-
-  const skillsHome = path.join(codexHomeDir(), "skills");
+export async function syncCodexSkills(input: {
+  skillsDir: string;
+  skillsHome: string;
+  onLog: AdapterExecutionContext["onLog"];
+}) {
+  const { skillsDir, skillsHome, onLog } = input;
   await fs.mkdir(skillsHome, { recursive: true });
   const entries = await fs.readdir(skillsDir, { withFileTypes: true });
   for (const entry of entries) {
@@ -87,7 +88,13 @@ async function ensureCodexSkillsInjected(onLog: AdapterExecutionContext["onLog"]
     const source = path.join(skillsDir, entry.name);
     const target = path.join(skillsHome, entry.name);
     const existing = await fs.lstat(target).catch(() => null);
-    if (existing) continue;
+    if (existing?.isSymbolicLink()) {
+      const currentTarget = await fs.realpath(target).catch(() => null);
+      if (currentTarget === source) continue;
+      await fs.rm(target, { force: true });
+    } else if (existing) {
+      continue;
+    }
 
     try {
       await fs.symlink(source, target);
@@ -102,6 +109,14 @@ async function ensureCodexSkillsInjected(onLog: AdapterExecutionContext["onLog"]
       );
     }
   }
+}
+
+async function ensureCodexSkillsInjected(onLog: AdapterExecutionContext["onLog"]) {
+  const skillsDir = await resolvePaperclipSkillsDir();
+  if (!skillsDir) return;
+
+  const skillsHome = path.join(codexHomeDir(), "skills");
+  await syncCodexSkills({ skillsDir, skillsHome, onLog });
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {

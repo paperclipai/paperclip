@@ -73,6 +73,16 @@ export {
 } from "./issue.js";
 
 export {
+  knowledgeItemKindSchema,
+  createKnowledgeItemSchema,
+  updateKnowledgeItemSchema,
+  attachIssueKnowledgeItemSchema,
+  type CreateKnowledgeItem,
+  type UpdateKnowledgeItem,
+  type AttachIssueKnowledgeItem,
+} from "./knowledge.js";
+
+export {
   createGoalSchema,
   updateGoalSchema,
   type CreateGoal,

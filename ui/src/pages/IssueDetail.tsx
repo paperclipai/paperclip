@@ -16,6 +16,7 @@ import { relativeTime, cn, formatTokens } from "../lib/utils";
 import { InlineEditor } from "../components/InlineEditor";
 import { CommentThread } from "../components/CommentThread";
 import { IssueProperties } from "../components/IssueProperties";
+import { IssueKnowledgePanel } from "../components/IssueKnowledgePanel";
 import { LiveRunWidget } from "../components/LiveRunWidget";
 import type { MentionOption } from "../components/MarkdownEditor";
 import { StatusIcon } from "../components/StatusIcon";
@@ -669,6 +670,10 @@ export function IssueDetail() {
             return attachment.contentPath;
           }}
         />
+      </div>
+
+      <div className="space-y-3">
+        <IssueKnowledgePanel companyId={issue.companyId} issueId={issue.id} />
       </div>
 
       <div className="space-y-3">
