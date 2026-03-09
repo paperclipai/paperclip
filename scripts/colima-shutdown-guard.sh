@@ -4,28 +4,38 @@
 # and runs "colima stop" so Postgres can flush WAL before the VM dies.
 #
 # INSTALL (one-time, needs sudo):
+#   sudo mkdir -p /usr/local/bin
 #   sudo cp scripts/colima-shutdown-guard.sh /usr/local/bin/colima-shutdown-guard.sh
-#   sudo chmod +x /usr/local/bin/colima-shutdown-guard.sh
+#   sudo xattr -c /usr/local/bin/colima-shutdown-guard.sh
 #   sudo cp scripts/com.colima.graceful-shutdown.plist /Library/LaunchDaemons/
-#   sudo launchctl load /Library/LaunchDaemons/com.colima.graceful-shutdown.plist
+#   sudo chmod 644 /Library/LaunchDaemons/com.colima.graceful-shutdown.plist
+#   sudo chown root:wheel /Library/LaunchDaemons/com.colima.graceful-shutdown.plist
+#   sudo xattr -c /Library/LaunchDaemons/com.colima.graceful-shutdown.plist
+#   sudo launchctl bootstrap system /Library/LaunchDaemons/com.colima.graceful-shutdown.plist
 #
 # VERIFY:
-#   sudo launchctl list | grep colima
+#   sudo launchctl list | grep colima        # should show a PID
+#   tail -f /tmp/colima-shutdown.log         # should show "started (PID ...)"
 #
-# LIVE STATUS:
-#   tail -f /tmp/colima-shutdown.log
+# UPDATE SCRIPT (after changes):
+#   sudo cp scripts/colima-shutdown-guard.sh /usr/local/bin/colima-shutdown-guard.sh
+#   sudo xattr -c /usr/local/bin/colima-shutdown-guard.sh
+#   sudo launchctl kickstart -k system/com.colima.graceful-shutdown
 #
 # UNINSTALL:
-#   sudo launchctl unload /Library/LaunchDaemons/com.colima.graceful-shutdown.plist
+#   sudo launchctl bootout system/com.colima.graceful-shutdown
 #   sudo rm /Library/LaunchDaemons/com.colima.graceful-shutdown.plist
 #   sudo rm /usr/local/bin/colima-shutdown-guard.sh
 
 LOGFILE="/tmp/colima-shutdown.log"
 COLIMA="/opt/homebrew/bin/colima"
 HEARTBEAT_INTERVAL=300  # print a heartbeat every 5 minutes
+# Daemon runs as root — needs HOME for ~/.lima config and PATH for Homebrew binaries
+export HOME="/Users/juandi"
+export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOGFILE"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOGFILE"
 }
 
 colima_status() {
@@ -36,15 +46,24 @@ cleanup() {
     log "⚠️  SIGTERM received — macOS is shutting down"
     log "→ Colima status before stop: $(colima_status)"
     log "→ Running: colima stop (timeout 90s)..."
-    timeout 90 "$COLIMA" stop 2>&1 | tee -a "$LOGFILE"
-    EXIT_CODE=$?
-    if [ $EXIT_CODE -eq 0 ]; then
-        log "✅ colima stop completed cleanly"
-    elif [ $EXIT_CODE -eq 124 ]; then
+    "$COLIMA" stop >> "$LOGFILE" 2>&1 &
+    COLIMA_PID=$!
+    # wait up to 90s then force-stop
+    for i in $(seq 1 90); do
+        kill -0 $COLIMA_PID 2>/dev/null || break
+        sleep 1
+    done
+    if kill -0 $COLIMA_PID 2>/dev/null; then
         log "⏱️  colima stop timed out after 90s — forcing with colima stop --force"
-        "$COLIMA" stop --force 2>&1 | tee -a "$LOGFILE"
+        "$COLIMA" stop --force >> "$LOGFILE" 2>&1
     else
-        log "❌ colima stop exited with code $EXIT_CODE"
+        wait $COLIMA_PID
+        EXIT_CODE=$?
+        if [ $EXIT_CODE -eq 0 ]; then
+            log "✅ colima stop completed cleanly"
+        else
+            log "❌ colima stop exited with code $EXIT_CODE"
+        fi
     fi
     log "--- shutdown guard done, exiting ---"
     exit 0

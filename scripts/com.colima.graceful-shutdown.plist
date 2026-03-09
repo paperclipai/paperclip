@@ -4,8 +4,11 @@
 <dict>
     <key>Label</key>
     <string>com.colima.graceful-shutdown</string>
+    <key>Program</key>
+    <string>/bin/bash</string>
     <key>ProgramArguments</key>
     <array>
+        <string>/bin/bash</string>
         <string>/usr/local/bin/colima-shutdown-guard.sh</string>
     </array>
     <key>RunAtLoad</key>
