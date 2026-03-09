@@ -492,6 +492,12 @@ if (config.heartbeatSchedulerEnabled) {
     logger.error({ err }, "startup reap of orphaned heartbeat runs failed");
   });
 
+  // Clear all execution locks on startup — server restart invalidates JWTs,
+  // so no in-flight agent can complete; release locks and wake affected agents.
+  void heartbeat.clearAllExecutionLocksOnStartup().catch((err) => {
+    logger.error({ err }, "startup clear of execution locks failed");
+  });
+
   setInterval(() => {
     void heartbeat
       .tickTimers(new Date())

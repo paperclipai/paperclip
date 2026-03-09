@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -72,6 +72,24 @@ interface WakeupOptions {
 interface ParsedIssueAssigneeAdapterOverrides {
   adapterConfig: Record<string, unknown> | null;
   useProjectWorkspace: boolean | null;
+}
+
+const ACTIVE_ASSIGNED_ISSUE_STATUSES = ["todo", "in_progress", "blocked"] as const;
+
+export type IssueTaskResolutionSource = "event_id" | "re-resolved" | "none";
+
+export function resolveIssueAssignedTaskId(input: {
+  requestedIssueId: string | null;
+  activeAssignedIssueIds: string[];
+}) {
+  const { requestedIssueId, activeAssignedIssueIds } = input;
+  if (requestedIssueId && activeAssignedIssueIds.includes(requestedIssueId)) {
+    return { issueId: requestedIssueId, source: "event_id" as IssueTaskResolutionSource };
+  }
+  if (activeAssignedIssueIds.length > 0) {
+    return { issueId: activeAssignedIssueIds[0]!, source: "re-resolved" as IssueTaskResolutionSource };
+  }
+  return { issueId: null, source: "none" as IssueTaskResolutionSource };
 }
 
 export type ResolvedWorkspaceForRun = {
@@ -283,6 +301,20 @@ function enrichWakeContextSnapshot(input: {
   };
 }
 
+function applyResolvedTaskContext(
+  contextSnapshot: Record<string, unknown>,
+  resolution: { issueId: string | null; source: IssueTaskResolutionSource },
+) {
+  contextSnapshot.taskIdSource = resolution.source;
+  if (resolution.issueId) {
+    contextSnapshot.issueId = resolution.issueId;
+    contextSnapshot.taskId = resolution.issueId;
+    return;
+  }
+  delete contextSnapshot.issueId;
+  delete contextSnapshot.taskId;
+}
+
 function mergeCoalescedContextSnapshot(
   existingRaw: unknown,
   incoming: Record<string, unknown>,
@@ -449,6 +481,39 @@ export function heartbeatService(db: Db) {
         ),
       )
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function resolveIssueAssignedTaskContext(
+    companyId: string,
+    agentId: string,
+    contextSnapshot: Record<string, unknown>,
+    payload: Record<string, unknown> | null,
+  ) {
+    const wakeReason = readNonEmptyString(contextSnapshot.wakeReason);
+    if (wakeReason !== "issue_assigned") return;
+
+    const requestedIssueId =
+      readNonEmptyString(payload?.issueId) ??
+      readNonEmptyString(contextSnapshot.issueId) ??
+      readNonEmptyString(contextSnapshot.taskId);
+    const activeAssignedIssueIds = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.assigneeAgentId, agentId),
+          inArray(issues.status, [...ACTIVE_ASSIGNED_ISSUE_STATUSES]),
+        ),
+      )
+      .orderBy(asc(issues.issueNumber), asc(issues.id))
+      .then((rows) => rows.map((row) => row.id));
+
+    const resolution = resolveIssueAssignedTaskId({
+      requestedIssueId,
+      activeAssignedIssueIds,
+    });
+    applyResolvedTaskContext(contextSnapshot, resolution);
   }
 
   async function resolveSessionBeforeForWakeup(
@@ -946,6 +1011,192 @@ export function heartbeatService(db: Db) {
     return { reaped: reaped.length, runIds: reaped };
   }
 
+  async function releaseStaleExecutionLocks(opts?: { lockTtlMs?: number }) {
+    const lockTtlMs = opts?.lockTtlMs ?? 15 * 60 * 1000; // 15 minutes default
+    const now = new Date();
+    const cutoffTime = new Date(now.getTime() - lockTtlMs);
+
+    // Find all issues with stale execution locks
+    const staleLockedIssues = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        executionRunId: issues.executionRunId,
+        executionLockedAt: issues.executionLockedAt,
+        executionAgentNameKey: issues.executionAgentNameKey,
+      })
+      .from(issues)
+      .where(
+        and(
+          sql`${issues.executionLockedAt} IS NOT NULL`,
+          sql`${issues.executionLockedAt} < ${cutoffTime}`,
+        ),
+      );
+
+    const released: Array<{ issueId: string; issueIdentifier: string | null; runId: string | null }> = [];
+
+    for (const issue of staleLockedIssues) {
+      // Check if the run still exists and is active
+      let runExists = false;
+      if (issue.executionRunId) {
+        const run = await db
+          .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, issue.executionRunId))
+          .then((rows) => rows[0] ?? null);
+
+        runExists = run !== null && (run.status === "queued" || run.status === "running");
+      }
+
+      // If run doesn't exist or is not active, release the lock
+      if (!runExists) {
+        await db
+          .update(issues)
+          .set({
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            updatedAt: now,
+          })
+          .where(eq(issues.id, issue.id));
+
+        released.push({
+          issueId: issue.id,
+          issueIdentifier: issue.identifier,
+          runId: issue.executionRunId,
+        });
+
+        logger.warn(
+          {
+            issueId: issue.id,
+            issueIdentifier: issue.identifier,
+            executionRunId: issue.executionRunId,
+            executionAgentNameKey: issue.executionAgentNameKey,
+            lockedAt: issue.executionLockedAt,
+            ageMinutes: Math.round((now.getTime() - new Date(issue.executionLockedAt!).getTime()) / 60000),
+          },
+          "Auto-released stale execution lock",
+        );
+      }
+    }
+
+    if (released.length > 0) {
+      logger.warn(
+        { releasedCount: released.length, issues: released },
+        `Released ${released.length} stale execution lock(s)`,
+      );
+    }
+
+    return { released: released.length, issues: released };
+  }
+
+  async function clearAllExecutionLocksOnStartup() {
+    const now = new Date();
+
+    // Find all issues with any execution lock (regardless of age)
+    const lockedIssues = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        executionRunId: issues.executionRunId,
+        executionAgentNameKey: issues.executionAgentNameKey,
+        executionLockedAt: issues.executionLockedAt,
+        assigneeAgentId: issues.assigneeAgentId,
+      })
+      .from(issues)
+      .where(isNotNull(issues.executionLockedAt));
+
+    if (lockedIssues.length === 0) {
+      logger.info("No execution locks to clear on startup");
+      return { cleared: 0, woken: 0, issues: [] };
+    }
+
+    const cleared: Array<{
+      issueId: string;
+      issueIdentifier: string | null;
+      runId: string | null;
+      agentNameKey: string | null;
+    }> = [];
+
+    // Clear all execution locks unconditionally — after restart, no runs are valid
+    for (const issue of lockedIssues) {
+      await db
+        .update(issues)
+        .set({
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: now,
+        })
+        .where(eq(issues.id, issue.id));
+
+      cleared.push({
+        issueId: issue.id,
+        issueIdentifier: issue.identifier,
+        runId: issue.executionRunId,
+        agentNameKey: issue.executionAgentNameKey,
+      });
+
+      logger.warn(
+        {
+          issueId: issue.id,
+          issueIdentifier: issue.identifier,
+          executionRunId: issue.executionRunId,
+          executionAgentNameKey: issue.executionAgentNameKey,
+          lockedAt: issue.executionLockedAt,
+          ageMinutes: issue.executionLockedAt
+            ? Math.round((now.getTime() - new Date(issue.executionLockedAt).getTime()) / 60000)
+            : null,
+        },
+        "Startup: cleared execution lock",
+      );
+    }
+
+    logger.warn(
+      { clearedCount: cleared.length, issues: cleared },
+      `Startup: cleared ${cleared.length} execution lock(s)`,
+    );
+
+    // Trigger wake events for affected issues by invoking their assigned agents
+    let woken = 0;
+    const seenAgentIds = new Set<string>();
+
+    for (const issue of lockedIssues) {
+      if (!issue.assigneeAgentId || seenAgentIds.has(issue.assigneeAgentId)) continue;
+      seenAgentIds.add(issue.assigneeAgentId);
+
+      try {
+        await enqueueWakeup(issue.assigneeAgentId, {
+          source: "on_demand",
+          triggerDetail: "system",
+          reason: "server_restart_lock_cleared",
+          requestedByActorType: "system",
+          requestedByActorId: "startup_lock_clear",
+          contextSnapshot: {
+            wakeReason: "server_restart_lock_cleared",
+            wakeSource: "on_demand",
+            issueId: issue.id,
+          },
+        });
+        woken += 1;
+      } catch (err) {
+        logger.warn(
+          { err, agentId: issue.assigneeAgentId, issueId: issue.id },
+          "Startup: failed to enqueue wake for agent after lock clear",
+        );
+      }
+    }
+
+    if (woken > 0) {
+      logger.info(
+        { woken, agents: [...seenAgentIds] },
+        `Startup: enqueued ${woken} wake event(s) for agents with cleared locks`,
+      );
+    }
+
+    return { cleared: cleared.length, woken, issues: cleared };
+  }
+
   async function updateRuntimeState(
     agent: typeof agents.$inferSelect,
     run: typeof heartbeatRuns.$inferSelect,
@@ -1063,8 +1314,9 @@ export function heartbeatService(db: Db) {
       return;
     }
 
-    const runtime = await ensureRuntimeState(agent);
     const context = parseObject(run.contextSnapshot);
+    await resolveIssueAssignedTaskContext(agent.companyId, agent.id, context, null);
+    const runtime = await ensureRuntimeState(agent);
     const taskKey = deriveTaskKey(context, null);
     const sessionCodec = getAdapterSessionCodec(agent.adapterType);
     const issueId = readNonEmptyString(context.issueId);
@@ -1153,6 +1405,7 @@ export function heartbeatService(db: Db) {
         .update(heartbeatRuns)
         .set({
           startedAt,
+          contextSnapshot: context,
           sessionIdBefore: runtimeForAdapter.sessionDisplayId ?? runtimeForAdapter.sessionId,
           updatedAt: new Date(),
         })
@@ -1186,6 +1439,17 @@ export function heartbeatService(db: Db) {
         stream: "system",
         level: "info",
         message: "run started",
+      });
+      await appendRunEvent(currentRun, seq++, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "info",
+        message: "task context resolved",
+        payload: {
+          issueId: readNonEmptyString(context.issueId),
+          taskId: readNonEmptyString(context.taskId),
+          taskIdSource: readNonEmptyString(context.taskIdSource) ?? "none",
+        },
       });
 
       handle = await runLogStore.begin({
@@ -1634,10 +1898,10 @@ export function heartbeatService(db: Db) {
       triggerDetail,
       payload,
     });
-    const issueId = readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueIdFromPayload;
-
     const agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
+    await resolveIssueAssignedTaskContext(agent.companyId, agent.id, enrichedContextSnapshot, payload);
+    const issueId = readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueIdFromPayload;
 
     if (
       agent.status === "paused" ||
@@ -2204,6 +2468,10 @@ export function heartbeatService(db: Db) {
     wakeup: enqueueWakeup,
 
     reapOrphanedRuns,
+
+    releaseStaleExecutionLocks,
+
+    clearAllExecutionLocksOnStartup,
 
     tickTimers: async (now = new Date()) => {
       const allAgents = await db.select().from(agents);

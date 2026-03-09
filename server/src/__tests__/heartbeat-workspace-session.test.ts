@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
+  resolveIssueAssignedTaskId,
   resolveRuntimeSessionParamsForWorkspace,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
@@ -139,5 +140,43 @@ describe("shouldResetTaskSessionForWake", () => {
         wakeTriggerDetail: "callback",
       }),
     ).toBe(false);
+  });
+});
+
+describe("resolveIssueAssignedTaskId", () => {
+  it("keeps the triggering issue id when it is still active", () => {
+    expect(
+      resolveIssueAssignedTaskId({
+        requestedIssueId: "issue-2",
+        activeAssignedIssueIds: ["issue-1", "issue-2"],
+      }),
+    ).toEqual({
+      issueId: "issue-2",
+      source: "event_id",
+    });
+  });
+
+  it("re-resolves to another active assignment when triggering issue is stale", () => {
+    expect(
+      resolveIssueAssignedTaskId({
+        requestedIssueId: "stale-issue",
+        activeAssignedIssueIds: ["issue-1", "issue-2"],
+      }),
+    ).toEqual({
+      issueId: "issue-1",
+      source: "re-resolved",
+    });
+  });
+
+  it("returns none when there are no active assignments", () => {
+    expect(
+      resolveIssueAssignedTaskId({
+        requestedIssueId: "stale-issue",
+        activeAssignedIssueIds: [],
+      }),
+    ).toEqual({
+      issueId: null,
+      source: "none",
+    });
   });
 });
