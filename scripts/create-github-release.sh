@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+dry_run=false
+version=""
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ./scripts/create-github-release.sh <version> [--dry-run]
+
+Examples:
+  ./scripts/create-github-release.sh 1.2.3
+  ./scripts/create-github-release.sh 1.2.3 --dry-run
+
+Notes:
+  - Run this after pushing the release commit and tag.
+  - If the release already exists, this script updates its title and notes.
+EOF
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run) dry_run=true ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      if [ -n "$version" ]; then
+        echo "Error: only one version may be provided." >&2
+        exit 1
+      fi
+      version="$1"
+      ;;
+  esac
+  shift
+done
+
+if [ -z "$version" ]; then
+  usage
+  exit 1
+fi
+
+if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "Error: version must be a stable semver like 1.2.3." >&2
+  exit 1
+fi
+
+tag="v$version"
+notes_file="$REPO_ROOT/releases/${tag}.md"
+
+if ! command -v gh >/dev/null 2>&1; then
+  echo "Error: gh CLI is required to create GitHub releases." >&2
+  exit 1
+fi
+
+if [ ! -f "$notes_file" ]; then
+  echo "Error: release notes file not found at $notes_file." >&2
+  exit 1
+fi
+
+if ! git -C "$REPO_ROOT" rev-parse "$tag" >/dev/null 2>&1; then
+  echo "Error: local git tag $tag does not exist." >&2
+  exit 1
+fi
+
+if [ "$dry_run" = true ]; then
+  echo "[dry-run] gh release create $tag --title $tag --notes-file $notes_file"
+  exit 0
+fi
+
+if ! git -C "$REPO_ROOT" ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+  echo "Error: remote tag $tag was not found on origin. Push the release commit and tag first." >&2
+  exit 1
+fi
+
+if gh release view "$tag" >/dev/null 2>&1; then
+  gh release edit "$tag" --title "$tag" --notes-file "$notes_file"
+  echo "Updated GitHub Release $tag"
+else
+  gh release create "$tag" --title "$tag" --notes-file "$notes_file"
+  echo "Created GitHub Release $tag"
+fi

@@ -1,420 +1,460 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# release.sh — One-command version bump, build, and publish via Changesets.
+# release.sh — Prepare and publish a Paperclip release.
 #
-# Usage:
-#   ./scripts/release.sh patch                  # 0.2.0 → 0.2.1
-#   ./scripts/release.sh minor                  # 0.2.0 → 0.3.0
-#   ./scripts/release.sh major                  # 0.2.0 → 1.0.0
-#   ./scripts/release.sh patch --dry-run        # everything except npm publish
-#   ./scripts/release.sh patch --canary          # publish under @canary tag, no commit/tag
-#   ./scripts/release.sh patch --canary --dry-run
-#   ./scripts/release.sh --promote 0.2.8        # promote canary to @latest + commit/tag
-#   ./scripts/release.sh --promote 0.2.8 --dry-run
+# Stable release:
+#   ./scripts/release.sh patch
+#   ./scripts/release.sh minor --dry-run
 #
-# Steps (normal):
-#   1. Preflight checks (clean tree, npm login)
-#   2. Auto-create a changeset for all public packages
-#   3. Run changeset version (bumps versions, generates CHANGELOGs)
-#   4. Build all packages
-#   5. Build CLI bundle (esbuild)
-#   6. Publish to npm via changeset publish (unless --dry-run)
-#   7. Commit and tag
+# Canary release:
+#   ./scripts/release.sh patch --canary
+#   ./scripts/release.sh minor --canary --dry-run
 #
-# --canary: Steps 1-5 unchanged, Step 6 publishes with --tag canary, Step 7 skipped.
-# --promote: Skips Steps 1-6, promotes canary to latest, then commits and tags.
+# Canary releases publish prerelease versions such as 1.2.3-canary.0 under the
+# npm dist-tag "canary". Stable releases publish 1.2.3 under "latest".
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CLI_DIR="$REPO_ROOT/cli"
-
-# ── Helper: create GitHub Release ────────────────────────────────────────────
-create_github_release() {
-  local version="$1"
-  local is_dry_run="$2"
-  local release_notes="$REPO_ROOT/releases/v${version}.md"
-
-  if [ "$is_dry_run" = true ]; then
-    echo "  [dry-run] gh release create v$version"
-    return
-  fi
-
-  if ! command -v gh &>/dev/null; then
-    echo "  ⚠ gh CLI not found — skipping GitHub Release"
-    return
-  fi
-
-  local gh_args=(gh release create "v$version" --title "v$version")
-  if [ -f "$release_notes" ]; then
-    gh_args+=(--notes-file "$release_notes")
-  else
-    gh_args+=(--generate-notes)
-  fi
-
-  if "${gh_args[@]}"; then
-    echo "  ✓ Created GitHub Release v$version"
-  else
-    echo "  ⚠ GitHub Release creation failed (non-fatal)"
-  fi
-}
-
-# ── Parse args ────────────────────────────────────────────────────────────────
+TEMP_CHANGESET_FILE="$REPO_ROOT/.changeset/release-bump.md"
+TEMP_PRE_FILE="$REPO_ROOT/.changeset/pre.json"
 
 dry_run=false
 canary=false
-promote=false
-promote_version=""
 bump_type=""
+
+cleanup_on_exit=false
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ./scripts/release.sh <patch|minor|major> [--canary] [--dry-run]
+
+Examples:
+  ./scripts/release.sh patch
+  ./scripts/release.sh minor --dry-run
+  ./scripts/release.sh patch --canary
+  ./scripts/release.sh minor --canary --dry-run
+
+Notes:
+  - Canary publishes prerelease versions like 1.2.3-canary.0 under the npm
+    dist-tag "canary".
+  - Stable publishes 1.2.3 under the npm dist-tag "latest".
+  - Dry runs leave the working tree clean.
+EOF
+}
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) dry_run=true ;;
     --canary) canary=true ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
     --promote)
-      promote=true
-      shift
-      if [ $# -eq 0 ] || [[ "$1" == --* ]]; then
-        echo "Error: --promote requires a version argument (e.g. --promote 0.2.8)"
+      echo "Error: --promote was removed. Re-run a stable release from the vetted commit instead."
+      exit 1
+      ;;
+    *)
+      if [ -n "$bump_type" ]; then
+        echo "Error: only one bump type may be provided."
         exit 1
       fi
-      promote_version="$1"
+      bump_type="$1"
       ;;
-    *) bump_type="$1" ;;
   esac
   shift
 done
 
-if [ "$promote" = true ] && [ "$canary" = true ]; then
-  echo "Error: --canary and --promote cannot be used together"
+if [[ ! "$bump_type" =~ ^(patch|minor|major)$ ]]; then
+  usage
   exit 1
 fi
 
-if [ "$promote" = false ]; then
-  if [ -z "$bump_type" ]; then
-    echo "Usage: $0 <patch|minor|major> [--dry-run] [--canary]"
-    echo "       $0 --promote <version> [--dry-run]"
-    exit 1
-  fi
-
-  if [[ ! "$bump_type" =~ ^(patch|minor|major)$ ]]; then
-    echo "Error: bump type must be patch, minor, or major (got '$bump_type')"
-    exit 1
-  fi
-fi
-
-# ── Promote mode (skips Steps 1-6) ───────────────────────────────────────────
-
-if [ "$promote" = true ]; then
-  NEW_VERSION="$promote_version"
-  echo ""
-  echo "==> Promote mode: promoting v$NEW_VERSION from canary to latest..."
-
-  # Get all publishable package names
-  PACKAGES=$(node -e "
-const { readFileSync } = require('fs');
-const { resolve } = require('path');
-const root = '$REPO_ROOT';
-const dirs = ['packages/shared', 'packages/adapter-utils', 'packages/db',
-  'packages/adapters/claude-local', 'packages/adapters/codex-local', 'packages/adapters/opencode-local', 'packages/adapters/openclaw-gateway',
-  'server', 'cli'];
-const names = [];
-for (const d of dirs) {
-  try {
-    const pkg = JSON.parse(readFileSync(resolve(root, d, 'package.json'), 'utf8'));
-    if (!pkg.private) names.push(pkg.name);
-  } catch {}
+info() {
+  echo "$@"
 }
-console.log(names.join('\n'));
-")
 
-  echo ""
-  echo "  Promoting packages to @latest:"
-  while IFS= read -r pkg; do
-    if [ "$dry_run" = true ]; then
-      echo "  [dry-run] npm dist-tag add ${pkg}@${NEW_VERSION} latest"
-    else
-      npm dist-tag add "${pkg}@${NEW_VERSION}" latest
-      echo "  ✓ ${pkg}@${NEW_VERSION} → latest"
-    fi
-  done <<< "$PACKAGES"
+fail() {
+  echo "Error: $*" >&2
+  exit 1
+}
 
-  # Restore CLI dev package.json if present
+restore_publish_artifacts() {
   if [ -f "$CLI_DIR/package.dev.json" ]; then
     mv "$CLI_DIR/package.dev.json" "$CLI_DIR/package.json"
-    echo "  ✓ Restored workspace dependencies in cli/package.json"
   fi
 
-  # Remove the README copied for npm publishing
-  if [ -f "$CLI_DIR/README.md" ]; then
-    rm "$CLI_DIR/README.md"
-  fi
-
-  # Remove temporary build artifacts
+  rm -f "$CLI_DIR/README.md"
   rm -rf "$REPO_ROOT/server/ui-dist"
+
   for pkg_dir in server packages/adapters/claude-local packages/adapters/codex-local; do
     rm -rf "$REPO_ROOT/$pkg_dir/skills"
   done
-
-  # Stage release files, commit, and tag
-  echo ""
-  echo "  Committing and tagging v$NEW_VERSION..."
-  if [ "$dry_run" = true ]; then
-    echo "  [dry-run] git add + commit + tag v$NEW_VERSION"
-  else
-    git add \
-      .changeset/ \
-      '**/CHANGELOG.md' \
-      '**/package.json' \
-      cli/src/index.ts
-    git commit -m "chore: release v$NEW_VERSION"
-    git tag "v$NEW_VERSION"
-    echo "  ✓ Committed and tagged v$NEW_VERSION"
-  fi
-
-  create_github_release "$NEW_VERSION" "$dry_run"
-
-  echo ""
-  if [ "$dry_run" = true ]; then
-    echo "Dry run complete for promote v$NEW_VERSION."
-    echo "  - Would promote all packages to @latest"
-    echo "  - Would commit and tag v$NEW_VERSION"
-    echo "  - Would create GitHub Release"
-  else
-    echo "Promoted all packages to @latest at v$NEW_VERSION"
-    echo ""
-    echo "Verify: npm view paperclipai@latest version"
-    echo ""
-    echo "To push:"
-    echo "  git push && git push origin v$NEW_VERSION"
-  fi
-  exit 0
-fi
-
-# ── Step 1: Preflight checks ─────────────────────────────────────────────────
-
-echo ""
-echo "==> Step 1/7: Preflight checks..."
-
-if [ "$dry_run" = false ]; then
-  if ! npm whoami &>/dev/null; then
-    echo "Error: Not logged in to npm. Run 'npm login' first."
-    exit 1
-  fi
-  echo "  ✓ Logged in to npm as $(npm whoami)"
-fi
-
-if ! git -C "$REPO_ROOT" diff --quiet || ! git -C "$REPO_ROOT" diff --cached --quiet; then
-  echo "Error: Working tree has uncommitted changes. Commit or stash them first."
-  exit 1
-fi
-echo "  ✓ Working tree is clean"
-
-# ── Step 2: Auto-create changeset ────────────────────────────────────────────
-
-echo ""
-echo "==> Step 2/7: Creating changeset ($bump_type bump for all packages)..."
-
-# Get all publishable (non-private) package names
-PACKAGES=$(node -e "
-const { readdirSync, readFileSync } = require('fs');
-const { resolve } = require('path');
-const root = '$REPO_ROOT';
-const wsYaml = readFileSync(resolve(root, 'pnpm-workspace.yaml'), 'utf8');
-const dirs = ['packages/shared', 'packages/adapter-utils', 'packages/db',
-  'packages/adapters/claude-local', 'packages/adapters/codex-local', 'packages/adapters/opencode-local', 'packages/adapters/openclaw-gateway',
-  'server', 'cli'];
-const names = [];
-for (const d of dirs) {
-  try {
-    const pkg = JSON.parse(readFileSync(resolve(root, d, 'package.json'), 'utf8'));
-    if (!pkg.private) names.push(pkg.name);
-  } catch {}
 }
-console.log(names.join('\n'));
-")
 
-# Write a changeset file
-CHANGESET_FILE="$REPO_ROOT/.changeset/release-bump.md"
+cleanup_release_state() {
+  restore_publish_artifacts
+
+  rm -f "$TEMP_CHANGESET_FILE" "$TEMP_PRE_FILE"
+
+  if [ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]; then
+    git -C "$REPO_ROOT" restore --source=HEAD --staged --worktree .
+    rm -f "$TEMP_CHANGESET_FILE" "$TEMP_PRE_FILE"
+  fi
+}
+
+if [ "$cleanup_on_exit" = true ]; then
+  trap cleanup_release_state EXIT
+fi
+
+set_cleanup_trap() {
+  cleanup_on_exit=true
+  trap cleanup_release_state EXIT
+}
+
+require_clean_worktree() {
+  if [ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]; then
+    fail "working tree is not clean. Commit, stash, or remove changes before releasing."
+  fi
+}
+
+require_npm_publish_auth() {
+  if [ "$dry_run" = true ]; then
+    return
+  fi
+
+  if npm whoami >/dev/null 2>&1; then
+    info "  ✓ Logged in to npm as $(npm whoami)"
+    return
+  fi
+
+  if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+    info "  ✓ npm publish auth will be provided by GitHub Actions trusted publishing"
+    return
+  fi
+
+  fail "npm publish auth is not available. Use 'npm login' locally or run from the GitHub release workflow."
+}
+
+list_public_package_info() {
+  node - "$REPO_ROOT" <<'NODE'
+const fs = require('fs');
+const path = require('path');
+
+const root = process.argv[2];
+const roots = ['packages', 'server', 'ui', 'cli'];
+const seen = new Set();
+const rows = [];
+
+function walk(relDir) {
+  const absDir = path.join(root, relDir);
+  const pkgPath = path.join(absDir, 'package.json');
+
+  if (fs.existsSync(pkgPath)) {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    if (!pkg.private) {
+      rows.push([relDir, pkg.name]);
+    }
+    return;
+  }
+
+  if (!fs.existsSync(absDir)) {
+    return;
+  }
+
+  for (const entry of fs.readdirSync(absDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    if (entry.name === 'node_modules' || entry.name === 'dist' || entry.name === '.git') continue;
+    walk(path.join(relDir, entry.name));
+  }
+}
+
+for (const rel of roots) {
+  walk(rel);
+}
+
+rows.sort((a, b) => a[0].localeCompare(b[0]));
+
+for (const [dir, name] of rows) {
+  const key = `${dir}\t${name}`;
+  if (seen.has(key)) continue;
+  seen.add(key);
+  process.stdout.write(`${dir}\t${name}\n`);
+}
+NODE
+}
+
+compute_bumped_version() {
+  node - "$1" "$2" <<'NODE'
+const current = process.argv[2];
+const bump = process.argv[3];
+const match = current.match(/^(\d+)\.(\d+)\.(\d+)$/);
+
+if (!match) {
+  throw new Error(`invalid semver version: ${current}`);
+}
+
+let [major, minor, patch] = match.slice(1).map(Number);
+
+if (bump === 'patch') {
+  patch += 1;
+} else if (bump === 'minor') {
+  minor += 1;
+  patch = 0;
+} else if (bump === 'major') {
+  major += 1;
+  minor = 0;
+  patch = 0;
+} else {
+  throw new Error(`unsupported bump type: ${bump}`);
+}
+
+process.stdout.write(`${major}.${minor}.${patch}`);
+NODE
+}
+
+next_canary_version() {
+  local stable_version="$1"
+  local versions_json
+
+  versions_json="$(npm view paperclipai versions --json 2>/dev/null || echo '[]')"
+
+  node - "$stable_version" "$versions_json" <<'NODE'
+const stable = process.argv[2];
+const versionsArg = process.argv[3];
+
+let versions = [];
+try {
+  const parsed = JSON.parse(versionsArg);
+  versions = Array.isArray(parsed) ? parsed : [parsed];
+} catch {
+  versions = [];
+}
+
+const pattern = new RegExp(`^${stable.replace(/\./g, '\\.')}-canary\\.(\\d+)$`);
+let max = -1;
+
+for (const version of versions) {
+  const match = version.match(pattern);
+  if (!match) continue;
+  max = Math.max(max, Number(match[1]));
+}
+
+process.stdout.write(`${stable}-canary.${max + 1}`);
+NODE
+}
+
+replace_version_string() {
+  local from_version="$1"
+  local to_version="$2"
+
+  node - "$REPO_ROOT" "$from_version" "$to_version" <<'NODE'
+const fs = require('fs');
+const path = require('path');
+
+const root = process.argv[2];
+const fromVersion = process.argv[3];
+const toVersion = process.argv[4];
+
+const roots = ['packages', 'server', 'ui', 'cli'];
+const targets = new Set(['package.json', 'CHANGELOG.md']);
+const extraFiles = [path.join('cli', 'src', 'index.ts')];
+
+function rewriteFile(filePath) {
+  if (!fs.existsSync(filePath)) return;
+  const current = fs.readFileSync(filePath, 'utf8');
+  if (!current.includes(fromVersion)) return;
+  fs.writeFileSync(filePath, current.split(fromVersion).join(toVersion));
+}
+
+function walk(relDir) {
+  const absDir = path.join(root, relDir);
+  if (!fs.existsSync(absDir)) return;
+
+  for (const entry of fs.readdirSync(absDir, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      if (entry.name === 'node_modules' || entry.name === 'dist' || entry.name === '.git') continue;
+      walk(path.join(relDir, entry.name));
+      continue;
+    }
+
+    if (targets.has(entry.name)) {
+      rewriteFile(path.join(absDir, entry.name));
+    }
+  }
+}
+
+for (const rel of roots) {
+  walk(rel);
+}
+
+for (const relFile of extraFiles) {
+  rewriteFile(path.join(root, relFile));
+}
+NODE
+}
+
+LAST_STABLE_TAG="$(git -C "$REPO_ROOT" tag --list 'v*' --sort=-version:refname | head -1)"
+CURRENT_STABLE_VERSION="${LAST_STABLE_TAG#v}"
+if [ -z "$CURRENT_STABLE_VERSION" ]; then
+  CURRENT_STABLE_VERSION="0.0.0"
+fi
+
+TARGET_STABLE_VERSION="$(compute_bumped_version "$CURRENT_STABLE_VERSION" "$bump_type")"
+TARGET_PUBLISH_VERSION="$TARGET_STABLE_VERSION"
+
+if [ "$canary" = true ]; then
+  TARGET_PUBLISH_VERSION="$(next_canary_version "$TARGET_STABLE_VERSION")"
+fi
+
+PUBLIC_PACKAGE_INFO="$(list_public_package_info)"
+PUBLIC_PACKAGE_NAMES="$(printf '%s\n' "$PUBLIC_PACKAGE_INFO" | cut -f2)"
+PUBLIC_PACKAGE_DIRS="$(printf '%s\n' "$PUBLIC_PACKAGE_INFO" | cut -f1)"
+
+if [ -z "$PUBLIC_PACKAGE_INFO" ]; then
+  fail "no public packages were found in the workspace."
+fi
+
+info ""
+info "==> Release plan"
+info "  Last stable tag: ${LAST_STABLE_TAG:-<none>}"
+info "  Current stable version: $CURRENT_STABLE_VERSION"
+if [ "$canary" = true ]; then
+  info "  Target stable version: $TARGET_STABLE_VERSION"
+  info "  Canary version: $TARGET_PUBLISH_VERSION"
+else
+  info "  Stable version: $TARGET_STABLE_VERSION"
+fi
+
+info ""
+info "==> Step 1/7: Preflight checks..."
+require_clean_worktree
+info "  ✓ Working tree is clean"
+require_npm_publish_auth
+
+if [ "$dry_run" = true ] || [ "$canary" = true ]; then
+  set_cleanup_trap
+fi
+
+info ""
+info "==> Step 2/7: Creating release changeset..."
 {
   echo "---"
-  while IFS= read -r pkg; do
-    echo "\"$pkg\": $bump_type"
-  done <<< "$PACKAGES"
+  while IFS= read -r pkg_name; do
+    [ -z "$pkg_name" ] && continue
+    echo "\"$pkg_name\": $bump_type"
+  done <<< "$PUBLIC_PACKAGE_NAMES"
   echo "---"
   echo ""
-  echo "Version bump ($bump_type)"
-} > "$CHANGESET_FILE"
+  if [ "$canary" = true ]; then
+    echo "Canary release preparation for $TARGET_STABLE_VERSION"
+  else
+    echo "Stable release preparation for $TARGET_STABLE_VERSION"
+  fi
+} > "$TEMP_CHANGESET_FILE"
+info "  ✓ Created release changeset for $(printf '%s\n' "$PUBLIC_PACKAGE_NAMES" | sed '/^$/d' | wc -l | xargs) packages"
 
-echo "  ✓ Created changeset for $(echo "$PACKAGES" | wc -l | xargs) packages"
-
-# ── Step 3: Version packages ─────────────────────────────────────────────────
-
-echo ""
-echo "==> Step 3/7: Running changeset version..."
+info ""
+info "==> Step 3/7: Versioning packages..."
 cd "$REPO_ROOT"
+if [ "$canary" = true ]; then
+  npx changeset pre enter canary
+fi
 npx changeset version
-echo "  ✓ Versions bumped and CHANGELOGs generated"
 
-# Read the new version from the CLI package
-NEW_VERSION=$(node -e "console.log(require('$CLI_DIR/package.json').version)")
-echo "  New version: $NEW_VERSION"
-
-# Update the version string in cli/src/index.ts
-CURRENT_VERSION_IN_SRC=$(sed -n 's/.*\.version("\([^"]*\)".*/\1/p' "$CLI_DIR/src/index.ts" | head -1)
-if [ -n "$CURRENT_VERSION_IN_SRC" ] && [ "$CURRENT_VERSION_IN_SRC" != "$NEW_VERSION" ]; then
-  sed -i '' "s/\.version(\"$CURRENT_VERSION_IN_SRC\")/\.version(\"$NEW_VERSION\")/" "$CLI_DIR/src/index.ts"
-  echo "  ✓ Updated cli/src/index.ts version to $NEW_VERSION"
+if [ "$canary" = true ]; then
+  BASE_CANARY_VERSION="${TARGET_STABLE_VERSION}-canary.0"
+  if [ "$TARGET_PUBLISH_VERSION" != "$BASE_CANARY_VERSION" ]; then
+    replace_version_string "$BASE_CANARY_VERSION" "$TARGET_PUBLISH_VERSION"
+  fi
 fi
 
-# ── Step 4: Build packages ───────────────────────────────────────────────────
+VERSION_IN_CLI_PACKAGE="$(node -e "console.log(require('$CLI_DIR/package.json').version)")"
+if [ "$VERSION_IN_CLI_PACKAGE" != "$TARGET_PUBLISH_VERSION" ]; then
+  fail "versioning drift detected. Expected $TARGET_PUBLISH_VERSION but found $VERSION_IN_CLI_PACKAGE."
+fi
+info "  ✓ Versioned workspace to $TARGET_PUBLISH_VERSION"
 
-echo ""
-echo "==> Step 4/7: Building all packages..."
+info ""
+info "==> Step 4/7: Building workspace artifacts..."
 cd "$REPO_ROOT"
-
-# Build packages in dependency order (excluding CLI)
-pnpm --filter @paperclipai/shared build
-pnpm --filter @paperclipai/adapter-utils build
-pnpm --filter @paperclipai/db build
-pnpm --filter @paperclipai/adapter-claude-local build
-pnpm --filter @paperclipai/adapter-codex-local build
-pnpm --filter @paperclipai/adapter-opencode-local build
-pnpm --filter @paperclipai/adapter-openclaw-gateway build
-pnpm --filter @paperclipai/server build
-
-# Build UI and bundle into server package for static serving
+pnpm build
 bash "$REPO_ROOT/scripts/prepare-server-ui-dist.sh"
-
-# Bundle skills into packages that need them (adapters + server)
 for pkg_dir in server packages/adapters/claude-local packages/adapters/codex-local; do
   rm -rf "$REPO_ROOT/$pkg_dir/skills"
   cp -r "$REPO_ROOT/skills" "$REPO_ROOT/$pkg_dir/skills"
 done
-echo "  ✓ All packages built (including UI + skills)"
+info "  ✓ Workspace build complete"
 
-# ── Step 5: Build CLI bundle ─────────────────────────────────────────────────
-
-echo ""
-echo "==> Step 5/7: Building CLI bundle..."
-cd "$REPO_ROOT"
+info ""
+info "==> Step 5/7: Building publishable CLI bundle..."
 "$REPO_ROOT/scripts/build-npm.sh" --skip-checks
-echo "  ✓ CLI bundled"
+info "  ✓ CLI bundle ready"
 
-# ── Step 6: Publish ──────────────────────────────────────────────────────────
-
+info ""
 if [ "$dry_run" = true ]; then
-  echo ""
-  if [ "$canary" = true ]; then
-    echo "==> Step 6/7: Skipping publish (--dry-run, --canary)"
-  else
-    echo "==> Step 6/7: Skipping publish (--dry-run)"
-  fi
-  echo ""
-  echo "  Preview what would be published:"
-  for dir in packages/shared packages/adapter-utils packages/db \
-             packages/adapters/claude-local packages/adapters/codex-local packages/adapters/opencode-local packages/adapters/openclaw-gateway \
-             server cli; do
-    echo "  --- $dir ---"
-    cd "$REPO_ROOT/$dir"
+  info "==> Step 6/7: Previewing publish payloads (--dry-run)..."
+  while IFS= read -r pkg_dir; do
+    [ -z "$pkg_dir" ] && continue
+    info "  --- $pkg_dir ---"
+    cd "$REPO_ROOT/$pkg_dir"
     npm pack --dry-run 2>&1 | tail -3
-  done
+  done <<< "$PUBLIC_PACKAGE_DIRS"
   cd "$REPO_ROOT"
   if [ "$canary" = true ]; then
-    echo ""
-    echo "  [dry-run] Would publish with: npx changeset publish --tag canary"
+    info "  [dry-run] Would publish ${TARGET_PUBLISH_VERSION} under dist-tag canary"
+  else
+    info "  [dry-run] Would publish ${TARGET_PUBLISH_VERSION} under dist-tag latest"
   fi
 else
-  echo ""
   if [ "$canary" = true ]; then
-    echo "==> Step 6/7: Publishing to npm (canary)..."
-    cd "$REPO_ROOT"
+    info "==> Step 6/7: Publishing canary to npm..."
     npx changeset publish --tag canary
-    echo "  ✓ Published all packages under @canary tag"
+    info "  ✓ Published ${TARGET_PUBLISH_VERSION} under dist-tag canary"
   else
-    echo "==> Step 6/7: Publishing to npm..."
-    cd "$REPO_ROOT"
+    info "==> Step 6/7: Publishing stable release to npm..."
     npx changeset publish
-    echo "  ✓ Published all packages"
+    info "  ✓ Published ${TARGET_PUBLISH_VERSION} under dist-tag latest"
   fi
 fi
 
-# ── Step 7: Restore CLI dev package.json and commit ──────────────────────────
-
-echo ""
-if [ "$canary" = true ]; then
-  echo "==> Step 7/7: Skipping commit and tag (canary mode — promote later)..."
+info ""
+if [ "$dry_run" = true ]; then
+  info "==> Step 7/7: Cleaning up dry-run state..."
+  info "  ✓ Dry run leaves the working tree unchanged"
+elif [ "$canary" = true ]; then
+  info "==> Step 7/7: Cleaning up canary state..."
+  info "  ✓ Canary state will be discarded after publish"
 else
-  echo "==> Step 7/7: Restoring dev package.json, committing, and tagging..."
-fi
-cd "$REPO_ROOT"
+  info "==> Step 7/7: Finalizing stable release commit..."
+  restore_publish_artifacts
 
-# Restore the dev package.json (build-npm.sh backs it up)
-if [ -f "$CLI_DIR/package.dev.json" ]; then
-  mv "$CLI_DIR/package.dev.json" "$CLI_DIR/package.json"
-  echo "  ✓ Restored workspace dependencies in cli/package.json"
-fi
+  git -C "$REPO_ROOT" add -u .changeset packages server cli
+  if [ -f "$REPO_ROOT/releases/v${TARGET_STABLE_VERSION}.md" ]; then
+    git -C "$REPO_ROOT" add "releases/v${TARGET_STABLE_VERSION}.md"
+  fi
 
-# Remove the README copied for npm publishing
-if [ -f "$CLI_DIR/README.md" ]; then
-  rm "$CLI_DIR/README.md"
+  git -C "$REPO_ROOT" commit -m "chore: release v$TARGET_STABLE_VERSION"
+  git -C "$REPO_ROOT" tag "v$TARGET_STABLE_VERSION"
+  info "  ✓ Created commit and tag v$TARGET_STABLE_VERSION"
 fi
 
-# Remove temporary build artifacts before committing (these are only needed during publish)
-rm -rf "$REPO_ROOT/server/ui-dist"
-for pkg_dir in server packages/adapters/claude-local packages/adapters/codex-local; do
-  rm -rf "$REPO_ROOT/$pkg_dir/skills"
-done
-
-if [ "$canary" = false ]; then
-  # Stage only release-related files (avoid sweeping unrelated changes with -A)
-  git add \
-    .changeset/ \
-    '**/CHANGELOG.md' \
-    '**/package.json' \
-    cli/src/index.ts
-  git commit -m "chore: release v$NEW_VERSION"
-  git tag "v$NEW_VERSION"
-  echo "  ✓ Committed and tagged v$NEW_VERSION"
-fi
-
-if [ "$canary" = false ]; then
-  create_github_release "$NEW_VERSION" "$dry_run"
-fi
-
-# ── Done ──────────────────────────────────────────────────────────────────────
-
-echo ""
-if [ "$canary" = true ]; then
-  if [ "$dry_run" = true ]; then
-    echo "Dry run complete for canary v$NEW_VERSION."
-    echo "  - Versions bumped, built, and previewed"
-    echo "  - Dev package.json restored"
-    echo "  - No commit or tag (canary mode)"
-    echo ""
-    echo "To actually publish canary, run:"
-    echo "  ./scripts/release.sh $bump_type --canary"
+info ""
+if [ "$dry_run" = true ]; then
+  if [ "$canary" = true ]; then
+    info "Dry run complete for canary ${TARGET_PUBLISH_VERSION}."
   else
-    echo "Published canary at v$NEW_VERSION"
-    echo ""
-    echo "Verify: npm view paperclipai@canary version"
-    echo ""
-    echo "To promote to latest:"
-    echo "  ./scripts/release.sh --promote $NEW_VERSION"
+    info "Dry run complete for stable v${TARGET_STABLE_VERSION}."
   fi
-elif [ "$dry_run" = true ]; then
-  echo "Dry run complete for v$NEW_VERSION."
-  echo "  - Versions bumped, built, and previewed"
-  echo "  - Dev package.json restored"
-  echo "  - Commit and tag created (locally)"
-  echo "  - Would create GitHub Release"
-  echo ""
-  echo "To actually publish, run:"
-  echo "  ./scripts/release.sh $bump_type"
+elif [ "$canary" = true ]; then
+  info "Published canary ${TARGET_PUBLISH_VERSION}."
+  info "Install with: npx paperclipai@canary onboard"
+  info "Stable version remains: $CURRENT_STABLE_VERSION"
 else
-  echo "Published all packages at v$NEW_VERSION"
-  echo ""
-  echo "To push:"
-  echo "  git push && git push origin v$NEW_VERSION"
-  echo ""
-  echo "GitHub Release: https://github.com/cryppadotta/paperclip/releases/tag/v$NEW_VERSION"
+  info "Published stable v${TARGET_STABLE_VERSION}."
+  info "Next steps:"
+  info "  git push origin HEAD:master --follow-tags"
+  info "  ./scripts/create-github-release.sh $TARGET_STABLE_VERSION"
 fi

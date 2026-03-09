@@ -19,6 +19,8 @@
     "paperclipai": "node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts",
     "build:npm": "./scripts/build-npm.sh",
     "release": "./scripts/release.sh",
+    "release:github": "./scripts/create-github-release.sh",
+    "release:rollback": "./scripts/rollback-latest.sh",
     "changeset": "changeset",
     "version-packages": "changeset version",
     "check:tokens": "node scripts/check-forbidden-tokens.mjs",

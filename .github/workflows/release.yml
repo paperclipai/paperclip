@@ -1,0 +1,132 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Release channel
+        required: true
+        type: choice
+        default: canary
+        options:
+          - canary
+          - stable
+      bump:
+        description: Semantic version bump
+        required: true
+        type: choice
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
+      dry_run:
+        description: Preview the release without publishing
+        required: true
+        type: boolean
+        default: true
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm -r typecheck
+
+      - name: Run tests
+        run: pnpm test:run
+
+      - name: Build
+        run: pnpm build
+
+  publish:
+    if: github.ref == 'refs/heads/master'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: npm-release
+    permissions:
+      contents: write
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Configure git author
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Run release script
+        env:
+          GITHUB_ACTIONS: "true"
+        run: |
+          args=("${{ inputs.bump }}")
+          if [ "${{ inputs.channel }}" = "canary" ]; then
+            args+=("--canary")
+          fi
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            args+=("--dry-run")
+          fi
+          ./scripts/release.sh "${args[@]}"
+
+      - name: Push stable release commit and tag
+        if: inputs.channel == 'stable' && !inputs.dry_run
+        run: git push origin HEAD:master --follow-tags
+
+      - name: Create GitHub Release
+        if: inputs.channel == 'stable' && !inputs.dry_run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(git tag --points-at HEAD | grep '^v' | head -1 | sed 's/^v//')"
+          if [ -z "$version" ]; then
+            echo "Error: no v* tag points at HEAD after stable release." >&2
+            exit 1
+          fi
+          ./scripts/create-github-release.sh "$version"
