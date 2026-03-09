@@ -7,6 +7,7 @@ import type {
   HeartbeatRun,
   Approval,
   AgentConfigRevision,
+  TrustLevel,
 } from "@paperclipai/shared";
 import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { ApiError, api } from "./client";
@@ -43,6 +44,17 @@ export interface OrgNode {
 export interface AgentHireResponse {
   agent: Agent;
   approval: Approval | null;
+}
+
+export interface TrustProgress {
+  trustLevel: TrustLevel;
+  trustPromotionThreshold: number | null;
+  trustManuallySetAt: Date | null;
+  consecutiveSuccesses: number;
+  recentFailures: number;
+  promotionThreshold: number;
+  demotionFailureThreshold: number;
+  demotionWindowSize: number;
 }
 
 function withCompanyScope(path: string, companyId?: string) {
@@ -144,4 +156,8 @@ export const agentsApi = {
   ) => api.post<HeartbeatRun | { status: "skipped" }>(agentPath(id, companyId, "/wakeup"), data),
   loginWithClaude: (id: string, companyId?: string) =>
     api.post<ClaudeLoginResult>(agentPath(id, companyId, "/claude-login"), {}),
+  setTrustLevel: (id: string, trustLevel: TrustLevel, companyId?: string) =>
+    api.patch<Agent>(agentPath(id, companyId, "/trust"), { trustLevel }),
+  trustProgress: (id: string, companyId?: string) =>
+    api.get<TrustProgress>(agentPath(id, companyId, "/trust-progress")),
 };

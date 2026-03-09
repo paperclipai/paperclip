@@ -4,6 +4,7 @@ import {
   AGENT_ICON_NAMES,
   AGENT_ROLES,
   AGENT_STATUSES,
+  TRUST_LEVELS,
 } from "../constants.js";
 import { envConfigSchema } from "./secret.js";
 
@@ -55,6 +56,7 @@ export const updateAgentSchema = createAgentSchema
     permissions: z.never().optional(),
     status: z.enum(AGENT_STATUSES).optional(),
     spentMonthlyCents: z.number().int().nonnegative().optional(),
+    trustPromotionThreshold: z.number().int().min(1).nullable().optional(),
   });
 
 export type UpdateAgent = z.infer<typeof updateAgentSchema>;
@@ -99,3 +101,9 @@ export const updateAgentPermissionsSchema = z.object({
 });
 
 export type UpdateAgentPermissions = z.infer<typeof updateAgentPermissionsSchema>;
+
+export const setAgentTrustSchema = z.object({
+  trustLevel: z.enum(TRUST_LEVELS),
+});
+
+export type SetAgentTrust = z.infer<typeof setAgentTrustSchema>;

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, Link, useBeforeUnload } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { agentsApi, type AgentKey, type ClaudeLoginResult } from "../api/agents";
+import { agentsApi, type AgentKey, type ClaudeLoginResult, type TrustProgress } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { ApiError } from "../api/client";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
@@ -33,6 +33,12 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   MoreHorizontal,
   Play,
   Pause,
@@ -53,6 +59,7 @@ import {
   ChevronDown,
   ArrowLeft,
   Settings,
+  ShieldCheck,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
@@ -291,6 +298,12 @@ export function AgentDetail() {
     enabled: !!resolvedCompanyId,
   });
 
+  const { data: trustProgress } = useQuery({
+    queryKey: ["agents", resolvedAgentId, "trust-progress"],
+    queryFn: () => agentsApi.trustProgress(resolvedAgentId!, resolvedCompanyId ?? undefined),
+    enabled: Boolean(resolvedAgentId),
+  });
+
   const assignedIssues = (allIssues ?? [])
     .filter((i) => i.assigneeAgentId === agent?.id)
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
@@ -446,9 +459,18 @@ export function AgentDetail() {
           </AgentIconPicker>
           <div className="min-w-0">
             <h2 className="text-2xl font-bold truncate">{agent.name}</h2>
-            <p className="text-sm text-muted-foreground truncate">
-              {roleLabels[agent.role] ?? agent.role}
-              {agent.title ? ` - ${agent.title}` : ""}
+            <p className="text-sm text-muted-foreground truncate flex items-center gap-1">
+              <span>{roleLabels[agent.role] ?? agent.role}{agent.title ? ` - ${agent.title}` : ""}</span>
+              {agent.trustLevel === "autonomous" && (
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <ShieldCheck className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                    </TooltipTrigger>
+                    <TooltipContent>Autonomous — earned through consistent performance</TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              )}
             </p>
           </div>
         </div>
@@ -632,6 +654,7 @@ export function AgentDetail() {
           directReports={directReports}
           agentId={agent.id}
           agentRouteId={canonicalAgentRef}
+          trustProgress={trustProgress ?? null}
         />
       )}
 
@@ -753,6 +776,7 @@ function AgentOverview({
   directReports,
   agentId,
   agentRouteId,
+  trustProgress,
 }: {
   agent: Agent;
   runs: HeartbeatRun[];
@@ -762,6 +786,7 @@ function AgentOverview({
   directReports: Agent[];
   agentId: string;
   agentRouteId: string;
+  trustProgress: TrustProgress | null;
 }) {
   return (
     <div className="space-y-8">
@@ -826,6 +851,7 @@ function AgentOverview({
         agentRouteId={agentRouteId}
         reportsToAgent={reportsToAgent}
         directReports={directReports}
+        trustProgress={trustProgress ?? null}
       />
     </div>
   );
@@ -840,11 +866,13 @@ function ConfigSummary({
   agentRouteId,
   reportsToAgent,
   directReports,
+  trustProgress,
 }: {
   agent: Agent;
   agentRouteId: string;
   reportsToAgent: Agent | null;
   directReports: Agent[];
+  trustProgress: TrustProgress | null;
 }) {
   const config = agent.adapterConfig as Record<string, unknown>;
   const promptText = typeof config?.promptTemplate === "string" ? config.promptTemplate : "";
@@ -896,6 +924,19 @@ function ConfigSummary({
                 ? <span>{relativeTime(agent.lastHeartbeatAt)}</span>
                 : <span className="text-muted-foreground">Never</span>
               }
+            </SummaryRow>
+            <SummaryRow label="Trust">
+              <span className="capitalize">{agent.trustLevel}</span>
+              {trustProgress && agent.trustLevel === "supervised" && (
+                <span className="text-muted-foreground ml-1 text-xs">
+                  ({trustProgress.consecutiveSuccesses}/{trustProgress.promotionThreshold} to promotion)
+                </span>
+              )}
+              {trustProgress && agent.trustLevel === "autonomous" && trustProgress.recentFailures > 0 && (
+                <span className="text-muted-foreground ml-1 text-xs">
+                  ({trustProgress.recentFailures} recent failure{trustProgress.recentFailures !== 1 ? "s" : ""})
+                </span>
+              )}
             </SummaryRow>
             <SummaryRow label="Reports to">
               {reportsToAgent ? (

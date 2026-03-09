@@ -22,6 +22,7 @@ import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { secretService } from "./secrets.js";
+import { trustService } from "./trust.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
@@ -406,6 +407,7 @@ function resolveNextSessionState(input: {
 export function heartbeatService(db: Db) {
   const runLogStore = getRunLogStore();
   const secretsSvc = secretService(db);
+  const trustSvc = trustService(db);
 
   async function getAgent(agentId: string) {
     return db
@@ -891,6 +893,13 @@ export function heartbeatService(db: Db) {
           outcome,
         },
       });
+    }
+
+    // Trust evaluation — non-blocking, errors logged but don't prevent status update
+    try {
+      await trustSvc.evaluateTrust(agentId, outcome);
+    } catch (err) {
+      logger.error({ err, agentId, outcome }, "Trust evaluation failed");
     }
   }
 

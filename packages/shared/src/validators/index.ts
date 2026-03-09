@@ -33,6 +33,7 @@ export {
   testAdapterEnvironmentSchema,
   agentPermissionsSchema,
   updateAgentPermissionsSchema,
+  setAgentTrustSchema,
   type CreateAgent,
   type CreateAgentHire,
   type UpdateAgent,
@@ -42,6 +43,7 @@ export {
   type ResetAgentSession,
   type TestAdapterEnvironment,
   type UpdateAgentPermissions,
+  type SetAgentTrust,
 } from "./agent.js";
 
 export {

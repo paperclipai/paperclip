@@ -15,6 +15,10 @@ import {
   updateAgentInstructionsPathSchema,
   wakeAgentSchema,
   updateAgentSchema,
+  setAgentTrustSchema,
+  TRUST_PROMOTION_THRESHOLD,
+  TRUST_DEMOTION_FAILURE_THRESHOLD,
+  TRUST_DEMOTION_WINDOW_SIZE,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import {
@@ -26,6 +30,7 @@ import {
   issueService,
   logActivity,
   secretService,
+  trustService,
 } from "../services/index.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -55,6 +60,7 @@ export function agentRoutes(db: Db) {
   const heartbeat = heartbeatService(db);
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
+  const trustSvc = trustService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
 
   function canCreateAgents(agent: { role: string; permissions: Record<string, unknown> | null | undefined }) {
@@ -1506,6 +1512,50 @@ export function agentRoutes(db: Db) {
       agentId: agent.id,
       agentName: agent.name,
       adapterType: agent.adapterType,
+    });
+  });
+
+  // ---- Trust ----
+
+  router.patch("/agents/:id/trust", validate(setAgentTrustSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, agent.companyId);
+    assertBoard(req);
+
+    const actorId = req.actor.userId ?? "board";
+    await trustSvc.setTrustLevel(id, agent.companyId, req.body.trustLevel, actorId);
+
+    const updated = await svc.getById(id);
+    res.json(updated);
+  });
+
+  router.get("/agents/:id/trust-progress", async (req, res) => {
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, agent.companyId);
+
+    const promotionThreshold = agent.trustPromotionThreshold ?? TRUST_PROMOTION_THRESHOLD;
+    const consecutiveSuccesses = await trustSvc.countConsecutiveSuccesses(id, promotionThreshold);
+    const recentFailures = await trustSvc.countRecentFailures(id);
+
+    res.json({
+      trustLevel: agent.trustLevel,
+      trustPromotionThreshold: agent.trustPromotionThreshold,
+      trustManuallySetAt: agent.trustManuallySetAt,
+      consecutiveSuccesses,
+      recentFailures,
+      promotionThreshold,
+      demotionFailureThreshold: TRUST_DEMOTION_FAILURE_THRESHOLD,
+      demotionWindowSize: TRUST_DEMOTION_WINDOW_SIZE,
     });
   });
 

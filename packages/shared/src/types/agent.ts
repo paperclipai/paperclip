@@ -2,6 +2,7 @@ import type {
   AgentAdapterType,
   AgentRole,
   AgentStatus,
+  TrustLevel,
 } from "../constants.js";
 
 export interface AgentPermissions {
@@ -26,6 +27,9 @@ export interface Agent {
   spentMonthlyCents: number;
   permissions: AgentPermissions;
   lastHeartbeatAt: Date | null;
+  trustLevel: TrustLevel;
+  trustPromotionThreshold: number | null;
+  trustManuallySetAt: Date | null;
   metadata: Record<string, unknown> | null;
   createdAt: Date;
   updatedAt: Date;

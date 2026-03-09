@@ -143,3 +143,22 @@ POST /api/agents/{agentId}/config-revisions/{revisionId}/rollback
 ```
 
 View and roll back agent configuration changes.
+
+## Set Trust Level
+
+```
+PATCH /api/agents/{agentId}/trust
+{
+  "trustLevel": "autonomous"
+}
+```
+
+Board-only. Manually sets an agent's trust level (`supervised` or `autonomous`). Starts a 5-minute cooldown during which automatic trust evaluation is paused.
+
+## Trust Progress
+
+```
+GET /api/agents/{agentId}/trust-progress
+```
+
+Returns the agent's current trust metrics: consecutive successes, recent failures, effective promotion threshold, and demotion parameters.
