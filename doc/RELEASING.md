@@ -128,6 +128,16 @@ If you want to exercise onboarding from a fresh local checkout rather than npm, 
 
 That is not a required release step every time, but it is a useful higher-confidence check when onboarding is the main risk area or when you need to verify what the current codebase does before publishing.
 
+If you want to exercise onboarding from the current committed ref in your local repo, use:
+
+```bash
+./scripts/clean-onboard-ref.sh
+PAPERCLIP_PORT=3234 ./scripts/clean-onboard-ref.sh
+./scripts/clean-onboard-ref.sh HEAD
+```
+
+This uses the current committed `HEAD` in a detached temp worktree. It does **not** include uncommitted local edits.
+
 ### GitHub Actions release
 
 There is also a manual workflow at [`.github/workflows/release.yml`](../.github/workflows/release.yml). It is designed for npm trusted publishing via GitHub OIDC instead of long-lived npm tokens.
@@ -344,6 +354,7 @@ If you want to smoke onboarding from the current codebase rather than npm, run:
 
 ```bash
 ./scripts/clean-onboard-git.sh
+./scripts/clean-onboard-ref.sh
 ```
 
 Minimum checks:
