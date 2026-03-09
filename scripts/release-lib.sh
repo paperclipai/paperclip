@@ -21,6 +21,35 @@ git_remote_exists() {
   git -C "$REPO_ROOT" remote get-url "$1" >/dev/null 2>&1
 }
 
+github_repo_from_remote() {
+  local remote_url
+
+  remote_url="$(git -C "$REPO_ROOT" remote get-url "$1" 2>/dev/null || true)"
+  [ -n "$remote_url" ] || return 1
+
+  remote_url="${remote_url%.git}"
+  remote_url="${remote_url#ssh://}"
+
+  node - "$remote_url" <<'NODE'
+const remoteUrl = process.argv[2];
+
+const patterns = [
+  /^https?:\/\/github\.com\/([^/]+\/[^/]+)$/,
+  /^git@github\.com:([^/]+\/[^/]+)$/,
+  /^[^:]+:([^/]+\/[^/]+)$/
+];
+
+for (const pattern of patterns) {
+  const match = remoteUrl.match(pattern);
+  if (!match) continue;
+  process.stdout.write(match[1]);
+  process.exit(0);
+}
+
+process.exit(1);
+NODE
+}
+
 resolve_release_remote() {
   local remote="${RELEASE_REMOTE:-${PUBLISH_REMOTE:-}}"
 
