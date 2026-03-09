@@ -10,11 +10,11 @@ If you don't set `DATABASE_URL`, the server automatically starts an embedded Pos
 pnpm dev
 ```
 
-That's it. On first start the server:
+That's it. On startup the server:
 
 1. Creates a `~/.paperclip/instances/default/db/` directory for storage
 2. Ensures the `paperclip` database exists
-3. Runs migrations automatically for empty databases
+3. Applies pending migrations automatically
 4. Starts serving requests
 
 Data persists across restarts in `~/.paperclip/instances/default/db/`. To reset local dev data, delete that directory.

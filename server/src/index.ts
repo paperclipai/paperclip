@@ -26,6 +26,7 @@ import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import { heartbeatService } from "./services/index.js";
+import { shouldAutoApplyStartupMigrations } from "./startup-migrations.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
@@ -369,12 +370,16 @@ export async function startServer(): Promise<StartedServer> {
     }
   
     const embeddedConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;
-    const shouldAutoApplyFirstRunMigrations = !clusterAlreadyInitialized || dbStatus === "created";
-    if (shouldAutoApplyFirstRunMigrations) {
-      logger.info("Detected first-run embedded PostgreSQL setup; applying pending migrations automatically");
+    const shouldAutoApplyEmbeddedMigrations = shouldAutoApplyStartupMigrations({
+      mode: "embedded",
+      clusterAlreadyInitialized,
+      databaseStatus: dbStatus,
+    });
+    if (shouldAutoApplyEmbeddedMigrations) {
+      logger.info("Embedded PostgreSQL startup will apply pending migrations automatically");
     }
     migrationSummary = await ensureMigrations(embeddedConnectionString, "Embedded PostgreSQL", {
-      autoApply: shouldAutoApplyFirstRunMigrations,
+      autoApply: shouldAutoApplyEmbeddedMigrations,
     });
   
     db = createDb(embeddedConnectionString);
