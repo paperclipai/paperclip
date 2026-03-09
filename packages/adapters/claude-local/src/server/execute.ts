@@ -520,9 +520,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const isProcessKilled = proc.signal != null;
 
     const classifiedErrorCode = (() => {
-      if (loginMeta.requiresLogin) return "claude_auth_required";
-      if ((proc.exitCode ?? 0) === 0 && !isRateLimited && !isMaxTurns) return null;
+      // Max turns is a definitive exit reason — check before auth detection
+      // which can false-positive from agent output containing "unauthorized"
       if (isMaxTurns) return "max_turns_exceeded";
+      if (loginMeta.requiresLogin) return "claude_auth_required";
+      if ((proc.exitCode ?? 0) === 0 && !isRateLimited) return null;
       if (isRateLimited) return "rate_limited";
       if (isProcessKilled) return "process_killed";
       return null;

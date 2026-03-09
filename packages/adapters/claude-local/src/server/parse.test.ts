@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hasRateLimitEvent, isClaudeRateLimitResult } from "./parse.js";
+import { hasRateLimitEvent, isClaudeRateLimitResult, detectClaudeLoginRequired } from "./parse.js";
 
 describe("hasRateLimitEvent", () => {
   it("detects rate_limit_event type", () => {
@@ -88,5 +88,37 @@ describe("isClaudeRateLimitResult", () => {
 
   it("returns false for success result", () => {
     expect(isClaudeRateLimitResult({ subtype: "success", result: "Task completed" })).toBe(false);
+  });
+});
+
+describe("detectClaudeLoginRequired", () => {
+  it("does not false-positive when agent stdout contains 'unauthorized'", () => {
+    // Agent output may discuss auth topics without meaning Claude itself needs login
+    const stdout = [
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "The API returned unauthorized. Let me fix the auth header." }] } }),
+      JSON.stringify({ type: "result", subtype: "error_max_turns", result: "Reached maximum turns" }),
+    ].join("\n");
+    const result = detectClaudeLoginRequired({ parsed: { subtype: "error_max_turns", result: "Reached maximum turns" }, stdout, stderr: "" });
+    expect(result.requiresLogin).toBe(false);
+  });
+
+  it("detects login required from stderr", () => {
+    const result = detectClaudeLoginRequired({ parsed: null, stdout: "", stderr: "Please run `claude login` to authenticate" });
+    expect(result.requiresLogin).toBe(true);
+  });
+
+  it("detects login required from parsed result", () => {
+    const result = detectClaudeLoginRequired({ parsed: { result: "Authentication required. Please log in." }, stdout: "", stderr: "" });
+    expect(result.requiresLogin).toBe(true);
+  });
+
+  it("detects login required from parsed errors", () => {
+    const result = detectClaudeLoginRequired({ parsed: { errors: ["Not logged in"] }, stdout: "", stderr: "" });
+    expect(result.requiresLogin).toBe(true);
+  });
+
+  it("returns false for normal output", () => {
+    const result = detectClaudeLoginRequired({ parsed: { result: "Task completed successfully" }, stdout: "", stderr: "" });
+    expect(result.requiresLogin).toBe(false);
   });
 });
