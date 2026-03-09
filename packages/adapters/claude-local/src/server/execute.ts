@@ -317,9 +317,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const combinedPath = path.join(skillsDir, "agent-instructions.md");
       await fs.writeFile(combinedPath, instructionsContent + pathDirective, "utf-8");
       effectiveInstructionsFilePath = combinedPath;
-    } catch {
-      await onLog("stderr", `[paperclip] Warning: instructions file not found at "${instructionsFilePath}", continuing without agent instructions.\n`);
-      effectiveInstructionsFilePath = "";
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        await onLog("stderr", `[paperclip] Warning: instructions file not found at "${instructionsFilePath}", continuing without agent instructions.\n`);
+        effectiveInstructionsFilePath = "";
+      } else {
+        throw err;
+      }
     }
   }
 
