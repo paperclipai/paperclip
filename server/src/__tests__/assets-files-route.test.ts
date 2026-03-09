@@ -125,4 +125,54 @@ describe("asset file routes", () => {
     expect(res.body.error).toContain("another company");
     expect(mockAssetService.create).not.toHaveBeenCalled();
   });
+
+  it("rejects active-content file uploads", async () => {
+    const app = createApp({
+      type: "board",
+      source: "local_implicit",
+      userId: "board-user",
+      companyIds: [COMPANY_ID],
+      isInstanceAdmin: true,
+    });
+
+    const res = await request(app)
+      .post(`/api/companies/${COMPANY_ID}/assets/files`)
+      .attach("file", Buffer.from("<html><script>alert(1)</script></html>"), {
+        filename: "report.html",
+        contentType: "text/html",
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("Unsupported file type");
+    expect(mockAssetService.create).not.toHaveBeenCalled();
+  });
+
+  it("serves asset content with nosniff headers", async () => {
+    mockAssetService.getById.mockResolvedValue({
+      id: "asset-1",
+      companyId: COMPANY_ID,
+      provider: "local_disk",
+      objectKey: "assets/records/report.txt",
+      contentType: "text/plain",
+      byteSize: 5,
+      sha256: "abc123",
+      originalFilename: "report.txt",
+      createdByAgentId: null,
+      createdByUserId: "board-user",
+      createdAt: new Date("2026-03-08T10:00:00.000Z"),
+      updatedAt: new Date("2026-03-08T10:00:00.000Z"),
+    });
+    const app = createApp({
+      type: "board",
+      source: "local_implicit",
+      userId: "board-user",
+      companyIds: [COMPANY_ID],
+      isInstanceAdmin: true,
+    });
+
+    const res = await request(app).get("/api/assets/asset-1/content");
+
+    expect(res.status).toBe(200);
+    expect(res.header["x-content-type-options"]).toBe("nosniff");
+  });
 });

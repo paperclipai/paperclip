@@ -15,6 +15,28 @@ const ALLOWED_IMAGE_CONTENT_TYPES = new Set([
   "image/webp",
   "image/gif",
 ]);
+const ALLOWED_FILE_CONTENT_TYPES = new Set([
+  "application/gzip",
+  "application/json",
+  "application/msword",
+  "application/pdf",
+  "application/vnd.ms-excel",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/x-gzip",
+  "application/x-tar",
+  "application/x-zip-compressed",
+  "application/zip",
+  "text/csv",
+  "text/markdown",
+  "text/plain",
+]);
+
+function normalizeContentType(value: string | null | undefined) {
+  return (value ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
+}
 
 export function assetRoutes(db: Db, storage: StorageService) {
   const router = Router();
@@ -90,7 +112,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
       return null;
     }
 
-    const contentType = (file.mimetype || "").toLowerCase();
+    const contentType = normalizeContentType(file.mimetype);
     if (file.buffer.length <= 0) {
       res.status(422).json({ error: `${opts.routeLabel === "image" ? "Image" : "File"} is empty` });
       return null;
@@ -173,6 +195,12 @@ export function assetRoutes(db: Db, storage: StorageService) {
       routeLabel: "file",
       metadataSchema: createAssetFileMetadataSchema,
       namespaceFallback: "records",
+      // General record attachments are intentionally limited to inert document formats
+      // so assets served from the Paperclip origin cannot become a stored-XSS vector.
+      validateContentType: (contentType) =>
+        ALLOWED_FILE_CONTENT_TYPES.has(contentType)
+          ? null
+          : `Unsupported file type: ${contentType || "unknown"}`,
     });
     if (!asset) return;
     res.status(201).json(toAssetResponse(asset));
@@ -191,6 +219,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
     res.setHeader("Content-Type", asset.contentType || object.contentType || "application/octet-stream");
     res.setHeader("Content-Length", String(asset.byteSize || object.contentLength || 0));
     res.setHeader("Cache-Control", "private, max-age=60");
+    res.setHeader("X-Content-Type-Options", "nosniff");
     const filename = asset.originalFilename ?? "asset";
     res.setHeader("Content-Disposition", `inline; filename=\"${filename.replaceAll("\"", "")}\"`);
 

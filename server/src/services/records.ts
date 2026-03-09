@@ -137,6 +137,35 @@ function deriveProjectDelta(blocker: string | null, hasRecentResult: boolean) {
   return "unknown" as const;
 }
 
+export function summarizeProjectHealth(
+  scopedProjects: Array<Pick<typeof projects.$inferSelect, "id" | "name" | "status">>,
+  scopedResults: ResultRecord[],
+  blockerRecords: Array<PlanRecord | ResultRecord>,
+  decisionRecords: PlanRecord[],
+): ExecutiveProjectHealth[] {
+  return scopedProjects.map((project) => {
+    const linkedResults = scopedResults.filter((record) => linkedToProject(record, project.id));
+    const linkedBlockers = blockerRecords.filter((record) => linkedToProject(record, project.id));
+    const linkedDecisions = decisionRecords.filter((record) => linkedToProject(record, project.id));
+    const lastMeaningfulResult = [...linkedResults]
+      .filter((record) => record.status === "published")
+      .sort((left, right) => (right.publishedAt ?? right.updatedAt).getTime() - (left.publishedAt ?? left.updatedAt).getTime())[0] ?? null;
+    const currentBlocker = linkedBlockers[0] ? getRecordHeadline(linkedBlockers[0]) : null;
+    const nextDecision = linkedDecisions[0] ?? null;
+    return {
+      projectId: project.id,
+      projectName: project.name,
+      projectStatus: project.status,
+      healthStatus: lastMeaningfulResult?.healthStatus ?? deriveProjectHealth(project.status, currentBlocker, nextDecision),
+      healthDelta: lastMeaningfulResult?.healthDelta ?? deriveProjectDelta(currentBlocker, Boolean(lastMeaningfulResult)),
+      confidence: lastMeaningfulResult?.confidence ?? null,
+      lastMeaningfulResult,
+      currentBlocker,
+      nextDecision,
+    };
+  });
+}
+
 function buildBriefingSummary(board: ExecutiveBoardSummary) {
   return `${board.outcomesLanded.length} outcomes, ${board.risksAndBlocks.length} risks, ${board.decisionsNeeded.length} decisions needed`;
 }
@@ -592,44 +621,26 @@ export function recordService(db: Db) {
       .sort((left, right) => (right.publishedAt ?? right.updatedAt).getTime() - (left.publishedAt ?? left.updatedAt).getTime())
       .slice(0, 8);
 
-    const risksAndBlocks = [
+    const allRisksAndBlocks = [
       ...scopedPlans.filter((record) => record.kind === "risk_register" && record.status === "active"),
       ...scopedResults.filter((record) => record.kind === "blocker" && record.status === "published"),
     ]
-      .sort((left, right) => right.updatedAt.getTime() - left.updatedAt.getTime())
-      .slice(0, 8);
+      .sort((left, right) => right.updatedAt.getTime() - left.updatedAt.getTime());
 
-    const decisionsNeeded = scopedPlans
+    const allDecisionsNeeded = scopedPlans
       .filter((record) => record.kind === "decision_record" && record.status === "active" && record.decisionNeeded)
       .sort((left, right) => {
         const leftDue = left.decisionDueAt?.getTime() ?? Number.MAX_SAFE_INTEGER;
         const rightDue = right.decisionDueAt?.getTime() ?? Number.MAX_SAFE_INTEGER;
         if (leftDue !== rightDue) return leftDue - rightDue;
         return right.updatedAt.getTime() - left.updatedAt.getTime();
-      })
-      .slice(0, 8);
+      });
 
-    const projectHealth: ExecutiveProjectHealth[] = scopedProjects.map((project) => {
-      const linkedResults = scopedResults.filter((record) => linkedToProject(record, project.id));
-      const linkedBlockers = risksAndBlocks.filter((record) => linkedToProject(record, project.id));
-      const linkedDecisions = decisionsNeeded.filter((record) => linkedToProject(record, project.id));
-      const lastMeaningfulResult = [...linkedResults]
-        .filter((record) => record.status === "published")
-        .sort((left, right) => (right.publishedAt ?? right.updatedAt).getTime() - (left.publishedAt ?? left.updatedAt).getTime())[0] ?? null;
-      const currentBlocker = linkedBlockers[0] ? getRecordHeadline(linkedBlockers[0]) : null;
-      const nextDecision = linkedDecisions[0] ?? null;
-      return {
-        projectId: project.id,
-        projectName: project.name,
-        projectStatus: project.status,
-        healthStatus: lastMeaningfulResult?.healthStatus ?? deriveProjectHealth(project.status, currentBlocker, nextDecision),
-        healthDelta: lastMeaningfulResult?.healthDelta ?? deriveProjectDelta(currentBlocker, Boolean(lastMeaningfulResult)),
-        confidence: lastMeaningfulResult?.confidence ?? null,
-        lastMeaningfulResult,
-        currentBlocker,
-        nextDecision,
-      };
-    });
+    // Project health must look at the full blocker and decision sets, even when the
+    // board UI only shows a truncated list of top exceptions.
+    const projectHealth = summarizeProjectHealth(scopedProjects, scopedResults, allRisksAndBlocks, allDecisionsNeeded);
+    const risksAndBlocks = allRisksAndBlocks.slice(0, 8);
+    const decisionsNeeded = allDecisionsNeeded.slice(0, 8);
 
     const issueById = new Map(issueRows.map((issue) => [issue.id, issue]));
     const projectById = new Map(companyProjects.map((project) => [project.id, project]));
