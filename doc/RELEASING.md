@@ -78,7 +78,7 @@ ls "releases/v${VERSION}.md"
 ./scripts/release.sh patch
 
 # 5. Push the release commit and tag
-git push origin HEAD:master --follow-tags
+git push public-gh HEAD:master --follow-tags
 
 # 6. Create or update the GitHub Release from the pushed tag
 ./scripts/create-github-release.sh X.Y.Z
@@ -393,7 +393,7 @@ What it does **not** do:
 After a stable publish succeeds:
 
 ```bash
-git push origin HEAD:master --follow-tags
+git push public-gh HEAD:master --follow-tags
 ./scripts/create-github-release.sh X.Y.Z
 ```
 
