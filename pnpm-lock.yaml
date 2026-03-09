@@ -35,9 +35,9 @@ importers:
       '@paperclipai/adapter-cursor-local':
         specifier: workspace:*
         version: link:../packages/adapters/cursor-local
-      '@paperclipai/adapter-openclaw':
+      '@paperclipai/adapter-nanoclaw-gateway':
         specifier: workspace:*
-        version: link:../packages/adapters/openclaw
+        version: link:../packages/adapters/nanoclaw-gateway
       '@paperclipai/adapter-openclaw-gateway':
         specifier: workspace:*
         version: link:../packages/adapters/openclaw-gateway
@@ -139,18 +139,27 @@ importers:
         specifier: ^5.7.3
         version: 5.9.3
 
-  packages/adapters/openclaw:
+  packages/adapters/nanoclaw-gateway:
     dependencies:
+      '@paperclipai/adapter-openclaw-gateway':
+        specifier: workspace:*
+        version: link:../openclaw-gateway
       '@paperclipai/adapter-utils':
         specifier: workspace:*
         version: link:../../adapter-utils
       picocolors:
         specifier: ^1.1.1
         version: 1.1.1
+      ws:
+        specifier: ^8.19.0
+        version: 8.19.0
     devDependencies:
       '@types/node':
         specifier: ^24.6.0
         version: 24.12.0
+      '@types/ws':
+        specifier: ^8.18.1
+        version: 8.18.1
       typescript:
         specifier: ^5.7.3
         version: 5.9.3
@@ -261,9 +270,9 @@ importers:
       '@paperclipai/adapter-cursor-local':
         specifier: workspace:*
         version: link:../packages/adapters/cursor-local
-      '@paperclipai/adapter-openclaw':
+      '@paperclipai/adapter-nanoclaw-gateway':
         specifier: workspace:*
-        version: link:../packages/adapters/openclaw
+        version: link:../packages/adapters/nanoclaw-gateway
       '@paperclipai/adapter-openclaw-gateway':
         specifier: workspace:*
         version: link:../packages/adapters/openclaw-gateway
@@ -379,9 +388,9 @@ importers:
       '@paperclipai/adapter-cursor-local':
         specifier: workspace:*
         version: link:../packages/adapters/cursor-local
-      '@paperclipai/adapter-openclaw':
+      '@paperclipai/adapter-nanoclaw-gateway':
         specifier: workspace:*
-        version: link:../packages/adapters/openclaw
+        version: link:../packages/adapters/nanoclaw-gateway
       '@paperclipai/adapter-openclaw-gateway':
         specifier: workspace:*
         version: link:../packages/adapters/openclaw-gateway

@@ -30,6 +30,7 @@ export const AGENT_ADAPTER_TYPES = [
   "pi_local",
   "cursor",
   "openclaw_gateway",
+  "nanoclaw_gateway",
 ] as const;
 export type AgentAdapterType = (typeof AGENT_ADAPTER_TYPES)[number];
 
@@ -124,7 +125,12 @@ export type IssuePriority = (typeof ISSUE_PRIORITIES)[number];
 export const GOAL_LEVELS = ["company", "team", "agent", "task"] as const;
 export type GoalLevel = (typeof GOAL_LEVELS)[number];
 
-export const GOAL_STATUSES = ["planned", "active", "achieved", "cancelled"] as const;
+export const GOAL_STATUSES = [
+  "planned",
+  "active",
+  "achieved",
+  "cancelled",
+] as const;
 export type GoalStatus = (typeof GOAL_STATUSES)[number];
 
 export const PROJECT_STATUSES = [
@@ -178,9 +184,15 @@ export const HEARTBEAT_INVOCATION_SOURCES = [
   "on_demand",
   "automation",
 ] as const;
-export type HeartbeatInvocationSource = (typeof HEARTBEAT_INVOCATION_SOURCES)[number];
+export type HeartbeatInvocationSource =
+  (typeof HEARTBEAT_INVOCATION_SOURCES)[number];
 
-export const WAKEUP_TRIGGER_DETAILS = ["manual", "ping", "callback", "system"] as const;
+export const WAKEUP_TRIGGER_DETAILS = [
+  "manual",
+  "ping",
+  "callback",
+  "system",
+] as const;
 export type WakeupTriggerDetail = (typeof WAKEUP_TRIGGER_DETAILS)[number];
 
 export const WAKEUP_REQUEST_STATUSES = [
@@ -233,7 +245,11 @@ export type InviteJoinType = (typeof INVITE_JOIN_TYPES)[number];
 export const JOIN_REQUEST_TYPES = ["human", "agent"] as const;
 export type JoinRequestType = (typeof JOIN_REQUEST_TYPES)[number];
 
-export const JOIN_REQUEST_STATUSES = ["pending_approval", "approved", "rejected"] as const;
+export const JOIN_REQUEST_STATUSES = [
+  "pending_approval",
+  "approved",
+  "rejected",
+] as const;
 export type JoinRequestStatus = (typeof JOIN_REQUEST_STATUSES)[number];
 
 export const PERMISSION_KEYS = [

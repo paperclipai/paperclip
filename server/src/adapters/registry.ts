@@ -4,28 +4,35 @@ import {
   testEnvironment as claudeTestEnvironment,
   sessionCodec as claudeSessionCodec,
 } from "@paperclipai/adapter-claude-local/server";
-import { agentConfigurationDoc as claudeAgentConfigurationDoc, models as claudeModels } from "@paperclipai/adapter-claude-local";
+import {
+  agentConfigurationDoc as claudeAgentConfigurationDoc,
+  models as claudeModels,
+} from "@paperclipai/adapter-claude-local";
 import {
   execute as codexExecute,
   testEnvironment as codexTestEnvironment,
   sessionCodec as codexSessionCodec,
 } from "@paperclipai/adapter-codex-local/server";
-import { agentConfigurationDoc as codexAgentConfigurationDoc, models as codexModels } from "@paperclipai/adapter-codex-local";
+import {
+  agentConfigurationDoc as codexAgentConfigurationDoc,
+  models as codexModels,
+} from "@paperclipai/adapter-codex-local";
 import {
   execute as cursorExecute,
   testEnvironment as cursorTestEnvironment,
   sessionCodec as cursorSessionCodec,
 } from "@paperclipai/adapter-cursor-local/server";
-import { agentConfigurationDoc as cursorAgentConfigurationDoc, models as cursorModels } from "@paperclipai/adapter-cursor-local";
+import {
+  agentConfigurationDoc as cursorAgentConfigurationDoc,
+  models as cursorModels,
+} from "@paperclipai/adapter-cursor-local";
 import {
   execute as openCodeExecute,
   testEnvironment as openCodeTestEnvironment,
   sessionCodec as openCodeSessionCodec,
   listOpenCodeModels,
 } from "@paperclipai/adapter-opencode-local/server";
-import {
-  agentConfigurationDoc as openCodeAgentConfigurationDoc,
-} from "@paperclipai/adapter-opencode-local";
+import { agentConfigurationDoc as openCodeAgentConfigurationDoc } from "@paperclipai/adapter-opencode-local";
 import {
   execute as openclawGatewayExecute,
   testEnvironment as openclawGatewayTestEnvironment,
@@ -34,6 +41,14 @@ import {
   agentConfigurationDoc as openclawGatewayAgentConfigurationDoc,
   models as openclawGatewayModels,
 } from "@paperclipai/adapter-openclaw-gateway";
+import {
+  execute as nanoclawGatewayExecute,
+  testEnvironment as nanoclawGatewayTestEnvironment,
+} from "@paperclipai/adapter-nanoclaw-gateway/server";
+import {
+  agentConfigurationDoc as nanoclawGatewayAgentConfigurationDoc,
+  models as nanoclawGatewayModels,
+} from "@paperclipai/adapter-nanoclaw-gateway";
 import { listCodexModels } from "./codex-models.js";
 import { listCursorModels } from "./cursor-models.js";
 import {
@@ -42,9 +57,7 @@ import {
   sessionCodec as piSessionCodec,
   listPiModels,
 } from "@paperclipai/adapter-pi-local/server";
-import {
-  agentConfigurationDoc as piAgentConfigurationDoc,
-} from "@paperclipai/adapter-pi-local";
+import { agentConfigurationDoc as piAgentConfigurationDoc } from "@paperclipai/adapter-pi-local";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
 
@@ -89,6 +102,15 @@ const openclawGatewayAdapter: ServerAdapterModule = {
   agentConfigurationDoc: openclawGatewayAgentConfigurationDoc,
 };
 
+const nanoclawGatewayAdapter: ServerAdapterModule = {
+  type: "nanoclaw_gateway",
+  execute: nanoclawGatewayExecute,
+  testEnvironment: nanoclawGatewayTestEnvironment,
+  models: nanoclawGatewayModels,
+  supportsLocalAgentJwt: false,
+  agentConfigurationDoc: nanoclawGatewayAgentConfigurationDoc,
+};
+
 const openCodeLocalAdapter: ServerAdapterModule = {
   type: "opencode_local",
   execute: openCodeExecute,
@@ -119,6 +141,7 @@ const adaptersByType = new Map<string, ServerAdapterModule>(
     piLocalAdapter,
     cursorLocalAdapter,
     openclawGatewayAdapter,
+    nanoclawGatewayAdapter,
     processAdapter,
     httpAdapter,
   ].map((a) => [a.type, a]),
@@ -133,7 +156,9 @@ export function getServerAdapter(type: string): ServerAdapterModule {
   return adapter;
 }
 
-export async function listAdapterModels(type: string): Promise<{ id: string; label: string }[]> {
+export async function listAdapterModels(
+  type: string,
+): Promise<{ id: string; label: string }[]> {
   const adapter = adaptersByType.get(type);
   if (!adapter) return [];
   if (adapter.listModels) {
