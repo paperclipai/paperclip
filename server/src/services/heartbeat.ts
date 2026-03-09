@@ -802,6 +802,7 @@ export function heartbeatService(db: Db) {
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
+      focusedTaskMode: asBoolean(heartbeat.focusedTaskMode, true),
     };
   }
 
@@ -1125,6 +1126,9 @@ export function heartbeatService(db: Db) {
       repoRef: resolvedWorkspace.repoRef,
     };
     context.paperclipWorkspaces = resolvedWorkspace.workspaceHints;
+    const policy = parseHeartbeatPolicy(agent);
+    const isMentionWake = readNonEmptyString(context.wakeReason) === "issue_comment_mentioned";
+    context.focusedTaskMode = policy.focusedTaskMode && !isMentionWake;
     if (resolvedWorkspace.projectId && !readNonEmptyString(context.projectId)) {
       context.projectId = resolvedWorkspace.projectId;
     }

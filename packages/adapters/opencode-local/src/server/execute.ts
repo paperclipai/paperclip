@@ -139,21 +139,47 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const linkedIssueIds = Array.isArray(context.issueIds)
     ? context.issueIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     : [];
-  if (wakeTaskId) env.PAPERCLIP_TASK_ID = wakeTaskId;
-  if (wakeReason) env.PAPERCLIP_WAKE_REASON = wakeReason;
-  if (wakeCommentId) env.PAPERCLIP_WAKE_COMMENT_ID = wakeCommentId;
-  if (approvalId) env.PAPERCLIP_APPROVAL_ID = approvalId;
-  if (approvalStatus) env.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
-  if (linkedIssueIds.length > 0) env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
-  if (effectiveWorkspaceCwd) env.PAPERCLIP_WORKSPACE_CWD = effectiveWorkspaceCwd;
-  if (workspaceSource) env.PAPERCLIP_WORKSPACE_SOURCE = workspaceSource;
-  if (workspaceId) env.PAPERCLIP_WORKSPACE_ID = workspaceId;
-  if (workspaceRepoUrl) env.PAPERCLIP_WORKSPACE_REPO_URL = workspaceRepoUrl;
-  if (workspaceRepoRef) env.PAPERCLIP_WORKSPACE_REPO_REF = workspaceRepoRef;
-  if (workspaceHints.length > 0) env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(workspaceHints);
-
-  for (const [key, value] of Object.entries(envConfig)) {
-    if (typeof value === "string") env[key] = value;
+  if (wakeTaskId) {
+    env.PAPERCLIP_TASK_ID = wakeTaskId;
+    if (context.focusedTaskMode !== false) {
+      env.PAPERCLIP_FOCUSED_TASK_MODE = "true";
+    }
+  }
+  if (wakeReason) {
+    env.PAPERCLIP_WAKE_REASON = wakeReason;
+  }
+  if (wakeCommentId) {
+    env.PAPERCLIP_WAKE_COMMENT_ID = wakeCommentId;
+  }
+  if (approvalId) {
+    env.PAPERCLIP_APPROVAL_ID = approvalId;
+  }
+  if (approvalStatus) {
+    env.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
+  }
+  if (linkedIssueIds.length > 0) {
+    env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
+  }
+  if (effectiveWorkspaceCwd) {
+    env.PAPERCLIP_WORKSPACE_CWD = effectiveWorkspaceCwd;
+  }
+  if (workspaceSource) {
+    env.PAPERCLIP_WORKSPACE_SOURCE = workspaceSource;
+  }
+  if (workspaceId) {
+    env.PAPERCLIP_WORKSPACE_ID = workspaceId;
+  }
+  if (workspaceRepoUrl) {
+    env.PAPERCLIP_WORKSPACE_REPO_URL = workspaceRepoUrl;
+  }
+  if (workspaceRepoRef) {
+    env.PAPERCLIP_WORKSPACE_REPO_REF = workspaceRepoRef;
+  }
+  if (workspaceHints.length > 0) {
+    env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(workspaceHints);
+  }
+  for (const [k, v] of Object.entries(envConfig)) {
+    if (typeof v === "string") env[k] = v;
   }
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
