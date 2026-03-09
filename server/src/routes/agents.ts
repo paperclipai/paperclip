@@ -16,6 +16,9 @@ import {
   wakeAgentSchema,
   updateAgentSchema,
   setAgentTrustSchema,
+  TRUST_PROMOTION_THRESHOLD,
+  TRUST_DEMOTION_FAILURE_THRESHOLD,
+  TRUST_DEMOTION_WINDOW_SIZE,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import {
@@ -1061,6 +1064,9 @@ export function agentRoutes(db: Db) {
       trustManuallySetAt: agent.trustManuallySetAt,
       consecutiveSuccesses,
       recentFailures,
+      promotionThreshold: TRUST_PROMOTION_THRESHOLD,
+      demotionFailureThreshold: TRUST_DEMOTION_FAILURE_THRESHOLD,
+      demotionWindowSize: TRUST_DEMOTION_WINDOW_SIZE,
     });
   });
 

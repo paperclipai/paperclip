@@ -51,6 +51,9 @@ export interface TrustProgress {
   trustManuallySetAt: Date | null;
   consecutiveSuccesses: number;
   recentFailures: number;
+  promotionThreshold: number;
+  demotionFailureThreshold: number;
+  demotionWindowSize: number;
 }
 
 function withCompanyScope(path: string, companyId?: string) {

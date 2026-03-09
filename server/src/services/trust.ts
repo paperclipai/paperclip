@@ -5,6 +5,7 @@ import {
   TRUST_PROMOTION_THRESHOLD,
   TRUST_DEMOTION_FAILURE_THRESHOLD,
   TRUST_DEMOTION_WINDOW_SIZE,
+  TRUST_MANUAL_OVERRIDE_COOLDOWN_MS,
   type TrustLevel,
 } from "@paperclipai/shared";
 import { logActivity } from "./activity-log.js";
@@ -74,7 +75,7 @@ export function trustService(db: Db) {
 
     // Skip evaluation if trust was manually set in the last 5 minutes
     if (agent.trustManuallySetAt) {
-      const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+      const fiveMinutesAgo = new Date(Date.now() - TRUST_MANUAL_OVERRIDE_COOLDOWN_MS);
       if (new Date(agent.trustManuallySetAt) > fiveMinutesAgo) return;
     }
 
@@ -161,6 +162,12 @@ export function trustService(db: Db) {
     trustLevel: TrustLevel,
     actorId: string,
   ): Promise<void> {
+    const existing = await db
+      .select({ trustLevel: agents.trustLevel })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0] ?? null);
+
     const now = new Date();
     await db
       .update(agents)
@@ -178,7 +185,11 @@ export function trustService(db: Db) {
       entityType: "agent",
       entityId: agentId,
       agentId,
-      details: { to: trustLevel, trigger: "manual" },
+      details: {
+        from: existing?.trustLevel ?? "unknown",
+        to: trustLevel,
+        trigger: "manual",
+      },
     });
   }
 

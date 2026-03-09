@@ -57,7 +57,7 @@ import {
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
-import { isUuidLike, TRUST_PROMOTION_THRESHOLD, type Agent, type HeartbeatRun, type HeartbeatRunEvent, type AgentRuntimeState, type LiveEvent } from "@paperclipai/shared";
+import { isUuidLike, type Agent, type HeartbeatRun, type HeartbeatRunEvent, type AgentRuntimeState, type LiveEvent } from "@paperclipai/shared";
 import { agentRouteRef } from "../lib/utils";
 
 const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string }> = {
@@ -915,7 +915,7 @@ function ConfigSummary({
               <TrustBadge level={agent.trustLevel} />
               {trustProgress && agent.trustLevel === "supervised" && (
                 <span className="text-muted-foreground ml-1 text-xs">
-                  {trustProgress.consecutiveSuccesses}/{TRUST_PROMOTION_THRESHOLD} to promotion
+                  {trustProgress.consecutiveSuccesses}/{trustProgress.promotionThreshold} to promotion
                 </span>
               )}
               {trustProgress && agent.trustLevel === "autonomous" && trustProgress.recentFailures > 0 && (
