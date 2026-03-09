@@ -103,10 +103,27 @@ export class PaperclipApiClient {
 }
 
 function buildUrl(apiBase: string, path: string): string {
-  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  let normalizedPath = path.startsWith("/") ? path : `/${path}`;
   const [pathname, query] = normalizedPath.split("?");
   const url = new URL(apiBase);
-  url.pathname = `${url.pathname.replace(/\/+$/, "")}${pathname}`;
+  const basePath = url.pathname.replace(/\/+$/, "");
+
+  // Allow either apiBase=http://host or apiBase=http://host/api while
+  // callers consistently pass "/api/..." paths.
+  if (basePath.endsWith("/api")) {
+    if (pathname === "/api") {
+      normalizedPath = "";
+    } else if (pathname.startsWith("/api/")) {
+      normalizedPath = pathname.slice(4);
+    } else {
+      normalizedPath = pathname;
+    }
+  } else {
+    normalizedPath = pathname;
+  }
+
+  const combined = normalizedPath ? `${basePath}/${normalizedPath}` : basePath;
+  url.pathname = combined.replace(/\/+/g, "/") || "/";
   if (query) url.search = query;
   return url.toString();
 }

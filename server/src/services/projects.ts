@@ -405,6 +405,16 @@ export function projectService(db: Db) {
       return rows.map(toWorkspace);
     },
 
+    getPrimaryWorkspace: async (projectId: string): Promise<ProjectWorkspace | null> => {
+      const rows = await db
+        .select()
+        .from(projectWorkspaces)
+        .where(eq(projectWorkspaces.projectId, projectId))
+        .orderBy(desc(projectWorkspaces.isPrimary), asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id))
+        .limit(1);
+      return rows[0] ? toWorkspace(rows[0]) : null;
+    },
+
     createWorkspace: async (
       projectId: string,
       data: CreateWorkspaceInput,

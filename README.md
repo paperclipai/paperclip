@@ -149,6 +149,7 @@ Paperclip handles the hard orchestration details correctly.
 | **Atomic execution.**             | Task checkout and budget enforcement are atomic, so no double-work and no runaway spend.                      |
 | **Persistent agent state.**       | Agents resume the same task context across heartbeats instead of restarting from scratch.                     |
 | **Runtime skill injection.**      | Agents can learn Paperclip workflows and project context at runtime, without retraining.                      |
+| **Company-scoped plugins.**       | Plugins install once per instance, then each company can enable or disable them independently from Company Settings. |
 | **Governance with rollback.**     | Approval gates are enforced, config changes are revisioned, and bad changes can be rolled back safely.        |
 | **Goal-aware execution.**         | Tasks carry full goal ancestry so agents consistently see the "why," not just a title.                        |
 | **Portable company templates.**   | Export/import orgs, agents, and skills with secret scrubbing and collision handling.                          |
@@ -229,6 +230,109 @@ pnpm db:migrate       # Apply migrations
 ```
 
 See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
+
+<br/>
+
+## Plugin Runtime Security (Current)
+
+- Plugin host APIs are capability-gated from plugin manifests; undeclared operations are denied.
+- Plugin workers run out-of-process for failure isolation.
+- Plugin packages are discovered through `package.json#paperclipPlugin`.
+- Relative imports are constrained to the plugin root and runtime loading remains restricted by host validation.
+
+## Plugin CLI Commands
+
+Paperclip provides a comprehensive CLI for plugin management. All commands support `--json` for raw JSON output.
+
+```bash
+# List installed plugins
+paperclipai plugin list
+
+# Filter by status
+paperclipai plugin list --status ready
+
+# Install from npm
+paperclipai plugin install @acme/plugin-linear
+
+# Install specific version
+paperclipai plugin install @acme/plugin-linear --version 1.2.0
+
+# Install from local path (development)
+paperclipai plugin install ./my-plugin
+
+# Get plugin details
+paperclipai plugin get acme.linear-sync
+
+# Run health diagnostics
+paperclipai plugin doctor acme.linear-sync
+
+# Enable a plugin
+paperclipai plugin enable acme.linear-sync
+
+# Disable a plugin
+paperclipai plugin disable acme.linear-sync --reason "Maintenance"
+
+# Upgrade a plugin
+paperclipai plugin upgrade acme.linear-sync --version 1.3.0
+
+# Uninstall (soft delete, 30-day retention)
+paperclipai plugin uninstall acme.linear-sync --force
+
+# Uninstall with data purge (hard delete)
+paperclipai plugin uninstall acme.linear-sync --force --purge
+
+# Create a new plugin project
+paperclipai plugin create my-plugin
+
+# Create with options
+paperclipai plugin create @acme/my-plugin \
+  --template connector \
+  --display-name "My Connector" \
+  --description "Connects to My Service" \
+  --author "Acme Inc" \
+  --category connector
+```
+
+> **Note for AI Agents:** If you are an AI agent working in this repository, you can use the `paperclip-create-plugin` skill to help you autonomously scaffold, implement, and test new plugins. Activate it with `activate_skill(name: "paperclip-create-plugin")`.
+
+`paperclipai plugin create` uses the dedicated `@paperclipai/create-paperclip-plugin`
+scaffolder and generates a starter with:
+- typed manifest + worker entrypoint
+- sample React UI slot component
+- harness-based plugin test
+- esbuild/rollup configs based on `@paperclipai/plugin-sdk/bundlers`
+- `pnpm dev:ui` script backed by `paperclip-plugin-dev-server`
+
+For full API documentation, see [docs/api/overview.md](docs/api/overview.md).
+
+## Plugin UI Extensions (Current)
+
+Plugins can contribute frontend UI via manifest-declared `ui.slots` and declarative `ui.launchers`.
+The host frontend resolves both from `/api/plugins/ui-contributions`, mounts registered plugin
+exports for slots, and uses launcher metadata to render host-owned entry points.
+Launcher-backed bridge calls also carry the active `renderEnvironment`, so plugin
+workers can distinguish page, modal, drawer, and popover executions.
+
+Supported UI/launcher surfaces in the current implementation:
+- dashboard widgets
+- sidebar links and sidebar panels
+- project sidebar items
+- toolbar buttons
+- settings pages
+- context menu items
+- detail tabs and task detail views
+
+See [doc/plugins/PLUGIN_SPEC.md](doc/plugins/PLUGIN_SPEC.md) for slot contracts and
+[doc/plugins/PLUGIN_AUTHORING_GUIDE.md](doc/plugins/PLUGIN_AUTHORING_GUIDE.md) for authoring details.
+First-party reference implementations are listed in [doc/plugins/EXAMPLE_PLUGINS.md](doc/plugins/EXAMPLE_PLUGINS.md).
+
+Common launcher flow:
+
+1. Declare `ui.launchers` in the plugin manifest.
+2. The host discovers them from `GET /api/plugins/ui-contributions`.
+3. The host renders the launcher in the requested placement zone.
+4. When the launcher opens a host-owned UI surface, the bridge forwards
+   `renderEnvironment` metadata to plugin UI and worker calls.
 
 <br/>
 

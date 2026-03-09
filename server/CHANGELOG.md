@@ -1,6 +1,29 @@
 # @paperclipai/server
 
-## 0.2.7
+## Unreleased
+
+### Patch Changes
+
+- Added documentation for company-scoped plugin availability routes and the runtime enforcement that blocks disabled plugins from company UI, tool, and bridge access.
+- Documented the launcher-aware `/api/plugins/ui-contributions` response shape, including company filtering, normalized launcher discovery, and bridge render-environment propagation for launcher-backed UI.
+
+## 0.2.8
+
+### Minor Changes
+
+- **Plugin System Enhancements**:
+  - Implemented plugin upgrade lifecycle in `PluginLifecycleManager` and `PluginLoader`.
+  - Added support for manifest capability comparison during upgrades with `upgrade_pending` state transition.
+  - Expanded database schema with new tables: `plugin_entities`, `plugin_jobs`, `plugin_job_runs`, and `plugin_webhook_deliveries`.
+  - Refactored `PluginLoader` with a reusable `fetchAndValidate` internal helper.
+  - Added registry methods for managing plugin-owned entities, jobs, and webhooks.
+
+### Patch Changes
+
+- Version bump (patch)
+- Updated dependencies
+  - @paperclipai/shared@0.2.8
+  - @paperclipai/db@0.2.8
 
 ### Patch Changes
 
