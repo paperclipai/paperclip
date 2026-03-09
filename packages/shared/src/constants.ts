@@ -244,6 +244,23 @@ export const TRUST_DEMOTION_FAILURE_THRESHOLD = 3;
 export const TRUST_DEMOTION_WINDOW_SIZE = 10;
 export const TRUST_MANUAL_OVERRIDE_COOLDOWN_MS = 5 * 60 * 1000;
 
+export const NOTIFICATION_CHANNEL_TYPES = ["webhook", "discord", "ntfy"] as const;
+export type NotificationChannelType = (typeof NOTIFICATION_CHANNEL_TYPES)[number];
+
+export const NOTIFICATION_EVENT_TYPES = [
+  "agent.run.finished",
+  "agent.run.failed",
+  "agent.run.cancelled",
+  "agent.status_changed",
+  "approval.created",
+  "approval.decided",
+  "issue.created",
+  "issue.updated",
+  "issue.comment.created",
+  "cost_event.created",
+] as const;
+export type NotificationEventType = (typeof NOTIFICATION_EVENT_TYPES)[number];
+
 export const PERMISSION_KEYS = [
   "agents:create",
   "users:invite",

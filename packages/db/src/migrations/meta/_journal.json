@@ -197,6 +197,13 @@
       "when": 1773027607264,
       "tag": "0027_agent_trust_levels",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1773037299434,
+      "tag": "0028_skinny_vengeance",
+      "breakpoints": true
     }
   ]
 }

@@ -37,6 +37,7 @@ vi.mock("../services/index.js", () => ({
   issueApprovalService: () => ({}),
   issueService: () => ({}),
   secretService: () => ({}),
+  trustService: () => ({}),
   logActivity: mockLogActivity,
 }));
 

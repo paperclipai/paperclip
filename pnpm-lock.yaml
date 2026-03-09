@@ -35,9 +35,6 @@ importers:
       '@paperclipai/adapter-cursor-local':
         specifier: workspace:*
         version: link:../packages/adapters/cursor-local
-      '@paperclipai/adapter-openclaw':
-        specifier: workspace:*
-        version: link:../packages/adapters/openclaw
       '@paperclipai/adapter-openclaw-gateway':
         specifier: workspace:*
         version: link:../packages/adapters/openclaw-gateway
@@ -139,22 +136,6 @@ importers:
         specifier: ^5.7.3
         version: 5.9.3
 
-  packages/adapters/openclaw:
-    dependencies:
-      '@paperclipai/adapter-utils':
-        specifier: workspace:*
-        version: link:../../adapter-utils
-      picocolors:
-        specifier: ^1.1.1
-        version: 1.1.1
-    devDependencies:
-      '@types/node':
-        specifier: ^24.6.0
-        version: 24.12.0
-      typescript:
-        specifier: ^5.7.3
-        version: 5.9.3
-
   packages/adapters/openclaw-gateway:
     dependencies:
       '@paperclipai/adapter-utils':
@@ -237,6 +218,45 @@ importers:
         specifier: ^3.0.5
         version: 3.2.4(@types/debug@4.1.12)(@types/node@24.12.0)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0)
 
+  packages/notifiers/discord:
+    dependencies:
+      '@paperclipai/shared':
+        specifier: workspace:*
+        version: link:../../shared
+    devDependencies:
+      '@types/node':
+        specifier: ^24.6.0
+        version: 24.12.0
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+
+  packages/notifiers/ntfy:
+    dependencies:
+      '@paperclipai/shared':
+        specifier: workspace:*
+        version: link:../../shared
+    devDependencies:
+      '@types/node':
+        specifier: ^24.6.0
+        version: 24.12.0
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+
+  packages/notifiers/webhook:
+    dependencies:
+      '@paperclipai/shared':
+        specifier: workspace:*
+        version: link:../../shared
+    devDependencies:
+      '@types/node':
+        specifier: ^24.6.0
+        version: 24.12.0
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+
   packages/shared:
     dependencies:
       zod:
@@ -261,9 +281,6 @@ importers:
       '@paperclipai/adapter-cursor-local':
         specifier: workspace:*
         version: link:../packages/adapters/cursor-local
-      '@paperclipai/adapter-openclaw':
-        specifier: workspace:*
-        version: link:../packages/adapters/openclaw
       '@paperclipai/adapter-openclaw-gateway':
         specifier: workspace:*
         version: link:../packages/adapters/openclaw-gateway
@@ -279,6 +296,15 @@ importers:
       '@paperclipai/db':
         specifier: workspace:*
         version: link:../packages/db
+      '@paperclipai/notifier-discord':
+        specifier: workspace:*
+        version: link:../packages/notifiers/discord
+      '@paperclipai/notifier-ntfy':
+        specifier: workspace:*
+        version: link:../packages/notifiers/ntfy
+      '@paperclipai/notifier-webhook':
+        specifier: workspace:*
+        version: link:../packages/notifiers/webhook
       '@paperclipai/shared':
         specifier: workspace:*
         version: link:../packages/shared
@@ -379,9 +405,6 @@ importers:
       '@paperclipai/adapter-cursor-local':
         specifier: workspace:*
         version: link:../packages/adapters/cursor-local
-      '@paperclipai/adapter-openclaw':
-        specifier: workspace:*
-        version: link:../packages/adapters/openclaw
       '@paperclipai/adapter-openclaw-gateway':
         specifier: workspace:*
         version: link:../packages/adapters/openclaw-gateway

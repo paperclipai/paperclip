@@ -135,3 +135,12 @@ export {
   type UpdateMemberPermissions,
   type UpdateUserCompanyAccess,
 } from "./access.js";
+
+export {
+  createNotificationChannelSchema,
+  updateNotificationChannelSchema,
+  testNotificationChannelConfigSchema,
+  type CreateNotificationChannel,
+  type UpdateNotificationChannel,
+  type TestNotificationChannelConfig,
+} from "./notification-channel.js";

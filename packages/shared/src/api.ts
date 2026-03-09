@@ -17,4 +17,5 @@ export const API = {
   joinRequests: `${API_PREFIX}/join-requests`,
   members: `${API_PREFIX}/members`,
   admin: `${API_PREFIX}/admin`,
+  notificationChannels: `${API_PREFIX}/notification-channels`,
 } as const;
