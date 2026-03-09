@@ -528,10 +528,14 @@ export function Inbox() {
   const dismissRunMutation = useMutation({
     mutationFn: (runId: string) => heartbeatsApi.dismiss(runId),
     onSuccess: () => {
+      setActionError(null);
       if (selectedCompanyId) {
         queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(selectedCompanyId) });
         queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
       }
+    },
+    onError: (err) => {
+      setActionError(err instanceof Error ? err.message : "Failed to dismiss run");
     },
   });
 
