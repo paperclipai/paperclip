@@ -31,7 +31,7 @@ Use this when you want an installable prerelease without changing `latest`.
 
 # 1. Draft or update the stable changelog for the intended stable version
 VERSION=0.2.8
-claude -p "Use the release-changelog skill to draft or update releases/v${VERSION}.md for Paperclip. Read doc/RELEASING.md and skills/release-changelog/SKILL.md, then generate the stable changelog for v${VERSION} from commits since the last stable tag. Do not create a canary changelog."
+claude --print --output-format stream-json --verbose --dangerously-skip-permissions --model claude-opus-4-6 "Use the release-changelog skill to draft or update releases/v${VERSION}.md for Paperclip. Read doc/RELEASING.md and skills/release-changelog/SKILL.md, then generate the stable changelog for v${VERSION} from commits since the last stable tag. Do not create a canary changelog."
 
 # 2. Preview the canary release
 ./scripts/release.sh patch --canary --dry-run
