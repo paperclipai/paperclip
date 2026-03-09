@@ -141,7 +141,7 @@ export async function promptServer(opts?: {
       baseUrlMode: "explicit",
       disableSignUp: false,
       publicBaseUrl: urlInput.trim().replace(/\/+$/, ""),
-      disableSignUp: false,
+      disableSignUp: currentAuth?.disableSignUp ?? false,
     };
   } else if (currentAuth?.baseUrlMode === "explicit" && currentAuth.publicBaseUrl) {
     auth = {

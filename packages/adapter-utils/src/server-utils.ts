@@ -192,8 +192,8 @@ function isWindowsBatchScript(commandPath: string): boolean {
 }
 
 function escapeForCmd(arg: string): string {
-  // Escape CMD metacharacters: & | < > ^ ( ) %
-  return arg.replace(/[&|<>^()%]/g, "^$&");
+  // Escape CMD metacharacters: & | < > ^ ( ) % !
+  return arg.replace(/[&|<>^()%!]/g, "^$&");
 }
 
 async function getSpawnPlan(
