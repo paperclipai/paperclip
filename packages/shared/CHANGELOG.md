@@ -1,6 +1,20 @@
 # @paperclipai/shared
 
-## 0.2.7
+## Unreleased
+
+### Patch Changes
+
+- Documented the shared company-plugin availability contracts so `PluginCompanySettings` and `CompanyPluginAvailability` clearly describe default-enabled company behavior.
+
+## 0.2.8
+
+### Minor Changes
+
+- **Plugin System Types**: Added new domain types and interfaces for `PluginEntityRecord`, `PluginJobRecord`, `PluginJobRunRecord`, and `PluginWebhookDeliveryRecord` to support the expanded plugin database schema.
+
+### Patch Changes
+
+- Version bump (patch)
 
 ### Patch Changes
 

@@ -132,6 +132,26 @@ pnpm paperclipai agent local-cli codexcoder --company-id <company-id>
 pnpm paperclipai agent local-cli claudecoder --company-id <company-id>
 ```
 
+## Plugin Commands
+
+```sh
+pnpm paperclipai plugin list
+pnpm paperclipai plugin get <plugin-id-or-prefix>
+pnpm paperclipai plugin install <npm-package-or-local-path>
+pnpm paperclipai plugin enable <plugin-id>
+pnpm paperclipai plugin disable <plugin-id> [--reason "..."]
+```
+
+The plugin system allows extending Paperclip with new agent adapters, tools, and background jobs. Plugins can be installed from the NPM registry or from a local directory path.
+
+Examples:
+
+```sh
+pnpm paperclipai plugin install @paperclipai/plugin-hello-world-example
+pnpm paperclipai plugin install ./packages/my-custom-plugin
+pnpm paperclipai plugin enable 5cbe79ee-acb3-4597-896e-7662742593cd
+```
+
 ## Approval Commands
 
 ```sh

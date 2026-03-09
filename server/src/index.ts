@@ -1,6 +1,7 @@
 /// <reference path="./types/express.d.ts" />
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
+import os from "node:os";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
@@ -389,7 +390,7 @@ export async function startServer(): Promise<StartedServer> {
         "Use authenticated mode for non-loopback deployments.",
     );
   }
-  
+
   if (config.deploymentMode === "local_trusted" && config.deploymentExposure !== "private") {
     throw new Error("local_trusted mode only supports private exposure");
   }
@@ -462,7 +463,14 @@ export async function startServer(): Promise<StartedServer> {
   
   const uiMode = config.uiDevMiddleware ? "vite-dev" : config.serveUi ? "static" : "none";
   const storageService = createStorageServiceFromConfig(config);
-  const app = await createApp(db as any, {
+  const instancePluginDir = resolve(
+    os.homedir(),
+    ".paperclip",
+    "instances",
+    config.instanceId,
+    "plugins",
+  );
+  const { app, shutdownPlugins } = await createApp(db as any, {
     uiMode,
     storageService,
     deploymentMode: config.deploymentMode,
@@ -471,6 +479,8 @@ export async function startServer(): Promise<StartedServer> {
     bindHost: config.host,
     authReady,
     companyDeletionEnabled: config.companyDeletionEnabled,
+    instanceId: config.instanceId,
+    localPluginDir: instancePluginDir,
     betterAuthHandler,
     resolveSession,
   });
@@ -632,18 +642,30 @@ export async function startServer(): Promise<StartedServer> {
     });
   });
   
-  if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
+  {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
-      logger.info({ signal }, "Stopping embedded PostgreSQL");
+      logger.info({ signal }, "Graceful shutdown initiated");
+
+      // Stop plugin runtime services (scheduler, workers, tool dispatcher)
       try {
-        await embeddedPostgres?.stop();
+        await shutdownPlugins();
       } catch (err) {
-        logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
-      } finally {
-        process.exit(0);
+        logger.error({ err }, "Failed to shut down plugin services cleanly");
       }
+
+      // Stop embedded PostgreSQL if this process started it
+      if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
+        logger.info({ signal }, "Stopping embedded PostgreSQL");
+        try {
+          await embeddedPostgres.stop();
+        } catch (err) {
+          logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
+        }
+      }
+
+      process.exit(0);
     };
-  
+
     process.once("SIGINT", () => {
       void shutdown("SIGINT");
     });

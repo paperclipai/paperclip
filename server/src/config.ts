@@ -61,6 +61,8 @@ export interface Config {
   heartbeatSchedulerEnabled: boolean;
   heartbeatSchedulerIntervalMs: number;
   companyDeletionEnabled: boolean;
+  /** Unique ID for this instance (used for instance-scoped plugin paths). */
+  instanceId: string;
 }
 
 export function loadConfig(): Config {
@@ -243,5 +245,6 @@ export function loadConfig(): Config {
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
+    instanceId: process.env.PAPERCLIP_INSTANCE_ID ?? "default",
   };
 }

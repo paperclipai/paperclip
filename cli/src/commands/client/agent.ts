@@ -203,7 +203,9 @@ export function registerAgentCommands(program: Command): void {
 
           const now = new Date().toISOString().replaceAll(":", "-");
           const keyName = opts.keyName?.trim() ? opts.keyName.trim() : `local-cli-${now}`;
-          const key = await ctx.api.post<CreatedAgentKey>(`/api/agents/${agentRow.id}/keys`, { name: keyName });
+          const key = await ctx.api.post<CreatedAgentKey>(`/api/agents/${agentRow.id}/keys`, {
+            name: keyName,
+          });
           if (!key) {
             throw new Error("Failed to create API key");
           }

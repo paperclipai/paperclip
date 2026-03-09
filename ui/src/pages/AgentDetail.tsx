@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
-import { useParams, useNavigate, Link, useBeforeUnload } from "@/lib/router";
+import { useParams, useNavigate, useSearchParams, Link, useBeforeUnload } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { agentsApi, type AgentKey, type ClaudeLoginResult } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
@@ -59,6 +59,8 @@ import { Input } from "@/components/ui/input";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
 import { isUuidLike, type Agent, type HeartbeatRun, type HeartbeatRunEvent, type AgentRuntimeState, type LiveEvent } from "@paperclipai/shared";
 import { agentRouteRef } from "../lib/utils";
+import { usePluginSlots, PluginSlotMount } from "@/plugins/slots";
+import { PluginLauncherOutlet } from "@/plugins/launchers";
 
 const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string }> = {
   succeeded: { icon: CheckCircle2, color: "text-green-600 dark:text-green-400" },
@@ -173,11 +175,12 @@ function scrollToContainerBottom(container: ScrollContainer, behavior: ScrollBeh
   container.scrollTo({ top: container.scrollHeight, behavior });
 }
 
-type AgentDetailView = "overview" | "configure" | "runs";
+type AgentDetailView = "overview" | "configure" | "runs" | (string & {});
 
 function parseAgentDetailView(value: string | null): AgentDetailView {
   if (value === "configure" || value === "configuration") return "configure";
   if (value === "runs") return value;
+  if (value?.startsWith("plugin:")) return value;
   return "overview";
 }
 
@@ -233,6 +236,8 @@ export function AgentDetail() {
     tab?: string;
     runId?: string;
   }>();
+  const [searchParams] = useSearchParams();
+  const tabParam = searchParams.get("tab");
   const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { closePanel } = usePanel();
   const { openNewIssue } = useDialog();
@@ -241,7 +246,11 @@ export function AgentDetail() {
   const navigate = useNavigate();
   const [actionError, setActionError] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
-  const activeView = urlRunId ? "runs" as AgentDetailView : parseAgentDetailView(urlTab ?? null);
+  const activeView: AgentDetailView = urlRunId
+    ? ("runs" as const)
+    : tabParam?.startsWith("plugin:")
+      ? tabParam
+      : parseAgentDetailView(urlTab ?? null);
   const [configDirty, setConfigDirty] = useState(false);
   const [configSaving, setConfigSaving] = useState(false);
   const saveConfigActionRef = useRef<(() => void) | null>(null);
@@ -291,6 +300,27 @@ export function AgentDetail() {
     queryFn: () => agentsApi.list(resolvedCompanyId!),
     enabled: !!resolvedCompanyId,
   });
+
+  const slotCompanyId = resolvedCompanyId ?? routeCompanyId ?? selectedCompanyId ?? null;
+  const { slots: agentPluginSlots } = usePluginSlots({
+    slotTypes: ["taskDetailView", "detailTab"],
+    entityType: "agent",
+    companyId: slotCompanyId,
+    enabled: !!slotCompanyId,
+  });
+  const resolvedCompanyPrefix = useMemo(
+    () => (resolvedCompanyId ? companies.find((c) => c.id === resolvedCompanyId)?.issuePrefix ?? null : null),
+    [companies, resolvedCompanyId],
+  );
+  const pluginSlotContext = useMemo(
+    () => ({
+      companyId: resolvedCompanyId ?? null,
+      companyPrefix: resolvedCompanyPrefix,
+      entityId: agent?.id ?? null,
+      entityType: "agent" as const,
+    }),
+    [resolvedCompanyId, resolvedCompanyPrefix, agent?.id],
+  );
 
   const assignedIssues = (allIssues ?? [])
     .filter((i) => i.assigneeAgentId === agent?.id)
@@ -408,10 +438,13 @@ export function AgentDetail() {
         crumbs.push({ label: "Configure" });
       } else if (activeView === "runs") {
         crumbs.push({ label: "Runs" });
+      } else if (typeof activeView === "string" && activeView.startsWith("plugin:")) {
+        const slot = agentPluginSlots.find((s) => `plugin:${s.pluginKey}:${s.id}` === activeView);
+        crumbs.push({ label: slot?.displayName ?? "Plugin" });
       }
     }
     setBreadcrumbs(crumbs);
-  }, [setBreadcrumbs, agent, routeAgentRef, canonicalAgentRef, activeView, urlRunId]);
+  }, [setBreadcrumbs, agent, routeAgentRef, canonicalAgentRef, activeView, urlRunId, agentPluginSlots]);
 
   useEffect(() => {
     closePanel();
@@ -559,6 +592,68 @@ export function AgentDetail() {
         </div>
       </div>
 
+      {/* Tab bar: Overview | Configure | Runs | plugin tabs */}
+      <div className="flex items-center gap-2 border-b border-border">
+        <div className="flex items-center gap-1 min-w-0 overflow-x-auto scrollbar-auto-hide">
+          <Link
+            to={`/agents/${canonicalAgentRef}`}
+            className={cn(
+              "px-3 py-2 text-sm font-medium transition-colors border-b-2 no-underline",
+              activeView === "overview" && !urlRunId
+                ? "border-foreground text-foreground"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            )}
+          >
+            Overview
+          </Link>
+          <Link
+            to={`/agents/${canonicalAgentRef}/configure`}
+            className={cn(
+              "px-3 py-2 text-sm font-medium transition-colors border-b-2 no-underline",
+              activeView === "configure"
+                ? "border-foreground text-foreground"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            )}
+          >
+            Configure
+          </Link>
+          <Link
+            to={`/agents/${canonicalAgentRef}/runs`}
+            className={cn(
+              "px-3 py-2 text-sm font-medium transition-colors border-b-2 no-underline",
+              activeView === "runs"
+                ? "border-foreground text-foreground"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            )}
+          >
+            Runs
+          </Link>
+          {agentPluginSlots.map((slot) => {
+            const value = `plugin:${slot.pluginKey}:${slot.id}`;
+            return (
+              <Link
+                key={value}
+                to={`/agents/${canonicalAgentRef}?tab=${encodeURIComponent(value)}`}
+                className={cn(
+                  "px-3 py-2 text-sm font-medium transition-colors border-b-2 no-underline shrink-0",
+                  activeView === value
+                    ? "border-foreground text-foreground"
+                    : "border-transparent text-muted-foreground hover:text-foreground"
+                )}
+              >
+                {slot.displayName}
+              </Link>
+            );
+          })}
+        </div>
+        <PluginLauncherOutlet
+          placementZones={["taskDetailView", "detailTab"]}
+          entityType="agent"
+          context={pluginSlotContext}
+          className="ml-auto flex items-center gap-1 shrink-0 py-1"
+        />
+      </div>
+
       {actionError && <p className="text-sm text-destructive">{actionError}</p>}
       {isPendingApproval && (
         <p className="text-sm text-amber-500">
@@ -659,6 +754,17 @@ export function AgentDetail() {
           adapterType={agent.adapterType}
         />
       )}
+
+      {typeof activeView === "string" && activeView.startsWith("plugin:") && (() => {
+        const activeSlot = agentPluginSlots.find((s) => `plugin:${s.pluginKey}:${s.id}` === activeView);
+        return activeSlot ? (
+          <PluginSlotMount
+            slot={activeSlot}
+            context={pluginSlotContext}
+            missingBehavior="placeholder"
+          />
+        ) : null;
+      })()}
     </div>
   );
 }
