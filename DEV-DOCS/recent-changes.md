@@ -1,16 +1,33 @@
 # Recent Changes Snapshot
 
-Date: 2026-03-09
+Date: 2026-03-10
 
-This file explains the current sprint branch in product terms so a human can look at the running app and understand what is actually new.
+This file explains the current state of the repo in product and operational terms so a human can look at the running app and understand what is actually new.
 
-## Sprint branch summary
+## Post-merge CI update
 
-Current branch:
+The executive-layer sprint is now merged into `development`.
+
+The current follow-up change is operational rather than product-facing:
+
+- feature branches are expected to open PRs into `development`
+- PR policy and PR verification now run for `development`
+- promotion PRs into `master` still rerun verification
+- the lockfile bot now refreshes `pnpm-lock.yaml` on pushes to `development`, not pushes to `master`
+
+Why this changed:
+
+- `development` is where integration and beta/live soak happen
+- `master` is the promotion branch
+- the old workflow shape was backwards for that branch model
+
+## Merged executive sprint summary
+
+Merged implementation branch:
 
 - `codex/all-phases-executive-sprint`
 
-Key local commits on this branch:
+Key commits from that merged branch:
 
 1. `3a609e3 docs(dev-docs): align current state and roadmap`
 2. `007037e feat(briefings): add executive sprint data contracts`

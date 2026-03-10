@@ -3,6 +3,8 @@ name: PR Verify
 on:
   pull_request:
     branches:
+      # Feature work lands in development first; master promotion PRs rerun verification.
+      - development
       - master
 
 concurrency:

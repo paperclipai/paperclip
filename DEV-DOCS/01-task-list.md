@@ -1,6 +1,6 @@
 # Task List
 
-Last updated: 2026-03-09
+Last updated: 2026-03-10
 
 ## Done
 
@@ -37,6 +37,11 @@ Last updated: 2026-03-09
   - normalize `knowledge` company routing
   - avoid misleading schedule defaults while record detail is still loading
 - Add logical checkout release semantics when an issue is released, reassigned, or leaves active execution
+- Move CI to a development-first branch model:
+  - PR policy on `development`
+  - PR verify on `development`
+  - promotion verify on `master`
+  - lockfile refresh bot on `development`
 
 ## Partial
 
@@ -48,6 +53,7 @@ Last updated: 2026-03-09
 
 ## Next
 
+- Verify the updated branch model against the next real feature PR targeting `development`
 - Tighten checkout lifecycle semantics:
   - release/archive rules
   - cleanup policy

@@ -1,5 +1,22 @@
 # Work Log
 
+## 2026-03-10
+
+### Session: development-first CI alignment
+
+- Updated GitHub Actions to match the intended branch model:
+  - PR policy now runs for `development` and `master`
+  - PR verification now runs for `development` and `master`
+  - lockfile refresh moved from `master` pushes to `development` pushes
+- Preserved the lockfile policy for promotion PRs:
+  - manual `pnpm-lock.yaml` edits are still blocked
+  - `development` -> `master` promotion PRs may carry the CI-owned lockfile update
+- Updated `doc/DEVELOPING.md` and the DEV-DOCS operational spine so the branch/CI contract is explicit instead of implied.
+- Re-ran:
+  - `pnpm -r typecheck`
+  - `pnpm test:run`
+  - `pnpm build`
+
 ## 2026-03-09
 
 ### Session: executive-layer status and sprint baseline

@@ -3,11 +3,12 @@ name: Refresh Lockfile
 on:
   push:
     branches:
-      - master
+      # Keep the integration branch deterministic; master is promoted after soak.
+      - development
   workflow_dispatch:
 
 concurrency:
-  group: refresh-lockfile-master
+  group: refresh-lockfile-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -58,8 +59,8 @@ jobs:
           git add pnpm-lock.yaml
           git commit -m "chore(lockfile): refresh pnpm-lock.yaml"
           git push || {
-            echo "Push failed because master moved during lockfile refresh."
-            echo "A later refresh run should recompute the lockfile from the newer master state."
+            echo "Push failed because the target branch moved during lockfile refresh."
+            echo "A later refresh run should recompute the lockfile from the newer branch state."
             exit 1
           }
 

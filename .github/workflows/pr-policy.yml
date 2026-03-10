@@ -3,6 +3,8 @@ name: PR Policy
 on:
   pull_request:
     branches:
+      # Development is the gated integration branch; master PRs are promotion PRs.
+      - development
       - master
 
 concurrency:
@@ -31,11 +33,15 @@ jobs:
         with:
           node-version: 20
 
-      - name: Block manual lockfile edits
+      - name: Block manual lockfile edits outside development promotion PRs
         run: |
           changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}")"
           if printf '%s\n' "$changed" | grep -qx 'pnpm-lock.yaml'; then
-            echo "Do not commit pnpm-lock.yaml in pull requests. CI owns lockfile updates."
+            if [ "${{ github.base_ref }}" = "master" ] && [ "${{ github.head_ref }}" = "development" ]; then
+              echo "Allowing CI-owned pnpm-lock.yaml updates on development promotion PRs."
+              exit 0
+            fi
+            echo "Do not commit pnpm-lock.yaml in pull requests. CI owns lockfile updates on development."
             exit 1
           fi
 

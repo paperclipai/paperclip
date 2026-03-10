@@ -1,16 +1,16 @@
 # Local Branch Maintenance Record
 
-Date: 2026-03-09
+Date: 2026-03-10
 
 ## Current verified branch state
 
 - `master`
 - `development`
-- `codex/all-phases-executive-sprint`
+- `codex/ci-development-first`
 
 Current checked-out branch:
 
-- `codex/all-phases-executive-sprint`
+- `codex/ci-development-first`
 
 Remote-tracked branches verified:
 
@@ -25,18 +25,14 @@ Remote-tracked branches verified:
    - `3db6e13 chore(lockfile): refresh pnpm-lock.yaml`
 3. `development` pulled in the merged feature work locally via:
    - `0e5310e Merge branch 'codex/executive-briefings-results-layer' into development`
-4. `development` then synchronized with the current remote `master` via:
-   - `71a62da Merge remote-tracking branch 'origin/master' into development`
-5. The old local feature branch is no longer present.
+4. The all-phases sprint merged into `development` as:
+   - `9da5cc4 Merge pull request #2 from plgonzalezrx8/codex/all-phases-executive-sprint`
+5. The current local follow-up branch retargets CI toward `development` as the gated integration branch.
 
 ## Notes that now matter
 
 - `master` contains the squashed GitHub merge of the executive briefings work.
-- `development` contains the merged Phase 1 executive-record baseline and lockfile sync.
-- `codex/all-phases-executive-sprint` is the current implementation branch for finishing Phases 2-5.
-- The current branch now contains additional local commits for:
-  - schedule/knowledge/portfolio APIs
-  - scheduled briefing execution
-  - briefing/portfolio/knowledge UI
-  - checkout-aware workspace isolation
+- `development` contains the merged executive-layer sprint and is now the intended CI gate.
+- `master` is the post-soak promotion branch.
+- `codex/ci-development-first` is the current branch for fixing the CI workflow drift.
 - Do not claim the workspace is clean unless that is re-verified at the time of reading.
