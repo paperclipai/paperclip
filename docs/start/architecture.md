@@ -87,7 +87,8 @@ Adapters are the bridge between Paperclip and agent runtimes. Each adapter is a 
 - **UI module** — stdout parser for the run viewer, config form fields for agent creation
 - **CLI module** — terminal formatter for `paperclipai run --watch`
 
-Built-in adapters: `claude_local`, `codex_local`, `process`, `http`. You can create custom adapters for any runtime.
+Built-in adapters: `claude_local`, `codex_local`, `acpx_sidecar`, `process`, `http`. You can create custom adapters for any runtime.
+Built-in adapters: `claude_local`, `codex_local`, `gemini_local`, `acpx_sidecar`, `process`, `http`. You can create custom adapters for any runtime.
 
 ## Key Design Decisions
 

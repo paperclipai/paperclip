@@ -21,6 +21,7 @@ import { Bot, Plus, List, GitBranch, SlidersHorizontal } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
 
 const adapterLabels: Record<string, string> = {
+  acpx_sidecar: "ACPX Sidecar",
   claude_local: "Claude",
   codex_local: "Codex",
   opencode_local: "OpenCode",

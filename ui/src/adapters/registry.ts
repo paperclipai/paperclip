@@ -1,4 +1,5 @@
 import type { UIAdapterModule } from "./types";
+import { acpxSidecarUIAdapter } from "./acpx-sidecar";
 import { claudeLocalUIAdapter } from "./claude-local";
 import { codexLocalUIAdapter } from "./codex-local";
 import { cursorLocalUIAdapter } from "./cursor";
@@ -10,6 +11,7 @@ import { httpUIAdapter } from "./http";
 
 const adaptersByType = new Map<string, UIAdapterModule>(
   [
+    acpxSidecarUIAdapter,
     claudeLocalUIAdapter,
     codexLocalUIAdapter,
     openCodeLocalUIAdapter,

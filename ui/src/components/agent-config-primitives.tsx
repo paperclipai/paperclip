@@ -51,6 +51,7 @@ export const help: Record<string, string> = {
 };
 
 export const adapterLabels: Record<string, string> = {
+  acpx_sidecar: "ACPX Sidecar",
   claude_local: "Claude (local)",
   codex_local: "Codex (local)",
   opencode_local: "OpenCode (local)",

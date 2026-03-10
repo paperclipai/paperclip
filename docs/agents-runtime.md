@@ -38,6 +38,7 @@ Common choices:
 - `codex_local`: runs your local `codex` CLI
 - `process`: generic shell command adapter
 - `http`: calls an external HTTP endpoint
+- `acpx_sidecar`: calls a dedicated runtime sidecar that shells out to `acpx`
 
 For `claude_local` and `codex_local`, Paperclip assumes the CLI is already installed and authenticated on the host machine.
 
