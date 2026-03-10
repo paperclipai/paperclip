@@ -82,6 +82,93 @@ async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
+export interface RestoreFileEntry {
+  objectKey: string;
+  relativePath: string;
+  s3Size?: number;
+  s3Etag?: string;
+  localSize?: number;
+}
+
+export interface RestorePreview {
+  enabled: boolean;
+  storageProvider: string;
+  totalS3Files: number;
+  missing: RestoreFileEntry[];
+  conflicts: RestoreFileEntry[];
+  synced: number;
+}
+
+export type RestoreStrategy = "missing_only" | "overwrite_all" | "selected";
+
+/**
+ * Preview what a restore from S3 would do without writing any files.
+ * Returns the set of missing files (not on disk) and conflict files
+ * (on disk but with different content than S3).
+ */
+export async function previewAgentRuntimeRestore(): Promise<RestorePreview> {
+  const config = loadConfig();
+
+  if (config.storageProvider !== "s3") {
+    return {
+      enabled: false,
+      storageProvider: config.storageProvider,
+      totalS3Files: 0,
+      missing: [],
+      conflicts: [],
+      synced: 0,
+    };
+  }
+
+  const runtimeDir = config.agentRuntimeDir;
+  const provider = createStorageProviderFromConfig(config);
+  const instanceId = resolvePaperclipInstanceId();
+  const s3Prefix = `agent-runtime/${instanceId}`;
+
+  const objects = await provider.listObjects({ prefix: s3Prefix });
+
+  const missing: RestoreFileEntry[] = [];
+  const conflicts: RestoreFileEntry[] = [];
+  let synced = 0;
+
+  for (const obj of objects) {
+    const relativePath = obj.objectKey.slice(s3Prefix.length + 1);
+    if (!relativePath) continue;
+
+    const localPath = path.join(runtimeDir, relativePath.split("/").join(path.sep));
+    const localStat = await fs.stat(localPath).catch(() => null);
+
+    const entry: RestoreFileEntry = {
+      objectKey: obj.objectKey,
+      relativePath,
+      s3Size: obj.size,
+      s3Etag: obj.etag ? normalizeEtag(obj.etag) : undefined,
+    };
+
+    if (!localStat) {
+      missing.push(entry);
+    } else {
+      entry.localSize = localStat.size;
+      // Compare etag to detect conflicts (local != S3)
+      const localBody = await fs.readFile(localPath).catch(() => null);
+      if (localBody && obj.etag && md5(localBody) !== normalizeEtag(obj.etag)) {
+        conflicts.push(entry);
+      } else {
+        synced++;
+      }
+    }
+  }
+
+  return {
+    enabled: true,
+    storageProvider: "s3",
+    totalS3Files: objects.length,
+    missing,
+    conflicts,
+    synced,
+  };
+}
+
 /**
  * Restore agent runtime files from S3 to the local runtime directory.
  *
@@ -89,8 +176,14 @@ async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
  * container replacements. Files that already exist locally are left untouched —
  * local state always wins (the live container may have written since the last
  * sync; we never clobber uncommitted work).
+ *
+ * When called from the API, callers can pass a strategy and an optional list
+ * of specific objectKeys to restore (for `selected` strategy).
  */
-export async function restoreAgentRuntimeFromS3(): Promise<{
+export async function restoreAgentRuntimeFromS3(opts?: {
+  strategy?: RestoreStrategy;
+  selectedKeys?: string[];
+}): Promise<{
   provider: string;
   restored: number;
   skipped: number;
@@ -101,6 +194,9 @@ export async function restoreAgentRuntimeFromS3(): Promise<{
   if (config.storageProvider !== "s3") {
     return { provider: config.storageProvider, restored: 0, skipped: 0, errors: 0 };
   }
+
+  const strategy = opts?.strategy ?? "missing_only";
+  const selectedKeys = opts?.selectedKeys ? new Set(opts.selectedKeys) : null;
 
   const runtimeDir = config.agentRuntimeDir;
   const provider = createStorageProviderFromConfig(config);
@@ -121,9 +217,19 @@ export async function restoreAgentRuntimeFromS3(): Promise<{
     if (!relativePath) continue;
 
     const localPath = path.join(runtimeDir, relativePath.split("/").join(path.sep));
-
     const localStat = await fs.stat(localPath).catch(() => null);
-    if (localStat) {
+
+    // Determine whether to write this file
+    let shouldWrite = false;
+    if (!localStat) {
+      shouldWrite = true; // file is missing — always restore
+    } else if (strategy === "overwrite_all") {
+      shouldWrite = true;
+    } else if (strategy === "selected" && selectedKeys?.has(obj.objectKey)) {
+      shouldWrite = true;
+    }
+
+    if (!shouldWrite) {
       skipped++;
       continue;
     }
