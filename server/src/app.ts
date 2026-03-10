@@ -32,6 +32,7 @@ export async function createApp(
   db: Db,
   opts: {
     uiMode: UiMode;
+    serverPort: number;
     storageService: StorageService;
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
@@ -146,12 +147,18 @@ export async function createApp(
 
   if (opts.uiMode === "vite-dev") {
     const uiRoot = path.resolve(__dirname, "../../ui");
+    const hmrPort = opts.serverPort + 10000;
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       root: uiRoot,
       appType: "spa",
       server: {
         middlewareMode: true,
+        hmr: {
+          host: opts.bindHost,
+          port: hmrPort,
+          clientPort: hmrPort,
+        },
         allowedHosts: privateHostnameGateEnabled ? Array.from(privateHostnameAllowSet) : undefined,
       },
     });
