@@ -34,12 +34,11 @@ permissions:
       - name: Docker meta
         id: meta
         uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
+            type=sha
 
       - name: Build and push
         uses: docker/build-push-action@v6
