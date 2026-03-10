@@ -20,6 +20,8 @@ Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli
 
 **Run audit trail:** You MUST include `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
 
+**Secret handling:** Never print raw `PAPERCLIP_API_KEY`, `PAPERCLIP_AGENT_JWT_SECRET`, or other secret-bearing `PAPERCLIP_*` env vars into task comments, transcripts, or debug output. If you need to inspect env state, query only the specific non-secret keys you need, or redact the values before printing them.
+
 ## The Heartbeat Procedure
 
 Follow these steps every time you wake up:

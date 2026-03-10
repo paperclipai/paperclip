@@ -1471,7 +1471,8 @@ export function heartbeatService(db: Db) {
         });
       };
       for (const warning of runtimeWorkspaceWarnings) {
-        await onLog("stderr", `[paperclip] ${warning}\n`);
+        // Workspace fallbacks are useful operator context, but they are not execution errors.
+        await onLog("stdout", `[paperclip] ${warning}\n`);
       }
 
       const config = parseObject(agent.adapterConfig);

@@ -190,6 +190,43 @@ This starts the API server at `http://localhost:3100`. An embedded PostgreSQL da
 
 > **Requirements:** Node.js 20+, pnpm 9.15+
 
+### Optional: install QMD for richer agent memory recall
+
+Paperclip works without `qmd`, but some agent memory workflows can use it for faster semantic recall across markdown notes and plans.
+
+Recommended options:
+
+```bash
+# Best fit if you keep Paperclip itself on Node 20
+bun install -g @tobilu/qmd
+
+# Also supported upstream if your system Node is 22+
+npm install -g @tobilu/qmd
+
+# One-off execution without a global install
+bunx @tobilu/qmd --help
+npx @tobilu/qmd --help
+```
+
+Source install from the upstream repository:
+
+```bash
+git clone https://github.com/tobi/qmd.git
+cd qmd
+bun install
+bun link
+qmd --help
+```
+
+Notes:
+
+- Upstream `qmd` package metadata currently requires Node.js 22+ on the Node/npm path.
+- Upstream docs list Bun 1.0+ as supported as well, which makes it the safer install path alongside this repo's Node 20 baseline.
+- On macOS, upstream also documents `brew install sqlite`.
+- If `qmd` is not installed, Paperclip agents fall back to `rg`, `find`, and direct file reads instead of failing.
+
+Upstream repository: [tobi/qmd](https://github.com/tobi/qmd)
+
 <br/>
 
 ## FAQ

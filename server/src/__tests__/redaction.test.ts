@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { REDACTED_EVENT_VALUE, redactEventPayload, sanitizeRecord } from "../redaction.js";
+import {
+  REDACTED_EVENT_VALUE,
+  redactEventPayload,
+  redactSensitiveText,
+  sanitizeRecord,
+} from "../redaction.js";
 
 describe("redaction", () => {
   it("redacts sensitive keys and nested secret values", () => {
@@ -62,5 +67,24 @@ describe("redaction", () => {
       password: REDACTED_EVENT_VALUE,
       safe: "value",
     });
+  });
+
+  it("redacts secret-like values embedded in transcript text", () => {
+    const text = [
+      "PAPERCLIP_API_URL=http://localhost:3100",
+      "PAPERCLIP_API_KEY=eyJhbGciOiJIUzI1NiJ9.payload.signature",
+      "PAPERCLIP_AGENT_JWT_SECRET=super-secret-value",
+      "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature",
+    ].join("\n");
+
+    const expected = [
+      "PAPERCLIP_API_URL=http://localhost:3100",
+      "PAPERCLIP_API_KEY=***REDACTED***",
+      "PAPERCLIP_AGENT_JWT_SECRET=***REDACTED***",
+      "Authorization: Bearer ***REDACTED***",
+    ].join("\n");
+
+    expect(redactSensitiveText(text)).toBe(expected);
+    expect(redactEventPayload({ content: text })).toEqual({ content: expected });
   });
 });

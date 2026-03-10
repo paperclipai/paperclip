@@ -1,6 +1,11 @@
 const SECRET_PAYLOAD_KEY_RE =
   /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
 const JWT_VALUE_RE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?$/;
+const SENSITIVE_TEXT_ASSIGNMENT_RE =
+  /(^|[\r\n])([A-Za-z0-9_.-]*(?:api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)[A-Za-z0-9_.-]*)\s*=\s*([^\r\n]+)/gi;
+const SENSITIVE_TEXT_JSON_RE =
+  /(["'](?:[^"'\n]*(?:api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)[^"'\n]*)["']\s*:\s*["'])([^"'\n]+)(["'])/gi;
+const SENSITIVE_TEXT_BEARER_RE = /(Authorization\s*:\s*Bearer\s+)([^\s"'`]+)/gi;
 export const REDACTED_EVENT_VALUE = "***REDACTED***";
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -11,6 +16,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function sanitizeValue(value: unknown): unknown {
   if (value === null || value === undefined) return value;
+  if (typeof value === "string") return sanitizeString(value);
   if (Array.isArray(value)) return value.map(sanitizeValue);
   if (isSecretRefBinding(value)) return value;
   if (isPlainBinding(value)) return { type: "plain", value: sanitizeValue(value.value) };
@@ -28,6 +34,28 @@ function isPlainBinding(value: unknown): value is { type: "plain"; value: unknow
   return value.type === "plain" && "value" in value;
 }
 
+export function redactSensitiveText(value: string): string {
+  // Transcript payloads are often plain text, so secret-bearing substrings need
+  // redaction even when the surrounding payload shape is otherwise harmless.
+  return value
+    .replace(
+      SENSITIVE_TEXT_ASSIGNMENT_RE,
+      (_match, prefix: string, key: string) => `${prefix}${key}=${REDACTED_EVENT_VALUE}`,
+    )
+    .replace(
+      SENSITIVE_TEXT_JSON_RE,
+      (_match, prefix: string, _value: string, suffix: string) =>
+        `${prefix}${REDACTED_EVENT_VALUE}${suffix}`,
+    )
+    .replace(SENSITIVE_TEXT_BEARER_RE, `$1${REDACTED_EVENT_VALUE}`);
+}
+
+function sanitizeString(value: string): string {
+  const redactedText = redactSensitiveText(value);
+  if (JWT_VALUE_RE.test(redactedText)) return REDACTED_EVENT_VALUE;
+  return redactedText;
+}
+
 export function sanitizeRecord(record: Record<string, unknown>): Record<string, unknown> {
   const redacted: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(record)) {
@@ -40,10 +68,6 @@ export function sanitizeRecord(record: Record<string, unknown>): Record<string, 
         redacted[key] = { type: "plain", value: REDACTED_EVENT_VALUE };
         continue;
       }
-      redacted[key] = REDACTED_EVENT_VALUE;
-      continue;
-    }
-    if (typeof value === "string" && JWT_VALUE_RE.test(value)) {
       redacted[key] = REDACTED_EVENT_VALUE;
       continue;
     }

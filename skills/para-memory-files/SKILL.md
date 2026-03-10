@@ -85,9 +85,9 @@ Memory does not survive session restarts. Files do.
 - Make a mistake -> document it so future-you does not repeat it.
 - On-disk text files are always better than holding it in temporary context.
 
-## Memory Recall -- Use qmd
+## Memory Recall -- Prefer qmd When Available
 
-Use `qmd` rather than grepping files:
+Use `qmd` rather than grepping files when it is installed:
 
 ```bash
 qmd query "what happened at Christmas"   # Semantic search with reranking
@@ -95,10 +95,14 @@ qmd search "specific phrase"              # BM25 keyword search
 qmd vsearch "conceptual question"         # Pure vector similarity
 ```
 
+Install examples from the upstream project: `npm install -g @tobilu/qmd` or `bun install -g @tobilu/qmd`
+
 Index your personal folder: `qmd index $AGENT_HOME`
+
+If `qmd` is not on `PATH`, do not fail the task just because semantic recall is unavailable. Fall back to `rg`, `find`, or direct file reads and note that memory recall is running in degraded mode.
 
 Vectors + BM25 + reranking finds things even when the wording differs.
 
 ## Planning
 
-Keep plans in timestamped files in `plans/` at the project root (outside personal memory so other agents can access them). Use `qmd` to search plans. Plans go stale -- if a newer plan exists, do not confuse yourself with an older version. If you notice staleness, update the file to note what it is supersededBy.
+Keep plans in timestamped files in `plans/` at the project root (outside personal memory so other agents can access them). Prefer `qmd` to search plans when available, otherwise use `rg` or direct reads. Plans go stale -- if a newer plan exists, do not confuse yourself with an older version. If you notice staleness, update the file to note what it is supersededBy.
