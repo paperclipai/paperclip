@@ -6,6 +6,7 @@ import { createServer } from "node:net";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import {
+  applyPendingMigrations,
   ensurePostgresDatabase,
   formatDatabaseBackupResult,
   runDatabaseBackup,
@@ -251,6 +252,7 @@ async function seedWorktreeDatabase(input: {
       connectionString: targetConnectionString,
       backupFile: backup.backupFile,
     });
+    await applyPendingMigrations(targetConnectionString);
 
     return formatDatabaseBackupResult(backup);
   } finally {

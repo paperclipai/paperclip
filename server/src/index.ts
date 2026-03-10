@@ -460,10 +460,12 @@ export async function startServer(): Promise<StartedServer> {
     authReady = true;
   }
   
+  const listenPort = await detectPort(config.port);
   const uiMode = config.uiDevMiddleware ? "vite-dev" : config.serveUi ? "static" : "none";
   const storageService = createStorageServiceFromConfig(config);
   const app = await createApp(db as any, {
     uiMode,
+    serverPort: listenPort,
     storageService,
     deploymentMode: config.deploymentMode,
     deploymentExposure: config.deploymentExposure,
@@ -475,7 +477,6 @@ export async function startServer(): Promise<StartedServer> {
     resolveSession,
   });
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
-  const listenPort = await detectPort(config.port);
   
   if (listenPort !== config.port) {
     logger.warn(`Requested port is busy; using next free port (requestedPort=${config.port}, selectedPort=${listenPort})`);

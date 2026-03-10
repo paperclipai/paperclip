@@ -27,6 +27,7 @@ export type RunDatabaseRestoreOptions = {
 };
 
 type SequenceDefinition = {
+  sequence_schema: string;
   sequence_name: string;
   data_type: string;
   start_value: string;
@@ -34,9 +35,18 @@ type SequenceDefinition = {
   maximum_value: string;
   increment: string;
   cycle_option: "YES" | "NO";
+  owner_schema: string | null;
   owner_table: string | null;
   owner_column: string | null;
 };
+
+type TableDefinition = {
+  schema_name: string;
+  tablename: string;
+};
+
+const DRIZZLE_SCHEMA = "drizzle";
+const DRIZZLE_MIGRATIONS_TABLE = "__drizzle_migrations";
 
 const STATEMENT_BREAKPOINT = "-- paperclip statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900";
 
@@ -119,6 +129,18 @@ function normalizeNullifyColumnMap(values: Record<string, string[]> | undefined)
   return out;
 }
 
+function quoteIdentifier(value: string): string {
+  return `"${value.replaceAll("\"", "\"\"")}"`;
+}
+
+function quoteQualifiedName(schemaName: string, objectName: string): string {
+  return `${quoteIdentifier(schemaName)}.${quoteIdentifier(objectName)}`;
+}
+
+function tableKey(schemaName: string, tableName: string): string {
+  return `${schemaName}.${tableName}`;
+}
+
 export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise<RunDatabaseBackupResult> {
   const filenamePrefix = opts.filenamePrefix ?? "paperclip";
   const retentionDays = Math.max(1, Math.trunc(opts.retentionDays));
@@ -149,19 +171,18 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     emitStatement("SET LOCAL client_min_messages = warning;");
     emit("");
 
-    const allTables = await sql<{ tablename: string }[]>`
-      SELECT c.relname AS tablename
-      FROM pg_class c
-      JOIN pg_namespace n ON n.oid = c.relnamespace
-      WHERE n.nspname = 'public'
-        AND c.relkind = 'r'
-      ORDER BY c.relname
+    const allTables = await sql<TableDefinition[]>`
+      SELECT table_schema AS schema_name, table_name AS tablename
+      FROM information_schema.tables
+      WHERE table_type = 'BASE TABLE'
+        AND (
+          table_schema = 'public'
+          OR (${includeMigrationJournal}::boolean AND table_schema = ${DRIZZLE_SCHEMA} AND table_name = ${DRIZZLE_MIGRATIONS_TABLE})
+        )
+      ORDER BY table_schema, table_name
     `;
-    const tables = allTables.filter(({ tablename }) => {
-      if (!includeMigrationJournal && tablename === "__drizzle_migrations") return false;
-      return !excludedTableNames.has(tablename);
-    });
-    const includedTableNames = new Set(tables.map(({ tablename }) => tablename));
+    const tables = allTables;
+    const includedTableNames = new Set(tables.map(({ schema_name, tablename }) => tableKey(schema_name, tablename)));
 
     // Get all enums
     const enums = await sql<{ typname: string; labels: string[] }[]>`
@@ -182,6 +203,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
 
     const allSequences = await sql<SequenceDefinition[]>`
       SELECT
+        s.sequence_schema,
         s.sequence_name,
         s.data_type,
         s.start_value,
@@ -189,6 +211,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         s.maximum_value,
         s.increment,
         s.cycle_option,
+        tblns.nspname AS owner_schema,
         tbl.relname AS owner_table,
         attr.attname AS owner_column
       FROM information_schema.sequences s
@@ -196,25 +219,43 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       JOIN pg_namespace n ON n.oid = seq.relnamespace AND n.nspname = s.sequence_schema
       LEFT JOIN pg_depend dep ON dep.objid = seq.oid AND dep.deptype = 'a'
       LEFT JOIN pg_class tbl ON tbl.oid = dep.refobjid
+      LEFT JOIN pg_namespace tblns ON tblns.oid = tbl.relnamespace
       LEFT JOIN pg_attribute attr ON attr.attrelid = tbl.oid AND attr.attnum = dep.refobjsubid
       WHERE s.sequence_schema = 'public'
-      ORDER BY s.sequence_name
+         OR (${includeMigrationJournal}::boolean AND s.sequence_schema = ${DRIZZLE_SCHEMA})
+      ORDER BY s.sequence_schema, s.sequence_name
     `;
-    const sequences = allSequences.filter((seq) => !seq.owner_table || includedTableNames.has(seq.owner_table));
+    const sequences = allSequences.filter(
+      (seq) => !seq.owner_table || includedTableNames.has(tableKey(seq.owner_schema ?? "public", seq.owner_table)),
+    );
+
+    const schemas = new Set<string>();
+    for (const table of tables) schemas.add(table.schema_name);
+    for (const seq of sequences) schemas.add(seq.sequence_schema);
+    const extraSchemas = [...schemas].filter((schemaName) => schemaName !== "public");
+    if (extraSchemas.length > 0) {
+      emit("-- Schemas");
+      for (const schemaName of extraSchemas) {
+        emitStatement(`CREATE SCHEMA IF NOT EXISTS ${quoteIdentifier(schemaName)};`);
+      }
+      emit("");
+    }
 
     if (sequences.length > 0) {
       emit("-- Sequences");
       for (const seq of sequences) {
-        emitStatement(`DROP SEQUENCE IF EXISTS "${seq.sequence_name}" CASCADE;`);
+        const qualifiedSequenceName = quoteQualifiedName(seq.sequence_schema, seq.sequence_name);
+        emitStatement(`DROP SEQUENCE IF EXISTS ${qualifiedSequenceName} CASCADE;`);
         emitStatement(
-          `CREATE SEQUENCE "${seq.sequence_name}" AS ${seq.data_type} INCREMENT BY ${seq.increment} MINVALUE ${seq.minimum_value} MAXVALUE ${seq.maximum_value} START WITH ${seq.start_value}${seq.cycle_option === "YES" ? " CYCLE" : " NO CYCLE"};`,
+          `CREATE SEQUENCE ${qualifiedSequenceName} AS ${seq.data_type} INCREMENT BY ${seq.increment} MINVALUE ${seq.minimum_value} MAXVALUE ${seq.maximum_value} START WITH ${seq.start_value}${seq.cycle_option === "YES" ? " CYCLE" : " NO CYCLE"};`,
         );
       }
       emit("");
     }
 
     // Get full CREATE TABLE DDL via column info
-    for (const { tablename } of tables) {
+    for (const { schema_name, tablename } of tables) {
+      const qualifiedTableName = quoteQualifiedName(schema_name, tablename);
       const columns = await sql<{
         column_name: string;
         data_type: string;
@@ -228,12 +269,12 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         SELECT column_name, data_type, udt_name, is_nullable, column_default,
                character_maximum_length, numeric_precision, numeric_scale
         FROM information_schema.columns
-        WHERE table_schema = 'public' AND table_name = ${tablename}
+        WHERE table_schema = ${schema_name} AND table_name = ${tablename}
         ORDER BY ordinal_position
       `;
 
-      emit(`-- Table: ${tablename}`);
-      emitStatement(`DROP TABLE IF EXISTS "${tablename}" CASCADE;`);
+      emit(`-- Table: ${schema_name}.${tablename}`);
+      emitStatement(`DROP TABLE IF EXISTS ${qualifiedTableName} CASCADE;`);
 
       const colDefs: string[] = [];
       for (const col of columns) {
@@ -269,7 +310,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         JOIN pg_class t ON t.oid = c.conrelid
         JOIN pg_namespace n ON n.oid = t.relnamespace
         JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(c.conkey)
-        WHERE n.nspname = 'public' AND t.relname = ${tablename} AND c.contype = 'p'
+        WHERE n.nspname = ${schema_name} AND t.relname = ${tablename} AND c.contype = 'p'
         GROUP BY c.conname
       `;
       for (const p of pk) {
@@ -277,7 +318,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         colDefs.push(`  CONSTRAINT "${p.constraint_name}" PRIMARY KEY (${cols})`);
       }
 
-      emit(`CREATE TABLE "${tablename}" (`);
+      emit(`CREATE TABLE ${qualifiedTableName} (`);
       emit(colDefs.join(",\n"));
       emit(");");
       emitStatementBoundary();
@@ -289,7 +330,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       emit("-- Sequence ownership");
       for (const seq of ownedSequences) {
         emitStatement(
-          `ALTER SEQUENCE "${seq.sequence_name}" OWNED BY "${seq.owner_table!}"."${seq.owner_column!}";`,
+          `ALTER SEQUENCE ${quoteQualifiedName(seq.sequence_schema, seq.sequence_name)} OWNED BY ${quoteQualifiedName(seq.owner_schema ?? "public", seq.owner_table!)}.${quoteIdentifier(seq.owner_column!)};`,
         );
       }
       emit("");
@@ -298,8 +339,10 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     // Foreign keys (after all tables created)
     const allForeignKeys = await sql<{
       constraint_name: string;
+      source_schema: string;
       source_table: string;
       source_columns: string[];
+      target_schema: string;
       target_table: string;
       target_columns: string[];
       update_rule: string;
@@ -307,24 +350,31 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     }[]>`
       SELECT
         c.conname AS constraint_name,
+        srcn.nspname AS source_schema,
         src.relname AS source_table,
         array_agg(sa.attname ORDER BY array_position(c.conkey, sa.attnum)) AS source_columns,
+        tgtn.nspname AS target_schema,
         tgt.relname AS target_table,
         array_agg(ta.attname ORDER BY array_position(c.confkey, ta.attnum)) AS target_columns,
         CASE c.confupdtype WHEN 'a' THEN 'NO ACTION' WHEN 'r' THEN 'RESTRICT' WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL' WHEN 'd' THEN 'SET DEFAULT' END AS update_rule,
         CASE c.confdeltype WHEN 'a' THEN 'NO ACTION' WHEN 'r' THEN 'RESTRICT' WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL' WHEN 'd' THEN 'SET DEFAULT' END AS delete_rule
       FROM pg_constraint c
       JOIN pg_class src ON src.oid = c.conrelid
+      JOIN pg_namespace srcn ON srcn.oid = src.relnamespace
       JOIN pg_class tgt ON tgt.oid = c.confrelid
-      JOIN pg_namespace n ON n.oid = src.relnamespace
+      JOIN pg_namespace tgtn ON tgtn.oid = tgt.relnamespace
       JOIN pg_attribute sa ON sa.attrelid = src.oid AND sa.attnum = ANY(c.conkey)
       JOIN pg_attribute ta ON ta.attrelid = tgt.oid AND ta.attnum = ANY(c.confkey)
-      WHERE c.contype = 'f' AND n.nspname = 'public'
-      GROUP BY c.conname, src.relname, tgt.relname, c.confupdtype, c.confdeltype
-      ORDER BY src.relname, c.conname
+      WHERE c.contype = 'f' AND (
+        srcn.nspname = 'public'
+        OR (${includeMigrationJournal}::boolean AND srcn.nspname = ${DRIZZLE_SCHEMA})
+      )
+      GROUP BY c.conname, srcn.nspname, src.relname, tgtn.nspname, tgt.relname, c.confupdtype, c.confdeltype
+      ORDER BY srcn.nspname, src.relname, c.conname
     `;
     const fks = allForeignKeys.filter(
-      (fk) => includedTableNames.has(fk.source_table) && includedTableNames.has(fk.target_table),
+      (fk) => includedTableNames.has(tableKey(fk.source_schema, fk.source_table))
+        && includedTableNames.has(tableKey(fk.target_schema, fk.target_table)),
     );
 
     if (fks.length > 0) {
@@ -333,7 +383,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         const srcCols = fk.source_columns.map((c) => `"${c}"`).join(", ");
         const tgtCols = fk.target_columns.map((c) => `"${c}"`).join(", ");
         emitStatement(
-          `ALTER TABLE "${fk.source_table}" ADD CONSTRAINT "${fk.constraint_name}" FOREIGN KEY (${srcCols}) REFERENCES "${fk.target_table}" (${tgtCols}) ON UPDATE ${fk.update_rule} ON DELETE ${fk.delete_rule};`,
+          `ALTER TABLE ${quoteQualifiedName(fk.source_schema, fk.source_table)} ADD CONSTRAINT "${fk.constraint_name}" FOREIGN KEY (${srcCols}) REFERENCES ${quoteQualifiedName(fk.target_schema, fk.target_table)} (${tgtCols}) ON UPDATE ${fk.update_rule} ON DELETE ${fk.delete_rule};`,
         );
       }
       emit("");
@@ -342,43 +392,52 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     // Unique constraints
     const allUniqueConstraints = await sql<{
       constraint_name: string;
+      schema_name: string;
       tablename: string;
       column_names: string[];
     }[]>`
       SELECT c.conname AS constraint_name,
+             n.nspname AS schema_name,
              t.relname AS tablename,
              array_agg(a.attname ORDER BY array_position(c.conkey, a.attnum)) AS column_names
       FROM pg_constraint c
       JOIN pg_class t ON t.oid = c.conrelid
       JOIN pg_namespace n ON n.oid = t.relnamespace
       JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(c.conkey)
-      WHERE n.nspname = 'public' AND c.contype = 'u'
-      GROUP BY c.conname, t.relname
-      ORDER BY t.relname, c.conname
+      WHERE c.contype = 'u' AND (
+        n.nspname = 'public'
+        OR (${includeMigrationJournal}::boolean AND n.nspname = ${DRIZZLE_SCHEMA})
+      )
+      GROUP BY c.conname, n.nspname, t.relname
+      ORDER BY n.nspname, t.relname, c.conname
     `;
-    const uniques = allUniqueConstraints.filter((entry) => includedTableNames.has(entry.tablename));
+    const uniques = allUniqueConstraints.filter((entry) => includedTableNames.has(tableKey(entry.schema_name, entry.tablename)));
 
     if (uniques.length > 0) {
       emit("-- Unique constraints");
       for (const u of uniques) {
         const cols = u.column_names.map((c) => `"${c}"`).join(", ");
-        emitStatement(`ALTER TABLE "${u.tablename}" ADD CONSTRAINT "${u.constraint_name}" UNIQUE (${cols});`);
+        emitStatement(`ALTER TABLE ${quoteQualifiedName(u.schema_name, u.tablename)} ADD CONSTRAINT "${u.constraint_name}" UNIQUE (${cols});`);
       }
       emit("");
     }
 
     // Indexes (non-primary, non-unique-constraint)
-    const allIndexes = await sql<{ tablename: string; indexdef: string }[]>`
-      SELECT tablename, indexdef
+    const allIndexes = await sql<{ schema_name: string; tablename: string; indexdef: string }[]>`
+      SELECT schemaname AS schema_name, tablename, indexdef
       FROM pg_indexes
-      WHERE schemaname = 'public'
-        AND indexname NOT IN (
-          SELECT conname FROM pg_constraint
-          WHERE connamespace = (SELECT oid FROM pg_namespace WHERE nspname = 'public')
+      WHERE (
+          schemaname = 'public'
+          OR (${includeMigrationJournal}::boolean AND schemaname = ${DRIZZLE_SCHEMA})
         )
-      ORDER BY tablename, indexname
+        AND indexname NOT IN (
+          SELECT conname FROM pg_constraint c
+          JOIN pg_namespace n ON n.oid = c.connamespace
+          WHERE n.nspname = pg_indexes.schemaname
+        )
+      ORDER BY schemaname, tablename, indexname
     `;
-    const indexes = allIndexes.filter((entry) => includedTableNames.has(entry.tablename));
+    const indexes = allIndexes.filter((entry) => includedTableNames.has(tableKey(entry.schema_name, entry.tablename)));
 
     if (indexes.length > 0) {
       emit("-- Indexes");
@@ -389,24 +448,23 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     }
 
     // Dump data for each table
-    for (const { tablename } of tables) {
-      const count = await sql<{ n: number }[]>`
-        SELECT count(*)::int AS n FROM ${sql(tablename)}
-      `;
-      if ((count[0]?.n ?? 0) === 0) continue;
+    for (const { schema_name, tablename } of tables) {
+      const qualifiedTableName = quoteQualifiedName(schema_name, tablename);
+      const count = await sql.unsafe<{ n: number }[]>(`SELECT count(*)::int AS n FROM ${qualifiedTableName}`);
+      if (excludedTableNames.has(tablename) || (count[0]?.n ?? 0) === 0) continue;
 
       // Get column info for this table
       const cols = await sql<{ column_name: string; data_type: string }[]>`
         SELECT column_name, data_type
         FROM information_schema.columns
-        WHERE table_schema = 'public' AND table_name = ${tablename}
+        WHERE table_schema = ${schema_name} AND table_name = ${tablename}
         ORDER BY ordinal_position
       `;
       const colNames = cols.map((c) => `"${c.column_name}"`).join(", ");
 
-      emit(`-- Data for: ${tablename} (${count[0]!.n} rows)`);
+      emit(`-- Data for: ${schema_name}.${tablename} (${count[0]!.n} rows)`);
 
-      const rows = await sql`SELECT * FROM ${sql(tablename)}`.values();
+      const rows = await sql.unsafe(`SELECT * FROM ${qualifiedTableName}`).values();
       const nullifiedColumns = nullifiedColumnsByTable.get(tablename) ?? new Set<string>();
       for (const row of rows) {
         const values = row.map((rawValue: unknown, index) => {
@@ -419,7 +477,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           if (typeof val === "object") return formatSqlLiteral(JSON.stringify(val));
           return formatSqlLiteral(String(val));
         });
-        emitStatement(`INSERT INTO "${tablename}" (${colNames}) VALUES (${values.join(", ")});`);
+        emitStatement(`INSERT INTO ${qualifiedTableName} (${colNames}) VALUES (${values.join(", ")});`);
       }
       emit("");
     }
@@ -428,11 +486,15 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     if (sequences.length > 0) {
       emit("-- Sequence values");
       for (const seq of sequences) {
-        const val = await sql<{ last_value: string; is_called: boolean }[]>`
-          SELECT last_value::text, is_called FROM ${sql(seq.sequence_name)}
-        `;
-        if (val[0]) {
-          emitStatement(`SELECT setval('"${seq.sequence_name}"', ${val[0].last_value}, ${val[0].is_called ? "true" : "false"});`);
+        const qualifiedSequenceName = quoteQualifiedName(seq.sequence_schema, seq.sequence_name);
+        const val = await sql.unsafe<{ last_value: string; is_called: boolean }[]>(
+          `SELECT last_value::text, is_called FROM ${qualifiedSequenceName}`,
+        );
+        const skipSequenceValue =
+          seq.owner_table !== null
+            && excludedTableNames.has(seq.owner_table);
+        if (val[0] && !skipSequenceValue) {
+          emitStatement(`SELECT setval('${qualifiedSequenceName.replaceAll("'", "''")}', ${val[0].last_value}, ${val[0].is_called ? "true" : "false"});`);
         }
       }
       emit("");

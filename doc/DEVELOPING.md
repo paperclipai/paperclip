@@ -143,7 +143,7 @@ This command:
 
 Seed modes:
 
-- `minimal` keeps core app state like companies, projects, issues, comments, approvals, and auth state, but drops heavy operational history such as heartbeat runs, wake requests, activity logs, runtime services, and agent session state
+- `minimal` keeps core app state like companies, projects, issues, comments, approvals, and auth state, preserves schema for all tables, but omits row data from heavy operational history such as heartbeat runs, wake requests, activity logs, runtime services, and agent session state
 - `full` makes a full logical clone of the source instance
 - `--no-seed` creates an empty isolated instance
 
