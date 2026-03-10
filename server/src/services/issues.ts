@@ -634,6 +634,19 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
+      // Inherit projectId (and goalId) from parent issue when not explicitly provided
+      if (data.parentId && (!issueData.projectId || !issueData.goalId)) {
+        const parent = await db
+          .select({ projectId: issues.projectId, goalId: issues.goalId })
+          .from(issues)
+          .where(eq(issues.id, data.parentId))
+          .then((rows) => rows[0] ?? null);
+        if (parent) {
+          if (!issueData.projectId && parent.projectId) issueData.projectId = parent.projectId;
+          if (!issueData.goalId && parent.goalId) issueData.goalId = parent.goalId;
+        }
+      }
+
       return db.transaction(async (tx) => {
         const [company] = await tx
           .update(companies)
