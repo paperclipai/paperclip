@@ -30,6 +30,7 @@
   "devDependencies": {
     "@changesets/cli": "^2.30.0",
     "esbuild": "^0.27.3",
+    "playwright": "^1.58.2",
     "typescript": "^5.7.3",
     "vitest": "^3.0.5"
   },
