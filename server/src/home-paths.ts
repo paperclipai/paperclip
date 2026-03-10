@@ -61,6 +61,10 @@ export function resolveDefaultAgentWorkspaceDir(agentId: string): string {
   return path.resolve(resolvePaperclipInstanceRoot(), "workspaces", trimmed);
 }
 
+export function resolveDefaultAgentCheckoutDir(agentId: string): string {
+  return path.resolve(resolveDefaultAgentWorkspaceDir(agentId), "checkouts");
+}
+
 export function resolveHomeAwarePath(value: string): string {
   return path.resolve(expandHomePrefix(value));
 }

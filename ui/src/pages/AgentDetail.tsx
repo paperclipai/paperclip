@@ -190,6 +190,16 @@ function usageNumber(usage: Record<string, unknown> | null, ...keys: string[]) {
   return 0;
 }
 
+function runPricingState(usage: Record<string, unknown> | null) {
+  const tokens =
+    usageNumber(usage, "inputTokens", "input_tokens") +
+    usageNumber(usage, "outputTokens", "output_tokens") +
+    usageNumber(usage, "cachedInputTokens", "cached_input_tokens", "cache_read_input_tokens");
+  const pricedCost = usageNumber(usage, "costUsd", "cost_usd", "total_cost_usd");
+  if (tokens === 0) return "exact" as const;
+  return pricedCost > 0 ? "exact" as const : "unpriced" as const;
+}
+
 function runMetrics(run: HeartbeatRun) {
   const usage = (run.usageJson ?? null) as Record<string, unknown> | null;
   const result = (run.resultJson ?? null) as Record<string, unknown> | null;
@@ -961,7 +971,15 @@ function CostsSection({
   const runsWithCost = runs
     .filter((r) => {
       const u = r.usageJson as Record<string, unknown> | null;
-      return u && (u.cost_usd || u.total_cost_usd || u.input_tokens);
+      return (
+        u &&
+        (
+          usageNumber(u, "costUsd", "cost_usd", "total_cost_usd") > 0 ||
+          usageNumber(u, "inputTokens", "input_tokens") > 0 ||
+          usageNumber(u, "outputTokens", "output_tokens") > 0 ||
+          usageNumber(u, "cachedInputTokens", "cached_input_tokens", "cache_read_input_tokens") > 0
+        )
+      );
     })
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
@@ -1004,17 +1022,19 @@ function CostsSection({
             <tbody>
               {runsWithCost.slice(0, 10).map((run) => {
                 const u = run.usageJson as Record<string, unknown>;
+                const pricingState = runPricingState(u);
+                const costLabel =
+                  pricingState === "unpriced"
+                    ? "Unpriced usage"
+                    : `$${usageNumber(u, "costUsd", "cost_usd", "total_cost_usd").toFixed(4)}`;
                 return (
                   <tr key={run.id} className="border-b border-border last:border-b-0">
                     <td className="px-3 py-2">{formatDate(run.createdAt)}</td>
                     <td className="px-3 py-2 font-mono">{run.id.slice(0, 8)}</td>
-                    <td className="px-3 py-2 text-right">{formatTokens(Number(u.input_tokens ?? 0))}</td>
-                    <td className="px-3 py-2 text-right">{formatTokens(Number(u.output_tokens ?? 0))}</td>
+                    <td className="px-3 py-2 text-right">{formatTokens(usageNumber(u, "inputTokens", "input_tokens"))}</td>
+                    <td className="px-3 py-2 text-right">{formatTokens(usageNumber(u, "outputTokens", "output_tokens"))}</td>
                     <td className="px-3 py-2 text-right">
-                      {(u.cost_usd || u.total_cost_usd)
-                        ? `$${Number(u.cost_usd ?? u.total_cost_usd ?? 0).toFixed(4)}`
-                        : "-"
-                      }
+                      {costLabel}
                     </td>
                   </tr>
                 );
@@ -1504,6 +1524,14 @@ function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRun; agen
   const sessionChanged = run.sessionIdBefore && run.sessionIdAfter && run.sessionIdBefore !== run.sessionIdAfter;
   const sessionId = run.sessionIdAfter || run.sessionIdBefore;
   const hasNonZeroExit = run.exitCode !== null && run.exitCode !== 0;
+  const workspaceMeta = useMemo(() => {
+    const context = asRecord(run.contextSnapshot);
+    return asRecord(context?.paperclipWorkspace);
+  }, [run.contextSnapshot]);
+  const workspacePath = asNonEmptyString(workspaceMeta?.worktreePath) ?? asNonEmptyString(workspaceMeta?.cwd);
+  const workspaceBranch = asNonEmptyString(workspaceMeta?.branchName);
+  const workspaceStatus = asNonEmptyString(workspaceMeta?.checkoutStatus);
+  const isolationUnavailable = workspaceMeta?.isolationUnavailable === true;
 
   return (
     <div className="space-y-4 min-w-0">
@@ -1596,6 +1624,17 @@ function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRun; agen
               <div className="text-xs">
                 <span className="text-red-600 dark:text-red-400">{run.error}</span>
                 {run.errorCode && <span className="text-muted-foreground ml-1">({run.errorCode})</span>}
+              </div>
+            )}
+            {workspacePath && (
+              <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs">
+                <div className="font-medium text-foreground">Workspace</div>
+                <div className="mt-1 break-all text-muted-foreground">{workspacePath}</div>
+                <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                  {workspaceBranch ? <span>Branch {workspaceBranch}</span> : null}
+                  {workspaceStatus ? <span>Status {workspaceStatus}</span> : null}
+                  {isolationUnavailable ? <span>Isolation unavailable</span> : null}
+                </div>
               </div>
             )}
             {run.errorCode === "claude_auth_required" && adapterType === "claude_local" && (

@@ -2,9 +2,11 @@ import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
   createProjectSchema,
+  createProjectMilestoneSchema,
   createProjectWorkspaceSchema,
   isUuidLike,
   updateProjectSchema,
+  updateProjectMilestoneSchema,
   updateProjectWorkspaceSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
@@ -149,6 +151,18 @@ export function projectRoutes(db: Db) {
     res.json(workspaces);
   });
 
+  router.get("/projects/:id/milestones", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    const milestones = await svc.listMilestones(id);
+    res.json(milestones);
+  });
+
   router.post("/projects/:id/workspaces", validate(createProjectWorkspaceSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
@@ -181,6 +195,39 @@ export function projectRoutes(db: Db) {
     });
 
     res.status(201).json(workspace);
+  });
+
+  router.post("/projects/:id/milestones", validate(createProjectMilestoneSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    const milestone = await svc.createMilestone(id, req.body);
+    if (!milestone) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "project.milestone_created",
+      entityType: "project",
+      entityId: id,
+      details: {
+        milestoneId: milestone.id,
+        name: milestone.name,
+        status: milestone.status,
+      },
+    });
+
+    res.status(201).json(milestone);
   });
 
   router.patch(
@@ -225,6 +272,39 @@ export function projectRoutes(db: Db) {
     },
   );
 
+  router.patch("/projects/:id/milestones/:milestoneId", validate(updateProjectMilestoneSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const milestoneId = req.params.milestoneId as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    const milestone = await svc.updateMilestone(id, milestoneId, req.body);
+    if (!milestone) {
+      res.status(404).json({ error: "Project milestone not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "project.milestone_updated",
+      entityType: "project",
+      entityId: id,
+      details: {
+        milestoneId: milestone.id,
+        changedKeys: Object.keys(req.body).sort(),
+      },
+    });
+
+    res.json(milestone);
+  });
+
   router.delete("/projects/:id/workspaces/:workspaceId", async (req, res) => {
     const id = req.params.id as string;
     const workspaceId = req.params.workspaceId as string;
@@ -256,6 +336,39 @@ export function projectRoutes(db: Db) {
     });
 
     res.json(workspace);
+  });
+
+  router.delete("/projects/:id/milestones/:milestoneId", async (req, res) => {
+    const id = req.params.id as string;
+    const milestoneId = req.params.milestoneId as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    const milestone = await svc.removeMilestone(id, milestoneId);
+    if (!milestone) {
+      res.status(404).json({ error: "Project milestone not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "project.milestone_deleted",
+      entityType: "project",
+      entityId: id,
+      details: {
+        milestoneId: milestone.id,
+        name: milestone.name,
+      },
+    });
+
+    res.json(milestone);
   });
 
   router.delete("/projects/:id", async (req, res) => {

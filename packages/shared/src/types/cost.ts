@@ -1,3 +1,5 @@
+import type { PricingState } from "../constants.js";
+
 export interface CostEvent {
   id: string;
   companyId: string;
@@ -20,6 +22,7 @@ export interface CostSummary {
   spendCents: number;
   budgetCents: number;
   utilizationPercent: number;
+  pricingState: PricingState;
 }
 
 export interface CostByAgent {
@@ -27,10 +30,20 @@ export interface CostByAgent {
   agentName: string | null;
   agentStatus: string | null;
   costCents: number;
+  pricingState: PricingState;
   inputTokens: number;
   outputTokens: number;
   apiRunCount: number;
   subscriptionRunCount: number;
   subscriptionInputTokens: number;
   subscriptionOutputTokens: number;
+}
+
+export interface CostByProject {
+  projectId: string | null;
+  projectName: string | null;
+  costCents: number;
+  pricingState: PricingState;
+  inputTokens: number;
+  outputTokens: number;
 }

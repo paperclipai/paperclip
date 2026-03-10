@@ -1,17 +1,21 @@
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { projects, projectGoals, goals, projectWorkspaces } from "@paperclipai/db";
+import { projects, projectGoals, goals, projectMilestones, projectWorkspaces } from "@paperclipai/db";
 import {
   PROJECT_COLORS,
   deriveProjectUrlKey,
   isUuidLike,
   normalizeProjectUrlKey,
+  type CreateProjectMilestone,
   type ProjectGoalRef,
+  type ProjectMilestone,
   type ProjectWorkspace,
+  type UpdateProjectMilestone,
 } from "@paperclipai/shared";
 
 type ProjectRow = typeof projects.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
+type ProjectMilestoneRow = typeof projectMilestones.$inferSelect;
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 type CreateWorkspaceInput = {
   name?: string | null;
@@ -94,6 +98,22 @@ function toWorkspace(row: ProjectWorkspaceRow): ProjectWorkspace {
   };
 }
 
+function toMilestone(row: ProjectMilestoneRow): ProjectMilestone {
+  return {
+    id: row.id,
+    companyId: row.companyId,
+    projectId: row.projectId,
+    name: row.name,
+    description: row.description ?? null,
+    status: row.status as ProjectMilestone["status"],
+    targetDate: row.targetDate ?? null,
+    completedAt: row.completedAt ?? null,
+    sortOrder: row.sortOrder,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
 function pickPrimaryWorkspace(rows: ProjectWorkspaceRow[]): ProjectWorkspace | null {
   if (rows.length === 0) return null;
   const explicitPrimary = rows.find((row) => row.isPrimary);
@@ -130,6 +150,31 @@ async function attachWorkspaces(db: Db, rows: ProjectWithGoals[]): Promise<Proje
       primaryWorkspace: pickPrimaryWorkspace(projectWorkspaceRows),
     };
   });
+}
+
+/** Batch-load milestones so portfolio and project detail views share the same source contract. */
+async function attachMilestones(db: Db, rows: ProjectWithGoals[]): Promise<ProjectWithGoals[]> {
+  if (rows.length === 0) return [];
+
+  const projectIds = rows.map((r) => r.id);
+  const milestoneRows = await db
+    .select()
+    .from(projectMilestones)
+    .where(inArray(projectMilestones.projectId, projectIds))
+    .orderBy(asc(projectMilestones.sortOrder), asc(projectMilestones.createdAt), asc(projectMilestones.id));
+
+  const map = new Map<string, ProjectMilestone[]>();
+  for (const row of milestoneRows) {
+    const milestone = toMilestone(row);
+    const existing = map.get(row.projectId);
+    if (existing) existing.push(milestone);
+    else map.set(row.projectId, [milestone]);
+  }
+
+  return rows.map((row) => ({
+    ...row,
+    milestones: map.get(row.id) ?? [],
+  }));
 }
 
 /** Sync the project_goals join table for a single project. */
@@ -264,7 +309,8 @@ export function projectService(db: Db) {
     list: async (companyId: string): Promise<ProjectWithGoals[]> => {
       const rows = await db.select().from(projects).where(eq(projects.companyId, companyId));
       const withGoals = await attachGoals(db, rows);
-      return attachWorkspaces(db, withGoals);
+      const withWorkspaces = await attachWorkspaces(db, withGoals);
+      return attachMilestones(db, withWorkspaces);
     },
 
     listByIds: async (companyId: string, ids: string[]): Promise<ProjectWithGoals[]> => {
@@ -276,7 +322,8 @@ export function projectService(db: Db) {
         .where(and(eq(projects.companyId, companyId), inArray(projects.id, dedupedIds)));
       const withGoals = await attachGoals(db, rows);
       const withWorkspaces = await attachWorkspaces(db, withGoals);
-      const byId = new Map(withWorkspaces.map((project) => [project.id, project]));
+      const withMilestones = await attachMilestones(db, withWorkspaces);
+      const byId = new Map(withMilestones.map((project) => [project.id, project]));
       return dedupedIds.map((id) => byId.get(id)).filter((project): project is ProjectWithGoals => Boolean(project));
     },
 
@@ -289,7 +336,8 @@ export function projectService(db: Db) {
       if (!row) return null;
       const [withGoals] = await attachGoals(db, [row]);
       if (!withGoals) return null;
-      const [enriched] = await attachWorkspaces(db, [withGoals]);
+      const [withWorkspaces] = await attachWorkspaces(db, [withGoals]);
+      const [enriched] = withWorkspaces ? await attachMilestones(db, [withWorkspaces]) : [];
       return enriched ?? null;
     },
 
@@ -328,7 +376,8 @@ export function projectService(db: Db) {
       }
 
       const [withGoals] = await attachGoals(db, [row]);
-      const [enriched] = withGoals ? await attachWorkspaces(db, [withGoals]) : [];
+      const [withWorkspaces] = withGoals ? await attachWorkspaces(db, [withGoals]) : [];
+      const [enriched] = withWorkspaces ? await attachMilestones(db, [withWorkspaces]) : [];
       return enriched!;
     },
 
@@ -381,7 +430,8 @@ export function projectService(db: Db) {
       }
 
       const [withGoals] = await attachGoals(db, [row]);
-      const [enriched] = withGoals ? await attachWorkspaces(db, [withGoals]) : [];
+      const [withWorkspaces] = withGoals ? await attachWorkspaces(db, [withGoals]) : [];
+      const [enriched] = withWorkspaces ? await attachMilestones(db, [withWorkspaces]) : [];
       return enriched ?? null;
     },
 
@@ -634,6 +684,75 @@ export function projectService(db: Db) {
       });
 
       return removed ? toWorkspace(removed) : null;
+    },
+
+    listMilestones: async (projectId: string): Promise<ProjectMilestone[]> => {
+      const rows = await db
+        .select()
+        .from(projectMilestones)
+        .where(eq(projectMilestones.projectId, projectId))
+        .orderBy(asc(projectMilestones.sortOrder), asc(projectMilestones.createdAt), asc(projectMilestones.id));
+      return rows.map(toMilestone);
+    },
+
+    createMilestone: async (projectId: string, data: CreateProjectMilestone): Promise<ProjectMilestone | null> => {
+      const project = await db
+        .select({ id: projects.id, companyId: projects.companyId })
+        .from(projects)
+        .where(eq(projects.id, projectId))
+        .then((rows) => rows[0] ?? null);
+      if (!project) return null;
+
+      const [row] = await db
+        .insert(projectMilestones)
+        .values({
+          companyId: project.companyId,
+          projectId,
+          name: data.name.trim(),
+          description: data.description?.trim() || null,
+          status: data.status ?? "planned",
+          targetDate: data.targetDate ?? null,
+          completedAt: data.completedAt ? new Date(data.completedAt) : null,
+          sortOrder: data.sortOrder ?? 0,
+        })
+        .returning();
+      return toMilestone(row);
+    },
+
+    updateMilestone: async (
+      projectId: string,
+      milestoneId: string,
+      data: UpdateProjectMilestone,
+    ): Promise<ProjectMilestone | null> => {
+      const existing = await db
+        .select()
+        .from(projectMilestones)
+        .where(and(eq(projectMilestones.id, milestoneId), eq(projectMilestones.projectId, projectId)))
+        .then((rows) => rows[0] ?? null);
+      if (!existing) return null;
+
+      const [row] = await db
+        .update(projectMilestones)
+        .set({
+          name: data.name?.trim() ?? existing.name,
+          description: data.description === undefined ? existing.description : data.description?.trim() || null,
+          status: data.status ?? existing.status,
+          targetDate: data.targetDate === undefined ? existing.targetDate : data.targetDate,
+          completedAt: data.completedAt === undefined ? existing.completedAt : data.completedAt ? new Date(data.completedAt) : null,
+          sortOrder: data.sortOrder ?? existing.sortOrder,
+          updatedAt: new Date(),
+        })
+        .where(eq(projectMilestones.id, milestoneId))
+        .returning();
+      return row ? toMilestone(row) : null;
+    },
+
+    removeMilestone: async (projectId: string, milestoneId: string): Promise<ProjectMilestone | null> => {
+      const [row] = await db
+        .delete(projectMilestones)
+        .where(and(eq(projectMilestones.id, milestoneId), eq(projectMilestones.projectId, projectId)))
+        .returning();
+      return row ? toMilestone(row) : null;
     },
 
     resolveByReference: async (companyId: string, reference: string) => {

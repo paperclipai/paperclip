@@ -24,6 +24,7 @@ import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { llmRoutes } from "./routes/llms.js";
 import { assetRoutes } from "./routes/assets.js";
 import { recordRoutes } from "./routes/records.js";
+import { knowledgeRoutes } from "./routes/knowledge.js";
 import { accessRoutes } from "./routes/access.js";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 
@@ -114,6 +115,7 @@ export async function createApp(
   api.use(dashboardRoutes(db));
   api.use(sidebarBadgeRoutes(db));
   api.use(recordRoutes(db));
+  api.use(knowledgeRoutes(db));
   api.use(
     accessRoutes(db, {
       deploymentMode: opts.deploymentMode,

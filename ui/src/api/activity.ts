@@ -9,6 +9,7 @@ export interface RunForIssue {
   finishedAt: string | null;
   createdAt: string;
   invocationSource: string;
+  contextSnapshot: Record<string, unknown> | null;
   usageJson: Record<string, unknown> | null;
   resultJson: Record<string, unknown> | null;
 }

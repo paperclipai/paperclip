@@ -1,6 +1,9 @@
 import { z } from "zod";
 import {
+  BRIEFING_CADENCES,
   BRIEFING_RECORD_KINDS,
+  BRIEFING_SCHEDULE_RUN_STATUSES,
+  BRIEFING_WINDOW_PRESETS,
   HEALTH_DELTAS,
   HEALTH_STATUSES,
   PLAN_RECORD_KINDS,
@@ -19,6 +22,9 @@ export const recordStatusSchema = z.enum(RECORD_STATUSES);
 export const planRecordKindSchema = z.enum(PLAN_RECORD_KINDS);
 export const resultRecordKindSchema = z.enum(RESULT_RECORD_KINDS);
 export const briefingRecordKindSchema = z.enum(BRIEFING_RECORD_KINDS);
+export const briefingCadenceSchema = z.enum(BRIEFING_CADENCES);
+export const briefingWindowPresetSchema = z.enum(BRIEFING_WINDOW_PRESETS);
+export const briefingScheduleRunStatusSchema = z.enum(BRIEFING_SCHEDULE_RUN_STATUSES);
 export const healthStatusSchema = z.enum(HEALTH_STATUSES);
 export const healthDeltaSchema = z.enum(HEALTH_DELTAS);
 export const pricingStateSchema = z.enum(PRICING_STATES);
@@ -80,8 +86,23 @@ export type CreateRecordAttachment = z.infer<typeof createRecordAttachmentSchema
 
 export const generateRecordSchema = z.object({
   since: z.union([z.literal("last_visit"), z.string().datetime()]).optional(),
+  windowPreset: briefingWindowPresetSchema.optional(),
+  from: z.string().datetime().nullable().optional(),
+  to: z.string().datetime().nullable().optional(),
 });
 export type GenerateRecord = z.infer<typeof generateRecordSchema>;
+
+export const upsertBriefingScheduleSchema = z.object({
+  enabled: z.boolean().optional().default(true),
+  cadence: briefingCadenceSchema,
+  timezone: z.string().trim().min(1).max(120),
+  localHour: z.number().int().min(0).max(23),
+  localMinute: z.number().int().min(0).max(59),
+  dayOfWeek: z.number().int().min(0).max(6).nullable().optional(),
+  windowPreset: briefingWindowPresetSchema,
+  autoPublish: z.boolean().optional().default(false),
+});
+export type UpsertBriefingSchedule = z.infer<typeof upsertBriefingScheduleSchema>;
 
 export const publishRecordSchema = z.object({});
 export type PublishRecord = z.infer<typeof publishRecordSchema>;

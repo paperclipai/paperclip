@@ -1,6 +1,7 @@
 import type {
   HeartbeatInvocationSource,
   HeartbeatRunStatus,
+  PricingState,
   WakeupTriggerDetail,
   WakeupRequestStatus,
 } from "../constants.js";
@@ -32,6 +33,8 @@ export interface HeartbeatRun {
   errorCode: string | null;
   externalRunId: string | null;
   contextSnapshot: Record<string, unknown> | null;
+  pricedCostCents?: number | null;
+  pricingState?: PricingState | null;
   createdAt: Date;
   updatedAt: Date;
 }

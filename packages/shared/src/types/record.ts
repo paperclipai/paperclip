@@ -1,4 +1,5 @@
 import type {
+  BriefingWindowPreset,
   BriefingRecordKind,
   HealthDelta,
   HealthStatus,
@@ -11,6 +12,7 @@ import type {
   RecordStatus,
   ResultRecordKind,
 } from "../constants.js";
+import type { Approval } from "./approval.js";
 import type { AssetFile } from "./asset.js";
 
 export interface RecordLink {
@@ -81,6 +83,30 @@ export interface BriefingRecord extends BaseRecord {
 
 export type AnyRecord = PlanRecord | ResultRecord | BriefingRecord;
 
+export interface ExecutiveApprovalDecision {
+  sourceType: "approval";
+  id: string;
+  title: string;
+  summary: string | null;
+  status: string;
+  ownerAgentId: string | null;
+  dueAt: Date | null;
+  approval: Approval;
+}
+
+export interface ExecutivePlanDecision {
+  sourceType: "plan";
+  id: string;
+  title: string;
+  summary: string | null;
+  status: string;
+  ownerAgentId: string | null;
+  dueAt: Date | null;
+  plan: PlanRecord;
+}
+
+export type ExecutiveDecisionItem = ExecutiveApprovalDecision | ExecutivePlanDecision;
+
 export interface ExecutiveProjectHealth {
   projectId: string;
   projectName: string;
@@ -90,7 +116,7 @@ export interface ExecutiveProjectHealth {
   confidence: number | null;
   lastMeaningfulResult: ResultRecord | null;
   currentBlocker: string | null;
-  nextDecision: PlanRecord | null;
+  nextDecision: ExecutiveDecisionItem | null;
 }
 
 export interface ExecutiveCostAnomaly {
@@ -115,8 +141,15 @@ export interface ExecutiveBoardSummary {
   lastViewedAt: Date | null;
   outcomesLanded: ResultRecord[];
   risksAndBlocks: Array<PlanRecord | ResultRecord>;
-  decisionsNeeded: PlanRecord[];
+  decisionsNeeded: ExecutiveDecisionItem[];
   projectHealth: ExecutiveProjectHealth[];
   costAnomalies: ExecutiveCostAnomaly[];
   executiveRollups: BriefingRecord[];
+}
+
+export interface BriefingGenerationInput {
+  since?: string;
+  windowPreset?: BriefingWindowPreset;
+  from?: string | null;
+  to?: string | null;
 }

@@ -82,6 +82,12 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
+function asNonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 function usageNumber(usage: Record<string, unknown> | null, ...keys: string[]) {
   if (!usage) return 0;
   for (const key of keys) {
@@ -156,6 +162,7 @@ export function IssueDetail() {
   const [secondaryOpen, setSecondaryOpen] = useState({
     approvals: false,
     cost: false,
+    activity: false,
   });
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -339,6 +346,8 @@ export function IssueDetail() {
     let cost = 0;
     let hasCost = false;
     let hasTokens = false;
+    let pricedRuns = 0;
+    let tokenRuns = 0;
 
     for (const run of linkedRuns ?? []) {
       const usage = asRecord(run.usageJson);
@@ -356,11 +365,16 @@ export function IssueDetail() {
         usageNumber(result, "total_cost_usd", "cost_usd", "costUsd");
       if (runCost > 0) hasCost = true;
       if (runInput + runOutput + runCached > 0) hasTokens = true;
+      if (runInput + runOutput + runCached > 0) tokenRuns += 1;
+      if (runCost > 0) pricedRuns += 1;
       input += runInput;
       output += runOutput;
       cached += runCached;
       cost += runCost;
     }
+
+    const pricingState =
+      tokenRuns === 0 ? "exact" : pricedRuns === 0 ? "unpriced" : pricedRuns < tokenRuns ? "estimated" : "exact";
 
     return {
       input,
@@ -370,7 +384,26 @@ export function IssueDetail() {
       totalTokens: input + output,
       hasCost,
       hasTokens,
+      pricingState,
     };
+  }, [linkedRuns]);
+
+  const workspaceSummary = useMemo(() => {
+    const rows = new Map<string, { runId: string; path: string; branch: string | null; status: string | null; isolationUnavailable: boolean }>();
+    for (const run of linkedRuns ?? []) {
+      const context = asRecord(run.contextSnapshot);
+      const workspace = asRecord(context?.paperclipWorkspace);
+      const path = asNonEmptyString(workspace?.worktreePath) ?? asNonEmptyString(workspace?.cwd);
+      if (!path) continue;
+      rows.set(run.runId, {
+        runId: run.runId,
+        path,
+        branch: asNonEmptyString(workspace?.branchName),
+        status: asNonEmptyString(workspace?.checkoutStatus),
+        isolationUnavailable: workspace?.isolationUnavailable === true,
+      });
+    }
+    return Array.from(rows.values());
   }, [linkedRuns]);
 
   const invalidateIssue = () => {
@@ -926,11 +959,17 @@ export function IssueDetail() {
                 <div className="text-xs text-muted-foreground">No cost data yet.</div>
               ) : (
                 <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
-                  {issueCostSummary.hasCost && (
+                  {issueCostSummary.hasCost && issueCostSummary.pricingState !== "unpriced" && (
                     <span className="font-medium text-foreground">
                       ${issueCostSummary.cost.toFixed(4)}
                     </span>
                   )}
+                  {issueCostSummary.hasTokens && issueCostSummary.pricingState === "unpriced" ? (
+                    <span className="font-medium text-foreground">Unpriced token usage</span>
+                  ) : null}
+                  {issueCostSummary.hasTokens && issueCostSummary.pricingState === "estimated" ? (
+                    <span className="font-medium text-foreground">Estimated spend</span>
+                  ) : null}
                   {issueCostSummary.hasTokens && (
                     <span>
                       Tokens {formatTokens(issueCostSummary.totalTokens)}
@@ -941,6 +980,35 @@ export function IssueDetail() {
                   )}
                 </div>
               )}
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
+      )}
+
+      {workspaceSummary.length > 0 && (
+        <Collapsible
+          open={secondaryOpen.activity}
+          onOpenChange={(open) => setSecondaryOpen((prev) => ({ ...prev, activity: open }))}
+          className="rounded-lg border border-border"
+        >
+          <CollapsibleTrigger className="flex w-full items-center justify-between px-3 py-2 text-left">
+            <span className="text-sm font-medium text-muted-foreground">Workspace Isolation</span>
+            <ChevronDown
+              className={cn("h-4 w-4 text-muted-foreground transition-transform", secondaryOpen.activity && "rotate-180")}
+            />
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <div className="space-y-2 border-t border-border px-3 py-2">
+              {workspaceSummary.map((row) => (
+                <div key={row.runId} className="rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs">
+                  <div className="font-medium text-foreground">{row.path}</div>
+                  <div className="mt-1 flex flex-wrap gap-2 text-muted-foreground">
+                    {row.branch ? <span>Branch {row.branch}</span> : null}
+                    {row.status ? <span>Status {row.status}</span> : null}
+                    {row.isolationUnavailable ? <span>Isolation unavailable</span> : null}
+                  </div>
+                </div>
+              ))}
             </div>
           </CollapsibleContent>
         </Collapsible>

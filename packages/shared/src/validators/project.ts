@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { PROJECT_STATUSES } from "../constants.js";
+import { MILESTONE_STATUSES, PROJECT_STATUSES } from "../constants.js";
 
 const projectWorkspaceFields = {
   name: z.string().min(1).optional(),
@@ -56,3 +56,20 @@ export type CreateProject = z.infer<typeof createProjectSchema>;
 export const updateProjectSchema = z.object(projectFields).partial();
 
 export type UpdateProject = z.infer<typeof updateProjectSchema>;
+
+export const projectMilestoneStatusSchema = z.enum(MILESTONE_STATUSES);
+
+export const createProjectMilestoneSchema = z.object({
+  name: z.string().trim().min(1).max(240),
+  description: z.string().trim().max(4000).nullable().optional(),
+  status: projectMilestoneStatusSchema.optional().default("planned"),
+  targetDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+  completedAt: z.string().datetime().nullable().optional(),
+  sortOrder: z.number().int().min(0).optional().default(0),
+});
+
+export type CreateProjectMilestone = z.infer<typeof createProjectMilestoneSchema>;
+
+export const updateProjectMilestoneSchema = createProjectMilestoneSchema.partial();
+
+export type UpdateProjectMilestone = z.infer<typeof updateProjectMilestoneSchema>;

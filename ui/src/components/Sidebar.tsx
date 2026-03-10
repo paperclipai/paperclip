@@ -4,6 +4,7 @@ import {
   Target,
   FileText,
   LayoutDashboard,
+  Library,
   DollarSign,
   History,
   Search,
@@ -78,6 +79,7 @@ export function Sidebar() {
           </button>
           <SidebarNavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
           <SidebarNavItem to="/briefings/board" label="Briefings" icon={FileText} />
+          <SidebarNavItem to="/knowledge" label="Knowledge" icon={Library} />
           <SidebarNavItem
             to="/inbox"
             label="Inbox"

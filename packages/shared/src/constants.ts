@@ -187,6 +187,15 @@ export const BRIEFING_RECORD_KINDS = [
 ] as const;
 export type BriefingRecordKind = (typeof BRIEFING_RECORD_KINDS)[number];
 
+export const BRIEFING_CADENCES = ["daily", "weekly"] as const;
+export type BriefingCadence = (typeof BRIEFING_CADENCES)[number];
+
+export const BRIEFING_WINDOW_PRESETS = ["last_visit", "24h", "7d", "custom"] as const;
+export type BriefingWindowPreset = (typeof BRIEFING_WINDOW_PRESETS)[number];
+
+export const BRIEFING_SCHEDULE_RUN_STATUSES = ["idle", "succeeded", "failed"] as const;
+export type BriefingScheduleRunStatus = (typeof BRIEFING_SCHEDULE_RUN_STATUSES)[number];
+
 export const RECORD_LINK_TARGET_TYPES = [
   "issue",
   "heartbeat_run",
@@ -209,6 +218,15 @@ export type HealthDelta = (typeof HEALTH_DELTAS)[number];
 
 export const PRICING_STATES = ["exact", "estimated", "unpriced"] as const;
 export type PricingState = (typeof PRICING_STATES)[number];
+
+export const KNOWLEDGE_ENTRY_STATUSES = ["draft", "published", "archived"] as const;
+export type KnowledgeEntryStatus = (typeof KNOWLEDGE_ENTRY_STATUSES)[number];
+
+export const MILESTONE_STATUSES = ["planned", "in_progress", "completed", "blocked", "cancelled"] as const;
+export type MilestoneStatus = (typeof MILESTONE_STATUSES)[number];
+
+export const WORKSPACE_CHECKOUT_STATUSES = ["active", "released", "unavailable", "error"] as const;
+export type WorkspaceCheckoutStatus = (typeof WORKSPACE_CHECKOUT_STATUSES)[number];
 
 export const APPROVAL_TYPES = ["hire_agent", "approve_ceo_strategy"] as const;
 export type ApprovalType = (typeof APPROVAL_TYPES)[number];

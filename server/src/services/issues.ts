@@ -15,6 +15,7 @@ import {
   labels,
   projectWorkspaces,
   projects,
+  workspaceCheckouts,
 } from "@paperclipai/db";
 import { extractProjectMentionIds } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
@@ -44,6 +45,18 @@ function applyStatusSideEffects(
     patch.cancelledAt = new Date();
   }
   return patch;
+}
+
+type IssueExecutionState = Pick<IssueRow, "status" | "assigneeAgentId" | "assigneeUserId">;
+
+export function shouldReleaseIssueCheckouts(
+  existing: IssueExecutionState,
+  next: IssueExecutionState,
+) {
+  if (existing.status === "in_progress" && next.status !== "in_progress") return true;
+  if (existing.assigneeAgentId !== next.assigneeAgentId) return true;
+  if (existing.assigneeUserId !== next.assigneeUserId) return true;
+  return false;
 }
 
 export interface IssueFilters {
@@ -247,6 +260,25 @@ async function withIssueLabels(dbOrTx: any, rows: IssueRow[]): Promise<IssueWith
       labelIds: issueLabels.map((label) => label.id),
     };
   });
+}
+
+async function releaseActiveCheckoutsForIssue(dbOrTx: any, issueId: string) {
+  // Releasing the logical checkout row gives operators a truthful lifecycle boundary even
+  // before this branch grows physical worktree cleanup/garbage-collection.
+  return dbOrTx
+    .update(workspaceCheckouts)
+    .set({
+      status: "released",
+      releasedAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(workspaceCheckouts.issueId, issueId),
+        eq(workspaceCheckouts.status, "active"),
+      ),
+    )
+    .returning();
 }
 
 const ACTIVE_RUN_STATUSES = ["queued", "running"];
@@ -701,6 +733,13 @@ export function issueService(db: Db) {
         await assertAssignableUser(existing.companyId, issueData.assigneeUserId);
       }
 
+      const nextExecutionState: IssueExecutionState = {
+        status: issueData.status ?? existing.status,
+        assigneeAgentId: nextAssigneeAgentId,
+        assigneeUserId: nextAssigneeUserId,
+      };
+      const releaseCheckouts = shouldReleaseIssueCheckouts(existing, nextExecutionState);
+
       applyStatusSideEffects(issueData.status, patch);
       if (issueData.status && issueData.status !== "done") {
         patch.completedAt = null;
@@ -726,6 +765,9 @@ export function issueService(db: Db) {
           .returning()
           .then((rows) => rows[0] ?? null);
         if (!updated) return null;
+        if (releaseCheckouts) {
+          await releaseActiveCheckoutsForIssue(tx, updated.id);
+        }
         if (nextLabelIds !== undefined) {
           await syncIssueLabels(updated.id, existing.companyId, nextLabelIds, tx);
         }
@@ -978,6 +1020,7 @@ export function issueService(db: Db) {
         .returning()
         .then((rows) => rows[0] ?? null);
       if (!updated) return null;
+      await releaseActiveCheckoutsForIssue(db, updated.id);
       const [enriched] = await withIssueLabels(db, [updated]);
       return enriched;
     },

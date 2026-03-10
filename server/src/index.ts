@@ -24,7 +24,7 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
-import { heartbeatService } from "./services/index.js";
+import { heartbeatService, knowledgeService, logActivity, recordService } from "./services/index.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
@@ -513,6 +513,45 @@ if (config.heartbeatSchedulerEnabled) {
   }, config.heartbeatSchedulerIntervalMs);
 }
 
+if (config.briefingSchedulerEnabled) {
+  const recordsSvc = recordService(db as any);
+  const knowledgeSvc = knowledgeService(db as any);
+
+  setInterval(() => {
+    void recordsSvc
+      .runDueSchedules(new Date())
+      .then(async (generated) => {
+        if (generated.length === 0) return;
+        let publishedToKnowledge = 0;
+        for (const record of generated) {
+          const entry = await knowledgeSvc.autoPublishEligibleRecord(record.id);
+          if (!entry) continue;
+          publishedToKnowledge += 1;
+          await logActivity(db as any, {
+            companyId: entry.companyId,
+            actorType: "system",
+            actorId: "briefing_scheduler",
+            action: "knowledge.published",
+            entityType: "knowledge_entry",
+            entityId: entry.id,
+            details: {
+              sourceRecordId: entry.sourceRecordId,
+              kind: entry.kind,
+              autoPublished: true,
+            },
+          });
+        }
+        logger.info(
+          { generated: generated.length, publishedToKnowledge },
+          "briefing scheduler generated briefing instances",
+        );
+      })
+      .catch((err) => {
+        logger.error({ err }, "briefing scheduler tick failed");
+      });
+  }, config.briefingSchedulerIntervalMs);
+}
+
 if (config.databaseBackupEnabled) {
   const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
   let backupInFlight = false;
@@ -587,6 +626,8 @@ server.listen(listenPort, config.host, () => {
     migrationSummary,
     heartbeatSchedulerEnabled: config.heartbeatSchedulerEnabled,
     heartbeatSchedulerIntervalMs: config.heartbeatSchedulerIntervalMs,
+    briefingSchedulerEnabled: config.briefingSchedulerEnabled,
+    briefingSchedulerIntervalMs: config.briefingSchedulerIntervalMs,
     databaseBackupEnabled: config.databaseBackupEnabled,
     databaseBackupIntervalMinutes: config.databaseBackupIntervalMinutes,
     databaseBackupRetentionDays: config.databaseBackupRetentionDays,

@@ -1,13 +1,15 @@
-import { and, asc, desc, eq, ilike, inArray, isNotNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, inArray, isNotNull, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
   approvals,
   assets,
+  briefingSchedules,
   briefingViewStates,
   goals,
   heartbeatRuns,
   issues,
+  projectMilestones,
   projects,
   recordAttachments,
   recordLinks,
@@ -15,6 +17,8 @@ import {
 } from "@paperclipai/db";
 import type {
   AnyRecord,
+  Approval,
+  BriefingSchedule,
   BriefingRecord,
   CreateBriefingRecord,
   CreatePlanRecord,
@@ -23,9 +27,12 @@ import type {
   CreateResultRecord,
   ExecutiveBoardSummary,
   ExecutiveCostAnomaly,
+  ExecutiveDecisionItem,
   ExecutiveProjectHealth,
   GenerateRecord,
   PlanRecord,
+  PortfolioProject,
+  PortfolioSummary,
   PromoteToResult,
   RecordAttachment,
   RecordCategory,
@@ -33,9 +40,11 @@ import type {
   RecordLinkTargetType,
   RecordScopeType,
   ResultRecord,
+  UpsertBriefingSchedule,
   UpdateRecord,
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { logActivity } from "./activity-log.js";
 
 export interface RecordFilters {
   category?: RecordCategory;
@@ -56,6 +65,7 @@ interface RecordActor {
 type RecordRow = typeof records.$inferSelect;
 type RecordLinkRow = typeof recordLinks.$inferSelect;
 type BriefingViewStateRow = typeof briefingViewStates.$inferSelect;
+type BriefingScheduleRow = typeof briefingSchedules.$inferSelect;
 type HydratedRecordRow = RecordRow & { links: RecordLink[]; attachments: RecordAttachment[] };
 type RunUsage = Record<string, unknown> | null;
 
@@ -137,6 +147,160 @@ function deriveProjectDelta(blocker: string | null, hasRecentResult: boolean) {
   return "unknown" as const;
 }
 
+function planDecisionItem(record: PlanRecord): ExecutiveDecisionItem {
+  return {
+    sourceType: "plan",
+    id: record.id,
+    title: record.title,
+    summary: record.summary,
+    status: record.status,
+    ownerAgentId: record.ownerAgentId,
+    dueAt: record.decisionDueAt,
+    plan: record,
+  };
+}
+
+function approvalDecisionItem(approval: Approval, title: string, summary: string | null): ExecutiveDecisionItem {
+  return {
+    sourceType: "approval",
+    id: approval.id,
+    title,
+    summary,
+    status: approval.status,
+    ownerAgentId: approval.requestedByAgentId,
+    dueAt: null,
+    approval,
+  };
+}
+
+function resolveWindow(input: GenerateRecord | undefined, lastViewedAt: Date | null) {
+  const now = new Date();
+  if (input?.windowPreset === "24h") {
+    return {
+      since: new Date(now.getTime() - 24 * 60 * 60 * 1000),
+      until: now,
+      windowPreset: "24h" as const,
+    };
+  }
+  if (input?.windowPreset === "7d") {
+    return {
+      since: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000),
+      until: now,
+      windowPreset: "7d" as const,
+    };
+  }
+  if (input?.windowPreset === "custom") {
+    return {
+      since: coerceDate(input.from ?? null),
+      until: coerceDate(input.to ?? null),
+      windowPreset: "custom" as const,
+    };
+  }
+  if (input?.since && input.since !== "last_visit") {
+    return {
+      since: coerceDate(input.since),
+      until: coerceDate(input.to ?? null),
+      windowPreset: input.windowPreset ?? "custom",
+    };
+  }
+  return {
+    since: lastViewedAt,
+    until: coerceDate(input?.to ?? null),
+    windowPreset: input?.windowPreset ?? "last_visit",
+  };
+}
+
+function toBriefingSchedule(row: BriefingScheduleRow): BriefingSchedule {
+  return {
+    id: row.id,
+    companyId: row.companyId,
+    recordId: row.recordId,
+    enabled: row.enabled,
+    cadence: row.cadence as BriefingSchedule["cadence"],
+    timezone: row.timezone,
+    localHour: row.localHour,
+    localMinute: row.localMinute,
+    dayOfWeek: row.dayOfWeek ?? null,
+    windowPreset: row.windowPreset as BriefingSchedule["windowPreset"],
+    autoPublish: row.autoPublish,
+    lastRunAt: row.lastRunAt ?? null,
+    nextRunAt: row.nextRunAt ?? null,
+    lastRunStatus: row.lastRunStatus as BriefingSchedule["lastRunStatus"],
+    lastError: row.lastError ?? null,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function weekdayIndex(label: string) {
+  return ({
+    Sun: 0,
+    Mon: 1,
+    Tue: 2,
+    Wed: 3,
+    Thu: 4,
+    Fri: 5,
+    Sat: 6,
+  } as Record<string, number>)[label] ?? null;
+}
+
+function zonedParts(date: Date, timeZone: string) {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    weekday: "short",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const parts = formatter.formatToParts(date);
+  const read = (type: string) => parts.find((part) => part.type === type)?.value ?? "";
+  return {
+    weekday: weekdayIndex(read("weekday")),
+    year: Number(read("year")),
+    month: Number(read("month")),
+    day: Number(read("day")),
+    hour: Number(read("hour")),
+    minute: Number(read("minute")),
+  };
+}
+
+// Timezone-aware next-run calculation uses a bounded minute scan because schedules are
+// low-cardinality in this deployment model and correctness matters more than micro-optimizing.
+function computeNextScheduleRunAt(
+  input: Pick<BriefingSchedule, "cadence" | "timezone" | "localHour" | "localMinute" | "dayOfWeek">,
+  after: Date,
+) {
+  const start = new Date(after.getTime());
+  start.setSeconds(0, 0);
+  start.setMinutes(start.getMinutes() + 1);
+  for (let offset = 0; offset < 14 * 24 * 60; offset += 1) {
+    const candidate = new Date(start.getTime() + offset * 60_000);
+    const local = zonedParts(candidate, input.timezone);
+    if (local.hour !== input.localHour || local.minute !== input.localMinute) continue;
+    if (input.cadence === "weekly" && local.weekday !== input.dayOfWeek) continue;
+    return candidate;
+  }
+  return null;
+}
+
+function approvalHeadline(approval: Approval) {
+  const payload = (approval.payload ?? {}) as Record<string, unknown>;
+  const title =
+    typeof payload.title === "string" && payload.title.trim().length > 0
+      ? payload.title.trim()
+      : `${approval.type.replace(/_/g, " ")} approval`;
+  const summary =
+    typeof approval.decisionNote === "string" && approval.decisionNote.trim().length > 0
+      ? approval.decisionNote.trim()
+      : typeof payload.summary === "string" && payload.summary.trim().length > 0
+        ? payload.summary.trim()
+        : null;
+  return { title, summary };
+}
+
 export function summarizeProjectHealth(
   scopedProjects: Array<Pick<typeof projects.$inferSelect, "id" | "name" | "status">>,
   scopedResults: ResultRecord[],
@@ -161,7 +325,7 @@ export function summarizeProjectHealth(
       confidence: lastMeaningfulResult?.confidence ?? null,
       lastMeaningfulResult,
       currentBlocker,
-      nextDecision,
+      nextDecision: nextDecision ? planDecisionItem(nextDecision) : null,
     };
   });
 }
@@ -170,13 +334,20 @@ function buildBriefingSummary(board: ExecutiveBoardSummary) {
   return `${board.outcomesLanded.length} outcomes, ${board.risksAndBlocks.length} risks, ${board.decisionsNeeded.length} decisions needed`;
 }
 
-function buildBriefingBody(board: ExecutiveBoardSummary) {
+function buildBriefingBody(board: ExecutiveBoardSummary, recordKind: BriefingRecord["kind"], portfolio?: PortfolioSummary | null) {
   const lines: string[] = [];
-  lines.push(`# Executive Briefing`);
+  lines.push(`# ${recordKind.replace(/_/g, " ")}`);
   lines.push("");
   lines.push(`Scope: ${board.scopeType}`);
   lines.push("");
-  lines.push(`## Outcomes Landed`);
+  if (recordKind === "incident_summary") {
+    lines.push(`## Incident Summary`);
+    lines.push(`- Outcomes landed: ${board.outcomesLanded.length}`);
+    lines.push(`- Risks and blocks: ${board.risksAndBlocks.length}`);
+    lines.push(`- Decisions needed: ${board.decisionsNeeded.length}`);
+    lines.push("");
+  }
+  lines.push(recordKind === "board_packet" ? `## Outcomes Since Last Review` : `## Outcomes Landed`);
   if (board.outcomesLanded.length === 0) {
     lines.push(`- No newly published outcomes in this window.`);
   } else {
@@ -199,7 +370,7 @@ function buildBriefingBody(board: ExecutiveBoardSummary) {
     lines.push(`- No active decision requests.`);
   } else {
     for (const decision of board.decisionsNeeded.slice(0, 8)) {
-      lines.push(`- ${decision.title}: ${decision.summary ?? "No summary provided."}`);
+      lines.push(`- ${decision.title}: ${decision.summary ?? "No summary provided."} [${decision.sourceType}]`);
     }
   }
   lines.push("");
@@ -212,6 +383,17 @@ function buildBriefingBody(board: ExecutiveBoardSummary) {
     }
   }
   lines.push("");
+  if (portfolio && (recordKind === "board_packet" || recordKind === "weekly_briefing" || recordKind === "project_status_report")) {
+    lines.push(`## Portfolio Snapshot`);
+    if (portfolio.projects.length === 0) {
+      lines.push(`- No portfolio rows available in this scope.`);
+    } else {
+      for (const project of portfolio.projects.slice(0, 8)) {
+        lines.push(`- ${project.projectName}: ${project.healthStatus}/${project.healthDelta}, blocker: ${project.currentBlocker ?? "none"}, budget: ${project.budgetPricingState}`);
+      }
+    }
+    lines.push("");
+  }
   lines.push(`## Cost Anomalies`);
   if (board.costAnomalies.length === 0) {
     lines.push(`- No anomalous run usage detected.`);
@@ -584,7 +766,7 @@ export function recordService(db: Db) {
   ): Promise<ExecutiveBoardSummary> {
     await assertScopeRef(companyId, scopeType, scopeRefId);
     const { since, lastViewedAt } = await resolveSinceDate(companyId, scopeType, scopeRefId, options?.since, options?.userId);
-    const [planRecords, resultRecords, briefingRecords, companyProjects, runRows, issueRows] = await Promise.all([
+    const [planRecords, resultRecords, briefingRecords, companyProjects, runRows, issueRows, approvalRows] = await Promise.all([
       listByCategory(companyId, "plan"),
       listByCategory(companyId, "result"),
       listByCategory(companyId, "briefing"),
@@ -603,6 +785,11 @@ export function recordService(db: Db) {
         .select({ id: issues.id, projectId: issues.projectId, title: issues.title })
         .from(issues)
         .where(eq(issues.companyId, companyId)),
+      db
+        .select()
+        .from(approvals)
+        .where(and(eq(approvals.companyId, companyId), eq(approvals.status, "pending")))
+        .orderBy(desc(approvals.createdAt)),
     ]);
 
     const scopedPlans = planRecords.filter((record) => matchesScope(record, scopeType, scopeRefId)) as PlanRecord[];
@@ -640,9 +827,29 @@ export function recordService(db: Db) {
     // board UI only shows a truncated list of top exceptions.
     const projectHealth = summarizeProjectHealth(scopedProjects, scopedResults, allRisksAndBlocks, allDecisionsNeeded);
     const risksAndBlocks = allRisksAndBlocks.slice(0, 8);
-    const decisionsNeeded = allDecisionsNeeded.slice(0, 8);
-
     const issueById = new Map(issueRows.map((issue) => [issue.id, issue]));
+    const approvalDecisions = approvalRows
+      .filter((approval) => {
+        if (scopeType === "company") return true;
+        if (scopeType === "agent") return approval.requestedByAgentId === scopeRefId;
+        const payload = (approval.payload ?? {}) as Record<string, unknown>;
+        const payloadProjectId = usageString(payload, "projectId");
+        if (payloadProjectId) return payloadProjectId === scopeRefId;
+        const payloadIssueId = usageString(payload, "issueId");
+        return payloadIssueId ? issueById.get(payloadIssueId)?.projectId === scopeRefId : false;
+      })
+      .map((approval) => {
+        const { title, summary } = approvalHeadline(approval as Approval);
+        return approvalDecisionItem(approval as Approval, title, summary);
+      });
+    const decisionsNeeded = [...allDecisionsNeeded.map(planDecisionItem), ...approvalDecisions]
+      .sort((left, right) => {
+        const leftDue = left.dueAt?.getTime() ?? Number.MAX_SAFE_INTEGER;
+        const rightDue = right.dueAt?.getTime() ?? Number.MAX_SAFE_INTEGER;
+        if (leftDue !== rightDue) return leftDue - rightDue;
+        return right.id.localeCompare(left.id);
+      })
+      .slice(0, 8);
     const projectById = new Map(companyProjects.map((project) => [project.id, project]));
     const costAnomalies: ExecutiveCostAnomaly[] = [];
     for (const row of runRows) {
@@ -708,6 +915,118 @@ export function recordService(db: Db) {
       costAnomalies,
       executiveRollups,
     };
+  }
+
+  function pricingStateForRuns(rows: Array<{ usageJson: RunUsage }>) {
+    let tokenRuns = 0;
+    let pricedRuns = 0;
+    for (const row of rows) {
+      const usage = row.usageJson;
+      const totalTokens = usageNumber(usage, "inputTokens", "input_tokens") + usageNumber(usage, "outputTokens", "output_tokens");
+      if (totalTokens <= 0) continue;
+      tokenRuns += 1;
+      if (usageNumber(usage, "costUsd", "cost_usd", "total_cost_usd") > 0) {
+        pricedRuns += 1;
+      }
+    }
+    if (tokenRuns === 0) return "exact" as const;
+    if (pricedRuns === 0) return "unpriced" as const;
+    if (pricedRuns < tokenRuns) return "estimated" as const;
+    return "exact" as const;
+  }
+
+  async function buildPortfolioSummary(
+    companyId: string,
+    scopeType: RecordScopeType,
+    scopeRefId: string,
+  ): Promise<PortfolioSummary> {
+    await assertScopeRef(companyId, scopeType, scopeRefId);
+    const board = await buildBoardSummary(companyId, scopeType, scopeRefId, { markViewed: false });
+    const [companyProjects, milestoneRows, leadAgents, runRows] = await Promise.all([
+      db.select().from(projects).where(eq(projects.companyId, companyId)),
+      db.select().from(projectMilestones).where(eq(projectMilestones.companyId, companyId)).orderBy(asc(projectMilestones.sortOrder), asc(projectMilestones.createdAt)),
+      db.select({ id: agents.id, name: agents.name }).from(agents).where(eq(agents.companyId, companyId)),
+      db
+        .select({
+          id: heartbeatRuns.id,
+          usageJson: heartbeatRuns.usageJson,
+          projectId: issues.projectId,
+        })
+        .from(heartbeatRuns)
+        .leftJoin(issues, sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issues.id}::text`)
+        .where(and(eq(heartbeatRuns.companyId, companyId), isNotNull(heartbeatRuns.usageJson))),
+    ]);
+    const leadAgentById = new Map(leadAgents.map((agent) => [agent.id, agent.name]));
+    const milestonesByProjectId = new Map<string, Array<typeof projectMilestones.$inferSelect>>();
+    for (const milestone of milestoneRows) {
+      const existing = milestonesByProjectId.get(milestone.projectId);
+      if (existing) existing.push(milestone);
+      else milestonesByProjectId.set(milestone.projectId, [milestone]);
+    }
+    const runsByProjectId = new Map<string, Array<{ usageJson: RunUsage }>>();
+    for (const row of runRows) {
+      if (!row.projectId) continue;
+      const existing = runsByProjectId.get(row.projectId);
+      const entry = { usageJson: (row.usageJson as RunUsage) ?? null };
+      if (existing) existing.push(entry);
+      else runsByProjectId.set(row.projectId, [entry]);
+    }
+
+    const projectsInScope = companyProjects.filter((project) => {
+      if (scopeType === "company") return true;
+      if (scopeType === "project") return project.id === scopeRefId;
+      return project.leadAgentId === scopeRefId || board.projectHealth.some((entry) => entry.projectId === project.id);
+    });
+
+    const portfolioProjects: PortfolioProject[] = projectsInScope.map((project) => {
+      const health = board.projectHealth.find((entry) => entry.projectId === project.id);
+      const milestones = milestonesByProjectId.get(project.id) ?? [];
+      const currentMilestone =
+        milestones.find((milestone) => milestone.status !== "completed" && milestone.status !== "cancelled") ??
+        milestones[milestones.length - 1] ??
+        null;
+      const projectRuns = runsByProjectId.get(project.id) ?? [];
+      const budgetBurn = projectRuns.reduce((sum, row) => sum + Math.round(usageNumber(row.usageJson, "costUsd", "cost_usd", "total_cost_usd") * 100), 0);
+      return {
+        projectId: project.id,
+        projectName: project.name,
+        leadAgentId: project.leadAgentId ?? null,
+        leadAgentName: project.leadAgentId ? (leadAgentById.get(project.leadAgentId) ?? null) : null,
+        budgetBurn,
+        budgetPricingState: pricingStateForRuns(projectRuns),
+        milestoneStatus: currentMilestone ? `${currentMilestone.status}${currentMilestone.targetDate ? ` (${currentMilestone.targetDate})` : ""}` : "No milestones",
+        currentBlocker: health?.currentBlocker ?? null,
+        lastMeaningfulResult: health?.lastMeaningfulResult ?? null,
+        nextBoardDecision: health?.nextDecision ?? null,
+        confidence: health?.confidence ?? null,
+        healthStatus: health?.healthStatus ?? "unknown",
+        healthDelta: health?.healthDelta ?? "unknown",
+      };
+    });
+
+    return {
+      companyId,
+      scopeType,
+      scopeRefId,
+      projects: portfolioProjects,
+    };
+  }
+
+  async function getScheduleRow(recordId: string) {
+    return db
+      .select()
+      .from(briefingSchedules)
+      .where(eq(briefingSchedules.recordId, recordId))
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function ensureBriefingRecord(recordId: string) {
+    const existing = await getRecordRow(recordId);
+    if (!existing) throw notFound("Record not found");
+    if (existing.category !== "briefing") {
+      throw unprocessable("Only briefing records support schedules");
+    }
+    return existing;
   }
 
   return {
@@ -861,23 +1180,45 @@ export function recordService(db: Db) {
       options?: { since?: string; userId?: string | null; markViewed?: boolean },
     ) => buildBoardSummary(companyId, scopeType, scopeRefId, options),
 
+    portfolioSummary: (companyId: string, scopeType: RecordScopeType, scopeRefId: string) =>
+      buildPortfolioSummary(companyId, scopeType, scopeRefId),
+
     generate: async (recordId: string, input: GenerateRecord | undefined, actor?: RecordActor) => {
-      const existing = await getRecordRow(recordId);
-      if (!existing) throw notFound("Record not found");
-      if (existing.category !== "briefing") {
-        throw unprocessable("Only briefing records can be generated");
-      }
+      const existing = await ensureBriefingRecord(recordId);
+      const { lastViewedAt } = await resolveSinceDate(
+        existing.companyId,
+        existing.scopeType as RecordScopeType,
+        existing.scopeRefId,
+        input?.since,
+        actor?.userId ?? null,
+      );
+      const window = resolveWindow(input, lastViewedAt);
       const board = await buildBoardSummary(existing.companyId, existing.scopeType as RecordScopeType, existing.scopeRefId, {
-        since: input?.since,
-        userId: actor?.userId ?? null,
+        since: window.since?.toISOString(),
         markViewed: false,
       });
+      const includePortfolio =
+        existing.kind === "board_packet" ||
+        existing.kind === "weekly_briefing" ||
+        existing.kind === "project_status_report";
+      const portfolio = includePortfolio
+        ? await buildPortfolioSummary(existing.companyId, existing.scopeType as RecordScopeType, existing.scopeRefId)
+        : null;
+      const nextMetadata: Record<string, unknown> = {
+        ...((existing.metadata as Record<string, unknown> | null) ?? {}),
+        generationWindow: {
+          windowPreset: window.windowPreset,
+          since: window.since?.toISOString() ?? null,
+          until: window.until?.toISOString() ?? null,
+        },
+      };
       const [row] = await db
         .update(records)
         .set({
           summary: buildBriefingSummary(board),
-          bodyMd: buildBriefingBody(board),
+          bodyMd: buildBriefingBody(board, existing.kind as BriefingRecord["kind"], portfolio),
           generatedAt: new Date(),
+          metadata: nextMetadata,
           updatedByAgentId: actor?.agentId ?? null,
           updatedByUserId: actor?.userId ?? null,
           updatedAt: new Date(),
@@ -906,6 +1247,281 @@ export function recordService(db: Db) {
         .returning();
       const [hydrated] = await hydrateRecords(db, existing.companyId, [row]);
       return toSharedRecord(hydrated);
+    },
+
+    getSchedule: async (recordId: string) => {
+      await ensureBriefingRecord(recordId);
+      const row = await getScheduleRow(recordId);
+      return row ? toBriefingSchedule(row) : null;
+    },
+
+    upsertSchedule: async (recordId: string, input: UpsertBriefingSchedule) => {
+      const existing = await ensureBriefingRecord(recordId);
+      const current = await getScheduleRow(recordId);
+      const normalizedDayOfWeek = input.cadence === "weekly" ? input.dayOfWeek ?? null : null;
+      if (input.cadence === "weekly" && normalizedDayOfWeek === null) {
+        throw unprocessable("Weekly briefing schedules require dayOfWeek");
+      }
+      const now = new Date();
+      const nextRunAt = input.enabled === false ? null : computeNextScheduleRunAt({
+        cadence: input.cadence,
+        timezone: input.timezone,
+        localHour: input.localHour,
+        localMinute: input.localMinute,
+        dayOfWeek: normalizedDayOfWeek,
+      }, now);
+      const [row] = await db
+        .insert(briefingSchedules)
+        .values({
+          companyId: existing.companyId,
+          recordId,
+          enabled: input.enabled ?? true,
+          cadence: input.cadence,
+          timezone: input.timezone,
+          localHour: input.localHour,
+          localMinute: input.localMinute,
+          dayOfWeek: normalizedDayOfWeek,
+          windowPreset: input.windowPreset,
+          autoPublish: input.autoPublish ?? false,
+          lastRunAt: current?.lastRunAt ?? null,
+          nextRunAt,
+          lastRunStatus: current?.lastRunStatus ?? "idle",
+          lastError: null,
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: briefingSchedules.recordId,
+          set: {
+            enabled: input.enabled ?? true,
+            cadence: input.cadence,
+            timezone: input.timezone,
+            localHour: input.localHour,
+            localMinute: input.localMinute,
+            dayOfWeek: normalizedDayOfWeek,
+            windowPreset: input.windowPreset,
+            autoPublish: input.autoPublish ?? false,
+            nextRunAt,
+            lastError: null,
+            updatedAt: now,
+          },
+        })
+        .returning();
+      return toBriefingSchedule(row);
+    },
+
+    deleteSchedule: async (recordId: string) => {
+      await ensureBriefingRecord(recordId);
+      const [row] = await db
+        .delete(briefingSchedules)
+        .where(eq(briefingSchedules.recordId, recordId))
+        .returning();
+      return row ? toBriefingSchedule(row) : null;
+    },
+
+    runDueSchedules: async (now = new Date()) => {
+      const dueSchedules = await db
+        .select()
+        .from(briefingSchedules)
+        .where(
+          and(
+            eq(briefingSchedules.enabled, true),
+            isNotNull(briefingSchedules.nextRunAt),
+            lte(briefingSchedules.nextRunAt, now),
+          ),
+        )
+        .orderBy(asc(briefingSchedules.nextRunAt))
+        .limit(20);
+
+      const generatedRecords: BriefingRecord[] = [];
+      for (const schedule of dueSchedules as BriefingScheduleRow[]) {
+        try {
+          const template = await getRecordRow(schedule.recordId);
+          if (!template || template.category !== "briefing") {
+            throw notFound("Briefing template not found");
+          }
+
+          const templateRecord = await getHydratedRecord(template.id);
+          if (!templateRecord || templateRecord.category !== "briefing") {
+            throw conflict("Failed to hydrate briefing template");
+          }
+
+          const window = resolveWindow(
+            {
+              windowPreset: schedule.windowPreset as GenerateRecord["windowPreset"],
+              since: schedule.windowPreset === "last_visit" ? "last_visit" : undefined,
+            },
+            schedule.lastRunAt ?? null,
+          );
+          const board = await buildBoardSummary(
+            template.companyId,
+            template.scopeType as RecordScopeType,
+            template.scopeRefId,
+            {
+              since: window.since?.toISOString(),
+              markViewed: false,
+            },
+          );
+          const includePortfolio =
+            template.kind === "board_packet" ||
+            template.kind === "weekly_briefing" ||
+            template.kind === "project_status_report";
+          const portfolio = includePortfolio
+            ? await buildPortfolioSummary(template.companyId, template.scopeType as RecordScopeType, template.scopeRefId)
+            : null;
+          const generatedAt = new Date();
+          const childTitle = `${template.title} (${generatedAt.toISOString().slice(0, 10)})`;
+
+          const generated = await db.transaction(async (tx) => {
+            const [childRow] = await tx
+              .insert(records)
+              .values({
+                companyId: template.companyId,
+                category: "briefing",
+                kind: template.kind,
+                scopeType: template.scopeType,
+                scopeRefId: template.scopeRefId,
+                title: childTitle,
+                summary: buildBriefingSummary(board),
+                bodyMd: buildBriefingBody(board, template.kind as BriefingRecord["kind"], portfolio),
+                status: schedule.autoPublish ? "published" : "draft",
+                ownerAgentId: template.ownerAgentId,
+                decisionNeeded: template.decisionNeeded,
+                decisionDueAt: template.decisionDueAt,
+                healthStatus: template.healthStatus,
+                healthDelta: template.healthDelta,
+                confidence: template.confidence,
+                generatedAt,
+                publishedAt: schedule.autoPublish ? generatedAt : null,
+                metadata: {
+                  ...((template.metadata as Record<string, unknown> | null) ?? {}),
+                  templateRecordId: template.id,
+                  generatedFromScheduleId: schedule.id,
+                  generationWindow: {
+                    windowPreset: window.windowPreset,
+                    since: window.since?.toISOString() ?? null,
+                    until: window.until?.toISOString() ?? null,
+                  },
+                  immutableSource: true,
+                },
+                updatedAt: generatedAt,
+              })
+              .returning();
+
+            await tx.insert(recordLinks).values({
+              companyId: template.companyId,
+              recordId: childRow.id,
+              targetType: "record",
+              targetId: template.id,
+              relation: "source",
+            });
+
+            if ((templateRecord.links?.length ?? 0) > 0) {
+              await tx.insert(recordLinks).values(
+                (templateRecord.links ?? []).map((link) => ({
+                  companyId: template.companyId,
+                  recordId: childRow.id,
+                  targetType: link.targetType,
+                  targetId: link.targetId,
+                  relation: link.relation,
+                })),
+              );
+            }
+
+            if ((templateRecord.attachments?.length ?? 0) > 0) {
+              await tx.insert(recordAttachments).values(
+                (templateRecord.attachments ?? []).map((attachment) => ({
+                  companyId: template.companyId,
+                  recordId: childRow.id,
+                  assetId: attachment.assetId,
+                })),
+              );
+            }
+
+            const nextRunAt = computeNextScheduleRunAt(
+              {
+                cadence: schedule.cadence as BriefingSchedule["cadence"],
+                timezone: schedule.timezone,
+                localHour: schedule.localHour,
+                localMinute: schedule.localMinute,
+                dayOfWeek: schedule.dayOfWeek,
+              },
+              generatedAt,
+            );
+
+            await tx
+              .update(briefingSchedules)
+              .set({
+                lastRunAt: generatedAt,
+                nextRunAt,
+                lastRunStatus: "succeeded",
+                lastError: null,
+                updatedAt: generatedAt,
+              })
+              .where(eq(briefingSchedules.id, schedule.id));
+
+            return childRow;
+          });
+
+          await logActivity(db, {
+            companyId: template.companyId,
+            actorType: "system",
+            actorId: "briefing_scheduler",
+            action: "record.generated",
+            entityType: "record",
+            entityId: generated.id,
+            details: {
+              category: "briefing",
+              kind: template.kind,
+              templateRecordId: template.id,
+              scheduleId: schedule.id,
+              autoPublish: schedule.autoPublish,
+            },
+          });
+          if (schedule.autoPublish) {
+            await logActivity(db, {
+              companyId: template.companyId,
+              actorType: "system",
+              actorId: "briefing_scheduler",
+              action: "record.published",
+              entityType: "record",
+              entityId: generated.id,
+              details: {
+                category: "briefing",
+                kind: template.kind,
+                templateRecordId: template.id,
+                scheduleId: schedule.id,
+              },
+            });
+          }
+
+          const created = await getHydratedRecord(generated.id);
+          if (created && created.category === "briefing") {
+            generatedRecords.push(created);
+          }
+        } catch (error) {
+          const nextRunAt = computeNextScheduleRunAt(
+            {
+              cadence: schedule.cadence as BriefingSchedule["cadence"],
+              timezone: schedule.timezone,
+              localHour: schedule.localHour,
+              localMinute: schedule.localMinute,
+              dayOfWeek: schedule.dayOfWeek,
+            },
+            now,
+          );
+          await db
+            .update(briefingSchedules)
+            .set({
+              lastRunStatus: "failed",
+              lastError: error instanceof Error ? error.message : String(error),
+              nextRunAt,
+              updatedAt: now,
+            })
+            .where(eq(briefingSchedules.id, schedule.id));
+        }
+      }
+
+      return generatedRecords;
     },
 
     promoteToResult: async (companyId: string, input: PromoteToResult, actor?: RecordActor) => {

@@ -1,11 +1,62 @@
 import { and, desc, eq, gte, isNotNull, lte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
+import type { CostByAgent, CostByProject, CostSummary, PricingState } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
 
 export interface CostDateRange {
   from?: Date;
   to?: Date;
+}
+
+type UsageJson = Record<string, unknown> | null;
+
+function usageNumber(usage: UsageJson, ...keys: string[]) {
+  if (!usage) return 0;
+  for (const key of keys) {
+    const value = usage[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && value.trim().length > 0) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+  }
+  return 0;
+}
+
+function usageString(usage: UsageJson, ...keys: string[]) {
+  if (!usage) return null;
+  for (const key of keys) {
+    const value = usage[key];
+    if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  }
+  return null;
+}
+
+function tokenCount(usage: UsageJson) {
+  return (
+    usageNumber(usage, "inputTokens", "input_tokens") +
+    usageNumber(usage, "outputTokens", "output_tokens") +
+    usageNumber(usage, "cachedInputTokens", "cached_input_tokens", "cache_read_input_tokens")
+  );
+}
+
+function pricedCostCents(usage: UsageJson) {
+  return Math.round(usageNumber(usage, "costUsd", "cost_usd", "total_cost_usd") * 100);
+}
+
+export function pricingStateForUsageRows(rows: Array<{ usageJson: UsageJson }>): PricingState {
+  let tokenRuns = 0;
+  let pricedRuns = 0;
+  for (const row of rows) {
+    const tokens = tokenCount(row.usageJson);
+    if (tokens > 0) tokenRuns += 1;
+    if (pricedCostCents(row.usageJson) > 0) pricedRuns += 1;
+  }
+  if (tokenRuns === 0) return "exact";
+  if (pricedRuns === 0) return "unpriced";
+  if (pricedRuns < tokenRuns) return "estimated";
+  return "exact";
 }
 
 export function costService(db: Db) {
@@ -66,7 +117,7 @@ export function costService(db: Db) {
       return event;
     },
 
-    summary: async (companyId: string, range?: CostDateRange) => {
+    summary: async (companyId: string, range?: CostDateRange): Promise<CostSummary> => {
       const company = await db
         .select()
         .from(companies)
@@ -86,6 +137,15 @@ export function costService(db: Db) {
         .from(costEvents)
         .where(and(...conditions));
 
+      const runConditions: ReturnType<typeof eq>[] = [eq(heartbeatRuns.companyId, companyId)];
+      if (range?.from) runConditions.push(gte(heartbeatRuns.finishedAt, range.from));
+      if (range?.to) runConditions.push(lte(heartbeatRuns.finishedAt, range.to));
+
+      const usageRows = await db
+        .select({ usageJson: heartbeatRuns.usageJson })
+        .from(heartbeatRuns)
+        .where(and(...runConditions));
+
       const spendCents = Number(total);
       const utilization =
         company.budgetMonthlyCents > 0
@@ -97,10 +157,11 @@ export function costService(db: Db) {
         spendCents,
         budgetCents: company.budgetMonthlyCents,
         utilizationPercent: Number(utilization.toFixed(2)),
+        pricingState: pricingStateForUsageRows(usageRows),
       };
     },
 
-    byAgent: async (companyId: string, range?: CostDateRange) => {
+    byAgent: async (companyId: string, range?: CostDateRange): Promise<CostByAgent[]> => {
       const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
@@ -127,24 +188,45 @@ export function costService(db: Db) {
       const runRows = await db
         .select({
           agentId: heartbeatRuns.agentId,
-          apiRunCount:
-            sql<number>`coalesce(sum(case when coalesce((${heartbeatRuns.usageJson} ->> 'billingType'), 'unknown') = 'api' then 1 else 0 end), 0)::int`,
-          subscriptionRunCount:
-            sql<number>`coalesce(sum(case when coalesce((${heartbeatRuns.usageJson} ->> 'billingType'), 'unknown') = 'subscription' then 1 else 0 end), 0)::int`,
-          subscriptionInputTokens:
-            sql<number>`coalesce(sum(case when coalesce((${heartbeatRuns.usageJson} ->> 'billingType'), 'unknown') = 'subscription' then coalesce((${heartbeatRuns.usageJson} ->> 'inputTokens')::int, 0) else 0 end), 0)::int`,
-          subscriptionOutputTokens:
-            sql<number>`coalesce(sum(case when coalesce((${heartbeatRuns.usageJson} ->> 'billingType'), 'unknown') = 'subscription' then coalesce((${heartbeatRuns.usageJson} ->> 'outputTokens')::int, 0) else 0 end), 0)::int`,
+          usageJson: heartbeatRuns.usageJson,
         })
         .from(heartbeatRuns)
-        .where(and(...runConditions))
-        .groupBy(heartbeatRuns.agentId);
+        .where(and(...runConditions));
 
-      const runRowsByAgent = new Map(runRows.map((row) => [row.agentId, row]));
+      const runRowsByAgent = new Map<
+        string,
+        {
+          usageRows: Array<{ usageJson: UsageJson }>;
+          apiRunCount: number;
+          subscriptionRunCount: number;
+          subscriptionInputTokens: number;
+          subscriptionOutputTokens: number;
+        }
+      >();
+      for (const row of runRows) {
+        const current = runRowsByAgent.get(row.agentId) ?? {
+          usageRows: [],
+          apiRunCount: 0,
+          subscriptionRunCount: 0,
+          subscriptionInputTokens: 0,
+          subscriptionOutputTokens: 0,
+        };
+        current.usageRows.push({ usageJson: row.usageJson });
+        const billingType = usageString(row.usageJson, "billingType", "billing_type");
+        if (billingType === "api") current.apiRunCount += 1;
+        if (billingType === "subscription") {
+          current.subscriptionRunCount += 1;
+          current.subscriptionInputTokens += usageNumber(row.usageJson, "inputTokens", "input_tokens");
+          current.subscriptionOutputTokens += usageNumber(row.usageJson, "outputTokens", "output_tokens");
+        }
+        runRowsByAgent.set(row.agentId, current);
+      }
+
       return costRows.map((row) => {
         const runRow = runRowsByAgent.get(row.agentId);
         return {
           ...row,
+          pricingState: pricingStateForUsageRows(runRow?.usageRows ?? []),
           apiRunCount: runRow?.apiRunCount ?? 0,
           subscriptionRunCount: runRow?.subscriptionRunCount ?? 0,
           subscriptionInputTokens: runRow?.subscriptionInputTokens ?? 0,
@@ -153,7 +235,7 @@ export function costService(db: Db) {
       });
     },
 
-    byProject: async (companyId: string, range?: CostDateRange) => {
+    byProject: async (companyId: string, range?: CostDateRange): Promise<CostByProject[]> => {
       const issueIdAsText = sql<string>`${issues.id}::text`;
       const runProjectLinks = db
         .selectDistinctOn([activityLog.runId, issues.projectId], {
@@ -183,22 +265,55 @@ export function costService(db: Db) {
       if (range?.from) conditions.push(gte(heartbeatRuns.finishedAt, range.from));
       if (range?.to) conditions.push(lte(heartbeatRuns.finishedAt, range.to));
 
-      const costCentsExpr = sql<number>`coalesce(sum(round(coalesce((${heartbeatRuns.usageJson} ->> 'costUsd')::numeric, 0) * 100)), 0)::int`;
-
-      return db
+      const rows = await db
         .select({
           projectId: runProjectLinks.projectId,
           projectName: projects.name,
-          costCents: costCentsExpr,
-          inputTokens: sql<number>`coalesce(sum(coalesce((${heartbeatRuns.usageJson} ->> 'inputTokens')::int, 0)), 0)::int`,
-          outputTokens: sql<number>`coalesce(sum(coalesce((${heartbeatRuns.usageJson} ->> 'outputTokens')::int, 0)), 0)::int`,
+          usageJson: heartbeatRuns.usageJson,
         })
         .from(runProjectLinks)
         .innerJoin(heartbeatRuns, eq(runProjectLinks.runId, heartbeatRuns.id))
         .innerJoin(projects, eq(runProjectLinks.projectId, projects.id))
-        .where(and(...conditions))
-        .groupBy(runProjectLinks.projectId, projects.name)
-        .orderBy(desc(costCentsExpr));
+        .where(and(...conditions));
+
+      const rowsByProject = new Map<
+        string,
+        {
+          projectId: string | null;
+          projectName: string | null;
+          costCents: number;
+          inputTokens: number;
+          outputTokens: number;
+          usageRows: Array<{ usageJson: UsageJson }>;
+        }
+      >();
+      for (const row of rows) {
+        const key = row.projectId ?? "unattributed";
+        const current = rowsByProject.get(key) ?? {
+          projectId: row.projectId,
+          projectName: row.projectName,
+          costCents: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          usageRows: [],
+        };
+        current.costCents += pricedCostCents(row.usageJson);
+        current.inputTokens += usageNumber(row.usageJson, "inputTokens", "input_tokens");
+        current.outputTokens += usageNumber(row.usageJson, "outputTokens", "output_tokens");
+        current.usageRows.push({ usageJson: row.usageJson });
+        rowsByProject.set(key, current);
+      }
+
+      return Array.from(rowsByProject.values())
+        .map((row) => ({
+          projectId: row.projectId,
+          projectName: row.projectName,
+          costCents: row.costCents,
+          pricingState: pricingStateForUsageRows(row.usageRows),
+          inputTokens: row.inputTokens,
+          outputTokens: row.outputTokens,
+        }))
+        .sort((left, right) => right.costCents - left.costCents);
     },
   };
 }

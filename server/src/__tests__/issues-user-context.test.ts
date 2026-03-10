@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deriveIssueUserContext } from "../services/issues.ts";
+import { deriveIssueUserContext, shouldReleaseIssueCheckouts } from "../services/issues.ts";
 
 function makeIssue(overrides?: Partial<{
   createdByUserId: string | null;
@@ -109,5 +109,34 @@ describe("deriveIssueUserContext", () => {
     expect(context.myLastTouchAt?.toISOString()).toBe("2026-03-06T10:00:00.000Z");
     expect(context.lastExternalCommentAt?.toISOString()).toBe("2026-03-06T11:00:00.000Z");
     expect(context.isUnreadForMe).toBe(true);
+  });
+});
+
+describe("shouldReleaseIssueCheckouts", () => {
+  it("releases checkouts when an issue leaves in-progress execution", () => {
+    expect(
+      shouldReleaseIssueCheckouts(
+        { status: "in_progress", assigneeAgentId: "agent-1", assigneeUserId: null },
+        { status: "done", assigneeAgentId: "agent-1", assigneeUserId: null },
+      ),
+    ).toBe(true);
+  });
+
+  it("releases checkouts when the assignee changes", () => {
+    expect(
+      shouldReleaseIssueCheckouts(
+        { status: "in_progress", assigneeAgentId: "agent-1", assigneeUserId: null },
+        { status: "in_progress", assigneeAgentId: "agent-2", assigneeUserId: null },
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps checkouts active while the same agent stays in progress", () => {
+    expect(
+      shouldReleaseIssueCheckouts(
+        { status: "in_progress", assigneeAgentId: "agent-1", assigneeUserId: null },
+        { status: "in_progress", assigneeAgentId: "agent-1", assigneeUserId: null },
+      ),
+    ).toBe(false);
   });
 });

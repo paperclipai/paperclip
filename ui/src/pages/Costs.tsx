@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import type { PricingState } from "@paperclipai/shared";
 import { costsApi } from "../api/costs";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -23,6 +24,18 @@ const PRESET_LABELS: Record<DatePreset, string> = {
   all: "All Time",
   custom: "Custom",
 };
+
+function formatCostValue(costCents: number, pricingState: PricingState) {
+  if (pricingState === "unpriced") return "Unpriced usage";
+  if (pricingState === "estimated") return `${formatCents(costCents)} est.`;
+  return formatCents(costCents);
+}
+
+function pricingStateCopy(pricingState: PricingState) {
+  if (pricingState === "unpriced") return "Token usage exists but no priceable cost data was recorded.";
+  if (pricingState === "estimated") return "Spend is partial because some runs were not fully priceable.";
+  return "All visible spend data is priceable.";
+}
 
 function computeRange(preset: DatePreset): { from: string; to: string } {
   const now = new Date();
@@ -138,21 +151,22 @@ export function Costs() {
             <CardContent className="p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <p className="text-sm text-muted-foreground">{PRESET_LABELS[preset]}</p>
-                {data.summary.budgetCents > 0 && (
+                {data.summary.budgetCents > 0 && data.summary.pricingState === "exact" && (
                   <p className="text-sm text-muted-foreground">
                     {data.summary.utilizationPercent}% utilized
                   </p>
                 )}
               </div>
               <p className="text-2xl font-bold">
-                {formatCents(data.summary.spendCents)}{" "}
+                {formatCostValue(data.summary.spendCents, data.summary.pricingState)}{" "}
                 <span className="text-base font-normal text-muted-foreground">
                   {data.summary.budgetCents > 0
                     ? `/ ${formatCents(data.summary.budgetCents)}`
                     : "Unlimited budget"}
                 </span>
               </p>
-              {data.summary.budgetCents > 0 && (
+              <p className="text-sm text-muted-foreground">{pricingStateCopy(data.summary.pricingState)}</p>
+              {data.summary.budgetCents > 0 && data.summary.pricingState === "exact" && (
                 <div className="w-full h-2 bg-muted rounded-full overflow-hidden">
                   <div
                     className={`h-full rounded-full transition-[width,background-color] duration-150 ${
@@ -193,9 +207,12 @@ export function Costs() {
                           )}
                         </div>
                         <div className="text-right shrink-0 ml-2">
-                          <span className="font-medium block">{formatCents(row.costCents)}</span>
+                          <span className="font-medium block">{formatCostValue(row.costCents, row.pricingState)}</span>
                           <span className="text-xs text-muted-foreground block">
                             in {formatTokens(row.inputTokens)} / out {formatTokens(row.outputTokens)} tok
+                          </span>
+                          <span className="text-xs text-muted-foreground block">
+                            {pricingStateCopy(row.pricingState)}
                           </span>
                           {(row.apiRunCount > 0 || row.subscriptionRunCount > 0) && (
                             <span className="text-xs text-muted-foreground block">
@@ -229,7 +246,10 @@ export function Costs() {
                         <span className="truncate">
                           {row.projectName ?? row.projectId ?? "Unattributed"}
                         </span>
-                        <span className="font-medium">{formatCents(row.costCents)}</span>
+                        <div className="text-right">
+                          <span className="font-medium block">{formatCostValue(row.costCents, row.pricingState)}</span>
+                          <span className="text-xs text-muted-foreground block">{pricingStateCopy(row.pricingState)}</span>
+                        </div>
                       </div>
                     ))}
                   </div>

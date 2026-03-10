@@ -36,6 +36,7 @@ export const queryKeys = {
   projects: {
     list: (companyId: string) => ["projects", companyId] as const,
     detail: (id: string) => ["projects", "detail", id] as const,
+    milestones: (projectId: string) => ["projects", "milestones", projectId] as const,
   },
   goals: {
     list: (companyId: string) => ["goals", companyId] as const,
@@ -57,8 +58,15 @@ export const queryKeys = {
       ["records", companyId, "briefings", filters ?? {}] as const,
     board: (companyId: string, scopeType: string, scopeId: string, since: string) =>
       ["records", companyId, "board", scopeType, scopeId, since] as const,
+    portfolio: (companyId: string, scopeType: string, scopeId: string) =>
+      ["records", companyId, "portfolio", scopeType, scopeId] as const,
     detail: (recordId: string) => ["records", "detail", recordId] as const,
     activity: (companyId: string, recordId: string) => ["records", "activity", companyId, recordId] as const,
+    schedule: (recordId: string) => ["records", "schedule", recordId] as const,
+  },
+  knowledge: {
+    list: (companyId: string) => ["knowledge", companyId] as const,
+    detail: (entryId: string) => ["knowledge", "detail", entryId] as const,
   },
   access: {
     joinRequests: (companyId: string, status: string = "pending_approval") =>

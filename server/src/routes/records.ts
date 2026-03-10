@@ -10,11 +10,12 @@ import {
   generateRecordSchema,
   promoteToResultSchema,
   publishRecordSchema,
+  upsertBriefingScheduleSchema,
   updateRecordSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { badRequest } from "../errors.js";
-import { logActivity, recordService } from "../services/index.js";
+import { knowledgeService, logActivity, recordService } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
 function readBoardViewUserId(req: Parameters<typeof getActorInfo>[0]) {
@@ -37,6 +38,7 @@ function parseRecordFilters(query: Record<string, unknown>) {
 export function recordRoutes(db: Db) {
   const router = Router();
   const svc = recordService(db);
+  const knowledgeSvc = knowledgeService(db);
 
   router.get("/companies/:companyId/plans", async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -167,6 +169,22 @@ export function recordRoutes(db: Db) {
     res.json(summary);
   });
 
+  router.get("/companies/:companyId/briefings/portfolio", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const parsed = boardSummaryQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      throw badRequest("Invalid portfolio query", parsed.error.issues);
+    }
+    const scopeType = parsed.data.scopeType;
+    const scopeRefId = parsed.data.scopeId ?? companyId;
+    if (scopeType !== "company" && !parsed.data.scopeId) {
+      throw badRequest("scopeId is required for project and agent portfolio views");
+    }
+    const summary = await svc.portfolioSummary(companyId, scopeType, scopeRefId);
+    res.json(summary);
+  });
+
   router.get("/records/:recordId", async (req, res) => {
     const recordId = req.params.recordId as string;
     const record = await svc.getById(recordId);
@@ -284,6 +302,81 @@ export function recordRoutes(db: Db) {
     res.json(record);
   });
 
+  router.get("/records/:recordId/schedule", async (req, res) => {
+    const recordId = req.params.recordId as string;
+    const existing = await svc.getById(recordId);
+    if (!existing) {
+      res.status(404).json({ error: "Record not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    const schedule = await svc.getSchedule(recordId);
+    if (!schedule) {
+      res.status(404).json({ error: "Briefing schedule not found" });
+      return;
+    }
+    res.json(schedule);
+  });
+
+  router.put("/records/:recordId/schedule", validate(upsertBriefingScheduleSchema), async (req, res) => {
+    const recordId = req.params.recordId as string;
+    const existing = await svc.getById(recordId);
+    if (!existing) {
+      res.status(404).json({ error: "Record not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    const actor = getActorInfo(req);
+    const schedule = await svc.upsertSchedule(recordId, req.body);
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "record.schedule_upserted",
+      entityType: "record",
+      entityId: recordId,
+      details: {
+        cadence: schedule.cadence,
+        timezone: schedule.timezone,
+        localHour: schedule.localHour,
+        localMinute: schedule.localMinute,
+        dayOfWeek: schedule.dayOfWeek,
+        autoPublish: schedule.autoPublish,
+      },
+    });
+    res.json(schedule);
+  });
+
+  router.delete("/records/:recordId/schedule", async (req, res) => {
+    const recordId = req.params.recordId as string;
+    const existing = await svc.getById(recordId);
+    if (!existing) {
+      res.status(404).json({ error: "Record not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    const actor = getActorInfo(req);
+    const schedule = await svc.deleteSchedule(recordId);
+    if (!schedule) {
+      res.status(404).json({ error: "Briefing schedule not found" });
+      return;
+    }
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "record.schedule_deleted",
+      entityType: "record",
+      entityId: recordId,
+      details: { scheduleId: schedule.id },
+    });
+    res.json(schedule);
+  });
+
   router.post("/records/:recordId/publish", validate(publishRecordSchema), async (req, res) => {
     const recordId = req.params.recordId as string;
     const existing = await svc.getById(recordId);
@@ -308,6 +401,20 @@ export function recordRoutes(db: Db) {
       entityId: record.id,
       details: { category: record.category, kind: record.kind, status: record.status },
     });
+    const knowledgeEntry = await knowledgeSvc.autoPublishEligibleRecord(record.id);
+    if (knowledgeEntry) {
+      await logActivity(db, {
+        companyId: knowledgeEntry.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "knowledge.published",
+        entityType: "knowledge_entry",
+        entityId: knowledgeEntry.id,
+        details: { sourceRecordId: knowledgeEntry.sourceRecordId, kind: knowledgeEntry.kind, autoPublished: true },
+      });
+    }
     res.json(record);
   });
 

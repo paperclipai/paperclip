@@ -1,5 +1,7 @@
 import fs from "node:fs/promises";
+import { execFile } from "node:child_process";
 import path from "node:path";
+import { promisify } from "node:util";
 import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -12,6 +14,7 @@ import {
   costEvents,
   issues,
   projectWorkspaces,
+  workspaceCheckouts,
 } from "@paperclipai/db";
 import { conflict, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -22,7 +25,7 @@ import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { secretService } from "./secrets.js";
-import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
+import { resolveDefaultAgentCheckoutDir, resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -30,6 +33,8 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
+const GIT_COMMAND_TIMEOUT_MS = 20_000;
+const execFileAsync = promisify(execFile);
 
 function appendExcerpt(prev: string, chunk: string) {
   return appendWithCap(prev, chunk, MAX_EXCERPT_BYTES);
@@ -76,11 +81,16 @@ interface ParsedIssueAssigneeAdapterOverrides {
 
 export type ResolvedWorkspaceForRun = {
   cwd: string;
-  source: "project_primary" | "task_session" | "agent_home";
+  source: "workspace_checkout" | "project_primary" | "task_session" | "agent_home";
   projectId: string | null;
   workspaceId: string | null;
   repoUrl: string | null;
   repoRef: string | null;
+  checkoutId: string | null;
+  branchName: string | null;
+  worktreePath: string | null;
+  checkoutStatus: string | null;
+  isolationUnavailable: boolean;
   workspaceHints: Array<{
     workspaceId: string;
     cwd: string | null;
@@ -92,6 +102,18 @@ export type ResolvedWorkspaceForRun = {
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function safeWorkspaceSegment(value: string) {
+  const cleaned = value.trim().replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/-+/g, "-");
+  return cleaned.slice(0, 24) || "workspace";
+}
+
+async function runGitCommand(cwd: string, args: string[]) {
+  const result = await execFileAsync("git", ["-C", cwd, ...args], {
+    timeout: GIT_COMMAND_TIMEOUT_MS,
+  });
+  return result.stdout.trim();
 }
 
 export function resolveRuntimeSessionParamsForWorkspace(input: {
@@ -108,7 +130,7 @@ export function resolveRuntimeSessionParamsForWorkspace(input: {
       warning: null as string | null,
     };
   }
-  if (resolvedWorkspace.source !== "project_primary") {
+  if (resolvedWorkspace.source !== "project_primary" && resolvedWorkspace.source !== "workspace_checkout") {
     return {
       sessionParams: previousSessionParams,
       warning: null as string | null,
@@ -153,6 +175,11 @@ export function resolveRuntimeSessionParamsForWorkspace(input: {
   if (resolvedWorkspace.workspaceId) migratedSessionParams.workspaceId = resolvedWorkspace.workspaceId;
   if (resolvedWorkspace.repoUrl) migratedSessionParams.repoUrl = resolvedWorkspace.repoUrl;
   if (resolvedWorkspace.repoRef) migratedSessionParams.repoRef = resolvedWorkspace.repoRef;
+  if (resolvedWorkspace.checkoutId) migratedSessionParams.checkoutId = resolvedWorkspace.checkoutId;
+  if (resolvedWorkspace.branchName) migratedSessionParams.branchName = resolvedWorkspace.branchName;
+  if (resolvedWorkspace.worktreePath) migratedSessionParams.worktreePath = resolvedWorkspace.worktreePath;
+  if (resolvedWorkspace.checkoutStatus) migratedSessionParams.checkoutStatus = resolvedWorkspace.checkoutStatus;
+  if (resolvedWorkspace.isolationUnavailable) migratedSessionParams.isolationUnavailable = true;
 
   return {
     sessionParams: migratedSessionParams,
@@ -161,6 +188,13 @@ export function resolveRuntimeSessionParamsForWorkspace(input: {
       `Attempting to resume session "${previousSessionId}" that was previously saved in fallback workspace "${previousCwd}".`,
   };
 }
+
+type RepoCheckoutResolution = {
+  id: string;
+  branchName: string;
+  worktreePath: string;
+  status: string;
+};
 
 function parseIssueAssigneeAdapterOverrides(
   raw: unknown,
@@ -477,6 +511,116 @@ export function heartbeatService(db: Db) {
     return runtimeForRun?.sessionId ?? null;
   }
 
+  // Repo-backed project workspaces use one reusable worktree per issue/agent pair so
+  // concurrent runs do not trample each other inside the same checkout.
+  async function ensureRepoCheckout(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    workspaceId: string;
+    workspaceCwd: string;
+    repoRef: string | null;
+  }): Promise<RepoCheckoutResolution> {
+    const repoRoot = await runGitCommand(input.workspaceCwd, ["rev-parse", "--show-toplevel"]);
+    await runGitCommand(repoRoot, ["worktree", "prune"]);
+
+    const existing = await db
+      .select()
+      .from(workspaceCheckouts)
+      .where(
+        and(
+          eq(workspaceCheckouts.companyId, input.companyId),
+          eq(workspaceCheckouts.projectWorkspaceId, input.workspaceId),
+          eq(workspaceCheckouts.issueId, input.issueId),
+          eq(workspaceCheckouts.agentId, input.agentId),
+          eq(workspaceCheckouts.status, "active"),
+        ),
+      )
+      .orderBy(desc(workspaceCheckouts.updatedAt))
+      .then((rows) => rows[0] ?? null);
+
+    const checkoutRoot = resolveDefaultAgentCheckoutDir(input.agentId);
+    await fs.mkdir(checkoutRoot, { recursive: true });
+    const fallbackPath = path.resolve(
+      checkoutRoot,
+      `${safeWorkspaceSegment(input.workspaceId)}-${safeWorkspaceSegment(input.issueId)}`,
+    );
+    const worktreePath = readNonEmptyString(existing?.worktreePath) ?? fallbackPath;
+    const branchName =
+      readNonEmptyString(existing?.branchName) ??
+      `paperclip/${safeWorkspaceSegment(input.agentId)}/${safeWorkspaceSegment(input.issueId)}`;
+    const worktreeExists = await fs
+      .stat(worktreePath)
+      .then((stats) => stats.isDirectory())
+      .catch(() => false);
+
+    if (!worktreeExists) {
+      await fs.rm(worktreePath, { recursive: true, force: true });
+      await runGitCommand(repoRoot, ["worktree", "add", "--detach", worktreePath, input.repoRef ?? "HEAD"]);
+      await runGitCommand(worktreePath, ["checkout", "-B", branchName]);
+    }
+
+    const now = new Date();
+    const resolvedRow = existing
+      ? (
+        await db
+          .update(workspaceCheckouts)
+          .set({
+            branchName,
+            worktreePath,
+            baseRef: input.repoRef ?? "HEAD",
+            metadata: {
+              ...((existing.metadata as Record<string, unknown> | null) ?? {}),
+              repoRoot,
+              sourceWorkspaceCwd: input.workspaceCwd,
+            },
+            updatedAt: now,
+          })
+          .where(eq(workspaceCheckouts.id, existing.id))
+          .returning()
+          .then((rows) => rows[0]!)
+      )
+      : (
+        await db
+          .insert(workspaceCheckouts)
+          .values({
+            companyId: input.companyId,
+            projectWorkspaceId: input.workspaceId,
+            issueId: input.issueId,
+            agentId: input.agentId,
+            branchName,
+            worktreePath,
+            status: "active",
+            baseRef: input.repoRef ?? "HEAD",
+            metadata: {
+              repoRoot,
+              sourceWorkspaceCwd: input.workspaceCwd,
+            },
+            updatedAt: now,
+          })
+          .returning()
+          .then((rows) => rows[0]!)
+      );
+
+    return {
+      id: resolvedRow.id,
+      branchName,
+      worktreePath,
+      status: resolvedRow.status,
+    };
+  }
+
+  async function noteCheckoutRun(checkoutId: string | null, runId: string) {
+    if (!checkoutId) return;
+    await db
+      .update(workspaceCheckouts)
+      .set({
+        lastRunId: runId,
+        updatedAt: new Date(),
+      })
+      .where(eq(workspaceCheckouts.id, checkoutId));
+  }
+
   async function resolveWorkspaceForRun(
     agent: typeof agents.$inferSelect,
     context: Record<string, unknown>,
@@ -530,6 +674,61 @@ export function heartbeatService(db: Db) {
           .then((stats) => stats.isDirectory())
           .catch(() => false);
         if (projectCwdExists) {
+          if (issueId) {
+            try {
+              const checkout = await ensureRepoCheckout({
+                companyId: agent.companyId,
+                agentId: agent.id,
+                issueId,
+                workspaceId: workspace.id,
+                workspaceCwd: projectCwd,
+                repoRef: readNonEmptyString(workspace.repoRef),
+              });
+              return {
+                cwd: checkout.worktreePath,
+                source: "workspace_checkout" as const,
+                projectId: resolvedProjectId,
+                workspaceId: workspace.id,
+                repoUrl: workspace.repoUrl,
+                repoRef: workspace.repoRef,
+                checkoutId: checkout.id,
+                branchName: checkout.branchName,
+                worktreePath: checkout.worktreePath,
+                checkoutStatus: checkout.status,
+                isolationUnavailable: false,
+                workspaceHints,
+                warnings: [],
+              };
+            } catch (error) {
+              logger.warn(
+                {
+                  companyId: agent.companyId,
+                  agentId: agent.id,
+                  issueId,
+                  workspaceId: workspace.id,
+                  err: error,
+                },
+                "workspace isolation unavailable for repo-backed project workspace",
+              );
+              return {
+                cwd: projectCwd,
+                source: "project_primary" as const,
+                projectId: resolvedProjectId,
+                workspaceId: workspace.id,
+                repoUrl: workspace.repoUrl,
+                repoRef: workspace.repoRef,
+                checkoutId: null,
+                branchName: null,
+                worktreePath: null,
+                checkoutStatus: null,
+                isolationUnavailable: true,
+                workspaceHints,
+                warnings: [
+                  `Workspace isolation was unavailable for "${projectCwd}". Continuing in the shared project workspace.`,
+                ],
+              };
+            }
+          }
           return {
             cwd: projectCwd,
             source: "project_primary" as const,
@@ -537,6 +736,11 @@ export function heartbeatService(db: Db) {
             workspaceId: workspace.id,
             repoUrl: workspace.repoUrl,
             repoRef: workspace.repoRef,
+            checkoutId: null,
+            branchName: null,
+            worktreePath: null,
+            checkoutStatus: null,
+            isolationUnavailable: false,
             workspaceHints,
             warnings: [],
           };
@@ -567,6 +771,11 @@ export function heartbeatService(db: Db) {
         workspaceId: projectWorkspaceRows[0]?.id ?? null,
         repoUrl: projectWorkspaceRows[0]?.repoUrl ?? null,
         repoRef: projectWorkspaceRows[0]?.repoRef ?? null,
+        checkoutId: null,
+        branchName: null,
+        worktreePath: null,
+        checkoutStatus: null,
+        isolationUnavailable: true,
         workspaceHints,
         warnings,
       };
@@ -586,6 +795,11 @@ export function heartbeatService(db: Db) {
           workspaceId: readNonEmptyString(previousSessionParams?.workspaceId),
           repoUrl: readNonEmptyString(previousSessionParams?.repoUrl),
           repoRef: readNonEmptyString(previousSessionParams?.repoRef),
+          checkoutId: readNonEmptyString(previousSessionParams?.checkoutId),
+          branchName: readNonEmptyString(previousSessionParams?.branchName),
+          worktreePath: readNonEmptyString(previousSessionParams?.worktreePath),
+          checkoutStatus: readNonEmptyString(previousSessionParams?.checkoutStatus),
+          isolationUnavailable: asBoolean(previousSessionParams?.isolationUnavailable, false),
           workspaceHints,
           warnings: [],
         };
@@ -615,6 +829,11 @@ export function heartbeatService(db: Db) {
       workspaceId: null,
       repoUrl: null,
       repoRef: null,
+      checkoutId: null,
+      branchName: null,
+      worktreePath: null,
+      checkoutStatus: null,
+      isolationUnavailable: Boolean(resolvedProjectId),
       workspaceHints,
       warnings,
     };
@@ -1123,10 +1342,29 @@ export function heartbeatService(db: Db) {
       workspaceId: resolvedWorkspace.workspaceId,
       repoUrl: resolvedWorkspace.repoUrl,
       repoRef: resolvedWorkspace.repoRef,
+      checkoutId: resolvedWorkspace.checkoutId,
+      branchName: resolvedWorkspace.branchName,
+      worktreePath: resolvedWorkspace.worktreePath,
+      checkoutStatus: resolvedWorkspace.checkoutStatus,
+      isolationUnavailable: resolvedWorkspace.isolationUnavailable,
     };
     context.paperclipWorkspaces = resolvedWorkspace.workspaceHints;
     if (resolvedWorkspace.projectId && !readNonEmptyString(context.projectId)) {
       context.projectId = resolvedWorkspace.projectId;
+    }
+    // Persist the enriched workspace context so issue/run detail screens can show the exact
+    // checkout path and isolation state that the adapter executed against.
+    const runWithWorkspaceContext = await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: context,
+        updatedAt: new Date(),
+      })
+      .where(eq(heartbeatRuns.id, run.id))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    if (runWithWorkspaceContext) {
+      run = runWithWorkspaceContext;
     }
     const runtimeSessionFallback = taskKey || resetTaskSession ? null : runtime.sessionId;
     const previousSessionDisplayId = truncateDisplayId(
@@ -1352,6 +1590,7 @@ export function heartbeatService(db: Db) {
         logSha256: logSummary?.sha256,
         logCompressed: logSummary?.compressed ?? false,
       });
+      await noteCheckoutRun(resolvedWorkspace.checkoutId, run.id);
 
       await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
         finishedAt: new Date(),
@@ -1421,6 +1660,7 @@ export function heartbeatService(db: Db) {
         logSha256: logSummary?.sha256,
         logCompressed: logSummary?.compressed ?? false,
       });
+      await noteCheckoutRun(resolvedWorkspace.checkoutId, run.id);
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: new Date(),
         error: message,

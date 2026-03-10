@@ -1,4 +1,4 @@
-import type { Project, ProjectWorkspace } from "@paperclipai/shared";
+import type { Project, ProjectMilestone, ProjectWorkspace } from "@paperclipai/shared";
 import { api } from "./client";
 
 function withCompanyScope(path: string, companyId?: string) {
@@ -20,6 +20,17 @@ export const projectsApi = {
     api.patch<Project>(projectPath(id, companyId), data),
   listWorkspaces: (projectId: string, companyId?: string) =>
     api.get<ProjectWorkspace[]>(projectPath(projectId, companyId, "/workspaces")),
+  listMilestones: (projectId: string, companyId?: string) =>
+    api.get<ProjectMilestone[]>(projectPath(projectId, companyId, "/milestones")),
+  createMilestone: (projectId: string, data: Record<string, unknown>, companyId?: string) =>
+    api.post<ProjectMilestone>(projectPath(projectId, companyId, "/milestones"), data),
+  updateMilestone: (projectId: string, milestoneId: string, data: Record<string, unknown>, companyId?: string) =>
+    api.patch<ProjectMilestone>(
+      projectPath(projectId, companyId, `/milestones/${encodeURIComponent(milestoneId)}`),
+      data,
+    ),
+  removeMilestone: (projectId: string, milestoneId: string, companyId?: string) =>
+    api.delete<ProjectMilestone>(projectPath(projectId, companyId, `/milestones/${encodeURIComponent(milestoneId)}`)),
   createWorkspace: (projectId: string, data: Record<string, unknown>, companyId?: string) =>
     api.post<ProjectWorkspace>(projectPath(projectId, companyId, "/workspaces"), data),
   updateWorkspace: (projectId: string, workspaceId: string, data: Record<string, unknown>, companyId?: string) =>

@@ -13,19 +13,28 @@ const mockRecordService = vi.hoisted(() => ({
   listBriefings: vi.fn(),
   createBriefing: vi.fn(),
   boardSummary: vi.fn(),
+  portfolioSummary: vi.fn(),
   getById: vi.fn(),
   update: vi.fn(),
   addLink: vi.fn(),
   addAttachment: vi.fn(),
   generate: vi.fn(),
+  getSchedule: vi.fn(),
+  upsertSchedule: vi.fn(),
+  deleteSchedule: vi.fn(),
+  runDueSchedules: vi.fn(),
   publish: vi.fn(),
   markViewed: vi.fn(),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockKnowledgeService = vi.hoisted(() => ({
+  autoPublishEligibleRecord: vi.fn(),
+}));
 
 vi.mock("../services/index.js", () => ({
   recordService: () => mockRecordService,
+  knowledgeService: () => mockKnowledgeService,
   logActivity: mockLogActivity,
 }));
 
@@ -67,6 +76,29 @@ function createRecord(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function createSchedule(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "schedule-1",
+    companyId: COMPANY_ID,
+    recordId: RECORD_ID,
+    enabled: true,
+    cadence: "daily",
+    timezone: "America/New_York",
+    localHour: 9,
+    localMinute: 0,
+    dayOfWeek: null,
+    windowPreset: "24h",
+    autoPublish: true,
+    lastRunAt: null,
+    nextRunAt: new Date("2026-03-10T13:00:00.000Z"),
+    lastRunStatus: "idle",
+    lastError: null,
+    createdAt: new Date("2026-03-08T10:00:00.000Z"),
+    updatedAt: new Date("2026-03-08T10:00:00.000Z"),
+    ...overrides,
+  };
+}
+
 function createApp(actor: Record<string, unknown>) {
   const app = express();
   app.use(express.json());
@@ -86,6 +118,8 @@ describe("record routes", () => {
     }
     mockLogActivity.mockReset();
     mockLogActivity.mockResolvedValue(undefined);
+    mockKnowledgeService.autoPublishEligibleRecord.mockReset();
+    mockKnowledgeService.autoPublishEligibleRecord.mockResolvedValue(null);
   });
 
   it("requires scopeId for project board views", async () => {
@@ -158,8 +192,27 @@ describe("record routes", () => {
   it("publishes a record and logs the publish event", async () => {
     const existing = createRecord();
     const published = createRecord({ status: "published", publishedAt: new Date("2026-03-08T12:00:00.000Z") });
+    const knowledgeEntry = {
+      id: "knowledge-1",
+      companyId: COMPANY_ID,
+      title: "Executive update",
+      summary: "Summary",
+      bodyMd: "Body",
+      sourceRecordId: RECORD_ID,
+      kind: "status_report",
+      scopeType: "company",
+      scopeRefId: COMPANY_ID,
+      status: "published",
+      publishedAt: new Date("2026-03-08T12:00:00.000Z"),
+      metadata: null,
+      attachments: [],
+      links: [],
+      createdAt: new Date("2026-03-08T12:00:00.000Z"),
+      updatedAt: new Date("2026-03-08T12:00:00.000Z"),
+    };
     mockRecordService.getById.mockResolvedValue(existing);
     mockRecordService.publish.mockResolvedValue(published);
+    mockKnowledgeService.autoPublishEligibleRecord.mockResolvedValue(knowledgeEntry);
 
     const app = createApp({
       type: "board",
@@ -179,11 +232,65 @@ describe("record routes", () => {
       agentId: null,
       userId: "board-user",
     });
+    expect(mockKnowledgeService.autoPublishEligibleRecord).toHaveBeenCalledWith(RECORD_ID);
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
         companyId: COMPANY_ID,
         action: "record.published",
+        entityId: RECORD_ID,
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId: COMPANY_ID,
+        action: "knowledge.published",
+        entityId: "knowledge-1",
+      }),
+    );
+  });
+
+  it("upserts a briefing schedule and logs the mutation", async () => {
+    const existing = createRecord({ category: "briefing", kind: "daily_briefing" });
+    const schedule = createSchedule();
+    mockRecordService.getById.mockResolvedValue(existing);
+    mockRecordService.upsertSchedule.mockResolvedValue(schedule);
+
+    const app = createApp({
+      type: "board",
+      source: "local_implicit",
+      userId: "board-user",
+      companyIds: [COMPANY_ID],
+      isInstanceAdmin: true,
+    });
+
+    const res = await request(app)
+      .put(`/api/records/${RECORD_ID}/schedule`)
+      .send({
+        enabled: true,
+        cadence: "daily",
+        timezone: "America/New_York",
+        localHour: 9,
+        localMinute: 0,
+        windowPreset: "24h",
+        autoPublish: true,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.recordId).toBe(RECORD_ID);
+    expect(mockRecordService.upsertSchedule).toHaveBeenCalledWith(
+      RECORD_ID,
+      expect.objectContaining({
+        cadence: "daily",
+        timezone: "America/New_York",
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId: COMPANY_ID,
+        action: "record.schedule_upserted",
         entityId: RECORD_ID,
       }),
     );

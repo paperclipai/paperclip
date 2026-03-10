@@ -6,6 +6,8 @@ import {
   RESULT_RECORD_KINDS,
   type Agent,
   type AnyRecord,
+  type ExecutiveDecisionItem,
+  type PortfolioSummary,
   type Project,
   type RecordScopeType,
 } from "@paperclipai/shared";
@@ -25,7 +27,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { cn, formatCents, formatDateTime, formatTokens, projectUrl, relativeTime } from "../lib/utils";
 import { FolderKanban, Sparkles } from "lucide-react";
 
-type BriefingsMode = "board" | "results" | "plans";
+type BriefingsMode = "board" | "briefings" | "results" | "plans" | "portfolio";
 type WindowPreset = "last_visit" | "24h" | "7d";
 type ComposerCategory = "plan" | "result" | "briefing";
 
@@ -92,8 +94,10 @@ function resolveScopeRefId(
 function BriefingTabs({ mode }: { mode: BriefingsMode }) {
   const tabs: Array<{ mode: BriefingsMode; label: string; href: string }> = [
     { mode: "board", label: "Board", href: "/briefings/board" },
+    { mode: "briefings", label: "Briefings", href: "/briefings/briefings" },
     { mode: "results", label: "Results", href: "/briefings/results" },
     { mode: "plans", label: "Plans", href: "/briefings/plans" },
+    { mode: "portfolio", label: "Portfolio", href: "/briefings/portfolio" },
   ];
 
   return (
@@ -488,7 +492,7 @@ function BoardRecordList({
   records,
   emptyMessage,
 }: {
-  records: AnyRecord[];
+  records: Array<AnyRecord | ExecutiveDecisionItem>;
   emptyMessage: string;
 }) {
   if (records.length === 0) {
@@ -498,6 +502,24 @@ function BoardRecordList({
   return (
     <div className="space-y-3">
       {records.map((record) => (
+        "sourceType" in record ? (
+          <Link
+            key={record.id}
+            to={record.sourceType === "plan" ? `/briefings/records/${record.plan.id}` : `/approvals/${record.approval.id}`}
+            className="block rounded-xl border border-border/70 bg-background px-4 py-3 transition-colors hover:bg-accent/20"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="space-y-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-medium text-foreground">{record.title}</span>
+                  <Badge variant="outline">{record.sourceType === "plan" ? "decision record" : "approval"}</Badge>
+                </div>
+                <p className="text-sm text-muted-foreground">{record.summary ?? "No summary yet."}</p>
+              </div>
+              <span className="text-xs text-muted-foreground">{record.dueAt ? relativeTime(record.dueAt) : "No due date"}</span>
+            </div>
+          </Link>
+        ) : (
         <Link
           key={record.id}
           to={`/briefings/records/${record.id}`}
@@ -514,6 +536,7 @@ function BoardRecordList({
             <span className="text-xs text-muted-foreground">{relativeTime(record.publishedAt ?? record.updatedAt)}</span>
           </div>
         </Link>
+        )
       ))}
     </div>
   );
@@ -823,6 +846,312 @@ function BoardView({
               )}
             </div>
           </BoardSection>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function BriefingLibraryView({
+  companyId,
+  projects,
+  agents,
+}: {
+  companyId: string;
+  projects: Project[];
+  agents: Agent[];
+}) {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const [showComposer, setShowComposer] = useState(false);
+  const [kind, setKind] = useState("");
+  const [status, setStatus] = useState("");
+  const [projectId, setProjectId] = useState("");
+  const [scopeType, setScopeType] = useState("");
+  const [scopeRefId, setScopeRefId] = useState("");
+
+  const filters = useMemo(
+    () => ({
+      kind: kind || undefined,
+      status: status || undefined,
+      projectId: projectId || undefined,
+      scopeType: scopeType || undefined,
+      scopeRefId: scopeType ? scopeRefId || undefined : undefined,
+    }),
+    [kind, status, projectId, scopeType, scopeRefId],
+  );
+
+  const briefingsQuery = useQuery({
+    queryKey: queryKeys.records.briefings(companyId, filters),
+    queryFn: () => recordsApi.listBriefings(companyId, filters),
+  });
+
+  const createBriefingMutation = useMutation({
+    mutationFn: (payload: Parameters<typeof recordsApi.createBriefing>[1]) => recordsApi.createBriefing(companyId, payload),
+    onSuccess: async (record) => {
+      await queryClient.invalidateQueries({ queryKey: ["records", companyId] });
+      navigate(`/briefings/records/${record.id}`);
+    },
+  });
+
+  return (
+    <div className="space-y-6">
+      <section className="rounded-2xl border border-border bg-card p-4">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <h2 className="text-xl font-semibold text-foreground">Briefing library</h2>
+            <p className="text-sm text-muted-foreground">
+              Daily briefs, weekly rollups, project status reports, incident summaries, and board packets.
+            </p>
+          </div>
+          <Button variant="outline" onClick={() => setShowComposer((current) => !current)}>
+            {showComposer ? "Hide composer" : "New briefing"}
+          </Button>
+        </div>
+
+        <div className="mt-4 grid gap-3 md:grid-cols-4">
+          <label className="space-y-1 text-sm">
+            <span className="text-muted-foreground">Kind</span>
+            <select value={kind} onChange={(event) => setKind(event.target.value)} className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm">
+              <option value="">All kinds</option>
+              {BRIEFING_RECORD_KINDS.map((option) => (
+                <option key={option} value={option}>{option.replace(/_/g, " ")}</option>
+              ))}
+            </select>
+          </label>
+          <label className="space-y-1 text-sm">
+            <span className="text-muted-foreground">Status</span>
+            <select value={status} onChange={(event) => setStatus(event.target.value)} className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm">
+              <option value="">All statuses</option>
+              <option value="draft">Draft</option>
+              <option value="published">Published</option>
+              <option value="archived">Archived</option>
+            </select>
+          </label>
+          <label className="space-y-1 text-sm">
+            <span className="text-muted-foreground">Project</span>
+            <select value={projectId} onChange={(event) => setProjectId(event.target.value)} className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm">
+              <option value="">All projects</option>
+              {projects.map((project) => (
+                <option key={project.id} value={project.id}>{project.name}</option>
+              ))}
+            </select>
+          </label>
+          <label className="space-y-1 text-sm">
+            <span className="text-muted-foreground">Scope</span>
+            <select value={scopeType} onChange={(event) => { setScopeType(event.target.value); setScopeRefId(""); }} className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm">
+              <option value="">All scopes</option>
+              <option value="company">Company</option>
+              <option value="project">Project</option>
+              <option value="agent">Executive owner</option>
+            </select>
+          </label>
+        </div>
+
+        {scopeType === "project" ? (
+          <div className="mt-3">
+            <select value={scopeRefId} onChange={(event) => setScopeRefId(event.target.value)} className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm">
+              <option value="">All projects</option>
+              {projects.map((project) => (
+                <option key={project.id} value={project.id}>{project.name}</option>
+              ))}
+            </select>
+          </div>
+        ) : null}
+
+        {scopeType === "agent" ? (
+          <div className="mt-3">
+            <select value={scopeRefId} onChange={(event) => setScopeRefId(event.target.value)} className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm">
+              <option value="">All executive owners</option>
+              {agents.map((agent) => (
+                <option key={agent.id} value={agent.id}>{agent.name}</option>
+              ))}
+            </select>
+          </div>
+        ) : null}
+      </section>
+
+      {showComposer ? (
+        <RecordComposer
+          category="briefing"
+          companyId={companyId}
+          projects={projects}
+          agents={agents}
+          kindOptions={BRIEFING_RECORD_KINDS}
+          submitLabel="Create briefing"
+          submitting={createBriefingMutation.isPending}
+          defaultKind="weekly_briefing"
+          onSubmit={(payload) => {
+            createBriefingMutation.mutate({
+              kind: payload.kind as (typeof BRIEFING_RECORD_KINDS)[number],
+              scopeType: payload.scopeType,
+              scopeRefId: payload.scopeRefId,
+              title: payload.title,
+              summary: payload.summary,
+              bodyMd: payload.bodyMd,
+              ownerAgentId: payload.ownerAgentId,
+            });
+          }}
+        />
+      ) : null}
+
+      {briefingsQuery.isLoading ? <PageSkeleton variant="list" /> : null}
+      {briefingsQuery.error ? <p className="text-sm text-destructive">{briefingsQuery.error.message}</p> : null}
+      {briefingsQuery.data ? (
+        <RecordList records={briefingsQuery.data} projects={projects} agents={agents} emptyMessage="No briefings match these filters." />
+      ) : null}
+    </div>
+  );
+}
+
+function PortfolioView({
+  companyId,
+  projects,
+  agents,
+}: {
+  companyId: string;
+  projects: Project[];
+  agents: Agent[];
+}) {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const scopeType = (searchParams.get("scopeType") as RecordScopeType | null) ?? "company";
+  const scopeId = searchParams.get("scopeId") ?? "";
+  const effectiveScopeId = scopeType === "company" ? companyId : scopeId;
+
+  const portfolioQuery = useQuery({
+    queryKey: queryKeys.records.portfolio(companyId, scopeType, effectiveScopeId || companyId),
+    queryFn: () => recordsApi.portfolioSummary(companyId, {
+      scopeType,
+      scopeId: scopeType === "company" ? undefined : effectiveScopeId,
+    }),
+    enabled: scopeType === "company" || Boolean(effectiveScopeId),
+  });
+
+  function updateScope(nextScopeType: RecordScopeType, nextScopeId: string) {
+    const next = new URLSearchParams(searchParams);
+    next.set("scopeType", nextScopeType);
+    if (nextScopeType === "company") next.delete("scopeId");
+    else if (nextScopeId) next.set("scopeId", nextScopeId);
+    else next.delete("scopeId");
+    setSearchParams(next);
+  }
+
+  const portfolio: PortfolioSummary | undefined = portfolioQuery.data;
+
+  return (
+    <div className="space-y-6">
+      <section className="rounded-2xl border border-border bg-card p-4">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <h2 className="text-xl font-semibold text-foreground">Portfolio board</h2>
+            <p className="text-sm text-muted-foreground">
+              Health, milestone status, current blocker, next decision, and budget truthfulness across projects.
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-4 grid gap-3 md:grid-cols-3">
+          <label className="space-y-1 text-sm">
+            <span className="text-muted-foreground">Scope</span>
+            <select
+              value={scopeType}
+              onChange={(event) => updateScope(event.target.value as RecordScopeType, "")}
+              className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+            >
+              <option value="company">Company</option>
+              <option value="project">Project</option>
+              <option value="agent">Executive owner</option>
+            </select>
+          </label>
+          {scopeType === "project" ? (
+            <label className="space-y-1 text-sm">
+              <span className="text-muted-foreground">Project</span>
+              <select value={effectiveScopeId} onChange={(event) => updateScope("project", event.target.value)} className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm">
+                <option value="">Select a project</option>
+                {projects.map((project) => (
+                  <option key={project.id} value={project.id}>{project.name}</option>
+                ))}
+              </select>
+            </label>
+          ) : scopeType === "agent" ? (
+            <label className="space-y-1 text-sm">
+              <span className="text-muted-foreground">Executive owner</span>
+              <select value={effectiveScopeId} onChange={(event) => updateScope("agent", event.target.value)} className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm">
+                <option value="">Select an executive owner</option>
+                {agents.map((agent) => (
+                  <option key={agent.id} value={agent.id}>{agent.name}</option>
+                ))}
+              </select>
+            </label>
+          ) : (
+            <div className="rounded-md border border-dashed border-border px-3 py-2 text-sm text-muted-foreground">
+              Portfolio rollup for the active company.
+            </div>
+          )}
+        </div>
+      </section>
+
+      {portfolioQuery.isLoading ? <PageSkeleton variant="list" /> : null}
+      {portfolioQuery.error ? <p className="text-sm text-destructive">{portfolioQuery.error.message}</p> : null}
+      {portfolio ? (
+        <div className="space-y-3">
+          {portfolio.projects.length === 0 ? (
+            <p className="rounded-xl border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">
+              No portfolio rows exist in this scope yet.
+            </p>
+          ) : (
+            portfolio.projects.map((project) => (
+              <div key={project.projectId} className="rounded-2xl border border-border bg-card p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Link to={projectUrl({ id: project.projectId, name: project.projectName, urlKey: project.projectId })} className="text-base font-semibold text-foreground hover:underline">
+                        {project.projectName}
+                      </Link>
+                      <span className={cn("rounded-full border px-2 py-0.5 text-xs font-medium", healthBadgeClass(project.healthStatus))}>
+                        {project.healthStatus}
+                      </span>
+                      <Badge variant="outline">{project.healthDelta}</Badge>
+                      <Badge variant="outline">{project.budgetPricingState}</Badge>
+                    </div>
+                    <p className="text-sm text-muted-foreground">
+                      {project.currentBlocker ?? "No blocker recorded."}
+                    </p>
+                  </div>
+                  <div className="grid gap-2 text-right text-xs text-muted-foreground sm:grid-cols-2">
+                    <div>
+                      <div>Lead</div>
+                      <div className="font-medium text-foreground">{project.leadAgentName ?? "Unassigned"}</div>
+                    </div>
+                    <div>
+                      <div>Budget burn</div>
+                      <div className="font-medium text-foreground">
+                        {project.budgetPricingState === "unpriced" ? "Unpriced usage" : formatCents(project.budgetBurn)}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div className="mt-4 grid gap-3 md:grid-cols-4">
+                  <div className="rounded-xl border border-border/70 bg-background px-3 py-2">
+                    <div className="text-xs text-muted-foreground">Milestone status</div>
+                    <div className="mt-1 text-sm font-medium text-foreground">{project.milestoneStatus}</div>
+                  </div>
+                  <div className="rounded-xl border border-border/70 bg-background px-3 py-2">
+                    <div className="text-xs text-muted-foreground">Next board decision</div>
+                    <div className="mt-1 text-sm font-medium text-foreground">{project.nextBoardDecision?.title ?? "None"}</div>
+                  </div>
+                  <div className="rounded-xl border border-border/70 bg-background px-3 py-2">
+                    <div className="text-xs text-muted-foreground">Last meaningful result</div>
+                    <div className="mt-1 text-sm font-medium text-foreground">{project.lastMeaningfulResult?.title ?? "None"}</div>
+                  </div>
+                  <div className="rounded-xl border border-border/70 bg-background px-3 py-2">
+                    <div className="text-xs text-muted-foreground">Confidence</div>
+                    <div className="mt-1 text-sm font-medium text-foreground">{project.confidence == null ? "n/a" : `${project.confidence}%`}</div>
+                  </div>
+                </div>
+              </div>
+            ))
+          )}
         </div>
       ) : null}
     </div>
@@ -1158,7 +1487,16 @@ export function Briefings({ mode }: { mode: BriefingsMode }) {
   });
 
   useEffect(() => {
-    const detail = mode === "board" ? "Board" : mode === "results" ? "Results" : "Plans";
+    const detail =
+      mode === "board"
+        ? "Board"
+        : mode === "briefings"
+          ? "Briefings"
+          : mode === "results"
+            ? "Results"
+            : mode === "portfolio"
+              ? "Portfolio"
+              : "Plans";
     setBreadcrumbs([{ label: "Briefings", href: "/briefings/board" }, { label: detail }]);
   }, [mode, setBreadcrumbs]);
 
@@ -1196,8 +1534,10 @@ export function Briefings({ mode }: { mode: BriefingsMode }) {
       {agentsQuery.error ? <p className="text-sm text-destructive">{agentsQuery.error.message}</p> : null}
 
       {mode === "board" ? <BoardView companyId={selectedCompanyId} projects={projects} agents={agents} /> : null}
+      {mode === "briefings" ? <BriefingLibraryView companyId={selectedCompanyId} projects={projects} agents={agents} /> : null}
       {mode === "results" ? <ResultsView companyId={selectedCompanyId} projects={projects} agents={agents} /> : null}
       {mode === "plans" ? <PlansView companyId={selectedCompanyId} projects={projects} agents={agents} /> : null}
+      {mode === "portfolio" ? <PortfolioView companyId={selectedCompanyId} projects={projects} agents={agents} /> : null}
     </div>
   );
 }

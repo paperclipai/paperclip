@@ -1,4 +1,4 @@
-import type { ProjectStatus } from "../constants.js";
+import type { MilestoneStatus, ProjectStatus, WorkspaceCheckoutStatus } from "../constants.js";
 
 export interface ProjectGoalRef {
   id: string;
@@ -19,6 +19,37 @@ export interface ProjectWorkspace {
   updatedAt: Date;
 }
 
+export interface ProjectMilestone {
+  id: string;
+  companyId: string;
+  projectId: string;
+  name: string;
+  description: string | null;
+  status: MilestoneStatus;
+  targetDate: string | null;
+  completedAt: Date | null;
+  sortOrder: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface WorkspaceCheckout {
+  id: string;
+  companyId: string;
+  projectWorkspaceId: string;
+  issueId: string;
+  agentId: string;
+  lastRunId: string | null;
+  branchName: string | null;
+  worktreePath: string | null;
+  status: WorkspaceCheckoutStatus;
+  baseRef: string | null;
+  releasedAt: Date | null;
+  metadata: Record<string, unknown> | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export interface Project {
   id: string;
   companyId: string;
@@ -35,6 +66,7 @@ export interface Project {
   color: string | null;
   workspaces: ProjectWorkspace[];
   primaryWorkspace: ProjectWorkspace | null;
+  milestones?: ProjectMilestone[];
   archivedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;

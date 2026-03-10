@@ -1,4 +1,5 @@
 export type { Company } from "./company.js";
+export type { BriefingSchedule, PortfolioProject, PortfolioSummary } from "./briefing.js";
 export type {
   Agent,
   AgentPermissions,
@@ -10,7 +11,8 @@ export type {
   AdapterEnvironmentTestResult,
 } from "./agent.js";
 export type { AssetFile, AssetImage } from "./asset.js";
-export type { Project, ProjectGoalRef, ProjectWorkspace } from "./project.js";
+export type { KnowledgeEntry } from "./knowledge.js";
+export type { Project, ProjectGoalRef, ProjectWorkspace, ProjectMilestone, WorkspaceCheckout } from "./project.js";
 export type {
   Issue,
   IssueAssigneeAdapterOverrides,
@@ -29,11 +31,15 @@ export type {
   ResultRecord,
   BriefingRecord,
   AnyRecord,
+  ExecutiveApprovalDecision,
+  ExecutivePlanDecision,
+  ExecutiveDecisionItem,
   RecordLink,
   RecordAttachment,
   ExecutiveProjectHealth,
   ExecutiveCostAnomaly,
   ExecutiveBoardSummary,
+  BriefingGenerationInput,
 } from "./record.js";
 export type {
   SecretProvider,
@@ -45,7 +51,7 @@ export type {
   CompanySecret,
   SecretProviderDescriptor,
 } from "./secrets.js";
-export type { CostEvent, CostSummary, CostByAgent } from "./cost.js";
+export type { CostEvent, CostSummary, CostByAgent, CostByProject } from "./cost.js";
 export type {
   HeartbeatRun,
   HeartbeatRunEvent,

@@ -27,6 +27,7 @@ import { DesignGuide } from "./pages/DesignGuide";
 import { OrgChart } from "./pages/OrgChart";
 import { NewAgent } from "./pages/NewAgent";
 import { RecordDetail } from "./pages/RecordDetail";
+import { Knowledge } from "./pages/Knowledge";
 import { AuthPage } from "./pages/Auth";
 import { BoardClaimPage } from "./pages/BoardClaim";
 import { InviteLandingPage } from "./pages/InviteLanding";
@@ -130,9 +131,12 @@ function boardRoutes() {
       <Route path="activity" element={<Activity />} />
       <Route path="briefings" element={<Navigate to="/briefings/board" replace />} />
       <Route path="briefings/board" element={<Briefings mode="board" />} />
+      <Route path="briefings/briefings" element={<Briefings mode="briefings" />} />
       <Route path="briefings/results" element={<Briefings mode="results" />} />
       <Route path="briefings/plans" element={<Briefings mode="plans" />} />
+      <Route path="briefings/portfolio" element={<Briefings mode="portfolio" />} />
       <Route path="briefings/records/:recordId" element={<RecordDetail />} />
+      <Route path="knowledge" element={<Knowledge />} />
       <Route path="inbox" element={<Navigate to="/inbox/new" replace />} />
       <Route path="inbox/new" element={<Inbox />} />
       <Route path="inbox/all" element={<Inbox />} />

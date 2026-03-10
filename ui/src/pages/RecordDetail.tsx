@@ -15,11 +15,14 @@ import { assetsApi } from "../api/assets";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { recordsApi } from "../api/records";
+import { ApiError } from "../api/client";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, formatDateTime, issueUrl, projectUrl, relativeTime } from "../lib/utils";
 import { Paperclip, RefreshCcw } from "lucide-react";
+
+type GenerateWindowPreset = "last_visit" | "24h" | "7d" | "custom";
 
 function healthBadgeClass(status: string | null | undefined) {
   if (status === "green") return "border-green-500/40 bg-green-500/10 text-green-700 dark:text-green-300";
@@ -103,6 +106,17 @@ export function RecordDetail() {
   const [summary, setSummary] = useState("");
   const [bodyMd, setBodyMd] = useState("");
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [windowPreset, setWindowPreset] = useState<GenerateWindowPreset>("last_visit");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
+  const [scheduleEnabled, setScheduleEnabled] = useState(true);
+  const [scheduleCadence, setScheduleCadence] = useState<"daily" | "weekly">("weekly");
+  const [scheduleTimezone, setScheduleTimezone] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
+  const [scheduleHour, setScheduleHour] = useState("9");
+  const [scheduleMinute, setScheduleMinute] = useState("0");
+  const [scheduleDayOfWeek, setScheduleDayOfWeek] = useState("1");
+  const [scheduleWindowPreset, setScheduleWindowPreset] = useState<GenerateWindowPreset>("7d");
+  const [scheduleAutoPublish, setScheduleAutoPublish] = useState(false);
 
   const recordQuery = useQuery({
     queryKey: queryKeys.records.detail(recordId ?? ""),
@@ -117,6 +131,18 @@ export function RecordDetail() {
   }, [record?.companyId, selectedCompanyId, setSelectedCompanyId]);
 
   const companyId = record?.companyId ?? selectedCompanyId ?? "";
+  const scheduleQuery = useQuery({
+    queryKey: queryKeys.records.schedule(recordId ?? ""),
+    queryFn: async () => {
+      try {
+        return await recordsApi.getSchedule(recordId!);
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return null;
+        throw error;
+      }
+    },
+    enabled: Boolean(recordId && record?.category === "briefing"),
+  });
 
   const projectsQuery = useQuery({
     queryKey: queryKeys.projects.list(companyId),
@@ -155,6 +181,19 @@ export function RecordDetail() {
     ]);
   }, [record, setBreadcrumbs]);
 
+  useEffect(() => {
+    const schedule = scheduleQuery.data;
+    if (!schedule) return;
+    setScheduleEnabled(schedule.enabled);
+    setScheduleCadence(schedule.cadence);
+    setScheduleTimezone(schedule.timezone);
+    setScheduleHour(String(schedule.localHour));
+    setScheduleMinute(String(schedule.localMinute));
+    setScheduleDayOfWeek(String(schedule.dayOfWeek ?? 1));
+    setScheduleWindowPreset(schedule.windowPreset);
+    setScheduleAutoPublish(schedule.autoPublish);
+  }, [scheduleQuery.data]);
+
   const saveMutation = useMutation({
     mutationFn: () => recordsApi.update(recordId!, { title, summary: summary || null, bodyMd: bodyMd || null }),
     onSuccess: async () => {
@@ -164,7 +203,13 @@ export function RecordDetail() {
   });
 
   const generateMutation = useMutation({
-    mutationFn: () => recordsApi.generate(recordId!, { since: "last_visit" }),
+    mutationFn: () =>
+      recordsApi.generate(recordId!, {
+        since: windowPreset === "last_visit" ? "last_visit" : undefined,
+        windowPreset,
+        from: windowPreset === "custom" && customFrom ? new Date(customFrom).toISOString() : null,
+        to: windowPreset === "custom" && customTo ? new Date(customTo).toISOString() : null,
+      }),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.records.detail(recordId!) });
       await queryClient.invalidateQueries({ queryKey: ["records", companyId] });
@@ -177,6 +222,38 @@ export function RecordDetail() {
       await queryClient.invalidateQueries({ queryKey: queryKeys.records.detail(recordId!) });
       await queryClient.invalidateQueries({ queryKey: ["records", companyId] });
       await queryClient.invalidateQueries({ queryKey: queryKeys.records.activity(companyId, recordId!) });
+    },
+  });
+
+  const publishToKnowledgeMutation = useMutation({
+    mutationFn: () => recordsApi.publishToKnowledge(recordId!),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.knowledge.list(companyId) });
+    },
+  });
+
+  const scheduleMutation = useMutation({
+    mutationFn: () =>
+      recordsApi.upsertSchedule(recordId!, {
+        enabled: scheduleEnabled,
+        cadence: scheduleCadence,
+        timezone: scheduleTimezone,
+        localHour: Number(scheduleHour),
+        localMinute: Number(scheduleMinute),
+        dayOfWeek: scheduleCadence === "weekly" ? Number(scheduleDayOfWeek) : null,
+        windowPreset: scheduleWindowPreset,
+        autoPublish: scheduleAutoPublish,
+      }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.records.schedule(recordId!) });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.records.detail(recordId!) });
+    },
+  });
+
+  const deleteScheduleMutation = useMutation({
+    mutationFn: () => recordsApi.deleteSchedule(recordId!),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.records.schedule(recordId!) });
     },
   });
 
@@ -211,6 +288,19 @@ export function RecordDetail() {
   const ownerName = record?.ownerAgentId
     ? relatedData.agents.find((agent) => agent.id === record.ownerAgentId)?.name ?? record.ownerAgentId.slice(0, 8)
     : "Unassigned";
+  const generationWindow = record?.metadata && typeof record.metadata === "object" && "generationWindow" in record.metadata
+    ? (record.metadata.generationWindow as { windowPreset?: string; since?: string | null; until?: string | null } | undefined)
+    : undefined;
+  const generatedFromScheduleId = record?.metadata && typeof record.metadata === "object" && "generatedFromScheduleId" in record.metadata
+    ? String(record.metadata.generatedFromScheduleId)
+    : null;
+  const scheduleStatusLabel = scheduleQuery.isLoading
+    ? "Loading schedule"
+    : scheduleQuery.data
+      ? scheduleQuery.data.enabled
+        ? "Scheduled"
+        : "Paused"
+      : "Manual only";
 
   if (recordQuery.isLoading) return <PageSkeleton variant="detail" />;
   if (recordQuery.error) return <p className="text-sm text-destructive">{recordQuery.error.message}</p>;
@@ -225,6 +315,7 @@ export function RecordDetail() {
               <Badge variant="outline">{record.category}</Badge>
               <Badge variant="outline">{record.kind.replace(/_/g, " ")}</Badge>
               <Badge variant="outline">{record.status.replace(/_/g, " ")}</Badge>
+              {generatedFromScheduleId ? <Badge variant="outline">Generated instance</Badge> : null}
               {record.healthStatus ? (
                 <span className={cn("rounded-full border px-2 py-0.5 text-xs font-medium", healthBadgeClass(record.healthStatus))}>
                   {record.healthStatus}
@@ -246,6 +337,11 @@ export function RecordDetail() {
             <Button onClick={() => publishMutation.mutate()} disabled={publishMutation.isPending}>
               {publishMutation.isPending ? "Saving..." : record.category === "plan" ? "Activate plan" : "Publish"}
             </Button>
+            {record.category !== "plan" && record.status === "published" ? (
+              <Button variant="outline" onClick={() => publishToKnowledgeMutation.mutate()} disabled={publishToKnowledgeMutation.isPending}>
+                {publishToKnowledgeMutation.isPending ? "Publishing..." : "Publish to knowledge"}
+              </Button>
+            ) : null}
           </div>
         </div>
 
@@ -269,6 +365,23 @@ export function RecordDetail() {
           </div>
         </div>
 
+        {record.category === "briefing" ? (
+          <div className="mt-4 grid gap-3 text-sm md:grid-cols-3">
+            <div className="rounded-xl border border-border/70 bg-background px-3 py-2">
+              <div className="text-xs text-muted-foreground">Generated</div>
+              <div className="mt-1 font-medium text-foreground">{record.generatedAt ? formatDateTime(record.generatedAt) : "Not generated yet"}</div>
+            </div>
+            <div className="rounded-xl border border-border/70 bg-background px-3 py-2">
+              <div className="text-xs text-muted-foreground">Window preset</div>
+              <div className="mt-1 font-medium text-foreground">{generationWindow?.windowPreset ?? "Not recorded"}</div>
+            </div>
+            <div className="rounded-xl border border-border/70 bg-background px-3 py-2">
+              <div className="text-xs text-muted-foreground">Window since</div>
+              <div className="mt-1 font-medium text-foreground">{generationWindow?.since ? formatDateTime(new Date(generationWindow.since)) : "Open-ended"}</div>
+            </div>
+          </div>
+        ) : null}
+
         {(record.decisionNeeded || record.decisionDueAt || record.healthDelta || record.confidence != null) ? (
           <div className="mt-4 grid gap-3 text-sm md:grid-cols-4">
             <div className="rounded-xl border border-border/70 bg-background px-3 py-2">
@@ -290,6 +403,127 @@ export function RecordDetail() {
           </div>
         ) : null}
       </section>
+
+      {record.category === "briefing" ? (
+        <section className="rounded-2xl border border-border bg-card p-4 space-y-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-base font-semibold text-foreground">Generation and schedule</h2>
+              <p className="text-sm text-muted-foreground">Choose the briefing window, regenerate on demand, and configure scheduled briefings.</p>
+            </div>
+            <Badge variant="outline">{scheduleStatusLabel}</Badge>
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div className="space-y-3 rounded-xl border border-border/70 bg-background p-4">
+              <h3 className="text-sm font-semibold text-foreground">Generate now</h3>
+              <label className="space-y-1 text-sm block">
+                <span className="text-muted-foreground">Window preset</span>
+                <select value={windowPreset} onChange={(event) => setWindowPreset(event.target.value as GenerateWindowPreset)} className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm">
+                  <option value="last_visit">Since last visit</option>
+                  <option value="24h">Last 24 hours</option>
+                  <option value="7d">Last 7 days</option>
+                  <option value="custom">Custom range</option>
+                </select>
+              </label>
+              {windowPreset === "custom" ? (
+                <div className="grid gap-3 md:grid-cols-2">
+                  <label className="space-y-1 text-sm block">
+                    <span className="text-muted-foreground">From</span>
+                    <Input type="datetime-local" value={customFrom} onChange={(event) => setCustomFrom(event.target.value)} />
+                  </label>
+                  <label className="space-y-1 text-sm block">
+                    <span className="text-muted-foreground">To</span>
+                    <Input type="datetime-local" value={customTo} onChange={(event) => setCustomTo(event.target.value)} />
+                  </label>
+                </div>
+              ) : null}
+              <Button variant="outline" onClick={() => generateMutation.mutate()} disabled={generateMutation.isPending}>
+                <RefreshCcw className="mr-2 h-4 w-4" />
+                {generateMutation.isPending ? "Generating..." : "Regenerate briefing"}
+              </Button>
+            </div>
+
+            <div className="space-y-3 rounded-xl border border-border/70 bg-background p-4">
+              <h3 className="text-sm font-semibold text-foreground">Schedule</h3>
+              {scheduleQuery.isLoading ? (
+                <p className="text-sm text-muted-foreground">Loading saved schedule configuration...</p>
+              ) : (
+                <>
+                  <label className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm">
+                    <input type="checkbox" checked={scheduleEnabled} onChange={(event) => setScheduleEnabled(event.target.checked)} className="h-4 w-4" />
+                    <span>Enable scheduled generation for this briefing template.</span>
+                  </label>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <label className="space-y-1 text-sm block">
+                      <span className="text-muted-foreground">Cadence</span>
+                      <select value={scheduleCadence} onChange={(event) => setScheduleCadence(event.target.value as "daily" | "weekly")} className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm">
+                        <option value="daily">Daily</option>
+                        <option value="weekly">Weekly</option>
+                      </select>
+                    </label>
+                    <label className="space-y-1 text-sm block">
+                      <span className="text-muted-foreground">Timezone</span>
+                      <Input value={scheduleTimezone} onChange={(event) => setScheduleTimezone(event.target.value)} />
+                    </label>
+                    <label className="space-y-1 text-sm block">
+                      <span className="text-muted-foreground">Hour</span>
+                      <Input type="number" min={0} max={23} value={scheduleHour} onChange={(event) => setScheduleHour(event.target.value)} />
+                    </label>
+                    <label className="space-y-1 text-sm block">
+                      <span className="text-muted-foreground">Minute</span>
+                      <Input type="number" min={0} max={59} value={scheduleMinute} onChange={(event) => setScheduleMinute(event.target.value)} />
+                    </label>
+                    {scheduleCadence === "weekly" ? (
+                      <label className="space-y-1 text-sm block">
+                        <span className="text-muted-foreground">Day of week</span>
+                        <select value={scheduleDayOfWeek} onChange={(event) => setScheduleDayOfWeek(event.target.value)} className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm">
+                          <option value="0">Sunday</option>
+                          <option value="1">Monday</option>
+                          <option value="2">Tuesday</option>
+                          <option value="3">Wednesday</option>
+                          <option value="4">Thursday</option>
+                          <option value="5">Friday</option>
+                          <option value="6">Saturday</option>
+                        </select>
+                      </label>
+                    ) : null}
+                    <label className="space-y-1 text-sm block">
+                      <span className="text-muted-foreground">Window preset</span>
+                      <select value={scheduleWindowPreset} onChange={(event) => setScheduleWindowPreset(event.target.value as GenerateWindowPreset)} className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm">
+                        <option value="last_visit">Since last run</option>
+                        <option value="24h">Last 24 hours</option>
+                        <option value="7d">Last 7 days</option>
+                        <option value="custom" disabled>Custom range</option>
+                      </select>
+                    </label>
+                  </div>
+                  <label className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm">
+                    <input type="checkbox" checked={scheduleAutoPublish} onChange={(event) => setScheduleAutoPublish(event.target.checked)} className="h-4 w-4" />
+                    <span>Automatically publish generated briefing instances.</span>
+                  </label>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button variant="outline" onClick={() => scheduleMutation.mutate()} disabled={scheduleMutation.isPending}>
+                      {scheduleMutation.isPending ? "Saving..." : "Save schedule"}
+                    </Button>
+                    {scheduleQuery.data ? (
+                      <Button variant="ghost" onClick={() => deleteScheduleMutation.mutate()} disabled={deleteScheduleMutation.isPending}>
+                        {deleteScheduleMutation.isPending ? "Removing..." : "Delete schedule"}
+                      </Button>
+                    ) : null}
+                  </div>
+                  {scheduleQuery.data ? (
+                    <div className="grid gap-2 text-xs text-muted-foreground md:grid-cols-2">
+                      <div>Last run: {scheduleQuery.data.lastRunAt ? formatDateTime(scheduleQuery.data.lastRunAt) : "Never"}</div>
+                      <div>Next run: {scheduleQuery.data.nextRunAt ? formatDateTime(scheduleQuery.data.nextRunAt) : "Not scheduled"}</div>
+                    </div>
+                  ) : null}
+                </>
+              )}
+            </div>
+          </div>
+        </section>
+      ) : null}
 
       <section className="rounded-2xl border border-border bg-card p-4 space-y-4">
         <div className="flex items-center justify-between gap-3">
