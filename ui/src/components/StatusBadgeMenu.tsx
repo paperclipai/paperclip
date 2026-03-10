@@ -1,5 +1,6 @@
 import { useQueryClient, useMutation } from "@tanstack/react-query";
 import { Pause, Play, Trash2 } from "lucide-react";
+import { AGENT_ACTIONABLE_STATUSES } from "@paperclipai/shared";
 import { agentsApi } from "../api/agents";
 import { useToast } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -11,14 +12,6 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
-
-type ActionableStatus = "active" | "idle" | "running" | "paused" | "error";
-
-const ACTIONABLE_STATUSES = new Set<string>(["active", "idle", "running", "paused", "error"]);
-
-function isActionable(status: string): status is ActionableStatus {
-  return ACTIONABLE_STATUSES.has(status);
-}
 
 interface StatusBadgeMenuProps {
   agentId: string;
@@ -60,7 +53,7 @@ export function StatusBadgeMenu({ agentId, status, companyId }: StatusBadgeMenuP
 
   const busy = pauseMut.isPending || resumeMut.isPending || terminateMut.isPending;
 
-  if (!isActionable(status)) {
+  if (!AGENT_ACTIONABLE_STATUSES.has(status as any)) {
     return <StatusBadge status={status} />;
   }
 
