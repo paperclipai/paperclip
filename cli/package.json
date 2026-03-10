@@ -1,6 +1,6 @@
 {
   "name": "paperclipai",
-  "version": "0.2.7",
+  "version": "0.3.0",
   "description": "Paperclip CLI — orchestrate AI agent teams to run a business",
   "type": "module",
   "bin": {
@@ -47,6 +47,7 @@
     "drizzle-orm": "0.38.4",
     "dotenv": "^17.0.1",
     "commander": "^13.1.0",
+    "embedded-postgres": "^18.1.0-beta.16",
     "picocolors": "^1.1.1"
   },
   "devDependencies": {

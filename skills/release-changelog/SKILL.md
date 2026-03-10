@@ -1,363 +1,178 @@
 ---
 name: release-changelog
 description: >
-  Generate user-facing release changelogs for Paperclip. Reads git history,
-  merged PRs, and changeset files since the last release tag. Detects breaking
-  changes, categorizes changes, and outputs structured markdown to
-  releases/v{version}.md. Use when preparing a release or when asked to
-  generate a changelog.
+  Generate the stable Paperclip release changelog at releases/v{version}.md by
+  reading commits, changesets, and merged PR context since the last stable tag.
 ---
 
 # Release Changelog Skill
 
-Generate a user-facing changelog for a new Paperclip release. This skill reads
-the commit history, changeset files, and merged PRs since the last release tag,
-detects breaking changes, categorizes everything, and writes a structured
-release notes file.
+Generate the user-facing changelog for the **stable** Paperclip release.
 
-**Output:** `releases/v{version}.md` in the repo root.
-**Review required:** Always present the draft for human sign-off before
-finalizing. Never auto-publish.
+Output:
 
----
+- `releases/v{version}.md`
+
+Important rule:
+
+- even if there are canary releases such as `1.2.3-canary.0`, the changelog file stays `releases/v1.2.3.md`
 
 ## Step 0 — Idempotency Check
 
-Before generating anything, check if a changelog already exists for this version:
+Before generating anything, check whether the file already exists:
 
 ```bash
 ls releases/v{version}.md 2>/dev/null
 ```
 
-**If the file already exists:**
+If it exists:
 
-1. Read the existing changelog and present it to the reviewer.
-2. Ask: "A changelog for v{version} already exists. Do you want to (a) keep it
-   as-is, (b) regenerate from scratch, or (c) update specific sections?"
-3. If the reviewer says keep it → **stop here**. Do not overwrite. This skill is
-   done.
-4. If the reviewer says regenerate → back up the existing file to
-   `releases/v{version}.md.prev`, then proceed from Step 1.
-5. If the reviewer says update → read the existing file, proceed through Steps
-   1-4 to gather fresh data, then merge changes into the existing file rather
-   than replacing it wholesale. Preserve any manual edits the reviewer previously
-   made.
+1. read it first
+2. present it to the reviewer
+3. ask whether to keep it, regenerate it, or update specific sections
+4. never overwrite it silently
 
-**If the file does not exist:** Proceed normally from Step 1.
+## Step 1 — Determine the Stable Range
 
-**Critical rule:** This skill NEVER triggers a version bump. It only reads git
-history and writes a markdown file. The `release.sh` script is the only thing
-that bumps versions, and it is called separately by the `release` coordination
-skill. Running this skill multiple times is always safe — worst case it
-overwrites a draft changelog (with reviewer permission).
-
----
-
-## Step 1 — Determine the Release Range
-
-Find the last release tag and the planned version:
+Find the last stable tag:
 
 ```bash
-# Last release tag (most recent semver tag)
-git tag --sort=-version:refname | head -1
-# e.g. v0.2.7
-
-# All commits since that tag
-git log v0.2.7..HEAD --oneline --no-merges
+git tag --list 'v*' --sort=-version:refname | head -1
+git log v{last}..HEAD --oneline --no-merges
 ```
 
-If no tag exists yet, use the initial commit as the base.
+The planned stable version comes from one of:
 
-The new version number comes from one of:
-- An explicit argument (e.g. "generate changelog for v0.3.0")
-- The bump type (patch/minor/major) applied to the last tag
-- The version already set in `cli/package.json` if `scripts/release.sh` has been run
+- an explicit maintainer request
+- the chosen bump type applied to the last stable tag
+- the release plan already agreed in `doc/RELEASING.md`
 
----
+Do not derive the changelog version from a canary tag or prerelease suffix.
 
-## Step 2 — Gather Raw Change Data
+## Step 2 — Gather the Raw Inputs
 
-Collect changes from three sources, in priority order:
+Collect release data from:
 
-### 2a. Git Commits
+1. git commits since the last stable tag
+2. `.changeset/*.md` files
+3. merged PRs via `gh` when available
+
+Useful commands:
 
 ```bash
 git log v{last}..HEAD --oneline --no-merges
-git log v{last}..HEAD --format="%H %s" --no-merges   # full SHAs for file diffs
-```
-
-### 2b. Changeset Files
-
-Look for unconsumed changesets in `.changeset/`:
-
-```bash
+git log v{last}..HEAD --format="%H %s" --no-merges
 ls .changeset/*.md | grep -v README.md
-```
-
-Each changeset file has YAML frontmatter with package names and bump types
-(`patch`, `minor`, `major`), followed by a description. Parse these — the bump
-type is a strong categorization signal, and the description may contain
-user-facing summaries.
-
-### 2c. Merged PRs (when available)
-
-If GitHub access is available via `gh`:
-
-```bash
 gh pr list --state merged --search "merged:>={last-tag-date}" --json number,title,body,labels
 ```
 
-PR titles and bodies are often the best source of user-facing descriptions.
-Prefer PR descriptions over raw commit messages when both are available.
-
----
-
 ## Step 3 — Detect Breaking Changes
 
-Scan for breaking changes using these signals. **Any match flags the release as
-containing breaking changes**, which affects version bump requirements and
-changelog structure.
+Look for:
 
-### 3a. Migration Files
+- destructive migrations
+- removed or changed API fields/endpoints
+- renamed or removed config keys
+- `major` changesets
+- `BREAKING:` or `BREAKING CHANGE:` commit signals
 
-Check for new migration files since the last tag:
+Key commands:
 
 ```bash
 git diff --name-only v{last}..HEAD -- packages/db/src/migrations/
-```
-
-- **New migration files exist** = DB migration required in upgrade.
-- Inspect migration content: look for `DROP`, `ALTER ... DROP`, `RENAME` to
-  distinguish destructive vs. additive migrations.
-- Additive-only migrations (new tables, new nullable columns, new indexes) are
-  safe but should still be mentioned.
-- Destructive migrations (column drops, type changes, table drops) = breaking.
-
-### 3b. Schema Changes
-
-```bash
 git diff v{last}..HEAD -- packages/db/src/schema/
-```
-
-Look for:
-- Removed or renamed columns/tables
-- Changed column types
-- Removed default values or nullable constraints
-- These indicate breaking DB changes even if no explicit migration file exists
-
-### 3c. API Route Changes
-
-```bash
 git diff v{last}..HEAD -- server/src/routes/ server/src/api/
+git log v{last}..HEAD --format="%s" | rg -n 'BREAKING CHANGE|BREAKING:|^[a-z]+!:' || true
 ```
 
-Look for:
-- Removed endpoints
-- Changed request/response shapes (removed fields, type changes)
-- Changed authentication requirements
+If the requested bump is lower than the minimum required bump, flag that before the release proceeds.
 
-### 3d. Config Changes
+## Step 4 — Categorize for Users
 
-```bash
-git diff v{last}..HEAD -- cli/src/config/ packages/*/src/*config*
+Use these stable changelog sections:
+
+- `Breaking Changes`
+- `Highlights`
+- `Improvements`
+- `Fixes`
+- `Upgrade Guide` when needed
+
+Exclude purely internal refactors, CI changes, and docs-only work unless they materially affect users.
+
+Guidelines:
+
+- group related commits into one user-facing entry
+- write from the user perspective
+- keep highlights short and concrete
+- spell out upgrade actions for breaking changes
+
+### Inline PR and contributor attribution
+
+When a bullet item clearly maps to a merged pull request, add inline attribution at the
+end of the entry in this format:
+
+```
+- **Feature name** — Description. ([#123](https://github.com/paperclipai/paperclip/pull/123), @contributor1, @contributor2)
 ```
 
-Look for renamed, removed, or restructured configuration keys.
+Rules:
 
-### 3e. Changeset Severity
+- Only add a PR link when you can confidently trace the bullet to a specific merged PR.
+  Use merge commit messages (`Merge pull request #N from user/branch`) to map PRs.
+- List the contributor(s) who authored the PR. Use GitHub usernames, not real names or emails.
+- If multiple PRs contributed to a single bullet, list them all: `([#10](url), [#12](url), @user1, @user2)`.
+- If you cannot determine the PR number or contributor with confidence, omit the attribution
+  parenthetical — do not guess.
+- Core maintainer commits that don't have an external PR can omit the parenthetical.
 
-Any `.changeset/*.md` file with a `major` bump = explicitly flagged breaking.
+## Step 5 — Write the File
 
-### 3f. Commit Conventions
-
-Scan commit messages for:
-- `BREAKING:` or `BREAKING CHANGE:` prefix
-- `!` after the type in conventional commits (e.g. `feat!:`, `fix!:`)
-
-### Version Bump Rules
-
-| Condition | Minimum Bump |
-|---|---|
-| Destructive migration (DROP, RENAME) | `major` |
-| Removed API endpoints or fields | `major` |
-| Any `major` changeset or `BREAKING:` commit | `major` |
-| New (additive) migration | `minor` |
-| New features (`feat:` commits, `minor` changesets) | `minor` |
-| Bug fixes only | `patch` |
-
-If the planned bump is lower than the minimum required, **warn the reviewer**
-and recommend the correct bump level.
-
----
-
-## Step 4 — Categorize Changes
-
-Assign every meaningful change to one of these categories:
-
-| Category | What Goes Here | Shows in User Notes? |
-|---|---|---|
-| **Breaking Changes** | Anything requiring user action to upgrade | Yes (top, with warning) |
-| **Highlights** | New user-visible features, major behavioral changes | Yes (with 1-2 sentence descriptions) |
-| **Improvements** | Enhancements to existing features | Yes (bullet list) |
-| **Fixes** | Bug fixes | Yes (bullet list) |
-| **Internal** | Refactoring, deps, CI, tests, docs | No (dev changelog only) |
-
-### Categorization Heuristics
-
-Use these signals to auto-categorize. When signals conflict, prefer the
-higher-visibility category and flag for human review.
-
-| Signal | Category |
-|---|---|
-| Commit touches migration files, schema changes | Breaking Change (if destructive) |
-| Changeset marked `major` | Breaking Change |
-| Commit message has `BREAKING:` or `!:` | Breaking Change |
-| New UI components, new routes, new API endpoints | Highlight |
-| Commit message starts with `feat:` or `add:` | Highlight or Improvement |
-| Changeset marked `minor` | Highlight |
-| Commit message starts with `fix:` or `bug:` | Fix |
-| Changeset marked `patch` | Fix or Improvement |
-| Commit message starts with `chore:`, `refactor:`, `ci:`, `test:`, `docs:` | Internal |
-| PR has detailed body with user-facing description | Use PR body as the description |
-
-### Writing Good Descriptions
-
-- **Highlights** get 1-2 sentence descriptions explaining the user benefit.
-  Write from the user's perspective ("You can now..." not "Added a component that...").
-- **Improvements and Fixes** are concise bullet points.
-- **Breaking Changes** get detailed descriptions including what changed,
-  why, and what the user needs to do.
-- Group related commits into a single changelog entry. Five commits implementing
-  one feature = one Highlight entry, not five bullets.
-- Omit purely internal changes from user-facing notes entirely.
-
----
-
-## Step 5 — Write the Changelog
-
-Output the changelog to `releases/v{version}.md` using this template:
+Template:
 
 ```markdown
 # v{version}
 
 > Released: {YYYY-MM-DD}
 
-{If breaking changes detected, include this section:}
-
 ## Breaking Changes
-
-> **Action required before upgrading.** Read the Upgrade Guide below.
-
-- **{Breaking change title}** — {What changed and why. What the user needs to do.}
 
 ## Highlights
 
-- **{Feature name}** — {1-2 sentence description of what it does and why it matters.}
-
 ## Improvements
-
-- {Concise description of improvement}
 
 ## Fixes
 
-- {Concise description of fix}
-
----
-
-{If breaking changes detected, include this section:}
-
 ## Upgrade Guide
 
-### Before You Update
+## Contributors
 
-1. **Back up your database.**
-   - SQLite: `cp paperclip.db paperclip.db.backup`
-   - Postgres: `pg_dump -Fc paperclip > paperclip-pre-{version}.dump`
-2. **Note your current version:** `paperclip --version`
+Thank you to everyone who contributed to this release!
 
-### After Updating
-
-{Specific steps: run migrations, update configs, etc.}
-
-### Rolling Back
-
-If something goes wrong:
-1. Restore your database backup
-2. `npm install @paperclipai/server@{previous-version}`
+@username1, @username2, @username3
 ```
 
-### Template Rules
+Omit empty sections except `Highlights`, `Improvements`, and `Fixes`, which should usually exist.
 
-- Omit any empty section entirely (don't show "## Fixes" with no bullets).
-- The Breaking Changes section always comes first when present.
-- The Upgrade Guide always comes last when present.
-- Use `**bold**` for feature/change names, regular text for descriptions.
-- Keep the entire changelog scannable — a busy user should get the gist from
-  headings and bold text alone.
+The `Contributors` section should always be included. List every person who authored
+commits in the release range, @-mentioning them by their **GitHub username** (not their
+real name or email). To find GitHub usernames:
 
----
+1. Extract usernames from merge commit messages: `git log v{last}..HEAD --oneline --merges` — the branch prefix (e.g. `from username/branch`) gives the GitHub username.
+2. For noreply emails like `user@users.noreply.github.com`, the username is the part before `@`.
+3. For contributors whose username is ambiguous, check `gh api users/{guess}` or the PR page.
 
-## Step 6 — Present for Review
+**Never expose contributor email addresses.** Use `@username` only.
 
-After generating the draft:
+Exclude bot accounts (e.g. `lockfile-bot`, `dependabot`) from the list. List contributors
+in alphabetical order by GitHub username (case-insensitive).
 
-1. **Show the full changelog** to the reviewer (CTO or whoever triggered the release).
-2. **Flag ambiguous items** — commits you weren't sure how to categorize, or
-   items that might be breaking but aren't clearly signaled.
-3. **Flag version bump mismatches** — if the planned bump is lower than what
-   the changes warrant.
-4. **Wait for approval** before considering the changelog final.
+## Step 6 — Review Before Release
 
-If the reviewer requests edits, update `releases/v{version}.md` accordingly.
+Before handing it off:
 
-Do not proceed to publishing, website updates, or social announcements. Those
-are handled by the `release` coordination skill (separate from this one).
+1. confirm the heading is the stable version only
+2. confirm there is no `-canary` language in the title or filename
+3. confirm any breaking changes have an upgrade path
+4. present the draft for human sign-off
 
----
-
-## Directory Convention
-
-Release changelogs live in `releases/` at the repo root:
-
-```
-releases/
-  v0.2.7.md
-  v0.3.0.md
-  ...
-```
-
-Each file is named `v{version}.md` matching the git tag. This directory is
-committed to the repo and serves as the source of truth for release history.
-
-The `releases/` directory should be created with a `.gitkeep` if it doesn't
-exist yet.
-
----
-
-## Quick Reference
-
-```bash
-# Full workflow summary:
-
-# 1. Find last tag
-LAST_TAG=$(git tag --sort=-version:refname | head -1)
-
-# 2. Commits since last tag
-git log $LAST_TAG..HEAD --oneline --no-merges
-
-# 3. Files changed (for breaking change detection)
-git diff --name-only $LAST_TAG..HEAD
-
-# 4. Migration changes specifically
-git diff --name-only $LAST_TAG..HEAD -- packages/db/src/migrations/
-
-# 5. Schema changes
-git diff $LAST_TAG..HEAD -- packages/db/src/schema/
-
-# 6. Unconsumed changesets
-ls .changeset/*.md | grep -v README.md
-
-# 7. Merged PRs (if gh available)
-gh pr list --state merged --search "merged:>=$(git log -1 --format=%aI $LAST_TAG)" \
-  --json number,title,body,labels
-```
+This skill never publishes anything. It only prepares the stable changelog artifact.

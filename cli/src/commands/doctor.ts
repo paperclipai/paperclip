@@ -14,6 +14,7 @@ import {
   storageCheck,
   type CheckResult,
 } from "../checks/index.js";
+import { loadPaperclipEnvFile } from "../config/env.js";
 import { printPaperclipCliBanner } from "../utils/banner.js";
 
 const STATUS_ICON = {
@@ -31,6 +32,7 @@ export async function doctor(opts: {
   p.intro(pc.bgCyan(pc.black(" paperclip doctor ")));
 
   const configPath = resolveConfigPath(opts.config);
+  loadPaperclipEnvFile(configPath);
   const results: CheckResult[] = [];
 
   // 1. Config check (must pass before others)
@@ -64,28 +66,40 @@ export async function doctor(opts: {
   printResult(deploymentAuthResult);
 
   // 3. Agent JWT check
-  const jwtResult = agentJwtSecretCheck(opts.config);
-  results.push(jwtResult);
-  printResult(jwtResult);
-  await maybeRepair(jwtResult, opts);
+  results.push(
+    await runRepairableCheck({
+      run: () => agentJwtSecretCheck(opts.config),
+      configPath,
+      opts,
+    }),
+  );
 
   // 4. Secrets adapter check
-  const secretsResult = secretsCheck(config, configPath);
-  results.push(secretsResult);
-  printResult(secretsResult);
-  await maybeRepair(secretsResult, opts);
+  results.push(
+    await runRepairableCheck({
+      run: () => secretsCheck(config, configPath),
+      configPath,
+      opts,
+    }),
+  );
 
   // 5. Storage check
-  const storageResult = storageCheck(config, configPath);
-  results.push(storageResult);
-  printResult(storageResult);
-  await maybeRepair(storageResult, opts);
+  results.push(
+    await runRepairableCheck({
+      run: () => storageCheck(config, configPath),
+      configPath,
+      opts,
+    }),
+  );
 
   // 6. Database check
-  const dbResult = await databaseCheck(config, configPath);
-  results.push(dbResult);
-  printResult(dbResult);
-  await maybeRepair(dbResult, opts);
+  results.push(
+    await runRepairableCheck({
+      run: () => databaseCheck(config, configPath),
+      configPath,
+      opts,
+    }),
+  );
 
   // 7. LLM check
   const llmResult = await llmCheck(config);
@@ -93,10 +107,13 @@ export async function doctor(opts: {
   printResult(llmResult);
 
   // 8. Log directory check
-  const logResult = logCheck(config, configPath);
-  results.push(logResult);
-  printResult(logResult);
-  await maybeRepair(logResult, opts);
+  results.push(
+    await runRepairableCheck({
+      run: () => logCheck(config, configPath),
+      configPath,
+      opts,
+    }),
+  );
 
   // 9. Port check
   const portResult = await portCheck(config);
@@ -118,9 +135,9 @@ function printResult(result: CheckResult): void {
 async function maybeRepair(
   result: CheckResult,
   opts: { repair?: boolean; yes?: boolean },
-): Promise<void> {
-  if (result.status === "pass" || !result.canRepair || !result.repair) return;
-  if (!opts.repair) return;
+): Promise<boolean> {
+  if (result.status === "pass" || !result.canRepair || !result.repair) return false;
+  if (!opts.repair) return false;
 
   let shouldRepair = opts.yes;
   if (!shouldRepair) {
@@ -128,7 +145,7 @@ async function maybeRepair(
       message: `Repair "${result.name}"?`,
       initialValue: true,
     });
-    if (p.isCancel(answer)) return;
+    if (p.isCancel(answer)) return false;
     shouldRepair = answer;
   }
 
@@ -136,10 +153,30 @@ async function maybeRepair(
     try {
       await result.repair();
       p.log.success(`Repaired: ${result.name}`);
+      return true;
     } catch (err) {
       p.log.error(`Repair failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+  return false;
+}
+
+async function runRepairableCheck(input: {
+  run: () => CheckResult | Promise<CheckResult>;
+  configPath: string;
+  opts: { repair?: boolean; yes?: boolean };
+}): Promise<CheckResult> {
+  let result = await input.run();
+  printResult(result);
+
+  const repaired = await maybeRepair(result, input.opts);
+  if (!repaired) return result;
+
+  // Repairs may create/update the adjacent .env file or other local resources.
+  loadPaperclipEnvFile(input.configPath);
+  result = await input.run();
+  printResult(result);
+  return result;
 }
 
 function printSummary(results: CheckResult[]): { passed: number; warned: number; failed: number } {

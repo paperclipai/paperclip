@@ -124,6 +124,50 @@ When a local agent run has no resolved project/session workspace, Paperclip fall
 
 This path honors `PAPERCLIP_HOME` and `PAPERCLIP_INSTANCE_ID` in non-default setups.
 
+## Worktree-local Instances
+
+When developing from multiple git worktrees, do not point two Paperclip servers at the same embedded PostgreSQL data directory.
+
+Instead, create a repo-local Paperclip config plus an isolated instance for the worktree:
+
+```sh
+paperclipai worktree init
+```
+
+This command:
+
+- writes repo-local files at `.paperclip/config.json` and `.paperclip/.env`
+- creates an isolated instance under `~/.paperclip-worktrees/instances/<worktree-id>/`
+- picks a free app port and embedded PostgreSQL port
+- by default seeds the isolated DB in `minimal` mode from your main instance via a logical SQL snapshot
+
+Seed modes:
+
+- `minimal` keeps core app state like companies, projects, issues, comments, approvals, and auth state, preserves schema for all tables, but omits row data from heavy operational history such as heartbeat runs, wake requests, activity logs, runtime services, and agent session state
+- `full` makes a full logical clone of the source instance
+- `--no-seed` creates an empty isolated instance
+
+After `worktree init`, both the server and the CLI auto-load the repo-local `.paperclip/.env` when run inside that worktree, so normal commands like `pnpm dev`, `paperclipai doctor`, and `paperclipai db:backup` stay scoped to the worktree instance.
+
+Print shell exports explicitly when needed:
+
+```sh
+paperclipai worktree env
+# or:
+eval "$(paperclipai worktree env)"
+```
+
+Useful options:
+
+```sh
+paperclipai worktree init --no-seed
+paperclipai worktree init --seed-mode minimal
+paperclipai worktree init --seed-mode full
+paperclipai worktree init --from-instance default
+paperclipai worktree init --from-data-dir ~/.paperclip
+paperclipai worktree init --force
+```
+
 ## Quick Health Checks
 
 In another terminal:
