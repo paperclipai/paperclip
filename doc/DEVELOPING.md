@@ -168,6 +168,8 @@ paperclipai worktree init --from-data-dir ~/.paperclip
 paperclipai worktree init --force
 ```
 
+For project execution worktrees, Paperclip can also run a project-defined provision command after it creates or reuses an isolated git worktree. Configure this on the project's execution workspace policy (`workspaceStrategy.provisionCommand`). The command runs inside the derived worktree and receives `PAPERCLIP_WORKSPACE_*`, `PAPERCLIP_PROJECT_ID`, `PAPERCLIP_AGENT_ID`, and `PAPERCLIP_ISSUE_*` environment variables so each repo can bootstrap itself however it wants.
+
 ## Quick Health Checks
 
 In another terminal:

@@ -44,6 +44,8 @@ import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySel
 
 const DRAFT_KEY = "paperclip:issue-draft";
 const DEBOUNCE_MS = 800;
+// TODO(issue-worktree-support): re-enable this UI once the workflow is ready to ship.
+const SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI = false;
 
 /** Return black or white hex based on background luminance (WCAG perceptual weights). */
 function getContrastTextColor(hexColor: string): string {
@@ -65,7 +67,7 @@ interface IssueDraft {
   assigneeModelOverride: string;
   assigneeThinkingEffort: string;
   assigneeChrome: boolean;
-  assigneeUseProjectWorkspace: boolean;
+  useIsolatedExecutionWorkspace: boolean;
 }
 
 const ISSUE_OVERRIDE_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "opencode_local"]);
@@ -99,7 +101,6 @@ function buildAssigneeAdapterOverrides(input: {
   modelOverride: string;
   thinkingEffortOverride: string;
   chrome: boolean;
-  useProjectWorkspace: boolean;
 }): Record<string, unknown> | null {
   const adapterType = input.adapterType ?? null;
   if (!adapterType || !ISSUE_OVERRIDE_ADAPTER_TYPES.has(adapterType)) {
@@ -126,9 +127,6 @@ function buildAssigneeAdapterOverrides(input: {
   const overrides: Record<string, unknown> = {};
   if (Object.keys(adapterConfig).length > 0) {
     overrides.adapterConfig = adapterConfig;
-  }
-  if (!input.useProjectWorkspace) {
-    overrides.useProjectWorkspace = false;
   }
   return Object.keys(overrides).length > 0 ? overrides : null;
 }
@@ -180,10 +178,11 @@ export function NewIssueDialog() {
   const [assigneeModelOverride, setAssigneeModelOverride] = useState("");
   const [assigneeThinkingEffort, setAssigneeThinkingEffort] = useState("");
   const [assigneeChrome, setAssigneeChrome] = useState(false);
-  const [assigneeUseProjectWorkspace, setAssigneeUseProjectWorkspace] = useState(true);
+  const [useIsolatedExecutionWorkspace, setUseIsolatedExecutionWorkspace] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [dialogCompanyId, setDialogCompanyId] = useState<string | null>(null);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const executionWorkspaceDefaultProjectId = useRef<string | null>(null);
 
   const effectiveCompanyId = dialogCompanyId ?? selectedCompanyId;
   const dialogCompany = companies.find((c) => c.id === effectiveCompanyId) ?? selectedCompany;
@@ -300,7 +299,7 @@ export function NewIssueDialog() {
       assigneeModelOverride,
       assigneeThinkingEffort,
       assigneeChrome,
-      assigneeUseProjectWorkspace,
+      useIsolatedExecutionWorkspace,
     });
   }, [
     title,
@@ -312,7 +311,7 @@ export function NewIssueDialog() {
     assigneeModelOverride,
     assigneeThinkingEffort,
     assigneeChrome,
-    assigneeUseProjectWorkspace,
+    useIsolatedExecutionWorkspace,
     newIssueOpen,
     scheduleSave,
   ]);
@@ -321,6 +320,7 @@ export function NewIssueDialog() {
   useEffect(() => {
     if (!newIssueOpen) return;
     setDialogCompanyId(selectedCompanyId);
+    executionWorkspaceDefaultProjectId.current = null;
 
     const draft = loadDraft();
     if (newIssueDefaults.title) {
@@ -333,7 +333,7 @@ export function NewIssueDialog() {
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
-      setAssigneeUseProjectWorkspace(true);
+      setUseIsolatedExecutionWorkspace(false);
     } else if (draft && draft.title.trim()) {
       setTitle(draft.title);
       setDescription(draft.description);
@@ -344,7 +344,7 @@ export function NewIssueDialog() {
       setAssigneeModelOverride(draft.assigneeModelOverride ?? "");
       setAssigneeThinkingEffort(draft.assigneeThinkingEffort ?? "");
       setAssigneeChrome(draft.assigneeChrome ?? false);
-      setAssigneeUseProjectWorkspace(draft.assigneeUseProjectWorkspace ?? true);
+      setUseIsolatedExecutionWorkspace(draft.useIsolatedExecutionWorkspace ?? false);
     } else {
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
@@ -353,7 +353,7 @@ export function NewIssueDialog() {
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
-      setAssigneeUseProjectWorkspace(true);
+      setUseIsolatedExecutionWorkspace(false);
     }
   }, [newIssueOpen, newIssueDefaults]);
 
@@ -363,7 +363,6 @@ export function NewIssueDialog() {
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
-      setAssigneeUseProjectWorkspace(true);
       return;
     }
 
@@ -396,10 +395,11 @@ export function NewIssueDialog() {
     setAssigneeModelOverride("");
     setAssigneeThinkingEffort("");
     setAssigneeChrome(false);
-    setAssigneeUseProjectWorkspace(true);
+    setUseIsolatedExecutionWorkspace(false);
     setExpanded(false);
     setDialogCompanyId(null);
     setCompanyOpen(false);
+    executionWorkspaceDefaultProjectId.current = null;
   }
 
   function handleCompanyChange(companyId: string) {
@@ -410,7 +410,7 @@ export function NewIssueDialog() {
     setAssigneeModelOverride("");
     setAssigneeThinkingEffort("");
     setAssigneeChrome(false);
-    setAssigneeUseProjectWorkspace(true);
+    setUseIsolatedExecutionWorkspace(false);
   }
 
   function discardDraft() {
@@ -426,8 +426,16 @@ export function NewIssueDialog() {
       modelOverride: assigneeModelOverride,
       thinkingEffortOverride: assigneeThinkingEffort,
       chrome: assigneeChrome,
-      useProjectWorkspace: assigneeUseProjectWorkspace,
     });
+    const selectedProject = orderedProjects.find((project) => project.id === projectId);
+    const executionWorkspacePolicy = SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI
+      ? selectedProject?.executionWorkspacePolicy
+      : null;
+    const executionWorkspaceSettings = executionWorkspacePolicy?.enabled
+      ? {
+          mode: useIsolatedExecutionWorkspace ? "isolated" : "project_primary",
+        }
+      : null;
     createIssue.mutate({
       companyId: effectiveCompanyId,
       title: title.trim(),
@@ -437,6 +445,7 @@ export function NewIssueDialog() {
       ...(assigneeId ? { assigneeAgentId: assigneeId } : {}),
       ...(projectId ? { projectId } : {}),
       ...(assigneeAdapterOverrides ? { assigneeAdapterOverrides } : {}),
+      ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
     });
   }
 
@@ -467,6 +476,10 @@ export function NewIssueDialog() {
   const currentPriority = priorities.find((p) => p.value === priority);
   const currentAssignee = (agents ?? []).find((a) => a.id === assigneeId);
   const currentProject = orderedProjects.find((project) => project.id === projectId);
+  const currentProjectExecutionWorkspacePolicy = SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI
+    ? currentProject?.executionWorkspacePolicy ?? null
+    : null;
+  const currentProjectSupportsExecutionWorkspace = Boolean(currentProjectExecutionWorkspacePolicy?.enabled);
   const assigneeOptionsTitle =
     assigneeAdapterType === "claude_local"
       ? "Claude options"
@@ -503,6 +516,30 @@ export function NewIssueDialog() {
       })),
     [orderedProjects],
   );
+
+  const handleProjectChange = useCallback((nextProjectId: string) => {
+    setProjectId(nextProjectId);
+    const nextProject = orderedProjects.find((project) => project.id === nextProjectId);
+    const policy = SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI ? nextProject?.executionWorkspacePolicy : null;
+    executionWorkspaceDefaultProjectId.current = nextProjectId || null;
+    setUseIsolatedExecutionWorkspace(Boolean(policy?.enabled && policy.defaultMode === "isolated"));
+  }, [orderedProjects]);
+
+  useEffect(() => {
+    if (!newIssueOpen || !projectId || executionWorkspaceDefaultProjectId.current === projectId) {
+      return;
+    }
+    const project = orderedProjects.find((entry) => entry.id === projectId);
+    if (!project) return;
+    executionWorkspaceDefaultProjectId.current = projectId;
+    setUseIsolatedExecutionWorkspace(
+      Boolean(
+        SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI &&
+        project.executionWorkspacePolicy?.enabled &&
+        project.executionWorkspacePolicy.defaultMode === "isolated",
+      ),
+    );
+  }, [newIssueOpen, orderedProjects, projectId]);
   const modelOverrideOptions = useMemo<InlineEntityOption[]>(
     () => {
       return [...(assigneeAdapterModels ?? [])]
@@ -705,7 +742,7 @@ export function NewIssueDialog() {
                 noneLabel="No project"
                 searchPlaceholder="Search projects..."
                 emptyMessage="No projects found."
-                onChange={setProjectId}
+                onChange={handleProjectChange}
                 onConfirm={() => {
                   descriptionEditorRef.current?.focus();
                 }}
@@ -739,6 +776,34 @@ export function NewIssueDialog() {
             </div>
           </div>
         </div>
+
+        {currentProjectSupportsExecutionWorkspace && (
+          <div className="px-4 pb-2 shrink-0">
+            <div className="flex items-center justify-between rounded-md border border-border px-3 py-2">
+              <div className="space-y-0.5">
+                <div className="text-xs font-medium">Use isolated issue checkout</div>
+                <div className="text-[11px] text-muted-foreground">
+                  Create an issue-specific execution workspace instead of using the project's primary checkout.
+                </div>
+              </div>
+              <button
+                className={cn(
+                  "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
+                  useIsolatedExecutionWorkspace ? "bg-green-600" : "bg-muted",
+                )}
+                onClick={() => setUseIsolatedExecutionWorkspace((value) => !value)}
+                type="button"
+              >
+                <span
+                  className={cn(
+                    "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
+                    useIsolatedExecutionWorkspace ? "translate-x-4.5" : "translate-x-0.5",
+                  )}
+                />
+              </button>
+            </div>
+          </div>
+        )}
 
         {supportsAssigneeOverrides && (
           <div className="px-4 pb-2 shrink-0">
@@ -800,23 +865,6 @@ export function NewIssueDialog() {
                     </button>
                   </div>
                 )}
-                <div className="flex items-center justify-between rounded-md border border-border px-2 py-1.5">
-                  <div className="text-xs text-muted-foreground">Use project workspace</div>
-                  <button
-                    className={cn(
-                      "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-                      assigneeUseProjectWorkspace ? "bg-green-600" : "bg-muted"
-                    )}
-                    onClick={() => setAssigneeUseProjectWorkspace((value) => !value)}
-                  >
-                    <span
-                      className={cn(
-                        "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-                        assigneeUseProjectWorkspace ? "translate-x-4.5" : "translate-x-0.5"
-                      )}
-                    />
-                  </button>
-                </div>
               </div>
             )}
           </div>

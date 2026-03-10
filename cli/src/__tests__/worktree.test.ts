@@ -175,27 +175,27 @@ describe("worktree helpers", () => {
   it("rebinds same-repo workspace paths onto the current worktree root", () => {
     expect(
       rebindWorkspaceCwd({
-        sourceRepoRoot: "/Users/nmurray/paperclip",
-        targetRepoRoot: "/Users/nmurray/paperclip-pr-432",
-        workspaceCwd: "/Users/nmurray/paperclip",
+        sourceRepoRoot: "/Users/example/paperclip",
+        targetRepoRoot: "/Users/example/paperclip-pr-432",
+        workspaceCwd: "/Users/example/paperclip",
       }),
-    ).toBe("/Users/nmurray/paperclip-pr-432");
+    ).toBe("/Users/example/paperclip-pr-432");
 
     expect(
       rebindWorkspaceCwd({
-        sourceRepoRoot: "/Users/nmurray/paperclip",
-        targetRepoRoot: "/Users/nmurray/paperclip-pr-432",
-        workspaceCwd: "/Users/nmurray/paperclip/packages/db",
+        sourceRepoRoot: "/Users/example/paperclip",
+        targetRepoRoot: "/Users/example/paperclip-pr-432",
+        workspaceCwd: "/Users/example/paperclip/packages/db",
       }),
-    ).toBe("/Users/nmurray/paperclip-pr-432/packages/db");
+    ).toBe("/Users/example/paperclip-pr-432/packages/db");
   });
 
   it("does not rebind paths outside the source repo root", () => {
     expect(
       rebindWorkspaceCwd({
-        sourceRepoRoot: "/Users/nmurray/paperclip",
-        targetRepoRoot: "/Users/nmurray/paperclip-pr-432",
-        workspaceCwd: "/Users/nmurray/other-project",
+        sourceRepoRoot: "/Users/example/paperclip",
+        targetRepoRoot: "/Users/example/paperclip-pr-432",
+        workspaceCwd: "/Users/example/other-project",
       }),
     ).toBeNull();
   });

@@ -12,6 +12,14 @@ export type {
 export type { AssetImage } from "./asset.js";
 export type { Project, ProjectGoalRef, ProjectWorkspace } from "./project.js";
 export type {
+  WorkspaceRuntimeService,
+  ExecutionWorkspaceStrategyType,
+  ExecutionWorkspaceMode,
+  ExecutionWorkspaceStrategy,
+  ProjectExecutionWorkspacePolicy,
+  IssueExecutionWorkspaceSettings,
+} from "./workspace-runtime.js";
+export type {
   Issue,
   IssueAssigneeAdapterOverrides,
   IssueComment,

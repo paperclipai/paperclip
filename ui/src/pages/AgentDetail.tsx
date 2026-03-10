@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
-import { useParams, useNavigate, Link, useBeforeUnload } from "@/lib/router";
+import { useParams, useNavigate, Link, Navigate, useBeforeUnload } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { agentsApi, type AgentKey, type ClaudeLoginResult } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
@@ -14,6 +14,7 @@ import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { AgentConfigForm } from "../components/AgentConfigForm";
+import { PageTabBar } from "../components/PageTabBar";
 import { adapterLabels, roleLabels } from "../components/agent-config-primitives";
 import { getUIAdapter, buildTranscript } from "../adapters";
 import type { TranscriptEntry } from "../adapters";
@@ -28,6 +29,7 @@ import { ScrollToBottom } from "../components/ScrollToBottom";
 import { formatCents, formatDate, relativeTime, formatTokens } from "../lib/utils";
 import { cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
+import { Tabs } from "@/components/ui/tabs";
 import {
   Popover,
   PopoverContent,
@@ -53,7 +55,6 @@ import {
   ChevronRight,
   ChevronDown,
   ArrowLeft,
-  Settings,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
@@ -173,12 +174,12 @@ function scrollToContainerBottom(container: ScrollContainer, behavior: ScrollBeh
   container.scrollTo({ top: container.scrollHeight, behavior });
 }
 
-type AgentDetailView = "overview" | "configure" | "runs";
+type AgentDetailView = "dashboard" | "configuration" | "runs";
 
 function parseAgentDetailView(value: string | null): AgentDetailView {
-  if (value === "configure" || value === "configuration") return "configure";
+  if (value === "configure" || value === "configuration") return "configuration";
   if (value === "runs") return value;
-  return "overview";
+  return "dashboard";
 }
 
 function usageNumber(usage: Record<string, unknown> | null, ...keys: string[]) {
@@ -304,17 +305,18 @@ export function AgentDetail() {
 
   useEffect(() => {
     if (!agent) return;
-    if (routeAgentRef === canonicalAgentRef) return;
     if (urlRunId) {
-      navigate(`/agents/${canonicalAgentRef}/runs/${urlRunId}`, { replace: true });
+      if (routeAgentRef !== canonicalAgentRef) {
+        navigate(`/agents/${canonicalAgentRef}/runs/${urlRunId}`, { replace: true });
+      }
       return;
     }
-    if (urlTab) {
-      navigate(`/agents/${canonicalAgentRef}/${urlTab}`, { replace: true });
+    const canonicalTab = activeView === "configuration" ? "configuration" : "dashboard";
+    if (routeAgentRef !== canonicalAgentRef || urlTab !== canonicalTab) {
+      navigate(`/agents/${canonicalAgentRef}/${canonicalTab}`, { replace: true });
       return;
     }
-    navigate(`/agents/${canonicalAgentRef}`, { replace: true });
-  }, [agent, routeAgentRef, canonicalAgentRef, urlRunId, urlTab, navigate]);
+  }, [agent, routeAgentRef, canonicalAgentRef, urlRunId, urlTab, activeView, navigate]);
 
   useEffect(() => {
     if (!agent?.companyId || agent.companyId === selectedCompanyId) return;
@@ -397,17 +399,19 @@ export function AgentDetail() {
       { label: "Agents", href: "/agents" },
     ];
     const agentName = agent?.name ?? routeAgentRef ?? "Agent";
-    if (activeView === "overview" && !urlRunId) {
+    if (activeView === "dashboard" && !urlRunId) {
       crumbs.push({ label: agentName });
     } else {
-      crumbs.push({ label: agentName, href: `/agents/${canonicalAgentRef}` });
+      crumbs.push({ label: agentName, href: `/agents/${canonicalAgentRef}/dashboard` });
       if (urlRunId) {
         crumbs.push({ label: "Runs", href: `/agents/${canonicalAgentRef}/runs` });
         crumbs.push({ label: `Run ${urlRunId.slice(0, 8)}` });
-      } else if (activeView === "configure") {
-        crumbs.push({ label: "Configure" });
+      } else if (activeView === "configuration") {
+        crumbs.push({ label: "Configuration" });
       } else if (activeView === "runs") {
         crumbs.push({ label: "Runs" });
+      } else {
+        crumbs.push({ label: "Dashboard" });
       }
     }
     setBreadcrumbs(crumbs);
@@ -416,7 +420,7 @@ export function AgentDetail() {
   useEffect(() => {
     closePanel();
     return () => closePanel();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [closePanel]);
 
   useBeforeUnload(
     useCallback((event) => {
@@ -429,8 +433,11 @@ export function AgentDetail() {
   if (isLoading) return <PageSkeleton variant="detail" />;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
   if (!agent) return null;
+  if (!urlRunId && !urlTab) {
+    return <Navigate to={`/agents/${canonicalAgentRef}/dashboard`} replace />;
+  }
   const isPendingApproval = agent.status === "pending_approval";
-  const showConfigActionBar = activeView === "configure" && configDirty;
+  const showConfigActionBar = activeView === "configuration" && configDirty;
 
   return (
     <div className={cn("space-y-6", isMobile && showConfigActionBar && "pb-24")}>
@@ -517,16 +524,6 @@ export function AgentDetail() {
               <button
                 className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
                 onClick={() => {
-                  navigate(`/agents/${canonicalAgentRef}/configure`);
-                  setMoreOpen(false);
-                }}
-              >
-                <Settings className="h-3 w-3" />
-                Configure Agent
-              </button>
-              <button
-                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
-                onClick={() => {
                   navigator.clipboard.writeText(agent.id);
                   setMoreOpen(false);
                 }}
@@ -558,6 +555,22 @@ export function AgentDetail() {
           </Popover>
         </div>
       </div>
+
+      {!urlRunId && (
+        <Tabs
+          value={activeView === "configuration" ? "configuration" : "dashboard"}
+          onValueChange={(value) => navigate(`/agents/${canonicalAgentRef}/${value}`)}
+        >
+          <PageTabBar
+            items={[
+              { value: "dashboard", label: "Dashboard" },
+              { value: "configuration", label: "Configuration" },
+            ]}
+            value={activeView === "configuration" ? "configuration" : "dashboard"}
+            onValueChange={(value) => navigate(`/agents/${canonicalAgentRef}/${value}`)}
+          />
+        </Tabs>
+      )}
 
       {actionError && <p className="text-sm text-destructive">{actionError}</p>}
       {isPendingApproval && (
@@ -623,20 +636,18 @@ export function AgentDetail() {
       )}
 
       {/* View content */}
-      {activeView === "overview" && (
+      {activeView === "dashboard" && (
         <AgentOverview
           agent={agent}
           runs={heartbeats ?? []}
           assignedIssues={assignedIssues}
           runtimeState={runtimeState}
-          reportsToAgent={reportsToAgent ?? null}
-          directReports={directReports}
           agentId={agent.id}
           agentRouteId={canonicalAgentRef}
         />
       )}
 
-      {activeView === "configure" && (
+      {activeView === "configuration" && (
         <AgentConfigurePage
           agent={agent}
           agentId={agent.id}
@@ -750,8 +761,6 @@ function AgentOverview({
   runs,
   assignedIssues,
   runtimeState,
-  reportsToAgent,
-  directReports,
   agentId,
   agentRouteId,
 }: {
@@ -759,8 +768,6 @@ function AgentOverview({
   runs: HeartbeatRun[];
   assignedIssues: { id: string; title: string; status: string; priority: string; identifier?: string | null; createdAt: Date }[];
   runtimeState?: AgentRuntimeState;
-  reportsToAgent: Agent | null;
-  directReports: Agent[];
   agentId: string;
   agentRouteId: string;
 }) {
@@ -819,131 +826,6 @@ function AgentOverview({
       <div className="space-y-3">
         <h3 className="text-sm font-medium">Costs</h3>
         <CostsSection runtimeState={runtimeState} runs={runs} />
-      </div>
-
-      {/* Configuration Summary */}
-      <ConfigSummary
-        agent={agent}
-        agentRouteId={agentRouteId}
-        reportsToAgent={reportsToAgent}
-        directReports={directReports}
-      />
-    </div>
-  );
-}
-
-/* Chart components imported from ../components/ActivityCharts */
-
-/* ---- Configuration Summary ---- */
-
-function ConfigSummary({
-  agent,
-  agentRouteId,
-  reportsToAgent,
-  directReports,
-}: {
-  agent: Agent;
-  agentRouteId: string;
-  reportsToAgent: Agent | null;
-  directReports: Agent[];
-}) {
-  const config = agent.adapterConfig as Record<string, unknown>;
-  const promptText = typeof config?.promptTemplate === "string" ? config.promptTemplate : "";
-
-  return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <h3 className="text-sm font-medium">Configuration</h3>
-        <Link
-          to={`/agents/${agentRouteId}/configure`}
-          className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors no-underline"
-        >
-          <Settings className="h-3 w-3" />
-          Manage &rarr;
-        </Link>
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="border border-border rounded-lg p-4 space-y-3">
-          <h4 className="text-xs text-muted-foreground font-medium">Agent Details</h4>
-          <div className="space-y-2 text-sm">
-            <SummaryRow label="Adapter">
-              <span className="font-mono">{adapterLabels[agent.adapterType] ?? agent.adapterType}</span>
-              {String(config?.model ?? "") !== "" && (
-                <span className="text-muted-foreground ml-1">
-                  ({String(config.model)})
-                </span>
-              )}
-            </SummaryRow>
-            <SummaryRow label="Heartbeat">
-              {(agent.runtimeConfig as Record<string, unknown>)?.heartbeat
-                ? (() => {
-                    const hb = (agent.runtimeConfig as Record<string, unknown>).heartbeat as Record<string, unknown>;
-                    if (!hb.enabled) return <span className="text-muted-foreground">Disabled</span>;
-                    const sec = Number(hb.intervalSec) || 300;
-                    const maxConcurrentRuns = Math.max(1, Math.floor(Number(hb.maxConcurrentRuns) || 1));
-                    const intervalLabel = sec >= 60 ? `${Math.round(sec / 60)} min` : `${sec}s`;
-                    return (
-                      <span>
-                        Every {intervalLabel}
-                        {maxConcurrentRuns > 1 ? ` (max ${maxConcurrentRuns} concurrent)` : ""}
-                      </span>
-                    );
-                  })()
-                : <span className="text-muted-foreground">Not configured</span>
-              }
-            </SummaryRow>
-            <SummaryRow label="Last heartbeat">
-              {agent.lastHeartbeatAt
-                ? <span>{relativeTime(agent.lastHeartbeatAt)}</span>
-                : <span className="text-muted-foreground">Never</span>
-              }
-            </SummaryRow>
-            <SummaryRow label="Reports to">
-              {reportsToAgent ? (
-                <Link
-                  to={`/agents/${agentRouteRef(reportsToAgent)}`}
-                  className="text-blue-600 hover:underline dark:text-blue-400"
-                >
-                  <Identity name={reportsToAgent.name} size="sm" />
-                </Link>
-              ) : (
-                <span className="text-muted-foreground">Nobody (top-level)</span>
-              )}
-            </SummaryRow>
-          </div>
-          {directReports.length > 0 && (
-            <div className="pt-1">
-              <span className="text-xs text-muted-foreground">Direct reports</span>
-              <div className="mt-1 space-y-1">
-                {directReports.map((r) => (
-                  <Link
-                    key={r.id}
-                    to={`/agents/${agentRouteRef(r)}`}
-                    className="flex items-center gap-2 text-sm text-blue-600 hover:underline dark:text-blue-400"
-                  >
-                    <span className="relative flex h-2 w-2">
-                      <span className={`absolute inline-flex h-full w-full rounded-full ${agentStatusDot[r.status] ?? agentStatusDotDefault}`} />
-                    </span>
-                    {r.name}
-                    <span className="text-muted-foreground text-xs">({roleLabels[r.role] ?? r.role})</span>
-                  </Link>
-                ))}
-              </div>
-            </div>
-          )}
-          {agent.capabilities && (
-            <div className="pt-1">
-              <span className="text-xs text-muted-foreground">Capabilities</span>
-              <p className="text-sm mt-0.5">{agent.capabilities}</p>
-            </div>
-          )}
-        </div>
-        {promptText && (
-          <div className="border border-border rounded-lg p-4 space-y-2">
-            <h4 className="text-xs text-muted-foreground font-medium">Prompt Template</h4>
-            <pre className="text-xs text-muted-foreground line-clamp-[12] font-mono whitespace-pre-wrap">{promptText}</pre>
-          </div>
-        )}
       </div>
     </div>
   );
