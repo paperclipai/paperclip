@@ -64,7 +64,11 @@ async function buildSkillsDir(): Promise<string> {
       const source = path.join(skillsDir, entry.name);
       const destination = path.join(target, entry.name);
       const existing = await fs.lstat(destination).catch(() => null);
-      if (existing) continue;
+      if (existing) {
+        const currentTarget = await fs.readlink(destination).catch(() => null);
+        if (currentTarget === source) continue;
+        await fs.rm(destination, { force: true, recursive: true }).catch(() => {});
+      }
       await fs.symlink(source, destination).catch(async (err) => {
         if ((err as NodeJS.ErrnoException).code === "EEXIST") return;
         throw err;
@@ -79,6 +83,8 @@ async function writeStableInstructionsFile(contents: string): Promise<string> {
   await fs.mkdir(instructionsDir, { recursive: true });
   const digest = createHash("sha256").update(contents).digest("hex");
   const filePath = path.join(instructionsDir, `${digest}.md`);
+  const alreadyExists = await fs.access(filePath).then(() => true).catch(() => false);
+  if (alreadyExists) return filePath;
   const tmpPath = path.join(
     instructionsDir,
     `${digest}.${process.pid}.${Date.now().toString(36)}.tmp`,
