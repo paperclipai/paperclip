@@ -19,7 +19,7 @@ import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard } from "lucide-react";
+import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, SkipForward, MessageSquareWarning, Activity, Cpu } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -260,6 +260,42 @@ export function Dashboard() {
               }
             />
           </div>
+
+          {data.runtimeHealth && data.runtimeHealth.totalRuns > 0 && (
+            <div>
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider px-1 mb-2">
+                Runtime Health · last 7 days · {data.runtimeHealth.totalRuns} runs
+              </p>
+              <div className="grid grid-cols-2 xl:grid-cols-4 gap-1 sm:gap-2">
+                <MetricCard
+                  icon={SkipForward}
+                  value={data.runtimeHealth.timerWakeSkipPct !== null ? `${data.runtimeHealth.timerWakeSkipPct}%` : "—"}
+                  label="Timer wakes skipped"
+                  description="Pre-flight guard effectiveness"
+                />
+                <MetricCard
+                  icon={MessageSquareWarning}
+                  value={data.runtimeHealth.stderrNoisePct !== null ? `${data.runtimeHealth.stderrNoisePct}%` : "—"}
+                  label="Runs with stderr"
+                  description="Successful runs that produced stderr output"
+                />
+                <MetricCard
+                  icon={Activity}
+                  value={data.runtimeHealth.sessionResumeRatePct !== null ? `${data.runtimeHealth.sessionResumeRatePct}%` : "—"}
+                  label="Session resume rate"
+                  description="Runs that resumed a prior session"
+                />
+                <MetricCard
+                  icon={Cpu}
+                  value={data.runtimeHealth.medianTimerInputTokens !== null
+                    ? `${(data.runtimeHealth.medianTimerInputTokens / 1000).toFixed(1)}k`
+                    : "—"}
+                  label="Median timer tokens"
+                  description="Input tokens on timer wakes"
+                />
+              </div>
+            </div>
+          )}
 
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <ChartCard title="Run Activity" subtitle="Last 14 days">

@@ -1,6 +1,6 @@
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, eq, gte, isNotNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, approvals, companies, costEvents, issues } from "@paperclipai/db";
+import { agents, approvals, companies, costEvents, heartbeatRuns, issues } from "@paperclipai/db";
 import { notFound } from "../errors.js";
 
 export function dashboardService(db: Db) {
@@ -92,6 +92,62 @@ export function dashboardService(db: Db) {
           ? (monthSpendCents / company.budgetMonthlyCents) * 100
           : 0;
 
+      // Phase 6: runtime health — last 7 days, this company only
+      const healthSince = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      const runRows = await db
+        .select({
+          invocationSource: heartbeatRuns.invocationSource,
+          status: heartbeatRuns.status,
+          stderrExcerpt: heartbeatRuns.stderrExcerpt,
+          sessionIdBefore: heartbeatRuns.sessionIdBefore,
+          inputTokens: sql<number>`COALESCE(
+            (${heartbeatRuns.usageJson}->>'input_tokens')::int,
+            (${heartbeatRuns.usageJson}->>'prompt_tokens')::int,
+            0
+          )`,
+        })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            gte(heartbeatRuns.createdAt, healthSince),
+            isNotNull(heartbeatRuns.finishedAt),
+          ),
+        );
+
+      const healthTotal = runRows.length;
+      let runtimeHealth: { windowDays: number; totalRuns: number; timerWakeSkipPct: number | null; stderrNoisePct: number | null; sessionResumeRatePct: number | null; medianTimerInputTokens: number | null } | undefined;
+
+      if (healthTotal > 0) {
+        const timerRows = runRows.filter((r) => r.invocationSource === "timer");
+        const skippedRows = runRows.filter((r) => r.status === "skipped");
+        const succeededWithStderr = runRows.filter(
+          (r) => r.status === "succeeded" && r.stderrExcerpt && r.stderrExcerpt.trim().length > 0,
+        );
+        const withSession = runRows.filter((r) => r.sessionIdBefore != null);
+
+        const medianOf = (nums: number[]): number | null => {
+          if (nums.length === 0) return null;
+          const sorted = [...nums].sort((a, b) => a - b);
+          const mid = Math.floor(sorted.length / 2);
+          return sorted.length % 2 !== 0
+            ? (sorted[mid] ?? null)
+            : Math.round(((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2);
+        };
+        const timerTokens = timerRows.map((r) => Number(r.inputTokens ?? 0));
+
+        runtimeHealth = {
+          windowDays: 7,
+          totalRuns: healthTotal,
+          timerWakeSkipPct: timerRows.length > 0
+            ? Math.round((skippedRows.length / timerRows.length) * 100)
+            : null,
+          stderrNoisePct: Math.round((succeededWithStderr.length / healthTotal) * 100),
+          sessionResumeRatePct: Math.round((withSession.length / healthTotal) * 100),
+          medianTimerInputTokens: medianOf(timerTokens),
+        };
+      }
+
       return {
         companyId,
         agents: {
@@ -108,6 +164,7 @@ export function dashboardService(db: Db) {
         },
         pendingApprovals,
         staleTasks,
+        runtimeHealth,
       };
     },
   };

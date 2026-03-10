@@ -19,4 +19,12 @@ export interface DashboardSummary {
   };
   pendingApprovals: number;
   staleTasks: number;
+  runtimeHealth?: {
+    windowDays: number;
+    totalRuns: number;
+    timerWakeSkipPct: number | null;
+    stderrNoisePct: number | null;
+    sessionResumeRatePct: number | null;
+    medianTimerInputTokens: number | null;
+  };
 }

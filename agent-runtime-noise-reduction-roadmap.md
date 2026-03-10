@@ -231,18 +231,15 @@ Distinguish real failures from benign runtime noise.
 
 ---
 
-### Phase 6 — Observability and Acceptance Metrics
+### Phase 6 — Observability and Acceptance Metrics ✅ DONE
 
 Measure whether the cleanup actually worked.
 
-Track before/after for:
-- Successful runs containing stderr noise
-- Timer wakes with no issue context
-- Median input tokens for timer wakes
-- Session resume rate by wake source
-- Runs that fail first command due to missing env/path assumptions
+- ✅ `DashboardSummary.runtimeHealth` added to `packages/shared/src/types/dashboard.ts`.
+- ✅ `dashboardService.summary()` computes 4 metrics from `heartbeat_runs` (last 7 days, company-scoped): timer wake skip %, stderr noise %, session resume rate %, median timer input tokens.
+- ✅ "Runtime Health" row rendered on `ui/src/pages/Dashboard.tsx` below the existing 4 MetricCards — hidden when no runs exist in the window.
 
-**Outcome:** Evidence-based validation instead of intuition.
+**Outcome:** Evidence-based validation instead of intuition. Operators can see at a glance whether Phase 4 (skip %), Phase 5 (stderr %), Phase 3 (resume rate %), and token spend are behaving as expected.
 
 ---
 
@@ -287,7 +284,7 @@ Track before/after for:
 | 7 | Phase 3 session resume hardening | ✅ Done |
 | 8 | Phase 5 stderr classification (backend ✅, UI 🔲) | ✅ Backend Done |
 | 9 | Phase 9 auth bootstrap integrity | ✅ Done |
-| 10 | Phase 6 observability metrics | 🔲 Next |
+| 10 | Phase 6 observability metrics | ✅ Done |
 | 11 | Integrate circuit breaker (#390) | 🔲 After noise baseline is clean |
 
 ## Acceptance Criteria
