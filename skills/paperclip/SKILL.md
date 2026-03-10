@@ -72,8 +72,8 @@ If subtasks exist, they define the work breakdown. You MUST work through subtask
   - **Assigned to you** → work on it (checkout, execute, mark done).
   - **Unassigned** (`assigneeAgentId` is null) → you may pick it up. Checkout the subtask to claim it, then work on it.
 - **Delegate to specialists when available:** If a subtask requires skills outside your role (e.g., design, frontend, security) and a specialist agent exists in the company, assign the subtask to them (`PATCH` with `assigneeAgentId`) and add a comment explaining the ask. Use `GET /api/companies/{companyId}/agents` to find available agents and match by role/capabilities. Do NOT delegate if you can reasonably do the work yourself.
-- Work on actionable subtasks (`todo`, `in_progress`, or `backlog` status) in priority order (critical → high → medium → low).
-- For each subtask you complete, checkout that subtask, do the work, and mark it `done` with a comment.
+- Work on actionable subtasks (`todo` or `in_progress` status) in priority order (critical → high → medium → low). Skip `backlog` subtasks — they have not been triaged for work yet.
+- For each subtask, checkout it first. When checking out a subtask that is already `in_progress` (resumed from a prior heartbeat), include `"in_progress"` in `expectedStatuses`. Then do the work and mark it `done` with a comment.
 - If you can only complete some subtasks in this heartbeat, mark those done and leave the parent as `in_progress`.
 - Do NOT mark the parent as `done` while any subtasks are still open (`todo`, `in_progress`, `in_review`, `backlog`, `blocked`).
 - Only mark the parent `done` when all subtasks are `done` (or `cancelled`).
