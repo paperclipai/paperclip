@@ -222,6 +222,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       touchedByUserId,
       unreadForUserId,
       projectId: req.query.projectId as string | undefined,
+      parentId: req.query.parentId as string | undefined,
       labelId: req.query.labelId as string | undefined,
       q: req.query.q as string | undefined,
     });
