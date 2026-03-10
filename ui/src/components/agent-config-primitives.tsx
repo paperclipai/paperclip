@@ -31,6 +31,8 @@ export const help: Record<string, string> = {
   thinkingEffort: "Control model reasoning depth. Supported values vary by adapter/model.",
   chrome: "Enable Claude's Chrome integration by passing --chrome.",
   dangerouslySkipPermissions: "Run Claude without permission prompts. Required for unattended operation.",
+  allowedTools: "Restrict this agent to only the selected tools. Recommended for unattended operation instead of skipping permissions entirely.",
+  disallowedTools: "Block this agent from using specific tools. Everything else is allowed.",
   dangerouslyBypassSandbox: "Run Codex without sandbox restrictions. Required for filesystem/network access.",
   search: "Enable Codex web search capability during runs.",
   maxTurnsPerRun: "Maximum number of agentic turns (tool calls) per heartbeat run.",

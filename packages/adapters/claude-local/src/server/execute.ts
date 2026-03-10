@@ -277,6 +277,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const chrome = asBoolean(config.chrome, false);
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, false);
+  const allowedTools = asStringArray(config.allowedTools).join(",");
+  const disallowedTools = asStringArray(config.disallowedTools).join(",");
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const instructionsFileDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
   const commandNotes = instructionsFilePath
@@ -345,6 +347,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
     if (resumeSessionId) args.push("--resume", resumeSessionId);
     if (dangerouslySkipPermissions) args.push("--dangerously-skip-permissions");
+    if (!dangerouslySkipPermissions && allowedTools && !disallowedTools) args.push("--allowedTools", allowedTools);
+    if (!dangerouslySkipPermissions && disallowedTools && !allowedTools) args.push("--disallowedTools", disallowedTools);
     if (chrome) args.push("--chrome");
     if (model) args.push("--model", model);
     if (effort) args.push("--effort", effort);
