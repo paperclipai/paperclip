@@ -789,7 +789,7 @@ export function IssueDetail() {
       <Separator />
 
       <Tabs value={detailTab} onValueChange={setDetailTab} className="space-y-3">
-        <div className="overflow-x-auto scrollbar-none">
+        <div className="overflow-x-auto scrollbar-none pb-[5px] mb-[-5px]">
           <TabsList variant="line" className="w-max min-w-full justify-start gap-1 flex-nowrap">
             <TabsTrigger value="comments" className="gap-1.5 shrink-0">
               <MessageSquare className="h-3.5 w-3.5" />
