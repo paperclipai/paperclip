@@ -6,7 +6,7 @@ export const agentRuntimeState = pgTable(
   "agent_runtime_state",
   {
     agentId: uuid("agent_id").primaryKey().references(() => agents.id),
-    companyId: uuid("company_id").notNull().references(() => companies.id),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     adapterType: text("adapter_type").notNull(),
     sessionId: text("session_id"),
     stateJson: jsonb("state_json").$type<Record<string, unknown>>().notNull().default({}),
