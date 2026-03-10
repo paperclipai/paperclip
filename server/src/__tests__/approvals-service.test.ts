@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { approvalService } from "../services/approvals.js";
+import { approvalService } from "../services/approvals.ts";
 
 const mockAgentService = vi.hoisted(() => ({
   activatePendingApproval: vi.fn(),
@@ -38,15 +38,12 @@ function createApproval(status: string): ApprovalRecord {
 }
 
 function createDbStub(selectResults: ApprovalRecord[][], updateResults: ApprovalRecord[]) {
-  const selectWhere = vi.fn();
-  for (const result of selectResults) {
-    selectWhere.mockResolvedValueOnce(result);
-  }
-
+  const pendingSelectResults = [...selectResults];
+  const selectWhere = vi.fn(async () => pendingSelectResults.shift() ?? []);
   const from = vi.fn(() => ({ where: selectWhere }));
   const select = vi.fn(() => ({ from }));
 
-  const returning = vi.fn().mockResolvedValue(updateResults);
+  const returning = vi.fn(async () => updateResults);
   const updateWhere = vi.fn(() => ({ returning }));
   const set = vi.fn(() => ({ where: updateWhere }));
   const update = vi.fn(() => ({ set }));
