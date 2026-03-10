@@ -18,3 +18,5 @@ export { logActivity, type LogActivityInput } from "./activity-log.js";
 export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js";
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
+export { evaluateCircuitBreaker, tripCircuitBreaker, parseCircuitBreakerConfig } from "./circuit-breaker.js";
+export type { CircuitBreakerConfig, CircuitBreakerResult, TripReason } from "./circuit-breaker.js";

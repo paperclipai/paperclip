@@ -23,6 +23,7 @@ import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
+import { evaluateCircuitBreaker, tripCircuitBreaker } from "./circuit-breaker.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -891,6 +892,18 @@ export function heartbeatService(db: Db) {
           outcome,
         },
       });
+
+      // Evaluate circuit breaker after status is finalized
+      if (updated.status !== "paused" && updated.status !== "terminated") {
+        try {
+          const cbResult = await evaluateCircuitBreaker(db, agentId, outcome);
+          if (cbResult.tripped) {
+            await tripCircuitBreaker(db, agentId, cbResult);
+          }
+        } catch (err) {
+          logger.error({ err, agentId }, "circuit breaker evaluation failed");
+        }
+      }
     }
   }
 
