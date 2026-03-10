@@ -1,6 +1,6 @@
 # Development Status
 
-Last updated: 2026-03-09
+Last updated: 2026-03-10
 
 ## Roadmap status
 
@@ -18,7 +18,11 @@ Last updated: 2026-03-09
 ## Branch state
 
 - Base branch for ongoing work: `development`
-- Current implementation branch: `codex/all-phases-executive-sprint`
+- Current implementation branch: `codex/ci-development-first`
+- CI branch model:
+  - feature branches open PRs into `development`
+  - `development` pushes refresh `pnpm-lock.yaml` and rerun verification
+  - `development` promotes into `master` after soak/live testing
 
 ## Primary gap
 
@@ -42,7 +46,7 @@ Phase 1 created the basic executive surface. The remaining work is to make it fu
 
 ## Verification posture
 
-Definition of done for this sprint branch remains:
+Definition of done for the current branch remains:
 
 ```bash
 pnpm -r typecheck
@@ -50,20 +54,11 @@ pnpm test:run
 pnpm build
 ```
 
-The final pass must also include interactive browser QA over the executive flows.
+This branch changes CI and docs, not runtime UI behavior, so browser QA is not required for this change set.
 
 Verified on this branch:
 
 - `pnpm -r typecheck`
 - `pnpm test:run`
 - `pnpm build`
-- browser QA over:
-  - `/EXE/briefings/board`
-  - `/EXE/briefings/briefings`
-  - `/EXE/briefings/results`
-  - `/EXE/briefings/plans`
-  - `/EXE/briefings/portfolio`
-  - `/EXE/knowledge`
-  - issue detail promotion flow
-  - approval detail promotion flow
-  - agent run detail workspace-isolation view
+- workflow YAML parses successfully after the branch-filter changes

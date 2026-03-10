@@ -1,47 +1,41 @@
 # Start Here
 
-Last updated: 2026-03-09
+Last updated: 2026-03-10
 
 ## Current focus
 
-Paperclip has already shipped the first executive-layer slice:
+Paperclip has already shipped the executive-layer sprint:
 
 - `/briefings/board`
+- `/briefings/briefings`
 - `/briefings/results`
 - `/briefings/plans`
-- durable `records` plus promotion flows from issues, approvals, and runs
-
-The current sprint branch exists to finish the missing pieces across all five phases:
-
-- Phase 2: real briefing product with library, schedules, and approval-aware digest synthesis
-- Phase 3: lightweight knowledge library with record publication
-- Phase 4: portfolio board plus milestones
-- Phase 5: attribution hardening, worktree isolation, and honest cost reporting everywhere
+- `/briefings/portfolio`
+- `/knowledge`
+- durable `records`, schedules, milestones, knowledge publication, and promotion flows
 
 ## Current branch
 
-- Working branch: `codex/all-phases-executive-sprint`
+- Working branch: `codex/ci-development-first`
 - Baseline source branch: `development`
 
 ## Immediate priorities
 
-1. Keep `DEV-DOCS/` aligned with the actual code as the sprint lands.
-2. Add missing schema/shared contracts for schedules, knowledge, milestones, and worktree checkouts.
-3. Extend the server/runtime before polishing the UI so routes and storage stay authoritative.
+1. Keep `DEV-DOCS/` aligned with the actual code and branch policy.
+2. Move PR verification to `development`, where feature work is supposed to land.
+3. Move lockfile ownership to `development`, where integration actually happens.
 4. End with full verification:
    - `pnpm -r typecheck`
    - `pnpm test:run`
    - `pnpm build`
-   - Playwright interactive QA across the executive surfaces
 
 ## Important current truths
 
 - `/dashboard` is still the operational telemetry page.
-- `Briefings` is present, but incomplete relative to the intended five-phase roadmap.
-- There is no shipped knowledge library yet.
-- There is no shipped portfolio page yet.
-- Cost truthfulness exists on the board, but not yet across all money displays.
-- Workspace isolation is not yet implemented.
+- The executive sprint is merged on `development`.
+- `development` is the gated integration branch.
+- `master` is the promotion branch after beta/live soak.
+- CI-owned lockfile updates belong on `development`, not on feature branches.
 
 ## Read next
 
