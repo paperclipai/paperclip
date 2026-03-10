@@ -13,6 +13,8 @@ export type {
   AdapterEnvironmentTestContext,
   AdapterSessionCodec,
   AdapterModel,
+  HireApprovedPayload,
+  HireApprovedHookResult,
   ServerAdapterModule,
   TranscriptEntry,
   StdoutLineParser,

@@ -30,6 +30,14 @@ Codex uses `previous_response_id` for session continuity. The adapter serializes
 
 The adapter symlinks Paperclip skills into the global Codex skills directory (`~/.codex/skills`). Existing user skills are not overwritten.
 
+For manual local CLI usage outside heartbeat runs (for example running as `codexcoder` directly), use:
+
+```sh
+pnpm paperclipai agent local-cli codexcoder --company-id <company-id>
+```
+
+This installs any missing skills, creates an agent API key, and prints shell exports to run as that agent.
+
 ## Environment Test
 
 The environment test checks:

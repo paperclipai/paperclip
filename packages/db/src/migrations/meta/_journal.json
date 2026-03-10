@@ -169,6 +169,20 @@
       "when": 1772139727599,
       "tag": "0023_fair_lethal_legion",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1772806603601,
+      "tag": "0024_far_beast",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1772807461603,
+      "tag": "0025_nasty_salo",
+      "breakpoints": true
     }
   ]
 }

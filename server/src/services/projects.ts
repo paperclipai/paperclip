@@ -31,6 +31,15 @@ interface ProjectWithGoals extends ProjectRow {
   primaryWorkspace: ProjectWorkspace | null;
 }
 
+interface ProjectShortnameRow {
+  id: string;
+  name: string;
+}
+
+interface ResolveProjectNameOptions {
+  excludeProjectId?: string | null;
+}
+
 /** Batch-load goal refs for a set of projects. */
 async function attachGoals(db: Db, rows: ProjectRow[]): Promise<ProjectWithGoals[]> {
   if (rows.length === 0) return [];
@@ -192,6 +201,34 @@ function deriveWorkspaceName(input: {
   return "Workspace";
 }
 
+export function resolveProjectNameForUniqueShortname(
+  requestedName: string,
+  existingProjects: ProjectShortnameRow[],
+  options?: ResolveProjectNameOptions,
+): string {
+  const requestedShortname = normalizeProjectUrlKey(requestedName);
+  if (!requestedShortname) return requestedName;
+
+  const usedShortnames = new Set(
+    existingProjects
+      .filter((project) => !(options?.excludeProjectId && project.id === options.excludeProjectId))
+      .map((project) => normalizeProjectUrlKey(project.name))
+      .filter((value): value is string => value !== null),
+  );
+  if (!usedShortnames.has(requestedShortname)) return requestedName;
+
+  for (let suffix = 2; suffix < 10_000; suffix += 1) {
+    const candidateName = `${requestedName} ${suffix}`;
+    const candidateShortname = normalizeProjectUrlKey(candidateName);
+    if (candidateShortname && !usedShortnames.has(candidateShortname)) {
+      return candidateName;
+    }
+  }
+
+  // Fallback guard for pathological naming collisions.
+  return `${requestedName} ${Date.now()}`;
+}
+
 async function ensureSinglePrimaryWorkspace(
   dbOrTx: any,
   input: {
@@ -271,6 +308,12 @@ export function projectService(db: Db) {
         projectData.color = nextColor;
       }
 
+      const existingProjects = await db
+        .select({ id: projects.id, name: projects.name })
+        .from(projects)
+        .where(eq(projects.companyId, companyId));
+      projectData.name = resolveProjectNameForUniqueShortname(projectData.name, existingProjects);
+
       // Also write goalId to the legacy column (first goal or null)
       const legacyGoalId = ids && ids.length > 0 ? ids[0] : projectData.goalId ?? null;
 
@@ -295,6 +338,26 @@ export function projectService(db: Db) {
     ): Promise<ProjectWithGoals | null> => {
       const { goalIds: inputGoalIds, ...projectData } = data;
       const ids = resolveGoalIds({ goalIds: inputGoalIds, goalId: projectData.goalId });
+      const existingProject = await db
+        .select({ id: projects.id, companyId: projects.companyId, name: projects.name })
+        .from(projects)
+        .where(eq(projects.id, id))
+        .then((rows) => rows[0] ?? null);
+      if (!existingProject) return null;
+
+      if (projectData.name !== undefined) {
+        const existingShortname = normalizeProjectUrlKey(existingProject.name);
+        const nextShortname = normalizeProjectUrlKey(projectData.name);
+        if (existingShortname !== nextShortname) {
+          const existingProjects = await db
+            .select({ id: projects.id, name: projects.name })
+            .from(projects)
+            .where(eq(projects.companyId, existingProject.companyId));
+          projectData.name = resolveProjectNameForUniqueShortname(projectData.name, existingProjects, {
+            excludeProjectId: id,
+          });
+        }
+      }
 
       // Keep legacy goalId column in sync
       const updates: Partial<typeof projects.$inferInsert> = {

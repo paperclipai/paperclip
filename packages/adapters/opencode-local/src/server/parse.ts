@@ -1,10 +1,17 @@
-import { asString, asNumber, parseObject, parseJson } from "@paperclipai/adapter-utils/server-utils";
+import { asNumber, asString, parseJson, parseObject } from "@paperclipai/adapter-utils/server-utils";
 
-function asErrorText(value: unknown): string {
+function errorText(value: unknown): string {
   if (typeof value === "string") return value;
   const rec = parseObject(value);
-  const message = asString(rec.message, "") || asString(rec.error, "") || asString(rec.code, "");
+  const message = asString(rec.message, "").trim();
   if (message) return message;
+  const data = parseObject(rec.data);
+  const nestedMessage = asString(data.message, "").trim();
+  if (nestedMessage) return nestedMessage;
+  const name = asString(rec.name, "").trim();
+  if (name) return name;
+  const code = asString(rec.code, "").trim();
+  if (code) return code;
   try {
     return JSON.stringify(rec);
   } catch {
@@ -15,13 +22,13 @@ function asErrorText(value: unknown): string {
 export function parseOpenCodeJsonl(stdout: string) {
   let sessionId: string | null = null;
   const messages: string[] = [];
-  let errorMessage: string | null = null;
-  let totalCostUsd = 0;
+  const errors: string[] = [];
   const usage = {
     inputTokens: 0,
     cachedInputTokens: 0,
     outputTokens: 0,
   };
+  let costUsd = 0;
 
   for (const rawLine of stdout.split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -30,8 +37,8 @@ export function parseOpenCodeJsonl(stdout: string) {
     const event = parseJson(line);
     if (!event) continue;
 
-    const foundSession = asString(event.sessionID, "").trim();
-    if (foundSession) sessionId = foundSession;
+    const currentSessionId = asString(event.sessionID, "").trim();
+    if (currentSessionId) sessionId = currentSessionId;
 
     const type = asString(event.type, "");
 
@@ -48,15 +55,25 @@ export function parseOpenCodeJsonl(stdout: string) {
       const cache = parseObject(tokens.cache);
       usage.inputTokens += asNumber(tokens.input, 0);
       usage.cachedInputTokens += asNumber(cache.read, 0);
-      usage.outputTokens += asNumber(tokens.output, 0);
-      totalCostUsd += asNumber(part.cost, 0);
+      usage.outputTokens += asNumber(tokens.output, 0) + asNumber(tokens.reasoning, 0);
+      costUsd += asNumber(part.cost, 0);
+      continue;
+    }
+
+    if (type === "tool_use") {
+      const part = parseObject(event.part);
+      const state = parseObject(part.state);
+      if (asString(state.status, "") === "error") {
+        const text = asString(state.error, "").trim();
+        if (text) errors.push(text);
+      }
       continue;
     }
 
     if (type === "error") {
-      const part = parseObject(event.part);
-      const msg = asErrorText(event.message ?? part.message ?? event.error ?? part.error).trim();
-      if (msg) errorMessage = msg;
+      const text = errorText(event.error ?? event.message).trim();
+      if (text) errors.push(text);
+      continue;
     }
   }
 
@@ -64,8 +81,8 @@ export function parseOpenCodeJsonl(stdout: string) {
     sessionId,
     summary: messages.join("\n\n").trim(),
     usage,
-    costUsd: totalCostUsd > 0 ? totalCostUsd : null,
-    errorMessage,
+    costUsd,
+    errorMessage: errors.length > 0 ? errors.join("\n") : null,
   };
 }
 
@@ -76,7 +93,7 @@ export function isOpenCodeUnknownSessionError(stdout: string, stderr: string): b
     .filter(Boolean)
     .join("\n");
 
-  return /unknown\s+session|session\s+.*\s+not\s+found|resource\s+not\s+found:.*[\\/]session[\\/].*\.json|notfounderror/i.test(
+  return /unknown\s+session|session\b.*\bnot\s+found|resource\s+not\s+found:.*[\\/]session[\\/].*\.json|notfounderror|no session/i.test(
     haystack,
   );
 }

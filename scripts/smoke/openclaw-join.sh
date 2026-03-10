@@ -160,7 +160,7 @@ if [[ -z "$COMPANY_ID" ]]; then
 fi
 
 log "creating agent-only invite for company ${COMPANY_ID}"
-INVITE_PAYLOAD="$(jq -nc '{allowedJoinTypes:"agent",expiresInHours:24}')"
+INVITE_PAYLOAD="$(jq -nc '{allowedJoinTypes:"agent"}')"
 api_request "POST" "/companies/${COMPANY_ID}/invites" "$INVITE_PAYLOAD"
 if [[ "$RESPONSE_CODE" == "401" || "$RESPONSE_CODE" == "403" ]]; then
   fail_board_auth_required "Invite creation"
@@ -179,24 +179,32 @@ if [[ -z "$ONBOARDING_TEXT_PATH" ]]; then
 fi
 api_request "GET" "/invites/${INVITE_TOKEN}/onboarding.txt"
 assert_status "200"
-if ! grep -q "Paperclip OpenClaw Onboarding" <<<"$RESPONSE_BODY"; then
+if ! grep -q "Paperclip OpenClaw Gateway Onboarding" <<<"$RESPONSE_BODY"; then
   fail "onboarding.txt response missing expected header"
 fi
 
-log "submitting OpenClaw agent join request"
+OPENCLAW_GATEWAY_URL="${OPENCLAW_GATEWAY_URL:-ws://127.0.0.1:18789}"
+OPENCLAW_GATEWAY_TOKEN="${OPENCLAW_GATEWAY_TOKEN:-${OPENCLAW_WEBHOOK_AUTH#Bearer }}"
+if [[ -z "$OPENCLAW_GATEWAY_TOKEN" ]]; then
+  fail "OPENCLAW_GATEWAY_TOKEN (or OPENCLAW_WEBHOOK_AUTH) is required for gateway join"
+fi
+
+log "submitting OpenClaw gateway agent join request"
 JOIN_PAYLOAD="$(jq -nc \
   --arg name "$OPENCLAW_AGENT_NAME" \
-  --arg url "$OPENCLAW_WEBHOOK_URL" \
-  --arg auth "$OPENCLAW_WEBHOOK_AUTH" \
+  --arg url "$OPENCLAW_GATEWAY_URL" \
+  --arg token "$OPENCLAW_GATEWAY_TOKEN" \
   '{
     requestType: "agent",
     agentName: $name,
-    adapterType: "openclaw",
-    capabilities: "Automated OpenClaw smoke harness",
-    agentDefaultsPayload: (
-      { url: $url, method: "POST", timeoutSec: 30 }
-      + (if ($auth | length) > 0 then { webhookAuthHeader: $auth } else {} end)
-    )
+    adapterType: "openclaw_gateway",
+    capabilities: "Automated OpenClaw gateway smoke harness",
+    agentDefaultsPayload: {
+      url: $url,
+      headers: { "x-openclaw-token": $token },
+      sessionKeyStrategy: "issue",
+      waitTimeoutMs: 120000
+    }
   }')"
 api_request "POST" "/invites/${INVITE_TOKEN}/accept" "$JOIN_PAYLOAD"
 assert_status "202"

@@ -52,13 +52,37 @@ export const httpLogger = pinoHttp({
   customSuccessMessage(req, res) {
     return `${req.method} ${req.url} ${res.statusCode}`;
   },
-  customErrorMessage(req, res) {
-    return `${req.method} ${req.url} ${res.statusCode}`;
+  customErrorMessage(req, res, err) {
+    const ctx = (res as any).__errorContext;
+    const errMsg = ctx?.error?.message || err?.message || (res as any).err?.message || "unknown error";
+    return `${req.method} ${req.url} ${res.statusCode} — ${errMsg}`;
   },
-  customProps(_req, res) {
-    const serverError = (res as any).locals?.serverError;
-    if (serverError) {
-      return { serverError };
+  customProps(req, res) {
+    if (res.statusCode >= 400) {
+      const ctx = (res as any).__errorContext;
+      if (ctx) {
+        return {
+          errorContext: ctx.error,
+          reqBody: ctx.reqBody,
+          reqParams: ctx.reqParams,
+          reqQuery: ctx.reqQuery,
+        };
+      }
+      const props: Record<string, unknown> = {};
+      const { body, params, query } = req as any;
+      if (body && typeof body === "object" && Object.keys(body).length > 0) {
+        props.reqBody = body;
+      }
+      if (params && typeof params === "object" && Object.keys(params).length > 0) {
+        props.reqParams = params;
+      }
+      if (query && typeof query === "object" && Object.keys(query).length > 0) {
+        props.reqQuery = query;
+      }
+      if ((req as any).route?.path) {
+        props.routePath = (req as any).route.path;
+      }
+      return props;
     }
     return {};
   },

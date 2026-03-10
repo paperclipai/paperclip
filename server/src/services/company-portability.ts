@@ -83,9 +83,13 @@ const ADAPTER_DEFAULT_RULES_BY_TYPE: Record<string, Array<{ path: string[]; valu
     { path: ["graceSec"], value: 15 },
     { path: ["maxTurnsPerRun"], value: 80 },
   ],
-  openclaw: [
-    { path: ["method"], value: "POST" },
-    { path: ["timeoutSec"], value: 30 },
+  openclaw_gateway: [
+    { path: ["timeoutSec"], value: 120 },
+    { path: ["waitTimeoutMs"], value: 120000 },
+    { path: ["sessionKeyStrategy"], value: "fixed" },
+    { path: ["sessionKey"], value: "paperclip" },
+    { path: ["role"], value: "operator" },
+    { path: ["scopes"], value: ["operator.admin"] },
   ],
 };
 

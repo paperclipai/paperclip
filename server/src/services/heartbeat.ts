@@ -1240,11 +1240,16 @@ export function heartbeatService(db: Db) {
       const mergedConfig = issueAssigneeOverrides?.adapterConfig
         ? { ...config, ...issueAssigneeOverrides.adapterConfig }
         : config;
-      const resolvedConfig = await secretsSvc.resolveAdapterConfigForRuntime(
+      const { config: resolvedConfig, secretKeys } = await secretsSvc.resolveAdapterConfigForRuntime(
         agent.companyId,
         mergedConfig,
       );
       const onAdapterMeta = async (meta: AdapterInvocationMeta) => {
+        if (meta.env && secretKeys.size > 0) {
+          for (const key of secretKeys) {
+            if (key in meta.env) meta.env[key] = "***REDACTED***";
+          }
+        }
         await appendRunEvent(currentRun, seq++, {
           eventType: "adapter.invoke",
           stream: "system",

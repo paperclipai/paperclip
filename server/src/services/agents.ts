@@ -51,6 +51,16 @@ interface UpdateAgentOptions {
   recordRevision?: RevisionMetadata;
 }
 
+interface AgentShortnameRow {
+  id: string;
+  name: string;
+  status: string;
+}
+
+interface AgentShortnameCollisionOptions {
+  excludeAgentId?: string | null;
+}
+
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -140,6 +150,37 @@ function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agents.$infe
   };
 }
 
+export function hasAgentShortnameCollision(
+  candidateName: string,
+  existingAgents: AgentShortnameRow[],
+  options?: AgentShortnameCollisionOptions,
+): boolean {
+  const candidateShortname = normalizeAgentUrlKey(candidateName);
+  if (!candidateShortname) return false;
+
+  return existingAgents.some((agent) => {
+    if (agent.status === "terminated") return false;
+    if (options?.excludeAgentId && agent.id === options.excludeAgentId) return false;
+    return normalizeAgentUrlKey(agent.name) === candidateShortname;
+  });
+}
+
+export function deduplicateAgentName(
+  candidateName: string,
+  existingAgents: AgentShortnameRow[],
+): string {
+  if (!hasAgentShortnameCollision(candidateName, existingAgents)) {
+    return candidateName;
+  }
+  for (let i = 2; i <= 100; i++) {
+    const suffixed = `${candidateName} ${i}`;
+    if (!hasAgentShortnameCollision(suffixed, existingAgents)) {
+      return suffixed;
+    }
+  }
+  return `${candidateName} ${Date.now()}`;
+}
+
 export function agentService(db: Db) {
   function withUrlKey<T extends { id: string; name: string }>(row: T) {
     return {
@@ -185,6 +226,31 @@ export function agentService(db: Db) {
     }
   }
 
+  async function assertCompanyShortnameAvailable(
+    companyId: string,
+    candidateName: string,
+    options?: AgentShortnameCollisionOptions,
+  ) {
+    const candidateShortname = normalizeAgentUrlKey(candidateName);
+    if (!candidateShortname) return;
+
+    const existingAgents = await db
+      .select({
+        id: agents.id,
+        name: agents.name,
+        status: agents.status,
+      })
+      .from(agents)
+      .where(eq(agents.companyId, companyId));
+
+    const hasCollision = hasAgentShortnameCollision(candidateName, existingAgents, options);
+    if (hasCollision) {
+      throw conflict(
+        `Agent shortname '${candidateShortname}' is already in use in this company`,
+      );
+    }
+  }
+
   async function updateAgent(
     id: string,
     data: Partial<typeof agents.$inferInsert>,
@@ -210,6 +276,14 @@ export function agentService(db: Db) {
         await ensureManager(existing.companyId, data.reportsTo);
       }
       await assertNoCycle(id, data.reportsTo);
+    }
+
+    if (data.name !== undefined) {
+      const previousShortname = normalizeAgentUrlKey(existing.name);
+      const nextShortname = normalizeAgentUrlKey(data.name);
+      if (previousShortname !== nextShortname) {
+        await assertCompanyShortnameAvailable(existing.companyId, data.name, { excludeAgentId: id });
+      }
     }
 
     const normalizedPatch = { ...data } as Partial<typeof agents.$inferInsert>;
@@ -267,11 +341,17 @@ export function agentService(db: Db) {
         await ensureManager(companyId, data.reportsTo);
       }
 
+      const existingAgents = await db
+        .select({ id: agents.id, name: agents.name, status: agents.status })
+        .from(agents)
+        .where(eq(agents.companyId, companyId));
+      const uniqueName = deduplicateAgentName(data.name, existingAgents);
+
       const role = data.role ?? "general";
       const normalizedPermissions = normalizeAgentPermissions(data.permissions, role);
       const created = await db
         .insert(agents)
-        .values({ ...data, companyId, role, permissions: normalizedPermissions })
+        .values({ ...data, name: uniqueName, companyId, role, permissions: normalizedPermissions })
         .returning()
         .then((rows) => rows[0]);
 

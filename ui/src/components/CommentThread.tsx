@@ -2,12 +2,13 @@ import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent } from "re
 import { Link, useLocation } from "react-router-dom";
 import type { IssueComment, Agent } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
-import { Paperclip } from "lucide-react";
+import { Check, Copy, Paperclip } from "lucide-react";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { StatusBadge } from "./StatusBadge";
+import { AgentIcon } from "./AgentIconPicker";
 import { formatDateTime } from "../lib/utils";
 
 interface CommentWithRunMeta extends IssueComment {
@@ -91,6 +92,25 @@ function parseReassignment(target: string): CommentReassignment | null {
   return null;
 }
 
+function CopyMarkdownButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      className="text-muted-foreground hover:text-foreground transition-colors"
+      title="Copy as markdown"
+      onClick={() => {
+        navigator.clipboard.writeText(text).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 2000);
+        });
+      }}
+    >
+      {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+    </button>
+  );
+}
+
 type TimelineItem =
   | { kind: "comment"; id: string; createdAtMs: number; comment: CommentWithRunMeta }
   | { kind: "run"; id: string; createdAtMs: number; run: LinkedRunItem };
@@ -159,12 +179,15 @@ const TimelineList = memo(function TimelineList({
               ) : (
                 <Identity name="You" size="sm" />
               )}
-              <a
-                href={`#comment-${comment.id}`}
-                className="text-xs text-muted-foreground hover:text-foreground hover:underline transition-colors"
-              >
-                {formatDateTime(comment.createdAt)}
-              </a>
+              <span className="flex items-center gap-1.5">
+                <a
+                  href={`#comment-${comment.id}`}
+                  className="text-xs text-muted-foreground hover:text-foreground hover:underline transition-colors"
+                >
+                  {formatDateTime(comment.createdAt)}
+                </a>
+                <CopyMarkdownButton text={comment.body} />
+              </span>
             </div>
             <MarkdownBody className="text-sm">{comment.body}</MarkdownBody>
             {comment.runId && (
@@ -385,6 +408,32 @@ export function CommentThread({
               emptyMessage="No assignees found."
               onChange={setReassignTarget}
               className="text-xs h-8"
+              renderTriggerValue={(option) => {
+                if (!option) return <span className="text-muted-foreground">Assignee</span>;
+                const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
+                const agent = agentId ? agentMap?.get(agentId) : null;
+                return (
+                  <>
+                    {agent ? (
+                      <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    ) : null}
+                    <span className="truncate">{option.label}</span>
+                  </>
+                );
+              }}
+              renderOption={(option) => {
+                if (!option.id) return <span className="truncate">{option.label}</span>;
+                const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
+                const agent = agentId ? agentMap?.get(agentId) : null;
+                return (
+                  <>
+                    {agent ? (
+                      <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    ) : null}
+                    <span className="truncate">{option.label}</span>
+                  </>
+                );
+              }}
             />
           )}
           <Button size="sm" disabled={!canSubmit} onClick={handleSubmit}>

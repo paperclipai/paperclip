@@ -18,11 +18,14 @@ import {
 } from "@paperclipai/adapter-cursor-local/server";
 import { agentConfigurationDoc as cursorAgentConfigurationDoc, models as cursorModels } from "@paperclipai/adapter-cursor-local";
 import {
-  execute as opencodeExecute,
-  testEnvironment as opencodeTestEnvironment,
-  sessionCodec as opencodeSessionCodec,
+  execute as openCodeExecute,
+  testEnvironment as openCodeTestEnvironment,
+  sessionCodec as openCodeSessionCodec,
+  listOpenCodeModels,
 } from "@paperclipai/adapter-opencode-local/server";
-import { agentConfigurationDoc as opencodeAgentConfigurationDoc, models as opencodeModels } from "@paperclipai/adapter-opencode-local";
+import {
+  agentConfigurationDoc as openCodeAgentConfigurationDoc,
+} from "@paperclipai/adapter-opencode-local";
 import {
   execute as openclawExecute,
   testEnvironment as openclawTestEnvironment,
@@ -31,8 +34,25 @@ import {
   agentConfigurationDoc as openclawAgentConfigurationDoc,
   models as openclawModels,
 } from "@paperclipai/adapter-openclaw";
+import {
+  execute as openclawGatewayExecute,
+  testEnvironment as openclawGatewayTestEnvironment,
+} from "@paperclipai/adapter-openclaw-gateway/server";
+import {
+  agentConfigurationDoc as openclawGatewayAgentConfigurationDoc,
+  models as openclawGatewayModels,
+} from "@paperclipai/adapter-openclaw-gateway";
 import { listCodexModels } from "./codex-models.js";
 import { listCursorModels } from "./cursor-models.js";
+import {
+  execute as piExecute,
+  testEnvironment as piTestEnvironment,
+  sessionCodec as piSessionCodec,
+  listPiModels,
+} from "@paperclipai/adapter-pi-local/server";
+import {
+  agentConfigurationDoc as piAgentConfigurationDoc,
+} from "@paperclipai/adapter-pi-local";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
 
@@ -57,16 +77,6 @@ const codexLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: codexAgentConfigurationDoc,
 };
 
-const opencodeLocalAdapter: ServerAdapterModule = {
-  type: "opencode_local",
-  execute: opencodeExecute,
-  testEnvironment: opencodeTestEnvironment,
-  sessionCodec: opencodeSessionCodec,
-  models: opencodeModels,
-  supportsLocalAgentJwt: true,
-  agentConfigurationDoc: opencodeAgentConfigurationDoc,
-};
-
 const cursorLocalAdapter: ServerAdapterModule = {
   type: "cursor",
   execute: cursorExecute,
@@ -87,8 +97,49 @@ const openclawAdapter: ServerAdapterModule = {
   agentConfigurationDoc: openclawAgentConfigurationDoc,
 };
 
+const openclawGatewayAdapter: ServerAdapterModule = {
+  type: "openclaw_gateway",
+  execute: openclawGatewayExecute,
+  testEnvironment: openclawGatewayTestEnvironment,
+  models: openclawGatewayModels,
+  supportsLocalAgentJwt: false,
+  agentConfigurationDoc: openclawGatewayAgentConfigurationDoc,
+};
+
+const openCodeLocalAdapter: ServerAdapterModule = {
+  type: "opencode_local",
+  execute: openCodeExecute,
+  testEnvironment: openCodeTestEnvironment,
+  sessionCodec: openCodeSessionCodec,
+  models: [],
+  listModels: listOpenCodeModels,
+  supportsLocalAgentJwt: true,
+  agentConfigurationDoc: openCodeAgentConfigurationDoc,
+};
+
+const piLocalAdapter: ServerAdapterModule = {
+  type: "pi_local",
+  execute: piExecute,
+  testEnvironment: piTestEnvironment,
+  sessionCodec: piSessionCodec,
+  models: [],
+  listModels: listPiModels,
+  supportsLocalAgentJwt: true,
+  agentConfigurationDoc: piAgentConfigurationDoc,
+};
+
 const adaptersByType = new Map<string, ServerAdapterModule>(
-  [claudeLocalAdapter, codexLocalAdapter, opencodeLocalAdapter, cursorLocalAdapter, openclawAdapter, processAdapter, httpAdapter].map((a) => [a.type, a]),
+  [
+    claudeLocalAdapter,
+    codexLocalAdapter,
+    openCodeLocalAdapter,
+    openclawAdapter,
+    piLocalAdapter,
+    cursorLocalAdapter,
+    openclawGatewayAdapter,
+    processAdapter,
+    httpAdapter,
+  ].map((a) => [a.type, a]),
 );
 
 export function getServerAdapter(type: string): ServerAdapterModule {

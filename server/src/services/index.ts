@@ -1,5 +1,5 @@
 export { companyService } from "./companies.js";
-export { agentService } from "./agents.js";
+export { agentService, deduplicateAgentName } from "./agents.js";
 export { assetService } from "./assets.js";
 export { projectService } from "./projects.js";
 export { issueService, type IssueFilters } from "./issues.js";
@@ -15,5 +15,6 @@ export { sidebarBadgeService } from "./sidebar-badges.js";
 export { accessService } from "./access.js";
 export { companyPortabilityService } from "./company-portability.js";
 export { logActivity, type LogActivityInput } from "./activity-log.js";
+export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js";
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";

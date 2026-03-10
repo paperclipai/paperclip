@@ -1,7 +1,8 @@
-import { createReadStream, createWriteStream, promises as fs } from "node:fs";
+import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { notFound } from "../errors.js";
+import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 
 export type RunLogStoreType = "local_file";
 
@@ -113,11 +114,7 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
         stream: event.stream,
         chunk: event.chunk,
       });
-      await new Promise<void>((resolve, reject) => {
-        const stream = createWriteStream(absPath, { flags: "a", encoding: "utf8" });
-        stream.on("error", reject);
-        stream.end(`${line}\n`, () => resolve());
-      });
+      await fs.appendFile(absPath, `${line}\n`, "utf8");
     },
 
     async finalize(handle) {
@@ -152,7 +149,7 @@ let cachedStore: RunLogStore | null = null;
 
 export function getRunLogStore() {
   if (cachedStore) return cachedStore;
-  const basePath = process.env.RUN_LOG_BASE_PATH ?? path.resolve(process.cwd(), "data/run-logs");
+  const basePath = process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
   cachedStore = createLocalFileRunLogStore(basePath);
   return cachedStore;
 }

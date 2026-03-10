@@ -25,6 +25,7 @@ import {
 import { logger } from "../middleware/logger.js";
 import { forbidden, HttpError, unauthorized } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 
 const MAX_ATTACHMENT_BYTES = Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
 const ALLOWED_ATTACHMENT_CONTENT_TYPES = new Set([
@@ -183,17 +184,42 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
   });
 
+  // Common malformed path when companyId is empty in "/api/companies/{companyId}/issues".
+  router.get("/issues", (_req, res) => {
+    res.status(400).json({
+      error: "Missing companyId in path. Use /api/companies/{companyId}/issues.",
+    });
+  });
+
   router.get("/companies/:companyId/issues", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const assigneeUserFilterRaw = req.query.assigneeUserId as string | undefined;
+    const touchedByUserFilterRaw = req.query.touchedByUserId as string | undefined;
+    const unreadForUserFilterRaw = req.query.unreadForUserId as string | undefined;
     const assigneeUserId =
       assigneeUserFilterRaw === "me" && req.actor.type === "board"
         ? req.actor.userId
         : assigneeUserFilterRaw;
+    const touchedByUserId =
+      touchedByUserFilterRaw === "me" && req.actor.type === "board"
+        ? req.actor.userId
+        : touchedByUserFilterRaw;
+    const unreadForUserId =
+      unreadForUserFilterRaw === "me" && req.actor.type === "board"
+        ? req.actor.userId
+        : unreadForUserFilterRaw;
 
     if (assigneeUserFilterRaw === "me" && (!assigneeUserId || req.actor.type !== "board")) {
       res.status(403).json({ error: "assigneeUserId=me requires board authentication" });
+      return;
+    }
+    if (touchedByUserFilterRaw === "me" && (!touchedByUserId || req.actor.type !== "board")) {
+      res.status(403).json({ error: "touchedByUserId=me requires board authentication" });
+      return;
+    }
+    if (unreadForUserFilterRaw === "me" && (!unreadForUserId || req.actor.type !== "board")) {
+      res.status(403).json({ error: "unreadForUserId=me requires board authentication" });
       return;
     }
 
@@ -201,6 +227,8 @@ export function issueRoutes(db: Db, storage: StorageService) {
       status: req.query.status as string | undefined,
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
       assigneeUserId,
+      touchedByUserId,
+      unreadForUserId,
       projectId: req.query.projectId as string | undefined,
       labelId: req.query.labelId as string | undefined,
       q: req.query.q as string | undefined,
@@ -280,6 +308,38 @@ export function issueRoutes(db: Db, storage: StorageService) {
       ? await projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
       : [];
     res.json({ ...issue, ancestors, project: project ?? null, goal: goal ?? null, mentionedProjects });
+  });
+
+  router.post("/issues/:id/read", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Board authentication required" });
+      return;
+    }
+    if (!req.actor.userId) {
+      res.status(403).json({ error: "Board user context required" });
+      return;
+    }
+    const readState = await svc.markRead(issue.companyId, issue.id, req.actor.userId, new Date());
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.read_marked",
+      entityType: "issue",
+      entityId: issue.id,
+      details: { userId: req.actor.userId, lastReadAt: readState.lastReadAt },
+    });
+    res.json(readState);
   });
 
   router.get("/issues/:id/approvals", async (req, res) => {
@@ -379,7 +439,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       details: { title: issue.title, identifier: issue.identifier },
     });
 
-    if (issue.assigneeAgentId) {
+    if (issue.assigneeAgentId && issue.status !== "backlog") {
       void heartbeat
         .wakeup(issue.assigneeAgentId, {
           source: "assignment",
@@ -469,6 +529,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
 
     const actor = getActorInfo(req);
+    const hasFieldChanges = Object.keys(previous).length > 0;
     await logActivity(db, {
       companyId: issue.companyId,
       actorType: actor.actorType,
@@ -478,7 +539,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
       action: "issue.updated",
       entityType: "issue",
       entityId: issue.id,
-      details: { ...updateFields, identifier: issue.identifier, _previous: Object.keys(previous).length > 0 ? previous : undefined },
+      details: {
+        ...updateFields,
+        identifier: issue.identifier,
+        ...(commentBody ? { source: "comment" } : {}),
+        _previous: hasFieldChanges ? previous : undefined,
+      },
     });
 
     let comment = null;
@@ -502,18 +568,23 @@ export function issueRoutes(db: Db, storage: StorageService) {
           bodySnippet: comment.body.slice(0, 120),
           identifier: issue.identifier,
           issueTitle: issue.title,
+          ...(hasFieldChanges ? { updated: true } : {}),
         },
       });
 
     }
 
     const assigneeChanged = assigneeWillChange;
+    const statusChangedFromBacklog =
+      existing.status === "backlog" &&
+      issue.status !== "backlog" &&
+      req.body.status !== undefined;
 
     // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
     void (async () => {
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
 
-      if (assigneeChanged && issue.assigneeAgentId) {
+      if (assigneeChanged && issue.assigneeAgentId && issue.status !== "backlog") {
         wakeups.set(issue.assigneeAgentId, {
           source: "assignment",
           triggerDetail: "system",
@@ -522,6 +593,18 @@ export function issueRoutes(db: Db, storage: StorageService) {
           requestedByActorType: actor.actorType,
           requestedByActorId: actor.actorId,
           contextSnapshot: { issueId: issue.id, source: "issue.update" },
+        });
+      }
+
+      if (!assigneeChanged && statusChangedFromBacklog && issue.assigneeAgentId) {
+        wakeups.set(issue.assigneeAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_status_changed",
+          payload: { issueId: issue.id, mutation: "update" },
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: { issueId: issue.id, source: "issue.status_change" },
         });
       }
 
@@ -535,6 +618,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
         for (const mentionedId of mentionedIds) {
           if (wakeups.has(mentionedId)) continue;
+          if (actor.actorType === "agent" && actor.actorId === mentionedId) continue;
           wakeups.set(mentionedId, {
             source: "automation",
             triggerDetail: "system",
@@ -634,17 +718,26 @@ export function issueRoutes(db: Db, storage: StorageService) {
       details: { agentId: req.body.agentId },
     });
 
-    void heartbeat
-      .wakeup(req.body.agentId, {
-        source: "assignment",
-        triggerDetail: "system",
-        reason: "issue_checked_out",
-        payload: { issueId: issue.id, mutation: "checkout" },
-        requestedByActorType: actor.actorType,
-        requestedByActorId: actor.actorId,
-        contextSnapshot: { issueId: issue.id, source: "issue.checkout" },
+    if (
+      shouldWakeAssigneeOnCheckout({
+        actorType: req.actor.type,
+        actorAgentId: req.actor.type === "agent" ? req.actor.agentId ?? null : null,
+        checkoutAgentId: req.body.agentId,
+        checkoutRunId,
       })
-      .catch((err) => logger.warn({ err, issueId: issue.id }, "failed to wake assignee on issue checkout"));
+    ) {
+      void heartbeat
+        .wakeup(req.body.agentId, {
+          source: "assignment",
+          triggerDetail: "system",
+          reason: "issue_checked_out",
+          payload: { issueId: issue.id, mutation: "checkout" },
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: { issueId: issue.id, source: "issue.checkout" },
+        })
+        .catch((err) => logger.warn({ err, issueId: issue.id }, "failed to wake assignee on issue checkout"));
+    }
 
     res.json(updated);
   });
@@ -837,7 +930,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
     void (async () => {
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
       const assigneeId = currentIssue.assigneeAgentId;
-      if (assigneeId) {
+      const actorIsAgent = actor.actorType === "agent";
+      const selfComment = actorIsAgent && actor.actorId === assigneeId;
+      const skipWake = selfComment || isClosed;
+      if (assigneeId && (reopened || !skipWake)) {
         if (reopened) {
           wakeups.set(assigneeId, {
             source: "automation",
@@ -896,6 +992,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
       for (const mentionedId of mentionedIds) {
         if (wakeups.has(mentionedId)) continue;
+        if (actorIsAgent && actor.actorId === mentionedId) continue;
         wakeups.set(mentionedId, {
           source: "automation",
           triggerDetail: "system",

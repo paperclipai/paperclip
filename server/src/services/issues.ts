@@ -10,6 +10,7 @@ import {
   issueAttachments,
   issueLabels,
   issueComments,
+  issueReadStates,
   issues,
   labels,
   projectWorkspaces,
@@ -49,6 +50,8 @@ export interface IssueFilters {
   status?: string;
   assigneeAgentId?: string;
   assigneeUserId?: string;
+  touchedByUserId?: string;
+  unreadForUserId?: string;
   projectId?: string;
   labelId?: string;
   q?: string;
@@ -68,6 +71,17 @@ type IssueActiveRunRow = {
 };
 type IssueWithLabels = IssueRow & { labels: IssueLabelRow[]; labelIds: string[] };
 type IssueWithLabelsAndRun = IssueWithLabels & { activeRun: IssueActiveRunRow | null };
+type IssueUserCommentStats = {
+  issueId: string;
+  myLastCommentAt: Date | null;
+  lastExternalCommentAt: Date | null;
+};
+type IssueUserContextInput = {
+  createdByUserId: string | null;
+  assigneeUserId: string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+};
 
 function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
   if (actorRunId) return checkoutRunId === actorRunId;
@@ -78,6 +92,127 @@ const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancell
 
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
+}
+
+function touchedByUserCondition(companyId: string, userId: string) {
+  return sql<boolean>`
+    (
+      ${issues.createdByUserId} = ${userId}
+      OR ${issues.assigneeUserId} = ${userId}
+      OR EXISTS (
+        SELECT 1
+        FROM ${issueReadStates}
+        WHERE ${issueReadStates.issueId} = ${issues.id}
+          AND ${issueReadStates.companyId} = ${companyId}
+          AND ${issueReadStates.userId} = ${userId}
+      )
+      OR EXISTS (
+        SELECT 1
+        FROM ${issueComments}
+        WHERE ${issueComments.issueId} = ${issues.id}
+          AND ${issueComments.companyId} = ${companyId}
+          AND ${issueComments.authorUserId} = ${userId}
+      )
+    )
+  `;
+}
+
+function myLastCommentAtExpr(companyId: string, userId: string) {
+  return sql<Date | null>`
+    (
+      SELECT MAX(${issueComments.createdAt})
+      FROM ${issueComments}
+      WHERE ${issueComments.issueId} = ${issues.id}
+        AND ${issueComments.companyId} = ${companyId}
+        AND ${issueComments.authorUserId} = ${userId}
+    )
+  `;
+}
+
+function myLastReadAtExpr(companyId: string, userId: string) {
+  return sql<Date | null>`
+    (
+      SELECT MAX(${issueReadStates.lastReadAt})
+      FROM ${issueReadStates}
+      WHERE ${issueReadStates.issueId} = ${issues.id}
+        AND ${issueReadStates.companyId} = ${companyId}
+        AND ${issueReadStates.userId} = ${userId}
+    )
+  `;
+}
+
+function myLastTouchAtExpr(companyId: string, userId: string) {
+  const myLastCommentAt = myLastCommentAtExpr(companyId, userId);
+  const myLastReadAt = myLastReadAtExpr(companyId, userId);
+  return sql<Date | null>`
+    GREATEST(
+      COALESCE(${myLastCommentAt}, to_timestamp(0)),
+      COALESCE(${myLastReadAt}, to_timestamp(0)),
+      COALESCE(CASE WHEN ${issues.createdByUserId} = ${userId} THEN ${issues.createdAt} ELSE NULL END, to_timestamp(0)),
+      COALESCE(CASE WHEN ${issues.assigneeUserId} = ${userId} THEN ${issues.updatedAt} ELSE NULL END, to_timestamp(0))
+    )
+  `;
+}
+
+function unreadForUserCondition(companyId: string, userId: string) {
+  const touchedCondition = touchedByUserCondition(companyId, userId);
+  const myLastTouchAt = myLastTouchAtExpr(companyId, userId);
+  return sql<boolean>`
+    (
+      ${touchedCondition}
+      AND EXISTS (
+        SELECT 1
+        FROM ${issueComments}
+        WHERE ${issueComments.issueId} = ${issues.id}
+          AND ${issueComments.companyId} = ${companyId}
+          AND (
+            ${issueComments.authorUserId} IS NULL
+            OR ${issueComments.authorUserId} <> ${userId}
+          )
+          AND ${issueComments.createdAt} > ${myLastTouchAt}
+      )
+    )
+  `;
+}
+
+export function deriveIssueUserContext(
+  issue: IssueUserContextInput,
+  userId: string,
+  stats:
+    | {
+      myLastCommentAt: Date | string | null;
+      myLastReadAt: Date | string | null;
+      lastExternalCommentAt: Date | string | null;
+    }
+    | null
+    | undefined,
+) {
+  const normalizeDate = (value: Date | string | null | undefined) => {
+    if (!value) return null;
+    if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  };
+
+  const myLastCommentAt = normalizeDate(stats?.myLastCommentAt);
+  const myLastReadAt = normalizeDate(stats?.myLastReadAt);
+  const createdTouchAt = issue.createdByUserId === userId ? normalizeDate(issue.createdAt) : null;
+  const assignedTouchAt = issue.assigneeUserId === userId ? normalizeDate(issue.updatedAt) : null;
+  const myLastTouchAt = [myLastCommentAt, myLastReadAt, createdTouchAt, assignedTouchAt]
+    .filter((value): value is Date => value instanceof Date)
+    .sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
+  const lastExternalCommentAt = normalizeDate(stats?.lastExternalCommentAt);
+  const isUnreadForMe = Boolean(
+    myLastTouchAt &&
+    lastExternalCommentAt &&
+    lastExternalCommentAt.getTime() > myLastTouchAt.getTime(),
+  );
+
+  return {
+    myLastTouchAt,
+    lastExternalCommentAt,
+    isUnreadForMe,
+  };
 }
 
 async function labelMapForIssues(dbOrTx: any, issueIds: string[]): Promise<Map<string, IssueLabelRow[]>> {
@@ -284,6 +419,9 @@ export function issueService(db: Db) {
   return {
     list: async (companyId: string, filters?: IssueFilters) => {
       const conditions = [eq(issues.companyId, companyId)];
+      const touchedByUserId = filters?.touchedByUserId?.trim() || undefined;
+      const unreadForUserId = filters?.unreadForUserId?.trim() || undefined;
+      const contextUserId = unreadForUserId ?? touchedByUserId;
       const rawSearch = filters?.q?.trim() ?? "";
       const hasSearch = rawSearch.length > 0;
       const escapedSearch = hasSearch ? escapeLikePattern(rawSearch) : "";
@@ -312,6 +450,12 @@ export function issueService(db: Db) {
       }
       if (filters?.assigneeUserId) {
         conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
+      }
+      if (touchedByUserId) {
+        conditions.push(touchedByUserCondition(companyId, touchedByUserId));
+      }
+      if (unreadForUserId) {
+        conditions.push(unreadForUserCondition(companyId, unreadForUserId));
       }
       if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
       if (filters?.labelId) {
@@ -353,7 +497,102 @@ export function issueService(db: Db) {
         .orderBy(hasSearch ? asc(searchOrder) : asc(priorityOrder), asc(priorityOrder), desc(issues.updatedAt));
       const withLabels = await withIssueLabels(db, rows);
       const runMap = await activeRunMapForIssues(db, withLabels);
-      return withActiveRuns(withLabels, runMap);
+      const withRuns = withActiveRuns(withLabels, runMap);
+      if (!contextUserId || withRuns.length === 0) {
+        return withRuns;
+      }
+
+      const issueIds = withRuns.map((row) => row.id);
+      const statsRows = await db
+        .select({
+          issueId: issueComments.issueId,
+          myLastCommentAt: sql<Date | null>`
+            MAX(CASE WHEN ${issueComments.authorUserId} = ${contextUserId} THEN ${issueComments.createdAt} END)
+          `,
+          lastExternalCommentAt: sql<Date | null>`
+            MAX(
+              CASE
+                WHEN ${issueComments.authorUserId} IS NULL OR ${issueComments.authorUserId} <> ${contextUserId}
+                THEN ${issueComments.createdAt}
+              END
+            )
+          `,
+        })
+        .from(issueComments)
+        .where(
+          and(
+            eq(issueComments.companyId, companyId),
+            inArray(issueComments.issueId, issueIds),
+          ),
+        )
+        .groupBy(issueComments.issueId);
+      const readRows = await db
+        .select({
+          issueId: issueReadStates.issueId,
+          myLastReadAt: issueReadStates.lastReadAt,
+        })
+        .from(issueReadStates)
+        .where(
+          and(
+            eq(issueReadStates.companyId, companyId),
+            eq(issueReadStates.userId, contextUserId),
+            inArray(issueReadStates.issueId, issueIds),
+          ),
+        );
+      const statsByIssueId = new Map(statsRows.map((row) => [row.issueId, row]));
+      const readByIssueId = new Map(readRows.map((row) => [row.issueId, row.myLastReadAt]));
+
+      return withRuns.map((row) => ({
+        ...row,
+        ...deriveIssueUserContext(row, contextUserId, {
+          myLastCommentAt: statsByIssueId.get(row.id)?.myLastCommentAt ?? null,
+          myLastReadAt: readByIssueId.get(row.id) ?? null,
+          lastExternalCommentAt: statsByIssueId.get(row.id)?.lastExternalCommentAt ?? null,
+        }),
+      }));
+    },
+
+    countUnreadTouchedByUser: async (companyId: string, userId: string, status?: string) => {
+      const conditions = [
+        eq(issues.companyId, companyId),
+        isNull(issues.hiddenAt),
+        unreadForUserCondition(companyId, userId),
+      ];
+      if (status) {
+        const statuses = status.split(",").map((s) => s.trim()).filter(Boolean);
+        if (statuses.length === 1) {
+          conditions.push(eq(issues.status, statuses[0]));
+        } else if (statuses.length > 1) {
+          conditions.push(inArray(issues.status, statuses));
+        }
+      }
+      const [row] = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(issues)
+        .where(and(...conditions));
+      return Number(row?.count ?? 0);
+    },
+
+    markRead: async (companyId: string, issueId: string, userId: string, readAt: Date = new Date()) => {
+      const now = new Date();
+      const [row] = await db
+        .insert(issueReadStates)
+        .values({
+          companyId,
+          issueId,
+          userId,
+          lastReadAt: readAt,
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: [issueReadStates.companyId, issueReadStates.issueId, issueReadStates.userId],
+          set: {
+            lastReadAt: readAt,
+            updatedAt: now,
+          },
+        })
+        .returning();
+      return row;
     },
 
     getById: async (id: string) => {

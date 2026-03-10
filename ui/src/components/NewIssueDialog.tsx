@@ -2,7 +2,6 @@ import { useState, useEffect, useRef, useCallback, useMemo, type ChangeEvent } f
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
-import { useToast } from "../context/ToastContext";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { agentsApi } from "../api/agents";
@@ -10,6 +9,7 @@ import { authApi } from "../api/auth";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
 import { useProjectOrder } from "../hooks/useProjectOrder";
+import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import {
   Dialog,
   DialogContent,
@@ -36,6 +36,7 @@ import {
   Paperclip,
 } from "lucide-react";
 import { cn } from "../lib/utils";
+import { extractProviderIdWithFallback } from "../lib/model-utils";
 import { issueStatusText, issueStatusTextDefault, priorityColor, priorityColorDefault } from "../lib/status-colors";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { AgentIcon } from "./AgentIconPicker";
@@ -114,6 +115,8 @@ function buildAssigneeAdapterOverrides(input: {
       adapterConfig.variant = input.thinkingEffortOverride;
     } else if (adapterType === "claude_local") {
       adapterConfig.effort = input.thinkingEffortOverride;
+    } else if (adapterType === "opencode_local") {
+      adapterConfig.variant = input.thinkingEffortOverride;
     }
   }
   if (adapterType === "claude_local" && input.chrome) {
@@ -166,7 +169,6 @@ const priorities = [
 export function NewIssueDialog() {
   const { newIssueOpen, newIssueDefaults, closeNewIssue } = useDialog();
   const { companies, selectedCompanyId, selectedCompany } = useCompany();
-  const { pushToast } = useToast();
   const queryClient = useQueryClient();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -247,27 +249,23 @@ export function NewIssueDialog() {
   }, [agents, orderedProjects]);
 
   const { data: assigneeAdapterModels } = useQuery({
-    queryKey: ["adapter-models", assigneeAdapterType],
-    queryFn: () => agentsApi.adapterModels(assigneeAdapterType!),
-    enabled: !!effectiveCompanyId && newIssueOpen && supportsAssigneeOverrides,
+    queryKey:
+      effectiveCompanyId && assigneeAdapterType
+        ? queryKeys.agents.adapterModels(effectiveCompanyId, assigneeAdapterType)
+        : ["agents", "none", "adapter-models", assigneeAdapterType ?? "none"],
+    queryFn: () => agentsApi.adapterModels(effectiveCompanyId!, assigneeAdapterType!),
+    enabled: Boolean(effectiveCompanyId) && newIssueOpen && supportsAssigneeOverrides,
   });
 
   const createIssue = useMutation({
     mutationFn: ({ companyId, ...data }: { companyId: string } & Record<string, unknown>) =>
       issuesApi.create(companyId, data),
-    onSuccess: (issue) => {
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(effectiveCompanyId!) });
       if (draftTimer.current) clearTimeout(draftTimer.current);
       clearDraft();
       reset();
       closeNewIssue();
-      pushToast({
-        dedupeKey: `activity:issue.created:${issue.id}`,
-        title: `${issue.identifier ?? "Issue"} created`,
-        body: issue.title,
-        tone: "success",
-        action: { label: `View ${issue.identifier ?? "issue"}`, href: `/issues/${issue.identifier ?? issue.id}` },
-      });
     },
   });
 
@@ -325,7 +323,18 @@ export function NewIssueDialog() {
     setDialogCompanyId(selectedCompanyId);
 
     const draft = loadDraft();
-    if (draft && draft.title.trim()) {
+    if (newIssueDefaults.title) {
+      setTitle(newIssueDefaults.title);
+      setDescription(newIssueDefaults.description ?? "");
+      setStatus(newIssueDefaults.status ?? "todo");
+      setPriority(newIssueDefaults.priority ?? "");
+      setProjectId(newIssueDefaults.projectId ?? "");
+      setAssigneeId(newIssueDefaults.assigneeAgentId ?? "");
+      setAssigneeModelOverride("");
+      setAssigneeThinkingEffort("");
+      setAssigneeChrome(false);
+      setAssigneeUseProjectWorkspace(true);
+    } else if (draft && draft.title.trim()) {
       setTitle(draft.title);
       setDescription(draft.description);
       setStatus(draft.status || "todo");
@@ -363,7 +372,7 @@ export function NewIssueDialog() {
         ? ISSUE_THINKING_EFFORT_OPTIONS.codex_local
         : assigneeAdapterType === "opencode_local"
           ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
-        : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
+          : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
     if (!validThinkingValues.some((option) => option.value === assigneeThinkingEffort)) {
       setAssigneeThinkingEffort("");
     }
@@ -472,16 +481,18 @@ export function NewIssueDialog() {
       : assigneeAdapterType === "opencode_local"
         ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
       : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
+  const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [newIssueOpen]);
   const assigneeOptions = useMemo<InlineEntityOption[]>(
     () =>
-      (agents ?? [])
-        .filter((agent) => agent.status !== "terminated")
-        .map((agent) => ({
-          id: agent.id,
-          label: agent.name,
-          searchText: `${agent.name} ${agent.role} ${agent.title ?? ""}`,
-        })),
-    [agents],
+      sortAgentsByRecency(
+        (agents ?? []).filter((agent) => agent.status !== "terminated"),
+        recentAssigneeIds,
+      ).map((agent) => ({
+        id: agent.id,
+        label: agent.name,
+        searchText: `${agent.name} ${agent.role} ${agent.title ?? ""}`,
+      })),
+    [agents, recentAssigneeIds],
   );
   const projectOptions = useMemo<InlineEntityOption[]>(
     () =>
@@ -493,12 +504,21 @@ export function NewIssueDialog() {
     [orderedProjects],
   );
   const modelOverrideOptions = useMemo<InlineEntityOption[]>(
-    () =>
-      (assigneeAdapterModels ?? []).map((model) => ({
-        id: model.id,
-        label: model.label,
-        searchText: model.id,
-      })),
+    () => {
+      return [...(assigneeAdapterModels ?? [])]
+        .sort((a, b) => {
+          const providerA = extractProviderIdWithFallback(a.id);
+          const providerB = extractProviderIdWithFallback(b.id);
+          const byProvider = providerA.localeCompare(providerB);
+          if (byProvider !== 0) return byProvider;
+          return a.id.localeCompare(b.id);
+        })
+        .map((model) => ({
+          id: model.id,
+          label: model.label,
+          searchText: `${model.id} ${extractProviderIdWithFallback(model.id)}`,
+        }));
+    },
     [assigneeAdapterModels],
   );
 
@@ -519,6 +539,18 @@ export function NewIssueDialog() {
             : "sm:max-w-lg"
         )}
         onKeyDown={handleKeyDown}
+        onPointerDownOutside={(event) => {
+          // Radix Dialog's modal DismissableLayer calls preventDefault() on
+          // pointerdown events that originate outside the Dialog DOM tree.
+          // Popover portals render at the body level (outside the Dialog), so
+          // touch events on popover content get their default prevented — which
+          // kills scroll gesture recognition on mobile.  Telling Radix "this
+          // event is handled" skips that preventDefault, restoring touch scroll.
+          const target = event.detail.originalEvent.target as HTMLElement | null;
+          if (target?.closest("[data-radix-popper-content-wrapper]")) {
+            event.preventDefault();
+          }
+        }}
       >
         {/* Header bar */}
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-border shrink-0">
@@ -626,18 +658,19 @@ export function NewIssueDialog() {
         </div>
 
         <div className="px-4 pb-2 shrink-0">
-          <div className="overflow-x-auto">
-            <div className="inline-flex min-w-max items-center gap-2 text-sm text-muted-foreground">
+          <div className="overflow-x-auto overscroll-x-contain">
+            <div className="inline-flex items-center gap-2 text-sm text-muted-foreground flex-wrap sm:flex-nowrap sm:min-w-max">
               <span>For</span>
               <InlineEntitySelector
                 ref={assigneeSelectorRef}
                 value={assigneeId}
                 options={assigneeOptions}
                 placeholder="Assignee"
+                disablePortal
                 noneLabel="No assignee"
                 searchPlaceholder="Search assignees..."
                 emptyMessage="No assignees found."
-                onChange={setAssigneeId}
+                onChange={(id) => { if (id) trackRecentAssignee(id); setAssigneeId(id); }}
                 onConfirm={() => {
                   projectSelectorRef.current?.focus();
                 }}
@@ -668,6 +701,7 @@ export function NewIssueDialog() {
                 value={projectId}
                 options={projectOptions}
                 placeholder="Project"
+                disablePortal
                 noneLabel="No project"
                 searchPlaceholder="Search projects..."
                 emptyMessage="No projects found."
@@ -723,6 +757,7 @@ export function NewIssueDialog() {
                     value={assigneeModelOverride}
                     options={modelOverrideOptions}
                     placeholder="Default model"
+                    disablePortal
                     noneLabel="Default model"
                     searchPlaceholder="Search models..."
                     emptyMessage="No models found."
@@ -796,7 +831,7 @@ export function NewIssueDialog() {
             placeholder="Add description..."
             bordered={false}
             mentions={mentionOptions}
-            contentClassName={cn("text-sm text-muted-foreground", expanded ? "min-h-[220px]" : "min-h-[120px]")}
+            contentClassName={cn("text-sm text-muted-foreground pb-12", expanded ? "min-h-[220px]" : "min-h-[120px]")}
             imageUploadHandler={async (file) => {
               const asset = await uploadDescriptionImage.mutateAsync(file);
               return asset.contentPath;

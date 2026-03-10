@@ -1,5 +1,18 @@
 import * as p from "@clack/prompts";
+import path from "node:path";
 import pc from "picocolors";
+import {
+  AUTH_BASE_URL_MODES,
+  DEPLOYMENT_EXPOSURES,
+  DEPLOYMENT_MODES,
+  SECRET_PROVIDERS,
+  STORAGE_PROVIDERS,
+  type AuthBaseUrlMode,
+  type DeploymentExposure,
+  type DeploymentMode,
+  type SecretProvider,
+  type StorageProvider,
+} from "@paperclipai/shared";
 import { configExists, readConfig, resolveConfigPath, writeConfig } from "../config/store.js";
 import type { PaperclipConfig } from "../config/schema.js";
 import { ensureAgentJwtSecret, resolveAgentJwtEnvFile } from "../config/env.js";
@@ -12,6 +25,7 @@ import { defaultStorageConfig, promptStorage } from "../prompts/storage.js";
 import { promptServer } from "../prompts/server.js";
 import {
   describeLocalInstancePaths,
+  expandHomePrefix,
   resolveDefaultBackupDir,
   resolveDefaultEmbeddedPostgresDir,
   resolveDefaultLogsDir,
@@ -29,18 +43,132 @@ type OnboardOptions = {
   invokedByRun?: boolean;
 };
 
-function quickstartDefaults(): Pick<PaperclipConfig, "database" | "logging" | "server" | "auth" | "storage" | "secrets"> {
+type OnboardDefaults = Pick<PaperclipConfig, "database" | "logging" | "server" | "auth" | "storage" | "secrets">;
+
+const ONBOARD_ENV_KEYS = [
+  "PAPERCLIP_PUBLIC_URL",
+  "DATABASE_URL",
+  "PAPERCLIP_DB_BACKUP_ENABLED",
+  "PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES",
+  "PAPERCLIP_DB_BACKUP_RETENTION_DAYS",
+  "PAPERCLIP_DB_BACKUP_DIR",
+  "PAPERCLIP_DEPLOYMENT_MODE",
+  "PAPERCLIP_DEPLOYMENT_EXPOSURE",
+  "HOST",
+  "PORT",
+  "SERVE_UI",
+  "PAPERCLIP_ALLOWED_HOSTNAMES",
+  "PAPERCLIP_AUTH_BASE_URL_MODE",
+  "PAPERCLIP_AUTH_PUBLIC_BASE_URL",
+  "BETTER_AUTH_URL",
+  "BETTER_AUTH_BASE_URL",
+  "PAPERCLIP_STORAGE_PROVIDER",
+  "PAPERCLIP_STORAGE_LOCAL_DIR",
+  "PAPERCLIP_STORAGE_S3_BUCKET",
+  "PAPERCLIP_STORAGE_S3_REGION",
+  "PAPERCLIP_STORAGE_S3_ENDPOINT",
+  "PAPERCLIP_STORAGE_S3_PREFIX",
+  "PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE",
+  "PAPERCLIP_SECRETS_PROVIDER",
+  "PAPERCLIP_SECRETS_STRICT_MODE",
+  "PAPERCLIP_SECRETS_MASTER_KEY_FILE",
+] as const;
+
+function parseBooleanFromEnv(rawValue: string | undefined): boolean | null {
+  if (rawValue === undefined) return null;
+  const lower = rawValue.trim().toLowerCase();
+  if (lower === "true" || lower === "1" || lower === "yes") return true;
+  if (lower === "false" || lower === "0" || lower === "no") return false;
+  return null;
+}
+
+function parseNumberFromEnv(rawValue: string | undefined): number | null {
+  if (!rawValue) return null;
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed)) return null;
+  return parsed;
+}
+
+function parseEnumFromEnv<T extends string>(rawValue: string | undefined, allowedValues: readonly T[]): T | null {
+  if (!rawValue) return null;
+  return allowedValues.includes(rawValue as T) ? (rawValue as T) : null;
+}
+
+function resolvePathFromEnv(rawValue: string | undefined): string | null {
+  if (!rawValue || rawValue.trim().length === 0) return null;
+  return path.resolve(expandHomePrefix(rawValue.trim()));
+}
+
+function quickstartDefaultsFromEnv(): {
+  defaults: OnboardDefaults;
+  usedEnvKeys: string[];
+  ignoredEnvKeys: Array<{ key: string; reason: string }>;
+} {
   const instanceId = resolvePaperclipInstanceId();
-  return {
+  const defaultStorage = defaultStorageConfig();
+  const defaultSecrets = defaultSecretsConfig();
+  const databaseUrl = process.env.DATABASE_URL?.trim() || undefined;
+  const publicUrl =
+    process.env.PAPERCLIP_PUBLIC_URL?.trim() ||
+    process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL?.trim() ||
+    process.env.BETTER_AUTH_URL?.trim() ||
+    process.env.BETTER_AUTH_BASE_URL?.trim() ||
+    undefined;
+  const deploymentMode =
+    parseEnumFromEnv<DeploymentMode>(process.env.PAPERCLIP_DEPLOYMENT_MODE, DEPLOYMENT_MODES) ?? "local_trusted";
+  const deploymentExposureFromEnv = parseEnumFromEnv<DeploymentExposure>(
+    process.env.PAPERCLIP_DEPLOYMENT_EXPOSURE,
+    DEPLOYMENT_EXPOSURES,
+  );
+  const deploymentExposure =
+    deploymentMode === "local_trusted" ? "private" : (deploymentExposureFromEnv ?? "private");
+  const authPublicBaseUrl = publicUrl;
+  const authBaseUrlModeFromEnv = parseEnumFromEnv<AuthBaseUrlMode>(
+    process.env.PAPERCLIP_AUTH_BASE_URL_MODE,
+    AUTH_BASE_URL_MODES,
+  );
+  const authBaseUrlMode = authBaseUrlModeFromEnv ?? (authPublicBaseUrl ? "explicit" : "auto");
+  const allowedHostnamesFromEnv = process.env.PAPERCLIP_ALLOWED_HOSTNAMES
+    ? process.env.PAPERCLIP_ALLOWED_HOSTNAMES
+      .split(",")
+      .map((value) => value.trim().toLowerCase())
+      .filter((value) => value.length > 0)
+    : [];
+  const hostnameFromPublicUrl = publicUrl
+    ? (() => {
+      try {
+        return new URL(publicUrl).hostname.trim().toLowerCase();
+      } catch {
+        return null;
+      }
+    })()
+    : null;
+  const storageProvider =
+    parseEnumFromEnv<StorageProvider>(process.env.PAPERCLIP_STORAGE_PROVIDER, STORAGE_PROVIDERS) ??
+    defaultStorage.provider;
+  const secretsProvider =
+    parseEnumFromEnv<SecretProvider>(process.env.PAPERCLIP_SECRETS_PROVIDER, SECRET_PROVIDERS) ??
+    defaultSecrets.provider;
+  const databaseBackupEnabled = parseBooleanFromEnv(process.env.PAPERCLIP_DB_BACKUP_ENABLED) ?? true;
+  const databaseBackupIntervalMinutes = Math.max(
+    1,
+    parseNumberFromEnv(process.env.PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES) ?? 60,
+  );
+  const databaseBackupRetentionDays = Math.max(
+    1,
+    parseNumberFromEnv(process.env.PAPERCLIP_DB_BACKUP_RETENTION_DAYS) ?? 30,
+  );
+  const defaults: OnboardDefaults = {
     database: {
-      mode: "embedded-postgres",
+      mode: databaseUrl ? "postgres" : "embedded-postgres",
+      ...(databaseUrl ? { connectionString: databaseUrl } : {}),
       embeddedPostgresDataDir: resolveDefaultEmbeddedPostgresDir(instanceId),
       embeddedPostgresPort: 54329,
       backup: {
-        enabled: true,
-        intervalMinutes: 60,
-        retentionDays: 30,
-        dir: resolveDefaultBackupDir(instanceId),
+        enabled: databaseBackupEnabled,
+        intervalMinutes: databaseBackupIntervalMinutes,
+        retentionDays: databaseBackupRetentionDays,
+        dir: resolvePathFromEnv(process.env.PAPERCLIP_DB_BACKUP_DIR) ?? resolveDefaultBackupDir(instanceId),
       },
     },
     logging: {
@@ -48,19 +176,61 @@ function quickstartDefaults(): Pick<PaperclipConfig, "database" | "logging" | "s
       logDir: resolveDefaultLogsDir(instanceId),
     },
     server: {
-      deploymentMode: "local_trusted",
-      exposure: "private",
-      host: "127.0.0.1",
-      port: 3100,
-      allowedHostnames: [],
-      serveUi: true,
+      deploymentMode,
+      exposure: deploymentExposure,
+      host: process.env.HOST ?? "127.0.0.1",
+      port: Number(process.env.PORT) || 3100,
+      allowedHostnames: Array.from(new Set([...allowedHostnamesFromEnv, ...(hostnameFromPublicUrl ? [hostnameFromPublicUrl] : [])])),
+      serveUi: parseBooleanFromEnv(process.env.SERVE_UI) ?? true,
     },
     auth: {
-      baseUrlMode: "auto",
+      baseUrlMode: authBaseUrlMode,
+      disableSignUp: false,
+      ...(authPublicBaseUrl ? { publicBaseUrl: authPublicBaseUrl } : {}),
     },
-    storage: defaultStorageConfig(),
-    secrets: defaultSecretsConfig(),
+    storage: {
+      provider: storageProvider,
+      localDisk: {
+        baseDir:
+          resolvePathFromEnv(process.env.PAPERCLIP_STORAGE_LOCAL_DIR) ?? defaultStorage.localDisk.baseDir,
+      },
+      s3: {
+        bucket: process.env.PAPERCLIP_STORAGE_S3_BUCKET ?? defaultStorage.s3.bucket,
+        region: process.env.PAPERCLIP_STORAGE_S3_REGION ?? defaultStorage.s3.region,
+        endpoint: process.env.PAPERCLIP_STORAGE_S3_ENDPOINT ?? defaultStorage.s3.endpoint,
+        prefix: process.env.PAPERCLIP_STORAGE_S3_PREFIX ?? defaultStorage.s3.prefix,
+        forcePathStyle:
+          parseBooleanFromEnv(process.env.PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE) ??
+          defaultStorage.s3.forcePathStyle,
+      },
+    },
+    secrets: {
+      provider: secretsProvider,
+      strictMode: parseBooleanFromEnv(process.env.PAPERCLIP_SECRETS_STRICT_MODE) ?? defaultSecrets.strictMode,
+      localEncrypted: {
+        keyFilePath:
+          resolvePathFromEnv(process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE) ??
+          defaultSecrets.localEncrypted.keyFilePath,
+      },
+    },
   };
+  const ignoredEnvKeys: Array<{ key: string; reason: string }> = [];
+  if (deploymentMode === "local_trusted" && process.env.PAPERCLIP_DEPLOYMENT_EXPOSURE !== undefined) {
+    ignoredEnvKeys.push({
+      key: "PAPERCLIP_DEPLOYMENT_EXPOSURE",
+      reason: "Ignored because deployment mode local_trusted always forces private exposure",
+    });
+  }
+
+  const ignoredKeySet = new Set(ignoredEnvKeys.map((entry) => entry.key));
+  const usedEnvKeys = ONBOARD_ENV_KEYS.filter(
+    (key) => process.env[key] !== undefined && !ignoredKeySet.has(key),
+  );
+  return { defaults, usedEnvKeys, ignoredEnvKeys };
+}
+
+function canCreateBootstrapInviteImmediately(config: Pick<PaperclipConfig, "database" | "server">): boolean {
+  return config.server.deploymentMode === "authenticated" && config.database.mode !== "embedded-postgres";
 }
 
 export async function onboard(opts: OnboardOptions): Promise<void> {
@@ -116,6 +286,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
   }
 
   let llm: PaperclipConfig["llm"] | undefined;
+  const { defaults: derivedDefaults, usedEnvKeys, ignoredEnvKeys } = quickstartDefaultsFromEnv();
   let {
     database,
     logging,
@@ -123,7 +294,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     auth,
     storage,
     secrets,
-  } = quickstartDefaults();
+  } = derivedDefaults;
 
   if (setupMode === "advanced") {
     p.log.step(pc.bold("Database"));
@@ -191,13 +362,20 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     logging = await promptLogging();
 
     p.log.step(pc.bold("Server"));
-    ({ server, auth } = await promptServer());
+    ({ server, auth } = await promptServer({ currentServer: server, currentAuth: auth }));
 
     p.log.step(pc.bold("Storage"));
-    storage = await promptStorage(defaultStorageConfig());
+    storage = await promptStorage(storage);
 
     p.log.step(pc.bold("Secrets"));
-    secrets = defaultSecretsConfig();
+    const secretsDefaults = defaultSecretsConfig();
+    secrets = {
+      provider: secrets.provider ?? secretsDefaults.provider,
+      strictMode: secrets.strictMode ?? secretsDefaults.strictMode,
+      localEncrypted: {
+        keyFilePath: secrets.localEncrypted?.keyFilePath ?? secretsDefaults.localEncrypted.keyFilePath,
+      },
+    };
     p.log.message(
       pc.dim(
         `Using defaults: provider=${secrets.provider}, strictMode=${secrets.strictMode}, keyFile=${secrets.localEncrypted.keyFilePath}`,
@@ -205,9 +383,17 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     );
   } else {
     p.log.step(pc.bold("Quickstart"));
-    p.log.message(
-      pc.dim("Using local defaults: embedded database, no LLM provider, file storage, and local encrypted secrets."),
-    );
+    p.log.message(pc.dim("Using quickstart defaults."));
+    if (usedEnvKeys.length > 0) {
+      p.log.message(pc.dim(`Environment-aware defaults active (${usedEnvKeys.length} env var(s) detected).`));
+    } else {
+      p.log.message(
+        pc.dim("No environment overrides detected: embedded database, file storage, local encrypted secrets."),
+      );
+    }
+    for (const ignored of ignoredEnvKeys) {
+      p.log.message(pc.dim(`Ignored ${ignored.key}: ${ignored.reason}`));
+    }
   }
 
   const jwtSecret = ensureAgentJwtSecret(configPath);
@@ -268,7 +454,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     "Next commands",
   );
 
-  if (server.deploymentMode === "authenticated") {
+  if (canCreateBootstrapInviteImmediately({ database, server })) {
     p.log.step("Generating bootstrap CEO invite");
     await bootstrapCeoInvite({ config: configPath });
   }
@@ -289,6 +475,16 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     const { runCommand } = await import("./run.js");
     await runCommand({ config: configPath, repair: true, yes: true });
     return;
+  }
+
+  if (server.deploymentMode === "authenticated" && database.mode === "embedded-postgres") {
+    p.log.info(
+      [
+        "Bootstrap CEO invite will be created after the server starts.",
+        `Next: ${pc.cyan("paperclipai run")}`,
+        `Then: ${pc.cyan("paperclipai auth bootstrap-ceo")}`,
+      ].join("\n"),
+    );
   }
 
   p.outro("You're all set!");

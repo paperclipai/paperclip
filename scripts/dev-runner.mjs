@@ -47,7 +47,7 @@ const serverScript = mode === "watch" ? "dev:watch" : "dev";
 const child = spawn(
   pnpmBin,
   ["--filter", "@paperclipai/server", serverScript, ...forwardedArgs],
-  { stdio: "inherit", env },
+  { stdio: "inherit", env, shell: process.platform === "win32" },
 );
 
 child.on("exit", (code, signal) => {

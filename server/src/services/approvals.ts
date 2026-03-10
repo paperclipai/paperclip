@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { approvalComments, approvals } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { agentService } from "./agents.js";
+import { notifyHireApproved } from "./hire-hook.js";
 
 export function approvalService(db: Db) {
   const agentsSvc = agentService(db);
@@ -59,13 +60,15 @@ export function approvalService(db: Db) {
         .returning()
         .then((rows) => rows[0]);
 
+      let hireApprovedAgentId: string | null = null;
       if (updated.type === "hire_agent") {
         const payload = updated.payload as Record<string, unknown>;
         const payloadAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
         if (payloadAgentId) {
           await agentsSvc.activatePendingApproval(payloadAgentId);
+          hireApprovedAgentId = payloadAgentId;
         } else {
-          await agentsSvc.create(updated.companyId, {
+          const created = await agentsSvc.create(updated.companyId, {
             name: String(payload.name ?? "New Agent"),
             role: String(payload.role ?? "general"),
             title: typeof payload.title === "string" ? payload.title : null,
@@ -87,6 +90,16 @@ export function approvalService(db: Db) {
             permissions: undefined,
             lastHeartbeatAt: null,
           });
+          hireApprovedAgentId = created?.id ?? null;
+        }
+        if (hireApprovedAgentId) {
+          void notifyHireApproved(db, {
+            companyId: updated.companyId,
+            agentId: hireApprovedAgentId,
+            source: "approval",
+            sourceId: id,
+            approvedAt: now,
+          }).catch(() => {});
         }
       }
 
