@@ -1,10 +1,11 @@
 import { useMemo, useState } from "react";
 import { NavLink, useLocation } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
-import { ChevronRight, Plus } from "lucide-react";
+import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
+import { ChevronRight, Pause, Play, Plus, ToggleLeft, ToggleRight } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useSidebar } from "../context/SidebarContext";
+import { useToast } from "../context/ToastContext";
 import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { queryKeys } from "../lib/queryKeys";
@@ -15,7 +16,14 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import type { Agent } from "@paperclipai/shared";
+
+const PAUSABLE_STATUSES = new Set(["active", "idle", "running", "error"]);
 
 /** BFS sort: roots first (no reportsTo), then their direct reports, etc. */
 function sortByHierarchy(agents: Agent[]): Agent[] {
@@ -40,10 +48,13 @@ function sortByHierarchy(agents: Agent[]): Agent[] {
 
 export function SidebarAgents() {
   const [open, setOpen] = useState(true);
+  const [showPaused, setShowPaused] = useState(false);
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialog();
   const { isMobile, setSidebarOpen } = useSidebar();
+  const { pushToast } = useToast();
   const location = useLocation();
+  const queryClient = useQueryClient();
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -66,15 +77,135 @@ export function SidebarAgents() {
     return counts;
   }, [liveRuns]);
 
-  const visibleAgents = useMemo(() => {
+  const nonTerminatedAgents = useMemo(() => {
     const filtered = (agents ?? []).filter(
       (a: Agent) => a.status !== "terminated"
     );
     return sortByHierarchy(filtered);
   }, [agents]);
 
+  const activeAgents = useMemo(
+    () => nonTerminatedAgents.filter((a) => a.status !== "paused"),
+    [nonTerminatedAgents],
+  );
+
+  const pausedAgents = useMemo(
+    () => nonTerminatedAgents.filter((a) => a.status === "paused"),
+    [nonTerminatedAgents],
+  );
+
+  const toggleableAgents = useMemo(
+    () => nonTerminatedAgents.filter((a) => PAUSABLE_STATUSES.has(a.status) || a.status === "paused"),
+    [nonTerminatedAgents],
+  );
+
+  const allPaused = toggleableAgents.length > 0 && toggleableAgents.every((a) => a.status === "paused");
+
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId!) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.org(selectedCompanyId!) });
+  };
+
+  const onError = (err: Error) => {
+    pushToast({ title: err.message, tone: "error" });
+  };
+
+  const pauseAgent = useMutation({
+    mutationFn: (id: string) => agentsApi.pause(id, selectedCompanyId!),
+    onSuccess: invalidate,
+    onError,
+  });
+
+  const resumeAgent = useMutation({
+    mutationFn: (id: string) => agentsApi.resume(id, selectedCompanyId!),
+    onSuccess: invalidate,
+    onError,
+  });
+
+  const bulkToggle = useMutation({
+    mutationFn: async () => {
+      const action = allPaused ? agentsApi.resume : agentsApi.pause;
+      await Promise.all(
+        toggleableAgents
+          .filter((a) => allPaused ? a.status === "paused" : PAUSABLE_STATUSES.has(a.status))
+          .map((a) => action(a.id, selectedCompanyId!)),
+      );
+    },
+    onSuccess: invalidate,
+    onError,
+  });
+
   const agentMatch = location.pathname.match(/^\/(?:[^/]+\/)?agents\/([^/]+)/);
   const activeAgentId = agentMatch?.[1] ?? null;
+
+  const renderAgentRow = (agent: Agent, dimmed = false) => {
+    const runCount = liveCountByAgent.get(agent.id) ?? 0;
+    const isPaused = agent.status === "paused";
+    const canToggle = PAUSABLE_STATUSES.has(agent.status) || isPaused;
+
+    return (
+      <NavLink
+        key={agent.id}
+        to={agentUrl(agent)}
+        onClick={() => {
+          if (isMobile) setSidebarOpen(false);
+        }}
+        className={cn(
+          "flex items-center gap-2.5 px-3 py-1.5 text-[13px] font-medium transition-colors",
+          activeAgentId === agentRouteRef(agent)
+            ? "bg-accent text-foreground"
+            : dimmed
+              ? "text-muted-foreground/60 hover:bg-accent/50 hover:text-foreground"
+              : "text-foreground/80 hover:bg-accent/50 hover:text-foreground"
+        )}
+      >
+        <AgentIcon icon={agent.icon} className={cn("shrink-0 h-3.5 w-3.5", dimmed ? "text-muted-foreground/40" : "text-muted-foreground")} />
+        <span className="flex-1 truncate">{agent.name}</span>
+        {runCount > 0 && (
+          <span className="ml-auto flex items-center gap-1.5 shrink-0">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+            </span>
+            <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">
+              {runCount} live
+            </span>
+          </span>
+        )}
+        {canToggle && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  if (isPaused) {
+                    resumeAgent.mutate(agent.id);
+                  } else {
+                    pauseAgent.mutate(agent.id);
+                  }
+                }}
+                disabled={pauseAgent.isPending || resumeAgent.isPending}
+                className={cn(
+                  "ml-auto flex items-center justify-center h-4 w-4 rounded shrink-0 transition-colors",
+                  isPaused
+                    ? "text-orange-500 hover:text-orange-600 hover:bg-orange-100 dark:hover:bg-orange-500/20"
+                    : "text-muted-foreground/40 hover:text-foreground hover:bg-accent/50"
+                )}
+                aria-label={isPaused ? `Resume ${agent.name}` : `Pause ${agent.name}`}
+              >
+                {isPaused ? <Play className="h-2.5 w-2.5" /> : <Pause className="h-2.5 w-2.5" />}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right">
+              <p>{isPaused ? "Resume" : "Pause"}</p>
+            </TooltipContent>
+          </Tooltip>
+        )}
+      </NavLink>
+    );
+  };
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
@@ -91,6 +222,57 @@ export function SidebarAgents() {
               Agents
             </span>
           </CollapsibleTrigger>
+          {toggleableAgents.length > 0 && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    bulkToggle.mutate();
+                  }}
+                  disabled={bulkToggle.isPending}
+                  className={cn(
+                    "flex items-center justify-center h-4 w-4 rounded transition-colors",
+                    allPaused
+                      ? "text-orange-500 hover:text-orange-600 hover:bg-orange-100 dark:hover:bg-orange-500/20"
+                      : "text-muted-foreground/60 hover:text-foreground hover:bg-accent/50"
+                  )}
+                  aria-label={allPaused ? "Resume all agents" : "Pause all agents"}
+                >
+                  {allPaused ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top">
+                <p>{allPaused ? "Resume all agents" : `Pause all agents${pausedAgents.length > 0 ? ` (${pausedAgents.length} paused)` : ""}`}</p>
+              </TooltipContent>
+            </Tooltip>
+          )}
+          {pausedAgents.length > 0 && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowPaused((prev) => !prev);
+                  }}
+                  className={cn(
+                    "flex items-center justify-center h-4 w-4 rounded transition-colors",
+                    showPaused
+                      ? "text-foreground/80 hover:text-foreground hover:bg-accent/50"
+                      : "text-muted-foreground/60 hover:text-foreground hover:bg-accent/50"
+                  )}
+                  aria-label={showPaused ? "Hide paused agents" : "Show paused agents"}
+                >
+                  {showPaused ? <ToggleRight className="h-3 w-3" /> : <ToggleLeft className="h-3 w-3" />}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top">
+                <p>{showPaused ? "Hide paused" : `Show paused (${pausedAgents.length})`}</p>
+              </TooltipContent>
+            </Tooltip>
+          )}
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -106,39 +288,13 @@ export function SidebarAgents() {
 
       <CollapsibleContent>
         <div className="flex flex-col gap-0.5 mt-0.5">
-          {visibleAgents.map((agent: Agent) => {
-            const runCount = liveCountByAgent.get(agent.id) ?? 0;
-            return (
-              <NavLink
-                key={agent.id}
-                to={agentUrl(agent)}
-                onClick={() => {
-                  if (isMobile) setSidebarOpen(false);
-                }}
-                className={cn(
-                  "flex items-center gap-2.5 px-3 py-1.5 text-[13px] font-medium transition-colors",
-                  activeAgentId === agentRouteRef(agent)
-                    ? "bg-accent text-foreground"
-                    : "text-foreground/80 hover:bg-accent/50 hover:text-foreground"
-                )}
-              >
-                <AgentIcon icon={agent.icon} className="shrink-0 h-3.5 w-3.5 text-muted-foreground" />
-                <span className="flex-1 truncate">{agent.name}</span>
-                {runCount > 0 && (
-                  <span className="ml-auto flex items-center gap-1.5 shrink-0">
-                    <span className="relative flex h-2 w-2">
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-                      <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
-                    </span>
-                    <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">
-                      {runCount} live
-                    </span>
-                  </span>
-                )}
-              </NavLink>
-            );
-          })}
+          {activeAgents.map((agent: Agent) => renderAgentRow(agent))}
         </div>
+        {showPaused && pausedAgents.length > 0 && (
+          <div className="flex flex-col gap-0.5 mt-0.5">
+            {pausedAgents.map((agent: Agent) => renderAgentRow(agent, true))}
+          </div>
+        )}
       </CollapsibleContent>
     </Collapsible>
   );
