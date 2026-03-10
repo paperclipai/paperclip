@@ -136,8 +136,9 @@ export async function createApp(
     const uiDist = candidates.find((p) => fs.existsSync(path.join(p, "index.html")));
     if (uiDist) {
       const indexHtml = fs.readFileSync(path.join(uiDist, "index.html"), "utf-8");
-      app.use(express.static(uiDist));
-      app.get(/.*/, (_req, res) => {
+      app.use(express.static(uiDist, { fallthrough: true }));
+      app.use((req, res, next) => {
+        if (req.path.startsWith("/api/")) return next();
         res.status(200).set("Content-Type", "text/html").end(indexHtml);
       });
     } else {
