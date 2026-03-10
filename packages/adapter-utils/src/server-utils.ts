@@ -31,8 +31,7 @@ type ChildProcessWithEvents = ChildProcess & {
 export const runningProcesses = new Map<string, RunningProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
-const SENSITIVE_ENV_KEY =
-  /(key|token|secret|password|passwd|authorization|cookie)/i;
+const SENSITIVE_ENV_KEY = /(key|token|secret|password|passwd|authorization|cookie)/i;
 
 export function parseObject(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -54,9 +53,7 @@ export function asBoolean(value: unknown, fallback: boolean): boolean {
 }
 
 export function asStringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string")
-    : [];
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
 export function parseJson(value: string): Record<string, unknown> | null {
@@ -67,30 +64,17 @@ export function parseJson(value: string): Record<string, unknown> | null {
   }
 }
 
-export function appendWithCap(
-  prev: string,
-  chunk: string,
-  cap = MAX_CAPTURE_BYTES,
-) {
+export function appendWithCap(prev: string, chunk: string, cap = MAX_CAPTURE_BYTES) {
   const combined = prev + chunk;
-  return combined.length > cap
-    ? combined.slice(combined.length - cap)
-    : combined;
+  return combined.length > cap ? combined.slice(combined.length - cap) : combined;
 }
 
-export function resolvePathValue(
-  obj: Record<string, unknown>,
-  dottedPath: string,
-) {
+export function resolvePathValue(obj: Record<string, unknown>, dottedPath: string) {
   const parts = dottedPath.split(".");
   let cursor: unknown = obj;
 
   for (const part of parts) {
-    if (
-      typeof cursor !== "object" ||
-      cursor === null ||
-      Array.isArray(cursor)
-    ) {
+    if (typeof cursor !== "object" || cursor === null || Array.isArray(cursor)) {
       return "";
     }
     cursor = (cursor as Record<string, unknown>)[part];
@@ -98,8 +82,7 @@ export function resolvePathValue(
 
   if (cursor === null || cursor === undefined) return "";
   if (typeof cursor === "string") return cursor;
-  if (typeof cursor === "number" || typeof cursor === "boolean")
-    return String(cursor);
+  if (typeof cursor === "number" || typeof cursor === "boolean") return String(cursor);
 
   try {
     return JSON.stringify(cursor);
@@ -108,18 +91,11 @@ export function resolvePathValue(
   }
 }
 
-export function renderTemplate(
-  template: string,
-  data: Record<string, unknown>,
-) {
-  return template.replace(/{{\s*([a-zA-Z0-9_.-]+)\s*}}/g, (_, path) =>
-    resolvePathValue(data, path),
-  );
+export function renderTemplate(template: string, data: Record<string, unknown>) {
+  return template.replace(/{{\s*([a-zA-Z0-9_.-]+)\s*}}/g, (_, path) => resolvePathValue(data, path));
 }
 
-export function redactEnvForLogs(
-  env: Record<string, string>,
-): Record<string, string> {
+export function redactEnvForLogs(env: Record<string, string>): Record<string, string> {
   const redacted: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
     redacted[key] = SENSITIVE_ENV_KEY.test(key) ? "***REDACTED***" : value;
@@ -127,15 +103,11 @@ export function redactEnvForLogs(
   return redacted;
 }
 
-export function buildPaperclipEnv(agent: {
-  id: string;
-  companyId: string;
-}): Record<string, string> {
+export function buildPaperclipEnv(agent: { id: string; companyId: string }): Record<string, string> {
   const resolveHostForUrl = (rawHost: string): string => {
     const host = rawHost.trim();
     if (!host || host === "0.0.0.0" || host === "::") return "localhost";
-    if (host.includes(":") && !host.startsWith("[") && !host.endsWith("]"))
-      return `[${host}]`;
+    if (host.includes(":") && !host.startsWith("[") && !host.endsWith("]")) return `[${host}]`;
     return host;
   };
   const vars: Record<string, string> = {
@@ -145,61 +117,13 @@ export function buildPaperclipEnv(agent: {
   const runtimeHost = resolveHostForUrl(
     process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost",
   );
-  const runtimePort =
-    process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
-  const apiUrl =
-    process.env.PAPERCLIP_API_URL ?? `http://${runtimeHost}:${runtimePort}`;
+  const runtimePort = process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
+  const apiUrl = process.env.PAPERCLIP_API_URL ?? `http://${runtimeHost}:${runtimePort}`;
   vars.PAPERCLIP_API_URL = apiUrl;
   return vars;
 }
 
-// ── Path Enhancement ───────────────────────────────────────────────────────────
-async function detectNvmPath(home: string): Promise<string | null> {
-  const nvmDir = path.join(home, ".nvm");
-  const aliasPath = path.join(nvmDir, "alias/default");
-
-  const alias = await fs
-    .readFile(aliasPath, "utf-8")
-    .then((s) => s.trim())
-    .catch(() => null);
-  if (!alias) return null;
-
-  const nodeVersionsDir = path.join(nvmDir, "versions/node");
-  const candidates = [
-    path.join(nodeVersionsDir, alias, "bin"),
-    path.join(nodeVersionsDir, `v${alias}`, "bin"),
-  ];
-
-  for (const p of candidates) {
-    if (await pathExists(p)) return p;
-  }
-
-  // Fallback: pick highest version
-  const versions = await fs.readdir(nodeVersionsDir).catch(() => []);
-  const validBins = await Promise.all(
-    versions
-      .filter((v) => v.startsWith("v"))
-      .map((v) => path.join(nodeVersionsDir, v, "bin"))
-      .map(async (p) => ((await pathExists(p)) ? p : null)),
-  );
-  const sorted = validBins.filter(Boolean).sort();
-  return sorted.at(-1) ?? null;
-}
-
-async function detectVoltaPath(home: string): Promise<string | null> {
-  const voltaBin = path.join(home, ".volta", "bin");
-  return (await pathExists(voltaBin)) ? voltaBin : null;
-}
-
-async function detectNodeBinPath(): Promise<string | null> {
-  if (process.platform === "win32") return null;
-  const home = process.env.HOME ?? process.env.USERPROFILE;
-  if (!home) return null;
-
-  return (await detectNvmPath(home)) ?? (await detectVoltaPath(home));
-}
-
-export function defaultPathForPlatform(): string {
+export function defaultPathForPlatform() {
   if (process.platform === "win32") {
     return "C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\Wbem";
   }
@@ -212,26 +136,17 @@ function windowsPathExts(env: NodeJS.ProcessEnv): string[] {
 
 async function pathExists(candidate: string) {
   try {
-    await fs.access(
-      candidate,
-      process.platform === "win32" ? fsConstants.F_OK : fsConstants.X_OK,
-    );
+    await fs.access(candidate, process.platform === "win32" ? fsConstants.F_OK : fsConstants.X_OK);
     return true;
   } catch {
     return false;
   }
 }
 
-async function resolveCommandPath(
-  command: string,
-  cwd: string,
-  env: NodeJS.ProcessEnv,
-): Promise<string | null> {
+async function resolveCommandPath(command: string, cwd: string, env: NodeJS.ProcessEnv): Promise<string | null> {
   const hasPathSeparator = command.includes("/") || command.includes("\\");
   if (hasPathSeparator) {
-    const absolute = path.isAbsolute(command)
-      ? command
-      : path.resolve(cwd, command);
+    const absolute = path.isAbsolute(command) ? command : path.resolve(cwd, command);
     return (await pathExists(absolute)) ? absolute : null;
   }
 
@@ -239,8 +154,7 @@ async function resolveCommandPath(
   const delimiter = process.platform === "win32" ? ";" : ":";
   const dirs = pathValue.split(delimiter).filter(Boolean);
   const exts = process.platform === "win32" ? windowsPathExts(env) : [""];
-  const hasExtension =
-    process.platform === "win32" && path.extname(command).length > 0;
+  const hasExtension = process.platform === "win32" && path.extname(command).length > 0;
 
   for (const dir of dirs) {
     const candidates =
@@ -278,10 +192,7 @@ async function resolveSpawnTarget(
 
   if (/\.(cmd|bat)$/i.test(executable)) {
     const shell = env.ComSpec || process.env.ComSpec || "cmd.exe";
-    const commandLine = [
-      quoteForCmd(executable),
-      ...args.map(quoteForCmd),
-    ].join(" ");
+    const commandLine = [quoteForCmd(executable), ...args.map(quoteForCmd)].join(" ");
     return {
       command: shell,
       args: ["/d", "/s", "/c", commandLine],
@@ -291,26 +202,10 @@ async function resolveSpawnTarget(
   return { command: executable, args };
 }
 
-export async function ensurePathInEnv(
-  env: NodeJS.ProcessEnv,
-): Promise<NodeJS.ProcessEnv> {
-  const currentPath = env.PATH ?? env.Path ?? "";
-  const nodeBin = await detectNodeBinPath();
-
-  if (!nodeBin) {
-    // No node path detected, ensure PATH has default value
-    if (currentPath) return env;
-    return { ...env, PATH: defaultPathForPlatform() };
-  }
-
-  if (!currentPath) {
-    // Empty PATH: build from node bin + default
-    return { ...env, PATH: `${nodeBin}:${defaultPathForPlatform()}` };
-  }
-
-  // Existing PATH: prepend node bin if not present
-  const hasNodeBin = currentPath.split(":").includes(nodeBin);
-  return hasNodeBin ? env : { ...env, PATH: `${nodeBin}:${currentPath}` };
+export function ensurePathInEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  if (typeof env.PATH === "string" && env.PATH.length > 0) return env;
+  if (typeof env.Path === "string" && env.Path.length > 0) return env;
+  return { ...env, PATH: defaultPathForPlatform() };
 }
 
 export async function ensureAbsoluteDirectory(
@@ -350,20 +245,12 @@ export async function ensureAbsoluteDirectory(
   }
 }
 
-export async function ensureCommandResolvable(
-  command: string,
-  cwd: string,
-  env: NodeJS.ProcessEnv,
-) {
+export async function ensureCommandResolvable(command: string, cwd: string, env: NodeJS.ProcessEnv) {
   const resolved = await resolveCommandPath(command, cwd, env);
   if (resolved) return;
   if (command.includes("/") || command.includes("\\")) {
-    const absolute = path.isAbsolute(command)
-      ? command
-      : path.resolve(cwd, command);
-    throw new Error(
-      `Command is not executable: "${command}" (resolved: "${absolute}")`,
-    );
+    const absolute = path.isAbsolute(command) ? command : path.resolve(cwd, command);
+    throw new Error(`Command is not executable: "${command}" (resolved: "${absolute}")`);
   }
   throw new Error(`Command not found in PATH: "${command}"`);
 }
@@ -382,11 +269,9 @@ export async function runChildProcess(
     stdin?: string;
   },
 ): Promise<RunProcessResult> {
-  const onLogError =
-    opts.onLogError ??
-    ((err, id, msg) => console.warn({ err, runId: id }, msg));
+  const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
 
-  return new Promise<RunProcessResult>(async (resolve, reject) => {
+  return new Promise<RunProcessResult>((resolve, reject) => {
     const rawMerged: NodeJS.ProcessEnv = { ...process.env, ...opts.env };
 
     // Strip Claude Code nesting-guard env vars so spawned `claude` processes
@@ -404,7 +289,7 @@ export async function runChildProcess(
       delete rawMerged[key];
     }
 
-    const mergedEnv = await ensurePathInEnv(rawMerged);
+    const mergedEnv = ensurePathInEnv(rawMerged);
     void resolveSpawnTarget(command, args, opts.cwd, mergedEnv)
       .then((target) => {
         const child = spawn(target.command, target.args, {
@@ -444,9 +329,7 @@ export async function runChildProcess(
           stdout = appendWithCap(stdout, text);
           logChain = logChain
             .then(() => opts.onLog("stdout", text))
-            .catch((err) =>
-              onLogError(err, runId, "failed to append stdout log chunk"),
-            );
+            .catch((err) => onLogError(err, runId, "failed to append stdout log chunk"));
         });
 
         child.stderr?.on("data", (chunk: unknown) => {
@@ -454,9 +337,7 @@ export async function runChildProcess(
           stderr = appendWithCap(stderr, text);
           logChain = logChain
             .then(() => opts.onLog("stderr", text))
-            .catch((err) =>
-              onLogError(err, runId, "failed to append stderr log chunk"),
-            );
+            .catch((err) => onLogError(err, runId, "failed to append stderr log chunk"));
         });
 
         child.on("error", (err: Error) => {
@@ -471,22 +352,19 @@ export async function runChildProcess(
           reject(new Error(msg));
         });
 
-        child.on(
-          "close",
-          (code: number | null, signal: NodeJS.Signals | null) => {
-            if (timeout) clearTimeout(timeout);
-            runningProcesses.delete(runId);
-            void logChain.finally(() => {
-              resolve({
-                exitCode: code,
-                signal,
-                timedOut,
-                stdout,
-                stderr,
-              });
+        child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
+          if (timeout) clearTimeout(timeout);
+          runningProcesses.delete(runId);
+          void logChain.finally(() => {
+            resolve({
+              exitCode: code,
+              signal,
+              timedOut,
+              stdout,
+              stderr,
             });
-          },
-        );
+          });
+        });
       })
       .catch(reject);
   });

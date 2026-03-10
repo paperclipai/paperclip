@@ -90,7 +90,7 @@ export async function testEnvironment(
     });
   }
 
-  const runtimeEnv = normalizeEnv(await ensurePathInEnv({ ...process.env, ...env }));
+  const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...env }));
 
   const cwdInvalid = checks.some((check) => check.code === "opencode_cwd_invalid");
   if (cwdInvalid) {

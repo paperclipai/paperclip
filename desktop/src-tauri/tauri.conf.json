@@ -10,7 +10,7 @@
     "windows": [],
     "withGlobalTauri": true,
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'"
     }
   },
   "bundle": {

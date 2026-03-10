@@ -104,7 +104,7 @@ export class ErrorBoundary extends Component<Props, State> {
             </button>
           </div>
           <p style={{ marginTop: 12, fontSize: 12, color: "#94a3b8", opacity: 0.6 }}>
-            Press Cmd+R to reload
+            Press Ctrl/Cmd+R to reload
           </p>
         </div>
       </div>

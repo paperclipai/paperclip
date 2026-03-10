@@ -1,6 +1,7 @@
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::net::TcpStream;
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,7 +18,7 @@ const PORT_SCAN_TIMEOUT_MS: u64 = 150;
 const PORT_SCAN_START_DELAY_SEC: u64 = 2;
 const SERVER_START_TIMEOUT_SEC: u32 = 90;
 const WINDOW_INITIAL_WIDTH: f64 = 640.0;
-const WINDOW_INITIAL_HEIGHT: f64 = 480.0;
+const WINDOW_INITIAL_HEIGHT: f64 = 580.0;
 const WINDOW_NORMAL_WIDTH: f64 = 1280.0;
 const WINDOW_NORMAL_HEIGHT: f64 = 800.0;
 const WINDOW_MIN_WIDTH: f64 = 800.0;
@@ -64,11 +65,22 @@ impl Drop for ServerState {
     fn drop(&mut self) {
         if let Ok(mut guard) = self.0.lock() {
             if let Some(mut child) = guard.take() {
-                let _ = child.kill();
-                let _ = child.wait();
+                kill_process_group(&mut child);
             }
         }
     }
+}
+
+/// Kill the entire process group spawned for the server child.
+/// Because we use `.process_group(0)`, the child's PGID equals its PID,
+/// so `kill -- -<pgid>` terminates all descendants (pnpm, tsx, node, postgres…).
+fn kill_process_group(child: &mut Child) {
+    let pgid = child.id();
+    let _ = Command::new("kill")
+        .args(["-9", &format!("-{pgid}")])
+        .status();
+    let _ = child.kill(); // belt-and-suspenders for the direct child
+    let _ = child.wait();
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -322,7 +334,10 @@ fn navigate_to(handle: &AppHandle, url: &str) {
     let url = url.to_string();
     let _ = handle.run_on_main_thread(move || {
         if let Some(w) = h.get_webview_window("main") {
-            let js = format!("window.location.replace('{url}')");
+            let js = format!(
+                "window.location.replace({})",
+                serde_json::to_string(&url).unwrap_or_else(|_| "\"\"".to_string()),
+            );
             let _ = w.eval(&js);
             let _ = w.set_size(LogicalSize::new(WINDOW_NORMAL_WIDTH, WINDOW_NORMAL_HEIGHT));
             let _ = w.set_min_size(Some(LogicalSize::new(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)));
@@ -366,6 +381,7 @@ fn spawn_server(project_root: &str, handle: AppHandle) -> Result<Child, String> 
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .process_group(0) // new process group so we can kill all descendants
         .spawn()
         .map_err(|e| format!("Failed to start server: {e}"))?;
 
@@ -467,7 +483,13 @@ async fn launch(
 ) -> Result<(), String> {
     save_config(&Config { project_root: path.clone() }).map_err(|e| e.to_string())?;
     let child = spawn_server(&path, app)?;
-    *state.0.lock().unwrap() = Some(child);
+    {
+        let mut guard = state.0.lock().unwrap();
+        if let Some(mut old) = guard.take() {
+            kill_process_group(&mut old);
+        }
+        *guard = Some(child);
+    }
     Ok(())
 }
 
@@ -516,6 +538,14 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
                 if window.app_handle().webview_windows().is_empty() {
+                    // Explicitly kill the child before exit — exit(0) skips Drop impls.
+                    if let Some(state) = window.app_handle().try_state::<ServerState>() {
+                        if let Ok(mut guard) = state.0.lock() {
+                            if let Some(mut child) = guard.take() {
+                                kill_process_group(&mut child);
+                            }
+                        }
+                    }
                     window.app_handle().exit(0);
                 }
             }
