@@ -94,8 +94,15 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (req.actor.type === "agent") {
       if (!req.actor.agentId) throw forbidden("Agent authentication required");
       const allowed = await access.hasPermission(companyId, "agent", req.actor.agentId, "tasks:assign");
-      if (!allowed) throw forbidden("Missing permission: tasks:assign");
-      return;
+      if (allowed) return;
+      // Legacy fallback: agents with canCreateAgents also have implicit task-assign
+      // permission. This covers agents created after the migration but before the
+      // UI/API is updated to manage grants explicitly.
+      const actorAgent = await agentsSvc.getById(req.actor.agentId);
+      if (actorAgent && actorAgent.companyId === companyId) {
+        if (actorAgent.role === "ceo" || Boolean(actorAgent.permissions?.canCreateAgents)) return;
+      }
+      throw forbidden("Missing permission: tasks:assign");
     }
     throw unauthorized();
   }
