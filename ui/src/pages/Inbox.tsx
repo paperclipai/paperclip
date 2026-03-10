@@ -841,38 +841,44 @@ export function Inbox() {
               {staleIssues.map((issue) => (
                 <div
                   key={issue.id}
-                  className="group/stale relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50"
+                  className="group/stale relative flex items-start gap-2 overflow-hidden px-3 py-3 transition-colors hover:bg-accent/50 sm:items-center sm:gap-3 sm:px-4"
                 >
+                  {/* Status icon - left column on mobile; Clock icon on desktop */}
+                  <span className="shrink-0 sm:hidden">
+                    <StatusIcon status={issue.status} />
+                  </span>
+                  <Clock className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground hidden sm:block sm:mt-0" />
+
                   <Link
                     to={`/issues/${issue.identifier ?? issue.id}`}
-                    className="flex flex-1 cursor-pointer items-center gap-3 no-underline text-inherit"
+                    className="flex min-w-0 flex-1 cursor-pointer flex-col gap-1 no-underline text-inherit sm:flex-row sm:items-center sm:gap-3"
                   >
-                    <Clock className="h-4 w-4 shrink-0 text-muted-foreground" />
-                    <PriorityIcon priority={issue.priority} />
-                    <StatusIcon status={issue.status} />
-                    <span className="text-xs font-mono text-muted-foreground">
-                      {issue.identifier ?? issue.id.slice(0, 8)}
+                    <span className="line-clamp-2 text-sm sm:order-2 sm:flex-1 sm:min-w-0 sm:line-clamp-none sm:truncate">
+                      {issue.title}
                     </span>
-                    <span className="flex-1 truncate text-sm">{issue.title}</span>
-                    {issue.assigneeAgentId &&
-                      (() => {
-                        const name = agentName(issue.assigneeAgentId);
-                        return name ? (
-                          <Identity name={name} size="sm" />
-                        ) : (
-                          <span className="font-mono text-xs text-muted-foreground">
-                            {issue.assigneeAgentId.slice(0, 8)}
-                          </span>
-                        );
-                      })()}
-                    <span className="shrink-0 text-xs text-muted-foreground">
-                      updated {timeAgo(issue.updatedAt)}
+                    <span className="flex items-center gap-2 sm:order-1 sm:shrink-0">
+                      <span className="hidden sm:inline-flex"><PriorityIcon priority={issue.priority} /></span>
+                      <span className="hidden sm:inline-flex"><StatusIcon status={issue.status} /></span>
+                      <span className="shrink-0 text-xs font-mono text-muted-foreground">
+                        {issue.identifier ?? issue.id.slice(0, 8)}
+                      </span>
+                      {issue.assigneeAgentId &&
+                        (() => {
+                          const name = agentName(issue.assigneeAgentId);
+                          return name ? (
+                            <span className="hidden sm:inline-flex"><Identity name={name} size="sm" /></span>
+                          ) : null;
+                        })()}
+                      <span className="text-xs text-muted-foreground sm:hidden">&middot;</span>
+                      <span className="shrink-0 text-xs text-muted-foreground sm:order-last">
+                        updated {timeAgo(issue.updatedAt)}
+                      </span>
                     </span>
                   </Link>
                   <button
                     type="button"
                     onClick={() => dismiss(`stale:${issue.id}`)}
-                    className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/stale:opacity-100"
+                    className="mt-0.5 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/stale:opacity-100 sm:mt-0"
                     aria-label="Dismiss"
                   >
                     <X className="h-3.5 w-3.5" />
@@ -896,47 +902,94 @@ export function Inbox() {
                 const isUnread = issue.isUnreadForMe && !fadingOutIssues.has(issue.id);
                 const isFading = fadingOutIssues.has(issue.id);
                 return (
-                  <div
+                  <Link
                     key={issue.id}
-                    className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50"
+                    to={`/issues/${issue.identifier ?? issue.id}`}
+                    className="flex min-w-0 cursor-pointer items-start gap-2 px-3 py-3 no-underline text-inherit transition-colors hover:bg-accent/50 sm:items-center sm:gap-3 sm:px-4"
                   >
-                    <span className="flex w-4 shrink-0 justify-center">
-                      {(isUnread || isFading) && (
-                        <button
-                          type="button"
-                          onClick={(e) => {
+                    {/* Status icon - left column on mobile, inline on desktop */}
+                    <span className="shrink-0 sm:hidden">
+                      <StatusIcon status={issue.status} />
+                    </span>
+
+                    {/* Right column on mobile: title + metadata stacked */}
+                    <span className="flex min-w-0 flex-1 flex-col gap-1 sm:contents">
+                      <span className="line-clamp-2 text-sm sm:order-2 sm:flex-1 sm:min-w-0 sm:line-clamp-none sm:truncate">
+                        {issue.title}
+                      </span>
+                      <span className="flex items-center gap-2 sm:order-1 sm:shrink-0">
+                        {(isUnread || isFading) ? (
+                          <span
+                            role="button"
+                            tabIndex={0}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              markReadMutation.mutate(issue.id);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                markReadMutation.mutate(issue.id);
+                              }
+                            }}
+                            className="hidden sm:inline-flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors hover:bg-blue-500/20"
+                            aria-label="Mark as read"
+                          >
+                            <span
+                              className={`h-2 w-2 rounded-full bg-blue-600 dark:bg-blue-400 transition-opacity duration-300 ${
+                                isFading ? "opacity-0" : "opacity-100"
+                              }`}
+                            />
+                          </span>
+                        ) : (
+                          <span className="hidden sm:inline-flex h-4 w-4 shrink-0" />
+                        )}
+                        <span className="hidden sm:inline-flex"><PriorityIcon priority={issue.priority} /></span>
+                        <span className="hidden sm:inline-flex"><StatusIcon status={issue.status} /></span>
+                        <span className="text-xs font-mono text-muted-foreground">
+                          {issue.identifier ?? issue.id.slice(0, 8)}
+                        </span>
+                        <span className="text-xs text-muted-foreground sm:hidden">
+                          &middot;
+                        </span>
+                        <span className="text-xs text-muted-foreground sm:order-last">
+                          {issue.lastExternalCommentAt
+                            ? `commented ${timeAgo(issue.lastExternalCommentAt)}`
+                            : `updated ${timeAgo(issue.updatedAt)}`}
+                        </span>
+                      </span>
+                    </span>
+
+                    {/* Unread dot - right side, vertically centered (mobile only; desktop keeps inline) */}
+                    {(isUnread || isFading) && (
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          markReadMutation.mutate(issue.id);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
                             e.preventDefault();
                             e.stopPropagation();
                             markReadMutation.mutate(issue.id);
-                          }}
-                          className="group/dot flex h-4 w-4 items-center justify-center rounded-full transition-colors hover:bg-blue-500/20"
-                          aria-label="Mark as read"
-                        >
-                          <span
-                            className={`h-2.5 w-2.5 rounded-full bg-blue-600 dark:bg-blue-400 transition-opacity duration-300 ${
-                              isFading ? "opacity-0" : "opacity-100"
-                            }`}
-                          />
-                        </button>
-                      )}
-                    </span>
-                    <Link
-                      to={`/issues/${issue.identifier ?? issue.id}`}
-                      className="flex flex-1 min-w-0 cursor-pointer items-center gap-3 no-underline text-inherit"
-                    >
-                      <PriorityIcon priority={issue.priority} />
-                      <StatusIcon status={issue.status} />
-                      <span className="text-xs font-mono text-muted-foreground">
-                        {issue.identifier ?? issue.id.slice(0, 8)}
+                          }
+                        }}
+                        className="shrink-0 self-center cursor-pointer sm:hidden"
+                        aria-label="Mark as read"
+                      >
+                        <span
+                          className={`block h-2 w-2 rounded-full bg-blue-600 dark:bg-blue-400 transition-opacity duration-300 ${
+                            isFading ? "opacity-0" : "opacity-100"
+                          }`}
+                        />
                       </span>
-                      <span className="flex-1 truncate text-sm">{issue.title}</span>
-                      <span className="shrink-0 text-xs text-muted-foreground">
-                        {issue.lastExternalCommentAt
-                          ? `commented ${timeAgo(issue.lastExternalCommentAt)}`
-                          : `updated ${timeAgo(issue.updatedAt)}`}
-                      </span>
-                    </Link>
-                  </div>
+                    )}
+                  </Link>
                 );
               })}
             </div>

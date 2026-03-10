@@ -1,6 +1,6 @@
 {
   "name": "@paperclipai/server",
-  "version": "0.2.7",
+  "version": "0.3.0",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
@@ -25,6 +25,8 @@
     "dev": "tsx src/index.ts",
     "dev:watch": "node scripts/dev-watch.mjs",
     "build": "tsc",
+    "prepack": "pnpm run prepare:ui-dist",
+    "postpack": "rm -rf ui-dist",
     "clean": "rm -rf dist",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit"
@@ -61,6 +63,7 @@
     "@types/node": "^24.6.0",
     "@types/supertest": "^6.0.2",
     "@types/ws": "^8.18.1",
+    "cross-env": "^10.1.0",
     "supertest": "^7.0.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",
