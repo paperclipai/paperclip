@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type UIEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type UIEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { BookOpen, Moon, Sun } from "lucide-react";
 import { Outlet, useLocation, useNavigate, useParams } from "@/lib/router";
@@ -24,13 +24,20 @@ import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
 import { healthApi } from "../api/health";
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
+import { NotFoundPage } from "../pages/NotFound";
 import { Button } from "@/components/ui/button";
 
 export function Layout() {
   const { sidebarOpen, setSidebarOpen, toggleSidebar, isMobile } = useSidebar();
   const { openNewIssue, openOnboarding } = useDialog();
   const { togglePanelVisible } = usePanel();
-  const { companies, loading: companiesLoading, selectedCompanyId, setSelectedCompanyId } = useCompany();
+  const {
+    companies,
+    loading: companiesLoading,
+    selectedCompany,
+    selectedCompanyId,
+    setSelectedCompanyId,
+  } = useCompany();
   const { theme, toggleTheme } = useTheme();
   const { companyPrefix } = useParams<{ companyPrefix: string }>();
   const navigate = useNavigate();
@@ -39,6 +46,13 @@ export function Layout() {
   const lastMainScrollTop = useRef(0);
   const [mobileNavVisible, setMobileNavVisible] = useState(true);
   const nextTheme = theme === "dark" ? "light" : "dark";
+  const matchedCompany = useMemo(() => {
+    if (!companyPrefix) return null;
+    const requestedPrefix = companyPrefix.toUpperCase();
+    return companies.find((company) => company.issuePrefix.toUpperCase() === requestedPrefix) ?? null;
+  }, [companies, companyPrefix]);
+  const hasUnknownCompanyPrefix =
+    Boolean(companyPrefix) && !companiesLoading && companies.length > 0 && !matchedCompany;
   const { data: health } = useQuery({
     queryKey: queryKeys.health,
     queryFn: () => healthApi.get(),
@@ -57,30 +71,30 @@ export function Layout() {
   useEffect(() => {
     if (!companyPrefix || companiesLoading || companies.length === 0) return;
 
-    const requestedPrefix = companyPrefix.toUpperCase();
-    const matched = companies.find((company) => company.issuePrefix.toUpperCase() === requestedPrefix);
-
-    if (!matched) {
-      const fallback =
-        (selectedCompanyId ? companies.find((company) => company.id === selectedCompanyId) : null)
-        ?? companies[0]!;
-      navigate(`/${fallback.issuePrefix}/dashboard`, { replace: true });
+    if (!matchedCompany) {
+      const fallback = (selectedCompanyId ? companies.find((company) => company.id === selectedCompanyId) : null)
+        ?? companies[0]
+        ?? null;
+      if (fallback && selectedCompanyId !== fallback.id) {
+        setSelectedCompanyId(fallback.id, { source: "route_sync" });
+      }
       return;
     }
 
-    if (companyPrefix !== matched.issuePrefix) {
+    if (companyPrefix !== matchedCompany.issuePrefix) {
       const suffix = location.pathname.replace(/^\/[^/]+/, "");
-      navigate(`/${matched.issuePrefix}${suffix}${location.search}`, { replace: true });
+      navigate(`/${matchedCompany.issuePrefix}${suffix}${location.search}`, { replace: true });
       return;
     }
 
-    if (selectedCompanyId !== matched.id) {
-      setSelectedCompanyId(matched.id, { source: "route_sync" });
+    if (selectedCompanyId !== matchedCompany.id) {
+      setSelectedCompanyId(matchedCompany.id, { source: "route_sync" });
     }
   }, [
     companyPrefix,
     companies,
     companiesLoading,
+    matchedCompany,
     location.pathname,
     location.search,
     navigate,
@@ -282,7 +296,14 @@ export function Layout() {
             className={cn("flex-1 overflow-auto p-4 md:p-6", isMobile && "pb-[calc(5rem+env(safe-area-inset-bottom))]")}
             onScroll={handleMainScroll}
           >
-            <Outlet />
+            {hasUnknownCompanyPrefix ? (
+              <NotFoundPage
+                scope="invalid_company_prefix"
+                requestedPrefix={companyPrefix ?? selectedCompany?.issuePrefix}
+              />
+            ) : (
+              <Outlet />
+            )}
           </main>
           <PropertiesPanel />
         </div>
