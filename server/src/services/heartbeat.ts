@@ -30,6 +30,8 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
+const _parsedMaxFailures = Number(process.env.PAPERCLIP_AGENT_MAX_FAILURES);
+const AGENT_MAX_CONSECUTIVE_FAILURES = Number.isFinite(_parsedMaxFailures) && process.env.PAPERCLIP_AGENT_MAX_FAILURES !== "" ? _parsedMaxFailures : 3;
 
 function appendExcerpt(prev: string, chunk: string) {
   return appendWithCap(prev, chunk, MAX_EXCERPT_BYTES);
@@ -860,17 +862,24 @@ export function heartbeatService(db: Db) {
     }
 
     const runningCount = await countRunningRunsForAgent(agentId);
-    const nextStatus =
-      runningCount > 0
-        ? "running"
-        : outcome === "succeeded" || outcome === "cancelled"
-          ? "idle"
-          : "error";
 
+    const isFailure = outcome === "failed" || outcome === "timed_out";
+
+    // Use atomic SQL increment to avoid race conditions when concurrent runs
+    // finish simultaneously for the same agent (maxConcurrentRuns > 1).
     const updated = await db
       .update(agents)
       .set({
-        status: nextStatus,
+        consecutiveFailures: isFailure
+          ? sql`${agents.consecutiveFailures} + 1`
+          : 0,
+        status: runningCount > 0
+          ? sql`'running'`
+          : outcome === "succeeded" || outcome === "cancelled"
+            ? sql`'idle'`
+            : isFailure
+              ? sql`CASE WHEN ${agents.consecutiveFailures} + 1 < ${AGENT_MAX_CONSECUTIVE_FAILURES} THEN 'idle' ELSE 'error' END`
+              : sql`'error'`,
         lastHeartbeatAt: new Date(),
         updatedAt: new Date(),
       })
@@ -879,6 +888,7 @@ export function heartbeatService(db: Db) {
       .then((rows) => rows[0] ?? null);
 
     if (updated) {
+      const underThreshold = isFailure && updated.consecutiveFailures < AGENT_MAX_CONSECUTIVE_FAILURES;
       publishLiveEvent({
         companyId: updated.companyId,
         type: "agent.status",
@@ -889,6 +899,7 @@ export function heartbeatService(db: Db) {
             ? new Date(updated.lastHeartbeatAt).toISOString()
             : null,
           outcome,
+          ...(underThreshold ? { retriesRemaining: AGENT_MAX_CONSECUTIVE_FAILURES - updated.consecutiveFailures } : {}),
         },
       });
     }
