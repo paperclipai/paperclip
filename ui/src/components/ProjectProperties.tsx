@@ -26,6 +26,9 @@ const PROJECT_STATUSES = [
   { value: "cancelled", label: "Cancelled" },
 ];
 
+// TODO(issue-worktree-support): re-enable this UI once the workflow is ready to ship.
+const SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI = false;
+
 interface ProjectPropertiesProps {
   project: Project;
   onUpdate?: (data: Record<string, unknown>) => void;
@@ -707,6 +710,8 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
           )}
         </div>
 
+        {SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI && (
+          <>
         <Separator className="my-4" />
 
         <div className="py-1.5 space-y-2">
@@ -945,6 +950,8 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
             )}
           </div>
         </div>
+          </>
+        )}
 
       </div>
     </div>
