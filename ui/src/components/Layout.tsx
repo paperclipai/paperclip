@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type UIEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import { BookOpen, Moon, Sun } from "lucide-react";
 import { Outlet, useLocation, useNavigate, useParams } from "@/lib/router";
 import { CompanyRail } from "./CompanyRail";
@@ -25,8 +26,10 @@ import { healthApi } from "../api/health";
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
+import { LanguageSwitcher } from "./LanguageSwitcher";
 
 export function Layout() {
+  const { t } = useTranslation();
   const { sidebarOpen, setSidebarOpen, toggleSidebar, isMobile } = useSidebar();
   const { openNewIssue, openOnboarding } = useDialog();
   const { togglePanelVisible } = usePanel();
@@ -189,7 +192,7 @@ export function Layout() {
         href="#main-content"
         className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[200] focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:shadow-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
-        Skip to Main Content
+        {t("common.skipToMainContent")}
       </a>
       {/* Mobile backdrop */}
       {isMobile && sidebarOpen && (
@@ -197,7 +200,7 @@ export function Layout() {
           type="button"
           className="fixed inset-0 z-40 bg-black/50"
           onClick={() => setSidebarOpen(false)}
-          aria-label="Close sidebar"
+          aria-label={t("common.closeSidebar")}
         />
       )}
 
@@ -217,18 +220,19 @@ export function Layout() {
             <div className="flex items-center gap-1">
               <SidebarNavItem
                 to="/docs"
-                label="Documentation"
+                label={t("nav.documentation")}
                 icon={BookOpen}
                 className="flex-1 min-w-0"
               />
+              <LanguageSwitcher className="text-muted-foreground shrink-0" />
               <Button
                 type="button"
                 variant="ghost"
                 size="icon-sm"
                 className="text-muted-foreground shrink-0"
                 onClick={toggleTheme}
-                aria-label={`Switch to ${nextTheme} mode`}
-                title={`Switch to ${nextTheme} mode`}
+                aria-label={nextTheme === "dark" ? t("common.switchToDark") : t("common.switchToLight")}
+                title={nextTheme === "dark" ? t("common.switchToDark") : t("common.switchToLight")}
               >
                 {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
               </Button>
@@ -252,18 +256,19 @@ export function Layout() {
             <div className="flex items-center gap-1">
               <SidebarNavItem
                 to="/docs"
-                label="Documentation"
+                label={t("nav.documentation")}
                 icon={BookOpen}
                 className="flex-1 min-w-0"
               />
+              <LanguageSwitcher className="text-muted-foreground shrink-0" />
               <Button
                 type="button"
                 variant="ghost"
                 size="icon-sm"
                 className="text-muted-foreground shrink-0"
                 onClick={toggleTheme}
-                aria-label={`Switch to ${nextTheme} mode`}
-                title={`Switch to ${nextTheme} mode`}
+                aria-label={nextTheme === "dark" ? t("common.switchToDark") : t("common.switchToLight")}
+                title={nextTheme === "dark" ? t("common.switchToDark") : t("common.switchToLight")}
               >
                 {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
               </Button>

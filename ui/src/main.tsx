@@ -14,6 +14,7 @@ import { ThemeProvider } from "./context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import "@mdxeditor/editor/style.css";
 import "./index.css";
+import "./i18n/i18n";
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {

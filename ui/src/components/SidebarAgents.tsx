@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { NavLink, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronRight, Plus } from "lucide-react";
@@ -39,6 +40,7 @@ function sortByHierarchy(agents: Agent[]): Agent[] {
 }
 
 export function SidebarAgents() {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(true);
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialog();
@@ -88,7 +90,7 @@ export function SidebarAgents() {
               )}
             />
             <span className="text-[10px] font-medium uppercase tracking-widest font-mono text-muted-foreground/60">
-              Agents
+              {t("nav.agents")}
             </span>
           </CollapsibleTrigger>
           <button
