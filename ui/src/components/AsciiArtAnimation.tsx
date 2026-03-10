@@ -1,29 +1,30 @@
 import { useEffect, useRef } from "react";
 
-const CHARS = [" ", ".", "·", "▪", "▫", "○"] as const;
-const TARGET_FPS = 24;
+const CHARS = [" ", ".", "\u00b7", "\u25aa", "\u25ab", "\u25cb"] as const;
+const TARGET_FPS = 12;
 const FRAME_INTERVAL_MS = 1000 / TARGET_FPS;
+const FONT = "11px monospace";
 
 const PAPERCLIP_SPRITES = [
   [
-    "  ╭────╮ ",
-    " ╭╯╭──╮│ ",
-    " │ │  ││ ",
-    " │ │  ││ ",
-    " │ │  ││ ",
-    " │ │  ││ ",
-    " │ ╰──╯│ ",
-    " ╰─────╯ ",
+    "  \u256d\u2500\u2500\u2500\u2500\u256e ",
+    " \u256d\u256f\u256d\u2500\u2500\u256e\u2502 ",
+    " \u2502 \u2502  \u2502\u2502 ",
+    " \u2502 \u2502  \u2502\u2502 ",
+    " \u2502 \u2502  \u2502\u2502 ",
+    " \u2502 \u2502  \u2502\u2502 ",
+    " \u2502 \u2570\u2500\u2500\u256f\u2502 ",
+    " \u2570\u2500\u2500\u2500\u2500\u2500\u256f ",
   ],
   [
-    " ╭─────╮ ",
-    " │╭──╮╰╮ ",
-    " ││  │ │ ",
-    " ││  │ │ ",
-    " ││  │ │ ",
-    " ││  │ │ ",
-    " │╰──╯ │ ",
-    " ╰────╯  ",
+    " \u256d\u2500\u2500\u2500\u2500\u2500\u256e ",
+    " \u2502\u256d\u2500\u2500\u256e\u2570\u256e ",
+    " \u2502\u2502  \u2502 \u2502 ",
+    " \u2502\u2502  \u2502 \u2502 ",
+    " \u2502\u2502  \u2502 \u2502 ",
+    " \u2502\u2502  \u2502 \u2502 ",
+    " \u2502\u2570\u2500\u2500\u256f \u2502 ",
+    " \u2570\u2500\u2500\u2500\u2500\u256f  ",
   ],
 ] as const;
 
@@ -42,30 +43,40 @@ interface Clip {
   height: number;
 }
 
-function measureChar(container: HTMLElement): { w: number; h: number } {
-  const span = document.createElement("span");
-  span.textContent = "M";
-  span.style.cssText =
-    "position:absolute;visibility:hidden;white-space:pre;font-size:11px;font-family:monospace;line-height:1;";
-  container.appendChild(span);
-  const rect = span.getBoundingClientRect();
-  container.removeChild(span);
-  return { w: rect.width, h: rect.height };
-}
-
 function spriteSize(sprite: PaperclipSprite): { width: number; height: number } {
   let width = 0;
   for (const row of sprite) width = Math.max(width, row.length);
   return { width, height: sprite.length };
 }
 
+function resolveColor(canvas: HTMLCanvasElement): string {
+  const style = getComputedStyle(canvas);
+  const raw = style.color;
+  if (!raw) return "rgba(128,128,128,0.6)";
+  // Apply the 60% opacity from the Tailwind class
+  if (raw.startsWith("rgb(")) {
+    return raw.replace("rgb(", "rgba(").replace(")", ",0.6)");
+  }
+  if (raw.startsWith("rgba(")) {
+    // Replace existing alpha with 0.6
+    return raw.replace(/,\s*[\d.]+\)$/, ",0.6)");
+  }
+  return raw;
+}
+
 export function AsciiArtAnimation() {
-  const preRef = useRef<HTMLPreElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
   const frameRef = useRef<number | null>(null);
 
   useEffect(() => {
-    if (!preRef.current) return;
-    const preEl: HTMLPreElement = preRef.current;
+    if (!canvasRef.current || !wrapRef.current) return;
+    const canvas: HTMLCanvasElement = canvasRef.current;
+    const wrap: HTMLDivElement = wrapRef.current;
+    const _ctx = canvas.getContext("2d", { alpha: true });
+    if (!_ctx) return;
+    const ctx: CanvasRenderingContext2D = _ctx;
+
     const motionMedia = window.matchMedia("(prefers-reduced-motion: reduce)");
     let isVisible = document.visibilityState !== "hidden";
     let loopActive = false;
@@ -80,7 +91,9 @@ export function AsciiArtAnimation() {
     let rowWave = new Float32Array(0);
     let clipMask = new Uint16Array(0);
     let clips: Clip[] = [];
-    let lastOutput = "";
+    let fillColor = "rgba(128,128,128,0.6)";
+    // Pre-allocated row buffer to avoid per-frame allocation
+    let rowBuf: string[] = [];
 
     function toGlyph(value: number): string {
       const clamped = Math.max(0, Math.min(0.999, value));
@@ -88,9 +101,29 @@ export function AsciiArtAnimation() {
       return CHARS[idx] ?? " ";
     }
 
+    function measureCharSize() {
+      ctx.font = FONT;
+      const metrics = ctx.measureText("M");
+      charW = metrics.width || 7;
+      // fontBoundingBoxAscent/Descent available in modern browsers
+      charH =
+        (metrics.fontBoundingBoxAscent ?? 0) + (metrics.fontBoundingBoxDescent ?? 0) || 13;
+    }
+
+    function syncCanvasSize() {
+      const dpr = window.devicePixelRatio || 1;
+      const w = wrap.clientWidth;
+      const h = wrap.clientHeight;
+      canvas.width = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
+      canvas.style.width = w + "px";
+      canvas.style.height = h + "px";
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+
     function rebuildGrid() {
-      const nextCols = Math.max(0, Math.ceil(preEl.clientWidth / Math.max(1, charW)));
-      const nextRows = Math.max(0, Math.ceil(preEl.clientHeight / Math.max(1, charH)));
+      const nextCols = Math.max(0, Math.ceil(wrap.clientWidth / Math.max(1, charW)));
+      const nextRows = Math.max(0, Math.ceil(wrap.clientHeight / Math.max(1, charH)));
       if (nextCols === cols && nextRows === rows) return;
 
       cols = nextCols;
@@ -100,27 +133,44 @@ export function AsciiArtAnimation() {
       colWave = new Float32Array(cols);
       rowWave = new Float32Array(rows);
       clipMask = new Uint16Array(cellCount);
-      clips = clips.filter((clip) => {
-        return (
+      rowBuf = new Array(cols);
+      clips = clips.filter(
+        (clip) =>
           clip.x > -clip.width - 2 &&
           clip.x < cols + 2 &&
           clip.y > -clip.height - 2 &&
-          clip.y < rows + 2
-        );
-      });
-      lastOutput = "";
+          clip.y < rows + 2,
+      );
+    }
+
+    function renderToCanvas(getCell: (r: number, c: number) => string) {
+      ctx.clearRect(0, 0, wrap.clientWidth, wrap.clientHeight);
+      ctx.font = FONT;
+      ctx.fillStyle = fillColor;
+      ctx.textBaseline = "top";
+
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          rowBuf[c] = getCell(r, c);
+        }
+        ctx.fillText(rowBuf.join(""), 0, r * charH);
+      }
     }
 
     function drawStaticFrame() {
       if (cols <= 0 || rows <= 0) {
-        preEl.textContent = "";
+        ctx.clearRect(0, 0, wrap.clientWidth, wrap.clientHeight);
         return;
       }
 
-      const grid = Array.from({ length: rows }, () => Array.from({ length: cols }, () => " "));
+      // Pre-compute static sprites positions
+      const grid: string[][] = Array.from({ length: rows }, () =>
+        Array.from({ length: cols }, () => " "),
+      );
       for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
-          const ambient = (Math.sin(c * 0.11 + r * 0.04) + Math.cos(r * 0.08 - c * 0.02)) * 0.18 + 0.22;
+          const ambient =
+            (Math.sin(c * 0.11 + r * 0.04) + Math.cos(r * 0.08 - c * 0.02)) * 0.18 + 0.22;
           grid[r][c] = toGlyph(ambient);
         }
       }
@@ -145,9 +195,7 @@ export function AsciiArtAnimation() {
         }
       }
 
-      const output = grid.map((line) => line.join("")).join("\n");
-      preEl.textContent = output;
-      lastOutput = output;
+      renderToCanvas((r, c) => grid[r][c]);
     }
 
     function spawnClip() {
@@ -198,7 +246,7 @@ export function AsciiArtAnimation() {
           const col = baseCol + sc;
           if (col < 0 || col >= cols) continue;
           const idx = row * cols + col;
-          const stroke = ch === "│" || ch === "─" ? 0.8 : 0.92;
+          const stroke = ch === "\u2502" || ch === "\u2500" ? 0.8 : 0.92;
           trail[idx] = Math.max(trail[idx] ?? 0, alpha * stroke);
           clipMask[idx] = ch.charCodeAt(0);
         }
@@ -252,25 +300,25 @@ export function AsciiArtAnimation() {
       for (let c = 0; c < cols; c++) colWave[c] = Math.sin(c * 0.08 + tick * 0.06);
       for (let r = 0; r < rows; r++) rowWave[r] = Math.cos(r * 0.1 - tick * 0.05);
 
-      let output = "";
+      // Render directly to canvas — no string building or DOM mutation
+      ctx.clearRect(0, 0, wrap.clientWidth, wrap.clientHeight);
+      ctx.font = FONT;
+      ctx.fillStyle = fillColor;
+      ctx.textBaseline = "top";
+
       for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
           const idx = r * cols + c;
           const clipChar = clipMask[idx];
           if (clipChar > 0) {
-            output += String.fromCharCode(clipChar);
+            rowBuf[c] = String.fromCharCode(clipChar);
             continue;
           }
           const ambient = (colWave[c] + rowWave[r]) * 0.08 + 0.1;
           const intensity = Math.max(trail[idx] ?? 0, ambient * 0.45);
-          output += toGlyph(intensity);
+          rowBuf[c] = toGlyph(intensity);
         }
-        if (r < rows - 1) output += "\n";
-      }
-
-      if (output !== lastOutput) {
-        preEl.textContent = output;
-        lastOutput = output;
+        ctx.fillText(rowBuf.join(""), 0, r * charH);
       }
     }
 
@@ -303,13 +351,13 @@ export function AsciiArtAnimation() {
     }
 
     const observer = new ResizeObserver(() => {
-      const size = measureChar(preEl);
-      charW = size.w;
-      charH = size.h;
+      syncCanvasSize();
+      measureCharSize();
       rebuildGrid();
+      fillColor = resolveColor(canvas);
       syncLoop();
     });
-    observer.observe(preEl);
+    observer.observe(wrap);
 
     const onVisibilityChange = () => {
       isVisible = document.visibilityState !== "hidden";
@@ -322,10 +370,10 @@ export function AsciiArtAnimation() {
     };
     motionMedia.addEventListener("change", onMotionChange);
 
-    const charSize = measureChar(preEl);
-    charW = charSize.w;
-    charH = charSize.h;
+    syncCanvasSize();
+    measureCharSize();
     rebuildGrid();
+    fillColor = resolveColor(canvas);
     syncLoop();
 
     return () => {
@@ -338,11 +386,12 @@ export function AsciiArtAnimation() {
   }, []);
 
   return (
-    <pre
-      ref={preRef}
-      className="w-full h-full m-0 p-0 overflow-hidden text-muted-foreground/60 select-none leading-none"
-      style={{ fontSize: "11px", fontFamily: "monospace" }}
-      aria-hidden="true"
-    />
+    <div ref={wrapRef} className="w-full h-full overflow-hidden">
+      <canvas
+        ref={canvasRef}
+        className="block text-muted-foreground/60 select-none"
+        aria-hidden="true"
+      />
+    </div>
   );
 }
