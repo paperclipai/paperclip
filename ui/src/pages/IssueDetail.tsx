@@ -16,7 +16,7 @@ import { relativeTime, cn, formatTokens } from "../lib/utils";
 import { InlineEditor } from "../components/InlineEditor";
 import { CommentThread } from "../components/CommentThread";
 import { IssueProperties } from "../components/IssueProperties";
-import { buildSubtaskCountMap, SubtaskBadge } from "../components/IssuesList";
+import { buildSubtaskCountMap, SubtaskBadge } from "../components/subtask-utils";
 import { LiveRunWidget } from "../components/LiveRunWidget";
 import type { MentionOption } from "../components/MarkdownEditor";
 import { ScrollToBottom } from "../components/ScrollToBottom";

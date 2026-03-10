@@ -21,84 +21,8 @@ import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/component
 import { CircleDot, Plus, Filter, ArrowUpDown, Layers, Check, X, ChevronRight, List, Columns3, User, Search } from "lucide-react";
 import { KanbanBoard } from "./KanbanBoard";
 import type { Issue } from "@paperclipai/shared";
-
-/* ── Subtask count helpers ── */
-
-export interface SubtaskCounts {
-  total: number;
-  done: number;
-}
-
-export function buildSubtaskCountMap(issues: Issue[]): Map<string, SubtaskCounts> {
-  const map = new Map<string, SubtaskCounts>();
-  for (const issue of issues) {
-    if (!issue.parentId) continue;
-    const existing = map.get(issue.parentId) ?? { total: 0, done: 0 };
-    existing.total += 1;
-    if (issue.status === "done" || issue.status === "cancelled") {
-      existing.done += 1;
-    }
-    map.set(issue.parentId, existing);
-  }
-  return map;
-}
-
-export function SubtaskBadge({ counts }: { counts: SubtaskCounts }) {
-  if (counts.total === 0) return null;
-  const allDone = counts.done === counts.total;
-  return (
-    <span
-      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium border ${
-        allDone
-          ? "border-green-500/40 text-green-600 dark:text-green-400 bg-green-500/10"
-          : "border-border text-muted-foreground bg-muted/40"
-      }`}
-      title={`${counts.done} of ${counts.total} subtasks done`}
-    >
-      <span className="leading-none">⊞</span>
-      <span>{counts.done}/{counts.total}</span>
-    </span>
-  );
-}
-
-/* ── Inline subtask list (collapsed by default, shown under parent row) ── */
-
-export function SubtaskList({
-  subtasks,
-  highlightIds,
-}: {
-  subtasks: Issue[];
-  highlightIds?: Set<string>;
-}) {
-  if (subtasks.length === 0) return null;
-  return (
-    <div className="ml-6 border-l border-border pl-3 py-1 space-y-0.5">
-      {subtasks.map((sub) => (
-        <Link
-          key={sub.id}
-          to={`/issues/${sub.identifier ?? sub.id}`}
-          className={`flex items-center gap-2 py-1 pr-2 text-xs rounded hover:bg-accent/50 no-underline text-inherit transition-colors ${
-            highlightIds?.has(sub.id) ? "ring-1 ring-blue-500/50 bg-blue-500/5" : ""
-          }`}
-        >
-          <StatusIcon status={sub.status} />
-          <span
-            className={`flex-1 truncate ${
-              sub.status === "done" || sub.status === "cancelled"
-                ? "line-through text-muted-foreground"
-                : ""
-            }`}
-          >
-            {sub.title}
-          </span>
-          <span className="text-muted-foreground font-mono shrink-0">
-            {sub.identifier ?? sub.id.slice(0, 8)}
-          </span>
-        </Link>
-      ))}
-    </div>
-  );
-}
+import { SubtaskBadge, SubtaskList, buildSubtaskCountMap } from "./subtask-utils";
+import type { SubtaskCounts } from "./subtask-utils";
 
 /* ── Helpers ── */
 
@@ -357,9 +281,12 @@ export function IssuesList({
   }, [issues, searchedIssues, viewState, normalizedIssueSearch]);
 
   // Separate root issues from subtasks; apply filter-through for subtask matches.
+  // Use the same source that produced `filtered` as allIssues, so that
+  // search results whose parents aren't yet in the local cache are handled correctly.
+  const sourceIssues = normalizedIssueSearch.length > 0 ? searchedIssues : issues;
   const { rootIssues, subtaskMap } = useMemo(
-    () => buildRootAndSubtaskMap(issues, filtered),
-    [issues, filtered]
+    () => buildRootAndSubtaskMap(sourceIssues, filtered),
+    [sourceIssues, filtered]
   );
 
   // Track which subtask IDs matched the filter (for highlighting when expanded).
@@ -371,15 +298,14 @@ export function IssuesList({
       viewState.labels.length > 0 ||
       normalizedIssueSearch.length > 0;
     if (!hasFilter) return new Set<string>();
-    const filteredIds = new Set(filtered.map((i) => i.id));
+    // Build O(1) lookup map to avoid O(n²) scan
+    const issueById = new Map(sourceIssues.map((i) => [i.id, i]));
     const result = new Set<string>();
-    for (const id of filteredIds) {
-      // If it's a subtask (has a parent in subtaskMap values), add to highlight set
-      const issue = issues.find((i) => i.id === id);
-      if (issue?.parentId) result.add(id);
+    for (const issue of filtered) {
+      if (issueById.get(issue.id)?.parentId) result.add(issue.id);
     }
     return result;
-  }, [filtered, issues, viewState, normalizedIssueSearch]);
+  }, [filtered, sourceIssues, viewState, normalizedIssueSearch]);
 
   const { data: labels } = useQuery({
     queryKey: queryKeys.issues.labels(selectedCompanyId!),

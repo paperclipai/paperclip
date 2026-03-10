@@ -21,7 +21,8 @@ import { ChevronRight } from "lucide-react";
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
-import { SubtaskBadge, SubtaskList, type SubtaskCounts } from "./IssuesList";
+import { SubtaskBadge, SubtaskList } from "./subtask-utils";
+import type { SubtaskCounts } from "./subtask-utils";
 import type { Issue } from "@paperclipai/shared";
 
 const boardStatuses = [
