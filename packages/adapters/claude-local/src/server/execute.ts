@@ -83,14 +83,17 @@ async function writeStableInstructionsFile(contents: string): Promise<string> {
   await fs.mkdir(instructionsDir, { recursive: true });
   const digest = createHash("sha256").update(contents).digest("hex");
   const filePath = path.join(instructionsDir, `${digest}.md`);
-  const alreadyExists = await fs.access(filePath).then(() => true).catch(() => false);
+  const alreadyExists = await fs
+    .access(filePath, fs.constants.R_OK)
+    .then(() => true)
+    .catch(() => false);
   if (alreadyExists) return filePath;
   const tmpPath = path.join(
     instructionsDir,
     `${digest}.${process.pid}.${Date.now().toString(36)}.tmp`,
   );
-  await fs.writeFile(tmpPath, contents, "utf-8");
   try {
+    await fs.writeFile(tmpPath, contents, "utf-8");
     await fs.rename(tmpPath, filePath);
   } catch (err) {
     await fs.rm(tmpPath, { force: true }).catch(() => {});
