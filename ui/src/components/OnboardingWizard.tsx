@@ -1049,7 +1049,9 @@ export function OnboardingWizard() {
                                   ? "CURSOR_API_KEY"
                                   : adapterType === "gemini_local"
                                     ? "GEMINI_API_KEY"
-                                    : "OPENAI_API_KEY"}
+                                    : adapterType === "opencode_local"
+                                      ? "LITELLM_API_KEY"
+                                      : "OPENAI_API_KEY"}
                               </span>{" "}
                               in env or run{" "}
                               <span className="font-mono">
