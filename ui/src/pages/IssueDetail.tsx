@@ -781,21 +781,23 @@ export function IssueDetail() {
       <Separator />
 
       <Tabs value={detailTab} onValueChange={setDetailTab} className="space-y-3">
-        <TabsList variant="line" className="w-full justify-start gap-1">
-          <TabsTrigger value="comments" className="gap-1.5">
-            <MessageSquare className="h-3.5 w-3.5" />
-            Comments
-          </TabsTrigger>
-          <TabsTrigger value="subissues" className="gap-1.5">
-            <ListTree className="h-3.5 w-3.5" />
-            Sub-issues
-            {subtaskCounts && <SubtaskBadge counts={subtaskCounts} />}
-          </TabsTrigger>
-          <TabsTrigger value="activity" className="gap-1.5">
-            <ActivityIcon className="h-3.5 w-3.5" />
-            Activity
-          </TabsTrigger>
-        </TabsList>
+        <div className="overflow-x-auto scrollbar-none">
+          <TabsList variant="line" className="w-max min-w-full justify-start gap-1 flex-nowrap">
+            <TabsTrigger value="comments" className="gap-1.5 shrink-0">
+              <MessageSquare className="h-3.5 w-3.5" />
+              Comments
+            </TabsTrigger>
+            <TabsTrigger value="subissues" className="gap-1.5 shrink-0">
+              <ListTree className="h-3.5 w-3.5" />
+              Sub-issues
+              {subtaskCounts && <SubtaskBadge counts={subtaskCounts} />}
+            </TabsTrigger>
+            <TabsTrigger value="activity" className="gap-1.5 shrink-0">
+              <ActivityIcon className="h-3.5 w-3.5" />
+              Activity
+            </TabsTrigger>
+          </TabsList>
+        </div>
 
         <TabsContent value="comments">
           <CommentThread
