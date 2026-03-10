@@ -111,7 +111,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     config.promptTemplate,
     "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
   );
-  const command = asString(config.command, "codex");
+  const command = asString(config.command, "ollama");
   const model = asString(config.model, "");
   const modelReasoningEffort = asString(
     config.modelReasoningEffort,
