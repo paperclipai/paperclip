@@ -1,5 +1,3 @@
-<!-- PAPERCLIP_API_URL: https://paperclip.lasse.dev -->
-
 ---
 name: paperclip
 description: >
@@ -77,7 +75,7 @@ If subtasks exist, they define the work breakdown. You MUST work through subtask
 - Work on actionable subtasks (`todo` or `backlog` status) in priority order (critical → high → medium → low).
 - For each subtask you complete, checkout that subtask, do the work, and mark it `done` with a comment.
 - If you can only complete some subtasks in this heartbeat, mark those done and leave the parent as `in_progress`.
-- Do NOT mark the parent as `done` while any subtasks are still open (`todo`, `in_progress`, `backlog`, `blocked`).
+- Do NOT mark the parent as `done` while any subtasks are still open (`todo`, `in_progress`, `in_review`, `backlog`, `blocked`).
 - Only mark the parent `done` when all subtasks are `done` (or `cancelled`).
 
 If the issue has NO subtasks, proceed normally with Step 7.
@@ -99,7 +97,7 @@ Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 
 Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
 
-**Subtask completion rule:** When marking a parent issue done, first verify all subtasks are done: `GET /api/companies/{companyId}/issues?parentId={issueId}&status=todo,in_progress,backlog,blocked`. If any are returned, do NOT mark the parent done — leave it `in_progress` and comment which subtasks remain.
+**Subtask completion rule:** When marking a parent issue done, first verify all subtasks are done: `GET /api/companies/{companyId}/issues?parentId={issueId}&status=todo,in_progress,in_review,backlog,blocked`. If any are returned, do NOT mark the parent done — leave it `in_progress` and comment which subtasks remain.
 
 **Step 9 — Delegate if needed.** Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. Set `billingCode` for cross-team work.
 
@@ -144,7 +142,7 @@ Access control:
 
 - **Always checkout** before working. Never PATCH to `in_progress` manually.
 - **Never retry a 409.** The task belongs to someone else.
-- **Never look for unassigned work.**
+- **Never look for unassigned work.** Exception: unassigned subtasks of a parent issue you have checked out may be claimed (see Step 6b).
 - **Self-assign only for explicit @-mention handoff.** This requires a mention-triggered wake with `PAPERCLIP_WAKE_COMMENT_ID` and a comment that clearly directs you to do the task. Use checkout (never direct assignee patch). Otherwise, no assignments = exit.
 - **Honor "send it back to me" requests from board users.** If a board/user asks for review handoff (e.g. "let me review it", "assign it back to me"), reassign the issue to that user with `assigneeAgentId: null` and `assigneeUserId: "<requesting-user-id>"`, and typically set status to `in_review` instead of `done`.
   Resolve requesting user id from the triggering comment thread (`authorUserId`) when available; otherwise use the issue's `createdByUserId` if it matches the requester context.
@@ -255,7 +253,7 @@ PATCH /api/agents/{agentId}/instructions-path
 | Update task          | `PATCH /api/issues/:issueId` (optional `comment` field)                                    |
 | Add comment          | `POST /api/issues/:issueId/comments`                                                       |
 | List subtasks        | `GET /api/companies/:companyId/issues?parentId=:issueId`                                   |
-| List open subtasks   | `GET /api/companies/:companyId/issues?parentId=:issueId&status=todo,in_progress,backlog,blocked` |
+| List open subtasks   | `GET /api/companies/:companyId/issues?parentId=:issueId&status=todo,in_progress,in_review,backlog,blocked` |
 | Create subtask       | `POST /api/companies/:companyId/issues`                                                    |
 | Generate OpenClaw invite prompt (CEO) | `POST /api/companies/:companyId/openclaw/invite-prompt`                   |
 | Create project       | `POST /api/companies/:companyId/projects`                                                  |
