@@ -18,7 +18,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # SYNC_PAT must be a PAT with `repo` + `workflow` scopes.
+          # GITHUB_TOKEN cannot push .github/workflows/ changes from upstream.
+          token: ${{ secrets.SYNC_PAT }}
 
       - name: Configure git
         run: |
