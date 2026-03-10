@@ -3,14 +3,12 @@ import { createLocalAgentJwt, verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 
 describe("agent local JWT", () => {
   const secretEnv = "PAPERCLIP_AGENT_JWT_SECRET";
-  const betterAuthSecretEnv = "BETTER_AUTH_SECRET";
   const ttlEnv = "PAPERCLIP_AGENT_JWT_TTL_SECONDS";
   const issuerEnv = "PAPERCLIP_AGENT_JWT_ISSUER";
   const audienceEnv = "PAPERCLIP_AGENT_JWT_AUDIENCE";
 
   const originalEnv = {
     secret: process.env[secretEnv],
-    betterAuthSecret: process.env[betterAuthSecretEnv],
     ttl: process.env[ttlEnv],
     issuer: process.env[issuerEnv],
     audience: process.env[audienceEnv],
@@ -18,7 +16,6 @@ describe("agent local JWT", () => {
 
   beforeEach(() => {
     process.env[secretEnv] = "test-secret";
-    delete process.env[betterAuthSecretEnv];
     process.env[ttlEnv] = "3600";
     delete process.env[issuerEnv];
     delete process.env[audienceEnv];
@@ -29,8 +26,6 @@ describe("agent local JWT", () => {
     vi.useRealTimers();
     if (originalEnv.secret === undefined) delete process.env[secretEnv];
     else process.env[secretEnv] = originalEnv.secret;
-    if (originalEnv.betterAuthSecret === undefined) delete process.env[betterAuthSecretEnv];
-    else process.env[betterAuthSecretEnv] = originalEnv.betterAuthSecret;
     if (originalEnv.ttl === undefined) delete process.env[ttlEnv];
     else process.env[ttlEnv] = originalEnv.ttl;
     if (originalEnv.issuer === undefined) delete process.env[issuerEnv];
@@ -80,21 +75,5 @@ describe("agent local JWT", () => {
     process.env[issuerEnv] = "paperclip";
     process.env[audienceEnv] = "paperclip-api";
     expect(verifyLocalAgentJwt(token!)).toBeNull();
-  });
-
-  it("falls back to BETTER_AUTH_SECRET when PAPERCLIP_AGENT_JWT_SECRET is missing", () => {
-    delete process.env[secretEnv];
-    process.env[betterAuthSecretEnv] = "better-auth-secret";
-    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
-
-    const token = createLocalAgentJwt("agent-1", "company-1", "codex_local", "run-1");
-
-    expect(typeof token).toBe("string");
-    expect(verifyLocalAgentJwt(token!)).toMatchObject({
-      sub: "agent-1",
-      company_id: "company-1",
-      adapter_type: "codex_local",
-      run_id: "run-1",
-    });
   });
 });

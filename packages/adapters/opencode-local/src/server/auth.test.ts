@@ -48,4 +48,16 @@ describe("hydrateLiteLlmApiKey", () => {
       await fs.rm(homeDir, { recursive: true, force: true });
     }
   });
+
+  it("returns missing without mutating env when no key source is available", async () => {
+    const env = {};
+
+    const result = await hydrateLiteLlmApiKey(env, {
+      authPaths: [path.join(os.tmpdir(), "paperclip-opencode-auth-does-not-exist", "auth.json")],
+    });
+
+    expect(result.source).toBe("missing");
+    expect(result.env).toBe(env);
+    expect(result.env.LITELLM_API_KEY).toBeUndefined();
+  });
 });

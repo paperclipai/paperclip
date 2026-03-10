@@ -6,6 +6,10 @@ function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean 
   return typeof env[key] === "string" && env[key].trim().length > 0;
 }
 
+export function isLiteLlmModel(model: string | null | undefined): boolean {
+  return typeof model === "string" && model.trim().startsWith("litellm/");
+}
+
 function defaultOpenCodeAuthPaths(homeDir: string): string[] {
   return [
     path.join(homeDir, ".local", "share", "opencode", "auth.json"),
@@ -36,12 +40,16 @@ async function readLiteLlmApiKeyFromOpenCodeAuth(
   return null;
 }
 
+export type HydrateLiteLlmApiKeyResult = {
+  env: Record<string, string>;
+  source: "existing_litellm_env" | "openai_env" | "opencode_auth" | "missing";
+  detail?: string;
+};
+
 export async function hydrateLiteLlmApiKey(
   env: Record<string, string>,
   options?: { homeDir?: string; authPaths?: string[] },
-): Promise<
-  | { env: Record<string, string>; source: "existing_litellm_env" | "openai_env" | "opencode_auth" | "missing"; detail?: string }
-> {
+): Promise<HydrateLiteLlmApiKeyResult> {
   if (hasNonEmptyEnvValue(env, "LITELLM_API_KEY")) {
     return { env, source: "existing_litellm_env" };
   }

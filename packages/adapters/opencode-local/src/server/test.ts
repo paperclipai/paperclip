@@ -14,7 +14,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { discoverOpenCodeModels, ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
 import { parseOpenCodeJsonl } from "./parse.js";
-import { hydrateLiteLlmApiKey } from "./auth.js";
+import { hydrateLiteLlmApiKey, isLiteLlmModel } from "./auth.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -102,7 +102,7 @@ export async function testEnvironment(
 
   let runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...env }));
   const configuredModel = asString(config.model, "").trim();
-  if (configuredModel.startsWith("litellm/")) {
+  if (isLiteLlmModel(configuredModel)) {
     const hydrated = await hydrateLiteLlmApiKey(runtimeEnv);
     runtimeEnv = hydrated.env;
     if (hydrated.source === "openai_env") {
