@@ -152,6 +152,7 @@ export function IssueDetail() {
   const navigate = useNavigate();
   const [moreOpen, setMoreOpen] = useState(false);
   const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
+  const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false);
   const [detailTab, setDetailTab] = useState("comments");
   const [secondaryOpen, setSecondaryOpen] = useState({
     approvals: false,
@@ -657,19 +658,45 @@ export function IssueDetail() {
           className="text-xl font-bold"
         />
 
-        <InlineEditor
-          value={issue.description ?? ""}
-          onSave={(description) => updateIssue.mutate({ description })}
-          as="p"
-          className="text-sm text-muted-foreground"
-          placeholder="Add a description..."
-          multiline
-          mentions={mentionOptions}
-          imageUploadHandler={async (file) => {
-            const attachment = await uploadAttachment.mutateAsync(file);
-            return attachment.contentPath;
-          }}
-        />
+        <div className="space-y-1">
+          <div
+            className={cn(
+              "overflow-hidden transition-all duration-200",
+              isDescriptionExpanded
+                ? "max-h-screen overflow-y-auto"
+                : "max-h-32",
+            )}
+          >
+            <InlineEditor
+              value={issue.description ?? ""}
+              onSave={(description) => updateIssue.mutate({ description })}
+              as="p"
+              className="text-sm text-muted-foreground"
+              placeholder="Add a description..."
+              multiline
+              mentions={mentionOptions}
+              imageUploadHandler={async (file) => {
+                const attachment = await uploadAttachment.mutateAsync(file);
+                return attachment.contentPath;
+              }}
+            />
+          </div>
+          {(issue.description ?? "").length > 0 && (
+            <button
+              type="button"
+              onClick={() => setIsDescriptionExpanded((prev) => !prev)}
+              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <ChevronDown
+                className={cn(
+                  "h-3.5 w-3.5 transition-transform duration-200",
+                  isDescriptionExpanded && "rotate-180",
+                )}
+              />
+              {isDescriptionExpanded ? "Hide description" : "Show description"}
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="space-y-3">
