@@ -1188,12 +1188,33 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         null;
       const summary = summaryFromEvents || summaryFromPayload || null;
 
-      const meta = asRecord(asRecord(acceptedPayload?.result)?.meta) ?? asRecord(acceptedPayload?.meta);
-      const agentMeta = asRecord(meta?.agentMeta);
+      // Check latestResultPayload (agent.wait response) first, then acceptedPayload (initial agent response)
+      const waitMeta = asRecord(asRecord(latestResultPayload)?.meta);
+      const waitAgentMeta = asRecord(waitMeta?.agentMeta);
+      const acceptMeta = asRecord(asRecord(acceptedPayload?.result)?.meta) ?? asRecord(acceptedPayload?.meta);
+      const acceptAgentMeta = asRecord(acceptMeta?.agentMeta);
+      const agentMeta = waitAgentMeta ?? acceptAgentMeta;
+      const meta = waitMeta ?? acceptMeta;
       const usage = parseUsage(agentMeta?.usage ?? meta?.usage);
       const provider = nonEmpty(agentMeta?.provider) ?? nonEmpty(meta?.provider) ?? "openclaw";
       const model = nonEmpty(agentMeta?.model) ?? nonEmpty(meta?.model) ?? null;
-      const costUsd = asNumber(agentMeta?.costUsd ?? meta?.costUsd, 0);
+      let costUsd = asNumber(agentMeta?.costUsd ?? meta?.costUsd, 0);
+
+      // If no costUsd reported but we have token usage, estimate from model pricing
+      if (costUsd <= 0 && usage) {
+        const m = (model ?? "").toLowerCase();
+        let inputPer1M = 3, outputPer1M = 15, cachePer1M = 0.30; // default: sonnet-class
+        if (m.includes("opus")) {
+          inputPer1M = 15; outputPer1M = 75; cachePer1M = 1.50;
+        } else if (m.includes("haiku")) {
+          inputPer1M = 0.80; outputPer1M = 4; cachePer1M = 0.08;
+        }
+        const uncachedInput = Math.max(0, (usage.inputTokens ?? 0) - (usage.cachedInputTokens ?? 0));
+        costUsd =
+          (uncachedInput / 1_000_000) * inputPer1M +
+          ((usage.cachedInputTokens ?? 0) / 1_000_000) * cachePer1M +
+          ((usage.outputTokens ?? 0) / 1_000_000) * outputPer1M;
+      }
 
       await ctx.onLog(
         "stdout",

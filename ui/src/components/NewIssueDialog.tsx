@@ -181,6 +181,8 @@ export function NewIssueDialog() {
   const [assigneeThinkingEffort, setAssigneeThinkingEffort] = useState("");
   const [assigneeChrome, setAssigneeChrome] = useState(false);
   const [assigneeUseProjectWorkspace, setAssigneeUseProjectWorkspace] = useState(true);
+  const [parentId, setParentId] = useState("");
+  const [goalId, setGoalId] = useState("");
   const [expanded, setExpanded] = useState(false);
   const [dialogCompanyId, setDialogCompanyId] = useState<string | null>(null);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -323,6 +325,9 @@ export function NewIssueDialog() {
     setDialogCompanyId(selectedCompanyId);
 
     const draft = loadDraft();
+    // parentId/goalId are ephemeral — never restored from draft
+    setParentId(newIssueDefaults.parentId ?? "");
+    setGoalId(newIssueDefaults.goalId ?? "");
     if (newIssueDefaults.title) {
       setTitle(newIssueDefaults.title);
       setDescription(newIssueDefaults.description ?? "");
@@ -334,7 +339,7 @@ export function NewIssueDialog() {
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
       setAssigneeUseProjectWorkspace(true);
-    } else if (draft && draft.title.trim()) {
+    } else if (draft && draft.title.trim() && !newIssueDefaults.parentId) {
       setTitle(draft.title);
       setDescription(draft.description);
       setStatus(draft.status || "todo");
@@ -346,6 +351,8 @@ export function NewIssueDialog() {
       setAssigneeChrome(draft.assigneeChrome ?? false);
       setAssigneeUseProjectWorkspace(draft.assigneeUseProjectWorkspace ?? true);
     } else {
+      setTitle("");
+      setDescription("");
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
       setProjectId(newIssueDefaults.projectId ?? "");
@@ -392,6 +399,8 @@ export function NewIssueDialog() {
     setPriority("");
     setAssigneeId("");
     setProjectId("");
+    setParentId("");
+    setGoalId("");
     setAssigneeOptionsOpen(false);
     setAssigneeModelOverride("");
     setAssigneeThinkingEffort("");
@@ -436,6 +445,8 @@ export function NewIssueDialog() {
       priority: priority || "medium",
       ...(assigneeId ? { assigneeAgentId: assigneeId } : {}),
       ...(projectId ? { projectId } : {}),
+      ...(parentId ? { parentId } : {}),
+      ...(goalId ? { goalId } : {}),
       ...(assigneeAdapterOverrides ? { assigneeAdapterOverrides } : {}),
     });
   }
@@ -609,7 +620,7 @@ export function NewIssueDialog() {
               </PopoverContent>
             </Popover>
             <span className="text-muted-foreground/60">&rsaquo;</span>
-            <span>New issue</span>
+            <span>{parentId ? "New sub-issue" : "New issue"}</span>
           </div>
           <div className="flex items-center gap-1">
             <Button
@@ -672,7 +683,11 @@ export function NewIssueDialog() {
                 emptyMessage="No assignees found."
                 onChange={(id) => { if (id) trackRecentAssignee(id); setAssigneeId(id); }}
                 onConfirm={() => {
-                  projectSelectorRef.current?.focus();
+                  if (parentId) {
+                    descriptionEditorRef.current?.focus();
+                  } else {
+                    projectSelectorRef.current?.focus();
+                  }
                 }}
                 renderTriggerValue={(option) =>
                   option && currentAssignee ? (
@@ -695,47 +710,51 @@ export function NewIssueDialog() {
                   );
                 }}
               />
-              <span>in</span>
-              <InlineEntitySelector
-                ref={projectSelectorRef}
-                value={projectId}
-                options={projectOptions}
-                placeholder="Project"
-                disablePortal
-                noneLabel="No project"
-                searchPlaceholder="Search projects..."
-                emptyMessage="No projects found."
-                onChange={setProjectId}
-                onConfirm={() => {
-                  descriptionEditorRef.current?.focus();
-                }}
-                renderTriggerValue={(option) =>
-                  option && currentProject ? (
-                    <>
-                      <span
-                        className="h-3.5 w-3.5 shrink-0 rounded-sm"
-                        style={{ backgroundColor: currentProject.color ?? "#6366f1" }}
-                      />
-                      <span className="truncate">{option.label}</span>
-                    </>
-                  ) : (
-                    <span className="text-muted-foreground">Project</span>
-                  )
-                }
-                renderOption={(option) => {
-                  if (!option.id) return <span className="truncate">{option.label}</span>;
-                  const project = orderedProjects.find((item) => item.id === option.id);
-                  return (
-                    <>
-                      <span
-                        className="h-3.5 w-3.5 shrink-0 rounded-sm"
-                        style={{ backgroundColor: project?.color ?? "#6366f1" }}
-                      />
-                      <span className="truncate">{option.label}</span>
-                    </>
-                  );
-                }}
-              />
+              {!parentId && (
+                <>
+                  <span>in</span>
+                  <InlineEntitySelector
+                    ref={projectSelectorRef}
+                    value={projectId}
+                    options={projectOptions}
+                    placeholder="Project"
+                    disablePortal
+                    noneLabel="No project"
+                    searchPlaceholder="Search projects..."
+                    emptyMessage="No projects found."
+                    onChange={setProjectId}
+                    onConfirm={() => {
+                      descriptionEditorRef.current?.focus();
+                    }}
+                    renderTriggerValue={(option) =>
+                      option && currentProject ? (
+                        <>
+                          <span
+                            className="h-3.5 w-3.5 shrink-0 rounded-sm"
+                            style={{ backgroundColor: currentProject.color ?? "#6366f1" }}
+                          />
+                          <span className="truncate">{option.label}</span>
+                        </>
+                      ) : (
+                        <span className="text-muted-foreground">Project</span>
+                      )
+                    }
+                    renderOption={(option) => {
+                      if (!option.id) return <span className="truncate">{option.label}</span>;
+                      const project = orderedProjects.find((item) => item.id === option.id);
+                      return (
+                        <>
+                          <span
+                            className="h-3.5 w-3.5 shrink-0 rounded-sm"
+                            style={{ backgroundColor: project?.color ?? "#6366f1" }}
+                          />
+                          <span className="truncate">{option.label}</span>
+                        </>
+                      );
+                    }}
+                  />
+                </>
+              )}
             </div>
           </div>
         </div>
