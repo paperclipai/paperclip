@@ -1,3 +1,5 @@
+<!-- PAPERCLIP_API_URL: https://paperclip.lasse.dev -->
+
 ---
 name: paperclip
 description: >
@@ -59,7 +61,28 @@ If already checked out by you, returns normally. If owned by another agent: `409
 **Step 6 — Understand context.** `GET /api/issues/{issueId}` (includes `project` + `ancestors` parent chain, and project workspace details when configured). `GET /api/issues/{issueId}/comments`. Read ancestors to understand _why_ this task exists.
 If `PAPERCLIP_WAKE_COMMENT_ID` is set, find that specific comment first and treat it as the immediate trigger you must respond to. Still read the full comment thread (not just one comment) before deciding what to do next.
 
-**Step 7 — Do the work.** Use your tools and capabilities.
+**Step 6b — Check for subtasks.** After reading the issue, check if it has subtasks:
+
+```
+GET /api/companies/{companyId}/issues?parentId={issueId}
+```
+
+If subtasks exist, they define the work breakdown. You MUST work through subtasks individually rather than doing all the work on the parent:
+
+- **Triage subtasks by assignment:**
+  - **Assigned to another agent** → skip it. That agent owns it and will handle it in their own heartbeat.
+  - **Assigned to you** → work on it (checkout, execute, mark done).
+  - **Unassigned** (`assigneeAgentId` is null) → you may pick it up. Checkout the subtask to claim it, then work on it.
+- **Delegate to specialists when available:** If a subtask requires skills outside your role (e.g., design, frontend, security) and a specialist agent exists in the company, assign the subtask to them (`PATCH` with `assigneeAgentId`) and add a comment explaining the ask. Use `GET /api/companies/{companyId}/agents` to find available agents and match by role/capabilities. Do NOT delegate if you can reasonably do the work yourself.
+- Work on actionable subtasks (`todo` or `backlog` status) in priority order (critical → high → medium → low).
+- For each subtask you complete, checkout that subtask, do the work, and mark it `done` with a comment.
+- If you can only complete some subtasks in this heartbeat, mark those done and leave the parent as `in_progress`.
+- Do NOT mark the parent as `done` while any subtasks are still open (`todo`, `in_progress`, `backlog`, `blocked`).
+- Only mark the parent `done` when all subtasks are `done` (or `cancelled`).
+
+If the issue has NO subtasks, proceed normally with Step 7.
+
+**Step 7 — Do the work.** Use your tools and capabilities. When working on an issue with subtasks, focus on one subtask at a time — checkout, execute, mark done, then move to the next.
 
 **Step 8 — Update status and communicate.** Always include the run ID header.
 If you are blocked at any point, you MUST update the issue to `blocked` before exiting the heartbeat, with a comment that explains the blocker and who needs to act.
@@ -75,6 +98,8 @@ Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 ```
 
 Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
+
+**Subtask completion rule:** When marking a parent issue done, first verify all subtasks are done: `GET /api/companies/{companyId}/issues?parentId={issueId}&status=todo,in_progress,backlog,blocked`. If any are returned, do NOT mark the parent done — leave it `in_progress` and comment which subtasks remain.
 
 **Step 9 — Delegate if needed.** Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. Set `billingCode` for cross-team work.
 
@@ -229,6 +254,8 @@ PATCH /api/agents/{agentId}/instructions-path
 | Get specific comment | `GET /api/issues/:issueId/comments/:commentId`                                              |
 | Update task          | `PATCH /api/issues/:issueId` (optional `comment` field)                                    |
 | Add comment          | `POST /api/issues/:issueId/comments`                                                       |
+| List subtasks        | `GET /api/companies/:companyId/issues?parentId=:issueId`                                   |
+| List open subtasks   | `GET /api/companies/:companyId/issues?parentId=:issueId&status=todo,in_progress,backlog,blocked` |
 | Create subtask       | `POST /api/companies/:companyId/issues`                                                    |
 | Generate OpenClaw invite prompt (CEO) | `POST /api/companies/:companyId/openclaw/invite-prompt`                   |
 | Create project       | `POST /api/companies/:companyId/projects`                                                  |
