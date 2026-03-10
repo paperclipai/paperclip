@@ -39,6 +39,24 @@ This starts:
 
 `pnpm dev` runs the server in watch mode and restarts on changes from workspace packages (including adapter packages). Use `pnpm dev:once` to run without file watching.
 
+## UI Localization (i18n)
+
+The board UI supports multiple languages via `i18next` + `react-i18next`.
+
+- i18n setup: `ui/src/i18n/i18n.ts`
+- Translations live under: `ui/src/i18n/locales/<lang>/common.json`
+- Currently supported languages are listed in `SUPPORTED_LANGUAGES` (and must have matching resource entries).
+
+Adding or changing copy:
+
+1. Add/update the key in `ui/src/i18n/locales/en/common.json`
+2. Add/update the same key in `ui/src/i18n/locales/zh/common.json`
+
+Notes:
+
+- The selected language is persisted in `localStorage` under `paperclip-language`.
+- The active language is also written to `document.documentElement.lang` when it changes.
+
 Tailscale/private-auth dev mode:
 
 ```sh

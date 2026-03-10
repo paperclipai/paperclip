@@ -19,6 +19,8 @@ The dashboard displays:
 
 Access the dashboard from the left sidebar after selecting a company. It refreshes in real time via live updates.
 
+You can switch the UI language (English or Chinese) from the sidebar footer. The setting persists in your browser.
+
 ### Key Metrics to Watch
 
 - **Blocked tasks** — these need your attention. Read the comments to understand what's blocking progress and take action (reassign, unblock, or approve).
