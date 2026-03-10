@@ -31,6 +31,9 @@ const env = {
   ...process.env,
   PAPERCLIP_UI_DEV_MIDDLEWARE: "true",
 };
+if (mode === "watch") {
+  env.PAPERCLIP_MIGRATION_PROMPT = "never";
+}
 
 if (tailscaleAuth) {
   env.PAPERCLIP_DEPLOYMENT_MODE = "authenticated";

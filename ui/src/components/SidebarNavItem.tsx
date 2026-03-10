@@ -1,4 +1,5 @@
 import { NavLink } from "@/lib/router";
+import { useTranslation } from "react-i18next";
 import { cn } from "../lib/utils";
 import { useSidebar } from "../context/SidebarContext";
 import type { LucideIcon } from "lucide-react";
@@ -26,6 +27,7 @@ export function SidebarNavItem({
   alert = false,
   liveCount,
 }: SidebarNavItemProps) {
+  const { t } = useTranslation();
   const { isMobile, setSidebarOpen } = useSidebar();
 
   return (
@@ -56,7 +58,7 @@ export function SidebarNavItem({
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
             <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
           </span>
-          <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">{liveCount} live</span>
+          <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">{t("sidebar.liveCount", { count: liveCount })}</span>
         </span>
       )}
       {badge != null && badge > 0 && (
