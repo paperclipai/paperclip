@@ -1,4 +1,4 @@
-import { eq, and, desc, sql, isNull, gt } from "drizzle-orm";
+import { eq, and, desc, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentMemories } from "@paperclipai/db";
 
@@ -72,7 +72,7 @@ export function agentMemoryService(db: Db) {
           },
         })
         .returning()
-        .then((rows) => rows[0]),
+        .then((rows) => rows[0] ?? null),
 
     update: (
       id: string,

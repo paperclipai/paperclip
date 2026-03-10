@@ -53,10 +53,14 @@ export function AgentMemories({ agentId }: AgentMemoriesProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editContent, setEditContent] = useState("");
 
-  const { data: memories = [], isLoading } = useQuery({
-    queryKey: queryKeys.agentMemories.list(agentId, filterCategory),
-    queryFn: () => agentMemoriesApi.list(agentId, filterCategory),
+  const { data: allMemories = [], isLoading } = useQuery({
+    queryKey: queryKeys.agentMemories.list(agentId),
+    queryFn: () => agentMemoriesApi.list(agentId),
   });
+
+  const memories = filterCategory
+    ? allMemories.filter((m) => m.category === filterCategory)
+    : allMemories;
 
   const createMemory = useMutation({
     mutationFn: (data: Record<string, unknown>) => agentMemoriesApi.create(agentId, data),
@@ -82,7 +86,7 @@ export function AgentMemories({ agentId }: AgentMemoriesProps) {
     },
   });
 
-  const categories = [...new Set(memories.map((m) => m.category))].sort();
+  const categories = [...new Set(allMemories.map((m) => m.category))].sort();
 
   return (
     <div className="space-y-4">
@@ -97,7 +101,7 @@ export function AgentMemories({ agentId }: AgentMemoriesProps) {
             )}
             onClick={() => setFilterCategory(undefined)}
           >
-            All ({memories.length})
+            All ({allMemories.length})
           </button>
           {categories.map((cat) => (
             <button
