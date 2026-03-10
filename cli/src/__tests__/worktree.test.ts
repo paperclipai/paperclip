@@ -3,7 +3,14 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { copyGitHooksToWorktreeGitDir, copySeededSecretsKey, rebindWorkspaceCwd } from "../commands/worktree.js";
+import {
+  copyGitHooksToWorktreeGitDir,
+  copySeededSecretsKey,
+  rebindWorkspaceCwd,
+  resolveGitWorktreeAddArgs,
+  resolveWorktreeMakeTargetPath,
+  worktreeMakeCommand,
+} from "../commands/worktree.js";
 import {
   buildWorktreeConfig,
   buildWorktreeEnvEntries,
@@ -76,6 +83,36 @@ describe("worktree helpers", () => {
   it("sanitizes instance ids", () => {
     expect(sanitizeWorktreeInstanceId("feature/worktree-support")).toBe("feature-worktree-support");
     expect(sanitizeWorktreeInstanceId("  ")).toBe("worktree");
+  });
+
+  it("resolves worktree:make target paths under the user home directory", () => {
+    expect(resolveWorktreeMakeTargetPath("paperclip-pr-432")).toBe(
+      path.resolve(os.homedir(), "paperclip-pr-432"),
+    );
+  });
+
+  it("rejects worktree:make names that are not safe directory/branch names", () => {
+    expect(() => resolveWorktreeMakeTargetPath("paperclip/pr-432")).toThrow(
+      "Worktree name must contain only letters, numbers, dots, underscores, or dashes.",
+    );
+  });
+
+  it("builds git worktree add args for new and existing branches", () => {
+    expect(
+      resolveGitWorktreeAddArgs({
+        branchName: "feature-branch",
+        targetPath: "/tmp/feature-branch",
+        branchExists: false,
+      }),
+    ).toEqual(["worktree", "add", "-b", "feature-branch", "/tmp/feature-branch", "HEAD"]);
+
+    expect(
+      resolveGitWorktreeAddArgs({
+        branchName: "feature-branch",
+        targetPath: "/tmp/feature-branch",
+        branchExists: true,
+      }),
+    ).toEqual(["worktree", "add", "/tmp/feature-branch", "feature-branch"]);
   });
 
   it("rewrites loopback auth URLs to the new port only", () => {
@@ -245,6 +282,46 @@ describe("worktree helpers", () => {
       expect(fs.readFileSync(targetTokensPath, "utf8")).toBe("secret-token\n");
     } finally {
       execFileSync("git", ["worktree", "remove", "--force", worktreePath], { cwd: repoRoot, stdio: "ignore" });
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("creates and initializes a worktree from the top-level worktree:make command", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-make-"));
+    const repoRoot = path.join(tempRoot, "repo");
+    const fakeHome = path.join(tempRoot, "home");
+    const worktreePath = path.join(fakeHome, "paperclip-make-test");
+    const originalCwd = process.cwd();
+    const originalHome = process.env.HOME;
+
+    try {
+      fs.mkdirSync(repoRoot, { recursive: true });
+      fs.mkdirSync(fakeHome, { recursive: true });
+      execFileSync("git", ["init"], { cwd: repoRoot, stdio: "ignore" });
+      execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: repoRoot, stdio: "ignore" });
+      execFileSync("git", ["config", "user.name", "Test User"], { cwd: repoRoot, stdio: "ignore" });
+      fs.writeFileSync(path.join(repoRoot, "README.md"), "# temp\n", "utf8");
+      execFileSync("git", ["add", "README.md"], { cwd: repoRoot, stdio: "ignore" });
+      execFileSync("git", ["commit", "-m", "Initial commit"], { cwd: repoRoot, stdio: "ignore" });
+
+      process.env.HOME = fakeHome;
+      process.chdir(repoRoot);
+
+      await worktreeMakeCommand("paperclip-make-test", {
+        seed: false,
+        home: path.join(tempRoot, ".paperclip-worktrees"),
+      });
+
+      expect(fs.existsSync(path.join(worktreePath, ".git"))).toBe(true);
+      expect(fs.existsSync(path.join(worktreePath, ".paperclip", "config.json"))).toBe(true);
+      expect(fs.existsSync(path.join(worktreePath, ".paperclip", ".env"))).toBe(true);
+    } finally {
+      process.chdir(originalCwd);
+      if (originalHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = originalHome;
+      }
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
   });

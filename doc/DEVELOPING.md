@@ -132,6 +132,8 @@ Instead, create a repo-local Paperclip config plus an isolated instance for the 
 
 ```sh
 paperclipai worktree init
+# or create the git worktree and initialize it in one step:
+pnpm paperclipai worktree:make paperclip-pr-432
 ```
 
 This command:
