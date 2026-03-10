@@ -40,7 +40,18 @@ export function PiLocalConfigFields({
           className={inputClass}
           placeholder="/absolute/path/to/AGENTS.md"
         />
-        <ChoosePathButton />
+        <ChoosePathButton
+          onSelect={(v) =>
+            isCreate
+              ? set!({ instructionsFilePath: v })
+              : mark("adapterConfig", "instructionsFilePath", v || undefined)
+          }
+          currentPath={
+            isCreate
+              ? values!.instructionsFilePath || undefined
+              : String(config.instructionsFilePath ?? "") || undefined
+          }
+        />
       </div>
     </Field>
   );

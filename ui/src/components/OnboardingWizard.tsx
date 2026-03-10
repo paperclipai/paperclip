@@ -751,7 +751,10 @@ export function OnboardingWizard() {
                             value={cwd}
                             onChange={(e) => setCwd(e.target.value)}
                           />
-                          <ChoosePathButton />
+                          <ChoosePathButton
+                            onSelect={setCwd}
+                            currentPath={cwd || undefined}
+                          />
                         </div>
                       </div>
                       <div>

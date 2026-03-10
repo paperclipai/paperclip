@@ -8,6 +8,7 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { FolderPickerDialog } from "./FolderPickerDialog";
 
 type Platform = "mac" | "windows" | "linux";
 
@@ -120,11 +121,23 @@ export function PathInstructionsModal({
 }
 
 /**
- * Small "Choose" button that opens the PathInstructionsModal.
- * Drop-in replacement for the old showDirectoryPicker buttons.
+ * "Choose" button that opens a folder picker dialog.
+ * When onSelect is provided, opens a browsable folder picker.
+ * Falls back to the PathInstructionsModal when onSelect is omitted.
  */
-export function ChoosePathButton({ className }: { className?: string }) {
+export function ChoosePathButton({
+  className,
+  onSelect,
+  currentPath,
+}: {
+  className?: string;
+  /** Called with the selected absolute path. When omitted, shows manual instructions instead. */
+  onSelect?: (path: string) => void;
+  /** Initial directory to open the picker at. */
+  currentPath?: string;
+}) {
   const [open, setOpen] = useState(false);
+
   return (
     <>
       <button
@@ -137,7 +150,17 @@ export function ChoosePathButton({ className }: { className?: string }) {
       >
         Choose
       </button>
-      <PathInstructionsModal open={open} onOpenChange={setOpen} />
+
+      {onSelect ? (
+        <FolderPickerDialog
+          open={open}
+          onOpenChange={setOpen}
+          onSelect={onSelect}
+          initialPath={currentPath}
+        />
+      ) : (
+        <PathInstructionsModal open={open} onOpenChange={setOpen} />
+      )}
     </>
   );
 }

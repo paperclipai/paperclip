@@ -555,7 +555,18 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   className="w-full bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40"
                   placeholder="/path/to/project"
                 />
-                <ChoosePathButton />
+                <ChoosePathButton
+                  onSelect={(v) =>
+                    isCreate
+                      ? set!({ cwd: v })
+                      : mark("adapterConfig", "cwd", v || undefined)
+                  }
+                  currentPath={
+                    isCreate
+                      ? val!.cwd || undefined
+                      : String(config.cwd ?? "") || undefined
+                  }
+                />
               </div>
             </Field>
           )}
