@@ -44,6 +44,8 @@ import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySel
 
 const DRAFT_KEY = "paperclip:issue-draft";
 const DEBOUNCE_MS = 800;
+// TODO(issue-worktree-support): re-enable this UI once the workflow is ready to ship.
+const SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI = false;
 
 /** Return black or white hex based on background luminance (WCAG perceptual weights). */
 function getContrastTextColor(hexColor: string): string {
@@ -426,7 +428,9 @@ export function NewIssueDialog() {
       chrome: assigneeChrome,
     });
     const selectedProject = orderedProjects.find((project) => project.id === projectId);
-    const executionWorkspacePolicy = selectedProject?.executionWorkspacePolicy;
+    const executionWorkspacePolicy = SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI
+      ? selectedProject?.executionWorkspacePolicy
+      : null;
     const executionWorkspaceSettings = executionWorkspacePolicy?.enabled
       ? {
           mode: useIsolatedExecutionWorkspace ? "isolated" : "project_primary",
@@ -472,7 +476,9 @@ export function NewIssueDialog() {
   const currentPriority = priorities.find((p) => p.value === priority);
   const currentAssignee = (agents ?? []).find((a) => a.id === assigneeId);
   const currentProject = orderedProjects.find((project) => project.id === projectId);
-  const currentProjectExecutionWorkspacePolicy = currentProject?.executionWorkspacePolicy ?? null;
+  const currentProjectExecutionWorkspacePolicy = SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI
+    ? currentProject?.executionWorkspacePolicy ?? null
+    : null;
   const currentProjectSupportsExecutionWorkspace = Boolean(currentProjectExecutionWorkspacePolicy?.enabled);
   const assigneeOptionsTitle =
     assigneeAdapterType === "claude_local"
@@ -514,7 +520,7 @@ export function NewIssueDialog() {
   const handleProjectChange = useCallback((nextProjectId: string) => {
     setProjectId(nextProjectId);
     const nextProject = orderedProjects.find((project) => project.id === nextProjectId);
-    const policy = nextProject?.executionWorkspacePolicy;
+    const policy = SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI ? nextProject?.executionWorkspacePolicy : null;
     executionWorkspaceDefaultProjectId.current = nextProjectId || null;
     setUseIsolatedExecutionWorkspace(Boolean(policy?.enabled && policy.defaultMode === "isolated"));
   }, [orderedProjects]);
@@ -527,7 +533,11 @@ export function NewIssueDialog() {
     if (!project) return;
     executionWorkspaceDefaultProjectId.current = projectId;
     setUseIsolatedExecutionWorkspace(
-      Boolean(project.executionWorkspacePolicy?.enabled && project.executionWorkspacePolicy.defaultMode === "isolated"),
+      Boolean(
+        SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI &&
+        project.executionWorkspacePolicy?.enabled &&
+        project.executionWorkspacePolicy.defaultMode === "isolated",
+      ),
     );
   }, [newIssueOpen, orderedProjects, projectId]);
   const modelOverrideOptions = useMemo<InlineEntityOption[]>(
