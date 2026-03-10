@@ -318,6 +318,40 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     effectiveInstructionsFilePath = combinedPath;
   }
 
+  // Write MCP server config if any are assigned to this agent
+  let mcpConfigPath: string | null = null;
+  const mcpServers = Array.isArray(context.mcpServers) ? context.mcpServers : [];
+  if (mcpServers.length > 0) {
+    const mcpConfig: Record<string, Record<string, unknown>> = {};
+    for (const s of mcpServers as Array<{
+      name: string;
+      transportType: string;
+      command: string | null;
+      args: string[];
+      url: string | null;
+      headers: Record<string, string>;
+      env: Record<string, string>;
+    }>) {
+      if (s.transportType === "stdio" && s.command) {
+        mcpConfig[s.name] = {
+          command: s.command,
+          ...(s.args.length > 0 ? { args: s.args } : {}),
+          ...(Object.keys(s.env).length > 0 ? { env: s.env } : {}),
+        };
+      } else if (s.url) {
+        mcpConfig[s.name] = {
+          url: s.url,
+          ...(Object.keys(s.headers).length > 0 ? { headers: s.headers } : {}),
+          ...(Object.keys(s.env).length > 0 ? { env: s.env } : {}),
+        };
+      }
+    }
+    if (Object.keys(mcpConfig).length > 0) {
+      mcpConfigPath = path.join(skillsDir, ".mcp.json");
+      await fs.writeFile(mcpConfigPath, JSON.stringify({ mcpServers: mcpConfig }, null, 2));
+    }
+  }
+
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
   const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
@@ -352,6 +386,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (effectiveInstructionsFilePath) {
       args.push("--append-system-prompt-file", effectiveInstructionsFilePath);
     }
+    if (mcpConfigPath) args.push("--mcp-config", mcpConfigPath);
     args.push("--add-dir", skillsDir);
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;

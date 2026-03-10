@@ -122,6 +122,10 @@ export type {
   AgentEnvConfig,
   CompanySecret,
   SecretProviderDescriptor,
+  McpTransportType,
+  McpServer,
+  AgentMcpServer,
+  ResolvedMcpServer,
 } from "./types/index.js";
 
 export {
@@ -214,6 +218,12 @@ export {
   type ClaimJoinRequestApiKey,
   type UpdateMemberPermissions,
   type UpdateUserCompanyAccess,
+  createMcpServerSchema,
+  updateMcpServerSchema,
+  assignMcpServersSchema,
+  type CreateMcpServer,
+  type UpdateMcpServer,
+  type AssignMcpServers,
   portabilityIncludeSchema,
   portabilitySecretRequirementSchema,
   portabilityCompanyManifestEntrySchema,

@@ -53,6 +53,12 @@ export type {
   InstanceUserRoleGrant,
 } from "./access.js";
 export type {
+  McpTransportType,
+  McpServer,
+  AgentMcpServer,
+  ResolvedMcpServer,
+} from "./mcp-server.js";
+export type {
   CompanyPortabilityInclude,
   CompanyPortabilitySecretRequirement,
   CompanyPortabilityCompanyManifestEntry,

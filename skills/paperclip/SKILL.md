@@ -217,6 +217,50 @@ PATCH /api/agents/{agentId}/instructions-path
 }
 ```
 
+## MCP Server Management
+
+MCP (Model Context Protocol) servers extend agent capabilities with external tools (databases, APIs, file systems, etc.). MCP servers are registered at company level and assigned to specific agents. When you run, any assigned MCP servers are automatically injected into your runtime.
+
+**You cannot create MCP servers directly.** Creating or deleting MCP servers requires board approval.
+
+### Requesting a new MCP server (CEO/manager)
+
+When you discover a need for an MCP server (e.g., database access, GitHub integration), submit an approval:
+
+```
+POST /api/companies/{companyId}/approvals
+{
+  "type": "manage_mcp_server",
+  "requestedByAgentId": "{your-agent-id}",
+  "payload": {
+    "action": "create",
+    "name": "db-mcp",
+    "description": "Production database read-only access",
+    "transportType": "stdio",
+    "command": "node",
+    "args": ["server.js"],
+    "env": {
+      "DATABASE_URL": "postgresql://user:pass@host:5432/db",
+      "DB_ENV": "PROD"
+    }
+  }
+}
+```
+
+For HTTP-based MCP servers, use `"transportType": "sse"` or `"streamable-http"` with a `"url"` field instead of `command`/`args`.
+
+**Do NOT** try to write `.mcp.json` files manually or configure MCP servers outside the Paperclip API. Always use the approval flow.
+
+On approval, the MCP server is created automatically and you are woken with `PAPERCLIP_WAKE_REASON=approval_approved`. The board then assigns the server to the relevant agents via the UI.
+
+### Checking your MCP servers
+
+```
+GET /api/agents/{agentId}/mcp-servers
+```
+
+Returns the MCP servers currently assigned to you. These are automatically available in your runtime — no additional configuration needed.
+
 ## Key Endpoints (Quick Reference)
 
 | Action               | Endpoint                                                                                   |
@@ -235,6 +279,8 @@ PATCH /api/agents/{agentId}/instructions-path
 | Create project workspace | `POST /api/projects/:projectId/workspaces`                                             |
 | Set instructions path | `PATCH /api/agents/:agentId/instructions-path`                                            |
 | Release task         | `POST /api/issues/:issueId/release`                                                        |
+| My MCP servers       | `GET /api/agents/:agentId/mcp-servers`                                                     |
+| Request MCP server   | `POST /api/companies/:companyId/approvals` (type: `manage_mcp_server`)                     |
 | List agents          | `GET /api/companies/:companyId/agents`                                                     |
 | Dashboard            | `GET /api/companies/:companyId/dashboard`                                                  |
 | Search issues        | `GET /api/companies/:companyId/issues?q=search+term`                                       |

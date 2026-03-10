@@ -118,6 +118,15 @@ export {
 } from "./asset.js";
 
 export {
+  createMcpServerSchema,
+  updateMcpServerSchema,
+  assignMcpServersSchema,
+  type CreateMcpServer,
+  type UpdateMcpServer,
+  type AssignMcpServers,
+} from "./mcp-server.js";
+
+export {
   createCompanyInviteSchema,
   createOpenClawInvitePromptSchema,
   acceptInviteSchema,

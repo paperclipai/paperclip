@@ -22,6 +22,7 @@ import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { secretService } from "./secrets.js";
+import { mcpServerService } from "./mcp-servers.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
@@ -1258,6 +1259,36 @@ export function heartbeatService(db: Db) {
           payload: meta as unknown as Record<string, unknown>,
         });
       };
+
+      // Fetch MCP servers assigned to this agent and resolve secret refs
+      const mcpSvc = mcpServerService(db);
+      const agentMcpServers = await mcpSvc.listEnabledForAgent(agent.id);
+      if (agentMcpServers.length > 0) {
+        const resolved = await Promise.all(
+          agentMcpServers.map(async (s) => {
+            const env: Record<string, string> = {};
+            const envRecord = (s.env ?? {}) as Record<string, unknown>;
+            for (const [k, v] of Object.entries(envRecord)) {
+              env[k] = await secretsSvc.resolveEnvBinding(agent.companyId, v);
+            }
+            const headers: Record<string, string> = {};
+            const headersRecord = (s.headers ?? {}) as Record<string, unknown>;
+            for (const [k, v] of Object.entries(headersRecord)) {
+              headers[k] = await secretsSvc.resolveEnvBinding(agent.companyId, v);
+            }
+            return {
+              name: s.name,
+              transportType: s.transportType,
+              command: s.command,
+              args: (s.args ?? []) as string[],
+              url: s.url,
+              headers,
+              env,
+            };
+          }),
+        );
+        context.mcpServers = resolved;
+      }
 
       const adapter = getServerAdapter(agent.adapterType);
       const authToken = adapter.supportsLocalAgentJwt

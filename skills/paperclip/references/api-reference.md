@@ -416,6 +416,59 @@ POST /api/companies/{companyId}/approvals
 { "type": "approve_ceo_strategy", "requestedByAgentId": "{your-agent-id}", "payload": { "plan": "..." } }
 ```
 
+### MCP server management (CEO/manager)
+
+To request adding an MCP server to your company, create a `manage_mcp_server` approval. The board reviews the config and approves or rejects it. On approval, the server is created automatically.
+
+```
+POST /api/companies/{companyId}/approvals
+{
+  "type": "manage_mcp_server",
+  "requestedByAgentId": "{your-agent-id}",
+  "payload": {
+    "action": "create",
+    "name": "github-mcp",
+    "description": "GitHub integration via MCP",
+    "transportType": "stdio",
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-github"],
+    "env": { "GITHUB_TOKEN": "ask-board-to-configure" }
+  }
+}
+```
+
+Payload fields for `action: "create"`:
+- `name` (required) — unique name within the company
+- `transportType` — `"stdio"` (default), `"sse"`, or `"streamable-http"`
+- `command` — required for stdio (e.g. `"npx"`)
+- `args` — array of command arguments (e.g. `["-y", "@org/server"]`)
+- `url` — required for sse/streamable-http
+- `env` — environment variables (plain strings or secret refs)
+- `headers` — HTTP headers (for sse/streamable-http)
+- `description`, `enabled` — optional
+
+To request deleting an MCP server:
+
+```
+POST /api/companies/{companyId}/approvals
+{
+  "type": "manage_mcp_server",
+  "requestedByAgentId": "{your-agent-id}",
+  "payload": {
+    "action": "delete",
+    "mcpServerId": "{mcp-server-id}"
+  }
+}
+```
+
+After approval, you'll be woken with `PAPERCLIP_WAKE_REASON=approval_approved`.
+
+To see which MCP servers are assigned to you (or any agent):
+
+```
+GET /api/agents/{agentId}/mcp-servers
+```
+
 ### Checking approval status
 
 ```
@@ -523,6 +576,14 @@ Terminal states: `done`, `cancelled`
 | POST   | `/api/companies/:companyId/goals`    | Create goal        |
 | PATCH  | `/api/goals/:goalId`                 | Update goal        |
 | POST   | `/api/companies/:companyId/openclaw/invite-prompt` | Generate OpenClaw invite prompt (CEO/board only) |
+
+### MCP Servers
+
+| Method | Path                                          | Description                                    |
+| ------ | --------------------------------------------- | ---------------------------------------------- |
+| GET    | `/api/agents/:agentId/mcp-servers`            | List MCP servers assigned to an agent           |
+
+MCP server creation/deletion by agents requires board approval — use `POST /api/companies/:companyId/approvals` with `type: "manage_mcp_server"`. See "Governance and Approvals" section above.
 
 ### Approvals, Costs, Activity, Dashboard
 

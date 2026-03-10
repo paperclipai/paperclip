@@ -3,10 +3,12 @@ import type { Db } from "@paperclipai/db";
 import { approvalComments, approvals } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { agentService } from "./agents.js";
+import { mcpServerService } from "./mcp-servers.js";
 import { notifyHireApproved } from "./hire-hook.js";
 
 export function approvalService(db: Db) {
   const agentsSvc = agentService(db);
+  const mcpSvc = mcpServerService(db);
   const canResolveStatuses = new Set(["pending", "revision_requested"]);
 
   async function getExistingApproval(id: string) {
@@ -100,6 +102,31 @@ export function approvalService(db: Db) {
             sourceId: id,
             approvedAt: now,
           }).catch(() => {});
+        }
+      }
+
+      if (updated.type === "manage_mcp_server") {
+        const payload = updated.payload as Record<string, unknown>;
+        const action = typeof payload.action === "string" ? payload.action : "create";
+        if (action === "create") {
+          const transportType = (typeof payload.transportType === "string" ? payload.transportType : "stdio") as "stdio" | "sse" | "streamable-http";
+          await mcpSvc.create(updated.companyId, {
+            name: String(payload.name ?? "unnamed-mcp-server"),
+            description: typeof payload.description === "string" ? payload.description : null,
+            transportType,
+            command: typeof payload.command === "string" ? payload.command : null,
+            args: Array.isArray(payload.args) ? payload.args.map(String) : null,
+            url: typeof payload.url === "string" ? payload.url : null,
+            headers: typeof payload.headers === "object" && payload.headers !== null
+              ? (payload.headers as Record<string, string>)
+              : null,
+            env: typeof payload.env === "object" && payload.env !== null
+              ? (payload.env as Record<string, string>)
+              : null,
+            enabled: typeof payload.enabled === "boolean" ? payload.enabled : true,
+          });
+        } else if (action === "delete" && typeof payload.mcpServerId === "string") {
+          await mcpSvc.remove(payload.mcpServerId);
         }
       }
 

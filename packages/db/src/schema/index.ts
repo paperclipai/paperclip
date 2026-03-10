@@ -31,3 +31,5 @@ export { approvalComments } from "./approval_comments.js";
 export { activityLog } from "./activity_log.js";
 export { companySecrets } from "./company_secrets.js";
 export { companySecretVersions } from "./company_secret_versions.js";
+export { mcpServers } from "./mcp_servers.js";
+export { agentMcpServers } from "./agent_mcp_servers.js";

@@ -333,6 +333,16 @@ export function secretService(db: Db) {
       return { env: resolved, secretKeys };
     },
 
+    /** Resolve a single env binding (plain string, { type: "plain" }, or { type: "secret_ref" }) to a string value. */
+    resolveEnvBinding: async (companyId: string, rawBinding: unknown): Promise<string> => {
+      if (typeof rawBinding === "string") return rawBinding;
+      const parsed = envBindingSchema.safeParse(rawBinding);
+      if (!parsed.success) return String(rawBinding);
+      const binding = canonicalizeBinding(parsed.data as EnvBinding);
+      if (binding.type === "plain") return binding.value;
+      return resolveSecretValue(companyId, binding.secretId, binding.version);
+    },
+
     resolveAdapterConfigForRuntime: async (companyId: string, adapterConfig: Record<string, unknown>): Promise<{ config: Record<string, unknown>; secretKeys: Set<string> }> => {
       const resolved = { ...adapterConfig };
       const secretKeys = new Set<string>();

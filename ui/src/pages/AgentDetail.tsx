@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, Link, useBeforeUnload } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { agentsApi, type AgentKey, type ClaudeLoginResult } from "../api/agents";
+import { mcpServersApi } from "../api/mcpServers";
 import { heartbeatsApi } from "../api/heartbeats";
 import { ApiError } from "../api/client";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
@@ -54,6 +55,7 @@ import {
   ChevronDown,
   ArrowLeft,
   Settings,
+  Plug,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
@@ -1029,6 +1031,81 @@ function CostsSection({
 
 /* ---- Agent Configure Page ---- */
 
+function AgentMcpServersSection({ agentId, companyId }: { agentId: string; companyId?: string }) {
+  const queryClient = useQueryClient();
+
+  const { data: allServers } = useQuery({
+    queryKey: queryKeys.mcpServers.list(companyId!),
+    queryFn: () => mcpServersApi.list(companyId!),
+    enabled: !!companyId,
+  });
+
+  const { data: assignedServers } = useQuery({
+    queryKey: queryKeys.mcpServers.forAgent(agentId),
+    queryFn: () => mcpServersApi.listForAgent(agentId),
+  });
+
+  const assignMutation = useMutation({
+    mutationFn: (ids: string[]) => mcpServersApi.setForAgent(agentId, ids),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.mcpServers.forAgent(agentId) });
+    },
+  });
+
+  const assignedIds = new Set((assignedServers ?? []).map((s) => s.id));
+
+  function toggleServer(serverId: string) {
+    const next = new Set(assignedIds);
+    if (next.has(serverId)) {
+      next.delete(serverId);
+    } else {
+      next.add(serverId);
+    }
+    assignMutation.mutate(Array.from(next));
+  }
+
+  if (!companyId) return null;
+
+  return (
+    <div>
+      <h3 className="text-sm font-medium mb-3">MCP Servers</h3>
+      {(!allServers || allServers.length === 0) ? (
+        <p className="text-sm text-muted-foreground">
+          No MCP servers configured.{" "}
+          <Link to="/company/mcp-servers" className="underline hover:text-foreground">
+            Add servers
+          </Link>
+        </p>
+      ) : (
+        <div className="rounded-md border border-border divide-y divide-border">
+          {allServers.map((server) => (
+            <label
+              key={server.id}
+              className="flex items-center gap-3 px-4 py-2.5 hover:bg-accent/30 transition-colors cursor-pointer"
+            >
+              <input
+                type="checkbox"
+                checked={assignedIds.has(server.id)}
+                onChange={() => toggleServer(server.id)}
+                disabled={assignMutation.isPending}
+                className="h-4 w-4 rounded border-border"
+              />
+              <Plug className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+              <span className="text-sm flex-1 truncate">{server.name}</span>
+              {!server.enabled && (
+                <span className="text-[10px] text-muted-foreground">(disabled)</span>
+              )}
+            </label>
+          ))}
+        </div>
+      )}
+      {assignMutation.isError && (
+        <p className="text-xs text-destructive mt-1">Failed to update MCP server assignments.</p>
+      )}
+    </div>
+  );
+}
+
 function AgentConfigurePage({
   agent,
   agentId,
@@ -1076,6 +1153,7 @@ function AgentConfigurePage({
         updatePermissions={updatePermissions}
         companyId={companyId}
       />
+      <AgentMcpServersSection agentId={agentId} companyId={companyId} />
       <div>
         <h3 className="text-sm font-medium mb-3">API Keys</h3>
         <KeysTab agentId={agentId} companyId={companyId} />
