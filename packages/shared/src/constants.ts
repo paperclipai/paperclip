@@ -21,6 +21,23 @@ export const AGENT_STATUSES = [
 ] as const;
 export type AgentStatus = (typeof AGENT_STATUSES)[number];
 
+/** Statuses where an agent can be paused (excludes "paused" itself, "pending_approval", "terminated"). */
+export const AGENT_PAUSABLE_STATUSES: ReadonlySet<AgentStatus> = new Set([
+  "active",
+  "idle",
+  "running",
+  "error",
+]);
+
+/** Statuses where pause/resume/terminate actions are available (pausable + "paused"). */
+export const AGENT_ACTIONABLE_STATUSES: ReadonlySet<AgentStatus> = new Set([
+  "active",
+  "idle",
+  "running",
+  "paused",
+  "error",
+]);
+
 export const AGENT_ADAPTER_TYPES = [
   "process",
   "http",
