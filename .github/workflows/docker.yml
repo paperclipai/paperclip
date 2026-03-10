@@ -11,11 +11,12 @@ permissions:
   contents: read
   packages: write
 
-jobs:
   build-and-push:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-
+    concurrency:
+      group: docker-${{ github.ref }}
+      cancel-in-progress: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
