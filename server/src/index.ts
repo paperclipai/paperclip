@@ -240,11 +240,10 @@ export async function startServer(): Promise<StartedServer> {
   if (config.databaseUrl) {
     migrationSummary = await ensureMigrations(config.databaseUrl, "PostgreSQL");
     if (migrationSummary === "pending migrations skipped") {
-      logger.error(
+      throw new Error(
         "Cannot start with pending migrations — queries will fail against missing tables. " +
         "Run `pnpm db:migrate` to apply pending migrations, then restart."
       );
-      process.exit(1);
     }
   
     db = createDb(config.databaseUrl);
@@ -385,14 +384,6 @@ export async function startServer(): Promise<StartedServer> {
     migrationSummary = await ensureMigrations(embeddedConnectionString, "Embedded PostgreSQL", {
       autoApply: shouldAutoApplyMigrations,
     });
-    if (migrationSummary === "pending migrations skipped") {
-      logger.error(
-        "Cannot start with pending migrations — queries will fail against missing tables. " +
-        "Run `pnpm db:migrate` to apply pending migrations, then restart."
-      );
-      process.exit(1);
-    }
-  
     db = createDb(embeddedConnectionString);
     logger.info("Embedded PostgreSQL ready");
     activeDatabaseConnectionString = embeddedConnectionString;
