@@ -272,7 +272,19 @@ export async function runChildProcess(
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
 
   return new Promise<RunProcessResult>((resolve, reject) => {
-    const mergedEnv = ensurePathInEnv({ ...process.env, ...opts.env });
+    const rawMerged: NodeJS.ProcessEnv = { ...process.env, ...opts.env };
+
+    // Strip Claude Code nesting-guard env vars so spawned `claude` processes
+    // don't refuse to start with "cannot be launched inside another session".
+    // These vars leak in when the Paperclip server itself is started from
+    // within a Claude Code session (e.g. `npx paperclipai run` in a terminal
+    // owned by Claude Code) or when cron inherits a contaminated shell env.
+    delete rawMerged.CLAUDECODE;
+    delete rawMerged.CLAUDE_CODE_ENTRYPOINT;
+    delete rawMerged.CLAUDE_CODE_SESSION;
+    delete rawMerged.CLAUDE_CODE_PARENT_SESSION;
+
+    const mergedEnv = ensurePathInEnv(rawMerged);
     void resolveSpawnTarget(command, args, opts.cwd, mergedEnv)
       .then((target) => {
         const child = spawn(target.command, target.args, {
