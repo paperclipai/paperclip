@@ -17,6 +17,8 @@ interface ActorMiddlewareOptions {
   resolveSession?: (req: Request) => Promise<BetterAuthSessionResult | null>;
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   return async (req, _res, next) => {
     req.actor =
@@ -24,7 +26,8 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         ? { type: "board", userId: "local-board", isInstanceAdmin: true, source: "local_implicit" }
         : { type: "none", source: "none" };
 
-    const runIdHeader = req.header("x-paperclip-run-id");
+    const rawRunIdHeader = req.header("x-paperclip-run-id")?.trim();
+    const runIdHeader = rawRunIdHeader && UUID_RE.test(rawRunIdHeader) ? rawRunIdHeader : undefined;
 
     const authHeader = req.header("authorization");
     if (!authHeader?.toLowerCase().startsWith("bearer ")) {
