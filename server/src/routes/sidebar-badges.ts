@@ -36,6 +36,14 @@ export function sidebarBadgeRoutes(db: Db) {
         .then((rows) => Number(rows[0]?.count ?? 0))
       : 0;
 
+    const actorUserId =
+      req.actor.type === "board" && req.actor.source !== "local_implicit"
+        ? req.actor.userId
+        : null;
+    const assignedToMeCount = actorUserId
+      ? await issueSvc.assignedToUserCount(companyId, actorUserId)
+      : 0;
+
     const badges = await svc.get(companyId, {
       joinRequests: joinRequestCount,
     });
@@ -47,7 +55,7 @@ export function sidebarBadgeRoutes(db: Db) {
       (summary.costs.monthBudgetCents > 0 && summary.costs.monthUtilizationPercent >= 80 ? 1 : 0);
     badges.inbox = badges.failedRuns + alertsCount + staleIssueCount + joinRequestCount + badges.approvals;
 
-    res.json(badges);
+    res.json({ ...badges, assignedToMe: assignedToMeCount });
   });
 
   return router;

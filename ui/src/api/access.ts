@@ -127,4 +127,7 @@ export const accessApi = {
 
   claimBoard: (token: string, code: string) =>
     api.post<{ claimed: true; userId: string }>(`/board-claim/${token}/claim`, { code }),
+
+  listMemberUsers: (companyId: string) =>
+    api.get<Array<{ id: string; name: string }>>(`/companies/${companyId}/member-users`),
 };

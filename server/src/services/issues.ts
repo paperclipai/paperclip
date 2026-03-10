@@ -1387,6 +1387,22 @@ export function issueService(db: Db) {
       }));
     },
 
+    assignedToUserCount: async (companyId: string, userId: string) => {
+      const result = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issues.assigneeUserId, userId),
+            isNull(issues.hiddenAt),
+            inArray(issues.status, ["backlog", "todo", "in_progress", "in_review", "blocked"]),
+          ),
+        )
+        .then((rows) => rows[0]);
+      return Number(result?.count ?? 0);
+    },
+
     staleCount: async (companyId: string, minutes = 60) => {
       const cutoff = new Date(Date.now() - minutes * 60 * 1000);
       const result = await db

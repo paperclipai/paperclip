@@ -2533,6 +2533,13 @@ export function accessRoutes(
     }
   );
 
+  router.get("/companies/:companyId/member-users", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const users = await access.listMemberUsers(companyId);
+    res.json(users);
+  });
+
   router.get("/companies/:companyId/members", async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCompanyPermission(req, companyId, "users:manage_permissions");

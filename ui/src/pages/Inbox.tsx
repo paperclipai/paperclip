@@ -49,6 +49,7 @@ const ACTIONABLE_APPROVAL_STATUSES = new Set(["pending", "revision_requested"]);
 type InboxTab = "new" | "all";
 type InboxCategoryFilter =
   | "everything"
+  | "assigned_to_me"
   | "issues_i_touched"
   | "join_requests"
   | "approvals"
@@ -57,6 +58,7 @@ type InboxCategoryFilter =
   | "stale_work";
 type InboxApprovalFilter = "all" | "actionable" | "resolved";
 type SectionKey =
+  | "assigned_to_me"
   | "issues_i_touched"
   | "join_requests"
   | "approvals"
@@ -77,6 +79,8 @@ function loadDismissed(): Set<string> {
 
 function saveDismissed(ids: Set<string>) {
   localStorage.setItem(DISMISSED_KEY, JSON.stringify([...ids]));
+  // Notify Sidebar on the same tab so badge adjusts immediately
+  window.dispatchEvent(new Event("inbox:dismissed-changed"));
 }
 
 function useDismissedItems() {
@@ -378,6 +382,18 @@ export function Inbox() {
       }),
     enabled: !!selectedCompanyId,
   });
+  const {
+    data: assignedToMeIssuesRaw = [],
+    isLoading: isAssignedToMeLoading,
+  } = useQuery({
+    queryKey: queryKeys.issues.listAssignedToMe(selectedCompanyId!),
+    queryFn: () =>
+      issuesApi.list(selectedCompanyId!, {
+        assigneeUserId: "me",
+        status: "backlog,todo,in_progress,in_review,blocked",
+      }),
+    enabled: !!selectedCompanyId,
+  });
 
   const { data: heartbeatRuns, isLoading: isRunsLoading } = useQuery({
     queryKey: queryKeys.heartbeats(selectedCompanyId!),
@@ -401,6 +417,11 @@ export function Inbox() {
   const touchedIssues = useMemo(
     () => [...touchedIssuesRaw].sort(sortByMostRecentActivity).slice(0, RECENT_ISSUES_LIMIT),
     [sortByMostRecentActivity, touchedIssuesRaw],
+  );
+
+  const assignedToMeIssues = useMemo(
+    () => [...assignedToMeIssuesRaw].sort(sortByMostRecentActivity),
+    [sortByMostRecentActivity, assignedToMeIssuesRaw],
   );
 
   const agentById = useMemo(() => {
@@ -538,6 +559,7 @@ export function Inbox() {
   const hasStale = staleIssues.length > 0;
   const hasJoinRequests = joinRequests.length > 0;
   const hasTouchedIssues = touchedIssues.length > 0;
+  const hasAssignedToMe = assignedToMeIssues.length > 0;
 
   const newItemCount =
     failedRuns.length +
@@ -545,6 +567,8 @@ export function Inbox() {
     (showAggregateAgentError ? 1 : 0) +
     (showBudgetAlert ? 1 : 0);
 
+  const showAssignedToMeCategory =
+    allCategoryFilter === "everything" || allCategoryFilter === "assigned_to_me";
   const showJoinRequestsCategory =
     allCategoryFilter === "everything" || allCategoryFilter === "join_requests";
   const showTouchedCategory =
@@ -556,6 +580,7 @@ export function Inbox() {
   const showStaleCategory = allCategoryFilter === "everything" || allCategoryFilter === "stale_work";
 
   const approvalsToRender = tab === "new" ? actionableApprovals : filteredAllApprovals;
+  const showAssignedToMeSection = tab === "new" ? hasAssignedToMe : showAssignedToMeCategory && hasAssignedToMe;
   const showTouchedSection = tab === "new" ? hasTouchedIssues : showTouchedCategory && hasTouchedIssues;
   const showJoinRequestsSection =
     tab === "new" ? hasJoinRequests : showJoinRequestsCategory && hasJoinRequests;
@@ -569,6 +594,7 @@ export function Inbox() {
   const showStaleSection = tab === "new" ? hasStale : showStaleCategory && hasStale;
 
   const visibleSections = [
+    showAssignedToMeSection ? "assigned_to_me" : null,
     showFailedRunsSection ? "failed_runs" : null,
     showAlertsSection ? "alerts" : null,
     showStaleSection ? "stale_work" : null,
@@ -583,6 +609,7 @@ export function Inbox() {
     !isDashboardLoading &&
     !isIssuesLoading &&
     !isTouchedIssuesLoading &&
+    !isAssignedToMeLoading &&
     !isRunsLoading;
 
   const showSeparatorBefore = (key: SectionKey) => visibleSections.indexOf(key) > 0;
@@ -622,6 +649,7 @@ export function Inbox() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="everything">All categories</SelectItem>
+                <SelectItem value="assigned_to_me">Assigned to me</SelectItem>
                 <SelectItem value="issues_i_touched">My recent issues</SelectItem>
                 <SelectItem value="join_requests">Join requests</SelectItem>
                 <SelectItem value="approvals">Approvals</SelectItem>
@@ -884,6 +912,45 @@ export function Inbox() {
                     <X className="h-3.5 w-3.5" />
                   </button>
                 </div>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+
+      {showAssignedToMeSection && (
+        <>
+          {showSeparatorBefore("assigned_to_me") && <Separator />}
+          <div>
+            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+              Assigned to Me
+            </h3>
+            <div className="divide-y divide-border border border-border">
+              {assignedToMeIssues.map((issue) => (
+                <Link
+                  key={issue.id}
+                  to={`/issues/${issue.identifier ?? issue.id}`}
+                  className="flex min-w-0 cursor-pointer items-start gap-2 px-3 py-3 no-underline text-inherit transition-colors hover:bg-accent/50 sm:items-center sm:gap-3 sm:px-4"
+                >
+                  <span className="shrink-0 sm:hidden">
+                    <StatusIcon status={issue.status} />
+                  </span>
+                  <span className="flex min-w-0 flex-1 flex-col gap-1 sm:contents">
+                    <span className="line-clamp-2 text-sm sm:order-2 sm:flex-1 sm:min-w-0 sm:line-clamp-none sm:truncate">
+                      {issue.title}
+                    </span>
+                    <span className="flex items-center gap-2 sm:order-1 sm:shrink-0">
+                      <span className="hidden sm:inline-flex"><PriorityIcon priority={issue.priority} /></span>
+                      <span className="hidden sm:inline-flex"><StatusIcon status={issue.status} /></span>
+                      <span className="text-xs font-mono text-muted-foreground">
+                        {issue.identifier ?? issue.id.slice(0, 8)}
+                      </span>
+                      <span className="text-xs text-muted-foreground sm:order-last">
+                        {`updated ${timeAgo(issue.updatedAt)}`}
+                      </span>
+                    </span>
+                  </span>
+                </Link>
               ))}
             </div>
           </div>
