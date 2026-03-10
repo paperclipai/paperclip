@@ -47,7 +47,13 @@ function sortByHierarchy(agents: Agent[]): Agent[] {
 
 export function SidebarAgents() {
   const [open, setOpen] = useState(true);
-  const [showPaused, setShowPaused] = useState(true);
+  const [showPaused, setShowPaused] = useState(() => {
+    try {
+      return localStorage.getItem("paperclip:sidebar-show-paused") !== "false";
+    } catch {
+      return true;
+    }
+  });
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialog();
   const { isMobile, setSidebarOpen } = useSidebar();
@@ -281,7 +287,11 @@ export function SidebarAgents() {
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
-                    setShowPaused((prev) => !prev);
+                    setShowPaused((prev) => {
+                      const next = !prev;
+                      try { localStorage.setItem("paperclip:sidebar-show-paused", String(next)); } catch {}
+                      return next;
+                    });
                   }}
                   className={cn(
                     "flex items-center justify-center h-4 w-4 rounded transition-colors",
