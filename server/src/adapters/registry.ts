@@ -34,6 +34,23 @@ import {
   agentConfigurationDoc as openclawGatewayAgentConfigurationDoc,
   models as openclawGatewayModels,
 } from "@paperclipai/adapter-openclaw-gateway";
+import {
+  execute as hermesGatewayExecute,
+  testEnvironment as hermesGatewayTestEnvironment,
+} from "@paperclipai/adapter-hermes-gateway/server";
+import {
+  agentConfigurationDoc as hermesGatewayAgentConfigurationDoc,
+  models as hermesGatewayModels,
+} from "@paperclipai/adapter-hermes-gateway";
+import {
+  execute as hermesExecute,
+  testEnvironment as hermesTestEnvironment,
+  sessionCodec as hermesSessionCodec,
+} from "@paperclipai/adapter-hermes-local/server";
+import {
+  agentConfigurationDoc as hermesAgentConfigurationDoc,
+  models as hermesModels,
+} from "@paperclipai/adapter-hermes-local";
 import { listCodexModels } from "./codex-models.js";
 import { listCursorModels } from "./cursor-models.js";
 import {
@@ -89,6 +106,25 @@ const openclawGatewayAdapter: ServerAdapterModule = {
   agentConfigurationDoc: openclawGatewayAgentConfigurationDoc,
 };
 
+const hermesGatewayAdapter: ServerAdapterModule = {
+  type: "hermes_gateway",
+  execute: hermesGatewayExecute,
+  testEnvironment: hermesGatewayTestEnvironment,
+  models: hermesGatewayModels,
+  supportsLocalAgentJwt: true,
+  agentConfigurationDoc: hermesGatewayAgentConfigurationDoc,
+};
+
+const hermesLocalAdapter: ServerAdapterModule = {
+  type: "hermes_local",
+  execute: hermesExecute,
+  testEnvironment: hermesTestEnvironment,
+  sessionCodec: hermesSessionCodec,
+  models: hermesModels,
+  supportsLocalAgentJwt: true,
+  agentConfigurationDoc: hermesAgentConfigurationDoc,
+};
+
 const openCodeLocalAdapter: ServerAdapterModule = {
   type: "opencode_local",
   execute: openCodeExecute,
@@ -115,6 +151,8 @@ const adaptersByType = new Map<string, ServerAdapterModule>(
   [
     claudeLocalAdapter,
     codexLocalAdapter,
+    hermesGatewayAdapter,
+    hermesLocalAdapter,
     openCodeLocalAdapter,
     piLocalAdapter,
     cursorLocalAdapter,

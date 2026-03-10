@@ -25,6 +25,8 @@ type AdvancedAdapterType =
   | "claude_local"
   | "codex_local"
   | "opencode_local"
+  | "hermes_gateway"
+  | "hermes_local"
   | "pi_local"
   | "cursor"
   | "openclaw_gateway";
@@ -55,6 +57,18 @@ const ADVANCED_ADAPTER_OPTIONS: Array<{
     label: "OpenCode",
     icon: OpenCodeLogoIcon,
     desc: "Local multi-provider agent",
+  },
+  {
+    value: "hermes_gateway",
+    label: "Hermes Gateway",
+    icon: Bot,
+    desc: "Persistent Hermes runtime over WebSocket",
+  },
+  {
+    value: "hermes_local",
+    label: "Hermes",
+    icon: Bot,
+    desc: "Local Hermes agent",
   },
   {
     value: "pi_local",

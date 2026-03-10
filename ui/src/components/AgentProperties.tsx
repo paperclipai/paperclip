@@ -4,6 +4,7 @@ import { AGENT_ROLE_LABELS, type Agent, type AgentRuntimeState } from "@papercli
 import { agentsApi } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
+import { adapterLabels } from "../lib/agent-adapters";
 import { StatusBadge } from "./StatusBadge";
 import { Identity } from "./Identity";
 import { formatDate, agentUrl } from "../lib/utils";
@@ -13,16 +14,6 @@ interface AgentPropertiesProps {
   agent: Agent;
   runtimeState?: AgentRuntimeState;
 }
-
-const adapterLabels: Record<string, string> = {
-  claude_local: "Claude (local)",
-  codex_local: "Codex (local)",
-  opencode_local: "OpenCode (local)",
-  openclaw_gateway: "OpenClaw Gateway",
-  cursor: "Cursor (local)",
-  process: "Process",
-  http: "HTTP",
-};
 
 const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 

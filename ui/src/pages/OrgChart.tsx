@@ -9,6 +9,7 @@ import { agentUrl } from "../lib/utils";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentIcon } from "../components/AgentIconPicker";
+import { adapterLabels } from "../lib/agent-adapters";
 import { Network } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
 
@@ -114,16 +115,6 @@ function collectEdges(nodes: LayoutNode[]): Array<{ parent: LayoutNode; child: L
 }
 
 // ── Status dot colors (raw hex for SVG) ─────────────────────────────────
-
-const adapterLabels: Record<string, string> = {
-  claude_local: "Claude",
-  codex_local: "Codex",
-  opencode_local: "OpenCode",
-  cursor: "Cursor",
-  openclaw_gateway: "OpenClaw Gateway",
-  process: "Process",
-  http: "HTTP",
-};
 
 const statusDotColor: Record<string, string> = {
   running: "#22d3ee",

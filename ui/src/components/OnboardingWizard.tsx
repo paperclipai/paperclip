@@ -30,6 +30,11 @@ import { ChoosePathButton } from "./PathInstructionsModal";
 import { HintIcon } from "./agent-config-primitives";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 import {
+  getDefaultLocalAdapterCommand,
+  getLocalAdapterHelloProbeCommand,
+  isLocalCliAdapter,
+} from "../lib/agent-adapters";
+import {
   Building2,
   Bot,
   Code,
@@ -52,6 +57,8 @@ type AdapterType =
   | "claude_local"
   | "codex_local"
   | "opencode_local"
+  | "hermes_gateway"
+  | "hermes_local"
   | "pi_local"
   | "cursor"
   | "process"
@@ -164,17 +171,8 @@ export function OnboardingWizard() {
     queryFn: () => agentsApi.adapterModels(createdCompanyId!, adapterType),
     enabled: Boolean(createdCompanyId) && onboardingOpen && step === 2
   });
-  const isLocalAdapter =
-    adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "opencode_local" || adapterType === "cursor";
-  const effectiveAdapterCommand =
-    command.trim() ||
-    (adapterType === "codex_local"
-      ? "codex"
-      : adapterType === "cursor"
-        ? "agent"
-        : adapterType === "opencode_local"
-          ? "opencode"
-          : "claude");
+  const isLocalAdapter = isLocalCliAdapter(adapterType);
+  const effectiveAdapterCommand = command.trim() || getDefaultLocalAdapterCommand(adapterType) || "";
 
   useEffect(() => {
     if (step !== 2) return;
@@ -662,6 +660,18 @@ export function OnboardingWizard() {
                           desc: "Local multi-provider agent"
                         },
                         {
+                          value: "hermes_gateway" as const,
+                          label: "Hermes Gateway",
+                          icon: Bot,
+                          desc: "Persistent Hermes runtime over WebSocket"
+                        },
+                        {
+                          value: "hermes_local" as const,
+                          label: "Hermes",
+                          icon: Bot,
+                          desc: "Local Hermes agent"
+                        },
+                        {
                           value: "pi_local" as const,
                           label: "Pi",
                           icon: Terminal,
@@ -733,6 +743,7 @@ export function OnboardingWizard() {
                   {(adapterType === "claude_local" ||
                     adapterType === "codex_local" ||
                     adapterType === "opencode_local" ||
+                    adapterType === "hermes_local" ||
                     adapterType === "pi_local" ||
                     adapterType === "cursor") && (
                     <div className="space-y-3">
@@ -900,13 +911,7 @@ export function OnboardingWizard() {
                       <div className="rounded-md border border-border/70 bg-muted/20 px-2.5 py-2 text-[11px] space-y-1.5">
                         <p className="font-medium">Manual debug</p>
                         <p className="text-muted-foreground font-mono break-all">
-                          {adapterType === "cursor"
-                            ? `${effectiveAdapterCommand} -p --mode ask --output-format json \"Respond with hello.\"`
-                            : adapterType === "codex_local"
-                            ? `${effectiveAdapterCommand} exec --json -`
-                            : adapterType === "opencode_local"
-                              ? `${effectiveAdapterCommand} run --format json "Respond with hello."`
-                            : `${effectiveAdapterCommand} --print - --output-format stream-json --verbose`}
+                          {getLocalAdapterHelloProbeCommand(adapterType, effectiveAdapterCommand) ?? "No probe available."}
                         </p>
                         <p className="text-muted-foreground">
                           Prompt:{" "}
@@ -966,14 +971,14 @@ export function OnboardingWizard() {
                     </div>
                   )}
 
-                  {(adapterType === "http" || adapterType === "openclaw_gateway") && (
+                  {(adapterType === "http" || adapterType === "openclaw_gateway" || adapterType === "hermes_gateway") && (
                     <div>
                       <label className="text-xs text-muted-foreground mb-1 block">
-                        {adapterType === "openclaw_gateway" ? "Gateway URL" : "Webhook URL"}
+                        {adapterType === "http" ? "Webhook URL" : "Gateway URL"}
                       </label>
                       <input
                         className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                        placeholder={adapterType === "openclaw_gateway" ? "ws://127.0.0.1:18789" : "https://..."}
+                        placeholder={adapterType === "http" ? "https://..." : "ws://127.0.0.1:18791/paperclip"}
                         value={url}
                         onChange={(e) => setUrl(e.target.value)}
                       />

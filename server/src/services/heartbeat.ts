@@ -261,6 +261,8 @@ function enrichWakeContextSnapshot(input: {
   const { contextSnapshot, reason, source, triggerDetail, payload } = input;
   const issueIdFromPayload = readNonEmptyString(payload?.["issueId"]);
   const commentIdFromPayload = readNonEmptyString(payload?.["commentId"]);
+  const actionHintFromPayload = readNonEmptyString(payload?.["actionHint"]);
+  const followupIssueFromPayload = parseObject(payload?.["followupIssue"]);
   const taskKey = deriveTaskKey(contextSnapshot, payload);
   const wakeCommentId = deriveCommentId(contextSnapshot, payload);
 
@@ -287,6 +289,15 @@ function enrichWakeContextSnapshot(input: {
   }
   if (!readNonEmptyString(contextSnapshot["wakeTriggerDetail"]) && triggerDetail) {
     contextSnapshot.wakeTriggerDetail = triggerDetail;
+  }
+  if (!readNonEmptyString(contextSnapshot["actionHint"]) && actionHintFromPayload) {
+    contextSnapshot.actionHint = actionHintFromPayload;
+  }
+  if (
+    Object.keys(parseObject(contextSnapshot["followupIssue"])).length === 0 &&
+    Object.keys(followupIssueFromPayload).length > 0
+  ) {
+    contextSnapshot.followupIssue = followupIssueFromPayload;
   }
 
   return {
