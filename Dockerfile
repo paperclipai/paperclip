@@ -31,7 +31,7 @@ RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" &
 FROM base AS production
 WORKDIR /app
 COPY --from=build /app /app
-RUN apt-get update && apt-get install -y --no-install-recommends gosu && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends gosu postgresql-client && rm -rf /var/lib/apt/lists/*
 RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest
 
 # Create non-root user so Claude Code allows --dangerously-skip-permissions
