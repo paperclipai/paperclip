@@ -21,6 +21,7 @@ import { getServerAdapter, runningProcesses } from "../adapters/index.js";
 import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
+import { calculateTokenCostCents } from "@paperclipai/shared";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 
@@ -977,6 +978,12 @@ export function heartbeatService(db: Db) {
       .where(eq(agentRuntimeState.agentId, agent.id));
 
     if (additionalCostCents > 0 || hasTokenUsage) {
+      const modelCostCents = calculateTokenCostCents(
+        result.model,
+        inputTokens,
+        outputTokens,
+        cachedInputTokens,
+      );
       await db.insert(costEvents).values({
         companyId: agent.companyId,
         agentId: agent.id,
@@ -985,6 +992,7 @@ export function heartbeatService(db: Db) {
         inputTokens,
         outputTokens,
         costCents: additionalCostCents,
+        calculatedCostCents: modelCostCents > 0 ? modelCostCents : null,
         occurredAt: new Date(),
       });
     }
