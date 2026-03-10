@@ -5,10 +5,13 @@ import { execFileSync } from "node:child_process";
 import { createServer } from "node:net";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
+import { eq } from "drizzle-orm";
 import {
   applyPendingMigrations,
+  createDb,
   ensurePostgresDatabase,
   formatDatabaseBackupResult,
+  projectWorkspaces,
   runDatabaseBackup,
   runDatabaseRestore,
 } from "@paperclipai/db";
@@ -74,6 +77,20 @@ type EmbeddedPostgresHandle = {
   stop: () => Promise<void>;
 };
 
+type GitWorkspaceInfo = {
+  root: string;
+  commonDir: string;
+};
+
+type SeedWorktreeDatabaseResult = {
+  backupSummary: string;
+  reboundWorkspaces: Array<{
+    name: string;
+    fromCwd: string;
+    toCwd: string;
+  }>;
+};
+
 function nonEmpty(value: string | null | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
@@ -130,6 +147,107 @@ function detectGitBranchName(cwd: string): string | null {
     return nonEmpty(value);
   } catch {
     return null;
+  }
+}
+
+function detectGitWorkspaceInfo(cwd: string): GitWorkspaceInfo | null {
+  try {
+    const root = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    const commonDirRaw = execFileSync("git", ["rev-parse", "--git-common-dir"], {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return {
+      root: path.resolve(root),
+      commonDir: path.resolve(root, commonDirRaw),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function rebindWorkspaceCwd(input: {
+  sourceRepoRoot: string;
+  targetRepoRoot: string;
+  workspaceCwd: string;
+}): string | null {
+  const sourceRepoRoot = path.resolve(input.sourceRepoRoot);
+  const targetRepoRoot = path.resolve(input.targetRepoRoot);
+  const workspaceCwd = path.resolve(input.workspaceCwd);
+  const relative = path.relative(sourceRepoRoot, workspaceCwd);
+  if (!relative || relative === "") {
+    return targetRepoRoot;
+  }
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    return null;
+  }
+  return path.resolve(targetRepoRoot, relative);
+}
+
+async function rebindSeededProjectWorkspaces(input: {
+  targetConnectionString: string;
+  currentCwd: string;
+}): Promise<SeedWorktreeDatabaseResult["reboundWorkspaces"]> {
+  const targetRepo = detectGitWorkspaceInfo(input.currentCwd);
+  if (!targetRepo) return [];
+
+  const db = createDb(input.targetConnectionString);
+  const closableDb = db as typeof db & {
+    $client?: { end?: (opts?: { timeout?: number }) => Promise<void> };
+  };
+
+  try {
+    const rows = await db
+      .select({
+        id: projectWorkspaces.id,
+        name: projectWorkspaces.name,
+        cwd: projectWorkspaces.cwd,
+      })
+      .from(projectWorkspaces);
+
+    const rebound: SeedWorktreeDatabaseResult["reboundWorkspaces"] = [];
+    for (const row of rows) {
+      const workspaceCwd = nonEmpty(row.cwd);
+      if (!workspaceCwd) continue;
+
+      const sourceRepo = detectGitWorkspaceInfo(workspaceCwd);
+      if (!sourceRepo) continue;
+      if (sourceRepo.commonDir !== targetRepo.commonDir) continue;
+
+      const reboundCwd = rebindWorkspaceCwd({
+        sourceRepoRoot: sourceRepo.root,
+        targetRepoRoot: targetRepo.root,
+        workspaceCwd,
+      });
+      if (!reboundCwd) continue;
+
+      const normalizedCurrent = path.resolve(workspaceCwd);
+      if (reboundCwd === normalizedCurrent) continue;
+      if (!existsSync(reboundCwd)) continue;
+
+      await db
+        .update(projectWorkspaces)
+        .set({
+          cwd: reboundCwd,
+          updatedAt: new Date(),
+        })
+        .where(eq(projectWorkspaces.id, row.id));
+
+      rebound.push({
+        name: row.name,
+        fromCwd: normalizedCurrent,
+        toCwd: reboundCwd,
+      });
+    }
+
+    return rebound;
+  } finally {
+    await closableDb.$client?.end?.({ timeout: 5 }).catch(() => undefined);
   }
 }
 
@@ -260,7 +378,7 @@ async function seedWorktreeDatabase(input: {
   targetPaths: WorktreeLocalPaths;
   instanceId: string;
   seedMode: WorktreeSeedMode;
-}): Promise<string> {
+}): Promise<SeedWorktreeDatabaseResult> {
   const seedPlan = resolveWorktreeSeedPlan(input.seedMode);
   const sourceEnvFile = resolvePaperclipEnvFile(input.sourceConfigPath);
   const sourceEnvEntries = readPaperclipEnvEntries(sourceEnvFile);
@@ -308,8 +426,15 @@ async function seedWorktreeDatabase(input: {
       backupFile: backup.backupFile,
     });
     await applyPendingMigrations(targetConnectionString);
+    const reboundWorkspaces = await rebindSeededProjectWorkspaces({
+      targetConnectionString,
+      currentCwd: input.targetPaths.cwd,
+    });
 
-    return formatDatabaseBackupResult(backup);
+    return {
+      backupSummary: formatDatabaseBackupResult(backup),
+      reboundWorkspaces,
+    };
   } finally {
     if (targetHandle?.startedByThisProcess) {
       await targetHandle.stop();
@@ -370,6 +495,7 @@ export async function worktreeInitCommand(opts: WorktreeInitOptions): Promise<vo
   loadPaperclipEnvFile(paths.configPath);
 
   let seedSummary: string | null = null;
+  let reboundWorkspaceSummary: SeedWorktreeDatabaseResult["reboundWorkspaces"] = [];
   if (opts.seed !== false) {
     if (!sourceConfig) {
       throw new Error(
@@ -379,7 +505,7 @@ export async function worktreeInitCommand(opts: WorktreeInitOptions): Promise<vo
     const spinner = p.spinner();
     spinner.start(`Seeding isolated worktree database from source instance (${seedMode})...`);
     try {
-      seedSummary = await seedWorktreeDatabase({
+      const seeded = await seedWorktreeDatabase({
         sourceConfigPath,
         sourceConfig,
         targetConfig,
@@ -387,6 +513,8 @@ export async function worktreeInitCommand(opts: WorktreeInitOptions): Promise<vo
         instanceId,
         seedMode,
       });
+      seedSummary = seeded.backupSummary;
+      reboundWorkspaceSummary = seeded.reboundWorkspaces;
       spinner.stop(`Seeded isolated worktree database (${seedMode}).`);
     } catch (error) {
       spinner.stop(pc.red("Failed to seed worktree database."));
@@ -402,6 +530,11 @@ export async function worktreeInitCommand(opts: WorktreeInitOptions): Promise<vo
   if (seedSummary) {
     p.log.message(pc.dim(`Seed mode: ${seedMode}`));
     p.log.message(pc.dim(`Seed snapshot: ${seedSummary}`));
+    for (const rebound of reboundWorkspaceSummary) {
+      p.log.message(
+        pc.dim(`Rebound workspace ${rebound.name}: ${rebound.fromCwd} -> ${rebound.toCwd}`),
+      );
+    }
   }
   p.outro(
     pc.green(
