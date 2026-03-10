@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -1412,11 +1413,112 @@ export function heartbeatService(db: Db) {
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
       }
+      // Subscription pool: inject CLAUDE_CONFIG_DIR so the agent process uses
+      // credentials from a specific subscription slot directory.
+      // Claude CLI resolves its config dir as: $CLAUDE_CONFIG_DIR ?? ~/.claude
+      // Credentials live at $CLAUDE_CONFIG_DIR/.credentials.json
+      // Data flow: resolvedConfig.env → adapter.execute(config) → claude-local
+      // execute.ts merges config.env into the spawned process environment.
+      //
+      // Supports two modes:
+      //   1. subscriptionConfigDir (string) — fixed slot assignment
+      //   2. subscriptionSlots (string[]) + subscriptionStrategy — pool rotation
+      //      Strategies: "round-robin" (default) alternates each run,
+      //                  "failover" uses first slot until a run fails then advances.
+      const SUBSCRIPTION_SLOTS_ROOT = path.resolve(os.homedir(), ".paperclip/subscription-slots");
+
+      async function validateSlotDir(slotPath: string): Promise<string | null> {
+        const resolved = path.resolve(slotPath);
+        if (!resolved.startsWith(SUBSCRIPTION_SLOTS_ROOT + path.sep)) {
+          logger.warn(
+            { agentId: agent.id, subscriptionConfigDir: resolved },
+            "subscriptionConfigDir outside allowed prefix; ignoring",
+          );
+          return null;
+        }
+        try {
+          const stat = await fs.lstat(resolved);
+          if (stat.isSymbolicLink()) throw new Error("symlink not allowed");
+          if (!stat.isDirectory()) throw new Error("not a directory");
+          const canonicalRoot = await fs.realpath(SUBSCRIPTION_SLOTS_ROOT);
+          const canonicalResolved = await fs.realpath(resolved);
+          if (!canonicalResolved.startsWith(canonicalRoot + path.sep)) {
+            throw new Error("resolved path escapes allowed prefix");
+          }
+          return canonicalResolved;
+        } catch {
+          logger.warn(
+            { agentId: agent.id, subscriptionConfigDir: resolved },
+            "subscriptionConfigDir does not exist or is not a valid directory; ignoring",
+          );
+          return null;
+        }
+      }
+
+      let subConfigDir: string | undefined;
+      if (agent.adapterType === "claude_local") {
+        const rc = parseObject(agent.runtimeConfig);
+        const singleSlot = rc.subscriptionConfigDir;
+        const poolSlots = rc.subscriptionSlots;
+
+        if (Array.isArray(poolSlots) && poolSlots.length > 0) {
+          // Pool mode: resolve slot names to full paths under SUBSCRIPTION_SLOTS_ROOT
+          const slotNames = poolSlots.filter((s): s is string => typeof s === "string");
+          const strategy = typeof rc.subscriptionStrategy === "string" ? rc.subscriptionStrategy : "round-robin";
+
+          if (slotNames.length > 0) {
+            // Single query: get last run's slot and status for rotation decisions
+            const [lastRun] = await db
+              .select({ status: heartbeatRuns.status, usageJson: heartbeatRuns.usageJson })
+              .from(heartbeatRuns)
+              .where(eq(heartbeatRuns.agentId, agent.id))
+              .orderBy(desc(heartbeatRuns.createdAt))
+              .limit(1);
+
+            const lastSlot = lastRun?.usageJson
+              ? (parseObject(lastRun.usageJson) as Record<string, unknown>).subscriptionSlot as string | undefined
+              : undefined;
+
+            let selectedName: string;
+            if (strategy === "failover") {
+              // Stick with current slot; advance to next only if last run failed
+              if (lastRun?.status === "failed" && lastSlot) {
+                const lastIdx = slotNames.indexOf(lastSlot);
+                selectedName = slotNames[(lastIdx + 1) % slotNames.length];
+              } else {
+                selectedName = lastSlot && slotNames.includes(lastSlot) ? lastSlot : slotNames[0];
+              }
+            } else {
+              // round-robin: advance to next slot after each run
+              if (lastSlot && slotNames.includes(lastSlot)) {
+                const lastIdx = slotNames.indexOf(lastSlot);
+                selectedName = slotNames[(lastIdx + 1) % slotNames.length];
+              } else {
+                selectedName = slotNames[0];
+              }
+            }
+
+            const validated = await validateSlotDir(path.join(SUBSCRIPTION_SLOTS_ROOT, selectedName));
+            if (validated) subConfigDir = validated;
+          }
+        } else if (singleSlot && typeof singleSlot === "string") {
+          // Single slot mode (explicit assignment)
+          subConfigDir = await validateSlotDir(singleSlot) ?? undefined;
+        }
+      }
+
+      const configForAdapter = subConfigDir
+        ? {
+            ...resolvedConfig,
+            env: { ...(parseObject(resolvedConfig.env) as Record<string, string>), CLAUDE_CONFIG_DIR: subConfigDir },
+          }
+        : resolvedConfig;
+
       const adapterResult = await adapter.execute({
         runId: run.id,
         agent,
         runtime: runtimeForAdapter,
-        config: resolvedConfig,
+        config: configForAdapter,
         context,
         onLog,
         onMeta: onAdapterMeta,
@@ -1504,12 +1606,14 @@ export function heartbeatService(db: Db) {
               ? "timed_out"
               : "failed";
 
+      const subscriptionSlot = subConfigDir ? path.basename(subConfigDir) : undefined;
       const usageJson =
-        adapterResult.usage || adapterResult.costUsd != null
+        adapterResult.usage || adapterResult.costUsd != null || subscriptionSlot
           ? ({
               ...(adapterResult.usage ?? {}),
               ...(adapterResult.costUsd != null ? { costUsd: adapterResult.costUsd } : {}),
               ...(adapterResult.billingType ? { billingType: adapterResult.billingType } : {}),
+              ...(subscriptionSlot ? { subscriptionSlot } : {}),
             } as Record<string, unknown>)
           : null;
 
