@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type UIEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { BookOpen, Moon, Sun } from "lucide-react";
-import { Outlet, useLocation, useNavigate, useParams } from "@/lib/router";
+import { BookOpen, Moon, Settings, Sun } from "lucide-react";
+import { Link, Outlet, useLocation, useNavigate, useParams } from "@/lib/router";
 import { CompanyRail } from "./CompanyRail";
 import { Sidebar } from "./Sidebar";
 import { SidebarNavItem } from "./SidebarNavItem";
@@ -221,6 +221,11 @@ export function Layout() {
                 icon={BookOpen}
                 className="flex-1 min-w-0"
               />
+              <Button asChild type="button" variant="ghost" size="icon-sm" className="text-muted-foreground shrink-0">
+                <Link to="/company/settings" aria-label="Open company settings" title="Company settings">
+                  <Settings className="h-4 w-4" />
+                </Link>
+              </Button>
               <Button
                 type="button"
                 variant="ghost"
@@ -256,6 +261,11 @@ export function Layout() {
                 icon={BookOpen}
                 className="flex-1 min-w-0"
               />
+              <Button asChild type="button" variant="ghost" size="icon-sm" className="text-muted-foreground shrink-0">
+                <Link to="/company/settings" aria-label="Open company settings" title="Company settings">
+                  <Settings className="h-4 w-4" />
+                </Link>
+              </Button>
               <Button
                 type="button"
                 variant="ghost"
