@@ -111,5 +111,11 @@ else
   fi
 fi
 
+# Start Qwen proxy in background (if API key is configured)
+if [ -n "$QWEN_API_KEY" ]; then
+  echo "[entrypoint] Starting Qwen proxy on port ${QWEN_PROXY_PORT:-3199}..."
+  gosu paperclip node /app/qwen-proxy.mjs &
+fi
+
 # Switch to paperclip user and start server
 exec gosu paperclip node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js
