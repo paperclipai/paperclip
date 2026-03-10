@@ -40,6 +40,7 @@ import {
 import { Identity } from "../components/Identity";
 import { PageTabBar } from "../components/PageTabBar";
 import type { HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
+import { useDismissedItems } from "../hooks/useDismissedItems";
 
 const STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24 hours
 const RECENT_ISSUES_LIMIT = 100;
@@ -63,36 +64,6 @@ type SectionKey =
   | "failed_runs"
   | "alerts"
   | "stale_work";
-
-const DISMISSED_KEY = "paperclip:inbox:dismissed";
-
-function loadDismissed(): Set<string> {
-  try {
-    const raw = localStorage.getItem(DISMISSED_KEY);
-    return raw ? new Set(JSON.parse(raw)) : new Set();
-  } catch {
-    return new Set();
-  }
-}
-
-function saveDismissed(ids: Set<string>) {
-  localStorage.setItem(DISMISSED_KEY, JSON.stringify([...ids]));
-}
-
-function useDismissedItems() {
-  const [dismissed, setDismissed] = useState<Set<string>>(loadDismissed);
-
-  const dismiss = useCallback((id: string) => {
-    setDismissed((prev) => {
-      const next = new Set(prev);
-      next.add(id);
-      saveDismissed(next);
-      return next;
-    });
-  }, []);
-
-  return { dismissed, dismiss };
-}
 
 const RUN_SOURCE_LABELS: Record<string, string> = {
   timer: "Scheduled",

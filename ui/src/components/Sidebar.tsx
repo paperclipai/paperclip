@@ -20,6 +20,7 @@ import { useCompany } from "../context/CompanyContext";
 import { sidebarBadgesApi } from "../api/sidebarBadges";
 import { heartbeatsApi } from "../api/heartbeats";
 import { queryKeys } from "../lib/queryKeys";
+import { useDismissedItems } from "../hooks/useDismissedItems";
 import { Button } from "@/components/ui/button";
 
 export function Sidebar() {
@@ -37,6 +38,8 @@ export function Sidebar() {
     refetchInterval: 10_000,
   });
   const liveRunCount = liveRuns?.length ?? 0;
+  const { dismissed } = useDismissedItems();
+  const adjustedInbox = Math.max(0, (sidebarBadges?.inbox ?? 0) - dismissed.size);
 
   function openSearch() {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true }));
@@ -80,7 +83,7 @@ export function Sidebar() {
             to="/inbox"
             label="Inbox"
             icon={Inbox}
-            badge={sidebarBadges?.inbox}
+            badge={adjustedInbox}
             badgeTone={sidebarBadges?.failedRuns ? "danger" : "default"}
             alert={(sidebarBadges?.failedRuns ?? 0) > 0}
           />
