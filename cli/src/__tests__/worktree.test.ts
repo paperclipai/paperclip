@@ -1,5 +1,8 @@
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { copySeededSecretsKey } from "../commands/worktree.js";
 import {
   buildWorktreeConfig,
   buildWorktreeEnvEntries,
@@ -121,5 +124,51 @@ describe("worktree helpers", () => {
 
     expect(full.excludedTables).toEqual([]);
     expect(full.nullifyColumns).toEqual({});
+  });
+
+  it("copies the source local_encrypted secrets key into the seeded worktree instance", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-secrets-"));
+    try {
+      const sourceConfigPath = path.join(tempRoot, "source", "config.json");
+      const sourceKeyPath = path.join(tempRoot, "source", "secrets", "master.key");
+      const targetKeyPath = path.join(tempRoot, "target", "secrets", "master.key");
+      fs.mkdirSync(path.dirname(sourceKeyPath), { recursive: true });
+      fs.writeFileSync(sourceKeyPath, "source-master-key", "utf8");
+
+      const sourceConfig = buildSourceConfig();
+      sourceConfig.secrets.localEncrypted.keyFilePath = sourceKeyPath;
+
+      copySeededSecretsKey({
+        sourceConfigPath,
+        sourceConfig,
+        sourceEnvEntries: {},
+        targetKeyFilePath: targetKeyPath,
+      });
+
+      expect(fs.readFileSync(targetKeyPath, "utf8")).toBe("source-master-key");
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("writes the source inline secrets master key into the seeded worktree instance", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-secrets-"));
+    try {
+      const sourceConfigPath = path.join(tempRoot, "source", "config.json");
+      const targetKeyPath = path.join(tempRoot, "target", "secrets", "master.key");
+
+      copySeededSecretsKey({
+        sourceConfigPath,
+        sourceConfig: buildSourceConfig(),
+        sourceEnvEntries: {
+          PAPERCLIP_SECRETS_MASTER_KEY: "inline-source-master-key",
+        },
+        targetKeyFilePath: targetKeyPath,
+      });
+
+      expect(fs.readFileSync(targetKeyPath, "utf8")).toBe("inline-source-master-key");
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 });

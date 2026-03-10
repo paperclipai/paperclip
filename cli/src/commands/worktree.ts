@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
@@ -18,6 +18,7 @@ import { expandHomePrefix } from "../config/home.js";
 import type { PaperclipConfig } from "../config/schema.js";
 import { readConfig, resolveConfigPath, writeConfig } from "../config/store.js";
 import { printPaperclipCliBanner } from "../utils/banner.js";
+import { resolveRuntimeLikePath } from "../utils/path-resolver.js";
 import {
   buildWorktreeConfig,
   buildWorktreeEnvEntries,
@@ -154,6 +155,54 @@ function resolveSourceConnectionString(config: PaperclipConfig, envEntries: Reco
   return `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;
 }
 
+export function copySeededSecretsKey(input: {
+  sourceConfigPath: string;
+  sourceConfig: PaperclipConfig;
+  sourceEnvEntries: Record<string, string>;
+  targetKeyFilePath: string;
+}): void {
+  if (input.sourceConfig.secrets.provider !== "local_encrypted") {
+    return;
+  }
+
+  mkdirSync(path.dirname(input.targetKeyFilePath), { recursive: true });
+
+  const sourceInlineMasterKey =
+    nonEmpty(input.sourceEnvEntries.PAPERCLIP_SECRETS_MASTER_KEY) ??
+    nonEmpty(process.env.PAPERCLIP_SECRETS_MASTER_KEY);
+  if (sourceInlineMasterKey) {
+    writeFileSync(input.targetKeyFilePath, sourceInlineMasterKey, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    try {
+      chmodSync(input.targetKeyFilePath, 0o600);
+    } catch {
+      // best effort
+    }
+    return;
+  }
+
+  const sourceKeyFileOverride =
+    nonEmpty(input.sourceEnvEntries.PAPERCLIP_SECRETS_MASTER_KEY_FILE) ??
+    nonEmpty(process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE);
+  const sourceConfiguredKeyPath = sourceKeyFileOverride ?? input.sourceConfig.secrets.localEncrypted.keyFilePath;
+  const sourceKeyFilePath = resolveRuntimeLikePath(sourceConfiguredKeyPath, input.sourceConfigPath);
+
+  if (!existsSync(sourceKeyFilePath)) {
+    throw new Error(
+      `Cannot seed worktree database because source local_encrypted secrets key was not found at ${sourceKeyFilePath}.`,
+    );
+  }
+
+  copyFileSync(sourceKeyFilePath, input.targetKeyFilePath);
+  try {
+    chmodSync(input.targetKeyFilePath, 0o600);
+  } catch {
+    // best effort
+  }
+}
+
 async function ensureEmbeddedPostgres(dataDir: string, preferredPort: number): Promise<EmbeddedPostgresHandle> {
   const moduleName = "embedded-postgres";
   let EmbeddedPostgres: EmbeddedPostgresCtor;
@@ -215,6 +264,12 @@ async function seedWorktreeDatabase(input: {
   const seedPlan = resolveWorktreeSeedPlan(input.seedMode);
   const sourceEnvFile = resolvePaperclipEnvFile(input.sourceConfigPath);
   const sourceEnvEntries = readPaperclipEnvEntries(sourceEnvFile);
+  copySeededSecretsKey({
+    sourceConfigPath: input.sourceConfigPath,
+    sourceConfig: input.sourceConfig,
+    sourceEnvEntries,
+    targetKeyFilePath: input.targetPaths.secretsKeyFilePath,
+  });
   let sourceHandle: EmbeddedPostgresHandle | null = null;
   let targetHandle: EmbeddedPostgresHandle | null = null;
 
