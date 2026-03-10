@@ -47,7 +47,7 @@ function sortByHierarchy(agents: Agent[]): Agent[] {
 
 export function SidebarAgents() {
   const [open, setOpen] = useState(true);
-  const [showPaused, setShowPaused] = useState(false);
+  const [showPaused, setShowPaused] = useState(true);
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialog();
   const { isMobile, setSidebarOpen } = useSidebar();
