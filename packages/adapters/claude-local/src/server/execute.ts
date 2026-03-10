@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,6 +33,11 @@ const PAPERCLIP_SKILLS_CANDIDATES = [
   path.resolve(__moduleDir, "../../skills"),         // published: <pkg>/dist/server/ -> <pkg>/skills/
   path.resolve(__moduleDir, "../../../../../skills"), // dev: src/server/ -> repo root/skills/
 ];
+const CLAUDE_CACHE_ROOT = path.join(
+  os.tmpdir(),
+  "paperclip-claude-local-cache",
+  createHash("sha256").update(__moduleDir).digest("hex").slice(0, 12),
+);
 
 async function resolvePaperclipSkillsDir(): Promise<string | null> {
   for (const candidate of PAPERCLIP_SKILLS_CANDIDATES) {
@@ -47,21 +53,45 @@ async function resolvePaperclipSkillsDir(): Promise<string | null> {
  * them as proper registered skills.
  */
 async function buildSkillsDir(): Promise<string> {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skills-"));
-  const target = path.join(tmp, ".claude", "skills");
+  const root = path.join(CLAUDE_CACHE_ROOT, "skills");
+  const target = path.join(root, ".claude", "skills");
   await fs.mkdir(target, { recursive: true });
   const skillsDir = await resolvePaperclipSkillsDir();
-  if (!skillsDir) return tmp;
+  if (!skillsDir) return root;
   const entries = await fs.readdir(skillsDir, { withFileTypes: true });
   for (const entry of entries) {
     if (entry.isDirectory()) {
-      await fs.symlink(
-        path.join(skillsDir, entry.name),
-        path.join(target, entry.name),
-      );
+      const source = path.join(skillsDir, entry.name);
+      const destination = path.join(target, entry.name);
+      const existing = await fs.lstat(destination).catch(() => null);
+      if (existing) continue;
+      await fs.symlink(source, destination).catch(async (err) => {
+        if ((err as NodeJS.ErrnoException).code === "EEXIST") return;
+        throw err;
+      });
     }
   }
-  return tmp;
+  return root;
+}
+
+async function writeStableInstructionsFile(contents: string): Promise<string> {
+  const instructionsDir = path.join(CLAUDE_CACHE_ROOT, "instructions");
+  await fs.mkdir(instructionsDir, { recursive: true });
+  const digest = createHash("sha256").update(contents).digest("hex");
+  const filePath = path.join(instructionsDir, `${digest}.md`);
+  const tmpPath = path.join(
+    instructionsDir,
+    `${digest}.${process.pid}.${Date.now().toString(36)}.tmp`,
+  );
+  await fs.writeFile(tmpPath, contents, "utf-8");
+  try {
+    await fs.rename(tmpPath, filePath);
+  } catch (err) {
+    await fs.rm(tmpPath, { force: true }).catch(() => {});
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== "EEXIST") throw err;
+  }
+  return filePath;
 }
 
 interface ClaudeExecutionInput {
@@ -313,8 +343,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (instructionsFilePath) {
     const instructionsContent = await fs.readFile(instructionsFilePath, "utf-8");
     const pathDirective = `\nThe above agent instructions were loaded from ${instructionsFilePath}. Resolve any relative file references from ${instructionsFileDir}.`;
-    const combinedPath = path.join(skillsDir, "agent-instructions.md");
-    await fs.writeFile(combinedPath, instructionsContent + pathDirective, "utf-8");
+    const combinedPath = await writeStableInstructionsFile(instructionsContent + pathDirective);
     effectiveInstructionsFilePath = combinedPath;
   }
 
@@ -500,25 +529,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   };
 
-  try {
-    const initial = await runAttempt(sessionId ?? null);
-    if (
-      sessionId &&
-      !initial.proc.timedOut &&
-      (initial.proc.exitCode ?? 0) !== 0 &&
-      initial.parsed &&
-      isClaudeUnknownSessionError(initial.parsed)
-    ) {
-      await onLog(
-        "stderr",
-        `[paperclip] Claude resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
-      );
-      const retry = await runAttempt(null);
-      return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
-    }
-
-    return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
-  } finally {
-    fs.rm(skillsDir, { recursive: true, force: true }).catch(() => {});
+  const initial = await runAttempt(sessionId ?? null);
+  if (
+    sessionId &&
+    !initial.proc.timedOut &&
+    (initial.proc.exitCode ?? 0) !== 0 &&
+    initial.parsed &&
+    isClaudeUnknownSessionError(initial.parsed)
+  ) {
+    await onLog(
+      "stderr",
+      `[paperclip] Claude resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
+    );
+    const retry = await runAttempt(null);
+    return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
   }
+
+  return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
 }

@@ -68,6 +68,11 @@ You can set:
 
 Templates support variables like `{{agent.id}}`, `{{agent.name}}`, and run context values.
 
+For better prompt-cache reuse on local model adapters:
+
+- keep static instructions at the top of the prompt
+- avoid volatile variables like `{{runId}}`, `{{run.id}}`, `{{context.now}}`, or whole-object interpolation like `{{context}}`
+
 ## 4. Session resume behavior
 
 Paperclip stores resumable session state per `(agent, taskKey, adapterType)`.
@@ -75,6 +80,7 @@ Paperclip stores resumable session state per `(agent, taskKey, adapterType)`.
 
 - A heartbeat for the same task key reuses the previous session for that task.
 - Different task keys for the same agent keep separate session state.
+- Timer heartbeats preserve the saved task session unless the wake itself requires a clean reset (for example a new assignment or manual invoke).
 - If restore fails, adapters should retry once with a fresh session and continue.
 - You can reset all sessions for an agent or reset one task session by task key.
 
