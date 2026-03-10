@@ -407,6 +407,51 @@ export function ProjectProperties({ project, onUpdate }: ProjectPropertiesProps)
                       </Button>
                     </div>
                   ) : null}
+                  {workspace.runtimeServices && workspace.runtimeServices.length > 0 ? (
+                    <div className="space-y-1 pl-2">
+                      {workspace.runtimeServices.map((service) => (
+                        <div
+                          key={service.id}
+                          className="flex items-center justify-between gap-2 rounded-md border border-border/60 px-2 py-1"
+                        >
+                          <div className="min-w-0 space-y-0.5">
+                            <div className="flex items-center gap-2">
+                              <span className="text-[11px] font-medium">{service.serviceName}</span>
+                              <span
+                                className={cn(
+                                  "rounded-full px-1.5 py-0.5 text-[10px] uppercase tracking-wide",
+                                  service.status === "running"
+                                    ? "bg-green-500/15 text-green-700 dark:text-green-300"
+                                    : service.status === "failed"
+                                      ? "bg-red-500/15 text-red-700 dark:text-red-300"
+                                      : "bg-muted text-muted-foreground",
+                                )}
+                              >
+                                {service.status}
+                              </span>
+                            </div>
+                            <div className="text-[11px] text-muted-foreground">
+                              {service.url ? (
+                                <a
+                                  href={service.url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="hover:text-foreground hover:underline"
+                                >
+                                  {service.url}
+                                </a>
+                              ) : (
+                                service.command ?? "No URL"
+                              )}
+                            </div>
+                          </div>
+                          <div className="text-[10px] text-muted-foreground whitespace-nowrap">
+                            {service.lifecycle}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
               ))}
             </div>

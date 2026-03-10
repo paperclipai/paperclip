@@ -187,8 +187,15 @@
     {
       "idx": 26,
       "version": "7",
+      "when": 1773089625430,
+      "tag": "0026_lying_pete_wisdom",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
       "when": 1773219292111,
-      "tag": "0026_daffy_mauler",
+      "tag": "0027_daffy_mauler",
       "breakpoints": true
     }
   ]

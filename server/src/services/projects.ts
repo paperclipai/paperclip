@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { projects, projectGoals, goals, projectWorkspaces } from "@paperclipai/db";
+import { projects, projectGoals, goals, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import {
   PROJECT_COLORS,
   deriveProjectUrlKey,
@@ -8,10 +8,13 @@ import {
   normalizeProjectUrlKey,
   type ProjectGoalRef,
   type ProjectWorkspace,
+  type WorkspaceRuntimeService,
 } from "@paperclipai/shared";
+import { listWorkspaceRuntimeServicesForProjectWorkspaces } from "./workspace-runtime.js";
 
 type ProjectRow = typeof projects.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
+type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 type CreateWorkspaceInput = {
   name?: string | null;
@@ -78,7 +81,41 @@ async function attachGoals(db: Db, rows: ProjectRow[]): Promise<ProjectWithGoals
   });
 }
 
-function toWorkspace(row: ProjectWorkspaceRow): ProjectWorkspace {
+function toRuntimeService(row: WorkspaceRuntimeServiceRow): WorkspaceRuntimeService {
+  return {
+    id: row.id,
+    companyId: row.companyId,
+    projectId: row.projectId ?? null,
+    projectWorkspaceId: row.projectWorkspaceId ?? null,
+    issueId: row.issueId ?? null,
+    scopeType: row.scopeType as WorkspaceRuntimeService["scopeType"],
+    scopeId: row.scopeId ?? null,
+    serviceName: row.serviceName,
+    status: row.status as WorkspaceRuntimeService["status"],
+    lifecycle: row.lifecycle as WorkspaceRuntimeService["lifecycle"],
+    reuseKey: row.reuseKey ?? null,
+    command: row.command ?? null,
+    cwd: row.cwd ?? null,
+    port: row.port ?? null,
+    url: row.url ?? null,
+    provider: row.provider as WorkspaceRuntimeService["provider"],
+    providerRef: row.providerRef ?? null,
+    ownerAgentId: row.ownerAgentId ?? null,
+    startedByRunId: row.startedByRunId ?? null,
+    lastUsedAt: row.lastUsedAt,
+    startedAt: row.startedAt,
+    stoppedAt: row.stoppedAt ?? null,
+    stopPolicy: (row.stopPolicy as Record<string, unknown> | null) ?? null,
+    healthStatus: row.healthStatus as WorkspaceRuntimeService["healthStatus"],
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function toWorkspace(
+  row: ProjectWorkspaceRow,
+  runtimeServices: WorkspaceRuntimeService[] = [],
+): ProjectWorkspace {
   return {
     id: row.id,
     companyId: row.companyId,
@@ -89,15 +126,20 @@ function toWorkspace(row: ProjectWorkspaceRow): ProjectWorkspace {
     repoRef: row.repoRef ?? null,
     metadata: (row.metadata as Record<string, unknown> | null) ?? null,
     isPrimary: row.isPrimary,
+    runtimeServices,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
 }
 
-function pickPrimaryWorkspace(rows: ProjectWorkspaceRow[]): ProjectWorkspace | null {
+function pickPrimaryWorkspace(
+  rows: ProjectWorkspaceRow[],
+  runtimeServicesByWorkspaceId?: Map<string, WorkspaceRuntimeService[]>,
+): ProjectWorkspace | null {
   if (rows.length === 0) return null;
   const explicitPrimary = rows.find((row) => row.isPrimary);
-  return toWorkspace(explicitPrimary ?? rows[0]);
+  const primary = explicitPrimary ?? rows[0];
+  return toWorkspace(primary, runtimeServicesByWorkspaceId?.get(primary.id) ?? []);
 }
 
 /** Batch-load workspace refs for a set of projects. */
@@ -110,6 +152,17 @@ async function attachWorkspaces(db: Db, rows: ProjectWithGoals[]): Promise<Proje
     .from(projectWorkspaces)
     .where(inArray(projectWorkspaces.projectId, projectIds))
     .orderBy(desc(projectWorkspaces.isPrimary), asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id));
+  const runtimeServicesByWorkspaceId = await listWorkspaceRuntimeServicesForProjectWorkspaces(
+    db,
+    rows[0]!.companyId,
+    workspaceRows.map((workspace) => workspace.id),
+  );
+  const sharedRuntimeServicesByWorkspaceId = new Map(
+    Array.from(runtimeServicesByWorkspaceId.entries()).map(([workspaceId, services]) => [
+      workspaceId,
+      services.map(toRuntimeService),
+    ]),
+  );
 
   const map = new Map<string, ProjectWorkspaceRow[]>();
   for (const row of workspaceRows) {
@@ -123,11 +176,16 @@ async function attachWorkspaces(db: Db, rows: ProjectWithGoals[]): Promise<Proje
 
   return rows.map((row) => {
     const projectWorkspaceRows = map.get(row.id) ?? [];
-    const workspaces = projectWorkspaceRows.map(toWorkspace);
+    const workspaces = projectWorkspaceRows.map((workspace) =>
+      toWorkspace(
+        workspace,
+        sharedRuntimeServicesByWorkspaceId.get(workspace.id) ?? [],
+      ),
+    );
     return {
       ...row,
       workspaces,
-      primaryWorkspace: pickPrimaryWorkspace(projectWorkspaceRows),
+      primaryWorkspace: pickPrimaryWorkspace(projectWorkspaceRows, sharedRuntimeServicesByWorkspaceId),
     };
   });
 }
@@ -402,7 +460,18 @@ export function projectService(db: Db) {
         .from(projectWorkspaces)
         .where(eq(projectWorkspaces.projectId, projectId))
         .orderBy(desc(projectWorkspaces.isPrimary), asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id));
-      return rows.map(toWorkspace);
+      if (rows.length === 0) return [];
+      const runtimeServicesByWorkspaceId = await listWorkspaceRuntimeServicesForProjectWorkspaces(
+        db,
+        rows[0]!.companyId,
+        rows.map((workspace) => workspace.id),
+      );
+      return rows.map((row) =>
+        toWorkspace(
+          row,
+          (runtimeServicesByWorkspaceId.get(row.id) ?? []).map(toRuntimeService),
+        ),
+      );
     },
 
     createWorkspace: async (

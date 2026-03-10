@@ -1,4 +1,5 @@
 import type { ProjectStatus } from "../constants.js";
+import type { WorkspaceRuntimeService } from "./workspace-runtime.js";
 
 export interface ProjectGoalRef {
   id: string;
@@ -15,6 +16,7 @@ export interface ProjectWorkspace {
   repoRef: string | null;
   metadata: Record<string, unknown> | null;
   isPrimary: boolean;
+  runtimeServices?: WorkspaceRuntimeService[];
   createdAt: Date;
   updatedAt: Date;
 }
