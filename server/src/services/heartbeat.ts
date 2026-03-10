@@ -12,6 +12,7 @@ import {
   costEvents,
   issues,
   projectWorkspaces,
+  companyCronJobs,
 } from "@paperclipai/db";
 import { conflict, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -1398,6 +1399,28 @@ export function heartbeatService(db: Db) {
         }
       }
       await finalizeAgentStatus(agent.id, outcome);
+
+      // Update cron job state if this run was triggered by the cron scheduler
+      const cronJobId =
+        typeof run.contextSnapshot?.cronJobId === "string" ? run.contextSnapshot.cronJobId : null;
+      if (cronJobId) {
+        const durationMs = finalizedRun?.finishedAt && finalizedRun?.startedAt
+          ? finalizedRun.finishedAt.getTime() - finalizedRun.startedAt.getTime()
+          : null;
+        await db
+          .update(companyCronJobs)
+          .set({
+            lastRunId: run.id,
+            lastRunStatus: outcome,
+            lastRunDurationMs: durationMs,
+            consecutiveErrors: outcome === "succeeded" ? 0 : sql`${companyCronJobs.consecutiveErrors} + 1`,
+            updatedAt: new Date(),
+          })
+          .where(eq(companyCronJobs.id, cronJobId))
+          .catch((err) => {
+            logger.warn({ err, cronJobId, runId }, "failed to update cron job state after run");
+          });
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown adapter failure";
       logger.error({ err, runId }, "heartbeat execution failed");
@@ -1481,6 +1504,7 @@ export function heartbeatService(db: Db) {
 
       if (!issue) return;
 
+      // Clear exec lock on ALL issues that share this run ID (not just the first one)
       await tx
         .update(issues)
         .set({
@@ -1489,7 +1513,7 @@ export function heartbeatService(db: Db) {
           executionLockedAt: null,
           updatedAt: new Date(),
         })
-        .where(eq(issues.id, issue.id));
+        .where(and(eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)));
 
       while (true) {
         const deferred = await tx
@@ -1692,6 +1716,7 @@ export function heartbeatService(db: Db) {
             companyId: issues.companyId,
             executionRunId: issues.executionRunId,
             executionAgentNameKey: issues.executionAgentNameKey,
+            assigneeAgentId: issues.assigneeAgentId,
           })
           .from(issues)
           .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
@@ -1756,7 +1781,15 @@ export function heartbeatService(db: Db) {
             .limit(1)
             .then((rows) => rows[0] ?? null);
 
-          if (legacyRun) {
+          // Only treat a legacy run as an execution lock if it belongs to the requesting
+          // agent (coalesce) or the issue's actual assignee (genuine contention).
+          // A third-party run that happens to have this issueId in its context snapshot
+          // should not block the assigned agent from waking — that creates ghost locks.
+          const legacyRunIsRelevant =
+            legacyRun &&
+            (legacyRun.agentId === agentId || legacyRun.agentId === issue.assigneeAgentId);
+
+          if (legacyRunIsRelevant && legacyRun) {
             activeExecutionRun = legacyRun;
             const legacyAgent = await tx
               .select({ name: agents.name })

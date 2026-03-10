@@ -25,7 +25,7 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
-import { heartbeatService } from "./services/index.js";
+import { heartbeatService, cronSchedulerService } from "./services/index.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
@@ -498,12 +498,18 @@ export async function startServer(): Promise<StartedServer> {
   
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any);
-  
+    const cronScheduler = cronSchedulerService(db as any, heartbeat);
+
     // Reap orphaned runs at startup (no threshold -- runningProcesses is empty)
     void heartbeat.reapOrphanedRuns().catch((err) => {
       logger.error({ err }, "startup reap of orphaned heartbeat runs failed");
     });
-  
+
+    // Initialize cron job schedules on startup
+    void cronScheduler.initializeJobSchedules().catch((err) => {
+      logger.error({ err }, "cron scheduler initialization failed");
+    });
+
     setInterval(() => {
       void heartbeat
         .tickTimers(new Date())
@@ -515,12 +521,24 @@ export async function startServer(): Promise<StartedServer> {
         .catch((err) => {
           logger.error({ err }, "heartbeat timer tick failed");
         });
-  
+
       // Periodically reap orphaned runs (5-min staleness threshold)
       void heartbeat
         .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
         .catch((err) => {
           logger.error({ err }, "periodic reap of orphaned heartbeat runs failed");
+        });
+
+      // Tick cron scheduler
+      void cronScheduler
+        .tickCronJobs(new Date())
+        .then((result) => {
+          if (result.enqueued > 0) {
+            logger.info({ ...result }, "cron scheduler tick enqueued runs");
+          }
+        })
+        .catch((err) => {
+          logger.error({ err }, "cron scheduler tick failed");
         });
     }, config.heartbeatSchedulerIntervalMs);
   }

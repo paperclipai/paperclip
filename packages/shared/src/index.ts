@@ -122,6 +122,7 @@ export type {
   AgentEnvConfig,
   CompanySecret,
   SecretProviderDescriptor,
+  CompanyCronJob,
 } from "./types/index.js";
 
 export {
@@ -229,6 +230,12 @@ export {
   type CompanyPortabilityExport,
   type CompanyPortabilityPreview,
   type CompanyPortabilityImport,
+  createCronJobSchema,
+  updateCronJobSchema,
+  listCronJobsQuerySchema,
+  type CreateCronJob,
+  type UpdateCronJob,
+  type ListCronJobsQuery,
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";

@@ -205,6 +205,8 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   }
 
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  // Remove CLAUDECODE so the spawned CLI doesn't think it's a nested session
+  delete runtimeEnv.CLAUDECODE;
   await ensureCommandResolvable(command, cwd, runtimeEnv);
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
@@ -270,7 +272,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const promptTemplate = asString(
     config.promptTemplate,
-    "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
+    "You are agent {{agent.id}} ({{agent.name}}). {{context.message}} Continue your Paperclip work.",
   );
   const model = asString(config.model, "");
   const effort = asString(config.effort, "");

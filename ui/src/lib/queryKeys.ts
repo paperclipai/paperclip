@@ -20,6 +20,7 @@ export const queryKeys = {
       ["issues", companyId, "search", q, projectId ?? "__all-projects__"] as const,
     listAssignedToMe: (companyId: string) => ["issues", companyId, "assigned-to-me"] as const,
     listTouchedByMe: (companyId: string) => ["issues", companyId, "touched-by-me"] as const,
+    listAssignedToUser: (companyId: string) => ["issues", companyId, "assigned-to-user"] as const,
     listUnreadTouchedByMe: (companyId: string) => ["issues", companyId, "unread-touched-by-me"] as const,
     labels: (companyId: string) => ["issues", companyId, "labels"] as const,
     listByProject: (companyId: string, projectId: string) =>
@@ -70,5 +71,9 @@ export const queryKeys = {
     ["heartbeats", companyId, agentId] as const,
   liveRuns: (companyId: string) => ["live-runs", companyId] as const,
   runIssues: (runId: string) => ["run-issues", runId] as const,
+  cronJobs: {
+    list: (companyId: string) => ["cron-jobs", companyId] as const,
+    detail: (companyId: string, id: string) => ["cron-jobs", companyId, id] as const,
+  },
   org: (companyId: string) => ["org", companyId] as const,
 };
