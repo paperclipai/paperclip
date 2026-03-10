@@ -1,6 +1,7 @@
 import { useQueryClient, useMutation } from "@tanstack/react-query";
 import { Pause, Play, Trash2 } from "lucide-react";
 import { agentsApi } from "../api/agents";
+import { useToast } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { StatusBadge } from "./StatusBadge";
 import {
@@ -27,6 +28,7 @@ interface StatusBadgeMenuProps {
 
 export function StatusBadgeMenu({ agentId, status, companyId }: StatusBadgeMenuProps) {
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
@@ -34,19 +36,26 @@ export function StatusBadgeMenu({ agentId, status, companyId }: StatusBadgeMenuP
     queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
   };
 
+  const onError = (err: Error) => {
+    pushToast({ title: err.message, tone: "error" });
+  };
+
   const pauseMut = useMutation({
     mutationFn: () => agentsApi.pause(agentId, companyId),
     onSuccess: invalidate,
+    onError,
   });
 
   const resumeMut = useMutation({
     mutationFn: () => agentsApi.resume(agentId, companyId),
     onSuccess: invalidate,
+    onError,
   });
 
   const terminateMut = useMutation({
     mutationFn: () => agentsApi.terminate(agentId, companyId),
     onSuccess: invalidate,
+    onError,
   });
 
   const busy = pauseMut.isPending || resumeMut.isPending || terminateMut.isPending;

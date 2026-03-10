@@ -7,8 +7,8 @@ import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
+import { useToast } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
-import { StatusBadge } from "../components/StatusBadge";
 import { StatusBadgeMenu } from "../components/StatusBadgeMenu";
 import { agentStatusDot, agentStatusDotDefault } from "../lib/status-colors";
 import { EntityRow } from "../components/EntityRow";
@@ -63,6 +63,7 @@ function filterOrgTree(nodes: OrgNode[], tab: FilterTab, showTerminated: boolean
 export function Agents() {
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialog();
+  const { pushToast } = useToast();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
   const location = useLocation();
@@ -136,13 +137,20 @@ export function Agents() {
 
   const bulkToggle = useMutation({
     mutationFn: async (action: "pause" | "resume") => {
-      await Promise.allSettled(
+      const results = await Promise.allSettled(
         toggleableAgents.map((a) =>
           action === "pause"
             ? agentsApi.pause(a.id, selectedCompanyId!)
             : agentsApi.resume(a.id, selectedCompanyId!),
         ),
       );
+      const failed = results.filter((r) => r.status === "rejected");
+      if (failed.length > 0) {
+        throw new Error(`${failed.length} agent(s) failed to ${action}`);
+      }
+    },
+    onError: (err) => {
+      pushToast({ title: err.message, tone: "error" });
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId!) });
