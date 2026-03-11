@@ -659,6 +659,9 @@ export function companyPortabilityService(db: Db) {
           instructions.body,
         );
 
+        // NOTE: linkedUserId is intentionally omitted — it references a local
+        // auth user that would not exist on the target instance.  Human proxy
+        // agents are imported without a user link and must be re-linked manually.
         manifest.agents.push({
           slug,
           name: agent.name,
