@@ -1,8 +1,16 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { copySeededSecretsKey, rebindWorkspaceCwd } from "../commands/worktree.js";
+import {
+  copyGitHooksToWorktreeGitDir,
+  copySeededSecretsKey,
+  rebindWorkspaceCwd,
+  resolveGitWorktreeAddArgs,
+  resolveWorktreeMakeTargetPath,
+  worktreeMakeCommand,
+} from "../commands/worktree.js";
 import {
   buildWorktreeConfig,
   buildWorktreeEnvEntries,
@@ -77,6 +85,36 @@ describe("worktree helpers", () => {
     expect(sanitizeWorktreeInstanceId("  ")).toBe("worktree");
   });
 
+  it("resolves worktree:make target paths under the user home directory", () => {
+    expect(resolveWorktreeMakeTargetPath("paperclip-pr-432")).toBe(
+      path.resolve(os.homedir(), "paperclip-pr-432"),
+    );
+  });
+
+  it("rejects worktree:make names that are not safe directory/branch names", () => {
+    expect(() => resolveWorktreeMakeTargetPath("paperclip/pr-432")).toThrow(
+      "Worktree name must contain only letters, numbers, dots, underscores, or dashes.",
+    );
+  });
+
+  it("builds git worktree add args for new and existing branches", () => {
+    expect(
+      resolveGitWorktreeAddArgs({
+        branchName: "feature-branch",
+        targetPath: "/tmp/feature-branch",
+        branchExists: false,
+      }),
+    ).toEqual(["worktree", "add", "-b", "feature-branch", "/tmp/feature-branch", "HEAD"]);
+
+    expect(
+      resolveGitWorktreeAddArgs({
+        branchName: "feature-branch",
+        targetPath: "/tmp/feature-branch",
+        branchExists: true,
+      }),
+    ).toEqual(["worktree", "add", "/tmp/feature-branch", "feature-branch"]);
+  });
+
   it("rewrites loopback auth URLs to the new port only", () => {
     expect(rewriteLocalUrlPort("http://127.0.0.1:3100", 3110)).toBe("http://127.0.0.1:3110/");
     expect(rewriteLocalUrlPort("https://paperclip.example", 3110)).toBe("https://paperclip.example");
@@ -109,6 +147,7 @@ describe("worktree helpers", () => {
     const env = buildWorktreeEnvEntries(paths);
     expect(env.PAPERCLIP_HOME).toBe(path.resolve("/tmp/paperclip-worktrees"));
     expect(env.PAPERCLIP_INSTANCE_ID).toBe("feature-worktree-support");
+    expect(env.PAPERCLIP_IN_WORKTREE).toBe("true");
     expect(formatShellExports(env)).toContain("export PAPERCLIP_INSTANCE_ID='feature-worktree-support'");
   });
 
@@ -175,28 +214,116 @@ describe("worktree helpers", () => {
   it("rebinds same-repo workspace paths onto the current worktree root", () => {
     expect(
       rebindWorkspaceCwd({
-        sourceRepoRoot: "/Users/nmurray/paperclip",
-        targetRepoRoot: "/Users/nmurray/paperclip-pr-432",
-        workspaceCwd: "/Users/nmurray/paperclip",
+        sourceRepoRoot: "/Users/example/paperclip",
+        targetRepoRoot: "/Users/example/paperclip-pr-432",
+        workspaceCwd: "/Users/example/paperclip",
       }),
-    ).toBe("/Users/nmurray/paperclip-pr-432");
+    ).toBe("/Users/example/paperclip-pr-432");
 
     expect(
       rebindWorkspaceCwd({
-        sourceRepoRoot: "/Users/nmurray/paperclip",
-        targetRepoRoot: "/Users/nmurray/paperclip-pr-432",
-        workspaceCwd: "/Users/nmurray/paperclip/packages/db",
+        sourceRepoRoot: "/Users/example/paperclip",
+        targetRepoRoot: "/Users/example/paperclip-pr-432",
+        workspaceCwd: "/Users/example/paperclip/packages/db",
       }),
-    ).toBe("/Users/nmurray/paperclip-pr-432/packages/db");
+    ).toBe("/Users/example/paperclip-pr-432/packages/db");
   });
 
   it("does not rebind paths outside the source repo root", () => {
     expect(
       rebindWorkspaceCwd({
-        sourceRepoRoot: "/Users/nmurray/paperclip",
-        targetRepoRoot: "/Users/nmurray/paperclip-pr-432",
-        workspaceCwd: "/Users/nmurray/other-project",
+        sourceRepoRoot: "/Users/example/paperclip",
+        targetRepoRoot: "/Users/example/paperclip-pr-432",
+        workspaceCwd: "/Users/example/other-project",
       }),
     ).toBeNull();
+  });
+
+  it("copies shared git hooks into a linked worktree git dir", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-hooks-"));
+    const repoRoot = path.join(tempRoot, "repo");
+    const worktreePath = path.join(tempRoot, "repo-feature");
+
+    try {
+      fs.mkdirSync(repoRoot, { recursive: true });
+      execFileSync("git", ["init"], { cwd: repoRoot, stdio: "ignore" });
+      execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: repoRoot, stdio: "ignore" });
+      execFileSync("git", ["config", "user.name", "Test User"], { cwd: repoRoot, stdio: "ignore" });
+      fs.writeFileSync(path.join(repoRoot, "README.md"), "# temp\n", "utf8");
+      execFileSync("git", ["add", "README.md"], { cwd: repoRoot, stdio: "ignore" });
+      execFileSync("git", ["commit", "-m", "Initial commit"], { cwd: repoRoot, stdio: "ignore" });
+
+      const sourceHooksDir = path.join(repoRoot, ".git", "hooks");
+      const sourceHookPath = path.join(sourceHooksDir, "pre-commit");
+      const sourceTokensPath = path.join(sourceHooksDir, "forbidden-tokens.txt");
+      fs.writeFileSync(sourceHookPath, "#!/usr/bin/env bash\nexit 0\n", { encoding: "utf8", mode: 0o755 });
+      fs.chmodSync(sourceHookPath, 0o755);
+      fs.writeFileSync(sourceTokensPath, "secret-token\n", "utf8");
+
+      execFileSync("git", ["worktree", "add", "--detach", worktreePath], { cwd: repoRoot, stdio: "ignore" });
+
+      const copied = copyGitHooksToWorktreeGitDir(worktreePath);
+      const worktreeGitDir = execFileSync("git", ["rev-parse", "--git-dir"], {
+        cwd: worktreePath,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+      const resolvedSourceHooksDir = fs.realpathSync(sourceHooksDir);
+      const resolvedTargetHooksDir = fs.realpathSync(path.resolve(worktreePath, worktreeGitDir, "hooks"));
+      const targetHookPath = path.join(resolvedTargetHooksDir, "pre-commit");
+      const targetTokensPath = path.join(resolvedTargetHooksDir, "forbidden-tokens.txt");
+
+      expect(copied).toMatchObject({
+        sourceHooksPath: resolvedSourceHooksDir,
+        targetHooksPath: resolvedTargetHooksDir,
+        copied: true,
+      });
+      expect(fs.readFileSync(targetHookPath, "utf8")).toBe("#!/usr/bin/env bash\nexit 0\n");
+      expect(fs.statSync(targetHookPath).mode & 0o111).not.toBe(0);
+      expect(fs.readFileSync(targetTokensPath, "utf8")).toBe("secret-token\n");
+    } finally {
+      execFileSync("git", ["worktree", "remove", "--force", worktreePath], { cwd: repoRoot, stdio: "ignore" });
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("creates and initializes a worktree from the top-level worktree:make command", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-make-"));
+    const repoRoot = path.join(tempRoot, "repo");
+    const fakeHome = path.join(tempRoot, "home");
+    const worktreePath = path.join(fakeHome, "paperclip-make-test");
+    const originalCwd = process.cwd();
+    const originalHome = process.env.HOME;
+
+    try {
+      fs.mkdirSync(repoRoot, { recursive: true });
+      fs.mkdirSync(fakeHome, { recursive: true });
+      execFileSync("git", ["init"], { cwd: repoRoot, stdio: "ignore" });
+      execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: repoRoot, stdio: "ignore" });
+      execFileSync("git", ["config", "user.name", "Test User"], { cwd: repoRoot, stdio: "ignore" });
+      fs.writeFileSync(path.join(repoRoot, "README.md"), "# temp\n", "utf8");
+      execFileSync("git", ["add", "README.md"], { cwd: repoRoot, stdio: "ignore" });
+      execFileSync("git", ["commit", "-m", "Initial commit"], { cwd: repoRoot, stdio: "ignore" });
+
+      process.env.HOME = fakeHome;
+      process.chdir(repoRoot);
+
+      await worktreeMakeCommand("paperclip-make-test", {
+        seed: false,
+        home: path.join(tempRoot, ".paperclip-worktrees"),
+      });
+
+      expect(fs.existsSync(path.join(worktreePath, ".git"))).toBe(true);
+      expect(fs.existsSync(path.join(worktreePath, ".paperclip", "config.json"))).toBe(true);
+      expect(fs.existsSync(path.join(worktreePath, ".paperclip", ".env"))).toBe(true);
+    } finally {
+      process.chdir(originalCwd);
+      if (originalHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = originalHome;
+      }
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 });

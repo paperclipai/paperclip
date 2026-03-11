@@ -1,4 +1,16 @@
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
@@ -50,6 +62,8 @@ type WorktreeInitOptions = {
   force?: boolean;
 };
 
+type WorktreeMakeOptions = WorktreeInitOptions;
+
 type WorktreeEnvOptions = {
   config?: string;
   json?: boolean;
@@ -80,6 +94,14 @@ type EmbeddedPostgresHandle = {
 type GitWorkspaceInfo = {
   root: string;
   commonDir: string;
+  gitDir: string;
+  hooksPath: string;
+};
+
+type CopiedGitHooksResult = {
+  sourceHooksPath: string;
+  targetHooksPath: string;
+  copied: boolean;
 };
 
 type SeedWorktreeDatabaseResult = {
@@ -93,6 +115,62 @@ type SeedWorktreeDatabaseResult = {
 
 function nonEmpty(value: string | null | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function resolveWorktreeMakeName(name: string): string {
+  const value = nonEmpty(name);
+  if (!value) {
+    throw new Error("Worktree name is required.");
+  }
+  if (!/^[A-Za-z0-9._-]+$/.test(value)) {
+    throw new Error(
+      "Worktree name must contain only letters, numbers, dots, underscores, or dashes.",
+    );
+  }
+  return value;
+}
+
+export function resolveWorktreeMakeTargetPath(name: string): string {
+  return path.resolve(os.homedir(), resolveWorktreeMakeName(name));
+}
+
+function extractExecSyncErrorMessage(error: unknown): string | null {
+  if (!error || typeof error !== "object") {
+    return error instanceof Error ? error.message : null;
+  }
+
+  const stderr = "stderr" in error ? error.stderr : null;
+  if (typeof stderr === "string") {
+    return nonEmpty(stderr);
+  }
+  if (stderr instanceof Buffer) {
+    return nonEmpty(stderr.toString("utf8"));
+  }
+
+  return error instanceof Error ? nonEmpty(error.message) : null;
+}
+
+function localBranchExists(cwd: string, branchName: string): boolean {
+  try {
+    execFileSync("git", ["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`], {
+      cwd,
+      stdio: "ignore",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function resolveGitWorktreeAddArgs(input: {
+  branchName: string;
+  targetPath: string;
+  branchExists: boolean;
+}): string[] {
+  if (input.branchExists) {
+    return ["worktree", "add", input.targetPath, input.branchName];
+  }
+  return ["worktree", "add", "-b", input.branchName, input.targetPath, "HEAD"];
 }
 
 function readPidFilePort(postmasterPidFile: string): number | null {
@@ -162,13 +240,86 @@ function detectGitWorkspaceInfo(cwd: string): GitWorkspaceInfo | null {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
+    const gitDirRaw = execFileSync("git", ["rev-parse", "--git-dir"], {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    const hooksPathRaw = execFileSync("git", ["rev-parse", "--git-path", "hooks"], {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
     return {
       root: path.resolve(root),
       commonDir: path.resolve(root, commonDirRaw),
+      gitDir: path.resolve(root, gitDirRaw),
+      hooksPath: path.resolve(root, hooksPathRaw),
     };
   } catch {
     return null;
   }
+}
+
+function copyDirectoryContents(sourceDir: string, targetDir: string): boolean {
+  if (!existsSync(sourceDir)) return false;
+
+  const entries = readdirSync(sourceDir, { withFileTypes: true });
+  if (entries.length === 0) return false;
+
+  mkdirSync(targetDir, { recursive: true });
+
+  let copied = false;
+  for (const entry of entries) {
+    const sourcePath = path.resolve(sourceDir, entry.name);
+    const targetPath = path.resolve(targetDir, entry.name);
+
+    if (entry.isDirectory()) {
+      mkdirSync(targetPath, { recursive: true });
+      copyDirectoryContents(sourcePath, targetPath);
+      copied = true;
+      continue;
+    }
+
+    if (entry.isSymbolicLink()) {
+      rmSync(targetPath, { recursive: true, force: true });
+      symlinkSync(readlinkSync(sourcePath), targetPath);
+      copied = true;
+      continue;
+    }
+
+    copyFileSync(sourcePath, targetPath);
+    try {
+      chmodSync(targetPath, statSync(sourcePath).mode & 0o777);
+    } catch {
+      // best effort
+    }
+    copied = true;
+  }
+
+  return copied;
+}
+
+export function copyGitHooksToWorktreeGitDir(cwd: string): CopiedGitHooksResult | null {
+  const workspace = detectGitWorkspaceInfo(cwd);
+  if (!workspace) return null;
+
+  const sourceHooksPath = workspace.hooksPath;
+  const targetHooksPath = path.resolve(workspace.gitDir, "hooks");
+
+  if (sourceHooksPath === targetHooksPath) {
+    return {
+      sourceHooksPath,
+      targetHooksPath,
+      copied: false,
+    };
+  }
+
+  return {
+    sourceHooksPath,
+    targetHooksPath,
+    copied: copyDirectoryContents(sourceHooksPath, targetHooksPath),
+  };
 }
 
 export function rebindWorkspaceCwd(input: {
@@ -445,10 +596,7 @@ async function seedWorktreeDatabase(input: {
   }
 }
 
-export async function worktreeInitCommand(opts: WorktreeInitOptions): Promise<void> {
-  printPaperclipCliBanner();
-  p.intro(pc.bgCyan(pc.black(" paperclipai worktree init ")));
-
+async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
   const cwd = process.cwd();
   const name = resolveSuggestedWorktreeName(
     cwd,
@@ -493,6 +641,7 @@ export async function worktreeInitCommand(opts: WorktreeInitOptions): Promise<vo
   mergePaperclipEnvEntries(buildWorktreeEnvEntries(paths), paths.envPath);
   ensureAgentJwtSecret(paths.configPath);
   loadPaperclipEnvFile(paths.configPath);
+  const copiedGitHooks = copyGitHooksToWorktreeGitDir(cwd);
 
   let seedSummary: string | null = null;
   let reboundWorkspaceSummary: SeedWorktreeDatabaseResult["reboundWorkspaces"] = [];
@@ -527,6 +676,11 @@ export async function worktreeInitCommand(opts: WorktreeInitOptions): Promise<vo
   p.log.message(pc.dim(`Isolated home: ${paths.homeDir}`));
   p.log.message(pc.dim(`Instance: ${paths.instanceId}`));
   p.log.message(pc.dim(`Server port: ${serverPort} | DB port: ${databasePort}`));
+  if (copiedGitHooks?.copied) {
+    p.log.message(
+      pc.dim(`Mirrored git hooks: ${copiedGitHooks.sourceHooksPath} -> ${copiedGitHooks.targetHooksPath}`),
+    );
+  }
   if (seedSummary) {
     p.log.message(pc.dim(`Seed mode: ${seedMode}`));
     p.log.message(pc.dim(`Seed snapshot: ${seedSummary}`));
@@ -541,6 +695,57 @@ export async function worktreeInitCommand(opts: WorktreeInitOptions): Promise<vo
       `Worktree ready. Run Paperclip inside this repo and the CLI/server will use ${paths.instanceId} automatically.`,
     ),
   );
+}
+
+export async function worktreeInitCommand(opts: WorktreeInitOptions): Promise<void> {
+  printPaperclipCliBanner();
+  p.intro(pc.bgCyan(pc.black(" paperclipai worktree init ")));
+  await runWorktreeInit(opts);
+}
+
+export async function worktreeMakeCommand(nameArg: string, opts: WorktreeMakeOptions): Promise<void> {
+  printPaperclipCliBanner();
+  p.intro(pc.bgCyan(pc.black(" paperclipai worktree:make ")));
+
+  const name = resolveWorktreeMakeName(nameArg);
+  const sourceCwd = process.cwd();
+  const targetPath = resolveWorktreeMakeTargetPath(name);
+  if (existsSync(targetPath)) {
+    throw new Error(`Target path already exists: ${targetPath}`);
+  }
+
+  mkdirSync(path.dirname(targetPath), { recursive: true });
+  const worktreeArgs = resolveGitWorktreeAddArgs({
+    branchName: name,
+    targetPath,
+    branchExists: localBranchExists(sourceCwd, name),
+  });
+
+  const spinner = p.spinner();
+  spinner.start(`Creating git worktree at ${targetPath}...`);
+  try {
+    execFileSync("git", worktreeArgs, {
+      cwd: sourceCwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    spinner.stop(`Created git worktree at ${targetPath}.`);
+  } catch (error) {
+    spinner.stop(pc.red("Failed to create git worktree."));
+    throw new Error(extractExecSyncErrorMessage(error) ?? String(error));
+  }
+
+  const originalCwd = process.cwd();
+  try {
+    process.chdir(targetPath);
+    await runWorktreeInit({
+      ...opts,
+      name,
+    });
+  } catch (error) {
+    throw error;
+  } finally {
+    process.chdir(originalCwd);
+  }
 }
 
 export async function worktreeEnvCommand(opts: WorktreeEnvOptions): Promise<void> {
@@ -565,6 +770,22 @@ export async function worktreeEnvCommand(opts: WorktreeEnvOptions): Promise<void
 
 export function registerWorktreeCommands(program: Command): void {
   const worktree = program.command("worktree").description("Worktree-local Paperclip instance helpers");
+
+  program
+    .command("worktree:make")
+    .description("Create ~/NAME as a git worktree, then initialize an isolated Paperclip instance inside it")
+    .argument("<name>", "Worktree directory and branch name (created at ~/NAME)")
+    .option("--instance <id>", "Explicit isolated instance id")
+    .option("--home <path>", `Home root for worktree instances (default: ${DEFAULT_WORKTREE_HOME})`)
+    .option("--from-config <path>", "Source config.json to seed from")
+    .option("--from-data-dir <path>", "Source PAPERCLIP_HOME used when deriving the source config")
+    .option("--from-instance <id>", "Source instance id when deriving the source config", "default")
+    .option("--server-port <port>", "Preferred server port", (value) => Number(value))
+    .option("--db-port <port>", "Preferred embedded Postgres port", (value) => Number(value))
+    .option("--seed-mode <mode>", "Seed profile: minimal or full (default: minimal)", "minimal")
+    .option("--no-seed", "Skip database seeding from the source instance")
+    .option("--force", "Replace existing repo-local config and isolated instance data", false)
+    .action(worktreeMakeCommand);
 
   worktree
     .command("init")

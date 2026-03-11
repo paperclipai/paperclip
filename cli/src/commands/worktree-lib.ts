@@ -202,6 +202,7 @@ export function buildWorktreeEnvEntries(paths: WorktreeLocalPaths): Record<strin
     PAPERCLIP_INSTANCE_ID: paths.instanceId,
     PAPERCLIP_CONFIG: paths.configPath,
     PAPERCLIP_CONTEXT: paths.contextPath,
+    PAPERCLIP_IN_WORKTREE: "true",
   };
 }
 

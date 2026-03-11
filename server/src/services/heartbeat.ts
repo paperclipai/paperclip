@@ -11,6 +11,7 @@ import {
   heartbeatRuns,
   costEvents,
   issues,
+  projects,
   projectWorkspaces,
 } from "@paperclipai/db";
 import { conflict, notFound } from "../errors.js";
@@ -23,6 +24,20 @@ import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
+import {
+  buildWorkspaceReadyComment,
+  ensureRuntimeServicesForRun,
+  persistAdapterManagedRuntimeServices,
+  realizeExecutionWorkspace,
+  releaseRuntimeServicesForRun,
+} from "./workspace-runtime.js";
+import { issueService } from "./issues.js";
+import {
+  buildExecutionWorkspaceAdapterConfig,
+  parseIssueExecutionWorkspaceSettings,
+  parseProjectExecutionWorkspacePolicy,
+  resolveExecutionWorkspaceMode,
+} from "./execution-workspace-policy.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -406,6 +421,7 @@ function resolveNextSessionState(input: {
 export function heartbeatService(db: Db) {
   const runLogStore = getRunLogStore();
   const secretsSvc = secretService(db);
+  const issuesSvc = issueService(db);
 
   async function getAgent(agentId: string) {
     return db
@@ -1071,8 +1087,10 @@ export function heartbeatService(db: Db) {
     const issueAssigneeConfig = issueId
       ? await db
           .select({
+            projectId: issues.projectId,
             assigneeAgentId: issues.assigneeAgentId,
             assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
+            executionWorkspaceSettings: issues.executionWorkspaceSettings,
           })
           .from(issues)
           .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
@@ -1084,6 +1102,18 @@ export function heartbeatService(db: Db) {
             issueAssigneeConfig.assigneeAdapterOverrides,
           )
         : null;
+    const issueExecutionWorkspaceSettings = parseIssueExecutionWorkspaceSettings(
+      issueAssigneeConfig?.executionWorkspaceSettings,
+    );
+    const contextProjectId = readNonEmptyString(context.projectId);
+    const executionProjectId = issueAssigneeConfig?.projectId ?? contextProjectId;
+    const projectExecutionWorkspacePolicy = executionProjectId
+      ? await db
+          .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+          .from(projects)
+          .where(and(eq(projects.id, executionProjectId), eq(projects.companyId, agent.companyId)))
+          .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy))
+      : null;
     const taskSession = taskKey
       ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, taskKey)
       : null;
@@ -1093,20 +1123,72 @@ export function heartbeatService(db: Db) {
     const previousSessionParams = normalizeSessionParams(
       sessionCodec.deserialize(taskSessionForRun?.sessionParamsJson ?? null),
     );
+    const config = parseObject(agent.adapterConfig);
+    const executionWorkspaceMode = resolveExecutionWorkspaceMode({
+      projectPolicy: projectExecutionWorkspacePolicy,
+      issueSettings: issueExecutionWorkspaceSettings,
+      legacyUseProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null,
+    });
     const resolvedWorkspace = await resolveWorkspaceForRun(
       agent,
       context,
       previousSessionParams,
-      { useProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null },
+      { useProjectWorkspace: executionWorkspaceMode !== "agent_default" },
     );
+    const workspaceManagedConfig = buildExecutionWorkspaceAdapterConfig({
+      agentConfig: config,
+      projectPolicy: projectExecutionWorkspacePolicy,
+      issueSettings: issueExecutionWorkspaceSettings,
+      mode: executionWorkspaceMode,
+      legacyUseProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null,
+    });
+    const mergedConfig = issueAssigneeOverrides?.adapterConfig
+      ? { ...workspaceManagedConfig, ...issueAssigneeOverrides.adapterConfig }
+      : workspaceManagedConfig;
+    const { config: resolvedConfig, secretKeys } = await secretsSvc.resolveAdapterConfigForRuntime(
+      agent.companyId,
+      mergedConfig,
+    );
+    const issueRef = issueId
+      ? await db
+          .select({
+            id: issues.id,
+            identifier: issues.identifier,
+            title: issues.title,
+          })
+          .from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
+          .then((rows) => rows[0] ?? null)
+      : null;
+    const executionWorkspace = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: resolvedWorkspace.cwd,
+        source: resolvedWorkspace.source,
+        projectId: resolvedWorkspace.projectId,
+        workspaceId: resolvedWorkspace.workspaceId,
+        repoUrl: resolvedWorkspace.repoUrl,
+        repoRef: resolvedWorkspace.repoRef,
+      },
+      config: resolvedConfig,
+      issue: issueRef,
+      agent: {
+        id: agent.id,
+        name: agent.name,
+        companyId: agent.companyId,
+      },
+    });
     const runtimeSessionResolution = resolveRuntimeSessionParamsForWorkspace({
       agentId: agent.id,
       previousSessionParams,
-      resolvedWorkspace,
+      resolvedWorkspace: {
+        ...resolvedWorkspace,
+        cwd: executionWorkspace.cwd,
+      },
     });
     const runtimeSessionParams = runtimeSessionResolution.sessionParams;
     const runtimeWorkspaceWarnings = [
       ...resolvedWorkspace.warnings,
+      ...executionWorkspace.warnings,
       ...(runtimeSessionResolution.warning ? [runtimeSessionResolution.warning] : []),
       ...(resetTaskSession && sessionResetReason
         ? [
@@ -1117,16 +1199,33 @@ export function heartbeatService(db: Db) {
         : []),
     ];
     context.paperclipWorkspace = {
-      cwd: resolvedWorkspace.cwd,
-      source: resolvedWorkspace.source,
-      projectId: resolvedWorkspace.projectId,
-      workspaceId: resolvedWorkspace.workspaceId,
-      repoUrl: resolvedWorkspace.repoUrl,
-      repoRef: resolvedWorkspace.repoRef,
+      cwd: executionWorkspace.cwd,
+      source: executionWorkspace.source,
+      mode: executionWorkspaceMode,
+      strategy: executionWorkspace.strategy,
+      projectId: executionWorkspace.projectId,
+      workspaceId: executionWorkspace.workspaceId,
+      repoUrl: executionWorkspace.repoUrl,
+      repoRef: executionWorkspace.repoRef,
+      branchName: executionWorkspace.branchName,
+      worktreePath: executionWorkspace.worktreePath,
     };
     context.paperclipWorkspaces = resolvedWorkspace.workspaceHints;
-    if (resolvedWorkspace.projectId && !readNonEmptyString(context.projectId)) {
-      context.projectId = resolvedWorkspace.projectId;
+    const runtimeServiceIntents = (() => {
+      const runtimeConfig = parseObject(resolvedConfig.workspaceRuntime);
+      return Array.isArray(runtimeConfig.services)
+        ? runtimeConfig.services.filter(
+            (value): value is Record<string, unknown> => typeof value === "object" && value !== null,
+          )
+        : [];
+    })();
+    if (runtimeServiceIntents.length > 0) {
+      context.paperclipRuntimeServiceIntents = runtimeServiceIntents;
+    } else {
+      delete context.paperclipRuntimeServiceIntents;
+    }
+    if (executionWorkspace.projectId && !readNonEmptyString(context.projectId)) {
+      context.projectId = executionWorkspace.projectId;
     }
     const runtimeSessionFallback = taskKey || resetTaskSession ? null : runtime.sessionId;
     const previousSessionDisplayId = truncateDisplayId(
@@ -1146,7 +1245,6 @@ export function heartbeatService(db: Db) {
     let handle: RunLogHandle | null = null;
     let stdoutExcerpt = "";
     let stderrExcerpt = "";
-
     try {
       const startedAt = run.startedAt ?? new Date();
       const runningWithSession = await db
@@ -1154,6 +1252,7 @@ export function heartbeatService(db: Db) {
         .set({
           startedAt,
           sessionIdBefore: runtimeForAdapter.sessionDisplayId ?? runtimeForAdapter.sessionId,
+          contextSnapshot: context,
           updatedAt: new Date(),
         })
         .where(eq(heartbeatRuns.id, run.id))
@@ -1235,15 +1334,54 @@ export function heartbeatService(db: Db) {
       for (const warning of runtimeWorkspaceWarnings) {
         await onLog("stderr", `[paperclip] ${warning}\n`);
       }
-
-      const config = parseObject(agent.adapterConfig);
-      const mergedConfig = issueAssigneeOverrides?.adapterConfig
-        ? { ...config, ...issueAssigneeOverrides.adapterConfig }
-        : config;
-      const { config: resolvedConfig, secretKeys } = await secretsSvc.resolveAdapterConfigForRuntime(
-        agent.companyId,
-        mergedConfig,
+      const adapterEnv = Object.fromEntries(
+        Object.entries(parseObject(resolvedConfig.env)).filter(
+          (entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string",
+        ),
       );
+      const runtimeServices = await ensureRuntimeServicesForRun({
+        db,
+        runId: run.id,
+        agent: {
+          id: agent.id,
+          name: agent.name,
+          companyId: agent.companyId,
+        },
+        issue: issueRef,
+        workspace: executionWorkspace,
+        config: resolvedConfig,
+        adapterEnv,
+        onLog,
+      });
+      if (runtimeServices.length > 0) {
+        context.paperclipRuntimeServices = runtimeServices;
+        context.paperclipRuntimePrimaryUrl =
+          runtimeServices.find((service) => readNonEmptyString(service.url))?.url ?? null;
+        await db
+          .update(heartbeatRuns)
+          .set({
+            contextSnapshot: context,
+            updatedAt: new Date(),
+          })
+          .where(eq(heartbeatRuns.id, run.id));
+      }
+      if (issueId && (executionWorkspace.created || runtimeServices.some((service) => !service.reused))) {
+        try {
+          await issuesSvc.addComment(
+            issueId,
+            buildWorkspaceReadyComment({
+              workspace: executionWorkspace,
+              runtimeServices,
+            }),
+            { agentId: agent.id },
+          );
+        } catch (err) {
+          await onLog(
+            "stderr",
+            `[paperclip] Failed to post workspace-ready comment: ${err instanceof Error ? err.message : String(err)}\n`,
+          );
+        }
+      }
       const onAdapterMeta = async (meta: AdapterInvocationMeta) => {
         if (meta.env && secretKeys.size > 0) {
           for (const key of secretKeys) {
@@ -1284,6 +1422,54 @@ export function heartbeatService(db: Db) {
         onMeta: onAdapterMeta,
         authToken: authToken ?? undefined,
       });
+      const adapterManagedRuntimeServices = adapterResult.runtimeServices
+        ? await persistAdapterManagedRuntimeServices({
+            db,
+            adapterType: agent.adapterType,
+            runId: run.id,
+            agent: {
+              id: agent.id,
+              name: agent.name,
+              companyId: agent.companyId,
+            },
+            issue: issueRef,
+            workspace: executionWorkspace,
+            reports: adapterResult.runtimeServices,
+          })
+        : [];
+      if (adapterManagedRuntimeServices.length > 0) {
+        const combinedRuntimeServices = [
+          ...runtimeServices,
+          ...adapterManagedRuntimeServices,
+        ];
+        context.paperclipRuntimeServices = combinedRuntimeServices;
+        context.paperclipRuntimePrimaryUrl =
+          combinedRuntimeServices.find((service) => readNonEmptyString(service.url))?.url ?? null;
+        await db
+          .update(heartbeatRuns)
+          .set({
+            contextSnapshot: context,
+            updatedAt: new Date(),
+          })
+          .where(eq(heartbeatRuns.id, run.id));
+        if (issueId) {
+          try {
+            await issuesSvc.addComment(
+              issueId,
+              buildWorkspaceReadyComment({
+                workspace: executionWorkspace,
+                runtimeServices: adapterManagedRuntimeServices,
+              }),
+              { agentId: agent.id },
+            );
+          } catch (err) {
+            await onLog(
+              "stderr",
+              `[paperclip] Failed to post adapter-managed runtime comment: ${err instanceof Error ? err.message : String(err)}\n`,
+            );
+          }
+        }
+      }
       const nextSessionState = resolveNextSessionState({
         codec: sessionCodec,
         adapterResult,
@@ -1460,6 +1646,7 @@ export function heartbeatService(db: Db) {
 
       await finalizeAgentStatus(agent.id, "failed");
     } finally {
+      await releaseRuntimeServicesForRun(run.id);
       await startNextQueuedRunForAgent(agent.id);
     }
   }

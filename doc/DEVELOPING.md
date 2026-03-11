@@ -132,12 +132,15 @@ Instead, create a repo-local Paperclip config plus an isolated instance for the 
 
 ```sh
 paperclipai worktree init
+# or create the git worktree and initialize it in one step:
+pnpm paperclipai worktree:make paperclip-pr-432
 ```
 
 This command:
 
 - writes repo-local files at `.paperclip/config.json` and `.paperclip/.env`
 - creates an isolated instance under `~/.paperclip-worktrees/instances/<worktree-id>/`
+- when run inside a linked git worktree, mirrors the effective git hooks into that worktree's private git dir
 - picks a free app port and embedded PostgreSQL port
 - by default seeds the isolated DB in `minimal` mode from your main instance via a logical SQL snapshot
 
@@ -148,6 +151,8 @@ Seed modes:
 - `--no-seed` creates an empty isolated instance
 
 After `worktree init`, both the server and the CLI auto-load the repo-local `.paperclip/.env` when run inside that worktree, so normal commands like `pnpm dev`, `paperclipai doctor`, and `paperclipai db:backup` stay scoped to the worktree instance.
+
+That repo-local env also sets `PAPERCLIP_IN_WORKTREE=true`, which the server can use for worktree-specific UI behavior such as an alternate favicon.
 
 Print shell exports explicitly when needed:
 
@@ -167,6 +172,8 @@ paperclipai worktree init --from-instance default
 paperclipai worktree init --from-data-dir ~/.paperclip
 paperclipai worktree init --force
 ```
+
+For project execution worktrees, Paperclip can also run a project-defined provision command after it creates or reuses an isolated git worktree. Configure this on the project's execution workspace policy (`workspaceStrategy.provisionCommand`). The command runs inside the derived worktree and receives `PAPERCLIP_WORKSPACE_*`, `PAPERCLIP_PROJECT_ID`, `PAPERCLIP_AGENT_ID`, and `PAPERCLIP_ISSUE_*` environment variables so each repo can bootstrap itself however it wants.
 
 ## Quick Health Checks
 

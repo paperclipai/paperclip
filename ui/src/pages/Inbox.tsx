@@ -539,12 +539,6 @@ export function Inbox() {
   const hasJoinRequests = joinRequests.length > 0;
   const hasTouchedIssues = touchedIssues.length > 0;
 
-  const newItemCount =
-    failedRuns.length +
-    staleIssues.length +
-    (showAggregateAgentError ? 1 : 0) +
-    (showBudgetAlert ? 1 : 0);
-
   const showJoinRequestsCategory =
     allCategoryFilter === "everything" || allCategoryFilter === "join_requests";
   const showTouchedCategory =
@@ -595,16 +589,7 @@ export function Inbox() {
             items={[
               {
                 value: "new",
-                label: (
-                  <>
-                    New
-                    {newItemCount > 0 && (
-                      <span className="ml-1.5 rounded-full bg-blue-500/20 px-1.5 py-0.5 text-[10px] font-medium text-blue-500">
-                        {newItemCount}
-                      </span>
-                    )}
-                  </>
-                ),
+                label: "New",
               },
               { value: "all", label: "All" },
             ]}

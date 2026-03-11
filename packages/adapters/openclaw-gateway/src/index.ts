@@ -31,6 +31,7 @@ Gateway connect identity fields:
 
 Request behavior fields:
 - payloadTemplate (object, optional): additional fields merged into gateway agent params
+- workspaceRuntime (object, optional): desired runtime service intents; Paperclip forwards these in a standardized paperclip.workspaceRuntime block for remote execution environments
 - timeoutSec (number, optional): adapter timeout in seconds (default 120)
 - waitTimeoutMs (number, optional): agent.wait timeout override (default timeoutSec * 1000)
 - autoPairOnFirstConnect (boolean, optional): on first "pairing required", attempt device.pair.list/device.pair.approve via shared auth, then retry once (default true)
@@ -39,4 +40,15 @@ Request behavior fields:
 Session routing fields:
 - sessionKeyStrategy (string, optional): issue (default), fixed, or run
 - sessionKey (string, optional): fixed session key when strategy=fixed (default paperclip)
+
+Standard outbound payload additions:
+- paperclip (object): standardized Paperclip context added to every gateway agent request
+- paperclip.workspace (object, optional): resolved execution workspace for this run
+- paperclip.workspaces (array, optional): additional workspace hints Paperclip exposed to the run
+- paperclip.workspaceRuntime (object, optional): normalized runtime service intent config for the workspace
+
+Standard result metadata supported:
+- meta.runtimeServices (array, optional): normalized adapter-managed runtime service reports
+- meta.previewUrl (string, optional): shorthand single preview URL
+- meta.previewUrls (string[], optional): shorthand multiple preview URLs
 `;
