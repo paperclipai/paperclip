@@ -451,16 +451,22 @@ export function agentRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const { orderedIds } = req.body as { orderedIds?: string[] };
-    if (!Array.isArray(orderedIds) || orderedIds.some((id) => typeof id !== "string")) {
-      res.status(400).json({ error: "orderedIds must be an array of agent id strings" });
+    if (
+      !Array.isArray(orderedIds) ||
+      orderedIds.length > 500 ||
+      orderedIds.some((id) => typeof id !== "string" || !isUuidLike(id))
+    ) {
+      res.status(400).json({ error: "orderedIds must be an array of up to 500 valid agent id strings" });
       return;
     }
-    for (let i = 0; i < orderedIds.length; i++) {
-      await db
-        .update(agentsTable)
-        .set({ sortOrder: i, updatedAt: new Date() })
-        .where(and(eq(agentsTable.id, orderedIds[i]!), eq(agentsTable.companyId, companyId)));
-    }
+    await Promise.all(
+      orderedIds.map((id, i) =>
+        db
+          .update(agentsTable)
+          .set({ sortOrder: i, updatedAt: new Date() })
+          .where(and(eq(agentsTable.id, id), eq(agentsTable.companyId, companyId))),
+      ),
+    );
     res.json({ ok: true });
   });
 
