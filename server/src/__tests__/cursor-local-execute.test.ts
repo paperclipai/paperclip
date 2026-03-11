@@ -110,8 +110,70 @@ describe("cursor execute", () => {
       );
       expect(capture.prompt).toContain("Paperclip runtime note:");
       expect(capture.prompt).toContain("PAPERCLIP_API_KEY");
+      expect(capture.prompt).toContain("You are agent agent-1 (Cursor Coder). Continue your Paperclip work.");
+      expect(capture.prompt).toContain("Follow the paperclip heartbeat.");
       expect(invocationPrompt).toContain("Paperclip runtime note:");
       expect(invocationPrompt).toContain("PAPERCLIP_API_URL");
+      expect(invocationPrompt).toContain("You are agent agent-1 (Cursor Coder). Continue your Paperclip work.");
+      expect(invocationPrompt).toContain("Follow the paperclip heartbeat.");
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = previousHome;
+      }
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("supports explicit {{defaultPrompt}} placement in custom templates", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-cursor-execute-default-prompt-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "agent");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCursorCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-default-prompt",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Cursor Coder",
+          adapterType: "cursor",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          model: "auto",
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Custom prefix. {{defaultPrompt}} Custom suffix.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.prompt).toContain("Custom prefix.");
+      expect(capture.prompt).toContain("You are agent agent-1 (Cursor Coder). Continue your Paperclip work.");
+      expect(capture.prompt).toContain("Custom suffix.");
     } finally {
       if (previousHome === undefined) {
         delete process.env.HOME;

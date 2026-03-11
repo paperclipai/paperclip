@@ -19,6 +19,8 @@ import {
   ensurePathInEnv,
   renderTemplate,
   runChildProcess,
+  resolveHeartbeatPromptTemplate,
+  buildHeartbeatPromptRenderData,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   parseClaudeStreamJson,
@@ -301,10 +303,7 @@ export async function runClaudeLogin(input: {
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, authToken } = ctx;
 
-  const promptTemplate = asString(
-    config.promptTemplate,
-    "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
-  );
+  const promptTemplate = resolveHeartbeatPromptTemplate(config.promptTemplate);
   const model = asString(config.model, "");
   const effort = asString(config.effort, "");
   const chrome = asBoolean(config.chrome, false);
@@ -365,19 +364,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     );
   }
   const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
-  const templateData = {
-    agentId: agent.id,
-    companyId: agent.companyId,
-    runId,
-    company: { id: agent.companyId },
-    agent,
-    run: { id: runId, source: "on_demand" },
-    context,
-  };
-  const renderedPrompt = renderTemplate(promptTemplate, templateData);
+  const promptData = buildHeartbeatPromptRenderData({ agent, runId, context });
+  const renderedPrompt = renderTemplate(promptTemplate, promptData);
   const renderedBootstrapPrompt =
     !sessionId && bootstrapPromptTemplate.trim().length > 0
-      ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
+      ? renderTemplate(bootstrapPromptTemplate, promptData).trim()
       : "";
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const prompt = joinPromptSections([

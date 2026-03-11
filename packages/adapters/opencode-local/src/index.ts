@@ -22,7 +22,7 @@ Core fields:
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to the run prompt
 - model (string, required): OpenCode model id in provider/model format (for example anthropic/claude-sonnet-4-5)
 - variant (string, optional): provider-specific model variant (for example minimal|low|medium|high|max)
-- promptTemplate (string, optional): run prompt template
+- promptTemplate (string, optional): extra run prompt instructions; default heartbeat context is preserved automatically, or use {{defaultPrompt}} to position it explicitly
 - command (string, optional): defaults to "opencode"
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables

@@ -108,6 +108,16 @@ export function resolvePathValue(obj: Record<string, unknown>, dottedPath: strin
   }
 }
 
+export const DEFAULT_HEARTBEAT_PROMPT_TEMPLATE =
+  "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.";
+
+export function resolveHeartbeatPromptTemplate(rawTemplate: unknown) {
+  const template = typeof rawTemplate === "string" ? rawTemplate.trim() : "";
+  if (!template) return DEFAULT_HEARTBEAT_PROMPT_TEMPLATE;
+  if (template.includes("{{defaultPrompt}}")) return template;
+  return `${DEFAULT_HEARTBEAT_PROMPT_TEMPLATE}\n\n${template}`;
+}
+
 export function renderTemplate(template: string, data: Record<string, unknown>) {
   return template.replace(/{{\s*([a-zA-Z0-9_.-]+)\s*}}/g, (_, path) => resolvePathValue(data, path));
 }
