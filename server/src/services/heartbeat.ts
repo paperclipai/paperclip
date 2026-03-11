@@ -208,6 +208,20 @@ export function shouldResetTaskSessionForWake(
   return wakeSource === "on_demand" && wakeTriggerDetail === "manual";
 }
 
+/**
+ * A run is a "zombie" if it's marked as running in the DB but has no live
+ * process tracked in the in-memory runningProcesses Map. This happens when
+ * the server restarts and the child process is lost.
+ *
+ * Queued runs are never zombies — they don't have processes yet.
+ */
+export function isZombieRun(
+  run: { status: string; id: string },
+  tracked: { has(id: string): boolean },
+): boolean {
+  return run.status === "running" && !tracked.has(run.id);
+}
+
 function describeSessionResetReason(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
@@ -1791,13 +1805,7 @@ export function heartbeatService(db: Db) {
             activeExecutionRun.status === "running" &&
             isSameExecutionAgent;
 
-          // A "running" run with no live process is a zombie — don't coalesce into it.
-          // Queued runs don't have processes yet, so they are never flagged as zombies.
-          const isZombieRun =
-            activeExecutionRun.status === "running" &&
-            !runningProcesses.has(activeExecutionRun.id);
-
-          if (isSameExecutionAgent && !shouldQueueFollowupForCommentWake && !isZombieRun) {
+          if (isSameExecutionAgent && !shouldQueueFollowupForCommentWake && !isZombieRun(activeExecutionRun, runningProcesses)) {
             const mergedContextSnapshot = mergeCoalescedContextSnapshot(
               activeExecutionRun.contextSnapshot,
               enrichedContextSnapshot,
@@ -1987,9 +1995,9 @@ export function heartbeatService(db: Db) {
       (shouldQueueFollowupForCommentWake ? null : sameScopeRunningRun ?? null);
 
     // Don't coalesce into a zombie run (running in DB but no live process).
-    // Queued runs don't have processes yet, so they are never filtered out.
+    // Queued runs don't have processes yet, so isZombieRun never filters them out.
     const coalescedTargetRun =
-      rawCoalescedTarget?.status === "running" && !runningProcesses.has(rawCoalescedTarget.id)
+      rawCoalescedTarget && isZombieRun(rawCoalescedTarget, runningProcesses)
         ? null
         : rawCoalescedTarget;
 
