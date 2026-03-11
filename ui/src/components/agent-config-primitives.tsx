@@ -62,6 +62,7 @@ export const adapterLabels: Record<string, string> = {
   codex_local: "Codex (local)",
   opencode_local: "OpenCode (local)",
   openclaw_gateway: "OpenClaw Gateway",
+  nanobot_local: "Nanobot (local)",
   cursor: "Cursor (local)",
   process: "Process",
   http: "HTTP",

@@ -32,6 +32,7 @@ const SUPPORTED_ADVANCED_ADAPTER_TYPES = new Set<CreateConfigValues["adapterType
   "pi_local",
   "cursor",
   "openclaw_gateway",
+  "nanobot_local",
 ]);
 
 function createValuesForAdapterType(

@@ -56,7 +56,8 @@ type AdapterType =
   | "cursor"
   | "process"
   | "http"
-  | "openclaw_gateway";
+  | "openclaw_gateway"
+  | "nanobot_local";
 
 const DEFAULT_TASK_DESCRIPTION = `Setup yourself as the CEO. Use the ceo persona found here: [https://github.com/paperclipai/companies/blob/main/default/ceo/AGENTS.md](https://github.com/paperclipai/companies/blob/main/default/ceo/AGENTS.md)
 
@@ -91,6 +92,7 @@ export function OnboardingWizard() {
   const [command, setCommand] = useState("");
   const [args, setArgs] = useState("");
   const [url, setUrl] = useState("");
+  const [nanobotApiKey, setNanobotApiKey] = useState("");
   const [adapterEnvResult, setAdapterEnvResult] =
     useState<AdapterEnvironmentTestResult | null>(null);
   const [adapterEnvError, setAdapterEnvError] = useState<string | null>(null);
@@ -241,6 +243,7 @@ export function OnboardingWizard() {
     setCommand("");
     setArgs("");
     setUrl("");
+    setNanobotApiKey("");
     setAdapterEnvResult(null);
     setAdapterEnvError(null);
     setAdapterEnvLoading(false);
@@ -280,6 +283,9 @@ export function OnboardingWizard() {
           ? DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX
           : defaultCreateValues.dangerouslyBypassSandbox
     });
+    if (adapterType === "nanobot_local" && nanobotApiKey.trim()) {
+      config.apiKey = nanobotApiKey.trim();
+    }
     if (adapterType === "claude_local" && forceUnsetAnthropicApiKey) {
       const env =
         typeof config.env === "object" &&
@@ -680,6 +686,12 @@ export function OnboardingWizard() {
                           label: "Cursor",
                           icon: MousePointer2,
                           desc: "Local Cursor agent"
+                        },
+                        {
+                          value: "nanobot_local" as const,
+                          label: "Nanobot",
+                          icon: Bot,
+                          desc: "Persistent nanobot instance"
                         }
                       ].map((opt) => (
                         <button
@@ -966,17 +978,33 @@ export function OnboardingWizard() {
                     </div>
                   )}
 
-                  {(adapterType === "http" || adapterType === "openclaw_gateway") && (
-                    <div>
-                      <label className="text-xs text-muted-foreground mb-1 block">
-                        {adapterType === "openclaw_gateway" ? "Gateway URL" : "Webhook URL"}
-                      </label>
-                      <input
-                        className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                        placeholder={adapterType === "openclaw_gateway" ? "ws://127.0.0.1:18789" : "https://..."}
-                        value={url}
-                        onChange={(e) => setUrl(e.target.value)}
-                      />
+                  {(adapterType === "http" || adapterType === "openclaw_gateway" || adapterType === "nanobot_local") && (
+                    <div className="space-y-3">
+                      <div>
+                        <label className="text-xs text-muted-foreground mb-1 block">
+                          {adapterType === "openclaw_gateway" ? "Gateway URL" : adapterType === "nanobot_local" ? "Nanobot URL" : "Webhook URL"}
+                        </label>
+                        <input
+                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                          placeholder={adapterType === "openclaw_gateway" ? "ws://127.0.0.1:18789" : adapterType === "nanobot_local" ? "http://localhost:9800" : "https://..."}
+                          value={url}
+                          onChange={(e) => setUrl(e.target.value)}
+                        />
+                      </div>
+                      {adapterType === "nanobot_local" && (
+                        <div>
+                          <label className="text-xs text-muted-foreground mb-1 block">
+                            API Key
+                          </label>
+                          <input
+                            type="password"
+                            className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                            placeholder="Bearer token for Paperclip channel"
+                            value={nanobotApiKey}
+                            onChange={(e) => setNanobotApiKey(e.target.value)}
+                          />
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
