@@ -22,3 +22,12 @@ export type {
   CLIAdapterModule,
   CreateConfigValues,
 } from "./types.js";
+export type {
+  SandboxExecResult,
+  SandboxExecOptions,
+  SandboxInstanceStatus,
+  SandboxInstance,
+  SandboxCreateOptions,
+  SandboxTestResult,
+  SandboxProvider,
+} from "./sandbox-types.js";

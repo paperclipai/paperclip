@@ -2,6 +2,16 @@ import type { CreateConfigValues } from "@paperclipai/adapter-utils";
 
 export const defaultCreateValues: CreateConfigValues = {
   adapterType: "claude_local",
+  sandboxProviderType: "e2b",
+  sandboxAgentType: "claude_local",
+  sandboxBaseUrl: "",
+  sandboxNamespace: "paperclip",
+  sandboxInstanceType: "standard",
+  sandboxImage: "",
+  sandboxTemplate: "",
+  sandboxDomain: "",
+  sandboxKeepAlive: true,
+  sandboxBootstrapCommand: "",
   cwd: "",
   instructionsFilePath: "",
   promptTemplate: "",
