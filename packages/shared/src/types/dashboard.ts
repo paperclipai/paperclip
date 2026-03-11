@@ -16,6 +16,8 @@ export interface DashboardSummary {
     monthSpendCents: number;
     monthBudgetCents: number;
     monthUtilizationPercent: number;
+    monthInputTokens: number;
+    monthOutputTokens: number;
   };
   pendingApprovals: number;
   staleTasks: number;

@@ -74,9 +74,11 @@ export function dashboardService(db: Db) {
 
       const now = new Date();
       const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-      const [{ monthSpend }] = await db
+      const [{ monthSpend, monthInputTokens, monthOutputTokens }] = await db
         .select({
           monthSpend: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+          monthInputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::int`,
+          monthOutputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::int`,
         })
         .from(costEvents)
         .where(
@@ -105,6 +107,8 @@ export function dashboardService(db: Db) {
           monthSpendCents,
           monthBudgetCents: company.budgetMonthlyCents,
           monthUtilizationPercent: Number(utilization.toFixed(2)),
+          monthInputTokens: Number(monthInputTokens),
+          monthOutputTokens: Number(monthOutputTokens),
         },
         pendingApprovals,
         staleTasks,
