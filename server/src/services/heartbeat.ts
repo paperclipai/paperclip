@@ -1791,7 +1791,13 @@ export function heartbeatService(db: Db) {
             activeExecutionRun.status === "running" &&
             isSameExecutionAgent;
 
-          if (isSameExecutionAgent && !shouldQueueFollowupForCommentWake) {
+          // A "running" run with no live process is a zombie — don't coalesce into it.
+          // Queued runs don't have processes yet, so they are never flagged as zombies.
+          const isZombieRun =
+            activeExecutionRun.status === "running" &&
+            !runningProcesses.has(activeExecutionRun.id);
+
+          if (isSameExecutionAgent && !shouldQueueFollowupForCommentWake && !isZombieRun) {
             const mergedContextSnapshot = mergeCoalescedContextSnapshot(
               activeExecutionRun.contextSnapshot,
               enrichedContextSnapshot,
@@ -1976,9 +1982,16 @@ export function heartbeatService(db: Db) {
     const shouldQueueFollowupForCommentWake =
       Boolean(wakeCommentId) && Boolean(sameScopeRunningRun) && !sameScopeQueuedRun;
 
-    const coalescedTargetRun =
+    const rawCoalescedTarget =
       sameScopeQueuedRun ??
       (shouldQueueFollowupForCommentWake ? null : sameScopeRunningRun ?? null);
+
+    // Don't coalesce into a zombie run (running in DB but no live process).
+    // Queued runs don't have processes yet, so they are never filtered out.
+    const coalescedTargetRun =
+      rawCoalescedTarget?.status === "running" && !runningProcesses.has(rawCoalescedTarget.id)
+        ? null
+        : rawCoalescedTarget;
 
     if (coalescedTargetRun) {
       const mergedContextSnapshot = mergeCoalescedContextSnapshot(
