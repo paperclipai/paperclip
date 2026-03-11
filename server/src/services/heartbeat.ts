@@ -2107,6 +2107,13 @@ export function formatRuntimeWorkspaceWarningLog(warning: string) {
   };
 }
 
+/**
+ * A run is a "zombie" if it's marked as running in the DB but has no live
+ * process tracked in the in-memory runningProcesses Map. This happens when
+ * the server restarts and the child process is lost.
+ *
+ * Queued runs are never zombies — they don't have processes yet.
+ */
 export function isZombieRun(
   run: { status: string; id: string },
   tracked: { has(id: string): boolean },
@@ -2121,7 +2128,7 @@ export function filterZombieCoalesceTarget<T extends { status: string; id: strin
   return target && isZombieRun(target, tracked) ? null : target;
 }
 
-export function describeSessionResetReason(
+function describeSessionResetReason(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
   if (contextSnapshot?.forceFreshSession === true) return "forceFreshSession was requested";
