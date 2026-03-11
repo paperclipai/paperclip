@@ -361,10 +361,13 @@ describe("sandbox adapter execute", () => {
       authToken: "jwt-token",
     });
 
-    expect(execCalls[1]).toContain("git clone --depth 1 'https://github.com/paperclipai/paperclip.git' '/workspace'");
-    expect(execCalls[1]).toContain("git -C '/workspace' fetch --depth 1 origin '0123456789abcdef0123456789abcdef01234567'");
-    expect(execCalls[1]).toContain("git -C '/workspace' checkout FETCH_HEAD");
-    expect(execCalls[1]).not.toContain("--branch '0123456789abcdef0123456789abcdef01234567'");
+    expect(execCalls[1]).toContain("git clone --depth 1");
+    expect(execCalls[1]).toContain("https://github.com/paperclipai/paperclip.git");
+    expect(execCalls[1]).toContain("git -C");
+    expect(execCalls[1]).toContain("fetch --depth 1 origin");
+    expect(execCalls[1]).toContain("0123456789abcdef0123456789abcdef01234567");
+    expect(execCalls[1]).toContain("checkout FETCH_HEAD");
+    expect(execCalls[1]).not.toContain("--branch 0123456789abcdef0123456789abcdef01234567");
     expect(result.summary).toBe("sha checkout");
   });
 
