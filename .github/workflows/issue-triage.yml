@@ -11,6 +11,7 @@ concurrency:
 permissions:
   issues: write
   contents: read
+  id-token: write
 
 jobs:
   triage:
@@ -24,9 +25,8 @@ jobs:
       - name: Triage issue with Claude
         uses: anthropics/claude-code-action@v1
         with:
-          anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          max_turns: "10"
-          allowed_tools: "Read,Glob,Grep,Bash(gh issue *)"
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: "--allowedTools Read,Glob,Grep,'Bash(gh issue *)' --max-turns 10"
           prompt: |
             You are an issue triage agent for this repository.
 

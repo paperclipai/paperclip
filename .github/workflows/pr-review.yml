@@ -9,6 +9,7 @@ permissions:
   contents: read
   pull-requests: write
   issues: write
+  id-token: write
 
 concurrency:
   group: pr-review-${{ github.event.pull_request.number }}
@@ -161,9 +162,8 @@ jobs:
       - name: Run ${{ matrix.reviewer }} review
         uses: anthropics/claude-code-action@v1
         with:
-          anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          allowed_tools: "Read,Glob,Grep,Bash(gh pr view *),Bash(gh pr diff *),Bash(gh api *)"
-          max_turns: "15"
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: "--allowedTools Read,Glob,Grep,'Bash(gh pr view *)','Bash(gh pr diff *)','Bash(gh api *)' --max-turns 15"
           prompt: ${{ matrix.prompt }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -183,9 +183,8 @@ jobs:
       - name: Assess risk and decide
         uses: anthropics/claude-code-action@v1
         with:
-          anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          allowed_tools: "Read,Glob,Grep,Bash(gh pr *),Bash(gh api *)"
-          max_turns: "15"
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: "--allowedTools Read,Glob,Grep,'Bash(gh pr *)','Bash(gh api *)' --max-turns 15"
           prompt: |
             You are the merge-decision agent for PR #${{ github.event.pull_request.number }}.
 
@@ -229,7 +228,7 @@ jobs:
             If the PR is LOW RISK AND no reviewer flagged any Critical issues:
             - Auto-merge the PR with:
               ```
-              gh pr merge ${{ github.event.pull_request.number }} --squash --delete-branch
+              gh pr merge ${{ github.event.pull_request.number }} --merge --delete-branch
               ```
             - Comment on the PR explaining that all 7 reviewers passed with no critical
               findings and the PR was auto-merged.
