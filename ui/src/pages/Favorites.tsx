@@ -76,6 +76,7 @@ export function Favorites() {
       agents={agents}
       liveIssueIds={liveIssueIds}
       viewStateKey="paperclip:favorites-view"
+      hideSearch
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
     />
   );

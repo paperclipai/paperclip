@@ -251,10 +251,8 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
     if (req.actor.type === "board" && req.actor.userId && result.length > 0) {
       const favoriteIds = await getFavoriteIssueIds(db, companyId, req.actor.userId);
-      if (favoriteIds.size > 0) {
-        res.json(result.map((issue) => ({ ...issue, isFavoritedByMe: favoriteIds.has(issue.id) })));
-        return;
-      }
+      res.json(result.map((issue) => ({ ...issue, isFavoritedByMe: favoriteIds.has(issue.id) })));
+      return;
     }
     res.json(result);
   });

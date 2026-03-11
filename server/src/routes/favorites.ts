@@ -3,8 +3,8 @@ import type { Db } from "@paperclipai/db";
 import { issueService } from "../services/index.js";
 import { logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
-import { and, eq } from "drizzle-orm";
-import { issueFavorites } from "@paperclipai/db";
+import { and, eq, inArray } from "drizzle-orm";
+import { issueFavorites, issues } from "@paperclipai/db";
 
 export function favoriteRoutes(db: Db) {
   const router = Router();
@@ -42,15 +42,12 @@ export function favoriteRoutes(db: Db) {
       return;
     }
 
-    const favoriteIssueIds = new Set(favoriteRows.map((r) => r.issueId));
+    const favoriteIssueIds = favoriteRows.map((r) => r.issueId);
 
-    // Fetch the full issue list and filter to favorited ones
-    const allIssues = await svc.list(companyId, {});
-    const favorited = allIssues
-      .filter((issue) => favoriteIssueIds.has(issue.id))
-      .map((issue) => ({ ...issue, isFavoritedByMe: true }));
+    // Query only the favorited issues directly (avoids O(N) full-company scan)
+    const favorited = await svc.listByIds(companyId, favoriteIssueIds);
 
-    res.json(favorited);
+    res.json(favorited.map((issue) => ({ ...issue, isFavoritedByMe: true })));
   });
 
   // PUT /issues/:id/favorite — add to favorites (idempotent)

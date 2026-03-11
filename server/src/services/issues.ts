@@ -617,6 +617,16 @@ export function issueService(db: Db) {
       return enriched;
     },
 
+    listByIds: async (companyId: string, issueIds: string[]) => {
+      if (issueIds.length === 0) return [];
+      const rows = await db
+        .select()
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), inArray(issues.id, issueIds)))
+        .orderBy(desc(issues.updatedAt));
+      return withIssueLabels(db, rows);
+    },
+
     create: async (
       companyId: string,
       data: Omit<typeof issues.$inferInsert, "companyId"> & { labelIds?: string[] },

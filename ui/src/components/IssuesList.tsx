@@ -144,6 +144,7 @@ interface IssuesListProps {
   viewStateKey: string;
   initialAssignees?: string[];
   initialSearch?: string;
+  hideSearch?: boolean;
   onSearchChange?: (search: string) => void;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
 }
@@ -158,6 +159,7 @@ export function IssuesList({
   viewStateKey,
   initialAssignees,
   initialSearch,
+  hideSearch,
   onSearchChange,
   onUpdateIssue,
 }: IssuesListProps) {
@@ -174,6 +176,13 @@ export function IssuesList({
       }
     },
     onSuccess: () => {
+      if (selectedCompanyId) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.favorites(selectedCompanyId) });
+      }
+    },
+    onError: () => {
+      // Invalidate queries to restore correct UI state on failure
       if (selectedCompanyId) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
         void queryClient.invalidateQueries({ queryKey: queryKeys.favorites(selectedCompanyId) });
@@ -229,7 +238,7 @@ export function IssuesList({
   const { data: searchedIssues = [] } = useQuery({
     queryKey: queryKeys.issues.search(selectedCompanyId!, normalizedIssueSearch, projectId),
     queryFn: () => issuesApi.list(selectedCompanyId!, { q: normalizedIssueSearch, projectId }),
-    enabled: !!selectedCompanyId && normalizedIssueSearch.length > 0,
+    enabled: !!selectedCompanyId && normalizedIssueSearch.length > 0 && !hideSearch,
   });
 
   const agentName = useCallback((id: string | null) => {
@@ -238,10 +247,10 @@ export function IssuesList({
   }, [agents]);
 
   const filtered = useMemo(() => {
-    const sourceIssues = normalizedIssueSearch.length > 0 ? searchedIssues : issues;
+    const sourceIssues = normalizedIssueSearch.length > 0 && !hideSearch ? searchedIssues : issues;
     const filteredByControls = applyFilters(sourceIssues, viewState);
     return sortIssues(filteredByControls, viewState);
-  }, [issues, searchedIssues, viewState, normalizedIssueSearch]);
+  }, [issues, searchedIssues, viewState, normalizedIssueSearch, hideSearch]);
 
   const { data: labels } = useQuery({
     queryKey: queryKeys.issues.labels(selectedCompanyId!),
@@ -320,19 +329,21 @@ export function IssuesList({
             <Plus className="h-4 w-4 sm:mr-1" />
             <span className="hidden sm:inline">New Issue</span>
           </Button>
-          <div className="relative w-48 sm:w-64 md:w-80">
-            <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={issueSearch}
-              onChange={(e) => {
-                setIssueSearch(e.target.value);
-                onSearchChange?.(e.target.value);
-              }}
-              placeholder="Search issues..."
-              className="pl-7 text-xs sm:text-sm"
-              aria-label="Search issues"
-            />
-          </div>
+          {!hideSearch && (
+            <div className="relative w-48 sm:w-64 md:w-80">
+              <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={issueSearch}
+                onChange={(e) => {
+                  setIssueSearch(e.target.value);
+                  onSearchChange?.(e.target.value);
+                }}
+                placeholder="Search issues..."
+                className="pl-7 text-xs sm:text-sm"
+                aria-label="Search issues"
+              />
+            </div>
+          )}
         </div>
 
         <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
