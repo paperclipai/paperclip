@@ -58,6 +58,19 @@ type TranscriptBlock =
       status: "running" | "completed";
     }
   | {
+      type: "command_group";
+      ts: string;
+      endTs?: string;
+      items: Array<{
+        ts: string;
+        endTs?: string;
+        input: unknown;
+        result?: string;
+        isError?: boolean;
+        status: "running" | "completed" | "error";
+      }>;
+    }
+  | {
       type: "event";
       ts: string;
       label: string;
@@ -266,6 +279,50 @@ function parseSystemActivity(text: string): { activityId?: string; name: string;
   };
 }
 
+function groupCommandBlocks(blocks: TranscriptBlock[]): TranscriptBlock[] {
+  const grouped: TranscriptBlock[] = [];
+  let pending: Array<Extract<TranscriptBlock, { type: "command_group" }>["items"][number]> = [];
+  let groupTs: string | null = null;
+  let groupEndTs: string | undefined;
+
+  const flush = () => {
+    if (pending.length === 0 || !groupTs) return;
+    grouped.push({
+      type: "command_group",
+      ts: groupTs,
+      endTs: groupEndTs,
+      items: pending,
+    });
+    pending = [];
+    groupTs = null;
+    groupEndTs = undefined;
+  };
+
+  for (const block of blocks) {
+    if (block.type === "tool" && isCommandTool(block.name, block.input)) {
+      if (!groupTs) {
+        groupTs = block.ts;
+      }
+      groupEndTs = block.endTs ?? block.ts;
+      pending.push({
+        ts: block.ts,
+        endTs: block.endTs,
+        input: block.input,
+        result: block.result,
+        isError: block.isError,
+        status: block.status,
+      });
+      continue;
+    }
+
+    flush();
+    grouped.push(block);
+  }
+
+  flush();
+  return grouped;
+}
+
 function normalizeTranscript(entries: TranscriptEntry[], streaming: boolean): TranscriptBlock[] {
   const blocks: TranscriptBlock[] = [];
   const pendingToolBlocks = new Map<string, Extract<TranscriptBlock, { type: "tool" }>>();
@@ -432,7 +489,7 @@ function normalizeTranscript(entries: TranscriptEntry[], streaming: boolean): Tr
     });
   }
 
-  return blocks;
+  return groupCommandBlocks(blocks);
 }
 
 function TranscriptMessageBlock({
@@ -503,9 +560,7 @@ function TranscriptToolCard({
 }) {
   const [open, setOpen] = useState(block.status === "error");
   const compact = density === "compact";
-  const commandTool = isCommandTool(block.name, block.input);
   const parsedResult = parseStructuredToolResult(block.result);
-  const commandPreview = summarizeToolInput(block.name, block.input, density);
   const statusLabel =
     block.status === "running"
       ? "Running"
@@ -531,9 +586,7 @@ function TranscriptToolCard({
         : "text-cyan-600 dark:text-cyan-300",
   );
   const summary = block.status === "running"
-    ? commandTool
-      ? commandPreview
-      : summarizeToolInput(block.name, block.input, density)
+    ? summarizeToolInput(block.name, block.input, density)
     : block.status === "completed" && parsedResult?.body
       ? truncate(parsedResult.body.split("\n")[0] ?? parsedResult.body, compact ? 84 : 140)
       : summarizeToolResult(block.result, block.isError, density);
@@ -543,10 +596,8 @@ function TranscriptToolCard({
       <div className="flex items-start gap-2">
         {block.status === "error" ? (
           <CircleAlert className={iconClass} />
-        ) : block.status === "completed" && !commandTool ? (
+        ) : block.status === "completed" ? (
           <Check className={iconClass} />
-        ) : commandTool ? (
-          <TerminalSquare className={cn(iconClass, block.status === "running" && "animate-pulse")} />
         ) : (
           <Wrench className={iconClass} />
         )}
@@ -555,32 +606,13 @@ function TranscriptToolCard({
             <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
               {block.name}
             </span>
-            {!commandTool && (
-              <span className={cn("text-[10px] font-semibold uppercase tracking-[0.14em]", statusTone)}>
-                {statusLabel}
-              </span>
-            )}
+            <span className={cn("text-[10px] font-semibold uppercase tracking-[0.14em]", statusTone)}>
+              {statusLabel}
+            </span>
           </div>
-          <div className={cn("mt-1 break-words", compact ? "text-xs" : "text-sm")}>
-            {commandTool ? (
-              <span className="font-mono text-foreground/85">
-                {summary}
-              </span>
-            ) : (
-              <span className="text-foreground/80">
-                {summary}
-              </span>
-            )}
+          <div className={cn("mt-1 break-words text-foreground/80", compact ? "text-xs" : "text-sm")}>
+            {summary}
           </div>
-          {commandTool && block.status !== "running" && (
-            <div className={cn("mt-1", compact ? "text-[11px]" : "text-xs", statusTone)}>
-              {block.status === "error"
-                ? "Command failed"
-                : parsedResult?.status === "completed"
-                  ? "Command completed"
-                  : statusLabel}
-            </div>
-          )}
         </div>
         <button
           type="button"
@@ -616,6 +648,132 @@ function TranscriptToolCard({
               </div>
             </div>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function hasSelectedText() {
+  if (typeof window === "undefined") return false;
+  return (window.getSelection()?.toString().length ?? 0) > 0;
+}
+
+function TranscriptCommandGroup({
+  block,
+  density,
+}: {
+  block: Extract<TranscriptBlock, { type: "command_group" }>;
+  density: TranscriptDensity;
+}) {
+  const [open, setOpen] = useState(block.items.some((item) => item.status === "error"));
+  const compact = density === "compact";
+  const runningItem = [...block.items].reverse().find((item) => item.status === "running");
+  const latestItem = block.items[block.items.length - 1] ?? null;
+  const hasError = block.items.some((item) => item.status === "error");
+  const isRunning = Boolean(runningItem);
+  const title = isRunning
+    ? "Executing command"
+    : block.items.length === 1
+      ? "Executed command"
+      : `Executed ${block.items.length} commands`;
+  const subtitle = runningItem
+    ? summarizeToolInput("command_execution", runningItem.input, density)
+    : null;
+  const statusTone = hasError
+    ? "text-red-700 dark:text-red-300"
+    : isRunning
+      ? "text-cyan-700 dark:text-cyan-300"
+      : "text-foreground/70";
+
+  return (
+    <div className={cn(hasError && "rounded-xl border border-red-500/20 bg-red-500/[0.04] p-3")}>
+      <div
+        role="button"
+        tabIndex={0}
+        className="flex cursor-pointer items-start gap-2"
+        onClick={() => {
+          if (hasSelectedText()) return;
+          setOpen((value) => !value);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            setOpen((value) => !value);
+          }
+        }}
+      >
+        <div className="mt-0.5 flex shrink-0 items-center">
+          {block.items.slice(0, Math.min(block.items.length, 3)).map((_, index) => (
+            <TerminalSquare
+              key={index}
+              className={cn(
+                "h-3.5 w-3.5",
+                index > 0 && "-ml-1.5",
+                hasError
+                  ? "text-red-600 dark:text-red-300"
+                  : isRunning
+                    ? "text-cyan-600 dark:text-cyan-300"
+                    : "text-foreground/55",
+                isRunning && "animate-pulse",
+              )}
+            />
+          ))}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+            {title}
+          </div>
+          {subtitle && (
+            <div className={cn("mt-1 break-words font-mono text-foreground/85", compact ? "text-xs" : "text-sm")}>
+              {subtitle}
+            </div>
+          )}
+          {!subtitle && latestItem?.status === "error" && (
+            <div className={cn("mt-1", compact ? "text-xs" : "text-sm", statusTone)}>
+              Command failed
+            </div>
+          )}
+        </div>
+        <button
+          type="button"
+          className="mt-0.5 inline-flex h-5 w-5 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+          onClick={(event) => {
+            event.stopPropagation();
+            setOpen((value) => !value);
+          }}
+          aria-label={open ? "Collapse command details" : "Expand command details"}
+        >
+          {open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+        </button>
+      </div>
+      {open && (
+        <div className={cn("mt-3 space-y-3", hasError && "rounded-xl border border-red-500/20 bg-red-500/[0.06] p-3")}>
+          {block.items.map((item, index) => (
+            <div key={`${item.ts}-${index}`} className="space-y-2">
+              <div className="flex items-center gap-2">
+                <TerminalSquare className={cn(
+                  "h-3.5 w-3.5",
+                  item.status === "error"
+                    ? "text-red-600 dark:text-red-300"
+                    : item.status === "running"
+                      ? "text-cyan-600 dark:text-cyan-300"
+                      : "text-foreground/55",
+                )} />
+                <span className={cn("font-mono break-all", compact ? "text-[11px]" : "text-xs")}>
+                  {summarizeToolInput("command_execution", item.input, density)}
+                </span>
+              </div>
+              {item.result && (
+                <pre className={cn(
+                  "overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px]",
+                  item.status === "error" ? "text-red-700 dark:text-red-300" : "text-foreground/80",
+                )}>
+                  {formatToolPayload(item.result)}
+                </pre>
+              )}
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -777,6 +935,7 @@ export function RunTranscriptView({
           {block.type === "message" && <TranscriptMessageBlock block={block} density={density} />}
           {block.type === "thinking" && <TranscriptThinkingBlock block={block} density={density} />}
           {block.type === "tool" && <TranscriptToolCard block={block} density={density} />}
+          {block.type === "command_group" && <TranscriptCommandGroup block={block} density={density} />}
           {block.type === "activity" && <TranscriptActivityRow block={block} density={density} />}
           {block.type === "event" && <TranscriptEventRow block={block} density={density} />}
         </div>
