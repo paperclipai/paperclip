@@ -37,7 +37,7 @@ These decisions close open questions from `SPEC.md` for V1.
 | Visibility | Full visibility to board and all agents in same company |
 | Communication | Tasks + comments only (no separate chat system) |
 | Task ownership | Single assignee; atomic checkout required for `in_progress` transition |
-| Recovery | No automatic reassignment; stale work is surfaced, not silently fixed |
+| Recovery | No automatic reassignment; work recovery stays manual/explicit |
 | Agent adapters | Built-in `process` and `http` adapters |
 | Auth | Mode-dependent human auth (`local_trusted` implicit board in current code; authenticated mode uses sessions), API keys for agents |
 | Budget period | Monthly UTC calendar window |
@@ -106,7 +106,6 @@ A lightweight scheduler/worker in the server process handles:
 - heartbeat trigger checks
 - stuck run detection
 - budget threshold checks
-- stale task reporting generation
 
 Separate queue infrastructure is not required for V1.
 
@@ -502,7 +501,6 @@ Dashboard payload must include:
 - open/in-progress/blocked/done issue counts
 - month-to-date spend and budget utilization
 - pending approvals count
-- stale task count
 
 ## 10.9 Error Semantics
 
@@ -681,7 +679,6 @@ Required UX behaviors:
 - global company selector
 - quick actions: pause/resume agent, create task, approve/reject request
 - conflict toasts on atomic checkout failure
-- clear stale-task indicators
 - no silent background failures; every failed run visible in UI
 
 ## 15. Operational Requirements
@@ -780,7 +777,6 @@ A release candidate is blocked unless these pass:
 
 - add company selector and org chart view
 - add approvals and cost pages
-- add operational dashboard and stale-task surfacing
 
 ## Milestone 6: Hardening and Release
 

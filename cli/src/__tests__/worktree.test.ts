@@ -115,6 +115,28 @@ describe("worktree helpers", () => {
     ).toEqual(["worktree", "add", "/tmp/feature-branch", "feature-branch"]);
   });
 
+  it("builds git worktree add args with a start point", () => {
+    expect(
+      resolveGitWorktreeAddArgs({
+        branchName: "my-worktree",
+        targetPath: "/tmp/my-worktree",
+        branchExists: false,
+        startPoint: "public-gh/master",
+      }),
+    ).toEqual(["worktree", "add", "-b", "my-worktree", "/tmp/my-worktree", "public-gh/master"]);
+  });
+
+  it("uses start point even when a local branch with the same name exists", () => {
+    expect(
+      resolveGitWorktreeAddArgs({
+        branchName: "my-worktree",
+        targetPath: "/tmp/my-worktree",
+        branchExists: true,
+        startPoint: "origin/main",
+      }),
+    ).toEqual(["worktree", "add", "-b", "my-worktree", "/tmp/my-worktree", "origin/main"]);
+  });
+
   it("rewrites loopback auth URLs to the new port only", () => {
     expect(rewriteLocalUrlPort("http://127.0.0.1:3100", 3110)).toBe("http://127.0.0.1:3110/");
     expect(rewriteLocalUrlPort("https://paperclip.example", 3110)).toBe("https://paperclip.example");
