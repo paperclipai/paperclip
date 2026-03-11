@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -17,7 +17,8 @@ import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
 
 function hashToken(token: string) {
-  return createHash("sha256").update(token).digest("hex");
+  const secret = process.env.PAPERCLIP_AGENT_JWT_SECRET || "paperclip-fallback-pepper";
+  return createHmac("sha256", secret).update(token).digest("hex");
 }
 
 function createToken() {

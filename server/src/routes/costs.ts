@@ -93,18 +93,12 @@ export function costRoutes(db: Db) {
   });
 
   router.patch("/agents/:agentId/budgets", validate(updateBudgetSchema), async (req, res) => {
+    assertBoard(req);
     const agentId = req.params.agentId as string;
     const agent = await agents.getById(agentId);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
-    }
-
-    if (req.actor.type === "agent") {
-      if (req.actor.agentId !== agentId) {
-        res.status(403).json({ error: "Agent can only change its own budget" });
-        return;
-      }
     }
 
     const updated = await agents.update(agentId, { budgetMonthlyCents: req.body.budgetMonthlyCents });

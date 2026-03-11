@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import {
   createHash,
   generateKeyPairSync,
@@ -51,7 +52,8 @@ import {
 } from "../board-claim.js";
 
 function hashToken(token: string) {
-  return createHash("sha256").update(token).digest("hex");
+  const secret = process.env.PAPERCLIP_AGENT_JWT_SECRET || "paperclip-fallback-pepper";
+  return createHmac("sha256", secret).update(token).digest("hex");
 }
 
 const INVITE_TOKEN_PREFIX = "pcp_invite_";

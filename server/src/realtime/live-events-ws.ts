@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import type { IncomingMessage, Server as HttpServer } from "node:http";
 import { createRequire } from "node:module";
 import type { Duplex } from "node:stream";
@@ -51,7 +51,8 @@ interface IncomingMessageWithContext extends IncomingMessage {
 }
 
 function hashToken(token: string) {
-  return createHash("sha256").update(token).digest("hex");
+  const secret = process.env.PAPERCLIP_AGENT_JWT_SECRET || "paperclip-fallback-pepper";
+  return createHmac("sha256", secret).update(token).digest("hex");
 }
 
 function rejectUpgrade(socket: Duplex, statusLine: string, message: string) {

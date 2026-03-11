@@ -1,0 +1,26 @@
+{
+  "name": "@paperclipai/mcp",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "paperclip-goose-mcp": "./dist/goose.js",
+    "paperclip-opencode-mcp": "./dist/opencode.js",
+    "paperclip-vscode-mcp": "./dist/vscode.js",
+    "paperclip-powershell-mcp": "./dist/powershell.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "typescript": "^5.7.3"
+  }
+}

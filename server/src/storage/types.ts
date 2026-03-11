@@ -3,7 +3,7 @@ import type { Readable } from "node:stream";
 
 export interface PutObjectInput {
   objectKey: string;
-  body: Buffer;
+  body: Buffer | Readable;
   contentType: string;
   contentLength: number;
 }
@@ -41,7 +41,7 @@ export interface PutFileInput {
   namespace: string;
   originalFilename: string | null;
   contentType: string;
-  body: Buffer;
+  body: Buffer | Readable;
 }
 
 export interface PutFileResult {
