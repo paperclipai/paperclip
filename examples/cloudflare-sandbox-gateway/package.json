@@ -1,0 +1,18 @@
+{
+  "name": "paperclip-cloudflare-sandbox-gateway",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@cloudflare/sandbox": "^0.7.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260307.1",
+    "typescript": "^5.7.3",
+    "wrangler": "^4.71.0"
+  }
+}

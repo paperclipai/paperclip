@@ -6,6 +6,7 @@ import { printGeminiStreamEvent } from "@paperclipai/adapter-gemini-local/cli";
 import { printOpenCodeStreamEvent } from "@paperclipai/adapter-opencode-local/cli";
 import { printPiStreamEvent } from "@paperclipai/adapter-pi-local/cli";
 import { printOpenClawGatewayStreamEvent } from "@paperclipai/adapter-openclaw-gateway/cli";
+import { printSandboxStreamEvent } from "@paperclipai/adapter-sandbox/cli";
 import { processCLIAdapter } from "./process/index.js";
 import { httpCLIAdapter } from "./http/index.js";
 
@@ -44,6 +45,11 @@ const openclawGatewayCLIAdapter: CLIAdapterModule = {
   formatStdoutEvent: printOpenClawGatewayStreamEvent,
 };
 
+const sandboxCLIAdapter: CLIAdapterModule = {
+  type: "sandbox",
+  formatStdoutEvent: printSandboxStreamEvent,
+};
+
 const adaptersByType = new Map<string, CLIAdapterModule>(
   [
     claudeLocalCLIAdapter,
@@ -52,6 +58,7 @@ const adaptersByType = new Map<string, CLIAdapterModule>(
     piLocalCLIAdapter,
     cursorLocalCLIAdapter,
     geminiLocalCLIAdapter,
+    sandboxCLIAdapter,
     openclawGatewayCLIAdapter,
     processCLIAdapter,
     httpCLIAdapter,
