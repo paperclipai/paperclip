@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { agentsApi, type OrgNode } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useI18n } from "../context/I18nContext";
 import { queryKeys } from "../lib/queryKeys";
 import { agentUrl } from "../lib/utils";
 import { EmptyState } from "../components/EmptyState";
@@ -140,6 +141,7 @@ const defaultDotColor = "#a3a3a3";
 export function OrgChart() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { t } = useI18n();
   const navigate = useNavigate();
 
   const { data: orgTree, isLoading } = useQuery({
@@ -161,7 +163,7 @@ export function OrgChart() {
   }, [agents]);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Org Chart" }]);
+    setBreadcrumbs([{ label: t("org.breadcrumb") }]);
   }, [setBreadcrumbs]);
 
   // Layout computation
@@ -254,7 +256,7 @@ export function OrgChart() {
   }, [zoom, pan]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Network} message="Select a company to view the org chart." />;
+    return <EmptyState icon={Network} message={t("org.selectCompany")} />;
   }
 
   if (isLoading) {
@@ -262,7 +264,7 @@ export function OrgChart() {
   }
 
   if (orgTree && orgTree.length === 0) {
-    return <EmptyState icon={Network} message="No organizational hierarchy defined." />;
+    return <EmptyState icon={Network} message={t("org.empty")} />;
   }
 
   return (

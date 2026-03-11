@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { costsApi } from "../api/costs";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useI18n } from "../context/I18nContext";
 import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -54,13 +55,14 @@ function computeRange(preset: DatePreset): { from: string; to: string } {
 export function Costs() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { t } = useI18n();
 
   const [preset, setPreset] = useState<DatePreset>("mtd");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Costs" }]);
+    setBreadcrumbs([{ label: t("costs.breadcrumb") }]);
   }, [setBreadcrumbs]);
 
   const { from, to } = useMemo(() => {
@@ -87,7 +89,7 @@ export function Costs() {
   });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={DollarSign} message="Select a company to view costs." />;
+    return <EmptyState icon={DollarSign} message={t("costs.selectCompany")} />;
   }
 
   if (isLoading) {

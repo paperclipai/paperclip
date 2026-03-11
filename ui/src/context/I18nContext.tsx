@@ -103,6 +103,24 @@ const messages: Record<Locale, Record<string, string>> = {
     "inbox.emptyNew": "No issues you're involved in yet.",
     "inbox.emptyFiltered": "No inbox items match these filters.",
     "inbox.approvalsNeedAction": "Approvals Needing Action",
+
+    "dashboard.breadcrumb": "Dashboard",
+    "dashboard.welcome": "Welcome to Paperclip. Set up your first company and agent to get started.",
+    "dashboard.getStarted": "Get Started",
+    "dashboard.selectCompany": "Create or select a company to view the dashboard.",
+
+    "activity.breadcrumb": "Activity",
+    "activity.selectCompany": "Select a company to view activity.",
+    "activity.empty": "No activity yet.",
+    "activity.filterPlaceholder": "Filter by type",
+    "activity.allTypes": "All types",
+
+    "costs.breadcrumb": "Costs",
+    "costs.selectCompany": "Select a company to view costs.",
+
+    "org.breadcrumb": "Org Chart",
+    "org.selectCompany": "Select a company to view the org chart.",
+    "org.empty": "No organizational hierarchy defined.",
   },
   ko: {
     "layout.skipToMain": "메인 콘텐츠로 건너뛰기",
@@ -187,6 +205,24 @@ const messages: Record<Locale, Record<string, string>> = {
     "inbox.emptyNew": "아직 내가 관여한 이슈가 없습니다.",
     "inbox.emptyFiltered": "필터에 맞는 받은함 항목이 없습니다.",
     "inbox.approvalsNeedAction": "조치 필요한 승인",
+
+    "dashboard.breadcrumb": "대시보드",
+    "dashboard.welcome": "Paperclip에 오신 것을 환영합니다. 시작하려면 첫 회사와 에이전트를 설정하세요.",
+    "dashboard.getStarted": "시작하기",
+    "dashboard.selectCompany": "대시보드를 보려면 회사를 생성하거나 선택하세요.",
+
+    "activity.breadcrumb": "활동",
+    "activity.selectCompany": "활동을 보려면 회사를 선택하세요.",
+    "activity.empty": "아직 활동이 없습니다.",
+    "activity.filterPlaceholder": "유형으로 필터",
+    "activity.allTypes": "모든 유형",
+
+    "costs.breadcrumb": "비용",
+    "costs.selectCompany": "비용을 보려면 회사를 선택하세요.",
+
+    "org.breadcrumb": "조직도",
+    "org.selectCompany": "조직도를 보려면 회사를 선택하세요.",
+    "org.empty": "정의된 조직 계층이 없습니다.",
   },
 };
 

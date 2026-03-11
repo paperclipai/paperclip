@@ -10,6 +10,7 @@ import { heartbeatsApi } from "../api/heartbeats";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useI18n } from "../context/I18nContext";
 import { queryKeys } from "../lib/queryKeys";
 import { MetricCard } from "../components/MetricCard";
 import { EmptyState } from "../components/EmptyState";
@@ -34,6 +35,7 @@ export function Dashboard() {
   const { selectedCompanyId, companies } = useCompany();
   const { openOnboarding } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { t } = useI18n();
   const [animatedActivityIds, setAnimatedActivityIds] = useState<Set<string>>(new Set());
   const seenActivityIdsRef = useRef<Set<string>>(new Set());
   const hydratedActivityRef = useRef(false);
@@ -46,7 +48,7 @@ export function Dashboard() {
   });
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Dashboard" }]);
+    setBreadcrumbs([{ label: t("dashboard.breadcrumb") }]);
   }, [setBreadcrumbs]);
 
   const { data, isLoading, error } = useQuery({
@@ -167,14 +169,14 @@ export function Dashboard() {
       return (
         <EmptyState
           icon={LayoutDashboard}
-          message="Welcome to Paperclip. Set up your first company and agent to get started."
-          action="Get Started"
+          message={t("dashboard.welcome")}
+          action={t("dashboard.getStarted")}
           onAction={openOnboarding}
         />
       );
     }
     return (
-      <EmptyState icon={LayoutDashboard} message="Create or select a company to view the dashboard." />
+      <EmptyState icon={LayoutDashboard} message={t("dashboard.selectCompany")} />
     );
   }
 
