@@ -21,6 +21,7 @@ import {
   issueService,
   logActivity,
   projectService,
+  runCompletionHook,
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
 import { forbidden, HttpError, unauthorized } from "../errors.js";
@@ -635,6 +636,17 @@ export function issueRoutes(db: Db, storage: StorageService) {
         heartbeat
           .wakeup(agentId, wakeup)
           .catch((err) => logger.warn({ err, issueId: issue.id, agentId }, "failed to wake agent on issue update"));
+      }
+
+      // Auto-route parent to CEO when a subtask is marked done
+      if (issue.status === "done" && existing.status !== "done") {
+        await runCompletionHook(db, {
+          id: issue.id,
+          identifier: issue.identifier,
+          title: issue.title,
+          companyId: issue.companyId,
+          parentId: issue.parentId ?? null,
+        }).catch((err) => logger.warn({ err, issueId: issue.id }, "completion-hook failed"));
       }
     })();
 
