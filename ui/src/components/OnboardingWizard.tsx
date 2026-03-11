@@ -696,19 +696,19 @@ export function OnboardingWizard() {
                           onClick={() => {
                             if (opt.comingSoon) return;
                             const nextType = opt.value as AdapterType;
+                            if (nextType === adapterType) return;
                             setAdapterType(nextType);
-                            if (nextType === "codex_local" && !model) {
+                            if (nextType === "codex_local") {
                               setModel(DEFAULT_CODEX_LOCAL_MODEL);
-                            } else if (nextType === "cursor" && !model) {
+                            } else if (nextType === "cursor") {
                               setModel(DEFAULT_CURSOR_LOCAL_MODEL);
-                            }
-                            if (nextType === "opencode_local") {
+                            } else if (nextType === "opencode_local") {
                               if (!model.includes("/")) {
                                 setModel("");
                               }
-                              return;
+                            } else {
+                              setModel("");
                             }
-                            setModel("");
                           }}
                         >
                           {opt.recommended && (
