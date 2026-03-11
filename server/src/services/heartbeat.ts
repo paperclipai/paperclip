@@ -1235,6 +1235,8 @@ export function heartbeatService(db: Db) {
     }
     if (projectRow?.sessionKey) {
       context.projectSessionKey = projectRow.sessionKey;
+    } else {
+      delete context.projectSessionKey;
     }
     const runtimeSessionFallback = taskKey || resetTaskSession ? null : runtime.sessionId;
     const previousSessionDisplayId = truncateDisplayId(
