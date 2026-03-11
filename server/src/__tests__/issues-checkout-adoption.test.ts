@@ -31,4 +31,94 @@ describe("shouldAttemptStaleCheckoutAdoption", () => {
       }),
     ).toBe(false);
   });
+
+  it("allows adoption when execution lock is unset", () => {
+    expect(
+      shouldAttemptStaleCheckoutAdoption({
+        actorAgentId: "agent-1",
+        actorRunId: "run-new",
+        current: {
+          status: "in_progress",
+          assigneeAgentId: "agent-1",
+          checkoutRunId: "run-old",
+          executionRunId: null,
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("blocks adoption without an actor run id", () => {
+    expect(
+      shouldAttemptStaleCheckoutAdoption({
+        actorAgentId: "agent-1",
+        actorRunId: null,
+        current: {
+          status: "in_progress",
+          assigneeAgentId: "agent-1",
+          checkoutRunId: "run-old",
+          executionRunId: "run-old",
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("blocks adoption when issue is not in progress", () => {
+    expect(
+      shouldAttemptStaleCheckoutAdoption({
+        actorAgentId: "agent-1",
+        actorRunId: "run-new",
+        current: {
+          status: "blocked",
+          assigneeAgentId: "agent-1",
+          checkoutRunId: "run-old",
+          executionRunId: "run-old",
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("blocks adoption when assignee does not match actor", () => {
+    expect(
+      shouldAttemptStaleCheckoutAdoption({
+        actorAgentId: "agent-1",
+        actorRunId: "run-new",
+        current: {
+          status: "in_progress",
+          assigneeAgentId: "agent-2",
+          checkoutRunId: "run-old",
+          executionRunId: "run-old",
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("blocks adoption when checkout lock is missing", () => {
+    expect(
+      shouldAttemptStaleCheckoutAdoption({
+        actorAgentId: "agent-1",
+        actorRunId: "run-new",
+        current: {
+          status: "in_progress",
+          assigneeAgentId: "agent-1",
+          checkoutRunId: null,
+          executionRunId: null,
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("blocks adoption when checkout lock is already owned by the actor run", () => {
+    expect(
+      shouldAttemptStaleCheckoutAdoption({
+        actorAgentId: "agent-1",
+        actorRunId: "run-same",
+        current: {
+          status: "in_progress",
+          assigneeAgentId: "agent-1",
+          checkoutRunId: "run-same",
+          executionRunId: "run-same",
+        },
+      }),
+    ).toBe(false);
+  });
 });
