@@ -230,6 +230,8 @@ pnpm db:migrate       # Apply migrations
 
 See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
 
+For Linux service setup, see [doc/SYSTEMD.md](doc/SYSTEMD.md).
+
 <br/>
 
 ## Roadmap
