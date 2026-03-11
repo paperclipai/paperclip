@@ -204,7 +204,12 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
   };
 
   const invalidateProject = () => {
-    queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(project.id) });
+    // Invalidate both UUID-based and slug-based query keys so the parent
+    // query (which may use a URL slug like "client" instead of the UUID)
+    // is also refreshed.
+    queryClient.invalidateQueries({
+      queryKey: ["projects", "detail"],
+    });
     if (selectedCompanyId) {
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(selectedCompanyId) });
     }
