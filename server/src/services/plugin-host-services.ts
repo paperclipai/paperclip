@@ -1,6 +1,9 @@
 import type { Db } from "@paperclipai/db";
-import { pluginLogs, agentTaskSessions as agentTaskSessionsTable } from "@paperclipai/db";
+import { pluginLogs, agentTaskSessions as agentTaskSessionsTable, pluginState as pluginStateTable } from "@paperclipai/db";
 import { eq, and, like, desc } from "drizzle-orm";
+import fs from "node:fs/promises";
+import os from "node:os";
+import nodePath from "node:path";
 import type {
   HostServices,
   Company,
@@ -27,6 +30,8 @@ import { pluginStateStore } from "./plugin-state-store.js";
 import { createPluginSecretsHandler } from "./plugin-secrets-handler.js";
 import { logActivity } from "./activity-log.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
+import type { PluginStreamBus } from "./plugin-stream-bus.js";
+import { listServerAdapters, listAdapterModels, findServerAdapter } from "../adapters/index.js";
 import { lookup as dnsLookup } from "node:dns/promises";
 import type { IncomingMessage, RequestOptions as HttpRequestOptions } from "node:http";
 import { request as httpRequest } from "node:http";
@@ -441,6 +446,7 @@ export function buildHostServices(
   pluginKey: string,
   eventBus: PluginEventBus,
   notifyWorker?: (method: string, params: unknown) => void,
+  streamBus?: PluginStreamBus,
 ): HostServices & { dispose(): void } {
   const registry = pluginRegistryService(db);
   const stateStore = pluginStateStore(db);
@@ -493,6 +499,169 @@ export function buildHostServices(
       throw new Error(`${entityName} not found`);
     }
     return record;
+  };
+
+  const requireDirectLlmAdapter = (adapterType: string) => {
+    const adapter = findServerAdapter(adapterType);
+    if (!adapter || adapter.supportsDirectLlmSessions !== true) {
+      throw new Error(`Adapter "${adapterType}" does not support direct LLM sessions`);
+    }
+    return adapter;
+  };
+
+  const asRecord = (value: unknown): Record<string, unknown> | null => {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+    return value as Record<string, unknown>;
+  };
+
+  const asString = (value: unknown): string => (typeof value === "string" ? value : "");
+
+  const extractTextBlocks = (contentRaw: unknown, allowedTypes: string[]) => {
+    const content = Array.isArray(contentRaw) ? contentRaw : [];
+    const allowed = new Set(allowedTypes);
+    const texts: string[] = [];
+
+    for (const blockRaw of content) {
+      const block = asRecord(blockRaw);
+      if (!block || !allowed.has(asString(block.type))) continue;
+      const text = asString(block.text);
+      if (text.length > 0) texts.push(text);
+    }
+
+    return texts;
+  };
+
+  const dedupeTexts = (texts: string[]) => {
+    const seen = new Set<string>();
+    const unique: string[] = [];
+
+    for (const text of texts) {
+      if (seen.has(text)) continue;
+      seen.add(text);
+      unique.push(text);
+    }
+
+    return unique;
+  };
+
+  const extractCursorAssistantTexts = (messageRaw: unknown) => {
+    if (typeof messageRaw === "string") {
+      return messageRaw.length > 0 ? [messageRaw] : [];
+    }
+
+    const message = asRecord(messageRaw);
+    if (!message) return [];
+
+    const directText = asString(message.text);
+    const contentTexts = extractTextBlocks(message.content, ["output_text", "text"]);
+    return dedupeTexts(directText ? [directText, ...contentTexts] : contentTexts);
+  };
+
+  const extractPiAssistantText = (messageRaw: unknown) => {
+    const message = asRecord(messageRaw);
+    if (!message) return "";
+
+    const content = message.content;
+    if (typeof content === "string") return content.trim();
+
+    return extractTextBlocks(content, ["text"]).join("");
+  };
+
+  const buildDirectLlmAdapterConfig = (
+    adapterType: string,
+    model: string,
+    message: string,
+    instructionsFilePath: string,
+  ) => {
+    const config: Record<string, unknown> = {
+      model,
+      promptTemplate: message,
+      instructionsFilePath,
+    };
+
+    if (adapterType === "claude_local") {
+      config.extraArgs = ["--include-partial-messages"];
+    }
+
+    return config;
+  };
+
+  const extractDirectLlmStreamChunks = (
+    adapterType: string,
+    parsedEvent: Record<string, unknown>,
+    state: {
+      sawClaudeDelta: boolean;
+      sawPiDelta: boolean;
+    },
+  ) => {
+    if (adapterType === "claude_local") {
+      const normalizedEvent =
+        parsedEvent.type === "stream_event"
+          ? asRecord(parsedEvent.event) ?? parsedEvent
+          : parsedEvent;
+
+      if (normalizedEvent.type === "content_block_delta") {
+        const delta = asRecord(normalizedEvent.delta);
+        const text = delta && delta.type === "text_delta" ? asString(delta.text) : "";
+        if (text) {
+          state.sawClaudeDelta = true;
+          return [text];
+        }
+      }
+
+      if (normalizedEvent.type === "assistant" && !state.sawClaudeDelta) {
+        return extractTextBlocks(asRecord(normalizedEvent.message)?.content, ["text"]);
+      }
+
+      return [];
+    }
+
+    if (adapterType === "codex_local") {
+      if (parsedEvent.type !== "item.completed") return [];
+      const item = asRecord(parsedEvent.item);
+      const text = item && asString(item.type) === "agent_message" ? asString(item.text) : "";
+      return text.length > 0 ? [text] : [];
+    }
+
+    if (adapterType === "cursor") {
+      if (parsedEvent.type === "assistant") {
+        return extractCursorAssistantTexts(parsedEvent.message);
+      }
+      if (parsedEvent.type === "text") {
+        const text = asString(asRecord(parsedEvent.part)?.text);
+        return text.length > 0 ? [text] : [];
+      }
+      return [];
+    }
+
+    if (adapterType === "pi_local") {
+      if (parsedEvent.type === "message_update") {
+        const assistantEvent = asRecord(parsedEvent.assistantMessageEvent);
+        const delta =
+          assistantEvent && asString(assistantEvent.type) === "text_delta"
+            ? asString(assistantEvent.delta)
+            : "";
+        if (delta) {
+          state.sawPiDelta = true;
+          return [delta];
+        }
+      }
+
+      if (parsedEvent.type === "turn_end" && !state.sawPiDelta) {
+        const text = extractPiAssistantText(parsedEvent.message);
+        return text ? [text] : [];
+      }
+
+      return [];
+    }
+
+    if (adapterType === "opencode_local") {
+      if (parsedEvent.type !== "text") return [];
+      const text = asString(asRecord(parsedEvent.part)?.text);
+      return text.length > 0 ? [text] : [];
+    }
+
+    return [];
   };
 
   return {
@@ -1054,6 +1223,337 @@ export function buildHostServices(
           .returning()
           .then((rows) => rows.length);
         if (deleted === 0) throw new Error(`Session not found: ${params.sessionId}`);
+      },
+    },
+
+    llmSessions: {
+      async listProviders() {
+        const adapters = listServerAdapters();
+        // Only expose adapters that explicitly support the direct LLM-session flow.
+        return adapters
+          .filter((a) => a.supportsDirectLlmSessions === true)
+          .map((a) => ({ id: a.type, label: a.type }));
+      },
+
+      async listModels(params) {
+        requireDirectLlmAdapter(params.adapterType);
+        const models = await listAdapterModels(params.adapterType);
+        return models.map((m) => ({ id: m.id, label: m.label }));
+      },
+
+      async create(params) {
+        const companyId = params.companyId;
+        await ensurePluginAvailableForCompany(companyId);
+        requireDirectLlmAdapter(params.adapterType);
+
+        const models = await listAdapterModels(params.adapterType);
+        // Adapters that return an empty model list don't enumerate their
+        // available models (e.g. self-hosted providers). In that case any
+        // model string is accepted and validation is skipped.
+        if (models.length > 0 && !models.some((m) => m.id === params.model)) {
+          throw new Error(`Model "${params.model}" is not available for adapter "${params.adapterType}"`);
+        }
+
+        const sessionId = randomUUID();
+        const sessionValue = {
+          adapterType: params.adapterType,
+          model: params.model,
+          systemPrompt: params.systemPrompt ?? null,
+          adapterSessionParams: null as Record<string, unknown> | null,
+          status: "active" as const,
+          createdAt: new Date().toISOString(),
+        };
+
+        await db.insert(pluginStateTable).values({
+          pluginId,
+          scopeKind: "company",
+          scopeId: companyId,
+          namespace: "llm-sessions",
+          stateKey: sessionId,
+          valueJson: sessionValue,
+        }).onConflictDoUpdate({
+          target: [
+            pluginStateTable.pluginId,
+            pluginStateTable.scopeKind,
+            pluginStateTable.scopeId,
+            pluginStateTable.namespace,
+            pluginStateTable.stateKey,
+          ],
+          set: { valueJson: sessionValue },
+        });
+
+        return {
+          sessionId,
+          companyId,
+          adapterType: params.adapterType,
+          model: params.model,
+          status: "active" as const,
+          createdAt: sessionValue.createdAt,
+        };
+      },
+
+      async resume(params) {
+        const companyId = params.companyId;
+        await ensurePluginAvailableForCompany(companyId);
+
+        const row = await db
+          .select()
+          .from(pluginStateTable)
+          .where(
+            and(
+              eq(pluginStateTable.pluginId, pluginId),
+              eq(pluginStateTable.scopeKind, "company"),
+              eq(pluginStateTable.scopeId, companyId),
+              eq(pluginStateTable.namespace, "llm-sessions"),
+              eq(pluginStateTable.stateKey, params.sessionId),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+
+        if (!row) throw new Error(`LLM session not found: ${params.sessionId}`);
+
+        const session = row.valueJson as {
+          adapterType: string;
+          model: string;
+          status: "active" | "closed";
+          createdAt: string;
+        };
+
+        if (session.status === "closed") {
+          throw new Error(`LLM session is closed: ${params.sessionId}`);
+        }
+
+        return {
+          sessionId: params.sessionId,
+          companyId,
+          adapterType: session.adapterType,
+          model: session.model,
+          status: session.status,
+          createdAt: session.createdAt,
+        };
+      },
+
+      async send(params) {
+        const companyId = params.companyId;
+        await ensurePluginAvailableForCompany(companyId);
+
+        // Load session
+        const row = await db
+          .select()
+          .from(pluginStateTable)
+          .where(
+            and(
+              eq(pluginStateTable.pluginId, pluginId),
+              eq(pluginStateTable.scopeKind, "company"),
+              eq(pluginStateTable.scopeId, companyId),
+              eq(pluginStateTable.namespace, "llm-sessions"),
+              eq(pluginStateTable.stateKey, params.sessionId),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+
+        if (!row) throw new Error(`LLM session not found: ${params.sessionId}`);
+
+        const session = row.valueJson as {
+          adapterType: string;
+          model: string;
+          systemPrompt: string | null;
+          adapterSessionParams: Record<string, unknown> | null;
+          status: "active" | "closed";
+          createdAt: string;
+        };
+
+        if (session.status === "closed") {
+          throw new Error(`LLM session is closed: ${params.sessionId}`);
+        }
+
+        const adapter = requireDirectLlmAdapter(session.adapterType);
+
+        // Write system prompt to a temp file if present
+        let systemPromptFilePath: string | null = null;
+        if (session.systemPrompt) {
+          const tmpFile = nodePath.join(os.tmpdir(), `paperclip-plugin-llm-sysprompt-${randomUUID()}.txt`);
+          try {
+            await fs.writeFile(tmpFile, session.systemPrompt, "utf8");
+            systemPromptFilePath = tmpFile;
+          } catch (err) {
+            // Proceed without system prompt — log so operators can diagnose
+            logger.warn({ err, pluginId, sessionId: params.sessionId }, "Failed to write system prompt temp file; proceeding without system prompt");
+          }
+        }
+
+        let seq = 0;
+
+        try {
+          const result = await adapter.execute({
+            runId: randomUUID(),
+            agent: {
+              id: `plugin-llm-${pluginId}-${params.sessionId}`,
+              companyId,
+              name: "plugin-llm-session",
+              adapterType: session.adapterType,
+              adapterConfig: { model: session.model },
+            },
+            runtime: {
+              sessionId: session.adapterSessionParams?.sessionId as string | null ?? null,
+              sessionParams: session.adapterSessionParams ?? null,
+              sessionDisplayId: null,
+              taskKey: null,
+            },
+            config: {
+              ...buildDirectLlmAdapterConfig(
+                session.adapterType,
+                session.model,
+                params.message,
+                systemPromptFilePath ?? "",
+              ),
+            },
+            context: {},
+            // Stream text deltas to the SSE bus in real time.
+            // Each direct-session adapter emits a different stdout event shape.
+            // Stream whatever incremental assistant text the adapter exposes.
+            onLog: (() => {
+              if (!params.streamChannel || !streamBus) return async () => {};
+              const streamChannel = params.streamChannel;
+              let lineBuffer = "";
+              const streamState = {
+                sawClaudeDelta: false,
+                sawPiDelta: false,
+              };
+              return async (stream: "stdout" | "stderr", chunk: string): Promise<void> => {
+                if (stream !== "stdout") return;
+                lineBuffer += chunk;
+                const lines = lineBuffer.split("\n");
+                // Retain the last (potentially incomplete) line in the buffer.
+                lineBuffer = lines.pop() ?? "";
+                for (const line of lines) {
+                  const trimmed = line.trim();
+                  if (!trimmed) continue;
+                  try {
+                    const event = JSON.parse(trimmed) as Record<string, unknown>;
+                    const chunks = extractDirectLlmStreamChunks(session.adapterType, event, streamState);
+                    for (const content of chunks) {
+                      streamBus.publish(
+                        pluginId,
+                        streamChannel,
+                        companyId,
+                        { type: "chunk", content },
+                        "message",
+                      );
+                    }
+                  } catch {
+                    // Not NDJSON — skip.
+                  }
+                }
+              };
+            })(),
+          });
+
+          const updatedSessionParams = result.sessionParams ?? session.adapterSessionParams;
+          const updatedSession = { ...session, adapterSessionParams: updatedSessionParams };
+
+          await db.update(pluginStateTable)
+            .set({ valueJson: updatedSession })
+            .where(
+              and(
+                eq(pluginStateTable.pluginId, pluginId),
+                eq(pluginStateTable.scopeKind, "company"),
+                eq(pluginStateTable.scopeId, companyId),
+                eq(pluginStateTable.namespace, "llm-sessions"),
+                eq(pluginStateTable.stateKey, params.sessionId),
+              ),
+            );
+
+          const failureMessage =
+            result.errorMessage ??
+            (result.timedOut ? "LLM session timed out" : null) ??
+            ((result.exitCode ?? 0) === 0 ? null : `Adapter exited with code ${result.exitCode ?? -1}`);
+
+          if (failureMessage) {
+            seq++;
+            notifyWorker?.("llm.sessions.event", {
+              sessionId: params.sessionId,
+              seq,
+              eventType: "error",
+              stream: "stderr",
+              chunk: null,
+              error: failureMessage,
+            });
+            if (params.streamChannel && streamBus) {
+              streamBus.publish(pluginId, params.streamChannel, companyId, {
+                type: "error",
+                error: failureMessage,
+              }, "message");
+              streamBus.publish(pluginId, params.streamChannel, companyId, {
+                type: "close",
+                error: failureMessage,
+              }, "message");
+            }
+            throw new Error(failureMessage);
+          }
+
+          const content = typeof result.summary === "string" ? result.summary : "";
+
+          if (content.length > 0) {
+            seq++;
+            notifyWorker?.("llm.sessions.event", {
+              sessionId: params.sessionId,
+              seq,
+              eventType: "chunk",
+              stream: "stdout",
+              chunk: content,
+              error: null,
+            });
+            // Chunks have already been streamed progressively via onLog above.
+            // Do not publish a redundant final-chunk SSE event here.
+          }
+
+          // Send done notification
+          notifyWorker?.("llm.sessions.event", {
+            sessionId: params.sessionId,
+            seq: seq + 1,
+            eventType: "done",
+            stream: null,
+            chunk: null,
+            error: null,
+          });
+
+          if (params.streamChannel && streamBus) {
+            // Publish as "message" (not "close") so the browser EventSource stays
+            // alive for subsequent turns in a multi-message conversation.
+            streamBus.publish(pluginId, params.streamChannel, companyId, { type: "done" }, "message");
+          }
+
+          return { content };
+        } finally {
+          // Clean up temp system prompt file
+          if (systemPromptFilePath) {
+            fs.unlink(systemPromptFilePath).catch(() => {});
+          }
+        }
+      },
+
+      async close(params) {
+        const companyId = params.companyId;
+        await ensurePluginAvailableForCompany(companyId);
+
+        const where = and(
+          eq(pluginStateTable.pluginId, pluginId),
+          eq(pluginStateTable.scopeKind, "company"),
+          eq(pluginStateTable.scopeId, companyId),
+          eq(pluginStateTable.namespace, "llm-sessions"),
+          eq(pluginStateTable.stateKey, params.sessionId),
+        );
+        const row = await db
+          .select()
+          .from(pluginStateTable)
+          .where(where)
+          .then((rows) => rows[0] ?? null);
+        if (!row) return; // idempotent
+        const existing = row.valueJson as Record<string, unknown>;
+        await db.update(pluginStateTable)
+          .set({ valueJson: { ...existing, status: "closed" } })
+          .where(where);
       },
     },
 

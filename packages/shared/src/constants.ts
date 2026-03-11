@@ -347,6 +347,11 @@ export const PLUGIN_CAPABILITIES = [
   "secrets.read-ref",
   // Agent Tools
   "agent.tools.register",
+  // LLM Sessions (direct adapter invocation)
+  "llm.providers.list",
+  "llm.sessions.create",
+  "llm.sessions.send",
+  "llm.sessions.close",
   // UI
   "instance.settings.register",
   "ui.sidebar.register",

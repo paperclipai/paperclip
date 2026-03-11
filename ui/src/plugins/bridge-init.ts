@@ -17,6 +17,7 @@ import {
   usePluginData,
   usePluginAction,
   useHostContext,
+  usePluginStream,
 } from "./bridge.js";
 
 // ---------------------------------------------------------------------------
@@ -62,6 +63,7 @@ export function initPluginBridge(
       usePluginData,
       usePluginAction,
       useHostContext,
+      usePluginStream,
 
       // Placeholder shared UI components — plugins that use these will get
       // functional stubs. Full implementations matching the host's design

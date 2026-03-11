@@ -24,6 +24,7 @@ import type {
   PluginWorkspace,
   AgentSession,
   AgentSessionEvent,
+  LlmSession,
 } from "./types.js";
 
 export interface TestHarnessOptions {
@@ -148,6 +149,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
 
   const sessions = new Map<string, AgentSession>();
   const sessionEventCallbacks = new Map<string, (event: AgentSessionEvent) => void>();
+  const llmSessions = new Map<string, LlmSession>();
 
   const events: EventRegistration[] = [];
   const jobs = new Map<string, (job: PluginJobContext) => Promise<void>>();
@@ -604,6 +606,54 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         },
       };
     })(),
+    llm: {
+      providers: {
+        async list() {
+          requireCapability(manifest, capabilitySet, "llm.providers.list");
+          return [];
+        },
+        models: {
+          async list(_adapterType: string) {
+            requireCapability(manifest, capabilitySet, "llm.providers.list");
+            return [];
+          },
+        },
+      },
+      sessions: {
+        async create(opts) {
+          requireCapability(manifest, capabilitySet, "llm.sessions.create");
+          const session: LlmSession = {
+            sessionId: randomUUID(),
+            companyId: opts.companyId,
+            adapterType: opts.adapterType,
+            model: opts.model,
+            status: "active" as const,
+            createdAt: new Date().toISOString(),
+          };
+          llmSessions.set(session.sessionId, session);
+          return session;
+        },
+        async resume(sessionId: string, companyId: string) {
+          requireCapability(manifest, capabilitySet, "llm.sessions.create");
+          const existing = llmSessions.get(sessionId);
+          return {
+            sessionId,
+            companyId,
+            adapterType: existing?.adapterType ?? "",
+            model: existing?.model ?? "",
+            status: "active" as const,
+            createdAt: existing?.createdAt ?? new Date().toISOString(),
+          };
+        },
+        async send(_sessionId: string, _companyId: string, _opts: { message: string; streamChannel?: string; onEvent?: (e: import("./types.js").LlmSessionEvent) => void }) {
+          requireCapability(manifest, capabilitySet, "llm.sessions.send");
+          return { content: "" };
+        },
+        async close(_sessionId: string, _companyId: string) {
+          requireCapability(manifest, capabilitySet, "llm.sessions.close");
+        },
+      },
+    },
     tools: {
       register(name, _decl, fn) {
         requireCapability(manifest, capabilitySet, "agent.tools.register");

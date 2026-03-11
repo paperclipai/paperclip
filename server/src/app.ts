@@ -37,6 +37,7 @@ import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
 import { createPluginJobCoordinator } from "./services/plugin-job-coordinator.js";
 import { buildHostServices, flushPluginLogBuffer } from "./services/plugin-host-services.js";
 import { createPluginEventBus } from "./services/plugin-event-bus.js";
+import { createPluginStreamBus } from "./services/plugin-stream-bus.js";
 import { subscribeDomainEvents, publishGlobalLiveEvent } from "./services/index.js";
 import { createPluginDevWatcher } from "./services/plugin-dev-watcher.js";
 import { createPluginHostServiceCleanup } from "./services/plugin-host-service-cleanup.js";
@@ -149,6 +150,7 @@ export async function createApp(
   // leaked session event subscriptions when workers exit.
   const hostServicesDisposers = new Map<string, () => void>();
   let hostServiceCleanup: ReturnType<typeof createPluginHostServiceCleanup> | null = null;
+  const streamBus = createPluginStreamBus();
 
   const workerManager = createPluginWorkerManager({
     onWorkerEvent(event) {
@@ -162,6 +164,25 @@ export async function createApp(
         },
       });
       hostServiceCleanup?.handleWorkerEvent(event);
+    },
+    onStreamNotification(pluginId, method, params) {
+      const channel = typeof params.channel === "string" ? params.channel : "";
+      const companyId = typeof params.companyId === "string" ? params.companyId : "";
+      if (!channel || !companyId) return;
+
+      if (method === "streams.emit") {
+        streamBus.publish(pluginId, channel, companyId, params.event ?? null, "message");
+        return;
+      }
+
+      if (method === "streams.open") {
+        streamBus.publish(pluginId, channel, companyId, { channel, companyId }, "open");
+        return;
+      }
+
+      if (method === "streams.close") {
+        streamBus.publish(pluginId, channel, companyId, { channel, companyId }, "close");
+      }
     },
   });
   // Registry created early so the event bus can check company availability.
@@ -227,7 +248,7 @@ export async function createApp(
           const handle = workerManager.getWorker(pluginId);
           if (handle) handle.notify(method, params);
         };
-        const services = buildHostServices(db, pluginId, manifest.id, eventBus, notifyWorker);
+        const services = buildHostServices(db, pluginId, manifest.id, eventBus, notifyWorker, streamBus);
 
         // Clean up leaked session event subscriptions when the worker exits.
         // The app wires crash, stop, and unload signals to `dispose()`.
@@ -250,7 +271,7 @@ export async function createApp(
       { scheduler, jobStore },     // jobDeps
       { workerManager },            // webhookDeps
       { toolDispatcher },           // toolDeps
-      { workerManager },            // bridgeDeps
+      { workerManager, streamBus }, // bridgeDeps
     ),
   );
   api.use(

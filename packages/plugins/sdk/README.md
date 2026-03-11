@@ -310,6 +310,10 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `agent.sessions.list` |
 | | `agent.sessions.send` |
 | | `agent.sessions.close` |
+| **LLM** | `llm.providers.list` |
+| | `llm.sessions.create` |
+| | `llm.sessions.send` |
+| | `llm.sessions.close` |
 | **UI** | `ui.sidebar.register` |
 | | `ui.page.register` |
 | | `ui.detailTab.register` |
@@ -907,6 +911,59 @@ await ctx.agents.sessions.close(session.sessionId, companyId);
 Requires capabilities: `agent.sessions.create`, `agent.sessions.list`, `agent.sessions.send`, `agent.sessions.close`.
 
 Exported types: `AgentSession`, `AgentSessionEvent`, `AgentSessionSendResult`, `PluginAgentSessionsClient`.
+
+## LLM sessions (direct adapter invocation)
+
+Plugins can call model providers directly, bypassing the full agent system. Best for summarization, classification, and Q&A:
+
+```ts
+// List available providers and models
+const providers = await ctx.llm.providers.list();
+const models = await ctx.llm.providers.models.list("claude_local");
+// Note: models may be [] for providers that don't enumerate models (e.g. self-hosted).
+// Any model string is valid in that case.
+
+// Create a session
+const session = await ctx.llm.sessions.create({
+  companyId,
+  adapterType: "claude_local",
+  model: "claude-opus-4-6", // or a user-supplied string for non-enumerating providers
+  systemPrompt: "You are a concise assistant.",
+});
+
+// Send a message with streaming
+const result = await ctx.llm.sessions.send(session.sessionId, companyId, {
+  message: "Summarize this issue in one sentence.",
+  streamChannel: "llm-response",  // host publishes chunks to SSE bus
+  onEvent: (e) => {
+    if (e.eventType === "chunk" && e.chunk) console.log(e.chunk);
+  },
+});
+
+// Conversation state is preserved automatically across send() calls
+await ctx.llm.sessions.send(session.sessionId, companyId, {
+  message: "Expand on that.",
+});
+
+// Close when done
+await ctx.llm.sessions.close(session.sessionId, companyId);
+```
+
+**Streaming to the UI:** Use `streamChannel` to have the host publish chunks directly to the SSE bus (lower latency), or use `onEvent` with `ctx.streams.emit()` for plugin-controlled formatting:
+
+```ts
+// Option A: plugin-side forwarding
+onEvent: (e) => {
+  if (e.eventType === "chunk") ctx.streams.emit("chat", { chunk: e.chunk });
+},
+
+// Option B: host direct publish (no onEvent needed)
+streamChannel: "chat",  // browser reads from GET /api/plugins/:pluginId/bridge/stream/chat
+```
+
+Requires capabilities: `llm.providers.list`, `llm.sessions.create`, `llm.sessions.send`, `llm.sessions.close`.
+
+Exported types: `LlmProvider`, `LlmModel`, `LlmSession`, `LlmSessionEvent`, `LlmSessionSendResult`, `PluginLlmClient`.
 
 ## Testing utilities
 

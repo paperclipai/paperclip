@@ -51,6 +51,7 @@
 import type { PluginCapability } from "@paperclipai/shared";
 import type { WorkerToHostMethods, WorkerToHostMethodName } from "./protocol.js";
 import { PLUGIN_RPC_ERROR_CODES } from "./protocol.js";
+import type { LlmProvider, LlmModel, LlmSession } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Error types
@@ -194,6 +195,16 @@ export interface HostServices {
     create(params: WorkerToHostMethods["goals.create"][0]): Promise<WorkerToHostMethods["goals.create"][1]>;
     update(params: WorkerToHostMethods["goals.update"][0]): Promise<WorkerToHostMethods["goals.update"][1]>;
   };
+
+  /** Provides `llm.providers.list`, `llm.providers.models.list`, `llm.sessions.*`. */
+  llmSessions: {
+    listProviders(params: Record<string, never>): Promise<LlmProvider[]>;
+    listModels(params: WorkerToHostMethods["llm.providers.models.list"][0]): Promise<LlmModel[]>;
+    create(params: WorkerToHostMethods["llm.sessions.create"][0]): Promise<LlmSession>;
+    resume(params: WorkerToHostMethods["llm.sessions.resume"][0]): Promise<LlmSession>;
+    send(params: WorkerToHostMethods["llm.sessions.send"][0]): Promise<{ content: string }>;
+    close(params: WorkerToHostMethods["llm.sessions.close"][0]): Promise<void>;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -324,6 +335,14 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "goals.get": "goals.read",
   "goals.create": "goals.create",
   "goals.update": "goals.update",
+
+  // LLM Sessions
+  "llm.providers.list": "llm.providers.list",
+  "llm.providers.models.list": "llm.providers.list",
+  "llm.sessions.create": "llm.sessions.create",
+  "llm.sessions.resume": "llm.sessions.create",
+  "llm.sessions.send": "llm.sessions.send",
+  "llm.sessions.close": "llm.sessions.close",
 };
 
 // ---------------------------------------------------------------------------
@@ -539,6 +558,26 @@ export function createHostClientHandlers(
     }),
     "goals.update": gated("goals.update", async (params) => {
       return services.goals.update(params);
+    }),
+
+    // LLM Sessions
+    "llm.providers.list": gated("llm.providers.list", async (params) => {
+      return services.llmSessions.listProviders(params);
+    }),
+    "llm.providers.models.list": gated("llm.providers.models.list", async (params) => {
+      return services.llmSessions.listModels(params);
+    }),
+    "llm.sessions.create": gated("llm.sessions.create", async (params) => {
+      return services.llmSessions.create(params);
+    }),
+    "llm.sessions.resume": gated("llm.sessions.resume", async (params) => {
+      return services.llmSessions.resume(params);
+    }),
+    "llm.sessions.send": gated("llm.sessions.send", async (params) => {
+      return services.llmSessions.send(params);
+    }),
+    "llm.sessions.close": gated("llm.sessions.close", async (params) => {
+      return services.llmSessions.close(params);
     }),
   };
 }

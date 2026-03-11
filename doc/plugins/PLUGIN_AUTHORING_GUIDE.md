@@ -806,6 +806,108 @@ harness.simulateSessionEvent(session.sessionId, {
 await harness.ctx.agents.sessions.close(session.sessionId, "company-1");
 ```
 
+### LLM Sessions (Direct Adapter Invocation)
+
+Use `ctx.llm` when you need a simple model call — summarization, classification, Q&A — without spinning up a full coding agent. Unlike `ctx.agents.sessions`, LLM sessions invoke the adapter directly in one-shot mode.
+
+**When to use `ctx.llm` vs `ctx.agents.sessions`:**
+
+| | `ctx.llm.sessions` | `ctx.agents.sessions` |
+|---|---|---|
+| Mode | Direct adapter invocation (`--print`) | Full agent with heartbeat/tools |
+| Best for | Summarization, classification, Q&A | Code tasks, tool use, multi-step work |
+| Response | Returns `{ content: string }` | Returns `{ runId }`, events via stream |
+| Latency | Lower (no agent overhead) | Higher (agent process startup) |
+
+**Capabilities required:** `llm.providers.list`, `llm.sessions.create`, `llm.sessions.send`, `llm.sessions.close`
+
+#### Choosing a provider and model
+
+```ts
+const providers = await ctx.llm.providers.list();
+const adapterType = providers[0].id; // e.g. "claude_local"
+
+const models = await ctx.llm.providers.models.list(adapterType);
+// Some providers (self-hosted, custom) return [] — they don't enumerate models.
+// Any model string is valid for those providers.
+const model = models.length > 0 ? models[0].id : "default";
+```
+
+#### Creating and using a session
+
+```ts
+const session = await ctx.llm.sessions.create({
+  companyId,
+  adapterType: "claude_local",
+  model: "claude-opus-4-6",
+  systemPrompt: "You are a concise assistant. Reply in one sentence.",
+});
+
+const result = await ctx.llm.sessions.send(session.sessionId, companyId, {
+  message: "Summarize this issue: " + issueBody,
+});
+// result: { content: "The issue is about X." }
+
+await ctx.llm.sessions.close(session.sessionId, companyId);
+```
+
+#### Session continuity
+
+Conversation state is preserved automatically across `send()` calls — you do not need to manage context manually. The host persists the adapter's session ID (e.g. Claude's `--resume` ID) in `plugin_state` after each call and threads it into the next:
+
+```ts
+// First call — establishes the conversation thread
+await ctx.llm.sessions.send(sessionId, companyId, { message: "Say hello." });
+
+// Second call — adapter remembers the first exchange
+await ctx.llm.sessions.send(sessionId, companyId, { message: "What did you just say?" });
+```
+
+#### Streaming to the UI
+
+**Option A — Plugin-side forwarding** (`onEvent` + `ctx.streams.emit`):
+
+```ts
+ctx.streams.open("llm-chat", companyId);
+
+await ctx.llm.sessions.send(sessionId, companyId, {
+  message: "Summarize this.",
+  onEvent: (e) => {
+    if (e.eventType === "chunk" && e.chunk) {
+      ctx.streams.emit("llm-chat", { type: "chunk", content: e.chunk });
+    }
+    if (e.eventType === "done") {
+      ctx.streams.close("llm-chat");
+    }
+  },
+});
+```
+
+**Option B — Host direct publish** (lower latency, `streamChannel` param):
+
+```ts
+await ctx.llm.sessions.send(sessionId, companyId, {
+  message: "Summarize this.",
+  streamChannel: "llm-chat",  // host publishes chunks to SSE bus directly
+});
+// Browser reads from: GET /api/plugins/:pluginId/bridge/stream/llm-chat
+```
+
+In the UI, use the existing `usePluginStream("llm-chat")` hook to receive events.
+
+#### Required capabilities checklist
+
+```json
+{
+  "capabilities": [
+    "llm.providers.list",
+    "llm.sessions.create",
+    "llm.sessions.send",
+    "llm.sessions.close"
+  ]
+}
+```
+
 ### Data and Action Handlers
 
 Register handlers that your UI components call via the bridge:

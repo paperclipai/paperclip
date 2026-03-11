@@ -94,7 +94,7 @@ vi.mock("../services/activity-log.js", () => ({
   logActivity: vi.fn(),
 }));
 
-import { pluginRoutes } from "../routes/plugins.js";
+import { DEFAULT_PLUGIN_ACTION_RPC_TIMEOUT_MS, pluginRoutes } from "../routes/plugins.js";
 import type { PluginRouteWebhookDeps, PluginRouteBridgeDeps, PluginRouteToolDeps } from "../routes/plugins.js";
 import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
 import { logActivity } from "../services/activity-log.js";
@@ -2198,6 +2198,7 @@ describe("plugin routes", () => {
           "p1",
           "performAction",
           { key: "resync", params: { companyId: "c1" }, renderEnvironment: null },
+          DEFAULT_PLUGIN_ACTION_RPC_TIMEOUT_MS,
         );
       });
 
@@ -2215,6 +2216,7 @@ describe("plugin routes", () => {
           "p1",
           "performAction",
           { key: "reset", params: {}, renderEnvironment: null },
+          DEFAULT_PLUGIN_ACTION_RPC_TIMEOUT_MS,
         );
       });
 
@@ -2513,6 +2515,7 @@ describe("plugin routes", () => {
           "p1",
           "performAction",
           { key: "resync", params: { companyId: "c1" }, renderEnvironment: null },
+          DEFAULT_PLUGIN_ACTION_RPC_TIMEOUT_MS,
         );
       });
 
@@ -2530,6 +2533,7 @@ describe("plugin routes", () => {
           "p1",
           "performAction",
           { key: "reset", params: {}, renderEnvironment: null },
+          DEFAULT_PLUGIN_ACTION_RPC_TIMEOUT_MS,
         );
       });
 
@@ -2561,6 +2565,7 @@ describe("plugin routes", () => {
               bounds: "wide",
             },
           },
+          DEFAULT_PLUGIN_ACTION_RPC_TIMEOUT_MS,
         );
       });
 

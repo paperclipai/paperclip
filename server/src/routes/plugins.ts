@@ -102,6 +102,12 @@ const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /**
+ * UI-triggered actions may legitimately stay open for minutes, especially for
+ * chat or generation workflows. Keep them above the generic 30s RPC default.
+ */
+export const DEFAULT_PLUGIN_ACTION_RPC_TIMEOUT_MS = 5 * 60 * 1_000;
+
+/**
  * Resolve a plugin by either database ID or plugin key.
  *
  * Lookup order:
@@ -1057,6 +1063,7 @@ export function pluginRoutes(
           params: body.params ?? {},
           renderEnvironment: body.renderEnvironment ?? null,
         },
+        DEFAULT_PLUGIN_ACTION_RPC_TIMEOUT_MS,
       );
       res.json({ data: result });
     } catch (err) {
@@ -1225,6 +1232,7 @@ export function pluginRoutes(
           params: body?.params ?? {},
           renderEnvironment: body?.renderEnvironment ?? null,
         },
+        DEFAULT_PLUGIN_ACTION_RPC_TIMEOUT_MS,
       );
       res.json({ data: result });
     } catch (err) {
@@ -1319,6 +1327,10 @@ export function pluginRoutes(
             res.write(`event: ${eventType}\n`);
           }
           res.write(`data: ${JSON.stringify(event)}\n\n`);
+          // Flush immediately so compression middleware (if any) doesn't
+          // hold the chunk in its internal buffer until it fills.
+          // res.flush is added by the `compression` package; call it if present.
+          (res as unknown as { flush?: () => void }).flush?.();
         } catch {
           // Connection closed or write error — stop delivering
           safeUnsubscribe();

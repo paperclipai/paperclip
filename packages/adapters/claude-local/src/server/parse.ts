@@ -149,7 +149,10 @@ export function describeClaudeFailure(parsed: Record<string, unknown>): string |
   }
 
   const parts = ["Claude run failed"];
-  if (subtype) parts.push(`subtype=${subtype}`);
+  // "success" subtype is misleading in an error description — omit it.
+  // It appears when Claude Code exits non-zero but still emits a well-formed
+  // result event (e.g. model-not-found errors reported via the result field).
+  if (subtype && subtype !== "success") parts.push(`subtype=${subtype}`);
   if (detail) parts.push(detail);
   return parts.length > 1 ? parts.join(": ") : null;
 }

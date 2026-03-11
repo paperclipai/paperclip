@@ -57,6 +57,7 @@ import type {
   ToolResult,
   EventFilter,
   AgentSessionEvent,
+  LlmSessionEvent,
 } from "./types.js";
 import type {
   JsonRpcId,
@@ -265,6 +266,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
   // Agent session event callbacks (populated by sendMessage, cleared by close)
   const sessionEventCallbacks = new Map<string, (event: AgentSessionEvent) => void>();
+
+  // LLM session event callbacks (populated by send, cleared after send resolves)
+  const llmSessionEventCallbacks = new Map<string, Set<(event: LlmSessionEvent) => void>>();
 
   // Pending outbound (worker→host) requests
   const pendingRequests = new Map<string | number, {
@@ -764,6 +768,67 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         };
       })(),
 
+      llm: {
+        providers: {
+          async list() {
+            return callHost("llm.providers.list", {} as Record<string, never>);
+          },
+          models: {
+            async list(adapterType: string) {
+              return callHost("llm.providers.models.list", { adapterType });
+            },
+          },
+        },
+
+        sessions: {
+          async create(opts: { companyId: string; adapterType: string; model: string; systemPrompt?: string }) {
+            return callHost("llm.sessions.create", {
+              companyId: opts.companyId,
+              adapterType: opts.adapterType,
+              model: opts.model,
+              systemPrompt: opts.systemPrompt,
+            });
+          },
+
+          async resume(sessionId: string, companyId: string) {
+            return callHost("llm.sessions.resume", { sessionId, companyId });
+          },
+
+          async send(sessionId: string, companyId: string, opts: {
+            message: string;
+            streamChannel?: string;
+            onEvent?: (e: LlmSessionEvent) => void;
+          }) {
+            if (opts.onEvent) {
+              // Use a Set per sessionId so concurrent sends don't overwrite each other's callbacks.
+              let cbs = llmSessionEventCallbacks.get(sessionId);
+              if (!cbs) {
+                cbs = new Set();
+                llmSessionEventCallbacks.set(sessionId, cbs);
+              }
+              cbs.add(opts.onEvent);
+            }
+            try {
+              return await callHost("llm.sessions.send", {
+                sessionId,
+                companyId,
+                message: opts.message,
+                streamChannel: opts.streamChannel,
+              });
+            } finally {
+              if (opts.onEvent) {
+                llmSessionEventCallbacks.get(sessionId)?.delete(opts.onEvent);
+              }
+            }
+          },
+
+          async close(sessionId: string, companyId: string) {
+            llmSessionEventCallbacks.delete(sessionId);
+            await callHost("llm.sessions.close", { sessionId, companyId });
+          },
+        },
+      },
+
       tools: {
         register(
           name: string,
@@ -1127,6 +1192,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         const event = notif.params as AgentSessionEvent;
         const cb = sessionEventCallbacks.get(event.sessionId);
         if (cb) cb(event);
+      } else if (notif.method === "llm.sessions.event" && notif.params) {
+        const event = notif.params as LlmSessionEvent;
+        llmSessionEventCallbacks.get(event.sessionId)?.forEach((cb) => cb(event));
       }
     }
   }
@@ -1157,6 +1225,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     }
     pendingRequests.clear();
     sessionEventCallbacks.clear();
+    llmSessionEventCallbacks.clear();
   }
 
   // -----------------------------------------------------------------------

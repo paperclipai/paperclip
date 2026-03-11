@@ -359,3 +359,113 @@ export function useHostContext(): PluginHostContext {
   const { hostContext } = usePluginBridgeContext();
   return hostContext;
 }
+
+// ---------------------------------------------------------------------------
+// usePluginStream — concrete implementation
+// ---------------------------------------------------------------------------
+
+/**
+ * Return type matching the SDK's `PluginStreamResult<T>`.
+ */
+export interface PluginStreamResult<T = unknown> {
+  events: T[];
+  lastEvent: T | null;
+  connecting: boolean;
+  connected: boolean;
+  error: Error | null;
+  close(): void;
+}
+
+/**
+ * Concrete implementation of `usePluginStream<T>(channel, options)`.
+ *
+ * Opens an SSE connection to `GET /api/plugins/:pluginId/bridge/stream/:channel`
+ * and accumulates events pushed from the worker via `ctx.streams.emit(channel, event)`.
+ *
+ * The `companyId` is taken from `options.companyId` if provided, falling back to
+ * the bridge context's host company. The connection is closed on component unmount
+ * or when the returned `close()` function is called.
+ */
+export function usePluginStream<T = unknown>(
+  channel: string,
+  options?: { companyId?: string },
+): PluginStreamResult<T> {
+  const { pluginId, hostContext } = usePluginBridgeContext();
+  const companyId = options?.companyId ?? hostContext.companyId;
+
+  const [events, setEvents] = useState<T[]>([]);
+  const [lastEvent, setLastEvent] = useState<T | null>(null);
+  const [connecting, setConnecting] = useState(true);
+  const [connected, setConnected] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+  const esRef = useRef<EventSource | null>(null);
+  const closedRef = useRef(false);
+
+  const close = useCallback(() => {
+    closedRef.current = true;
+    esRef.current?.close();
+    esRef.current = null;
+    setConnected(false);
+    setConnecting(false);
+  }, []);
+
+  useEffect(() => {
+    if (!companyId) return;
+
+    closedRef.current = false;
+    setEvents([]);
+    setLastEvent(null);
+    setConnecting(true);
+    setConnected(false);
+    setError(null);
+
+    const url =
+      `/api/plugins/${encodeURIComponent(pluginId)}/bridge/stream/${encodeURIComponent(channel)}` +
+      `?companyId=${encodeURIComponent(companyId)}`;
+
+    const es = new EventSource(url);
+    esRef.current = es;
+
+    es.onopen = () => {
+      if (closedRef.current) return;
+      setConnecting(false);
+      setConnected(true);
+    };
+
+    es.onmessage = (e: MessageEvent<string>) => {
+      if (closedRef.current) return;
+      try {
+        const parsed = JSON.parse(e.data) as T;
+        setEvents((prev) => [...prev, parsed]);
+        setLastEvent(parsed);
+      } catch {
+        // Ignore malformed events.
+      }
+    };
+
+    // The worker can send `event: close` to signal a logical end-of-stream
+    // (e.g. after ctx.streams.close()). Update connected state but keep the
+    // physical EventSource open so multi-turn / re-used channels continue to
+    // receive events without requiring a reconnect.
+    es.addEventListener("close", () => {
+      if (closedRef.current) return;
+      setConnected(false);
+      setConnecting(false);
+    });
+
+    es.onerror = () => {
+      if (closedRef.current) return;
+      setError(new Error("SSE connection error"));
+      setConnecting(false);
+      setConnected(false);
+    };
+
+    return () => {
+      closedRef.current = true;
+      es.close();
+      esRef.current = null;
+    };
+  }, [pluginId, channel, companyId]);
+
+  return { events, lastEvent, connecting, connected, error, close };
+}

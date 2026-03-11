@@ -936,6 +936,105 @@ export interface PluginAgentSessionsClient {
   close(sessionId: string, companyId: string): Promise<void>;
 }
 
+// ---------------------------------------------------------------------------
+// LLM Sessions — direct adapter invocation
+// ---------------------------------------------------------------------------
+
+/** A provider (adapter) available for LLM sessions. */
+export interface LlmProvider {
+  id: string;
+  label: string;
+}
+
+/** A model offered by an LLM provider. */
+export interface LlmModel {
+  id: string;
+  label: string;
+}
+
+/** An active or closed LLM session. */
+export interface LlmSession {
+  sessionId: string;
+  companyId: string;
+  adapterType: string;
+  model: string;
+  status: "active" | "closed";
+  createdAt: string;
+}
+
+/** A streaming event delivered during `ctx.llm.sessions.send()`. */
+export interface LlmSessionEvent {
+  sessionId: string;
+  seq: number;
+  eventType: "chunk" | "done" | "error";
+  stream: "stdout" | "stderr" | null;
+  chunk: string | null;
+  error: string | null;
+}
+
+/** Result of `ctx.llm.sessions.send()`. */
+export interface LlmSessionSendResult {
+  content: string;
+}
+
+/** `ctx.llm.providers.models` — list models for a provider. */
+export interface PluginLlmModelsClient {
+  list(adapterType: string): Promise<LlmModel[]>;
+}
+
+/** `ctx.llm.providers` — list providers and their models. */
+export interface PluginLlmProvidersClient {
+  list(): Promise<LlmProvider[]>;
+  models: PluginLlmModelsClient;
+}
+
+/** `ctx.llm.sessions` — manage direct adapter sessions. */
+export interface PluginLlmSessionsClient {
+  /** Create a new LLM session. Requires `llm.sessions.create`. */
+  create(opts: {
+    companyId: string;
+    adapterType: string;
+    model: string;
+    systemPrompt?: string;
+  }): Promise<LlmSession>;
+
+  /** Resume an existing LLM session. Requires `llm.sessions.create`. */
+  resume(sessionId: string, companyId: string): Promise<LlmSession>;
+
+  /**
+   * Send a message and receive the full response.
+   * Streaming chunks are delivered via `onEvent` callback and optionally
+   * published directly to the SSE bus via `streamChannel`.
+   * Requires `llm.sessions.send`.
+   */
+  send(
+    sessionId: string,
+    companyId: string,
+    opts: {
+      message: string;
+      /** Optional SSE channel — host publishes chunks directly to this channel. */
+      streamChannel?: string;
+      /** Optional per-chunk callback (called in real-time, before `send()` resolves). */
+      onEvent?: (e: LlmSessionEvent) => void;
+    },
+  ): Promise<LlmSessionSendResult>;
+
+  /** Close a session. Requires `llm.sessions.close`. */
+  close(sessionId: string, companyId: string): Promise<void>;
+}
+
+/**
+ * `ctx.llm` — direct adapter invocation for plugins.
+ *
+ * Requires `llm.providers.list` for provider/model listing,
+ * `llm.sessions.create` for create/resume, `llm.sessions.send` for send,
+ * `llm.sessions.close` for close.
+ */
+export interface PluginLlmClient {
+  providers: PluginLlmProvidersClient;
+  sessions: PluginLlmSessionsClient;
+}
+
 /**
  * `ctx.goals` — read and mutate goals.
  *
@@ -1108,6 +1207,12 @@ export interface PluginContext {
 
   /** Push real-time events from the worker to the plugin UI via SSE. */
   streams: PluginStreamsClient;
+
+  /**
+   * Call LLM providers directly via adapter invocation.
+   * Requires `llm.providers.list` / `llm.sessions.create` / `llm.sessions.send` / `llm.sessions.close`.
+   */
+  llm: PluginLlmClient;
 
   /** Register agent tool handlers. Requires `agent.tools.register`. */
   tools: PluginToolsClient;

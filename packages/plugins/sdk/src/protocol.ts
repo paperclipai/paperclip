@@ -36,6 +36,9 @@ import type {
   PluginWorkspace,
   ToolRunContext,
   ToolResult,
+  LlmProvider,
+  LlmModel,
+  LlmSession,
 } from "./types.js";
 import type {
   PluginHealthDiagnostics,
@@ -677,6 +680,32 @@ export interface WorkerToHostMethods {
       companyId: string;
     },
     result: Goal,
+  ];
+
+  // LLM Sessions (direct adapter invocation)
+  "llm.providers.list": [
+    params: Record<string, never>,
+    result: LlmProvider[],
+  ];
+  "llm.providers.models.list": [
+    params: { adapterType: string },
+    result: LlmModel[],
+  ];
+  "llm.sessions.create": [
+    params: { companyId: string; adapterType: string; model: string; systemPrompt?: string },
+    result: LlmSession,
+  ];
+  "llm.sessions.resume": [
+    params: { sessionId: string; companyId: string },
+    result: LlmSession,
+  ];
+  "llm.sessions.send": [
+    params: { sessionId: string; companyId: string; message: string; streamChannel?: string },
+    result: { content: string },
+  ];
+  "llm.sessions.close": [
+    params: { sessionId: string; companyId: string },
+    result: void,
   ];
 }
 

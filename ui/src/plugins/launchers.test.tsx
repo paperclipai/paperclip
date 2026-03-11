@@ -1,4 +1,5 @@
 import * as React from "react";
+import { act } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
@@ -841,9 +842,11 @@ describe("plugin launcher runtime", () => {
     const trigger = view.container.querySelector("button");
     expect(trigger).not.toBeNull();
 
-    trigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    trigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    await flushEffects();
+    await act(async () => {
+      trigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      trigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flushEffects();
+    });
 
     let dialogs = Array.from(document.querySelectorAll('[role="dialog"]')) as HTMLDivElement[];
     expect(dialogs).toHaveLength(2);
@@ -855,8 +858,10 @@ describe("plugin launcher runtime", () => {
     );
     expect(resizeButtons).toHaveLength(2);
 
-    resizeButtons[1]!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    await flushEffects();
+    await act(async () => {
+      resizeButtons[1]!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flushEffects();
+    });
 
     dialogs = Array.from(document.querySelectorAll('[role="dialog"]')) as HTMLDivElement[];
     const bounds = Array.from(document.querySelectorAll('[data-testid="bounds"]')).map((node) => node.textContent);
@@ -864,8 +869,10 @@ describe("plugin launcher runtime", () => {
     expect(dialogs[0]?.style.width).toContain("28rem");
     expect(dialogs[1]?.style.width).toContain("64rem");
 
-    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    await flushEffects();
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await flushEffects();
+    });
 
     dialogs = Array.from(document.querySelectorAll('[role="dialog"]')) as HTMLDivElement[];
     expect(dialogs).toHaveLength(1);

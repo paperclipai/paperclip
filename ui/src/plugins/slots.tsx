@@ -241,7 +241,11 @@ function getShimBlobUrl(specifier: "react" | "react-dom" | "react-dom/client" | 
         const R = globalThis.__paperclipPluginBridge__?.react;
         const withKey = ${applyJsxRuntimeKey.toString()};
         export const jsx = (type, props, key) => R.createElement(type, withKey(props, key));
-        export const jsxs = (type, props, key) => R.createElement(type, withKey(props, key));
+        export const jsxs = (type, props, key) => {
+          const { children, ...rest } = props ?? {};
+          const p = withKey(rest, key);
+          return Array.isArray(children) ? R.createElement(type, p, ...children) : R.createElement(type, p, children);
+        };
         export const Fragment = R.Fragment;
       `;
       break;
@@ -257,11 +261,11 @@ function getShimBlobUrl(specifier: "react" | "react-dom" | "react-dom/client" | 
     case "sdk-ui":
       source = `
         const SDK = globalThis.__paperclipPluginBridge__?.sdkUi ?? {};
-        const { usePluginData, usePluginAction, useHostContext,
+        const { usePluginData, usePluginAction, useHostContext, usePluginStream,
           MetricCard, StatusBadge, DataTable, TimeseriesChart,
           MarkdownBlock, KeyValueList, ActionBar, LogView, JsonTree,
           Spinner, ErrorBoundary } = SDK;
-        export { usePluginData, usePluginAction, useHostContext,
+        export { usePluginData, usePluginAction, useHostContext, usePluginStream,
           MetricCard, StatusBadge, DataTable, TimeseriesChart,
           MarkdownBlock, KeyValueList, ActionBar, LogView, JsonTree,
           Spinner, ErrorBoundary };

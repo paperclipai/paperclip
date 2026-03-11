@@ -163,7 +163,7 @@ export interface WorkerStartOptions {
    * Callback for stream notifications from the worker (streams.open/emit/close).
    * The host wires this to the PluginStreamBus to fan out events to SSE clients.
    */
-  onStreamNotification?: (method: string, params: Record<string, unknown>) => void;
+  onStreamNotification?: (pluginId: string, method: string, params: Record<string, unknown>) => void;
 }
 
 /**
@@ -564,7 +564,7 @@ export function createPluginWorkerHandle(
 
       if (options.onStreamNotification) {
         try {
-          options.onStreamNotification(notification.method, params);
+          options.onStreamNotification(pluginId, notification.method, params);
         } catch (err) {
           log.error(
             {
@@ -672,7 +672,7 @@ export function createPluginWorkerHandle(
     if (openStreamChannels.size > 0 && options.onStreamNotification) {
       for (const [channel, companyId] of openStreamChannels) {
         try {
-          options.onStreamNotification("streams.close", { channel, companyId });
+          options.onStreamNotification(pluginId, "streams.close", { channel, companyId });
         } catch {
           // Best-effort cleanup — don't let it interfere with exit handling
         }
@@ -1163,6 +1163,7 @@ export interface PluginWorkerManagerOptions {
     signal?: string | null;
     willRestart?: boolean;
   }) => void;
+  onStreamNotification?: (pluginId: string, method: string, params: Record<string, unknown>) => void;
 }
 
 /**
@@ -1218,7 +1219,10 @@ export function createPluginWorkerManager(
         );
       }
 
-      const handle = createPluginWorkerHandle(pluginId, options);
+      const handle = createPluginWorkerHandle(pluginId, {
+        ...options,
+        onStreamNotification: options.onStreamNotification ?? managerOptions?.onStreamNotification,
+      });
       workers.set(pluginId, handle);
 
       // Subscribe to crash/ready events for live event forwarding

@@ -25,7 +25,7 @@ The following spec sections are implemented on `feature/plugins`:
 | §17 Scheduled Jobs | Done | `server/src/services/plugin-job-scheduler.ts`, `cron.ts`, `plugin-job-store.ts` |
 | §18 Webhooks | Done | `server/src/routes/plugins.ts` (webhook ingestion route) |
 | §19 UI Extension Model | Done | `ui/src/plugins/slots.tsx`, `bridge.ts`, `bridge-init.ts` |
-| §19.8 Real-Time Streaming | Done | `packages/plugins/sdk/src/worker-rpc-host.ts` (ctx.streams), `server/src/services/plugin-stream-bus.ts`, `server/src/routes/plugins.ts` (SSE endpoint), `packages/plugins/sdk/src/ui/hooks.ts` (usePluginStream) |
+| §19.8 Real-Time Streaming | Done | `packages/plugins/sdk/src/worker-rpc-host.ts` (ctx.streams), `server/src/services/plugin-stream-bus.ts`, `server/src/routes/plugins.ts` (SSE endpoint), `packages/plugins/sdk/src/ui/hooks.ts` (usePluginStream SDK stub), `ui/src/plugins/bridge.ts` (usePluginStream host implementation) |
 | §19.9 Plugin Settings UI | Done | `ui/src/components/JsonSchemaForm.tsx`, `ui/src/pages/PluginSettings.tsx` |
 | §21 Persistence | Done | `packages/db/src/schema/plugins.ts` and related tables |
 | §22 Secrets | Done | `server/src/services/plugin-secrets-handler.ts` |
@@ -796,6 +796,24 @@ export interface PluginContext {
     emit(channel: string, event: unknown): void;
     close(channel: string): void;
   };
+  llm: {
+    providers: {
+      list(): Promise<Array<{ id: string; label: string }>>;
+      models: {
+        list(adapterType: string): Promise<Array<{ id: string; label: string }>>;
+      };
+    };
+    sessions: {
+      create(opts: { companyId: string; adapterType: string; model: string; systemPrompt?: string }): Promise<LlmSession>;
+      resume(sessionId: string, companyId: string): Promise<LlmSession>;
+      send(sessionId: string, companyId: string, opts: {
+        message: string;
+        streamChannel?: string;
+        onEvent?: (event: LlmSessionEvent) => void;
+      }): Promise<{ content: string }>;
+      close(sessionId: string, companyId: string): Promise<void>;
+    };
+  };
   tools: {
     register(name: string, input: PluginToolDeclaration, fn: (params: unknown, runCtx: ToolRunContext) => Promise<ToolResult>): void;
   };
@@ -860,6 +878,13 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `agent.sessions.list`
 - `agent.sessions.send`
 - `agent.sessions.close`
+
+### LLM Sessions (Direct Adapter Invocation)
+
+- `llm.providers.list`
+- `llm.sessions.create`
+- `llm.sessions.send`
+- `llm.sessions.close`
 
 ### Plugin State
 
@@ -955,6 +980,86 @@ interface AgentSessionEvent {
 The host subscribes to the company's live event stream, filters for the session's run, and forwards events as `agents.sessions.event` JSON-RPC notifications to the plugin worker. The `onEvent` callback in the SDK dispatches these to the plugin code.
 
 **Session isolation:** Each plugin's sessions are scoped by a task key prefix `plugin:<pluginKey>:session:<uuid>`. The host uses `wakeSource: "automation"` and `wakeTriggerDetail: "system"` to prevent the adapter from resetting session state between messages.
+
+## 15.x LLM Sessions (Direct Adapter Invocation)
+
+LLM sessions let plugins call model providers directly by invoking adapters in one-shot prompt→response mode, bypassing the full agent/heartbeat system. Use this for summarization, classification, Q&A, and other simple model calls.
+
+**Required capabilities:** `llm.providers.list`, `llm.sessions.create`, `llm.sessions.send`, `llm.sessions.close`
+
+### Session Lifecycle
+
+| Method | Capability | Description |
+|--------|-----------|-------------|
+| `ctx.llm.providers.list()` | `llm.providers.list` | List available adapter types |
+| `ctx.llm.providers.models.list(adapterType)` | `llm.providers.list` | List models for an adapter (may return `[]`) |
+| `ctx.llm.sessions.create(opts)` | `llm.sessions.create` | Create a new session |
+| `ctx.llm.sessions.resume(sessionId, companyId)` | `llm.sessions.create` | Resume an existing session |
+| `ctx.llm.sessions.send(sessionId, companyId, opts)` | `llm.sessions.send` | Send a message; returns `{ content: string }` |
+| `ctx.llm.sessions.close(sessionId, companyId)` | `llm.sessions.close` | Close and mark session as closed |
+
+### Two Session IDs
+
+Each LLM session has two associated IDs:
+
+| ID | Owner | Purpose |
+|----|-------|---------|
+| Plugin session UUID | Host (generated on `create`) | Stable handle the plugin uses across all `send()` calls |
+| Adapter session ID | CLI (e.g. Claude's `--resume` ID) | Stored in `adapterSessionParams`, threaded into each `send()` for conversation continuity |
+
+The host automatically persists adapter session params in the `plugin_state` table (namespace `"llm-sessions"`) after each `send()` call. The next `send()` reads them back and passes them to the adapter so it can resume the conversation.
+
+### Streaming
+
+Two options for getting response chunks to the browser:
+
+**Option A — Plugin-side forwarding** (always works, plugin controls format):
+
+```typescript
+await ctx.llm.sessions.send(sessionId, companyId, {
+  message: "Summarize this issue.",
+  onEvent: (e) => {
+    if (e.eventType === "chunk" && e.chunk) {
+      ctx.streams.emit("llm-chat", { type: "chunk", content: e.chunk });
+    }
+  },
+});
+```
+
+**Option B — Host direct publish** (lower latency, no plugin code needed):
+
+```typescript
+await ctx.llm.sessions.send(sessionId, companyId, {
+  message: "Summarize this issue.",
+  streamChannel: "llm-chat",  // host publishes chunks directly to SSE bus
+});
+// Browser reads from GET /api/plugins/:pluginId/bridge/stream/llm-chat
+```
+
+### Session State
+
+Sessions are stored in the `plugin_state` table with:
+- `scopeKind: "company"`, `scopeId: companyId`
+- `namespace: "llm-sessions"`
+- `stateKey: sessionId` (the plugin-facing UUID)
+- `valueJson: { adapterType, model, systemPrompt?, adapterSessionParams, status, createdAt }`
+
+### Model enumeration
+
+`ctx.llm.providers.models.list(adapterType)` returns the adapter's enumerated model list. Some adapters (e.g. self-hosted or custom providers) return an empty array — this means they do not enumerate their models, **not** that they have none. When the list is empty, any `model` string passed to `create()` is accepted. Plugins should fall back to a known-good default or expose a free-text model field when targeting such providers:
+
+```typescript
+const models = await ctx.llm.providers.models.list(adapterType);
+const model = models.length > 0
+  ? models[0].id            // use the first enumerated model
+  : userSuppliedModelString; // adapter doesn't enumerate — use caller's value
+```
+
+### Constraints
+
+- Works in `--print` (one-shot) mode: best for Q&A, summarization, classification.
+- Not designed for full agentic tool-use (use `ctx.agents.sessions` for that).
+- The synthetic agent ID used internally is not a real agent in the DB.
 
 ## 16. Event System
 

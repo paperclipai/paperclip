@@ -16,7 +16,9 @@
     "prebuild": "node ../../../../scripts/ensure-plugin-build-deps.mjs",
     "build": "tsc",
     "clean": "rm -rf dist",
-    "typecheck": "pnpm --filter @paperclipai/plugin-sdk build && tsc --noEmit"
+    "typecheck": "pnpm --filter @paperclipai/plugin-sdk build && tsc --noEmit",
+    "plugin:install": "pnpm -w paperclipai plugin install $PWD",
+    "plugin:uninstall": "pnpm -w paperclipai plugin uninstall paperclip.hello-world-example --force"
   },
   "dependencies": {
     "@paperclipai/plugin-sdk": "workspace:*"

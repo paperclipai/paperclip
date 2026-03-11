@@ -33,6 +33,10 @@ const ALL_CAPABILITIES: PluginCapability[] = [
   "agent.sessions.list",
   "agent.sessions.send",
   "agent.sessions.close",
+  "llm.providers.list",
+  "llm.sessions.create",
+  "llm.sessions.send",
+  "llm.sessions.close",
   "goals.read",
   "goals.create",
   "goals.update",
@@ -155,6 +159,28 @@ function createMockServices(): HostServices {
       create: vi.fn().mockResolvedValue({ id: "g1" }),
       update: vi.fn().mockResolvedValue({ id: "g1" }),
     },
+    llmSessions: {
+      listProviders: vi.fn().mockResolvedValue([{ id: "codex_local", label: "codex_local" }]),
+      listModels: vi.fn().mockResolvedValue([{ id: "gpt-5", label: "GPT-5" }]),
+      create: vi.fn().mockResolvedValue({
+        sessionId: "llm-1",
+        companyId: "c1",
+        adapterType: "codex_local",
+        model: "gpt-5",
+        status: "active",
+        createdAt: "2025-01-01T00:00:00Z",
+      }),
+      resume: vi.fn().mockResolvedValue({
+        sessionId: "llm-1",
+        companyId: "c1",
+        adapterType: "codex_local",
+        model: "gpt-5",
+        status: "active",
+        createdAt: "2025-01-01T00:00:00Z",
+      }),
+      send: vi.fn().mockResolvedValue({ content: "hello" }),
+      close: vi.fn().mockResolvedValue(undefined),
+    },
   };
 }
 
@@ -194,6 +220,7 @@ describe("createHostClientHandlers", () => {
         "issues.list", "issues.get", "issues.create", "issues.update", "issues.listComments", "issues.createComment",
         "agents.list", "agents.get", "agents.pause", "agents.resume", "agents.invoke",
         "agents.sessions.create", "agents.sessions.list", "agents.sessions.sendMessage", "agents.sessions.close",
+        "llm.providers.list", "llm.providers.models.list", "llm.sessions.create", "llm.sessions.resume", "llm.sessions.send", "llm.sessions.close",
         "goals.list", "goals.get", "goals.create", "goals.update",
       ];
 
@@ -1245,6 +1272,12 @@ describe("getRequiredCapability", () => {
     expect(getRequiredCapability("agents.sessions.list")).toBe("agent.sessions.list");
     expect(getRequiredCapability("agents.sessions.sendMessage")).toBe("agent.sessions.send");
     expect(getRequiredCapability("agents.sessions.close")).toBe("agent.sessions.close");
+    expect(getRequiredCapability("llm.providers.list")).toBe("llm.providers.list");
+    expect(getRequiredCapability("llm.providers.models.list")).toBe("llm.providers.list");
+    expect(getRequiredCapability("llm.sessions.create")).toBe("llm.sessions.create");
+    expect(getRequiredCapability("llm.sessions.resume")).toBe("llm.sessions.create");
+    expect(getRequiredCapability("llm.sessions.send")).toBe("llm.sessions.send");
+    expect(getRequiredCapability("llm.sessions.close")).toBe("llm.sessions.close");
     expect(getRequiredCapability("goals.list")).toBe("goals.read");
     expect(getRequiredCapability("goals.get")).toBe("goals.read");
     expect(getRequiredCapability("goals.create")).toBe("goals.create");
