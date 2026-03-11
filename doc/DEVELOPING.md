@@ -39,6 +39,10 @@ This starts:
 
 `pnpm dev` runs the server in watch mode and restarts on changes from workspace packages (including adapter packages). Use `pnpm dev:once` to run without file watching.
 
+Run only one `pnpm dev` per repository copy. The runner now uses a repo-local lock and will fail fast if another dev runner is active, to prevent embedded-Postgres corruption from parallel watchers.
+
+The server itself also locks the embedded PostgreSQL data directory (`<data-dir>/.paperclip-embedded-postgres.lock`). Starting a second server process against the same data dir now fails immediately with a clear lock-owner error instead of racing startup/shutdown.
+
 `pnpm dev` and `pnpm dev:once` enable a watchdog for the server process. If the server exits unexpectedly, the runner restarts it automatically with backoff. (`dev:once` still exits cleanly when the server exits with code `0`.) Tune behavior with environment variables:
 
 - `PAPERCLIP_DEV_WATCHDOG=false` to disable auto-restart
@@ -317,6 +321,19 @@ pnpm paperclipai dashboard get
 ```
 
 See full command reference in `doc/CLI.md`.
+
+## Harness Runner
+
+Run any command through the harness for observable, reproducible execution:
+
+```sh
+pnpm harness:run -- pnpm test:run
+pnpm harness:run -- --collect-artifacts -- pnpm test:run
+```
+
+Artifacts are saved to `.harness-artifacts/<run-id>/` with metadata, logs, and result JSON.
+
+See `doc/HARNESS_RUNBOOK.md` for full usage, CI artifact naming, and failure classification.
 
 ## OpenClaw Invite Onboarding Endpoints
 

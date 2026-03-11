@@ -46,3 +46,12 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-verify-${{ github.event.pull_request.head.sha }}
+          path: |
+            .harness-artifacts/
+          retention-days: 7

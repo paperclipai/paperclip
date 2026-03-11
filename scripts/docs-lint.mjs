@@ -18,6 +18,7 @@ const REQUIRED_DOCS = [
   'doc/RELIABILITY.md',
   'doc/SECURITY.md',
   'doc/HARNESS_SCORECARD.md',
+  'doc/HARNESS_RUNBOOK.md',
   'doc/DECISIONS/0001-harness-engineering-adoption.md',
 ];
 
