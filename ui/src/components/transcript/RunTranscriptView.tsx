@@ -711,7 +711,7 @@ function TranscriptCommandGroup({
           }
         }}
       >
-        <div className="mt-0.5 flex shrink-0 items-center">
+        <div className={cn("flex shrink-0 items-center", subtitle && "mt-0.5")}>
           {block.items.slice(0, Math.min(block.items.length, 3)).map((_, index) => (
             <span
               key={index}
@@ -729,7 +729,7 @@ function TranscriptCommandGroup({
           ))}
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+          <div className="text-[11px] font-semibold uppercase leading-none tracking-[0.18em] text-muted-foreground">
             {title}
           </div>
           {subtitle && (
@@ -745,7 +745,10 @@ function TranscriptCommandGroup({
         </div>
         <button
           type="button"
-          className="mt-0.5 inline-flex h-5 w-5 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+          className={cn(
+            "inline-flex h-5 w-5 items-center justify-center text-muted-foreground transition-colors hover:text-foreground",
+            subtitle && "mt-0.5",
+          )}
           onClick={(event) => {
             event.stopPropagation();
             setOpen((value) => !value);
