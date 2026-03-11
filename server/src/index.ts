@@ -498,11 +498,29 @@ export async function startServer(): Promise<StartedServer> {
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any);
   
-    // Reap orphaned runs at startup (no threshold -- runningProcesses is empty)
-    void heartbeat.reapOrphanedRuns().catch((err) => {
-      logger.error({ err }, "startup reap of orphaned heartbeat runs failed");
-    });
+    // Reap orphaned runs at startup (no threshold -- runningProcesses is empty).
+    // Must complete before setInterval to prevent timer ticks from coalescing into zombies.
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const result = await heartbeat.reapOrphanedRuns();
+        logger.info(
+          { reaped: result.reaped, runIds: result.runIds },
+          "startup reap of orphaned heartbeat runs complete",
+        );
+        break;
+      } catch (err) {
+        if (attempt < 2) {
+          logger.warn({ err, attempt }, "startup reap failed, retrying");
+        } else {
+          logger.error(
+            { err },
+            "startup reap of orphaned heartbeat runs failed after retry — periodic reaper will serve as degraded backstop",
+          );
+        }
+      }
+    }
   
+    // Timer ticks start AFTER startup reap completes
     setInterval(() => {
       void heartbeat
         .tickTimers(new Date())
