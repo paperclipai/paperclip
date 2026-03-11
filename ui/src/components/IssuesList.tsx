@@ -22,6 +22,84 @@ import { CircleDot, Plus, Filter, ArrowUpDown, Layers, Check, X, ChevronRight, L
 import { KanbanBoard } from "./KanbanBoard";
 import type { Issue } from "@paperclipai/shared";
 
+/* ── Subtask count helpers ── */
+
+export interface SubtaskCounts {
+  total: number;
+  done: number;
+}
+
+export function buildSubtaskCountMap(issues: Issue[]): Map<string, SubtaskCounts> {
+  const map = new Map<string, SubtaskCounts>();
+  for (const issue of issues) {
+    if (!issue.parentId) continue;
+    const existing = map.get(issue.parentId) ?? { total: 0, done: 0 };
+    existing.total += 1;
+    if (issue.status === "done" || issue.status === "cancelled") {
+      existing.done += 1;
+    }
+    map.set(issue.parentId, existing);
+  }
+  return map;
+}
+
+export function SubtaskBadge({ counts }: { counts: SubtaskCounts }) {
+  if (counts.total === 0) return null;
+  const allDone = counts.done === counts.total;
+  return (
+    <span
+      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium border ${
+        allDone
+          ? "border-green-500/40 text-green-600 dark:text-green-400 bg-green-500/10"
+          : "border-border text-muted-foreground bg-muted/40"
+      }`}
+      title={`${counts.done} of ${counts.total} subtasks done`}
+    >
+      <span className="leading-none">⊞</span>
+      <span>{counts.done}/{counts.total}</span>
+    </span>
+  );
+}
+
+/* ── Inline subtask list (collapsed by default, shown under parent row) ── */
+
+export function SubtaskList({
+  subtasks,
+  highlightIds,
+}: {
+  subtasks: Issue[];
+  highlightIds?: Set<string>;
+}) {
+  if (subtasks.length === 0) return null;
+  return (
+    <div className="ml-6 border-l border-border pl-3 py-1 space-y-0.5">
+      {subtasks.map((sub) => (
+        <Link
+          key={sub.id}
+          to={`/issues/${sub.identifier ?? sub.id}`}
+          className={`flex items-center gap-2 py-1 pr-2 text-xs rounded hover:bg-accent/50 no-underline text-inherit transition-colors ${
+            highlightIds?.has(sub.id) ? "ring-1 ring-blue-500/50 bg-blue-500/5" : ""
+          }`}
+        >
+          <StatusIcon status={sub.status} />
+          <span
+            className={`flex-1 truncate ${
+              sub.status === "done" || sub.status === "cancelled"
+                ? "line-through text-muted-foreground"
+                : ""
+            }`}
+          >
+            {sub.title}
+          </span>
+          <span className="text-muted-foreground font-mono shrink-0">
+            {sub.identifier ?? sub.id.slice(0, 8)}
+          </span>
+        </Link>
+      ))}
+    </div>
+  );
+}
+
 /* ── Helpers ── */
 
 const statusOrder = ["in_progress", "todo", "backlog", "in_review", "blocked", "done", "cancelled"];
@@ -94,6 +172,58 @@ function applyFilters(issues: Issue[], state: IssueViewState): Issue[] {
   if (state.assignees.length > 0) result = result.filter((i) => i.assigneeAgentId != null && state.assignees.includes(i.assigneeAgentId));
   if (state.labels.length > 0) result = result.filter((i) => (i.labelIds ?? []).some((id) => state.labels.includes(id)));
   return result;
+}
+
+// Returns { rootIssues, subtaskMap } where rootIssues are parents/top-level and
+// subtaskMap groups subtasks by parentId. When filters are active, a parent is
+// included if it matches OR if any of its subtasks match (filter-through logic).
+function buildRootAndSubtaskMap(
+  allIssues: Issue[],
+  filteredIssues: Issue[],
+): { rootIssues: Issue[]; subtaskMap: Map<string, Issue[]> } {
+  const filteredIds = new Set(filteredIssues.map((i) => i.id));
+
+  // Build subtask map from ALL issues (unfiltered) so subtasks appear under parent
+  const subtaskMap = new Map<string, Issue[]>();
+  const subtaskIds = new Set<string>();
+
+  for (const issue of allIssues) {
+    if (issue.parentId) {
+      subtaskIds.add(issue.id);
+      const list = subtaskMap.get(issue.parentId) ?? [];
+      list.push(issue);
+      subtaskMap.set(issue.parentId, list);
+    }
+  }
+
+  // Root issues: filtered issues that are NOT subtasks themselves
+  // Plus: parents of filtered subtasks (filter-through: subtask matches, include parent)
+  const rootSet = new Set<Issue>();
+  const rootById = new Map<string, Issue>();
+  for (const issue of allIssues) {
+    if (!issue.parentId) rootById.set(issue.id, issue);
+  }
+
+  for (const issue of filteredIssues) {
+    if (!subtaskIds.has(issue.id)) {
+      // It's a root issue that matched filter
+      rootSet.add(issue);
+    } else if (issue.parentId) {
+      // It's a subtask that matched filter — include its parent if available
+      const parent = rootById.get(issue.parentId);
+      if (parent) rootSet.add(parent);
+    }
+  }
+
+  // If no filters applied (filteredIssues === allIssues for root), just use all roots
+  // We detect this by checking if filteredIds covers all non-subtask issues
+  const allRootIssues = [...rootById.values()];
+  const allRootsFiltered = allRootIssues.every((r) => filteredIds.has(r.id));
+  const rootIssues = allRootsFiltered
+    ? allRootIssues // no filtering needed
+    : [...rootSet]; // filtered with filter-through
+
+  return { rootIssues, subtaskMap };
 }
 
 function sortIssues(issues: Issue[], state: IssueViewState): Issue[] {
@@ -226,6 +356,31 @@ export function IssuesList({
     return sortIssues(filteredByControls, viewState);
   }, [issues, searchedIssues, viewState, normalizedIssueSearch]);
 
+  // Separate root issues from subtasks; apply filter-through for subtask matches.
+  const { rootIssues, subtaskMap } = useMemo(
+    () => buildRootAndSubtaskMap(issues, filtered),
+    [issues, filtered]
+  );
+
+  // Track which subtask IDs matched the filter (for highlighting when expanded).
+  const highlightedSubtaskIds = useMemo(() => {
+    const hasFilter =
+      viewState.statuses.length > 0 ||
+      viewState.priorities.length > 0 ||
+      viewState.assignees.length > 0 ||
+      viewState.labels.length > 0 ||
+      normalizedIssueSearch.length > 0;
+    if (!hasFilter) return new Set<string>();
+    const filteredIds = new Set(filtered.map((i) => i.id));
+    const result = new Set<string>();
+    for (const id of filteredIds) {
+      // If it's a subtask (has a parent in subtaskMap values), add to highlight set
+      const issue = issues.find((i) => i.id === id);
+      if (issue?.parentId) result.add(id);
+    }
+    return result;
+  }, [filtered, issues, viewState, normalizedIssueSearch]);
+
   const { data: labels } = useQuery({
     queryKey: queryKeys.issues.labels(selectedCompanyId!),
     queryFn: () => issuesApi.listLabels(selectedCompanyId!),
@@ -234,30 +389,46 @@ export function IssuesList({
 
   const activeFilterCount = countActiveFilters(viewState);
 
+  // Build subtask count map from the full (unfiltered) issues list so parent tasks
+  // show counts even when children are filtered out.
+  const subtaskCountMap = useMemo(() => buildSubtaskCountMap(issues), [issues]);
+
+  // Collapse state per parent issue (for the subtask expand/collapse toggle)
+  const [expandedSubtasks, setExpandedSubtasks] = useState<Set<string>>(new Set());
+
+  const toggleSubtasks = useCallback((issueId: string) => {
+    setExpandedSubtasks((prev) => {
+      const next = new Set(prev);
+      if (next.has(issueId)) next.delete(issueId);
+      else next.add(issueId);
+      return next;
+    });
+  }, []);
+
   const groupedContent = useMemo(() => {
     if (viewState.groupBy === "none") {
-      return [{ key: "__all", label: null as string | null, items: filtered }];
+      return [{ key: "__all", label: null as string | null, items: rootIssues }];
     }
     if (viewState.groupBy === "status") {
-      const groups = groupBy(filtered, (i) => i.status);
+      const groups = groupBy(rootIssues, (i) => i.status);
       return statusOrder
         .filter((s) => groups[s]?.length)
         .map((s) => ({ key: s, label: statusLabel(s), items: groups[s]! }));
     }
     if (viewState.groupBy === "priority") {
-      const groups = groupBy(filtered, (i) => i.priority);
+      const groups = groupBy(rootIssues, (i) => i.priority);
       return priorityOrder
         .filter((p) => groups[p]?.length)
         .map((p) => ({ key: p, label: statusLabel(p), items: groups[p]! }));
     }
     // assignee
-    const groups = groupBy(filtered, (i) => i.assigneeAgentId ?? "__unassigned");
+    const groups = groupBy(rootIssues, (i) => i.assigneeAgentId ?? "__unassigned");
     return Object.keys(groups).map((key) => ({
       key,
       label: key === "__unassigned" ? "Unassigned" : (agentName(key) ?? key.slice(0, 8)),
       items: groups[key]!,
     }));
-  }, [filtered, viewState.groupBy, agents]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [rootIssues, viewState.groupBy, agents]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const newIssueDefaults = (groupKey?: string) => {
     const defaults: Record<string, string> = {};
@@ -539,7 +710,7 @@ export function IssuesList({
       {isLoading && <PageSkeleton variant="issues-list" />}
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
-      {!isLoading && filtered.length === 0 && viewState.viewMode === "list" && (
+      {!isLoading && rootIssues.length === 0 && viewState.viewMode === "list" && (
         <EmptyState
           icon={CircleDot}
           message="No issues match the current filters or search."
@@ -550,9 +721,12 @@ export function IssuesList({
 
       {viewState.viewMode === "board" ? (
         <KanbanBoard
-          issues={filtered}
+          issues={rootIssues}
+          allIssues={issues}
           agents={agents}
           liveIssueIds={liveIssueIds}
+          subtaskCountMap={subtaskCountMap}
+          subtaskMap={subtaskMap}
           onUpdateIssue={onUpdateIssue}
         />
       ) : (
@@ -587,11 +761,15 @@ export function IssuesList({
               </div>
             )}
             <CollapsibleContent>
-              {group.items.map((issue) => (
+              {group.items.map((issue) => {
+                const issueSubtasks = subtaskMap.get(issue.id) ?? [];
+                const hasSubtasks = issueSubtasks.length > 0;
+                const isExpanded = expandedSubtasks.has(issue.id);
+                return (
+                <div key={issue.id} className="border-b border-border last:border-b-0">
                 <Link
-                  key={issue.id}
                   to={`/issues/${issue.identifier ?? issue.id}`}
-                  className="flex items-start gap-2 py-2.5 pl-2 pr-3 text-sm border-b border-border last:border-b-0 cursor-pointer hover:bg-accent/50 transition-colors no-underline text-inherit sm:items-center sm:py-2 sm:pl-1"
+                  className="flex items-start gap-2 py-2.5 pl-2 pr-3 text-sm cursor-pointer hover:bg-accent/50 transition-colors no-underline text-inherit sm:items-center sm:py-2 sm:pl-1"
                 >
                   {/* Status icon - left column on mobile, inline on desktop */}
                   <span className="shrink-0 pt-px sm:hidden" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
@@ -622,6 +800,10 @@ export function IssuesList({
                       <span className="text-xs text-muted-foreground font-mono shrink-0">
                         {issue.identifier ?? issue.id.slice(0, 8)}
                       </span>
+                      {(() => {
+                        const counts = subtaskCountMap.get(issue.id);
+                        return counts ? <SubtaskBadge counts={counts} /> : null;
+                      })()}
                       {liveIssueIds?.has(issue.id) && (
                         <span className="inline-flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2 py-0.5 rounded-full bg-blue-500/10">
                           <span className="relative flex h-2 w-2">
@@ -743,7 +925,27 @@ export function IssuesList({
                     </span>
                   </span>
                 </Link>
-              ))}
+                {hasSubtasks && (
+                  <div>
+                    <button
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors w-full text-left rounded-b-sm"
+                      onClick={() => toggleSubtasks(issue.id)}
+                    >
+                      <ChevronRight className={`h-3 w-3 shrink-0 transition-transform duration-150 ${isExpanded ? "rotate-90" : ""}`} />
+                      <span className="font-medium">{isExpanded ? "Hide subtasks" : `Show subtasks`}</span>
+                      <span className="text-muted-foreground/60">({issueSubtasks.length})</span>
+                    </button>
+                    {isExpanded && (
+                      <SubtaskList
+                        subtasks={issueSubtasks}
+                        highlightIds={highlightedSubtaskIds}
+                      />
+                    )}
+                  </div>
+                )}
+                </div>
+                );
+              })}
             </CollapsibleContent>
           </Collapsible>
         ))

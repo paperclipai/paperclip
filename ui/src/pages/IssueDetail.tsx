@@ -10,6 +10,7 @@ import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { usePanel } from "../context/PanelContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useDialog } from "../context/DialogContext";
 import { queryKeys } from "../lib/queryKeys";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatTokens } from "../lib/utils";
@@ -40,6 +41,7 @@ import {
   MessageSquare,
   MoreHorizontal,
   Paperclip,
+  Plus,
   SlidersHorizontal,
   Trash2,
 } from "lucide-react";
@@ -148,10 +150,14 @@ export function IssueDetail() {
   const { selectedCompanyId } = useCompany();
   const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { openNewIssue } = useDialog();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [moreOpen, setMoreOpen] = useState(false);
   const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
+  const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false);
+  const [isDescriptionOverflowing, setIsDescriptionOverflowing] = useState(false);
+  const descriptionRef = useRef<HTMLDivElement>(null);
   const [detailTab, setDetailTab] = useState("comments");
   const [secondaryOpen, setSecondaryOpen] = useState({
     approvals: false,
@@ -288,6 +294,14 @@ export function IssueDetail() {
       .filter((i) => i.parentId === issue.id)
       .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
   }, [allIssues, issue]);
+
+  const childIssueCounts = useMemo(() => {
+    if (childIssues.length === 0) return null;
+    const done = childIssues.filter(
+      (c) => c.status === "done" || c.status === "cancelled"
+    ).length;
+    return { total: childIssues.length, done };
+  }, [childIssues]);
 
   const commentReassignOptions = useMemo(() => {
     const options: Array<{ id: string; label: string; searchText?: string }> = [];
@@ -496,6 +510,17 @@ export function IssueDetail() {
     return () => closePanel();
   }, [issue]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Reset description expanded state when navigating between issues
+  useEffect(() => {
+    setIsDescriptionExpanded(false);
+  }, [issueId]);
+
+  // Detect whether description actually overflows the collapsed height
+  useEffect(() => {
+    const el = descriptionRef.current;
+    if (el) setIsDescriptionOverflowing(el.scrollHeight > el.clientHeight);
+  }, [issue?.description]);
+
   if (isLoading) return <p className="text-sm text-muted-foreground">Loading...</p>;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
   if (!issue) return null;
@@ -657,19 +682,40 @@ export function IssueDetail() {
           className="text-xl font-bold"
         />
 
-        <InlineEditor
-          value={issue.description ?? ""}
-          onSave={(description) => updateIssue.mutate({ description })}
-          as="p"
-          className="text-sm text-muted-foreground"
-          placeholder="Add a description..."
-          multiline
-          mentions={mentionOptions}
-          imageUploadHandler={async (file) => {
-            const attachment = await uploadAttachment.mutateAsync(file);
-            return attachment.contentPath;
-          }}
-        />
+        <Collapsible open={isDescriptionExpanded} onOpenChange={setIsDescriptionExpanded}>
+          <div
+            ref={descriptionRef}
+            className={cn(
+              "overflow-hidden transition-all duration-200",
+              isDescriptionExpanded ? "max-h-screen overflow-y-auto" : "max-h-32",
+            )}
+          >
+            <InlineEditor
+              value={issue.description ?? ""}
+              onSave={(description) => updateIssue.mutate({ description })}
+              as="p"
+              className="text-sm text-muted-foreground"
+              placeholder="Add a description..."
+              multiline
+              mentions={mentionOptions}
+              imageUploadHandler={async (file) => {
+                const attachment = await uploadAttachment.mutateAsync(file);
+                return attachment.contentPath;
+              }}
+            />
+          </div>
+          {isDescriptionOverflowing && (
+            <CollapsibleTrigger className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors mt-1">
+              <ChevronDown
+                className={cn(
+                  "h-3.5 w-3.5 transition-transform duration-200",
+                  isDescriptionExpanded && "rotate-180",
+                )}
+              />
+              {isDescriptionExpanded ? "Hide description" : "Show description"}
+            </CollapsibleTrigger>
+          )}
+        </Collapsible>
       </div>
 
       <div className="space-y-3">
@@ -747,20 +793,34 @@ export function IssueDetail() {
       <Separator />
 
       <Tabs value={detailTab} onValueChange={setDetailTab} className="space-y-3">
-        <TabsList variant="line" className="w-full justify-start gap-1">
-          <TabsTrigger value="comments" className="gap-1.5">
-            <MessageSquare className="h-3.5 w-3.5" />
-            Comments
-          </TabsTrigger>
-          <TabsTrigger value="subissues" className="gap-1.5">
-            <ListTree className="h-3.5 w-3.5" />
-            Sub-issues
-          </TabsTrigger>
-          <TabsTrigger value="activity" className="gap-1.5">
-            <ActivityIcon className="h-3.5 w-3.5" />
-            Activity
-          </TabsTrigger>
-        </TabsList>
+        <div className="overflow-x-auto scrollbar-none">
+          <TabsList variant="line" className="w-max min-w-full justify-start gap-1 flex-nowrap">
+            <TabsTrigger value="comments" className="gap-1.5 shrink-0">
+              <MessageSquare className="h-3.5 w-3.5" />
+              Comments
+            </TabsTrigger>
+            <TabsTrigger value="subissues" className="gap-1.5 shrink-0">
+              <ListTree className="h-3.5 w-3.5" />
+              Sub-issues
+              {childIssueCounts && (
+                <span
+                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium border ${
+                    childIssueCounts.done === childIssueCounts.total
+                      ? "border-green-500/40 text-green-600 dark:text-green-400 bg-green-500/10"
+                      : "border-border text-muted-foreground bg-muted/40"
+                  }`}
+                  title={`${childIssueCounts.done} of ${childIssueCounts.total} sub-issues done`}
+                >
+                  ⊞ {childIssueCounts.done}/{childIssueCounts.total}
+                </span>
+              )}
+            </TabsTrigger>
+            <TabsTrigger value="activity" className="gap-1.5 shrink-0">
+              <ActivityIcon className="h-3.5 w-3.5" />
+              Activity
+            </TabsTrigger>
+          </TabsList>
+        </div>
 
         <TabsContent value="comments">
           <CommentThread
@@ -792,34 +852,74 @@ export function IssueDetail() {
         </TabsContent>
 
         <TabsContent value="subissues">
-          {childIssues.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No sub-issues.</p>
-          ) : (
-            <div className="border border-border rounded-lg divide-y divide-border">
-              {childIssues.map((child) => (
-                <Link
-                  key={child.id}
-                  to={`/issues/${child.identifier ?? child.id}`}
-                  className="flex items-center justify-between px-3 py-2 text-sm hover:bg-accent/20 transition-colors"
-                >
-                  <div className="flex items-center gap-2 min-w-0">
-                    <StatusIcon status={child.status} />
-                    <PriorityIcon priority={child.priority} />
-                    <span className="font-mono text-muted-foreground shrink-0">
-                      {child.identifier ?? child.id.slice(0, 8)}
+          <div className="space-y-2">
+            {childIssues.length === 0 ? (
+              <p className="text-xs text-muted-foreground">No sub-issues.</p>
+            ) : (
+              <div className="space-y-2">
+                {childIssueCounts && (
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <span className="shrink-0">
+                      {childIssueCounts.done} of {childIssueCounts.total} completed
                     </span>
-                    <span className="truncate">{child.title}</span>
+                    <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all ${
+                          childIssueCounts.done === childIssueCounts.total
+                            ? "bg-green-500"
+                            : "bg-primary"
+                        }`}
+                        style={{
+                          width: `${(childIssueCounts.done / childIssueCounts.total) * 100}%`,
+                        }}
+                      />
+                    </div>
                   </div>
-                  {child.assigneeAgentId && (() => {
-                    const name = agentMap.get(child.assigneeAgentId)?.name;
-                    return name
-                      ? <Identity name={name} size="sm" />
-                      : <span className="text-muted-foreground font-mono">{child.assigneeAgentId.slice(0, 8)}</span>;
-                  })()}
-                </Link>
-              ))}
-            </div>
-          )}
+                )}
+                <div className="border border-border rounded-lg divide-y divide-border">
+                  {childIssues.map((child) => (
+                    <Link
+                      key={child.id}
+                      to={`/issues/${child.identifier ?? child.id}`}
+                      className="flex items-center justify-between px-3 py-2 text-sm hover:bg-accent/20 transition-colors"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <StatusIcon status={child.status} />
+                        <PriorityIcon priority={child.priority} />
+                        <span className="font-mono text-muted-foreground shrink-0">
+                          {child.identifier ?? child.id.slice(0, 8)}
+                        </span>
+                        <span className="truncate">{child.title}</span>
+                      </div>
+                      {child.assigneeAgentId && (() => {
+                        const name = agentMap.get(child.assigneeAgentId)?.name;
+                        return name
+                          ? <Identity name={name} size="sm" />
+                          : <span className="text-muted-foreground font-mono">{child.assigneeAgentId.slice(0, 8)}</span>;
+                      })()}
+                    </Link>
+                  ))}
+                </div>
+              </div>
+            )}
+            {!issue.parentId && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-full text-muted-foreground"
+                onClick={() =>
+                  openNewIssue({
+                    parentId: issue.id,
+                    ...(issue.projectId ? { projectId: issue.projectId } : {}),
+                    ...(issue.goalId ? { goalId: issue.goalId } : {}),
+                  })
+                }
+              >
+                <Plus className="h-3.5 w-3.5 mr-1.5" />
+                Create sub-issue
+              </Button>
+            )}
+          </div>
         </TabsContent>
 
         <TabsContent value="activity">
