@@ -324,6 +324,11 @@ export async function runChildProcess(
               }, opts.timeoutSec * 1000)
             : null;
 
+        // Set encoding so Node uses StringDecoder internally, which correctly
+        // handles multi-byte UTF-8 characters split across chunk boundaries.
+        child.stdout?.setEncoding("utf8");
+        child.stderr?.setEncoding("utf8");
+
         child.stdout?.on("data", (chunk: unknown) => {
           const text = String(chunk);
           stdout = appendWithCap(stdout, text);
