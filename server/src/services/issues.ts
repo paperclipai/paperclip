@@ -16,7 +16,7 @@ import {
   projectWorkspaces,
   projects,
 } from "@paperclipai/db";
-import { extractProjectMentionIds } from "@paperclipai/shared";
+import { extractProjectMentionIds, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
@@ -65,6 +65,12 @@ export interface IssueFilters {
   q?: string;
 }
 
+interface MentionableAgentRow {
+  id: string;
+  name: string;
+  urlKey?: string | null;
+}
+
 type IssueRow = typeof issues.$inferSelect;
 type IssueLabelRow = typeof labels.$inferSelect;
 type IssueActiveRunRow = {
@@ -107,6 +113,31 @@ const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancell
 
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
+}
+
+export function findMentionedAgentIds(
+  body: string,
+  rows: MentionableAgentRow[],
+): string[] {
+  const re = /\B@([^\s@,!?.]+)/g;
+  const tokens = new Set<string>();
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(body)) !== null) {
+    const normalized = normalizeAgentUrlKey(match[1]);
+    if (normalized) tokens.add(normalized);
+  }
+  if (tokens.size === 0) return [];
+
+  return rows
+    .filter((agent) => {
+      const normalizedName = normalizeAgentUrlKey(agent.name);
+      const normalizedUrlKey = normalizeAgentUrlKey(agent.urlKey);
+      return (
+        (normalizedName && tokens.has(normalizedName)) ||
+        (normalizedUrlKey && tokens.has(normalizedUrlKey))
+      );
+    })
+    .map((agent) => agent.id);
 }
 
 function touchedByUserCondition(companyId: string, userId: string) {
@@ -1265,14 +1296,9 @@ export function issueService(db: Db) {
       }),
 
     findMentionedAgents: async (companyId: string, body: string) => {
-      const re = /\B@([^\s@,!?.]+)/g;
-      const tokens = new Set<string>();
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(body)) !== null) tokens.add(m[1].toLowerCase());
-      if (tokens.size === 0) return [];
       const rows = await db.select({ id: agents.id, name: agents.name })
         .from(agents).where(eq(agents.companyId, companyId));
-      return rows.filter(a => tokens.has(a.name.toLowerCase())).map(a => a.id);
+      return findMentionedAgentIds(body, rows);
     },
 
     findMentionedProjectIds: async (issueId: string) => {
