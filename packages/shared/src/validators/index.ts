@@ -49,16 +49,19 @@ export {
   updateProjectSchema,
   createProjectWorkspaceSchema,
   updateProjectWorkspaceSchema,
+  projectExecutionWorkspacePolicySchema,
   type CreateProject,
   type UpdateProject,
   type CreateProjectWorkspace,
   type UpdateProjectWorkspace,
+  type ProjectExecutionWorkspacePolicy,
 } from "./project.js";
 
 export {
   createIssueSchema,
   createIssueLabelSchema,
   updateIssueSchema,
+  issueExecutionWorkspaceSettingsSchema,
   checkoutIssueSchema,
   addIssueCommentSchema,
   linkIssueApprovalSchema,
@@ -66,6 +69,7 @@ export {
   type CreateIssue,
   type CreateIssueLabel,
   type UpdateIssue,
+  type IssueExecutionWorkspaceSettings,
   type CheckoutIssue,
   type AddIssueComment,
   type LinkIssueApproval,

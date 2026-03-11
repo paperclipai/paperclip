@@ -6,6 +6,10 @@ import {
   DraftInput,
   help,
 } from "../../components/agent-config-primitives";
+import {
+  PayloadTemplateJsonField,
+  RuntimeServicesJsonField,
+} from "../runtime-json-fields";
 
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
@@ -111,6 +115,22 @@ export function OpenClawGatewayConfigFields({
           placeholder="ws://127.0.0.1:18789"
         />
       </Field>
+
+      <PayloadTemplateJsonField
+        isCreate={isCreate}
+        values={values}
+        set={set}
+        config={config}
+        mark={mark}
+      />
+
+      <RuntimeServicesJsonField
+        isCreate={isCreate}
+        values={values}
+        set={set}
+        config={config}
+        mark={mark}
+      />
 
       {!isCreate && (
         <>

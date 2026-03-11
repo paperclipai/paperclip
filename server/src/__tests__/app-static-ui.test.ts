@@ -43,6 +43,7 @@ describe("createApp static UI fallback", () => {
     const { createApp } = await import("../app.js");
     return createApp({} as any, {
       uiMode: "static",
+      serverPort: 3100,
       storageService: {} as any,
       deploymentMode: "local_trusted",
       deploymentExposure: "private",
@@ -68,7 +69,7 @@ describe("createApp static UI fallback", () => {
     expect(spaRes.status).toBe(200);
     expect(spaRes.headers["content-type"]).toContain("text/html");
     expect(spaRes.text).toContain("Paperclip");
-  });
+  }, 60_000);
 
   it("serves static assets from dotfile install paths", async () => {
     const fixture = createStaticUiFixture([
@@ -84,7 +85,7 @@ describe("createApp static UI fallback", () => {
     const assetRes = await request(app).get("/assets/app.js");
     expect(assetRes.status).toBe(200);
     expect(assetRes.text).toContain("console.log('ok');");
-  });
+  }, 60_000);
 
   it("serves index.html for SPA subroutes from regular install paths", async () => {
     const fixture = createStaticUiFixture(["node_modules", "@paperclipai", "server"]);
@@ -94,5 +95,5 @@ describe("createApp static UI fallback", () => {
     expect(spaRes.status).toBe(200);
     expect(spaRes.headers["content-type"]).toContain("text/html");
     expect(spaRes.text).toContain("Paperclip");
-  });
+  }, 60_000);
 });

@@ -441,7 +441,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     "promptTemplate",
                     String(config.promptTemplate ?? ""),
                   )}
-                  onChange={(v) => mark("adapterConfig", "promptTemplate", v || undefined)}
+                  onChange={(v) => mark("adapterConfig", "promptTemplate", v ?? "")}
                   placeholder="You are agent {{ agent.name }}. Your role is {{ agent.role }}..."
                   contentClassName="min-h-[88px] text-sm font-mono"
                   imageUploadHandler={async (file) => {

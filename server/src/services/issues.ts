@@ -18,6 +18,10 @@ import {
 } from "@paperclipai/db";
 import { extractProjectMentionIds } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import {
+  defaultIssueExecutionWorkspaceSettingsForProject,
+  parseProjectExecutionWorkspacePolicy,
+} from "./execution-workspace-policy.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 
@@ -53,6 +57,7 @@ export interface IssueFilters {
   touchedByUserId?: string;
   unreadForUserId?: string;
   projectId?: string;
+  parentId?: string;
   labelId?: string;
   q?: string;
 }
@@ -458,6 +463,7 @@ export function issueService(db: Db) {
         conditions.push(unreadForUserCondition(companyId, unreadForUserId));
       }
       if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
+      if (filters?.parentId) conditions.push(eq(issues.parentId, filters.parentId));
       if (filters?.labelId) {
         const labeledIssueIds = await db
           .select({ issueId: issueLabels.issueId })
@@ -635,6 +641,19 @@ export function issueService(db: Db) {
         throw unprocessable("in_progress issues require an assignee");
       }
       return db.transaction(async (tx) => {
+        let executionWorkspaceSettings =
+          (issueData.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? null;
+        if (executionWorkspaceSettings == null && issueData.projectId) {
+          const project = await tx
+            .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+            .from(projects)
+            .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, companyId)))
+            .then((rows) => rows[0] ?? null);
+          executionWorkspaceSettings =
+            defaultIssueExecutionWorkspaceSettingsForProject(
+              parseProjectExecutionWorkspacePolicy(project?.executionWorkspacePolicy),
+            ) as Record<string, unknown> | null;
+        }
         const [company] = await tx
           .update(companies)
           .set({ issueCounter: sql`${companies.issueCounter} + 1` })
@@ -644,7 +663,13 @@ export function issueService(db: Db) {
         const issueNumber = company.issueCounter;
         const identifier = `${company.issuePrefix}-${issueNumber}`;
 
-        const values = { ...issueData, companyId, issueNumber, identifier } as typeof issues.$inferInsert;
+        const values = {
+          ...issueData,
+          ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
+          companyId,
+          issueNumber,
+          identifier,
+        } as typeof issues.$inferInsert;
         if (values.status === "in_progress" && !values.startedAt) {
           values.startedAt = new Date();
         }

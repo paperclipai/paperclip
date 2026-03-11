@@ -23,6 +23,7 @@ const logFile = path.join(logDir, "server.log");
 const sharedOpts = {
   translateTime: "HH:MM:ss",
   ignore: "pid,hostname",
+  singleLine: true,
 };
 
 export const logger = pino({

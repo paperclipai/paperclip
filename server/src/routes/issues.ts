@@ -26,15 +26,7 @@ import { logger } from "../middleware/logger.js";
 import { forbidden, HttpError, unauthorized } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
-
-const MAX_ATTACHMENT_BYTES = Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
-const ALLOWED_ATTACHMENT_CONTENT_TYPES = new Set([
-  "image/png",
-  "image/jpeg",
-  "image/jpg",
-  "image/webp",
-  "image/gif",
-]);
+import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 
 export function issueRoutes(db: Db, storage: StorageService) {
   const router = Router();
@@ -230,6 +222,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       touchedByUserId,
       unreadForUserId,
       projectId: req.query.projectId as string | undefined,
+      parentId: req.query.parentId as string | undefined,
       labelId: req.query.labelId as string | undefined,
       q: req.query.q as string | undefined,
     });
@@ -575,6 +568,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
 
     const assigneeChanged = assigneeWillChange;
+    const statusChangedFromBacklog =
+      existing.status === "backlog" &&
+      issue.status !== "backlog" &&
+      req.body.status !== undefined;
 
     // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
     void (async () => {
@@ -589,6 +586,18 @@ export function issueRoutes(db: Db, storage: StorageService) {
           requestedByActorType: actor.actorType,
           requestedByActorId: actor.actorId,
           contextSnapshot: { issueId: issue.id, source: "issue.update" },
+        });
+      }
+
+      if (!assigneeChanged && statusChangedFromBacklog && issue.assigneeAgentId) {
+        wakeups.set(issue.assigneeAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_status_changed",
+          payload: { issueId: issue.id, mutation: "update" },
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: { issueId: issue.id, source: "issue.status_change" },
         });
       }
 
@@ -1051,7 +1060,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     const contentType = (file.mimetype || "").toLowerCase();
-    if (!ALLOWED_ATTACHMENT_CONTENT_TYPES.has(contentType)) {
+    if (!isAllowedContentType(contentType)) {
       res.status(422).json({ error: `Unsupported attachment type: ${contentType || "unknown"}` });
       return;
     }

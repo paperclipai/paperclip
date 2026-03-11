@@ -5,22 +5,14 @@ import { createAssetImageMetadataSchema } from "@paperclipai/shared";
 import type { StorageService } from "../storage/types.js";
 import { assetService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
-
-const MAX_ASSET_IMAGE_BYTES = Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
-const ALLOWED_IMAGE_CONTENT_TYPES = new Set([
-  "image/png",
-  "image/jpeg",
-  "image/jpg",
-  "image/webp",
-  "image/gif",
-]);
+import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 
 export function assetRoutes(db: Db, storage: StorageService) {
   const router = Router();
   const svc = assetService(db);
   const upload = multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: MAX_ASSET_IMAGE_BYTES, files: 1 },
+    limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
   });
 
   async function runSingleFileUpload(req: Request, res: Response) {
@@ -41,7 +33,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
     } catch (err) {
       if (err instanceof multer.MulterError) {
         if (err.code === "LIMIT_FILE_SIZE") {
-          res.status(422).json({ error: `Image exceeds ${MAX_ASSET_IMAGE_BYTES} bytes` });
+          res.status(422).json({ error: `File exceeds ${MAX_ATTACHMENT_BYTES} bytes` });
           return;
         }
         res.status(400).json({ error: err.message });
@@ -57,8 +49,8 @@ export function assetRoutes(db: Db, storage: StorageService) {
     }
 
     const contentType = (file.mimetype || "").toLowerCase();
-    if (!ALLOWED_IMAGE_CONTENT_TYPES.has(contentType)) {
-      res.status(422).json({ error: `Unsupported image type: ${contentType || "unknown"}` });
+    if (!isAllowedContentType(contentType)) {
+      res.status(422).json({ error: `Unsupported file type: ${contentType || "unknown"}` });
       return;
     }
     if (file.buffer.length <= 0) {
