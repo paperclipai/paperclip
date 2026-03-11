@@ -1,4 +1,4 @@
-# HEARTBEAT.md -- Founding Engineer Heartbeat Checklist
+# HEARTBEAT.md -- QA Engineer Heartbeat Checklist
 
 Run this checklist on every heartbeat.
 
@@ -20,20 +20,26 @@ Run this checklist on every heartbeat.
 - Always checkout before working: `POST /api/issues/{id}/checkout`.
 - Never retry a 409 -- that task belongs to someone else.
 - Read the issue, its ancestors, and comments to understand full context.
-- **Recall before coding**: run `memory_recall` (LanceDB `custom:firstlot`) + `search_memory_facts` (Graphiti `cgt-app`, `hmrc-forms`) to surface past patterns relevant to the task.
-- **Before touching any code, create a git worktree** using the `paperclip-git-workflow` skill.
-  Never work directly on main/master. All code changes happen in an isolated worktree.
+- **Recall before testing**: run `memory_recall` (LanceDB `custom:firstlot-qa`) + `search_memory_facts` (Graphiti `cgt-app`, `hmrc-forms`) to surface past test patterns and known issues.
+- Determine your mode from the task title (see SOUL.md for details).
 - Perform work following the workflow in SOUL.md.
 - Post structured results when done.
 
-## 4. Implementation Standards
+## 4. Work Standards
 
-- Create a worktree first -- no exceptions
-- Root cause analysis before writing code
-- Minimal, focused fixes -- change what needs to change
-- Test evidence for every fix
-- Clear task comments with reproduction steps and evidence
-- Commit with conventional messages, push, and create a PR when done
+Two modes based on task title:
+
+### Mode 1: Acceptance Criteria (title contains "acceptance criteria")
+- Read architect's findings and original issue for full context
+- Write BDD Given/When/Then acceptance criteria
+- Cover: happy path, edge cases, regression checks
+
+### Mode 2: Verification (default)
+- Reproduction: Can you reproduce the original bug?
+- Fix confirmation: Does the fix actually resolve the issue?
+- Acceptance criteria: If criteria exist from a sibling subtask, verify against each one
+- Edge cases: Are boundary conditions handled?
+- Regressions: Does the fix break adjacent functionality?
 
 ## 5. Communication
 
@@ -44,12 +50,12 @@ Run this checklist on every heartbeat.
 ## 6. Fact Extraction
 
 **Before starting any task**, recall relevant context:
-1. `memory_recall` (LanceDB) — search `custom:firstlot` for past patterns, known pitfalls, architecture decisions
+1. `memory_recall` (LanceDB) — search `custom:firstlot-qa` + `custom:firstlot` for past test patterns, known issues, test commands
 2. `search_nodes` + `search_memory_facts` (Graphiti) — search with `group_ids: ["cgt-app", "hmrc-forms"]` for architectural knowledge
 
 **After completing work**, store durable findings:
-3. `memory_store` (LanceDB) — store to `custom:firstlot` scope (patterns, decisions, pitfalls)
-4. `add_memory` (Graphiti) — store engineering discoveries to group `cgt-app`
+3. `memory_store` (LanceDB) — store to `custom:firstlot-qa` scope (test commands, results, troubleshooting steps)
+4. `add_memory` (Graphiti) — store QA discoveries to group `cgt-app`
 
 ## 7. Exit
 
