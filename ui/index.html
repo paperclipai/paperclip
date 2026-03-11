@@ -19,12 +19,20 @@
     <script>
       (() => {
         const key = "paperclip.theme";
+        const localeKey = "paperclip.locale";
         const darkThemeColor = "#18181b";
         const lightThemeColor = "#ffffff";
         try {
           const stored = window.localStorage.getItem(key);
           const theme = stored === "light" || stored === "dark" ? stored : "dark";
+          const localeStored = window.localStorage.getItem(localeKey);
+          const locale = localeStored === "ko" || localeStored === "en"
+            ? localeStored
+            : navigator.language.toLowerCase().startsWith("ko")
+              ? "ko"
+              : "en";
           const isDark = theme === "dark";
+          document.documentElement.lang = locale;
           document.documentElement.classList.toggle("dark", isDark);
           document.documentElement.style.colorScheme = isDark ? "dark" : "light";
           const themeColorMeta = document.querySelector('meta[name="theme-color"]');
