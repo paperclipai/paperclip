@@ -1,7 +1,17 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { NavLink, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronRight, Plus } from "lucide-react";
+import {
+  DndContext,
+  PointerSensor,
+  closestCenter,
+  type DragEndEvent,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
+import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useSidebar } from "../context/SidebarContext";
@@ -10,6 +20,7 @@ import { heartbeatsApi } from "../api/heartbeats";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { AgentIcon } from "./AgentIconPicker";
+import { useAgentOrder } from "../hooks/useAgentOrder";
 import {
   Collapsible,
   CollapsibleContent,
@@ -17,25 +28,68 @@ import {
 } from "@/components/ui/collapsible";
 import type { Agent } from "@paperclipai/shared";
 
-/** BFS sort: roots first (no reportsTo), then their direct reports, etc. */
-function sortByHierarchy(agents: Agent[]): Agent[] {
-  const byId = new Map(agents.map((a) => [a.id, a]));
-  const childrenOf = new Map<string | null, Agent[]>();
-  for (const a of agents) {
-    const parent = a.reportsTo && byId.has(a.reportsTo) ? a.reportsTo : null;
-    const list = childrenOf.get(parent) ?? [];
-    list.push(a);
-    childrenOf.set(parent, list);
-  }
-  const sorted: Agent[] = [];
-  const queue = childrenOf.get(null) ?? [];
-  while (queue.length > 0) {
-    const agent = queue.shift()!;
-    sorted.push(agent);
-    const children = childrenOf.get(agent.id);
-    if (children) queue.push(...children);
-  }
-  return sorted;
+function SortableAgentItem({
+  activeAgentId,
+  agent,
+  isMobile,
+  runCount,
+  setSidebarOpen,
+}: {
+  activeAgentId: string | null;
+  agent: Agent;
+  isMobile: boolean;
+  runCount: number;
+  setSidebarOpen: (open: boolean) => void;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: agent.id });
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{
+        transform: CSS.Transform.toString(transform),
+        transition,
+        zIndex: isDragging ? 10 : undefined,
+      }}
+      className={cn(isDragging && "opacity-80")}
+      {...attributes}
+      {...listeners}
+    >
+      <NavLink
+        to={agentUrl(agent)}
+        onClick={() => {
+          if (isMobile) setSidebarOpen(false);
+        }}
+        className={cn(
+          "flex items-center gap-2.5 px-3 py-1.5 text-[13px] font-medium transition-colors",
+          activeAgentId === agentRouteRef(agent)
+            ? "bg-accent text-foreground"
+            : "text-foreground/80 hover:bg-accent/50 hover:text-foreground"
+        )}
+      >
+        <AgentIcon icon={agent.icon} className="shrink-0 h-3.5 w-3.5 text-muted-foreground" />
+        <span className="flex-1 truncate">{agent.name}</span>
+        {runCount > 0 && (
+          <span className="ml-auto flex items-center gap-1.5 shrink-0">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+            </span>
+            <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">
+              {runCount} live
+            </span>
+          </span>
+        )}
+      </NavLink>
+    </div>
+  );
 }
 
 export function SidebarAgents() {
@@ -67,14 +121,37 @@ export function SidebarAgents() {
   }, [liveRuns]);
 
   const visibleAgents = useMemo(() => {
-    const filtered = (agents ?? []).filter(
-      (a: Agent) => a.status !== "terminated"
-    );
-    return sortByHierarchy(filtered);
+    return (agents ?? []).filter((a: Agent) => a.status !== "terminated");
   }, [agents]);
+
+  const { orderedAgents, persistOrder } = useAgentOrder({
+    agents: visibleAgents,
+    companyId: selectedCompanyId,
+  });
 
   const agentMatch = location.pathname.match(/^\/(?:[^/]+\/)?agents\/([^/]+)/);
   const activeAgentId = agentMatch?.[1] ?? null;
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 8 },
+    }),
+  );
+
+  const handleDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event;
+      if (!over || active.id === over.id) return;
+
+      const ids = orderedAgents.map((agent: Agent) => agent.id);
+      const oldIndex = ids.indexOf(active.id as string);
+      const newIndex = ids.indexOf(over.id as string);
+      if (oldIndex === -1 || newIndex === -1) return;
+
+      persistOrder(arrayMove(ids, oldIndex, newIndex));
+    },
+    [orderedAgents, persistOrder],
+  );
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
@@ -105,40 +182,29 @@ export function SidebarAgents() {
       </div>
 
       <CollapsibleContent>
-        <div className="flex flex-col gap-0.5 mt-0.5">
-          {visibleAgents.map((agent: Agent) => {
-            const runCount = liveCountByAgent.get(agent.id) ?? 0;
-            return (
-              <NavLink
-                key={agent.id}
-                to={agentUrl(agent)}
-                onClick={() => {
-                  if (isMobile) setSidebarOpen(false);
-                }}
-                className={cn(
-                  "flex items-center gap-2.5 px-3 py-1.5 text-[13px] font-medium transition-colors",
-                  activeAgentId === agentRouteRef(agent)
-                    ? "bg-accent text-foreground"
-                    : "text-foreground/80 hover:bg-accent/50 hover:text-foreground"
-                )}
-              >
-                <AgentIcon icon={agent.icon} className="shrink-0 h-3.5 w-3.5 text-muted-foreground" />
-                <span className="flex-1 truncate">{agent.name}</span>
-                {runCount > 0 && (
-                  <span className="ml-auto flex items-center gap-1.5 shrink-0">
-                    <span className="relative flex h-2 w-2">
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-                      <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
-                    </span>
-                    <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">
-                      {runCount} live
-                    </span>
-                  </span>
-                )}
-              </NavLink>
-            );
-          })}
-        </div>
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragEnd={handleDragEnd}
+        >
+          <SortableContext
+            items={orderedAgents.map((agent: Agent) => agent.id)}
+            strategy={verticalListSortingStrategy}
+          >
+            <div className="flex flex-col gap-0.5 mt-0.5">
+              {orderedAgents.map((agent: Agent) => (
+                <SortableAgentItem
+                  key={agent.id}
+                  activeAgentId={activeAgentId}
+                  agent={agent}
+                  isMobile={isMobile}
+                  runCount={liveCountByAgent.get(agent.id) ?? 0}
+                  setSidebarOpen={setSidebarOpen}
+                />
+              ))}
+            </div>
+          </SortableContext>
+        </DndContext>
       </CollapsibleContent>
     </Collapsible>
   );

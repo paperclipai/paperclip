@@ -130,6 +130,8 @@ export const agentsApi = {
       `/companies/${companyId}/adapters/${type}/test-environment`,
       data,
     ),
+  reorder: (companyId: string, orderedIds: string[]) =>
+    api.patch<{ ok: true }>(`/companies/${companyId}/agents/reorder`, { orderedIds }),
   invoke: (id: string, companyId?: string) => api.post<HeartbeatRun>(agentPath(id, companyId, "/heartbeat/invoke"), {}),
   wakeup: (
     id: string,
