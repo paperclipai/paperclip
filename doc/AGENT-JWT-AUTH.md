@@ -1,6 +1,19 @@
 # Agent JWT Authentication
 
-When Paperclip runs an agent via a heartbeat, it creates a short-lived JWT and injects it as `PAPERCLIP_API_KEY` in the agent's environment. The agent uses this token to authenticate API calls back to the Paperclip server, ensuring actions are attributed to the correct agent rather than falling back to the board identity.
+When Paperclip runs an agent via a heartbeat, it checks whether the agent's adapter has opted in to local agent JWT (`supportsLocalAgentJwt: true` in the adapter registry). For adapters that support it, Paperclip creates a short-lived JWT and injects it as `PAPERCLIP_API_KEY` in the agent's environment. The agent uses this token to authenticate API calls back to the Paperclip server, ensuring actions are attributed to the correct agent rather than falling back to the board identity.
+
+Adapters that have not opted in (such as `openclaw_gateway`, which uses its own claimed-API-key authentication) skip JWT injection entirely.
+
+## Supported adapters
+
+| Adapter type | `supportsLocalAgentJwt` |
+|-------------|------------------------|
+| `claude_local` | true |
+| `codex_local` | true |
+| `cursor` | true |
+| `opencode_local` | true |
+| `pi_local` | true |
+| `openclaw_gateway` | **false** |
 
 ## How it works
 
@@ -15,7 +28,7 @@ When Paperclip runs an agent via a heartbeat, it creates a short-lived JWT and i
 |-------|-------------|
 | `sub` | Agent ID |
 | `company_id` | Company the agent belongs to |
-| `adapter_type` | Adapter type (e.g. `claude_local`, `openclaw_gateway`) |
+| `adapter_type` | Adapter type (e.g. `claude_local`, `codex_local`) |
 | `run_id` | Current heartbeat run ID |
 | `iat` | Issued-at timestamp (seconds) |
 | `exp` | Expiration timestamp (seconds) |
@@ -37,9 +50,7 @@ If `PAPERCLIP_AGENT_JWT_SECRET` is not set, the server logs a warning and runs a
 
 ## OpenClaw gateway agents
 
-For agents using the `openclaw_gateway` adapter, the JWT flow works the same way. The Paperclip server generates a JWT for each heartbeat run and passes it to the adapter. The adapter then includes the token when making API calls back to Paperclip.
-
-The OpenClaw invite/onboarding flow stores a long-lived API key in `~/.openclaw/workspace/paperclip-claimed-api-key.json`. This key is separate from the per-run JWT - the JWT provides per-run identity and traceability, while the claimed API key provides persistent agent authentication.
+The `openclaw_gateway` adapter does **not** participate in the local agent JWT flow (`supportsLocalAgentJwt: false`). Instead, it authenticates using a long-lived API key stored in `~/.openclaw/workspace/paperclip-claimed-api-key.json` during the invite/onboarding flow. No per-run JWT is generated or injected for this adapter.
 
 ### Webhook adapter usage
 
