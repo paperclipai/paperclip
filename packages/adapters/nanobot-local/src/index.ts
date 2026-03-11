@@ -19,9 +19,15 @@ Core fields:
 - url (string, required): Base URL of the nanobot's Paperclip channel (e.g. http://localhost:9800)
 - apiKey (string, optional): Bearer token for authenticating with the nanobot's Paperclip channel
 - timeoutSec (number, optional): Seconds before the request times out (default 300)
+- providerMode (string, optional): "sdk" | "litellm" | "auto" (default: auto)
+  - sdk: Force Claude Agent SDK — delegates full agent loop to Claude Code (OAuth, no API key needed)
+  - litellm: Force legacy LiteLLM path (multi-provider via OpenRouter/direct API)
+  - auto: SDK for Anthropic models when CLI is available, LiteLLM otherwise
 
 Notes:
 - The model is configured per-nanobot-instance, not per-Paperclip-agent.
 - Each nanobot instance needs its own port for the Paperclip channel.
 - Token usage (input/output tokens) is reported when the nanobot includes a usage object in its response.
+- SDK mode uses Claude Code's OAuth (active Claude subscription) — no ANTHROPIC_API_KEY required.
+- SDK mode enables Claude Code's built-in Agent tool for team/subagent orchestration.
 `;

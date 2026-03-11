@@ -10,6 +10,12 @@ import {
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
 
+const PROVIDER_MODES = [
+  { value: "auto", label: "Auto", hint: "SDK for Anthropic models, LiteLLM for others" },
+  { value: "sdk", label: "Claude SDK", hint: "Claude Code agent (OAuth, full tool loop)" },
+  { value: "litellm", label: "LiteLLM", hint: "Multi-provider via OpenRouter/direct API" },
+] as const;
+
 function SecretField({
   label,
   value,
@@ -114,6 +120,31 @@ export function NanobotLocalConfigFields({
           className={inputClass}
           placeholder="300"
         />
+      </Field>
+
+      <Field label="Provider Mode" hint="How nanobot invokes the LLM: Auto picks based on model, SDK uses Claude Code agent loop (OAuth), LiteLLM uses multi-provider routing">
+        <select
+          value={
+            isCreate
+              ? String((values!.envBindings as Record<string, unknown>)?.nanobotProviderMode ?? "auto")
+              : eff("adapterConfig", "providerMode", String(config.providerMode ?? "auto"))
+          }
+          onChange={(e) => {
+            const mode = e.target.value;
+            if (isCreate) {
+              set!({ envBindings: { ...((values!.envBindings as Record<string, unknown>) ?? {}), nanobotProviderMode: mode } });
+            } else {
+              mark("adapterConfig", "providerMode", mode);
+            }
+          }}
+          className={inputClass + " bg-background text-foreground"}
+        >
+          {PROVIDER_MODES.map((m) => (
+            <option key={m.value} value={m.value} className="bg-background text-foreground">
+              {m.label} — {m.hint}
+            </option>
+          ))}
+        </select>
       </Field>
     </>
   );

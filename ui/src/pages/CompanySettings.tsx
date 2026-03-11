@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { companiesApi } from "../api/companies";
@@ -28,6 +29,7 @@ export function CompanySettings() {
     setSelectedCompanyId
   } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
 
   // General settings local state
@@ -152,6 +154,30 @@ export function CompanySettings() {
       await queryClient.invalidateQueries({
         queryKey: queryKeys.companies.stats
       });
+    }
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: ({
+      companyId,
+      nextCompanyId
+    }: {
+      companyId: string;
+      nextCompanyId: string | null;
+    }) => companiesApi.remove(companyId).then(() => ({ nextCompanyId })),
+    onSuccess: async ({ nextCompanyId }) => {
+      if (nextCompanyId) {
+        setSelectedCompanyId(nextCompanyId);
+      }
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.companies.all
+      });
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.companies.stats
+      });
+      if (!nextCompanyId) {
+        navigate("/");
+      }
     }
   });
 
@@ -426,6 +452,48 @@ export function CompanySettings() {
                 {archiveMutation.error instanceof Error
                   ? archiveMutation.error.message
                   : "Failed to archive company"}
+              </span>
+            )}
+          </div>
+
+          <hr className="border-destructive/20" />
+
+          <p className="text-sm text-muted-foreground">
+            Permanently delete this company and all its data. This cannot be
+            undone.
+          </p>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="destructive"
+              disabled={deleteMutation.isPending}
+              onClick={() => {
+                if (!selectedCompanyId) return;
+                const confirmed = window.confirm(
+                  `Permanently delete "${selectedCompany.name}" and all its data? This cannot be undone.`
+                );
+                if (!confirmed) return;
+                const nextCompanyId =
+                  companies.find(
+                    (company) =>
+                      company.id !== selectedCompanyId &&
+                      company.status !== "archived"
+                  )?.id ?? null;
+                deleteMutation.mutate({
+                  companyId: selectedCompanyId,
+                  nextCompanyId
+                });
+              }}
+            >
+              {deleteMutation.isPending
+                ? "Deleting..."
+                : "Delete company"}
+            </Button>
+            {deleteMutation.isError && (
+              <span className="text-xs text-destructive">
+                {deleteMutation.error instanceof Error
+                  ? deleteMutation.error.message
+                  : "Failed to delete company"}
               </span>
             )}
           </div>

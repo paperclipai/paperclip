@@ -9,6 +9,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const url = asString(config.url, "").replace(/\/+$/, "");
   const apiKey = asString(config.apiKey, "");
   const timeoutSec = asNumber(config.timeoutSec, 300);
+  const providerMode = asString(config.providerMode, "");  // "sdk" | "litellm" | "" (auto)
 
   if (!url) {
     return {
@@ -49,7 +50,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const message = lines.join("\n");
 
   const invokeUrl = `${url}/api/invoke`;
-  const body = JSON.stringify({
+  const invokeBody: Record<string, unknown> = {
     message,
     runId: ctx.runId,
     agentId: ctx.agent.id,
@@ -60,7 +61,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       issueId,
       companyId: ctx.agent.companyId,
     },
-  });
+  };
+  // Pass provider mode override (sdk/litellm) from agent config to nanobot
+  if (providerMode) {
+    invokeBody.providerMode = providerMode;
+  }
+  const body = JSON.stringify(invokeBody);
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",

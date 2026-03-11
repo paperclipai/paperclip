@@ -8,5 +8,7 @@ export function buildNanobotLocalConfig(v: CreateConfigValues): Record<string, u
   if (apiKey) ac.apiKey = apiKey;
   const timeout = typeof bindings?.nanobotTimeoutSec === "number" ? bindings.nanobotTimeoutSec : 300;
   ac.timeoutSec = timeout;
+  const providerMode = typeof bindings?.nanobotProviderMode === "string" ? bindings.nanobotProviderMode : "auto";
+  if (providerMode !== "auto") ac.providerMode = providerMode;
   return ac;
 }
