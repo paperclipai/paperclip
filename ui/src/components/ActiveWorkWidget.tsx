@@ -112,7 +112,7 @@ export function ActiveWorkWidget({ companyId }: ActiveWorkWidgetProps) {
   });
 
   const { data: issues } = useQuery({
-    queryKey: ["active-work", companyId],
+    queryKey: queryKeys.issues.list(companyId),
     queryFn: () =>
       issuesApi.list(companyId, { status: "in_progress,todo,blocked" }),
     enabled: !!companyId,
