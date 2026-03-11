@@ -59,6 +59,15 @@ export type {
   ResolvedMcpServer,
 } from "./mcp-server.js";
 export type {
+  JiraAttachment,
+  JiraIntegration,
+  JiraProject,
+  JiraStatus,
+  JiraUser,
+  JiraIssuePreview,
+  JiraImportResult,
+} from "./jira-integration.js";
+export type {
   CompanyPortabilityInclude,
   CompanyPortabilitySecretRequirement,
   CompanyPortabilityCompanyManifestEntry,

@@ -127,6 +127,15 @@ export {
 } from "./mcp-server.js";
 
 export {
+  createJiraIntegrationSchema,
+  updateJiraIntegrationSchema,
+  jiraImportSchema,
+  type CreateJiraIntegration,
+  type UpdateJiraIntegration,
+  type JiraImport,
+} from "./jira-integration.js";
+
+export {
   createCompanyInviteSchema,
   createOpenClawInvitePromptSchema,
   acceptInviteSchema,

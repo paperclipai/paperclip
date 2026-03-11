@@ -126,6 +126,12 @@ export type {
   McpServer,
   AgentMcpServer,
   ResolvedMcpServer,
+  JiraIntegration,
+  JiraProject,
+  JiraStatus,
+  JiraUser,
+  JiraIssuePreview,
+  JiraImportResult,
 } from "./types/index.js";
 
 export {
@@ -224,6 +230,12 @@ export {
   type CreateMcpServer,
   type UpdateMcpServer,
   type AssignMcpServers,
+  createJiraIntegrationSchema,
+  updateJiraIntegrationSchema,
+  jiraImportSchema,
+  type CreateJiraIntegration,
+  type UpdateJiraIntegration,
+  type JiraImport,
   portabilityIncludeSchema,
   portabilitySecretRequirementSchema,
   portabilityCompanyManifestEntrySchema,
