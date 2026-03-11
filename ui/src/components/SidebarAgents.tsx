@@ -131,22 +131,25 @@ export function SidebarAgents() {
     return sortByHierarchy(filtered);
   }, [agents]);
 
-  const { projectGroups, ungroupedAgents } = useMemo(() => {
+  const { pinnedAgents, projectGroups, ungroupedAgents } = useMemo(() => {
+    const pinned = visibleAgents.filter((a) => a.role === "ceo");
     const visibleProjects = (projects ?? []).filter((p: Project) => !p.archivedAt);
     const groups: ProjectGroup[] = [];
-    const assignedAgentIds = new Set<string>();
+    const pinnedAgentIds = new Set(pinned.map((a) => a.id));
+    const assignedAgentIds = new Set<string>(pinnedAgentIds);
+    const remainingAgents = visibleAgents.filter((a) => !pinnedAgentIds.has(a.id));
 
     for (const project of visibleProjects) {
       const projectAgentIds = new Set(project.agentIds ?? []);
-      const projectAgents = visibleAgents.filter((a) => projectAgentIds.has(a.id));
+      const projectAgents = remainingAgents.filter((a) => projectAgentIds.has(a.id));
       if (projectAgents.length > 0) {
         groups.push({ project, agents: projectAgents });
         for (const a of projectAgents) assignedAgentIds.add(a.id);
       }
     }
 
-    const ungrouped = visibleAgents.filter((a) => !assignedAgentIds.has(a.id));
-    return { projectGroups: groups, ungroupedAgents: ungrouped };
+    const ungrouped = remainingAgents.filter((a) => !assignedAgentIds.has(a.id));
+    return { pinnedAgents: pinned, projectGroups: groups, ungroupedAgents: ungrouped };
   }, [visibleAgents, projects]);
 
   const hasGroups = projectGroups.length > 0;
@@ -190,6 +193,17 @@ export function SidebarAgents() {
 
       <CollapsibleContent>
         <div className="flex flex-col gap-0.5 mt-0.5">
+          {pinnedAgents.map((agent: Agent) => (
+            <AgentNavItem
+              key={agent.id}
+              agent={agent}
+              runCount={liveCountByAgent.get(agent.id) ?? 0}
+              activeAgentId={activeAgentId}
+              isMobile={isMobile}
+              setSidebarOpen={setSidebarOpen}
+            />
+          ))}
+
           {/* Project groups */}
           {projectGroups.map(({ project, agents: groupAgents }) => {
             const isGroupOpen = openGroups[project.id] ?? true;

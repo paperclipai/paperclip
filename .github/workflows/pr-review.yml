@@ -163,8 +163,15 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: "--allowedTools Read,Glob,Grep,'Bash(gh pr view *)','Bash(gh pr diff *)','Bash(gh api *)' --max-turns 15"
-          prompt: ${{ matrix.prompt }}
+          claude_args: "--allowedTools Read,Glob,Grep,'Bash(gh pr view *)','Bash(gh pr diff *)','Bash(gh api *)' --max-turns 30"
+          prompt: |
+            IMPORTANT: You may ONLY use these tools: Read, Glob, Grep, Bash(gh pr view ...), Bash(gh pr diff ...), Bash(gh api ...).
+            Do NOT attempt to use any other tools (no WebSearch, no Agent, no Write, no Edit, no general Bash). Any other tool call will be denied and waste a turn.
+
+            To review the PR diff, run: gh pr diff ${{ github.event.pull_request.number }}
+            To view PR details, run: gh pr view ${{ github.event.pull_request.number }}
+
+            ${{ matrix.prompt }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -172,7 +179,7 @@ jobs:
     needs: review
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    if: needs.review.result == 'success'
+    if: always() && !cancelled()
 
     steps:
       - name: Checkout repository
@@ -184,8 +191,11 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: "--allowedTools Read,Glob,Grep,'Bash(gh pr *)','Bash(gh api *)' --max-turns 15"
+          claude_args: "--allowedTools Read,Glob,Grep,'Bash(gh pr *)','Bash(gh api *)' --max-turns 30"
           prompt: |
+            IMPORTANT: You may ONLY use these tools: Read, Glob, Grep, Bash(gh pr ...), Bash(gh api ...).
+            Do NOT attempt to use any other tools. Any other tool call will be denied and waste a turn.
+
             You are the merge-decision agent for PR #${{ github.event.pull_request.number }}.
 
             Your job is to:
@@ -222,16 +232,17 @@ jobs:
             Performance, Pattern Consistency, Code Simplicity, Data Integrity, Contract Sync).
 
             Check if ANY reviewer flagged a "Critical" issue.
+            Note which reviewers posted comments and which are missing (some may have failed to run).
 
             STEP 3: Make the decision.
 
-            If the PR is LOW RISK AND no reviewer flagged any Critical issues:
+            If the PR is LOW RISK AND no reviewer flagged any Critical issues AND at least 4 of 7 reviewers posted comments:
             - Auto-merge the PR with:
               ```
               gh pr merge ${{ github.event.pull_request.number }} --merge --delete-branch
               ```
-            - Comment on the PR explaining that all 7 reviewers passed with no critical
-              findings and the PR was auto-merged.
+            - Comment on the PR explaining which reviewers passed, any that were missing,
+              and that the PR was auto-merged.
 
             If the PR is HIGH RISK OR any reviewer flagged Critical issues:
             - Do NOT merge.
@@ -239,5 +250,9 @@ jobs:
               - Whether the PR is HIGH RISK or LOW RISK (and which files triggered high risk)
               - A summary of all critical findings from reviewers
               - A clear statement that manual human review is required before merging
+
+            If fewer than 4 reviewers posted comments (most failed to run):
+            - Do NOT merge.
+            - Comment explaining that too few reviewers completed and the PR needs manual review or a re-run.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
