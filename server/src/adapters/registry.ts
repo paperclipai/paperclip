@@ -1,5 +1,11 @@
 import type { ServerAdapterModule } from "./types.js";
 import {
+  execute as acpxSidecarExecute,
+  testEnvironment as acpxSidecarTestEnvironment,
+  sessionCodec as acpxSidecarSessionCodec,
+} from "@paperclipai/adapter-acpx-sidecar/server";
+import { agentConfigurationDoc as acpxSidecarAgentConfigurationDoc, models as acpxSidecarModels } from "@paperclipai/adapter-acpx-sidecar";
+import {
   execute as claudeExecute,
   testEnvironment as claudeTestEnvironment,
   sessionCodec as claudeSessionCodec,
@@ -58,6 +64,16 @@ const claudeLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: claudeAgentConfigurationDoc,
 };
 
+const acpxSidecarAdapter: ServerAdapterModule = {
+  type: "acpx_sidecar",
+  execute: acpxSidecarExecute,
+  testEnvironment: acpxSidecarTestEnvironment,
+  sessionCodec: acpxSidecarSessionCodec,
+  models: acpxSidecarModels,
+  supportsLocalAgentJwt: true,
+  agentConfigurationDoc: acpxSidecarAgentConfigurationDoc,
+};
+
 const codexLocalAdapter: ServerAdapterModule = {
   type: "codex_local",
   execute: codexExecute,
@@ -114,6 +130,7 @@ const piLocalAdapter: ServerAdapterModule = {
 const adaptersByType = new Map<string, ServerAdapterModule>(
   [
     claudeLocalAdapter,
+    acpxSidecarAdapter,
     codexLocalAdapter,
     openCodeLocalAdapter,
     piLocalAdapter,

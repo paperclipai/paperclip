@@ -24,6 +24,7 @@ When a heartbeat fires, Paperclip:
 | OpenClaw | `openclaw` | Sends wake payloads to an OpenClaw webhook |
 | [Process](/adapters/process) | `process` | Executes arbitrary shell commands |
 | [HTTP](/adapters/http) | `http` | Sends webhooks to external agents |
+| [ACPX Sidecar](/adapters/acpx-sidecar) | `acpx_sidecar` | Calls a dedicated sidecar service that runs acpx + official CLIs |
 
 ## Adapter Architecture
 

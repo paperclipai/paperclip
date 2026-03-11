@@ -22,6 +22,7 @@ import { cn } from "@/lib/utils";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 
 type AdvancedAdapterType =
+  | "acpx_sidecar"
   | "claude_local"
   | "codex_local"
   | "opencode_local"
@@ -36,6 +37,13 @@ const ADVANCED_ADAPTER_OPTIONS: Array<{
   icon: ComponentType<{ className?: string }>;
   recommended?: boolean;
 }> = [
+  {
+    value: "acpx_sidecar",
+    label: "ACPX Sidecar",
+    icon: Bot,
+    desc: "External sidecar via acpx",
+    recommended: true,
+  },
   {
     value: "claude_local",
     label: "Claude Code",

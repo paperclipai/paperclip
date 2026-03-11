@@ -28,7 +28,8 @@ Create agents from the Agents page. Each agent requires:
 - **Capabilities** — short description of what this agent does
 
 Common adapter choices:
-- `claude_local` / `codex_local` / `opencode_local` for local coding agents
+- `claude_local` / `codex_local` / `gemini_local` / `opencode_local` for local coding agents
+- `acpx_sidecar` for dedicated runtime sidecars that keep official CLIs out of the main Paperclip container
 - `openclaw` / `http` for webhook-based external agents
 - `process` for generic local command execution
 
