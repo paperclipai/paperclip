@@ -6,7 +6,13 @@ import {
 
 describe("claude model discovery", () => {
   it("falls back to built-in Claude models when no settings exist", () => {
-    expect(resolveClaudeModelsFromSettings(null)).toEqual(DEFAULT_CLAUDE_MODELS);
+    expect(resolveClaudeModelsFromSettings(null)).toEqual([
+      { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
+      { id: "claude-opus-4-6", label: "Claude Opus 4.6" },
+      { id: "claude-haiku-4-6", label: "Claude Haiku 4.6" },
+      { id: "claude-sonnet-4-5-20250929", label: "Claude Sonnet 4.5" },
+      { id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5" },
+    ]);
   });
 
   it("uses configured default family models from Claude settings env", () => {
