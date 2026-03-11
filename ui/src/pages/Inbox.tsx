@@ -43,10 +43,9 @@ import type { HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
 import {
   ACTIONABLE_APPROVAL_STATUSES,
   getLatestFailedRunsByAgent,
+  getRecentTouchedIssues,
   type InboxTab,
-  RECENT_ISSUES_LIMIT,
   saveLastInboxTab,
-  sortIssuesByMostRecentActivity,
 } from "../lib/inbox";
 import { useDismissedInboxItems } from "../hooks/useInboxBadge";
 
@@ -329,10 +328,7 @@ export function Inbox() {
     enabled: !!selectedCompanyId,
   });
 
-  const touchedIssues = useMemo(
-    () => [...touchedIssuesRaw].sort(sortIssuesByMostRecentActivity).slice(0, RECENT_ISSUES_LIMIT),
-    [touchedIssuesRaw],
-  );
+  const touchedIssues = useMemo(() => getRecentTouchedIssues(touchedIssuesRaw), [touchedIssuesRaw]);
   const unreadTouchedIssues = useMemo(
     () => touchedIssues.filter((issue) => issue.isUnreadForMe),
     [touchedIssues],
@@ -435,23 +431,51 @@ export function Inbox() {
 
   const [fadingOutIssues, setFadingOutIssues] = useState<Set<string>>(new Set());
 
+  const invalidateInboxIssueQueries = () => {
+    if (!selectedCompanyId) return;
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
+  };
+
   const markReadMutation = useMutation({
     mutationFn: (id: string) => issuesApi.markRead(id),
     onMutate: (id) => {
       setFadingOutIssues((prev) => new Set(prev).add(id));
     },
     onSuccess: () => {
-      if (selectedCompanyId) {
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId) });
-        queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
-      }
+      invalidateInboxIssueQueries();
     },
     onSettled: (_data, _error, id) => {
       setTimeout(() => {
         setFadingOutIssues((prev) => {
           const next = new Set(prev);
           next.delete(id);
+          return next;
+        });
+      }, 300);
+    },
+  });
+
+  const markAllReadMutation = useMutation({
+    mutationFn: async (issueIds: string[]) => {
+      await Promise.all(issueIds.map((issueId) => issuesApi.markRead(issueId)));
+    },
+    onMutate: (issueIds) => {
+      setFadingOutIssues((prev) => {
+        const next = new Set(prev);
+        for (const issueId of issueIds) next.add(issueId);
+        return next;
+      });
+    },
+    onSuccess: () => {
+      invalidateInboxIssueQueries();
+    },
+    onSettled: (_data, _error, issueIds) => {
+      setTimeout(() => {
+        setFadingOutIssues((prev) => {
+          const next = new Set(prev);
+          for (const issueId of issueIds) next.delete(issueId);
           return next;
         });
       }, 300);
@@ -515,6 +539,10 @@ export function Inbox() {
     !isRunsLoading;
 
   const showSeparatorBefore = (key: SectionKey) => visibleSections.indexOf(key) > 0;
+  const unreadIssueIds = unreadTouchedIssues
+    .filter((issue) => !fadingOutIssues.has(issue.id))
+    .map((issue) => issue.id);
+  const canMarkAllRead = unreadIssueIds.length > 0;
 
   return (
     <div className="space-y-6">
@@ -532,8 +560,22 @@ export function Inbox() {
           />
         </Tabs>
 
-        {tab === "all" && (
-          <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {canMarkAllRead && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8"
+              onClick={() => markAllReadMutation.mutate(unreadIssueIds)}
+              disabled={markAllReadMutation.isPending}
+            >
+              {markAllReadMutation.isPending ? "Marking…" : "Mark all as read"}
+            </Button>
+          )}
+
+          {tab === "all" && (
+            <>
             <Select
               value={allCategoryFilter}
               onValueChange={(value) => setAllCategoryFilter(value as InboxCategoryFilter)}
@@ -566,8 +608,9 @@ export function Inbox() {
                 </SelectContent>
               </Select>
             )}
-          </div>
-        )}
+            </>
+          )}
+        </div>
       </div>
 
       {approvalsError && <p className="text-sm text-destructive">{approvalsError.message}</p>}

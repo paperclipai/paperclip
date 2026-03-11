@@ -4,8 +4,10 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { Approval, DashboardSummary, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
 import {
   computeInboxBadgeData,
+  getRecentTouchedIssues,
   getUnreadTouchedIssues,
   loadLastInboxTab,
+  RECENT_ISSUES_LIMIT,
   saveLastInboxTab,
 } from "./inbox";
 
@@ -218,6 +220,19 @@ describe("inbox helpers", () => {
 
     expect(getUnreadTouchedIssues(issues).map((issue) => issue.id)).toEqual(["1"]);
     expect(issues).toHaveLength(2);
+  });
+
+  it("limits recent touched issues before unread badge counting", () => {
+    const issues = Array.from({ length: RECENT_ISSUES_LIMIT + 5 }, (_, index) => {
+      const issue = makeIssue(String(index + 1), index < 3);
+      issue.lastExternalCommentAt = new Date(Date.UTC(2026, 2, 31, 0, 0, 0, 0) - index * 60_000);
+      return issue;
+    });
+
+    const recentIssues = getRecentTouchedIssues(issues);
+
+    expect(recentIssues).toHaveLength(RECENT_ISSUES_LIMIT);
+    expect(getUnreadTouchedIssues(recentIssues).map((issue) => issue.id)).toEqual(["1", "2", "3"]);
   });
 
   it("defaults the remembered inbox tab to recent and persists all", () => {

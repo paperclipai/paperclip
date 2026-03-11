@@ -9,8 +9,10 @@ import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import {
   computeInboxBadgeData,
+  getRecentTouchedIssues,
   loadDismissedInboxItems,
   saveDismissedInboxItems,
+  getUnreadTouchedIssues,
 } from "../lib/inbox";
 
 const INBOX_ISSUE_STATUSES = "backlog,todo,in_progress,in_review,blocked,done";
@@ -70,15 +72,20 @@ export function useInboxBadge(companyId: string | null | undefined) {
     enabled: !!companyId,
   });
 
-  const { data: unreadIssues = [] } = useQuery({
-    queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId!),
+  const { data: touchedIssues = [] } = useQuery({
+    queryKey: queryKeys.issues.listTouchedByMe(companyId!),
     queryFn: () =>
       issuesApi.list(companyId!, {
-        unreadForUserId: "me",
+        touchedByUserId: "me",
         status: INBOX_ISSUE_STATUSES,
       }),
     enabled: !!companyId,
   });
+
+  const unreadIssues = useMemo(
+    () => getUnreadTouchedIssues(getRecentTouchedIssues(touchedIssues)),
+    [touchedIssues],
+  );
 
   const { data: heartbeatRuns = [] } = useQuery({
     queryKey: queryKeys.heartbeats(companyId!),
