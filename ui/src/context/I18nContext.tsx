@@ -14,7 +14,7 @@ interface I18nContextValue {
   locale: Locale;
   setLocale: (locale: Locale) => void;
   toggleLocale: () => void;
-  t: (key: string) => string;
+  t: (key: string, vars?: Record<string, string>) => string;
 }
 
 const LOCALE_STORAGE_KEY = "paperclip.locale";
@@ -105,8 +105,8 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const t = useCallback(
-    (key: string) => {
-      return formatMessage(locale, key);
+    (key: string, vars?: Record<string, string>) => {
+      return formatMessage(locale, key, vars);
     },
     [locale],
   );
@@ -143,6 +143,3 @@ export function useI18n() {
   return context;
 }
 
-export function tWithVars(locale: Locale, key: string, vars: Record<string, string>) {
-  return formatMessage(locale, key, vars);
-}

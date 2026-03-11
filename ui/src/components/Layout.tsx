@@ -19,7 +19,7 @@ import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useTheme } from "../context/ThemeContext";
-import { tWithVars, useI18n } from "../context/I18nContext";
+import { useI18n } from "../context/I18nContext";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
 import { healthApi } from "../api/health";
@@ -40,7 +40,7 @@ export function Layout() {
     setSelectedCompanyId,
   } = useCompany();
   const { theme, toggleTheme } = useTheme();
-  const { locale, toggleLocale, t } = useI18n();
+  const { toggleLocale, t } = useI18n();
   const { companyPrefix } = useParams<{ companyPrefix: string }>();
   const navigate = useNavigate();
   const location = useLocation();
@@ -48,7 +48,10 @@ export function Layout() {
   const lastMainScrollTop = useRef(0);
   const [mobileNavVisible, setMobileNavVisible] = useState(true);
   const nextTheme = theme === "dark" ? "light" : "dark";
-  const switchThemeLabel = tWithVars(locale, "layout.switchTheme", { theme: t(`theme.${nextTheme}`) });
+  const switchThemeLabel = useMemo(
+    () => t("layout.switchTheme", { theme: t(`theme.${nextTheme}`) }),
+    [nextTheme, t],
+  );
   const matchedCompany = useMemo(() => {
     if (!companyPrefix) return null;
     const requestedPrefix = companyPrefix.toUpperCase();
