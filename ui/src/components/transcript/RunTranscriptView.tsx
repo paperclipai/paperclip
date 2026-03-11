@@ -21,6 +21,7 @@ interface RunTranscriptViewProps {
   density?: TranscriptDensity;
   limit?: number;
   streaming?: boolean;
+  collapseStdout?: boolean;
   emptyMessage?: string;
   className?: string;
 }
@@ -69,6 +70,11 @@ type TranscriptBlock =
         isError?: boolean;
         status: "running" | "completed" | "error";
       }>;
+    }
+  | {
+      type: "stdout";
+      ts: string;
+      text: string;
     }
   | {
       type: "event";
@@ -480,13 +486,16 @@ function normalizeTranscript(entries: TranscriptEntry[], streaming: boolean): Tr
       continue;
     }
 
-    blocks.push({
-      type: "event",
-      ts: entry.ts,
-      label: "stdout",
-      tone: "neutral",
-      text: entry.text,
-    });
+    if (previous?.type === "stdout") {
+      previous.text += previous.text.endsWith("\n") || entry.text.startsWith("\n") ? entry.text : `\n${entry.text}`;
+      previous.ts = entry.ts;
+    } else {
+      blocks.push({
+        type: "stdout",
+        ts: entry.ts,
+        text: entry.text,
+      });
+    }
   }
 
   return groupCommandBlocks(blocks);
@@ -859,6 +868,44 @@ function TranscriptEventRow({
   );
 }
 
+function TranscriptStdoutRow({
+  block,
+  density,
+  collapseByDefault,
+}: {
+  block: Extract<TranscriptBlock, { type: "stdout" }>;
+  density: TranscriptDensity;
+  collapseByDefault: boolean;
+}) {
+  const [open, setOpen] = useState(!collapseByDefault);
+
+  return (
+    <div>
+      <div className="flex items-center gap-2">
+        <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+          stdout
+        </span>
+        <button
+          type="button"
+          className="inline-flex h-5 w-5 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+          onClick={() => setOpen((value) => !value)}
+          aria-label={open ? "Collapse stdout" : "Expand stdout"}
+        >
+          {open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+        </button>
+      </div>
+      {open && (
+        <pre className={cn(
+          "mt-2 overflow-x-auto whitespace-pre-wrap break-words font-mono text-foreground/80",
+          density === "compact" ? "text-[11px]" : "text-xs",
+        )}>
+          {block.text}
+        </pre>
+      )}
+    </div>
+  );
+}
+
 function RawTranscriptView({
   entries,
   density,
@@ -903,6 +950,7 @@ export function RunTranscriptView({
   density = "comfortable",
   limit,
   streaming = false,
+  collapseStdout = false,
   emptyMessage = "No transcript yet.",
   className,
 }: RunTranscriptViewProps) {
@@ -937,6 +985,9 @@ export function RunTranscriptView({
           {block.type === "thinking" && <TranscriptThinkingBlock block={block} density={density} />}
           {block.type === "tool" && <TranscriptToolCard block={block} density={density} />}
           {block.type === "command_group" && <TranscriptCommandGroup block={block} density={density} />}
+          {block.type === "stdout" && (
+            <TranscriptStdoutRow block={block} density={density} collapseByDefault={collapseStdout} />
+          )}
           {block.type === "activity" && <TranscriptActivityRow block={block} density={density} />}
           {block.type === "event" && <TranscriptEventRow block={block} density={density} />}
         </div>

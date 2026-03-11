@@ -146,6 +146,7 @@ function AgentRunCard({
           density="compact"
           limit={5}
           streaming={isActive}
+          collapseStdout
           emptyMessage={hasOutput ? "Waiting for transcript parsing..." : isActive ? "Waiting for output..." : "No transcript captured."}
         />
       </div>

@@ -1368,12 +1368,13 @@ export function heartbeatService(db: Db) {
       const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
         if (stream === "stdout") stdoutExcerpt = appendExcerpt(stdoutExcerpt, chunk);
         if (stream === "stderr") stderrExcerpt = appendExcerpt(stderrExcerpt, chunk);
+        const ts = new Date().toISOString();
 
         if (handle) {
           await runLogStore.append(handle, {
             stream,
             chunk,
-            ts: new Date().toISOString(),
+            ts,
           });
         }
 
@@ -1388,6 +1389,7 @@ export function heartbeatService(db: Db) {
           payload: {
             runId: run.id,
             agentId: run.agentId,
+            ts,
             stream,
             chunk: payloadChunk,
             truncated: payloadChunk.length !== chunk.length,

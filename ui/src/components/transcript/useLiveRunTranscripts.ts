@@ -46,7 +46,7 @@ function parsePersistedLogContent(
         ts,
         stream,
         chunk,
-        dedupeKey: `persisted:${runId}:${ts}:${stream}:${chunk}`,
+        dedupeKey: `log:${runId}:${ts}:${stream}:${chunk}`,
       });
     } catch {
       // Ignore malformed log rows.
@@ -202,6 +202,7 @@ export function useLiveRunTranscripts({
         if (event.type === "heartbeat.run.log") {
           const chunk = readString(payload["chunk"]);
           if (!chunk) return;
+          const ts = readString(payload["ts"]) ?? event.createdAt;
           const stream =
             readString(payload["stream"]) === "stderr"
               ? "stderr"
@@ -209,10 +210,10 @@ export function useLiveRunTranscripts({
                 ? "system"
                 : "stdout";
           appendChunks(runId, [{
-            ts: event.createdAt,
+            ts,
             stream,
             chunk,
-            dedupeKey: `socket:log:${runId}:${event.createdAt}:${stream}:${chunk}`,
+            dedupeKey: `log:${runId}:${ts}:${stream}:${chunk}`,
           }]);
           return;
         }
