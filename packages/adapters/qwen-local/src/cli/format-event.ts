@@ -26,7 +26,16 @@ function flattenText(value: unknown): string {
   if (Array.isArray(value)) return value.map(flattenText).filter(Boolean).join("\n").trim();
   const record = asRecord(value);
   if (!record) return "";
-  return asString(record.text).trim() || asString(record.content).trim() || flattenText(record.message);
+  if (asString(record.subtype) === "session_start") return "";
+  return (
+    asString(record.text).trim() ||
+    asString(record.content).trim() ||
+    asString(record.message).trim() ||
+    flattenText(record.part) ||
+    flattenText(record.parts) ||
+    flattenText(record.contentParts) ||
+    flattenText(record.message)
+  );
 }
 
 export function printQwenStreamEvent(raw: string, debug: boolean): void {
@@ -39,7 +48,7 @@ export function printQwenStreamEvent(raw: string, debug: boolean): void {
   }
 
   const type = asString(parsed.type);
-  if (type === "system") {
+  if (type === "system" || asString(parsed.subtype) === "session_start") {
     const sessionId = asString(parsed.sessionId) || asString(parsed.session_id) || asString(parsed.id);
     const model = asString(parsed.model);
     console.log(pc.blue(`session started${sessionId ? ` (${sessionId})` : ""}${model ? ` model=${model}` : ""}`));

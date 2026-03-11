@@ -41,6 +41,13 @@ function resolveSettingsPath(input: unknown): string {
   return explicit || defaultSettingsPath();
 }
 
+function getSelectedAuthType(record: Record<string, unknown>): string | null {
+  const security = parseObject(record.security);
+  const auth = parseObject(security.auth);
+  const selectedType = asString(auth.selectedType, "").trim();
+  return selectedType || null;
+}
+
 function readProviders(record: Record<string, unknown>, authType: string | null): AdapterModel[] {
   const providers = parseObject(record.modelProviders);
   const selected = authType ? parseProviderEntries(providers[authType]) : [];
@@ -71,14 +78,24 @@ export async function discoverQwenModels(input: {
   settingsPath?: unknown;
 } = {}): Promise<AdapterModel[]> {
   const settingsPath = resolveSettingsPath(input.settingsPath);
-  const raw = await fs.readFile(settingsPath, "utf8");
+  let raw: string;
+  try {
+    raw = await fs.readFile(settingsPath, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error(
+        `Qwen settings file not found: ${settingsPath}. Configure Qwen Code before loading models.`,
+      );
+    }
+    throw err;
+  }
   const parsed = parseJson(raw);
   if (!parsed) {
     throw new Error(`Failed to parse Qwen settings JSON: ${settingsPath}`);
   }
 
   const record = parseObject(parsed);
-  const authType = asString(record.security && parseObject(record.security).auth && parseObject(parseObject(record.security).auth).selectedType, "").trim() || null;
+  const authType = getSelectedAuthType(record);
   const discovered = readProviders(record, authType);
   return sortModels(dedupeModels(discovered));
 }

@@ -29,9 +29,20 @@ function flattenText(value: unknown): string {
   return (
     asString(record.text).trim() ||
     asString(record.content).trim() ||
+    asString(record.message).trim() ||
     flattenText(record.message) ||
+    flattenText(record.part) ||
     flattenText(record.parts) ||
+    flattenText(record.contentParts) ||
     ""
+  );
+}
+
+function toolUseIdFromRecord(record: Record<string, unknown>): string {
+  return (
+    asString(record.toolUseId) ||
+    asString(record.tool_use_id) ||
+    asString(record.id, "tool")
   );
 }
 
@@ -40,7 +51,7 @@ export function parseQwenStdoutLine(line: string, ts: string): TranscriptEntry[]
   if (!parsed) return [{ kind: "stdout", ts, text: line }];
 
   const type = asString(parsed.type);
-  if (type === "system") {
+  if (type === "system" || asString(parsed.subtype) === "session_start") {
     const sessionId = asString(parsed.sessionId) || asString(parsed.session_id) || asString(parsed.id);
     const model = asString(parsed.model);
     if (sessionId && model) return [{ kind: "init", ts, model, sessionId }];
@@ -52,7 +63,9 @@ export function parseQwenStdoutLine(line: string, ts: string): TranscriptEntry[]
       flattenText(parsed.text) ||
       flattenText(parsed.content) ||
       flattenText(parsed.message) ||
-      flattenText(parsed.part);
+      flattenText(parsed.part) ||
+      flattenText(parsed.parts) ||
+      flattenText(parsed.contentParts);
     return text ? [{ kind: "assistant", ts, text }] : [];
   }
 
@@ -73,7 +86,7 @@ export function parseQwenStdoutLine(line: string, ts: string): TranscriptEntry[]
       {
         kind: "tool_result",
         ts,
-        toolUseId: asString(parsed.toolUseId) || asString(parsed.id, "tool"),
+        toolUseId: toolUseIdFromRecord(parsed),
         content,
         isError: parsed.is_error === true || parsed.isError === true,
       },
@@ -86,7 +99,7 @@ export function parseQwenStdoutLine(line: string, ts: string): TranscriptEntry[]
       {
         kind: "result",
         ts,
-        text: flattenText(parsed.summary) || flattenText(parsed.message) || "result",
+        text: flattenText(parsed.summary) || flattenText(parsed.message) || flattenText(parsed.result) || "result",
         inputTokens:
           asNumber(usage?.inputTokens, 0) ||
           asNumber(usage?.input_tokens, 0) ||

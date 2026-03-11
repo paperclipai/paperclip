@@ -73,6 +73,12 @@ function sessionParamsFor(cwd: string, sessionId: string | null, workspace: Reco
   };
 }
 
+function trimmedOrNull(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed || null;
+}
+
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, authToken } = ctx;
 
@@ -155,9 +161,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "").trim();
   const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "").trim();
+  const runtimeSessionWorkspaceId = asString(runtimeSessionParams.workspaceId, "").trim();
+  const runtimeSessionRepoUrl = asString(runtimeSessionParams.repoUrl, "").trim();
+  const runtimeSessionRepoRef = asString(runtimeSessionParams.repoRef, "").trim();
   const canResumeSession =
     runtimeSessionId.length > 0 &&
-    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
+    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd)) &&
+    runtimeSessionWorkspaceId === workspaceId &&
+    runtimeSessionRepoUrl === workspaceRepoUrl &&
+    runtimeSessionRepoRef === workspaceRepoRef;
   const resumeSessionId = canResumeSession ? runtimeSessionId : null;
 
   if (runtimeSessionId && !canResumeSession) {
@@ -220,11 +232,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   const finalSessionId = attempt.parsed.sessionId ?? attempt.sessionId ?? null;
+  const errorMessage =
+    attempt.parsed.errorMessage ??
+    trimmedOrNull(attempt.proc.stderr) ??
+    (attempt.proc.timedOut ? "process timed out" : null);
   return {
     exitCode: attempt.proc.exitCode,
     signal: attempt.proc.signal,
     timedOut: attempt.proc.timedOut,
-    errorMessage: attempt.parsed.errorMessage,
+    errorMessage,
     usage: attempt.parsed.usage,
     sessionId: finalSessionId,
     sessionParams: sessionParamsFor(cwd, finalSessionId, {

@@ -1,4 +1,4 @@
-# @paperclipai/adapter-opencode-local
+# @paperclipai/adapter-qwen-local
 
 ## 0.3.0
 
@@ -15,4 +15,4 @@
 
 ### Patch Changes
 
-- Add local OpenCode adapter package with server/UI/CLI modules.
+- Add local Qwen adapter package with server/UI/CLI modules.

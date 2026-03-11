@@ -121,7 +121,7 @@ export async function testEnvironment(
       const probe = await runChildProcess(
         `qwen-envtest-${Date.now()}`,
         command,
-        ["-p", "Respond with hello.", "--output-format", "json"],
+        ["-p", "Respond with hello.", "--output-format", "stream-json"],
         {
           cwd,
           env: runtimeEnv,

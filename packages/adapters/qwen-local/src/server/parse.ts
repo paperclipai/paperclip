@@ -11,10 +11,15 @@ function textFromUnknown(value: unknown): string {
   }
   if (typeof value !== "object" || value === null) return "";
   const record = parseObject(value);
+  const result = parseObject(record.result);
   return (
     asString(record.text, "").trim() ||
     asString(record.content, "").trim() ||
     asString(record.message, "").trim() ||
+    asString(result.summary, "").trim() ||
+    asString(result.message, "").trim() ||
+    asString(result.text, "").trim() ||
+    textFromUnknown(record.part) ||
     textFromUnknown(record.parts) ||
     textFromUnknown(record.contentParts)
   );
@@ -61,7 +66,9 @@ export function parseQwenStreamJson(stdout: string) {
         textFromUnknown(event.text) ||
         textFromUnknown(event.content) ||
         textFromUnknown(event.message) ||
-        textFromUnknown(event.part);
+        textFromUnknown(event.part) ||
+        textFromUnknown(event.parts) ||
+        textFromUnknown(event.contentParts);
       if (text) messages.push(text);
       continue;
     }

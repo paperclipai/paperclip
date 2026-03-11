@@ -1,3 +1,4 @@
+import { stripVTControlCharacters } from "node:util";
 import { describe, expect, it, vi } from "vitest";
 import { parseQwenStreamJson } from "@paperclipai/adapter-qwen-local/server";
 import { parseQwenStdoutLine } from "@paperclipai/adapter-qwen-local/ui";
@@ -108,7 +109,7 @@ describe("qwen_local ui stdout parser", () => {
 });
 
 function stripAnsi(value: string): string {
-  return value.replace(/\x1b\[[0-9;]*m/g, "");
+  return stripVTControlCharacters(value);
 }
 
 describe("qwen_local cli formatter", () => {

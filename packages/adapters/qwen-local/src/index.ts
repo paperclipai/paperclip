@@ -1,8 +1,9 @@
 export const type = "qwen_local";
 export const label = "Qwen Code (local)";
+export const DEFAULT_QWEN_LOCAL_MODEL = "qwen3-coder-plus";
 
 export const models = [
-  { id: "qwen3-coder-plus", label: "qwen3-coder-plus" },
+  { id: DEFAULT_QWEN_LOCAL_MODEL, label: DEFAULT_QWEN_LOCAL_MODEL },
   { id: "qwen3-coder-next", label: "qwen3-coder-next" },
   { id: "qwen3.5-plus", label: "qwen3.5-plus" },
 ];
