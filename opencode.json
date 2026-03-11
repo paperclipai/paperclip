@@ -1,0 +1,31 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "forge": {
+      "api": "openai",
+      "options": {
+        "baseURL": "http://192.168.1.51:52415/v1"
+      },
+      "models": {
+        "qwen3-coder-480b": {
+          "name": "Qwen3-Coder-480B-8bit",
+          "id": "mlx-community/Qwen3-Coder-480B-A35B-Instruct-8bit",
+          "attachment": false
+        }
+      }
+    },
+    "lobster": {
+      "api": "openai",
+      "options": {
+        "baseURL": "http://192.168.1.56:1234/v1"
+      },
+      "models": {
+        "qwen3-next-80b": {
+          "name": "Qwen3-Next-80B-A3B-8bit",
+          "id": "mlx-community/Qwen3-Next-80B-A3B-Instruct-8bit",
+          "attachment": false
+        }
+      }
+    }
+  }
+}
