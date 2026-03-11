@@ -10,6 +10,7 @@ import {
   Network,
   Settings,
 } from "lucide-react";
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
@@ -20,6 +21,7 @@ import { useCompany } from "../context/CompanyContext";
 import { sidebarBadgesApi } from "../api/sidebarBadges";
 import { heartbeatsApi } from "../api/heartbeats";
 import { queryKeys } from "../lib/queryKeys";
+import { loadDismissed } from "../lib/dismissedItems";
 import { Button } from "@/components/ui/button";
 
 export function Sidebar() {
@@ -37,6 +39,24 @@ export function Sidebar() {
     refetchInterval: 10_000,
   });
   const liveRunCount = liveRuns?.length ?? 0;
+
+  // Adjust server badge count by subtracting client-side dismissed items
+  // so the sidebar badge stays in sync with what the Inbox page actually shows.
+  const adjustedBadges = useMemo(() => {
+    if (!sidebarBadges) return undefined;
+    const dismissed = loadDismissed();
+    let dismissedRunCount = 0;
+    let dismissedAlertCount = 0;
+    let dismissedStaleCount = 0;
+    for (const id of dismissed) {
+      if (id.startsWith("run:")) dismissedRunCount++;
+      else if (id.startsWith("alert:")) dismissedAlertCount++;
+      else if (id.startsWith("stale:")) dismissedStaleCount++;
+    }
+    const failedRuns = Math.max(0, sidebarBadges.failedRuns - dismissedRunCount);
+    const inbox = Math.max(0, sidebarBadges.inbox - dismissedRunCount - dismissedAlertCount - dismissedStaleCount);
+    return { ...sidebarBadges, inbox, failedRuns };
+  }, [sidebarBadges]);
 
   function openSearch() {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true }));
@@ -80,9 +100,9 @@ export function Sidebar() {
             to="/inbox"
             label="Inbox"
             icon={Inbox}
-            badge={sidebarBadges?.inbox}
-            badgeTone={sidebarBadges?.failedRuns ? "danger" : "default"}
-            alert={(sidebarBadges?.failedRuns ?? 0) > 0}
+            badge={adjustedBadges?.inbox}
+            badgeTone={adjustedBadges?.failedRuns ? "danger" : "default"}
+            alert={(adjustedBadges?.failedRuns ?? 0) > 0}
           />
         </div>
 
