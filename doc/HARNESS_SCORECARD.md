@@ -41,3 +41,15 @@ Each parameter is scored 0-100 based on its metric source. The overall score is 
 | Quarter | Score | Delta | Key Changes |
 |---------|-------|-------|-------------|
 | 2026-Q1 | 52 | - | Baseline |
+
+## Quarterly Recalibration Process
+
+At the end of each quarter:
+
+1. Re-score all 11 parameters against their metric sources
+2. Update the Current column in the Parameters table
+3. Calculate new overall score
+4. Add row to Quarterly Delta table
+5. Review Learning Registry experiments that ended this quarter
+6. Update targets if any parameter has structurally changed scope
+7. Present delta to team in quarterly review

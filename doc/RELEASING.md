@@ -23,6 +23,17 @@ Every release has four separate surfaces:
 
 A release is done only when all four surfaces are handled.
 
+## Release Preflight: Harness Scorecard Gate
+
+Before starting a release train, verify the harness scorecard:
+
+1. Run `pnpm harness:scorecard:check` — must pass
+2. Review `doc/HARNESS_SCORECARD.md` — overall score should be trending toward target
+3. Check `doc/HARNESS_LEARNING_REGISTRY.md` for any experiments blocking release
+4. If overall score has regressed since last release, document the reason in the release changelog
+
+This gate ensures harness-engineering maturity is maintained across releases.
+
 ## Core Invariants
 
 - Canary and stable for `X.Y.Z` must come from the same `release/X.Y.Z` branch.
