@@ -34,6 +34,7 @@ import {
   Tag,
   Calendar,
   Paperclip,
+  Loader2,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { extractProviderIdWithFallback } from "../lib/model-utils";
@@ -420,7 +421,7 @@ export function NewIssueDialog() {
   }
 
   function handleSubmit() {
-    if (!effectiveCompanyId || !title.trim()) return;
+    if (!effectiveCompanyId || !title.trim() || createIssue.isPending) return;
     const assigneeAdapterOverrides = buildAssigneeAdapterOverrides({
       adapterType: assigneeAdapterType,
       modelOverride: assigneeModelOverride,
@@ -516,6 +517,11 @@ export function NewIssueDialog() {
       })),
     [orderedProjects],
   );
+  const savedDraft = loadDraft();
+  const hasSavedDraft = Boolean(savedDraft?.title.trim() || savedDraft?.description.trim());
+  const canDiscardDraft = hasDraft || hasSavedDraft;
+  const createIssueErrorMessage =
+    createIssue.error instanceof Error ? createIssue.error.message : "Failed to create issue. Try again.";
 
   const handleProjectChange = useCallback((nextProjectId: string) => {
     setProjectId(nextProjectId);
@@ -563,7 +569,7 @@ export function NewIssueDialog() {
     <Dialog
       open={newIssueOpen}
       onOpenChange={(open) => {
-        if (!open) closeNewIssue();
+        if (!open && !createIssue.isPending) closeNewIssue();
       }}
     >
       <DialogContent
@@ -576,7 +582,16 @@ export function NewIssueDialog() {
             : "sm:max-w-lg"
         )}
         onKeyDown={handleKeyDown}
+        onEscapeKeyDown={(event) => {
+          if (createIssue.isPending) {
+            event.preventDefault();
+          }
+        }}
         onPointerDownOutside={(event) => {
+          if (createIssue.isPending) {
+            event.preventDefault();
+            return;
+          }
           // Radix Dialog's modal DismissableLayer calls preventDefault() on
           // pointerdown events that originate outside the Dialog DOM tree.
           // Popover portals render at the body level (outside the Dialog), so
@@ -654,6 +669,7 @@ export function NewIssueDialog() {
               size="icon-xs"
               className="text-muted-foreground"
               onClick={() => setExpanded(!expanded)}
+              disabled={createIssue.isPending}
             >
               {expanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
             </Button>
@@ -662,6 +678,7 @@ export function NewIssueDialog() {
               size="icon-xs"
               className="text-muted-foreground"
               onClick={() => closeNewIssue()}
+              disabled={createIssue.isPending}
             >
               <span className="text-lg leading-none">&times;</span>
             </Button>
@@ -680,6 +697,7 @@ export function NewIssueDialog() {
               e.target.style.height = "auto";
               e.target.style.height = `${e.target.scrollHeight}px`;
             }}
+            readOnly={createIssue.isPending}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.metaKey && !e.ctrlKey) {
                 e.preventDefault();
@@ -998,17 +1016,36 @@ export function NewIssueDialog() {
             size="sm"
             className="text-muted-foreground"
             onClick={discardDraft}
-            disabled={!hasDraft && !loadDraft()}
+            disabled={createIssue.isPending || !canDiscardDraft}
           >
             Discard Draft
           </Button>
-          <Button
-            size="sm"
-            disabled={!title.trim() || createIssue.isPending}
-            onClick={handleSubmit}
-          >
-            {createIssue.isPending ? "Creating..." : "Create Issue"}
-          </Button>
+          <div className="flex items-center gap-3">
+            <div className="min-h-5 text-right">
+              {createIssue.isPending ? (
+                <span className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Creating issue...
+                </span>
+              ) : createIssue.isError ? (
+                <span className="text-xs text-destructive">{createIssueErrorMessage}</span>
+              ) : canDiscardDraft ? (
+                <span className="text-xs text-muted-foreground">Draft autosaves locally</span>
+              ) : null}
+            </div>
+            <Button
+              size="sm"
+              className="min-w-[8.5rem] disabled:opacity-100"
+              disabled={!title.trim() || createIssue.isPending}
+              onClick={handleSubmit}
+              aria-busy={createIssue.isPending}
+            >
+              <span className="inline-flex items-center justify-center gap-1.5">
+                {createIssue.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                <span>{createIssue.isPending ? "Creating..." : "Create Issue"}</span>
+              </span>
+            </Button>
+          </div>
         </div>
       </DialogContent>
     </Dialog>
