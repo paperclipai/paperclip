@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, gt, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -45,6 +45,10 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
+
+const AUTO_REQUEUE_MAX_RETRIES = 3;
+const AUTO_REQUEUE_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
+const TRANSIENT_ERROR_CODES = new Set(["adapter_failed", "timeout", "process_lost"]);
 
 function appendExcerpt(prev: string, chunk: string) {
   return appendWithCap(prev, chunk, MAX_EXCERPT_BYTES);
@@ -962,6 +966,39 @@ export function heartbeatService(db: Db) {
     return { reaped: reaped.length, runIds: reaped };
   }
 
+  async function shouldAutoRequeue(agentId: string, errorCode: string | null): Promise<boolean> {
+    if (!errorCode || !TRANSIENT_ERROR_CODES.has(errorCode)) return false;
+
+    const cutoff = new Date(Date.now() - AUTO_REQUEUE_WINDOW_MS);
+    const recentFailures = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.agentId, agentId),
+          inArray(heartbeatRuns.status, ["failed", "timed_out"]),
+          gte(heartbeatRuns.finishedAt, cutoff),
+        ),
+      );
+
+    return recentFailures.length < AUTO_REQUEUE_MAX_RETRIES;
+  }
+
+  async function autoRequeueOnTransientFailure(agentId: string, errorCode: string | null) {
+    try {
+      if (await shouldAutoRequeue(agentId, errorCode)) {
+        logger.info({ agentId, errorCode }, "auto-requeuing agent after transient failure");
+        await enqueueWakeup(agentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: `auto_requeue:${errorCode}`,
+        });
+      }
+    } catch (err) {
+      logger.warn({ err, agentId, errorCode }, "failed to auto-requeue agent after transient failure");
+    }
+  }
+
   async function updateRuntimeState(
     agent: typeof agents.$inferSelect,
     run: typeof heartbeatRuns.$inferSelect,
@@ -1584,6 +1621,12 @@ export function heartbeatService(db: Db) {
         }
       }
       await finalizeAgentStatus(agent.id, outcome);
+
+      if (outcome === "failed" || outcome === "timed_out") {
+        const failureErrorCode =
+          outcome === "timed_out" ? "timeout" : (adapterResult.errorCode ?? "adapter_failed");
+        await autoRequeueOnTransientFailure(agent.id, failureErrorCode);
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown adapter failure";
       logger.error({ err, runId }, "heartbeat execution failed");
@@ -1645,6 +1688,7 @@ export function heartbeatService(db: Db) {
       }
 
       await finalizeAgentStatus(agent.id, "failed");
+      await autoRequeueOnTransientFailure(agent.id, "adapter_failed");
     } finally {
       await releaseRuntimeServicesForRun(run.id);
       await startNextQueuedRunForAgent(agent.id);
