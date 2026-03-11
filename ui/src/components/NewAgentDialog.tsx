@@ -28,6 +28,7 @@ type AdvancedAdapterType =
   | "gemini_local"
   | "opencode_local"
   | "pi_local"
+  | "qwen_local"
   | "cursor"
   | "openclaw_gateway";
 
@@ -69,6 +70,12 @@ const ADVANCED_ADAPTER_OPTIONS: Array<{
     label: "Pi",
     icon: Terminal,
     desc: "Local Pi agent",
+  },
+  {
+    value: "qwen_local",
+    label: "Qwen Code",
+    icon: Terminal,
+    desc: "Local Qwen agent",
   },
   {
     value: "cursor",

@@ -62,6 +62,7 @@ export const adapterLabels: Record<string, string> = {
   codex_local: "Codex (local)",
   gemini_local: "Gemini CLI (local)",
   opencode_local: "OpenCode (local)",
+  qwen_local: "Qwen Code (local)",
   openclaw_gateway: "OpenClaw Gateway",
   cursor: "Cursor (local)",
   process: "Process",

@@ -32,6 +32,7 @@ const SUPPORTED_ADVANCED_ADAPTER_TYPES = new Set<CreateConfigValues["adapterType
   "gemini_local",
   "opencode_local",
   "pi_local",
+  "qwen_local",
   "cursor",
   "openclaw_gateway",
 ]);

@@ -30,6 +30,7 @@ import {
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
+import { DEFAULT_QWEN_LOCAL_MODEL } from "@paperclipai/adapter-qwen-local";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { ChoosePathButton } from "./PathInstructionsModal";
 import { HintIcon } from "./agent-config-primitives";
@@ -60,6 +61,7 @@ type AdapterType =
   | "gemini_local"
   | "opencode_local"
   | "pi_local"
+  | "qwen_local"
   | "cursor"
   | "process"
   | "http"
@@ -775,6 +777,12 @@ export function OnboardingWizard() {
                             desc: "Local Pi agent"
                           },
                           {
+                            value: "qwen_local" as const,
+                            label: "Qwen Code",
+                            icon: Terminal,
+                            desc: "Local Qwen agent"
+                          },
+                          {
                             value: "cursor" as const,
                             label: "Cursor",
                             icon: MousePointer2,
@@ -812,6 +820,10 @@ export function OnboardingWizard() {
                                 setModel(DEFAULT_CURSOR_LOCAL_MODEL);
                                 return;
                               }
+                              if (nextType === "qwen_local" && !model) {
+                                setModel(DEFAULT_QWEN_LOCAL_MODEL);
+                                return;
+                              }
                               if (nextType === "opencode_local") {
                                 if (!model.includes("/")) {
                                   setModel("");
@@ -841,6 +853,7 @@ export function OnboardingWizard() {
                     adapterType === "gemini_local" ||
                     adapterType === "opencode_local" ||
                     adapterType === "pi_local" ||
+                    adapterType === "qwen_local" ||
                     adapterType === "cursor") && (
                     <div className="space-y-3">
                       <div>
