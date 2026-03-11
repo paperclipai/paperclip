@@ -1077,6 +1077,31 @@ export function heartbeatService(db: Db) {
         })
         .where(eq(agents.id, agent.id));
     }
+
+    const cbConfig = parseObject(parseObject(agent.runtimeConfig).circuitBreaker);
+    const cbMaxInputTokens = Math.max(asNumber(cbConfig.maxInputTokensPerRun, 500_000), 1000);
+    if (inputTokens > cbMaxInputTokens) {
+      logger.warn(
+        { agentId: agent.id, runId: run.id, inputTokens, limit: cbMaxInputTokens },
+        "circuit breaker tripped: run exceeded max input tokens per run, pausing agent",
+      );
+      await db
+        .update(agents)
+        .set({ status: "paused", updatedAt: new Date() })
+        .where(eq(agents.id, agent.id));
+      publishLiveEvent({
+        companyId: agent.companyId,
+        type: "agent.status",
+        payload: {
+          agentId: agent.id,
+          status: "paused",
+          lastHeartbeatAt: agent.lastHeartbeatAt
+            ? new Date(agent.lastHeartbeatAt).toISOString()
+            : null,
+          outcome: "circuit_breaker_tripped",
+        },
+      });
+    }
   }
 
   async function startNextQueuedRunForAgent(agentId: string) {
