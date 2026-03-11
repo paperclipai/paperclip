@@ -2107,6 +2107,20 @@ export function formatRuntimeWorkspaceWarningLog(warning: string) {
   };
 }
 
+export function isZombieRun(
+  run: { status: string; id: string },
+  tracked: { has(id: string): boolean },
+): boolean {
+  return run.status === "running" && !tracked.has(run.id);
+}
+
+export function filterZombieCoalesceTarget<T extends { status: string; id: string }>(
+  target: T | null,
+  tracked: { has(id: string): boolean },
+): T | null {
+  return target && isZombieRun(target, tracked) ? null : target;
+}
+
 export function describeSessionResetReason(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
@@ -10505,7 +10519,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             activeExecutionRun.status === "running" &&
             isSameExecutionAgent;
 
-          if (isSameExecutionAgent && !shouldDeferFollowupWake && !shouldQueueFollowupForRunningWake) {
+          if (
+            isSameExecutionAgent
+            && !shouldDeferFollowupWake
+            && !shouldQueueFollowupForRunningWake
+            && !isZombieRun(activeExecutionRun, runningProcesses)
+          ) {
             const mergedContextSnapshot = mergeCoalescedContextSnapshot(
               activeExecutionRun.contextSnapshot,
               enrichedContextSnapshot,
@@ -10693,10 +10712,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       !sameScopeQueuedRun &&
       shouldQueueFollowupForRunningIssueWake({ contextSnapshot: enrichedContextSnapshot, wakeCommentId });
 
-    const coalescedTargetRun =
+    const rawCoalescedTarget =
       sameScopeQueuedRun ??
       sameScopeScheduledRetryRun ??
       (shouldQueueFollowupForRunningWake ? null : sameScopeRunningRun ?? null);
+
+    const coalescedTargetRun = filterZombieCoalesceTarget(
+      rawCoalescedTarget,
+      runningProcesses,
+    );
 
     if (coalescedTargetRun) {
       const mergedContextSnapshot = mergeCoalescedContextSnapshot(
