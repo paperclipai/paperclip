@@ -21,7 +21,7 @@ export function NotFoundPage({ scope = "global", requestedPrefix }: NotFoundPage
 
   useEffect(() => {
     setBreadcrumbs([{ label: t("notFound") }]);
-  }, [setBreadcrumbs]);
+  }, [setBreadcrumbs, t]);
 
   const fallbackCompany = selectedCompany ?? companies[0] ?? null;
   const dashboardHref = fallbackCompany ? `/${fallbackCompany.issuePrefix}/dashboard` : "/";

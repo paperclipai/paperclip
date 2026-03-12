@@ -30,7 +30,7 @@ export function Activity() {
 
   useEffect(() => {
     setBreadcrumbs([{ label: t("title") }]);
-  }, [setBreadcrumbs]);
+  }, [setBreadcrumbs, t]);
 
   const { data, isLoading, error } = useQuery({
     queryKey: queryKeys.activity(selectedCompanyId!),

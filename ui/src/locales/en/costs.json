@@ -2,6 +2,7 @@
   "title": "Costs",
   "selectCompany": "Select a company to view costs.",
   "noCostEvents": "No cost events yet.",
+  "noProjectCosts": "No project-attributed run costs yet.",
   "byAgent": "By Agent",
   "byProject": "By Project",
   "inOutTok": "in {{input}} / out {{output}} tok",

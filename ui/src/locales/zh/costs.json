@@ -2,6 +2,7 @@
   "title": "成本",
   "selectCompany": "选择一个公司以查看成本。",
   "noCostEvents": "暂无成本记录。",
+  "noProjectCosts": "暂无按项目归属的运行成本。",
   "byAgent": "按智能体",
   "byProject": "按项目",
   "inOutTok": "输入 {{input}} / 输出 {{output}} token",

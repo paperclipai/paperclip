@@ -23,7 +23,7 @@ export function Projects() {
 
   useEffect(() => {
     setBreadcrumbs([{ label: t("title") }]);
-  }, [setBreadcrumbs]);
+  }, [setBreadcrumbs, t]);
 
   const { data: projects, isLoading, error } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId!),

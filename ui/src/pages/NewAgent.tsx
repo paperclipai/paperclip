@@ -101,7 +101,7 @@ export function NewAgent() {
       { label: t("title"), href: "/agents" },
       { label: t("newAgent") },
     ]);
-  }, [setBreadcrumbs]);
+  }, [setBreadcrumbs, t]);
 
   useEffect(() => {
     if (isFirstAgent) {

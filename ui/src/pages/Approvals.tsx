@@ -29,7 +29,7 @@ export function Approvals() {
 
   useEffect(() => {
     setBreadcrumbs([{ label: t("title") }]);
-  }, [setBreadcrumbs]);
+  }, [setBreadcrumbs, t]);
 
   const { data, isLoading, error } = useQuery({
     queryKey: queryKeys.approvals.list(selectedCompanyId!),

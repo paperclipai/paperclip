@@ -132,7 +132,7 @@ export function AuthPage() {
             {error && <p className="text-xs text-destructive">{error}</p>}
             <Button type="submit" disabled={!canSubmit || mutation.isPending} className="w-full">
               {mutation.isPending
-                ? "Working…"
+                ? t("working")
                 : mode === "sign_in"
                   ? t("signIn")
                   : t("signUp")}
@@ -140,7 +140,7 @@ export function AuthPage() {
           </form>
 
           <div className="mt-5 text-sm text-muted-foreground">
-            {mode === "sign_in" ? "Need an account?" : "Already have an account?"}{" "}
+            {mode === "sign_in" ? t("needAccount") : t("haveAccount")}{" "}
             <button
               type="button"
               className="font-medium text-foreground underline underline-offset-2"
@@ -149,7 +149,7 @@ export function AuthPage() {
                 setMode(mode === "sign_in" ? "sign_up" : "sign_in");
               }}
             >
-              {mode === "sign_in" ? "Create one" : t("signIn")}
+              {mode === "sign_in" ? t("createOne") : t("signIn")}
             </button>
           </div>
         </div>

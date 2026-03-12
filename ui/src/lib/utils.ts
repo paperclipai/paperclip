@@ -12,7 +12,7 @@ export function formatCents(cents: number): string {
 }
 
 export function formatDate(date: Date | string): string {
-  const locale = i18n.language?.startsWith("zh") ? "zh-CN" : "en-US";
+  const locale = i18n.language ?? "en";
   return new Date(date).toLocaleDateString(locale, {
     month: "short",
     day: "numeric",
@@ -21,7 +21,7 @@ export function formatDate(date: Date | string): string {
 }
 
 export function formatDateTime(date: Date | string): string {
-  const locale = i18n.language?.startsWith("zh") ? "zh-CN" : "en-US";
+  const locale = i18n.language ?? "en";
   return new Date(date).toLocaleString(locale, {
     month: "short",
     day: "numeric",

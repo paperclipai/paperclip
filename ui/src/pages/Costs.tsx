@@ -66,7 +66,7 @@ export function Costs() {
 
   useEffect(() => {
     setBreadcrumbs([{ label: t("title") }]);
-  }, [setBreadcrumbs]);
+  }, [setBreadcrumbs, t]);
 
   const { from, to } = useMemo(() => {
     if (preset === "custom") {
@@ -223,7 +223,7 @@ export function Costs() {
               <CardContent className="p-4">
                 <h3 className="text-sm font-semibold mb-3">{t("byProject")}</h3>
                 {data.byProject.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">{t("noCostEvents")}</p>
+                  <p className="text-sm text-muted-foreground">{t("noProjectCosts")}</p>
                 ) : (
                   <div className="space-y-2">
                     {data.byProject.map((row) => (

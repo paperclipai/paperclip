@@ -105,7 +105,7 @@ export function Agents() {
 
   useEffect(() => {
     setBreadcrumbs([{ label: t("title") }]);
-  }, [setBreadcrumbs]);
+  }, [setBreadcrumbs, t]);
 
   if (!selectedCompanyId) {
     return <EmptyState icon={Bot} message={t("selectCompany")} />;

@@ -1,4 +1,7 @@
 import i18n from "../i18n";
+import { timeAgo as formatTimeAgo } from "./timeAgo";
+
+export { formatTimeAgo };
 
 export function statusLabel(status: string): string {
   const key = `status.${status}`;
@@ -49,40 +52,8 @@ export function runSourceLabel(source: string): string {
   return source.charAt(0).toUpperCase() + source.slice(1);
 }
 
-export function formatTimeAgo(date: Date | string): string {
-  const MINUTE = 60;
-  const HOUR = 60 * MINUTE;
-  const DAY = 24 * HOUR;
-  const WEEK = 7 * DAY;
-  const MONTH = 30 * DAY;
-
-  const now = Date.now();
-  const then = new Date(date).getTime();
-  const seconds = Math.round((now - then) / 1000);
-
-  if (seconds < MINUTE) return i18n.t("time.justNow", { ns: "common" });
-  if (seconds < HOUR) {
-    const m = Math.floor(seconds / MINUTE);
-    return i18n.t("time.mAgo", { m, ns: "common" });
-  }
-  if (seconds < DAY) {
-    const h = Math.floor(seconds / HOUR);
-    return i18n.t("time.hAgo", { h, ns: "common" });
-  }
-  if (seconds < WEEK) {
-    const d = Math.floor(seconds / DAY);
-    return i18n.t("time.dAgo", { d, ns: "common" });
-  }
-  if (seconds < MONTH) {
-    const w = Math.floor(seconds / WEEK);
-    return i18n.t("time.wAgo", { w, ns: "common" });
-  }
-  const mo = Math.floor(seconds / MONTH);
-  return i18n.t("time.moAgo", { mo, ns: "common" });
-}
-
 export function localizedDate(date: Date | string): string {
-  const locale = i18n.language?.startsWith("zh") ? "zh-CN" : "en-US";
+  const locale = i18n.language ?? "en";
   return new Date(date).toLocaleDateString(locale, {
     month: "short",
     day: "numeric",
@@ -91,7 +62,7 @@ export function localizedDate(date: Date | string): string {
 }
 
 export function localizedDateTime(date: Date | string): string {
-  const locale = i18n.language?.startsWith("zh") ? "zh-CN" : "en-US";
+  const locale = i18n.language ?? "en";
   return new Date(date).toLocaleString(locale, {
     month: "short",
     day: "numeric",
