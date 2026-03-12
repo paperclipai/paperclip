@@ -138,37 +138,6 @@ export function issueRequiresDoneEvidence(input: {
   return (input.currentLabels ?? []).some((label) => isCodeLabelName(label.name));
 }
 
-type CommentWakeActor = {
-  actorType: "agent" | "user";
-  agentId: string | null;
-};
-
-const GITHUB_COMMIT_OR_PR_LINK_RE =
-  /https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/(?:commit\/[0-9a-fA-F]{7,40}|pull\/\d+)(?:[/?#][^\s<>)\]}]*)?/;
-
-export function shouldWakeAgentForComment(
-  actor: CommentWakeActor,
-  targetAgentId: string | null | undefined,
-) {
-  if (!targetAgentId) return false;
-  return !(actor.actorType === "agent" && actor.agentId === targetAgentId);
-}
-
-export function containsGitHubCommitOrPrLink(body: string | null | undefined) {
-  if (!body) return false;
-  return GITHUB_COMMIT_OR_PR_LINK_RE.test(body);
-}
-
-export function resolveDoneTransitionEvidenceComment(
-  commentBody: string | null | undefined,
-  latestExistingCommentBody: string | null | undefined,
-) {
-  const directComment = commentBody?.trim();
-  if (directComment) return directComment;
-  const latestComment = latestExistingCommentBody?.trim();
-  return latestComment || null;
-}
-
 export function issueRoutes(db: Db, storage: StorageService) {
   const router = Router();
   const svc = issueService(db);
