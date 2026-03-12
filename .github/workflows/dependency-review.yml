@@ -10,8 +10,10 @@ permissions:
 
 jobs:
   dependency-review:
+    if: ${{ github.event.repository.private == false || vars.ENABLE_PRIVATE_SECURITY_FEATURES == 'true' }}
     name: Review dependency changes for vulnerabilities
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 

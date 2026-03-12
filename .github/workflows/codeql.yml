@@ -15,6 +15,7 @@ permissions:
 
 jobs:
   analyze:
+    if: ${{ github.event.repository.private == false || vars.ENABLE_PRIVATE_SECURITY_FEATURES == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
 

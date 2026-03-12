@@ -1,17 +1,25 @@
 area/github:
-  - .github/**/*
+  - changed-files:
+      - any-glob-to-any-file:
+          - .github/**/*
 
 area/docs:
-  - README.md
-  - docs/**/*
-  - SECURITY.md
+  - changed-files:
+      - any-glob-to-any-file:
+          - README.md
+          - docs/**/*
+          - SECURITY.md
 
 area/src:
-  - src/**/*
-  - app/**/*
-  - packages/**/*
+  - changed-files:
+      - any-glob-to-any-file:
+          - src/**/*
+          - app/**/*
+          - packages/**/*
 
 area/tests:
-  - test/**/*
-  - tests/**/*
-  - __tests__/**/*
+  - changed-files:
+      - any-glob-to-any-file:
+          - test/**/*
+          - tests/**/*
+          - __tests__/**/*
