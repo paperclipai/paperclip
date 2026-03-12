@@ -66,7 +66,23 @@ export function parseJson(value: string): Record<string, unknown> | null {
 
 export function appendWithCap(prev: string, chunk: string, cap = MAX_CAPTURE_BYTES) {
   const combined = prev + chunk;
-  return combined.length > cap ? combined.slice(combined.length - cap) : combined;
+  const byteLen = Buffer.byteLength(combined, "utf8");
+  if (byteLen <= cap) return combined;
+
+  // Truncate from the front to keep the most recent output.
+  // Walk forward character-by-character to find the byte offset that
+  // leaves at most `cap` bytes from the end.
+  let bytesToDrop = byteLen - cap;
+  let charIdx = 0;
+  while (bytesToDrop > 0 && charIdx < combined.length) {
+    const code = combined.codePointAt(charIdx)!;
+    const charBytes = code > 0xffff ? 4 : code > 0x7ff ? 3 : code > 0x7f ? 2 : 1;
+    bytesToDrop -= charBytes;
+    charIdx += code > 0xffff ? 2 : 1; // surrogate pair = 2 UTF-16 code units
+  }
+  // If we overshot (dropped a multi-byte char that pushed us under cap), that's
+  // fine — we just keep slightly fewer bytes than cap, preserving char boundaries.
+  return combined.slice(charIdx);
 }
 
 export function resolvePathValue(obj: Record<string, unknown>, dottedPath: string) {
