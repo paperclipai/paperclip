@@ -77,20 +77,6 @@ export function InstanceSettings() {
     },
   });
 
-  if (heartbeatsQuery.isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading scheduler heartbeats...</div>;
-  }
-
-  if (heartbeatsQuery.error) {
-    return (
-      <div className="text-sm text-destructive">
-        {heartbeatsQuery.error instanceof Error
-          ? heartbeatsQuery.error.message
-          : "Failed to load scheduler heartbeats."}
-      </div>
-    );
-  }
-
   const agents = heartbeatsQuery.data ?? [];
   const activeCount = agents.filter((agent) => agent.schedulerActive).length;
   const disabledCount = agents.length - activeCount;
@@ -108,6 +94,20 @@ export function InstanceSettings() {
     return [...map.values()];
   }, [agents]);
 
+  if (heartbeatsQuery.isLoading) {
+    return <div className="text-sm text-muted-foreground">Loading scheduler heartbeats...</div>;
+  }
+
+  if (heartbeatsQuery.error) {
+    return (
+      <div className="text-sm text-destructive">
+        {heartbeatsQuery.error instanceof Error
+          ? heartbeatsQuery.error.message
+          : "Failed to load scheduler heartbeats."}
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-5xl space-y-6">
       <div className="space-y-2">
@@ -116,9 +116,7 @@ export function InstanceSettings() {
           <h1 className="text-lg font-semibold">Scheduler Heartbeats</h1>
         </div>
         <p className="text-sm text-muted-foreground">
-          Shows timer-based heartbeats where <code>intervalSec &gt; 0</code> and agent status is not
-          paused, terminated, or pending approval. Toggling a row only changes{" "}
-          <code>runtimeConfig.heartbeat.enabled</code>.
+          Agents with a timer heartbeat enabled across all of your companies.
         </p>
       </div>
 
@@ -196,7 +194,7 @@ export function InstanceSettings() {
                             disabled={saving}
                             onClick={() => toggleMutation.mutate(agent)}
                           >
-                            {saving ? "..." : agent.heartbeatEnabled ? "Disable" : "Enable"}
+                            {saving ? "..." : agent.heartbeatEnabled ? "Disable Timer Heartbeat" : "Enable Timer Heartbeat"}
                           </Button>
                         </span>
                       </div>
