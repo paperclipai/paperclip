@@ -244,7 +244,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ? path.resolve(cwd, instructionsFilePath)
     : "";
   const instructionsFileDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
-  
+
+  // Default system prompt suffix that provides essential context
+  const defaultSystemPromptSuffix = `You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.`;
+
   let systemPromptExtension = "";
   let instructionsReadFailed = false;
   if (resolvedInstructionsFilePath) {
@@ -254,7 +257,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `${instructionsContents}\n\n` +
         `The above agent instructions were loaded from ${resolvedInstructionsFilePath}. ` +
         `Resolve any relative file references from ${instructionsFileDir}.\n\n` +
-        `You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.`;
+        defaultSystemPromptSuffix;
       await onLog(
         "stderr",
         `[paperclip] Loaded agent instructions file: ${resolvedInstructionsFilePath}\n`,
@@ -266,11 +269,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         "stderr",
         `[paperclip] Warning: could not read agent instructions file "${resolvedInstructionsFilePath}": ${reason}\n`,
       );
-      // Fall back to base prompt template
-      systemPromptExtension = promptTemplate;
+      // Fall back to base prompt template with default suffix
+      systemPromptExtension = `${promptTemplate}\n\n${defaultSystemPromptSuffix}`;
     }
   } else {
-    systemPromptExtension = promptTemplate;
+    // When using promptTemplate directly, append default system prompt suffix
+    // to ensure agent has essential context about its identity and task
+    systemPromptExtension = `${promptTemplate}\n\n${defaultSystemPromptSuffix}`;
   }
 
   const renderedSystemPromptExtension = renderTemplate(systemPromptExtension, {

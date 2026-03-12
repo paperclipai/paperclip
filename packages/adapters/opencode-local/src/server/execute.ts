@@ -85,10 +85,9 @@ async function ensureOpenCodeSkillsInjected(onLog: AdapterExecutionContext["onLo
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, authToken } = ctx;
 
-  const promptTemplate = asString(
-    config.promptTemplate,
-    "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
-  );
+  // Default system context that provides essential agent identity and task information
+  const defaultSystemContext = "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.";
+  const promptTemplate = asString(config.promptTemplate, defaultSystemContext);
   const command = asString(config.command, "opencode");
   const model = asString(config.model, "").trim();
   const variant = asString(config.variant, "").trim();
@@ -242,7 +241,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     run: { id: runId, source: "on_demand" },
     context,
   });
-  const prompt = `${instructionsPrefix}${renderedPrompt}`;
+  // Append default system context if user provided a custom promptTemplate
+  // This ensures agent always has essential context about its identity and task
+  const systemSuffix = config.promptTemplate ? `\n\n${defaultSystemContext}` : "";
+  const prompt = `${instructionsPrefix}${renderedPrompt}${systemSuffix}`;
 
   const buildArgs = (resumeSessionId: string | null) => {
     const args = ["run", "--format", "json"];
