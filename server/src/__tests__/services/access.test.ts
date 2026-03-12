@@ -14,7 +14,7 @@ describe("accessService", () => {
   });
   afterAll(() => testDb.close());
   beforeEach(async () => {
-    await cleanDb(testDb.db);
+    await cleanDb();
     svc = accessService(testDb.db);
   });
 
