@@ -7,13 +7,15 @@ import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { Settings, Check } from "lucide-react";
+import { Settings, Check, Bell } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
   ToggleField,
   HintIcon
 } from "../components/agent-config-primitives";
+import { usePushNotifications } from "../hooks/usePushNotifications";
+import { pushApi } from "../api/push";
 
 type AgentSnippetInput = {
   onboardingTextUrl: string;
@@ -333,6 +335,9 @@ export function CompanySettings() {
         </div>
       </div>
 
+      {/* Push Notifications */}
+      <PushNotificationSettings companyId={selectedCompanyId} />
+
       {/* Invites */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
@@ -498,6 +503,158 @@ export function CompanySettings() {
             )}
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function PushNotificationSettings({ companyId }: { companyId: string | null }) {
+  const push = usePushNotifications(companyId);
+  const [testSending, setTestSending] = useState(false);
+  const [testResult, setTestResult] = useState<string | null>(null);
+
+  if (!push.isSupported) {
+    return (
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Notifications
+        </div>
+        <div className="rounded-md border border-border px-4 py-3">
+          <p className="text-xs text-muted-foreground">
+            Push notifications are not supported in this browser.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!push.isConfigured) {
+    return (
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Notifications
+        </div>
+        <div className="rounded-md border border-border px-4 py-3">
+          <p className="text-xs text-muted-foreground">
+            Push notifications are not configured on this server. Set{" "}
+            <code className="bg-muted px-1 rounded text-[11px]">VAPID_PUBLIC_KEY</code> and{" "}
+            <code className="bg-muted px-1 rounded text-[11px]">VAPID_PRIVATE_KEY</code>{" "}
+            environment variables to enable.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-1.5">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Notifications
+        </div>
+        <HintIcon text="Receive native push notifications on this device when agents finish tasks, ask questions, or when items need board review." />
+      </div>
+      <div className="space-y-3 rounded-md border border-border px-4 py-4">
+        {!push.isSubscribed ? (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <Bell className="h-4 w-4 text-muted-foreground" />
+              <span className="text-xs text-muted-foreground">
+                Enable push notifications for this device.
+              </span>
+            </div>
+            <Button
+              size="sm"
+              onClick={() => push.subscribe()}
+              disabled={push.isSubscribing}
+            >
+              {push.isSubscribing ? "Enabling..." : "Enable push notifications"}
+            </Button>
+            {push.error && (
+              <p className="text-xs text-destructive">
+                {push.error instanceof Error
+                  ? push.error.message === "Permission denied"
+                    ? "Notification permission was denied. Please enable it in your browser/device settings."
+                    : push.error.message
+                  : "Failed to enable notifications"}
+              </p>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Bell className="h-4 w-4 text-green-600" />
+                <span className="text-xs text-muted-foreground">
+                  Push notifications enabled on this device.
+                </span>
+              </div>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => push.unsubscribe()}
+                disabled={push.isUnsubscribing}
+                className="text-xs text-muted-foreground"
+              >
+                {push.isUnsubscribing ? "Disabling..." : "Disable"}
+              </Button>
+            </div>
+            <hr className="border-border" />
+            <ToggleField
+              label="Agent completes a task"
+              hint="Get notified when an agent's run succeeds, fails, or times out."
+              checked={push.preferences?.notifyTaskComplete ?? true}
+              onChange={(v) =>
+                push.updatePreferences({ notifyTaskComplete: v })
+              }
+            />
+            <ToggleField
+              label="Agent has a question"
+              hint="Get notified when an agent requests approval or comments on an issue."
+              checked={push.preferences?.notifyAgentQuestion ?? true}
+              onChange={(v) =>
+                push.updatePreferences({ notifyAgentQuestion: v })
+              }
+            />
+            <ToggleField
+              label="Task needs board review"
+              hint="Get notified when an issue moves to review or a new join request arrives."
+              checked={push.preferences?.notifyBoardReview ?? true}
+              onChange={(v) =>
+                push.updatePreferences({ notifyBoardReview: v })
+              }
+            />
+            <hr className="border-border" />
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={testSending || !companyId}
+                onClick={async () => {
+                  if (!companyId) return;
+                  setTestSending(true);
+                  setTestResult(null);
+                  try {
+                    await pushApi.sendTest(companyId);
+                    setTestResult("sent");
+                  } catch {
+                    setTestResult("failed");
+                  } finally {
+                    setTestSending(false);
+                  }
+                }}
+              >
+                {testSending ? "Sending..." : "Send test notification"}
+              </Button>
+              {testResult === "sent" && (
+                <span className="text-xs text-green-600">Sent! Check your notifications.</span>
+              )}
+              {testResult === "failed" && (
+                <span className="text-xs text-destructive">Failed to send test notification.</span>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

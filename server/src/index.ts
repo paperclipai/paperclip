@@ -494,7 +494,11 @@ export async function startServer(): Promise<StartedServer> {
     deploymentMode: config.deploymentMode,
     resolveSessionFromHeaders,
   });
-  
+
+  // Start push notification dispatcher (listens to all live events)
+  const { startPushDispatcher } = await import("./services/push-dispatcher.js");
+  startPushDispatcher(db as any);
+
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any);
   

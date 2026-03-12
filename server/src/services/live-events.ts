@@ -31,10 +31,16 @@ export function publishLiveEvent(input: {
 }) {
   const event = toLiveEvent(input);
   emitter.emit(input.companyId, event);
+  emitter.emit("*", event);
   return event;
 }
 
 export function subscribeCompanyLiveEvents(companyId: string, listener: LiveEventListener) {
   emitter.on(companyId, listener);
   return () => emitter.off(companyId, listener);
+}
+
+export function subscribeAllLiveEvents(listener: LiveEventListener) {
+  emitter.on("*", listener);
+  return () => emitter.off("*", listener);
 }
