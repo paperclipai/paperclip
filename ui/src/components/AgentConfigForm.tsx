@@ -975,7 +975,7 @@ function EnvVarEditor({
     secretId: string;
   };
 
-  function toRows(rec: Record<string, EnvBinding> | null | undefined): Row[] {
+  const toRows = useCallback((rec: Record<string, EnvBinding> | null | undefined): Row[] => {
     if (!rec || typeof rec !== "object") {
       return [{ key: "", source: "plain", plainValue: "", secretId: "" }];
     }
@@ -1024,10 +1024,10 @@ function EnvVarEditor({
       };
     });
     return [...entries, { key: "", source: "plain", plainValue: "", secretId: "" }];
-  }
+  }, []);
 
-  function normalizeEnvRecord(rec: Record<string, EnvBinding> | null | undefined): string {
-    if (!rec || typeof rec !== "object") return "{}";
+  const normalizeEnvRecord = useCallback((rec: Record<string, EnvBinding> | null | undefined): string => {
+    if (!rec || typeof rec !== "object" || Object.keys(rec).length === 0) return "{}";
     const normalized = Object.entries(rec)
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([key, binding]) => {
@@ -1058,7 +1058,7 @@ function EnvVarEditor({
         return [key, { type: "plain", value: "" }];
       });
     return JSON.stringify(normalized);
-  }
+  }, []);
 
   const [rows, setRows] = useState<Row[]>(() => toRows(value));
   const [sealError, setSealError] = useState<string | null>(null);
@@ -1076,7 +1076,7 @@ function EnvVarEditor({
       lastExternalValueRef.current = normalizedValue;
       setRows(toRows(value));
     }
-  }, [value]);
+  }, [value, normalizeEnvRecord, toRows]);
 
   function emit(nextRows: Row[]) {
     const rec: Record<string, EnvBinding> = {};
