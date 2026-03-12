@@ -508,15 +508,15 @@ export function Inbox() {
     },
   });
 
-  if (!selectedCompanyId) {
-    return <EmptyState icon={InboxIcon} message="Select a company to view inbox." />;
-  }
-
   const allVisibleJoinRequests = useMemo<InboxJoinRequest[]>(() => {
     const pending: InboxJoinRequest[] = joinRequests.filter((r) => !approvedRequests.has(r.id));
     const approved = Array.from(approvedRequests.values());
     return [...pending, ...approved];
   }, [joinRequests, approvedRequests]);
+
+  if (!selectedCompanyId) {
+    return <EmptyState icon={InboxIcon} message="Select a company to view inbox." />;
+  }
 
   const hasRunFailures = failedRuns.length > 0;
   const showAggregateAgentError = !!dashboard && dashboard.agents.error > 0 && !hasRunFailures && !dismissed.has("alert:agent-errors");

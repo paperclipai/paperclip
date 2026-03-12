@@ -46,8 +46,8 @@ describe("Role Presets", () => {
     expect(ROLE_HIERARCHY.owner).toBeLessThan(ROLE_HIERARCHY.viewer);
   });
 
-  it("does not include pending in membership statuses", () => {
-    expect(MEMBERSHIP_STATUSES).not.toContain("pending");
+  it("includes pending, active and suspended membership statuses", () => {
+    expect(MEMBERSHIP_STATUSES).toContain("pending");
     expect(MEMBERSHIP_STATUSES).toContain("active");
     expect(MEMBERSHIP_STATUSES).toContain("suspended");
   });

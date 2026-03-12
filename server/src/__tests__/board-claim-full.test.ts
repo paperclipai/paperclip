@@ -87,9 +87,8 @@ describe("board-claim", () => {
       );
       await initializeBoardClaimChallenge(db as any, { deploymentMode: "authenticated" as any });
       const url = getBoardClaimWarningUrl("0.0.0.0", 3100);
-      // After clearing challenge, it should be null (depends on previous state)
-      // This verifies the condition check works
-      expect(url === null || typeof url === "string").toBe(true);
+      // When a real (non local-board) admin exists, no challenge should be active
+      expect(url).toBeNull();
     });
   });
 
