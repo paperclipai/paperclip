@@ -4,6 +4,7 @@ import {
   INVITE_JOIN_TYPES,
   JOIN_REQUEST_STATUSES,
   JOIN_REQUEST_TYPES,
+  MEMBERSHIP_ROLES,
   PERMISSION_KEYS,
 } from "../constants.js";
 
@@ -59,6 +60,7 @@ export const updateMemberPermissionsSchema = z.object({
       scope: z.record(z.string(), z.unknown()).optional().nullable(),
     }),
   ),
+  membershipRole: z.enum(MEMBERSHIP_ROLES).optional(),
 });
 
 export type UpdateMemberPermissions = z.infer<typeof updateMemberPermissionsSchema>;

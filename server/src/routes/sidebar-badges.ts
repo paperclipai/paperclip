@@ -23,7 +23,7 @@ export function sidebarBadgeRoutes(db: Db) {
         Boolean(req.actor.isInstanceAdmin) ||
         (await access.canUser(companyId, req.actor.userId, "joins:approve"));
     } else if (req.actor.type === "agent" && req.actor.agentId) {
-      canApproveJoins = await access.hasPermission(companyId, "agent", req.actor.agentId, "joins:approve");
+      canApproveJoins = (await access.hasPermission(companyId, "agent", req.actor.agentId, "joins:approve")).granted;
     }
 
     const joinRequestCount = canApproveJoins

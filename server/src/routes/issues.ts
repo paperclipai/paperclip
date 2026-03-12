@@ -81,18 +81,48 @@ export function issueRoutes(db: Db, storage: StorageService) {
     return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
   }
 
-  async function assertCanAssignTasks(req: Request, companyId: string) {
+  async function assertCanAssignTasks(req: Request, companyId: string, targetAgentId?: string | null) {
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "board") {
       if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
       const allowed = await access.canUser(companyId, req.actor.userId, "tasks:assign");
       if (!allowed) throw forbidden("Missing permission: tasks:assign");
+      // Check subtree scope for board users
+      if (targetAgentId) {
+        const scopeResult = await access.hasPermission(companyId, "user", req.actor.userId!, "tasks:assign_scope");
+        if (scopeResult.granted && scopeResult.scope) {
+          const subtree = typeof scopeResult.scope === "object" && scopeResult.scope.subtree
+            ? String(scopeResult.scope.subtree)
+            : null;
+          if (subtree) {
+            const chain = await agentsSvc.getChainOfCommand(targetAgentId);
+            const isInSubtree = chain.some(a => a.id === subtree) || targetAgentId === subtree;
+            if (!isInSubtree) throw forbidden("Cannot assign to agent outside your scope subtree");
+          }
+        }
+      }
       return;
     }
     if (req.actor.type === "agent") {
       if (!req.actor.agentId) throw forbidden("Agent authentication required");
-      const allowedByGrant = await access.hasPermission(companyId, "agent", req.actor.agentId, "tasks:assign");
-      if (allowedByGrant) return;
+      const allowedByGrant = (await access.hasPermission(companyId, "agent", req.actor.agentId, "tasks:assign")).granted;
+      if (allowedByGrant) {
+        // Check subtree scope for agents
+        if (targetAgentId) {
+          const scopeResult = await access.hasPermission(companyId, "agent", req.actor.agentId, "tasks:assign_scope");
+          if (scopeResult.granted && scopeResult.scope) {
+            const subtree = typeof scopeResult.scope === "object" && scopeResult.scope.subtree
+              ? String(scopeResult.scope.subtree)
+              : null;
+            if (subtree) {
+              const chain = await agentsSvc.getChainOfCommand(targetAgentId);
+              const isInSubtree = chain.some(a => a.id === subtree) || targetAgentId === subtree;
+              if (!isInSubtree) throw forbidden("Cannot assign to agent outside your scope subtree");
+            }
+          }
+        }
+        return;
+      }
       const actorAgent = await agentsSvc.getById(req.actor.agentId);
       if (actorAgent && actorAgent.companyId === companyId && canCreateAgentsLegacy(actorAgent)) return;
       throw forbidden("Missing permission: tasks:assign");
@@ -410,7 +440,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
-      await assertCanAssignTasks(req, companyId);
+      await assertCanAssignTasks(req, companyId, req.body.assigneeAgentId);
     }
 
     const actor = getActorInfo(req);
@@ -472,7 +502,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
     if (assigneeWillChange) {
       if (!isAgentReturningIssueToCreator) {
-        await assertCanAssignTasks(req, existing.companyId);
+        await assertCanAssignTasks(req, existing.companyId, req.body.assigneeAgentId);
       }
     }
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;

@@ -1,8 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
-import type { DeploymentMode } from "@paperclipai/shared";
+import { companies, companyMemberships, instanceUserRoles, principalPermissionGrants } from "@paperclipai/db";
+import { type DeploymentMode, ROLE_PRESETS } from "@paperclipai/shared";
 
 const LOCAL_BOARD_USER_ID = "local-board";
 const CLAIM_TTL_MS = 1000 * 60 * 60 * 24;
@@ -128,15 +128,24 @@ export async function claimBoardOwnership(
           status: "active",
           membershipRole: "owner",
         });
-        continue;
-      }
-
-      if (existing.status !== "active") {
+      } else if (existing.status !== "active") {
         await tx
           .update(companyMemberships)
           .set({ status: "active", membershipRole: "owner", updatedAt: new Date() })
           .where(eq(companyMemberships.id, existing.id));
       }
+
+      const ownerGrants = ROLE_PRESETS.owner.map((k) => ({
+        companyId: company.id,
+        principalType: "user" as const,
+        principalId: opts.userId,
+        permissionKey: k,
+        scope: null,
+        grantedByUserId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }));
+      await tx.insert(principalPermissionGrants).values(ownerGrants).onConflictDoNothing();
     }
   });
 

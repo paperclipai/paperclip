@@ -219,8 +219,27 @@ export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number];
 export const PRINCIPAL_TYPES = ["user", "agent"] as const;
 export type PrincipalType = (typeof PRINCIPAL_TYPES)[number];
 
-export const MEMBERSHIP_STATUSES = ["pending", "active", "suspended"] as const;
+export const MEMBERSHIP_STATUSES = ["active", "suspended"] as const;
 export type MembershipStatus = (typeof MEMBERSHIP_STATUSES)[number];
+
+export const MEMBERSHIP_ROLES = ["owner", "admin", "contributor", "viewer"] as const;
+export type MembershipRole = (typeof MEMBERSHIP_ROLES)[number];
+
+export const ROLE_HIERARCHY: Record<MembershipRole, number> = {
+  owner: 0,
+  admin: 1,
+  contributor: 2,
+  viewer: 3,
+} as const;
+
+export const ROLE_PRESETS: Record<MembershipRole, readonly PermissionKey[]> = {
+  owner: ["users:invite", "users:manage_permissions", "agents:create", "tasks:assign", "tasks:assign_scope", "joins:approve"] as const,
+  admin: ["users:invite", "users:manage_permissions", "agents:create", "tasks:assign", "tasks:assign_scope", "joins:approve"] as const,
+  contributor: ["tasks:assign", "tasks:assign_scope"] as const,
+  viewer: [] as const,
+} as const;
+
+export const HUMAN_INVITE_TTL_MS = 24 * 60 * 60 * 1000;
 
 export const INSTANCE_USER_ROLES = ["instance_admin"] as const;
 export type InstanceUserRole = (typeof INSTANCE_USER_ROLES)[number];

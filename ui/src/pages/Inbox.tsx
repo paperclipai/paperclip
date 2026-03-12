@@ -49,6 +49,8 @@ import {
 } from "../lib/inbox";
 import { useDismissedInboxItems } from "../hooks/useInboxBadge";
 
+type InboxJoinRequest = JoinRequest & { claimSecret?: string };
+
 type InboxCategoryFilter =
   | "everything"
   | "issues_i_touched"
@@ -242,6 +244,9 @@ export function Inbox() {
   const [allCategoryFilter, setAllCategoryFilter] = useState<InboxCategoryFilter>("everything");
   const [allApprovalFilter, setAllApprovalFilter] = useState<InboxApprovalFilter>("all");
   const { dismissed, dismiss } = useDismissedInboxItems();
+  const [approvedRequests, setApprovedRequests] = useState<Map<string, InboxJoinRequest>>(new Map());
+  const [claimedApiKey, setClaimedApiKey] = useState<string | null>(null);
+  const [keyCopied, setKeyCopied] = useState(false);
 
   const pathSegment = location.pathname.split("/").pop() ?? "recent";
   const tab: InboxTab =
@@ -260,6 +265,10 @@ export function Inbox() {
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+
+  useEffect(() => {
+    setApprovedRequests(new Map());
+  }, [selectedCompanyId]);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Inbox" }]);
@@ -404,8 +413,14 @@ export function Inbox() {
   const approveJoinMutation = useMutation({
     mutationFn: (joinRequest: JoinRequest) =>
       accessApi.approveJoinRequest(selectedCompanyId!, joinRequest.id),
-    onSuccess: () => {
+    onSuccess: (data, joinRequest) => {
       setActionError(null);
+      const response = data as InboxJoinRequest;
+      setApprovedRequests((prev) => {
+        const next = new Map(prev);
+        next.set(joinRequest.id, response);
+        return next;
+      });
       queryClient.invalidateQueries({ queryKey: queryKeys.access.joinRequests(selectedCompanyId!) });
       queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId!) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId!) });
@@ -413,6 +428,17 @@ export function Inbox() {
     },
     onError: (err) => {
       setActionError(err instanceof Error ? err.message : "Failed to approve join request");
+    },
+  });
+
+  const claimMutation = useMutation({
+    mutationFn: ({ requestId, claimSecret }: { requestId: string; claimSecret: string }) =>
+      accessApi.claimJoinRequestApiKey(requestId, claimSecret),
+    onSuccess: (data) => {
+      setClaimedApiKey(data.token);
+    },
+    onError: (err) => {
+      setActionError(err instanceof Error ? err.message : "Failed to claim API key");
     },
   });
 
@@ -486,6 +512,12 @@ export function Inbox() {
     return <EmptyState icon={InboxIcon} message="Select a company to view inbox." />;
   }
 
+  const allVisibleJoinRequests = useMemo<InboxJoinRequest[]>(() => {
+    const pending: InboxJoinRequest[] = joinRequests.filter((r) => !approvedRequests.has(r.id));
+    const approved = Array.from(approvedRequests.values());
+    return [...pending, ...approved];
+  }, [joinRequests, approvedRequests]);
+
   const hasRunFailures = failedRuns.length > 0;
   const showAggregateAgentError = !!dashboard && dashboard.agents.error > 0 && !hasRunFailures && !dismissed.has("alert:agent-errors");
   const showBudgetAlert =
@@ -494,7 +526,7 @@ export function Inbox() {
     dashboard.costs.monthUtilizationPercent >= 80 &&
     !dismissed.has("alert:budget");
   const hasAlerts = showAggregateAgentError || showBudgetAlert;
-  const hasJoinRequests = joinRequests.length > 0;
+  const hasJoinRequests = joinRequests.length > 0 || approvedRequests.size > 0;
   const hasTouchedIssues = touchedIssues.length > 0;
 
   const showJoinRequestsCategory =
@@ -669,7 +701,7 @@ export function Inbox() {
               Join Requests
             </h3>
             <div className="grid gap-3">
-              {joinRequests.map((joinRequest) => (
+              {allVisibleJoinRequests.map((joinRequest) => (
                 <div key={joinRequest.id} className="rounded-xl border border-border bg-card p-4">
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                     <div className="space-y-1">
@@ -691,21 +723,42 @@ export function Inbox() {
                       )}
                     </div>
                     <div className="flex items-center gap-2">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={approveJoinMutation.isPending || rejectJoinMutation.isPending}
-                        onClick={() => rejectJoinMutation.mutate(joinRequest)}
-                      >
-                        Reject
-                      </Button>
-                      <Button
-                        size="sm"
-                        disabled={approveJoinMutation.isPending || rejectJoinMutation.isPending}
-                        onClick={() => approveJoinMutation.mutate(joinRequest)}
-                      >
-                        Approve
-                      </Button>
+                      {joinRequest.status === "pending_approval" && (
+                        <>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={approveJoinMutation.isPending || rejectJoinMutation.isPending}
+                            onClick={() => rejectJoinMutation.mutate(joinRequest)}
+                          >
+                            Reject
+                          </Button>
+                          <Button
+                            size="sm"
+                            disabled={approveJoinMutation.isPending || rejectJoinMutation.isPending}
+                            onClick={() => approveJoinMutation.mutate(joinRequest)}
+                          >
+                            Approve
+                          </Button>
+                        </>
+                      )}
+                      {joinRequest.status === "approved" && joinRequest.claimSecret && (
+                        <Button
+                          size="sm"
+                          onClick={() =>
+                            claimMutation.mutate({
+                              requestId: joinRequest.id,
+                              claimSecret: joinRequest.claimSecret!,
+                            })
+                          }
+                          disabled={claimMutation.isPending}
+                        >
+                          {claimMutation.isPending ? "Claiming..." : "Claim API Key"}
+                        </Button>
+                      )}
+                      {joinRequest.status === "approved" && !joinRequest.claimSecret && (
+                        <StatusBadge status="approved" />
+                      )}
                     </div>
                   </div>
                 </div>
@@ -794,6 +847,37 @@ export function Inbox() {
             </div>
           </div>
         </>
+      )}
+
+      {claimedApiKey && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="rounded-lg border border-border bg-card p-6 shadow-lg w-96">
+            <h4 className="text-lg font-semibold mb-2">API Key Created</h4>
+            <p className="text-sm text-destructive mb-3 font-medium">
+              This key will NOT be shown again. Copy it now.
+            </p>
+            <textarea
+              readOnly
+              value={claimedApiKey}
+              rows={3}
+              className="w-full rounded-md border border-input bg-muted p-3 text-sm font-mono mb-3"
+            />
+            <div className="flex items-center gap-2">
+              <Button
+                onClick={() => {
+                  navigator.clipboard.writeText(claimedApiKey);
+                  setKeyCopied(true);
+                  setTimeout(() => setKeyCopied(false), 2000);
+                }}
+              >
+                {keyCopied ? "Copied!" : "Copy Key"}
+              </Button>
+              <Button variant="ghost" onClick={() => setClaimedApiKey(null)}>
+                Done
+              </Button>
+            </div>
+          </div>
+        </div>
       )}
 
       {showTouchedSection && (

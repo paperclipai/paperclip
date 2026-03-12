@@ -1,5 +1,5 @@
 import type { AgentAdapterType, JoinRequest } from "@paperclipai/shared";
-import { api } from "./client";
+import { api, ApiError } from "./client";
 
 type InviteSummary = {
   id: string;
@@ -127,4 +127,62 @@ export const accessApi = {
 
   claimBoard: (token: string, code: string) =>
     api.post<{ claimed: true; userId: string }>(`/board-claim/${token}/claim`, { code }),
+
+  listMembers: (companyId: string) =>
+    api.get<Array<{
+      id: string;
+      companyId: string;
+      principalType: "user" | "agent";
+      principalId: string;
+      status: "active" | "suspended";
+      membershipRole: string | null;
+      createdAt: string;
+      updatedAt: string;
+    }>>(`/companies/${companyId}/members`),
+
+  updateMemberPermissions: (
+    companyId: string,
+    memberId: string,
+    grants: Array<{ permissionKey: string; scope?: Record<string, unknown> | null }>,
+  ) =>
+    api.patch<{
+      id: string;
+      companyId: string;
+      principalType: "user" | "agent";
+      principalId: string;
+      status: string;
+      membershipRole: string | null;
+    }>(`/companies/${companyId}/members/${memberId}/permissions`, { grants }),
+
+  removeMember: async (companyId: string, memberId: string) => {
+    const res = await fetch(`/api/companies/${companyId}/members/${memberId}`, {
+      method: "DELETE",
+      credentials: "include",
+    });
+    if (!res.ok) {
+      const errorBody = await res.json().catch(() => null);
+      throw new ApiError(
+        (errorBody as { error?: string } | null)?.error ?? `Request failed: ${res.status}`,
+        res.status,
+        errorBody,
+      );
+    }
+  },
+
+  suspendMember: (companyId: string, memberId: string) =>
+    api.post<{
+      id: string;
+      status: "suspended";
+      membershipRole: string | null;
+    }>(`/companies/${companyId}/members/${memberId}/suspend`, {}),
+
+  unsuspendMember: (companyId: string, memberId: string) =>
+    api.post<{
+      id: string;
+      status: "active";
+      membershipRole: string | null;
+    }>(`/companies/${companyId}/members/${memberId}/unsuspend`, {}),
+
+  revokeInvite: (inviteId: string) =>
+    api.post<{ revoked: true }>(`/invites/${inviteId}/revoke`, {}),
 };

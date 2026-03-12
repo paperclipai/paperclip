@@ -7,7 +7,9 @@ import { accessApi } from "../api/access";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Settings, Check } from "lucide-react";
+import { ROLE_PRESETS, MEMBERSHIP_ROLES, type MembershipRole } from "@paperclipai/shared";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
+import { MembersSection } from "../components/MembersSection";
 import {
   Field,
   ToggleField,
@@ -47,6 +49,11 @@ export function CompanySettings() {
   const [inviteSnippet, setInviteSnippet] = useState<string | null>(null);
   const [snippetCopied, setSnippetCopied] = useState(false);
   const [snippetCopyDelightId, setSnippetCopyDelightId] = useState(0);
+
+  const [humanInviteUrl, setHumanInviteUrl] = useState<string | null>(null);
+  const [humanInviteError, setHumanInviteError] = useState<string | null>(null);
+  const [humanInviteRole, setHumanInviteRole] = useState<MembershipRole>("contributor");
+  const [humanInviteCopied, setHumanInviteCopied] = useState(false);
 
   const generalDirty =
     !!selectedCompany &&
@@ -128,11 +135,33 @@ export function CompanySettings() {
     }
   });
 
+  const humanInviteMutation = useMutation({
+    mutationFn: async () => {
+      const roleGrants = ROLE_PRESETS[humanInviteRole].map((k) => ({
+        permissionKey: k,
+      }));
+      return accessApi.createCompanyInvite(selectedCompanyId!, {
+        allowedJoinTypes: "human",
+        defaultsPayload: { human: { grants: roleGrants }, rolePreset: humanInviteRole },
+      });
+    },
+    onSuccess: (data) => {
+      setHumanInviteUrl(data.inviteUrl);
+      setHumanInviteError(null);
+    },
+    onError: (err: Error) => {
+      setHumanInviteError(err.message);
+    },
+  });
+
   useEffect(() => {
     setInviteError(null);
     setInviteSnippet(null);
     setSnippetCopied(false);
     setSnippetCopyDelightId(0);
+    setHumanInviteUrl(null);
+    setHumanInviteError(null);
+    setHumanInviteCopied(false);
   }, [selectedCompanyId]);
   const archiveMutation = useMutation({
     mutationFn: ({
@@ -378,6 +407,77 @@ export function CompanySettings() {
           )}
         </div>
       </div>
+
+      {/* Invite Collaborator */}
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Invite Collaborator
+        </div>
+        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+          <p className="text-sm text-muted-foreground">
+            Generate a single-use invite link for a human collaborator. Links expire after 24 hours.
+          </p>
+
+          <div className="flex items-center gap-3">
+            <label className="text-sm font-medium">Role:</label>
+            <select
+              value={humanInviteRole}
+              onChange={(e) => setHumanInviteRole(e.target.value as MembershipRole)}
+              className="rounded-md border border-input bg-background px-3 py-1.5 text-sm"
+            >
+              {MEMBERSHIP_ROLES.map((role) => (
+                <option key={role} value={role}>
+                  {role.charAt(0).toUpperCase() + role.slice(1)}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              onClick={() => humanInviteMutation.mutate()}
+              disabled={humanInviteMutation.isPending}
+            >
+              {humanInviteMutation.isPending ? "Generating..." : "Generate Invite Link"}
+            </Button>
+          </div>
+
+          {humanInviteError && (
+            <p className="text-sm text-destructive">{humanInviteError}</p>
+          )}
+
+          {humanInviteUrl && (
+            <div className="rounded-md border border-border bg-muted/30 p-2">
+              <textarea
+                readOnly
+                value={humanInviteUrl}
+                rows={2}
+                className="w-full rounded-md border border-border bg-background px-2 py-1.5 font-mono text-xs outline-none"
+              />
+              <div className="mt-2 flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    navigator.clipboard.writeText(humanInviteUrl);
+                    setHumanInviteCopied(true);
+                    setTimeout(() => setHumanInviteCopied(false), 2000);
+                  }}
+                >
+                  {humanInviteCopied ? "Copied!" : "Copy Link"}
+                </Button>
+                <span className="text-xs text-muted-foreground">
+                  Expires in 24 hours
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Members */}
+      <MembersSection companyId={selectedCompanyId!} />
 
       {/* Danger Zone */}
       <div className="space-y-4">
