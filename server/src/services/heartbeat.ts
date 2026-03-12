@@ -12,6 +12,7 @@ import {
   issues,
   projects,
   projectWorkspaces,
+  nodes,
 } from "@paperclipai/db";
 import { conflict, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -20,7 +21,7 @@ import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, runningProcesses } from "../adapters/index.js";
 import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
-import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
+import { parseObject, asBoolean, asNumber, asString, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
@@ -455,6 +456,23 @@ export function heartbeatService(db: Db) {
   const runLogStore = getRunLogStore();
   const secretsSvc = secretService(db);
   const issuesSvc = issueService(db);
+
+  /** If the newly queued/claimed run is for a remote_node agent, publish node.run.available. */
+  async function maybeNotifyRemoteNode(run: typeof heartbeatRuns.$inferSelect) {
+    const [agent] = await db
+      .select({ adapterType: agents.adapterType, adapterConfig: agents.adapterConfig, companyId: agents.companyId })
+      .from(agents)
+      .where(eq(agents.id, run.agentId));
+    if (!agent || agent.adapterType !== "remote_node") return;
+    const config = parseObject(agent.adapterConfig);
+    const nodeId = asString(config.nodeId, "");
+    if (!nodeId) return;
+    publishLiveEvent({
+      companyId: agent.companyId,
+      type: "node.run.available",
+      payload: { runId: run.id, agentId: run.agentId, nodeId },
+    });
+  }
 
   async function getAgent(agentId: string) {
     return db
@@ -946,6 +964,47 @@ export function heartbeatService(db: Db) {
     }
   }
 
+  async function isRemoteNodeRun(agentId: string): Promise<boolean> {
+    const [agent] = await db.select({ adapterType: agents.adapterType }).from(agents).where(eq(agents.id, agentId));
+    return agent?.adapterType === "remote_node";
+  }
+
+  /** Remote node staleness threshold: 10 minutes since last log/update. */
+  const REMOTE_NODE_STALE_THRESHOLD_MS = 10 * 60 * 1000;
+  /** Node offline threshold: 90 seconds without heartbeat. */
+  const NODE_OFFLINE_THRESHOLD_MS = 90_000;
+
+  async function shouldReapRemoteRun(
+    run: typeof heartbeatRuns.$inferSelect,
+    now: Date,
+  ): Promise<boolean> {
+    // If the run was never remotely claimed and has been waiting too long, reap it
+    if (!run.remoteClaimedAt) {
+      const age = now.getTime() - new Date(run.createdAt).getTime();
+      return age > REMOTE_NODE_STALE_THRESHOLD_MS;
+    }
+    // If remotely claimed but no updates for a while, check if node is still online
+    const timeSinceUpdate = now.getTime() - (run.updatedAt ? new Date(run.updatedAt).getTime() : 0);
+    if (timeSinceUpdate < REMOTE_NODE_STALE_THRESHOLD_MS) return false;
+
+    // Check node status
+    const [agent] = await db
+      .select({ adapterConfig: agents.adapterConfig })
+      .from(agents)
+      .where(eq(agents.id, run.agentId));
+    if (!agent) return true;
+
+    const config = parseObject(agent.adapterConfig);
+    const nodeId = typeof config.nodeId === "string" ? config.nodeId : null;
+    if (!nodeId) return true;
+
+    const [node] = await db.select({ lastSeenAt: nodes.lastSeenAt }).from(nodes).where(eq(nodes.id, nodeId));
+    if (!node?.lastSeenAt) return true;
+
+    const nodeLastSeen = new Date(node.lastSeenAt).getTime();
+    return now.getTime() - nodeLastSeen > NODE_OFFLINE_THRESHOLD_MS;
+  }
+
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
@@ -959,6 +1018,42 @@ export function heartbeatService(db: Db) {
     const reaped: string[] = [];
 
     for (const run of activeRuns) {
+      // For remote_node runs, use separate logic (no local process tracking)
+      const isRemote = await isRemoteNodeRun(run.agentId);
+      if (isRemote) {
+        const shouldReap = await shouldReapRemoteRun(run, now);
+        if (!shouldReap) continue;
+
+        const errorMsg = run.remoteClaimedAt
+          ? "Remote node stopped responding"
+          : "Remote node never claimed run";
+
+        await setRunStatus(run.id, "failed", {
+          error: errorMsg,
+          errorCode: "remote_node_lost",
+          finishedAt: now,
+        });
+        await setWakeupStatus(run.wakeupRequestId, "failed", {
+          finishedAt: now,
+          error: errorMsg,
+        });
+        const updatedRun = await getRun(run.id);
+        if (updatedRun) {
+          await appendRunEvent(updatedRun, 1, {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "error",
+            message: errorMsg,
+          });
+          await releaseIssueExecutionAndPromote(updatedRun);
+        }
+        await finalizeAgentStatus(run.agentId, "failed");
+        await startNextQueuedRunForAgent(run.agentId);
+        reaped.push(run.id);
+        continue;
+      }
+
+      // Local adapter reaping (existing logic)
       if (runningProcesses.has(run.id)) continue;
 
       // Apply staleness threshold to avoid false positives
@@ -1830,6 +1925,7 @@ export function heartbeatService(db: Db) {
         wakeupRequestId: promotedRun.wakeupRequestId,
       },
     });
+    await maybeNotifyRemoteNode(promotedRun);
 
     await startNextQueuedRunForAgent(promotedRun.agentId);
   }
@@ -2174,6 +2270,7 @@ export function heartbeatService(db: Db) {
           wakeupRequestId: newRun.wakeupRequestId,
         },
       });
+      await maybeNotifyRemoteNode(newRun);
 
       await startNextQueuedRunForAgent(agent.id);
       return newRun;
@@ -2284,6 +2381,7 @@ export function heartbeatService(db: Db) {
         wakeupRequestId: newRun.wakeupRequestId,
       },
     });
+    await maybeNotifyRemoteNode(newRun);
 
     await startNextQueuedRunForAgent(agent.id);
 
@@ -2465,15 +2563,39 @@ export function heartbeatService(db: Db) {
       if (!run) throw notFound("Heartbeat run not found");
       if (run.status !== "running" && run.status !== "queued") return run;
 
-      const running = runningProcesses.get(run.id);
-      if (running) {
-        running.child.kill("SIGTERM");
-        const graceMs = Math.max(1, running.graceSec) * 1000;
-        setTimeout(() => {
-          if (!running.child.killed) {
-            running.child.kill("SIGKILL");
-          }
-        }, graceMs);
+      const isRemote = await isRemoteNodeRun(run.agentId);
+
+      if (isRemote) {
+        // For remote_node runs: emit cancellation event and resolve the waiter
+        const { remoteCompletionEmitter } = await import("@paperclipai/adapter-remote-node/server");
+        remoteCompletionEmitter.emit("run.cancel", { runId: run.id });
+
+        // Notify the remote runner via live event
+        const [agent] = await db
+          .select({ companyId: agents.companyId, adapterConfig: agents.adapterConfig })
+          .from(agents)
+          .where(eq(agents.id, run.agentId));
+        if (agent) {
+          const config = parseObject(agent.adapterConfig);
+          const nodeId = typeof config.nodeId === "string" ? config.nodeId : null;
+          publishLiveEvent({
+            companyId: agent.companyId,
+            type: "node.run.cancelled",
+            payload: { runId: run.id, nodeId },
+          });
+        }
+      } else {
+        // Local adapter: kill the process
+        const running = runningProcesses.get(run.id);
+        if (running) {
+          running.child.kill("SIGTERM");
+          const graceMs = Math.max(1, running.graceSec) * 1000;
+          setTimeout(() => {
+            if (!running.child.killed) {
+              running.child.kill("SIGKILL");
+            }
+          }, graceMs);
+        }
       }
 
       const cancelled = await setRunStatus(run.id, "cancelled", {

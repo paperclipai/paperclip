@@ -32,3 +32,5 @@ export { approvalComments } from "./approval_comments.js";
 export { activityLog } from "./activity_log.js";
 export { companySecrets } from "./company_secrets.js";
 export { companySecretVersions } from "./company_secret_versions.js";
+export { nodes } from "./nodes.js";
+export { nodeApiKeys } from "./node_api_keys.js";

@@ -122,6 +122,15 @@ export {
 } from "./asset.js";
 
 export {
+  createNodeSchema,
+  updateNodeSchema,
+  createNodeKeySchema,
+  type CreateNode,
+  type UpdateNode,
+  type CreateNodeKey,
+} from "./node.js";
+
+export {
   createCompanyInviteSchema,
   createOpenClawInvitePromptSchema,
   acceptInviteSchema,

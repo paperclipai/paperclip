@@ -30,7 +30,9 @@ export {
   INVITE_JOIN_TYPES,
   JOIN_REQUEST_TYPES,
   JOIN_REQUEST_STATUSES,
+  NODE_STATUSES,
   PERMISSION_KEYS,
+  type NodeStatus,
   type CompanyStatus,
   type DeploymentMode,
   type DeploymentExposure,
@@ -129,6 +131,8 @@ export type {
   AgentEnvConfig,
   CompanySecret,
   SecretProviderDescriptor,
+  Node,
+  NodeKeyCreated,
 } from "./types/index.js";
 
 export {
@@ -223,6 +227,12 @@ export {
   type ClaimJoinRequestApiKey,
   type UpdateMemberPermissions,
   type UpdateUserCompanyAccess,
+  createNodeSchema,
+  updateNodeSchema,
+  createNodeKeySchema,
+  type CreateNode,
+  type UpdateNode,
+  type CreateNodeKey,
   portabilityIncludeSchema,
   portabilitySecretRequirementSchema,
   portabilityCompanyManifestEntrySchema,

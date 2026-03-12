@@ -51,6 +51,14 @@ import {
 import {
   agentConfigurationDoc as piAgentConfigurationDoc,
 } from "@paperclipai/adapter-pi-local";
+import {
+  execute as remoteNodeExecute,
+  testEnvironment as remoteNodeTestEnvironment,
+} from "@paperclipai/adapter-remote-node/server";
+import {
+  agentConfigurationDoc as remoteNodeAgentConfigurationDoc,
+} from "@paperclipai/adapter-remote-node";
+import { sessionCodec as remoteNodeSessionCodec } from "@paperclipai/adapter-remote-node/server";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
 
@@ -127,6 +135,16 @@ const piLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: piAgentConfigurationDoc,
 };
 
+const remoteNodeAdapter: ServerAdapterModule = {
+  type: "remote_node",
+  execute: remoteNodeExecute,
+  testEnvironment: remoteNodeTestEnvironment,
+  sessionCodec: remoteNodeSessionCodec,
+  models: [],
+  supportsLocalAgentJwt: false,
+  agentConfigurationDoc: remoteNodeAgentConfigurationDoc,
+};
+
 const adaptersByType = new Map<string, ServerAdapterModule>(
   [
     claudeLocalAdapter,
@@ -136,6 +154,7 @@ const adaptersByType = new Map<string, ServerAdapterModule>(
     cursorLocalAdapter,
     geminiLocalAdapter,
     openclawGatewayAdapter,
+    remoteNodeAdapter,
     processAdapter,
     httpAdapter,
   ].map((a) => [a.type, a]),

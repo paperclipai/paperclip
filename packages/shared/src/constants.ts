@@ -31,6 +31,7 @@ export const AGENT_ADAPTER_TYPES = [
   "pi_local",
   "cursor",
   "openclaw_gateway",
+  "remote_node",
 ] as const;
 export type AgentAdapterType = (typeof AGENT_ADAPTER_TYPES)[number];
 
@@ -213,6 +214,9 @@ export const LIVE_EVENT_TYPES = [
   "heartbeat.run.log",
   "agent.status",
   "activity.logged",
+  "node.run.available",
+  "node.run.cancelled",
+  "node.status",
 ] as const;
 export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number];
 
@@ -236,6 +240,9 @@ export type JoinRequestType = (typeof JOIN_REQUEST_TYPES)[number];
 
 export const JOIN_REQUEST_STATUSES = ["pending_approval", "approved", "rejected"] as const;
 export type JoinRequestStatus = (typeof JOIN_REQUEST_STATUSES)[number];
+
+export const NODE_STATUSES = ["online", "offline", "draining"] as const;
+export type NodeStatus = (typeof NODE_STATUSES)[number];
 
 export const PERMISSION_KEYS = [
   "agents:create",
