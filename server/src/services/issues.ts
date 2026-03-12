@@ -68,7 +68,6 @@ export interface IssueFilters {
 interface MentionableAgentRow {
   id: string;
   name: string;
-  urlKey?: string | null;
 }
 
 type IssueRow = typeof issues.$inferSelect;
@@ -131,11 +130,7 @@ export function findMentionedAgentIds(
   return rows
     .filter((agent) => {
       const normalizedName = normalizeAgentUrlKey(agent.name);
-      const normalizedUrlKey = normalizeAgentUrlKey(agent.urlKey);
-      return (
-        (normalizedName && tokens.has(normalizedName)) ||
-        (normalizedUrlKey && tokens.has(normalizedUrlKey))
-      );
+      return normalizedName != null && tokens.has(normalizedName);
     })
     .map((agent) => agent.id);
 }
