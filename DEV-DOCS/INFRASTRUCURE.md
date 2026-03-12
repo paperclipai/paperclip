@@ -1,6 +1,6 @@
 # Infrastructure
 
-Last updated: 2026-03-10
+Last updated: 2026-03-11
 
 ## 1. Purpose
 
@@ -27,6 +27,7 @@ Paperclip is a single-instance control plane with one primary server process and
 | UI | Browser app, served statically or via Vite middleware | Operator console for all board workflows | `ui/src/App.tsx` |
 | CLI | Separate operator process | Onboarding, doctor, run, config, and client commands | `cli/src/index.ts` |
 | Database | Embedded PostgreSQL by default, external Postgres optionally | System of record for all core entities | `packages/db/src/*` |
+| Repo startup scripts | Local checkout process | Resolve startup profile, pin instance env, and record launch attempts | `scripts/start-local.mjs`, `scripts/dev-runner.mjs`, `scripts/startup-context.mjs` |
 | Storage provider | Local disk or S3-compatible object storage | Asset and file storage | `server/src/storage/*` |
 | Secret provider | Local encrypted provider by default, pluggable registry | Secret material resolution for agent env bindings | `server/src/secrets/*`, `server/src/services/secrets.ts` |
 | Adapter runtime | In-process adapter registry, spawning local tools or gateway calls | Agent execution and environment diagnostics | `server/src/adapters/*`, `packages/adapters/*` |
@@ -63,6 +64,10 @@ Configuration is resolved in layers:
 2. Paperclip config file
 3. environment variables
 4. CLI overrides for some workflows
+
+For repo-root startup scripts there is an additional operator-facing layer before the server boots:
+
+5. repo-local startup profile at `.paperclip/local-start.json`
 
 ### Config loading
 
@@ -117,25 +122,27 @@ The runtime boot path lives in `server/src/index.ts`.
 
 ### Startup phases
 
-1. Load runtime config.
-2. Normalize secrets-related env vars so downstream code sees a consistent view.
-3. Resolve the database mode:
+1. Resolve startup context from env, repo-local profile, or interactive chooser.
+2. Record a launch attempt for the resolved instance.
+3. Load runtime config.
+4. Normalize secrets-related env vars so downstream code sees a consistent view.
+5. Resolve the database mode:
    - external Postgres if `DATABASE_URL` or config connection string exists
    - embedded PostgreSQL otherwise
-4. Inspect migrations and apply or prompt when needed.
-5. Validate deployment-mode constraints.
-6. Initialize auth mode:
+6. Inspect migrations and apply or prompt when needed.
+7. Validate deployment-mode constraints.
+8. Initialize auth mode:
    - local implicit board bootstrap in `local_trusted`
    - Better Auth setup in `authenticated`
-7. Create the storage service.
-8. Build the Express app with mounted routes and UI mode.
-9. Create the HTTP server.
-10. Attach websocket upgrade handling.
-11. Start scheduler loops:
+9. Create the storage service.
+10. Build the Express app with mounted routes and UI mode.
+11. Create the HTTP server.
+12. Attach websocket upgrade handling.
+13. Start scheduler loops:
     - heartbeat timers and orphan-run reap
     - briefing schedule generation
     - automatic database backups
-12. Listen on the resolved host and port.
+14. Listen on the resolved host and port and append a `ready` launch-history row.
 
 ### UI serving modes
 
@@ -241,7 +248,7 @@ The DB schema exports group into these logical areas:
 
 ## 6. Filesystem and Instance Layout
 
-The local instance layout under `~/.paperclip/instances/<instance-id>/` is part of the infrastructure.
+The local instance layout under `<paperclipHome>/instances/<instance-id>/` is part of the infrastructure.
 
 Important default locations:
 
@@ -255,10 +262,16 @@ Important default locations:
   - `~/.paperclip/instances/default/secrets/master.key`
 - fallback agent workspaces:
   - `~/.paperclip/instances/default/workspaces/<agent-id>`
+- launch history:
+  - `<paperclipHome>/instances/<instance-id>/logs/launch-history.jsonl`
 - plugins, when that system lands later:
   - planned under the same instance root
 
-These paths are resolved through `server/src/home-paths.ts` and the CLI home/config helpers.
+Repo checkout state that points at one of those instances lives at:
+
+- `.paperclip/local-start.json`
+
+These paths are resolved through `server/src/home-paths.ts`, `server/src/paths.ts`, the CLI home/config helpers, and `scripts/startup-context.mjs`.
 
 ## 7. Server Infrastructure
 

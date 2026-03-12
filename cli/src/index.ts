@@ -52,6 +52,7 @@ program
   .option("--repair", "Attempt to repair issues automatically")
   .alias("--fix")
   .option("-y, --yes", "Skip repair confirmation prompts")
+  .option("--launch-history", "Show recent launch history for the repo-local startup profile")
   .action(async (opts) => {
     await doctor(opts);
   });

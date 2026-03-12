@@ -23,7 +23,7 @@
   ],
   "scripts": {
     "dev": "tsx src/index.ts",
-    "dev:watch": "PAPERCLIP_MIGRATION_PROMPT=never tsx watch --ignore ../ui/node_modules --ignore ../ui/.vite --ignore ../ui/dist src/index.ts",
+    "dev:watch": "cross-env PAPERCLIP_MIGRATION_PROMPT=never tsx watch --ignore ../ui/node_modules --ignore ../ui/.vite --ignore ../ui/dist src/index.ts",
     "build": "tsc",
     "clean": "rm -rf dist",
     "start": "node dist/index.js",
@@ -61,6 +61,7 @@
     "@types/node": "^24.6.0",
     "@types/supertest": "^6.0.2",
     "@types/ws": "^8.18.1",
+    "cross-env": "^10.1.0",
     "supertest": "^7.0.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",

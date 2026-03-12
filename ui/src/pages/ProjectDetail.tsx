@@ -24,7 +24,7 @@ import { SlidersHorizontal } from "lucide-react";
 
 /* ── Top-level tab types ── */
 
-type ProjectTab = "overview" | "list";
+type ProjectTab = "overview" | "list" | "configuration";
 
 function resolveProjectTab(pathname: string, projectId: string): ProjectTab | null {
   const segments = pathname.split("/").filter(Boolean);
@@ -32,6 +32,7 @@ function resolveProjectTab(pathname: string, projectId: string): ProjectTab | nu
   if (projectsIdx === -1 || segments[projectsIdx + 1] !== projectId) return null;
   const tab = segments[projectsIdx + 2];
   if (tab === "overview") return "overview";
+  if (tab === "configuration") return "configuration";
   if (tab === "issues") return "list";
   return null;
 }
@@ -205,6 +206,7 @@ export function ProjectDetail() {
   const navigate = useNavigate();
   const location = useLocation();
   const routeProjectRef = projectId ?? "";
+  const [projectConfigPatch, setProjectConfigPatch] = useState<Record<string, unknown>>({});
   const routeCompanyId = useMemo(() => {
     if (!companyPrefix) return null;
     const requestedPrefix = companyPrefix.toUpperCase();
@@ -240,7 +242,10 @@ export function ProjectDetail() {
   const updateProject = useMutation({
     mutationFn: (data: Record<string, unknown>) =>
       projectsApi.update(projectLookupRef, data, resolvedCompanyId ?? lookupCompanyId),
-    onSuccess: invalidateProject,
+    onSuccess: () => {
+      setProjectConfigPatch({});
+      invalidateProject();
+    },
   });
 
   const uploadImage = useMutation({
@@ -264,6 +269,10 @@ export function ProjectDetail() {
       navigate(`/projects/${canonicalProjectRef}/overview`, { replace: true });
       return;
     }
+    if (activeTab === "configuration") {
+      navigate(`/projects/${canonicalProjectRef}/configuration`, { replace: true });
+      return;
+    }
     if (activeTab === "list") {
       if (filter) {
         navigate(`/projects/${canonicalProjectRef}/issues/${filter}`, { replace: true });
@@ -276,11 +285,18 @@ export function ProjectDetail() {
   }, [project, routeProjectRef, canonicalProjectRef, activeTab, filter, navigate]);
 
   useEffect(() => {
-    if (project) {
-      openPanel(<ProjectProperties project={project} onUpdate={(data) => updateProject.mutate(data)} />);
+    setProjectConfigPatch({});
+  }, [project?.id, project?.updatedAt]);
+
+  useEffect(() => {
+    if (!project) return;
+    if (activeTab === "configuration") {
+      closePanel();
+      return;
     }
+    openPanel(<ProjectProperties project={project} onUpdate={(data) => updateProject.mutate(data)} />);
     return () => closePanel();
-  }, [project]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeTab, project]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Redirect bare /projects/:id to /projects/:id/issues
   if (routeProjectRef && activeTab === null) {
@@ -294,10 +310,22 @@ export function ProjectDetail() {
   const handleTabChange = (tab: ProjectTab) => {
     if (tab === "overview") {
       navigate(`/projects/${canonicalProjectRef}/overview`);
+    } else if (tab === "configuration") {
+      navigate(`/projects/${canonicalProjectRef}/configuration`);
     } else {
       navigate(`/projects/${canonicalProjectRef}/issues`);
     }
   };
+
+  const configurationDraft = useMemo(
+    () => ({
+      ...project,
+      ...projectConfigPatch,
+      ...(Object.prototype.hasOwnProperty.call(projectConfigPatch, "goalIds") ? { goals: [] } : null),
+    }),
+    [project, projectConfigPatch],
+  );
+  const hasConfigChanges = Object.keys(projectConfigPatch).length > 0;
 
   return (
     <div className="space-y-6">
@@ -314,27 +342,31 @@ export function ProjectDetail() {
           as="h2"
           className="text-xl font-bold"
         />
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          className="ml-auto md:hidden shrink-0"
-          onClick={() => setMobilePropsOpen(true)}
-          title="Properties"
-        >
-          <SlidersHorizontal className="h-4 w-4" />
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          className={cn(
-            "shrink-0 ml-auto transition-opacity duration-200 hidden md:flex",
-            panelVisible ? "opacity-0 pointer-events-none w-0 overflow-hidden" : "opacity-100",
-          )}
-          onClick={() => setPanelVisible(true)}
-          title="Show properties"
-        >
-          <SlidersHorizontal className="h-4 w-4" />
-        </Button>
+        {activeTab !== "configuration" ? (
+          <>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              className="ml-auto md:hidden shrink-0"
+              onClick={() => setMobilePropsOpen(true)}
+              title="Properties"
+            >
+              <SlidersHorizontal className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              className={cn(
+                "shrink-0 ml-auto transition-opacity duration-200 hidden md:flex",
+                panelVisible ? "opacity-0 pointer-events-none w-0 overflow-hidden" : "opacity-100",
+              )}
+              onClick={() => setPanelVisible(true)}
+              title="Show properties"
+            >
+              <SlidersHorizontal className="h-4 w-4" />
+            </Button>
+          </>
+        ) : null}
       </div>
 
       {/* Top-level project tabs */}
@@ -359,6 +391,16 @@ export function ProjectDetail() {
         >
           List
         </button>
+        <button
+          className={`px-3 py-2 text-sm font-medium transition-colors border-b-2 ${
+            activeTab === "configuration"
+              ? "border-foreground text-foreground"
+              : "border-transparent text-muted-foreground hover:text-foreground"
+          }`}
+          onClick={() => handleTabChange("configuration")}
+        >
+          Configuration
+        </button>
       </div>
 
       {/* Tab content */}
@@ -377,8 +419,47 @@ export function ProjectDetail() {
         <ProjectIssuesList projectId={project.id} companyId={resolvedCompanyId} />
       )}
 
+      {activeTab === "configuration" && (
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-card/60 p-4">
+            <div>
+              <h3 className="text-sm font-medium">Project Configuration</h3>
+              <p className="text-xs text-muted-foreground">
+                Save roadmap linkage and project settings deliberately so reviews stay easy to follow.
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={!hasConfigChanges}
+                onClick={() => setProjectConfigPatch({})}
+              >
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                disabled={!hasConfigChanges || updateProject.isPending}
+                onClick={() => updateProject.mutate(projectConfigPatch)}
+              >
+                {updateProject.isPending ? "Saving..." : "Save changes"}
+              </Button>
+            </div>
+          </div>
+          <ProjectProperties
+            project={configurationDraft}
+            onUpdate={(patch) =>
+              setProjectConfigPatch((current) => ({
+                ...current,
+                ...patch,
+              }))
+            }
+          />
+        </div>
+      )}
+
       {/* Mobile properties drawer */}
-      <Sheet open={mobilePropsOpen} onOpenChange={setMobilePropsOpen}>
+      <Sheet open={activeTab !== "configuration" && mobilePropsOpen} onOpenChange={setMobilePropsOpen}>
         <SheetContent side="bottom" className="max-h-[85dvh] pb-[env(safe-area-inset-bottom)]">
           <SheetHeader>
             <SheetTitle className="text-sm">Properties</SheetTitle>

@@ -70,6 +70,9 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?
   const secret = process.env.BETTER_AUTH_SECRET ?? process.env.PAPERCLIP_AGENT_JWT_SECRET ?? "paperclip-dev-secret";
   const effectiveTrustedOrigins = trustedOrigins ?? deriveAuthTrustedOrigins(config);
 
+  const publicUrl = process.env.PAPERCLIP_PUBLIC_URL ?? baseUrl;
+  const isHttpOnly = publicUrl ? publicUrl.startsWith("http://") : false;
+
   const authConfig = {
     baseURL: baseUrl,
     secret,
@@ -88,6 +91,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?
       requireEmailVerification: false,
       disableSignUp: config.authDisableSignUp,
     },
+    ...(isHttpOnly ? { advanced: { useSecureCookies: false } } : {}),
   };
 
   if (!baseUrl) {

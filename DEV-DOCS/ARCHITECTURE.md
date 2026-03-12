@@ -1,6 +1,6 @@
 # Architecture
 
-Last updated: 2026-03-10
+Last updated: 2026-03-11
 
 ## 1. System shape
 
@@ -80,10 +80,19 @@ Key responsibilities:
 - company-scoped routing and route prefix normalization
 - query/mutation wiring against the REST API
 - operator-facing roadmap, dashboard, approvals, and agent management surfaces
+- keeping agent detail as the full run-analysis surface
+- keeping issue detail compact while linking back to agent runs
+- explicit-save project configuration flows where reviewability matters
 
 ### `cli`
 
 Operator CLI for local workflows, admin actions, and scripted access to the control plane API.
+
+It now also bridges the repo-local startup safety model:
+
+- `pnpm start` / `pnpm dev` save checkout-specific startup context in `.paperclip/local-start.json`
+- `paperclipai doctor --launch-history` explains which instance the current checkout points at
+- launch history is stored with the resolved instance, not with the repo checkout
 
 ## 3. Core entity model
 

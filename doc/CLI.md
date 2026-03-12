@@ -25,6 +25,12 @@ Choose local instance:
 pnpm paperclipai run --instance dev
 ```
 
+Inspect the current repo-local startup profile and launch history:
+
+```sh
+pnpm paperclipai doctor --launch-history
+```
+
 ## Deployment Modes
 
 Mode taxonomy and design intent are documented in `doc/DEPLOYMENT-MODES.md`.
@@ -60,6 +66,15 @@ Use `--data-dir` on any CLI command to isolate all default local state (config/c
 pnpm paperclipai run --data-dir ./tmp/paperclip-dev
 pnpm paperclipai issue list --data-dir ./tmp/paperclip-dev
 ```
+
+## Repo-Local Startup Profiles
+
+The root repo scripts `pnpm start` and `pnpm dev` now keep a checkout-specific startup profile at `.paperclip/local-start.json`.
+
+- This file is local to the repo checkout and is gitignored.
+- It records the chosen `PAPERCLIP_HOME`, `PAPERCLIP_INSTANCE_ID`, and `PAPERCLIP_CONFIG`.
+- `paperclipai doctor --launch-history` reads that profile and shows the recent launch records for the resolved instance.
+- `paperclipai run --data-dir ...` remains the explicit CLI path when you want to bypass repo-local startup profiles entirely.
 
 ## Context Profiles
 
@@ -167,7 +182,13 @@ pnpm paperclipai heartbeat run --agent-id <agent-id> [--api-base http://localhos
 
 ## Local Storage Defaults
 
-Default local instance root is `~/.paperclip/instances/default`:
+Default local instance root is `~/.paperclip/instances/default` when no repo-local startup profile or explicit override is in effect.
+
+Resolved local instance root formula:
+
+- `<paperclipHome>/instances/<instanceId>`
+
+Default example paths:
 
 - config: `~/.paperclip/instances/default/config.json`
 - embedded db: `~/.paperclip/instances/default/db`

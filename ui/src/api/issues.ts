@@ -12,6 +12,7 @@ export const issuesApi = {
       touchedByUserId?: string;
       unreadForUserId?: string;
       labelId?: string;
+      parentId?: string;
       q?: string;
     },
   ) => {
@@ -23,6 +24,7 @@ export const issuesApi = {
     if (filters?.touchedByUserId) params.set("touchedByUserId", filters.touchedByUserId);
     if (filters?.unreadForUserId) params.set("unreadForUserId", filters.unreadForUserId);
     if (filters?.labelId) params.set("labelId", filters.labelId);
+    if (filters?.parentId) params.set("parentId", filters.parentId);
     if (filters?.q) params.set("q", filters.q);
     const qs = params.toString();
     return api.get<Issue[]>(`/companies/${companyId}/issues${qs ? `?${qs}` : ""}`);

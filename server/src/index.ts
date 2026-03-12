@@ -28,6 +28,7 @@ import { heartbeatService, knowledgeService, logActivity, recordService } from "
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
+import { recordStartupReady } from "./startup-history.js";
 
 type BetterAuthSessionUser = {
   id: string;
@@ -603,6 +604,13 @@ if (config.databaseBackupEnabled) {
 
 server.listen(listenPort, config.host, () => {
   logger.info(`Server listening on ${config.host}:${listenPort}`);
+  void recordStartupReady({
+    db: startupDbInfo,
+    listenHost: config.host,
+    listenPort,
+  }).catch((err) => {
+    logger.warn({ err }, "Failed to record startup ready event");
+  });
   if (process.env.PAPERCLIP_OPEN_ON_LISTEN === "true") {
     const openHost = config.host === "0.0.0.0" || config.host === "::" ? "127.0.0.1" : config.host;
     const url = `http://${openHost}:${listenPort}`;

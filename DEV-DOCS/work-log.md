@@ -1,5 +1,37 @@
 # Work Log
 
+## 2026-03-11
+
+### Session: selective upstream adoption, startup safety, and docs sync
+
+- Adopted the upstream hardening items that fit this fork cleanly:
+  - secure cookies disabled for HTTP auth deployments
+  - nested Claude env stripping for child processes
+  - stronger Windows/local adapter wrapper handling
+  - parent-aware issues list filtering
+  - lighter heartbeat run summaries for operator surfaces
+- Added repo-local startup safety for `pnpm start` and `pnpm dev`:
+  - `.paperclip/local-start.json` profile resolution
+  - `--choose-startup` and `--clear-startup-profile`
+  - append-only launch history at `instances/<id>/logs/launch-history.jsonl`
+  - server-side ready recording plus CLI doctor history output
+- Tightened run and configuration UX:
+  - extracted a reusable transcript renderer with readable and raw modes
+  - kept agent detail as the primary run-analysis surface
+  - added a project `Configuration` tab with explicit-save behavior
+  - removed the conflicting side-panel/project-properties path while the config tab is active
+- Added automated coverage for:
+  - startup profile resolution helpers
+  - doctor launch-history/profile rendering
+  - transcript rendering modes
+  - heartbeat summary and issue filter behavior
+  - HTTP auth cookie configuration
+- Refreshed user docs and DEV-DOCS so startup, runtime paths, run UX, and selective upstream adoption are all described consistently.
+- Repaired the local dependency installation and re-ran:
+  - `pnpm install --force`
+  - `pnpm -r typecheck`
+  - `pnpm test:run`
+
 ## 2026-03-10
 
 ### Session: simplify local startup command

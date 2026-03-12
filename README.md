@@ -29,11 +29,11 @@
 
 **If OpenClaw is an _employee_, Paperclip is the _company_**
 
-Paperclip is a Node.js server and React UI that orchestrates a team of AI agents to run a business. Bring your own agents, assign goals, and track your agents' work and costs from one dashboard.
+Paperclip is a Node.js server and React UI that orchestrates a team of AI agents to run a business. Bring your own agents, assign roadmap items, and track your agents' work and costs from one dashboard.
 
-It looks like a task manager — but under the hood it has org charts, budgets, governance, goal alignment, and agent coordination.
+It looks like a task manager — but under the hood it has org charts, budgets, governance, roadmap alignment, and agent coordination.
 
-**Manage business goals, not pull requests.**
+**Manage business roadmap, not pull requests.**
 
 |        | Step            | Example                                                            |
 | ------ | --------------- | ------------------------------------------------------------------ |
@@ -186,7 +186,7 @@ pnpm install
 pnpm start
 ```
 
-This starts the API server at `http://localhost:3100`. An embedded PostgreSQL database is created automatically — no setup required.
+This starts the API server at `http://localhost:3100`. An embedded PostgreSQL database is created automatically for the resolved local instance — no manual setup required.
 
 > **Requirements:** Node.js 20+, pnpm 9.15+
 
@@ -197,6 +197,22 @@ pnpm start
 ```
 
 That is the simplest repo-local startup path. It runs a startup preflight and then launches the app without watch mode.
+
+On the first ambiguous launch in a terminal, Paperclip asks which local instance/config you want to use and saves the answer to `.paperclip/local-start.json` in this checkout. After that, `pnpm start` and `pnpm dev` reuse the saved startup profile. Explicit `PAPERCLIP_HOME`, `PAPERCLIP_INSTANCE_ID`, or `PAPERCLIP_CONFIG` still take precedence.
+
+Re-pin or clear the repo-local startup profile:
+
+```bash
+pnpm start -- --choose-startup
+pnpm start -- --clear-startup-profile
+pnpm dev -- --choose-startup
+```
+
+Inspect the active repo-local startup profile and recent launch history:
+
+```bash
+pnpm paperclipai doctor --launch-history
+```
 
 If `pnpm start` says startup dependencies are incomplete, rerun `pnpm install`. If that still fails, remove `node_modules` and reinstall once.
 
@@ -244,7 +260,7 @@ Upstream repository: [tobi/qmd](https://github.com/tobi/qmd)
 ## FAQ
 
 **What does a typical setup look like?**
-Locally, a single Node.js process manages an embedded Postgres and local file storage. For production, point it at your own Postgres and deploy however you like. Configure projects, agents, and goals — the agents take care of the rest.
+Locally, a single Node.js process manages an embedded Postgres and local file storage. For production, point it at your own Postgres and deploy however you like. Configure projects, agents, and roadmap items — the agents take care of the rest.
 
 If you're a solo-entreprenuer you can use Tailscale to access Paperclip on the go. Then later you can deploy to e.g. Vercel when you need it.
 
@@ -252,7 +268,7 @@ If you're a solo-entreprenuer you can use Tailscale to access Paperclip on the g
 Yes. A single deployment can run an unlimited number of companies with complete data isolation.
 
 **How is Paperclip different from agents like OpenClaw or Claude Code?**
-Paperclip _uses_ those agents. It orchestrates them into a company — with org charts, budgets, goals, governance, and accountability.
+Paperclip _uses_ those agents. It orchestrates them into a company — with org charts, budgets, roadmap guidance, governance, and accountability.
 
 **Why should I use Paperclip instead of just pointing my OpenClaw to Asana or Trello?**
 Agent orchestration has subtleties in how you coordinate who has work checked out, how to maintain sessions, monitoring costs, establishing governance - Paperclip does this for you.
@@ -279,6 +295,8 @@ pnpm db:migrate       # Apply migrations
 ```
 
 See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
+
+If you need to reselect which local instance this checkout starts against, use `pnpm start -- --choose-startup`. The saved profile lives at `.paperclip/local-start.json`.
 
 <br/>
 

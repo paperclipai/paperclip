@@ -2,7 +2,7 @@
 
 This folder captures the **current local development state** of the Paperclip repository as verified in this workspace.
 
-Last updated: 2026-03-10 (America/New_York)
+Last updated: 2026-03-11 (America/New_York)
 
 ## Scope
 
@@ -40,6 +40,8 @@ These docs were updated from live repo inspection of:
   - infrastructure reference for runtime processes, config, persistence, storage, secrets, adapters, realtime, and schedulers
 - `DEV-DOCS/MAP.md`
   - interaction map showing how the server, UI, CLI, adapters, records, and governance flows connect
+- `DEV-DOCS/UPSTREAM-COMPARISON-2026-03-11.md`
+  - selective upstream adoption log showing what was adopted, deferred, and rejected in this fork
 - `DEV-DOCS/roadmap.md`
   - the five-phase executive-layer roadmap and what each phase means
 
@@ -61,3 +63,4 @@ If you only read two files before continuing work on this branch:
 
 If the task is about safe simplification or codebase cleanup, read `DEV-DOCS/CONDENSE-AUDIT.md` immediately after those two files.
 If the task is about runtime topology, deployment, or subsystem interactions, read `DEV-DOCS/INFRASTRUCURE.md` and `DEV-DOCS/MAP.md`.
+If the task is about upstream parity or selective backports, read `DEV-DOCS/UPSTREAM-COMPARISON-2026-03-11.md`.

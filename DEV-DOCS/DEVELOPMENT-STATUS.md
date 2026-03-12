@@ -1,6 +1,6 @@
 # Development Status
 
-Last updated: 2026-03-10
+Last updated: 2026-03-11
 
 ## Current feature status
 
@@ -27,15 +27,36 @@ Last updated: 2026-03-10
   - scored hotspot inventory across code and docs
   - five-batch backlog for safe simplification
   - docs overlap map and do-not-condense guidance
+- Selective upstream hardening adoption: `done`
+  - HTTP deployments now disable secure auth cookies safely
+  - issues list now honors `parentId` filters end to end
+  - heartbeat run list responses use trimmed operator-facing summaries
+  - child-process env hardening strips nested Claude env leakage
+  - Windows/local adapter wrapper handling is more robust
+- Runs and configuration UX: `done`
+  - reusable transcript renderer with `nice` / `raw` modes
+  - agent runs remain a first-class detail surface
+  - project detail now has an explicit-save `Configuration` tab
+  - project side-panel properties no longer undercut explicit-save config edits
+- Startup safety and launch auditing: `done`
+  - repo-local startup profile at `.paperclip/local-start.json`
+  - `--choose-startup` and `--clear-startup-profile` for repo scripts
+  - non-interactive startup now fails fast when the instance is ambiguous
+  - launch history recorded under instance logs
+  - `paperclipai doctor --launch-history` shows pinned profile and recent launches
+- Documentation sync: `done`
+  - startup docs now describe repo-local profiles and launch history
+  - CLI/database docs now use resolved-instance path formulas
+  - architecture, map, and infrastructure docs reflect the new startup model
 
 ## Branch state
 
 - Active branch in this workspace: `development`
-- Working tree contains the roadmap/health/governance implementation and supporting tests.
+- Working tree contains the roadmap/health/governance implementation plus selective upstream adoption for startup safety, transcript UX, and hardening.
 
 ## Primary gap
 
-Paperclip now has the strategic primitives for manager autonomy, but the next maintainability gap is structural:
+Paperclip now has the strategic primitives for manager autonomy and safer local startup, but the next maintainability gap is structural:
 
 - several server and UI hotspots are large enough to slow review velocity and increase regression risk
 - the new condense audit identifies the highest-value extractions, but none of those batches are implemented yet
@@ -45,6 +66,8 @@ Product-level gaps still remain:
 - roadmap quality determines whether idle managers pick useful next work
 - manager-plan approvals govern the workflow, but plan quality is still prompt-driven
 - checkout cleanup and wider attribution auditing remain separate hardening work
+- worktree/runtime migration remains deferred and needs design work before adoption
+- Gemini adapter support remains deferred
 
 ## Current blockers
 
@@ -53,7 +76,7 @@ Product-level gaps still remain:
   - Batch 1 server condensation has not started yet
   - physical checkout cleanup/reaping is still light
   - attribution auditing across every mutation path still deserves a deeper sweep
-  - operator UX could use browser QA for the new roadmap and health flows
+  - operator UX could use browser QA for the new transcript/config/startup flows
 
 ## Verification posture
 

@@ -59,7 +59,7 @@ V1 implementation extends this baseline into a company-centric, governance-aware
 ## 5.1 In Scope
 
 - Company lifecycle (create/list/get/update/archive)
-- Goal hierarchy linked to company mission
+- Roadmap hierarchy (stored as goals) linked to company mission
 - Agent lifecycle with org structure and adapter configuration
 - Task lifecycle with parent/child hierarchy and comments
 - Atomic task checkout and explicit task status transitions
@@ -92,11 +92,11 @@ V1 implementation extends this baseline into a company-centric, governance-aware
 ## 6.2 Data Stores
 
 - Primary: PostgreSQL
-- Local default: embedded PostgreSQL at `~/.paperclip/instances/default/db`
+- Local default: embedded PostgreSQL at `<paperclipHome>/instances/<instanceId>/db` (default example: `~/.paperclip/instances/default/db`)
 - Optional local prod-like: Docker Postgres
 - Optional hosted: Supabase/Postgres-compatible
 - File/object storage:
-  - local default: `~/.paperclip/instances/default/data/storage` (`local_disk`)
+  - local default: `<paperclipHome>/instances/<instanceId>/data/storage` (`local_disk`)
   - cloud: S3-compatible object storage (`s3`)
 
 ## 6.3 Background Processing
@@ -416,13 +416,18 @@ All endpoints are under `/api` and return JSON.
 - `PATCH /companies/:companyId`
 - `POST /companies/:companyId/archive`
 
-## 10.2 Goals
+## 10.2 Roadmap / Goals Compatibility
 
 - `GET /companies/:companyId/goals`
 - `POST /companies/:companyId/goals`
 - `GET /goals/:goalId`
 - `PATCH /goals/:goalId`
 - `DELETE /goals/:goalId` (soft delete optional, hard delete board-only)
+- `GET /companies/:companyId/roadmap`
+- `POST /companies/:companyId/roadmap`
+- `GET /roadmap/:goalId`
+- `PATCH /roadmap/:goalId`
+- `DELETE /roadmap/:goalId`
 
 ## 10.3 Agents
 

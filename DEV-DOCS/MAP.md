@@ -1,6 +1,6 @@
 # System Map
 
-Last updated: 2026-03-10
+Last updated: 2026-03-11
 
 ## 1. Purpose
 
@@ -46,7 +46,7 @@ flowchart LR
 
 ```mermaid
 sequenceDiagram
-  participant CLI as "CLI or node server entry"
+  participant Start as "Repo start/dev script"
   participant Config as "Config loader"
   participant DB as "Database bootstrap"
   participant Auth as "Auth bootstrap"
@@ -54,14 +54,17 @@ sequenceDiagram
   participant WS as "WebSocket bridge"
   participant Loops as "Schedulers"
 
-  CLI->>Config: "loadConfig()"
-  Config-->>CLI: "resolved runtime config"
-  CLI->>DB: "create or connect database"
+  Start->>Start: "resolve env/profile/interactive startup context"
+  Start->>Start: "append launch attempt context"
+  Start->>Config: "loadConfig()"
+  Config-->>Start: "resolved runtime config"
+  Start->>DB: "create or connect database"
   DB->>DB: "inspect and apply migrations"
-  CLI->>Auth: "initialize local board or Better Auth"
-  CLI->>App: "createApp(db, config, storage)"
-  CLI->>WS: "attach websocket upgrade handler"
-  CLI->>Loops: "start heartbeat, briefing, backup timers"
+  Start->>Auth: "initialize local board or Better Auth"
+  Start->>App: "createApp(db, config, storage)"
+  Start->>WS: "attach websocket upgrade handler"
+  Start->>Loops: "start heartbeat, briefing, backup timers"
+  App->>Start: "record ready launch event"
 ```
 
 ### What this means in practice
@@ -70,6 +73,7 @@ sequenceDiagram
 - there is no separate queue worker or job runner yet
 - the database must be ready before auth, routes, or schedulers can do meaningful work
 - storage and secrets are resolved before route handlers use them, but they remain provider-backed abstractions
+- repo-local startup profiles make the checkout-to-instance mapping explicit instead of silently defaulting to `~/.paperclip`
 
 ## 5. Operator Request Map
 
@@ -255,10 +259,12 @@ Two different diagnostic surfaces exist and they complement each other.
 - LLM access
 - log paths
 - port availability
+- repo-local startup profile selection
+- recent launch history for the pinned instance when `--launch-history` is requested
 
 ### Relationship between them
 
-- the CLI doctor validates whether the instance can be started correctly
+- the CLI doctor validates whether the instance can be started correctly and whether the current checkout is pointed at the intended local instance
 - the health endpoints validate whether the running instance is healthy now
 
 ## 12. Where to Look When Something Breaks

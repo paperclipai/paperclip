@@ -36,8 +36,32 @@ pnpm start
 `pnpm start` is the simplest local entrypoint. It:
 
 1. runs a startup preflight
-2. tells you directly if the local install is incomplete
-3. launches the app without watch mode
+2. resolves the local startup context safely for this checkout
+3. tells you directly if the local install is incomplete
+4. launches the app without watch mode
+
+Startup context precedence:
+
+1. explicit `PAPERCLIP_HOME`, `PAPERCLIP_INSTANCE_ID`, or `PAPERCLIP_CONFIG`
+2. repo-local startup profile at `.paperclip/local-start.json`
+3. interactive chooser in a TTY
+4. fail-fast with the exact repair command in non-interactive mode
+
+On the first ambiguous launch in a terminal, Paperclip prompts for the instance/config to use and saves that choice in `.paperclip/local-start.json` for this checkout. `pnpm dev` reuses the same saved profile.
+
+Repin or clear the repo-local startup profile:
+
+```sh
+pnpm start -- --choose-startup
+pnpm start -- --clear-startup-profile
+pnpm dev -- --choose-startup
+```
+
+Inspect the pinned profile and recent launch history for this checkout:
+
+```sh
+pnpm paperclipai doctor --launch-history
+```
 
 If startup says dependencies are incomplete, rerun `pnpm install`. If the problem persists, remove `node_modules` and reinstall once.
 
@@ -66,7 +90,7 @@ This starts:
 Tailscale/private-auth dev mode:
 
 ```sh
-pnpm dev --tailscale-auth
+pnpm dev -- --tailscale-auth
 ```
 
 This runs dev as `authenticated/private` and binds the server to `0.0.0.0` for private-network access.
@@ -112,9 +136,10 @@ See `doc/DOCKER.md` for API key wiring (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY`) 
 ## Database in Dev (Auto-Handled)
 
 For local development, leave `DATABASE_URL` unset.
-The server will automatically use embedded PostgreSQL and persist data at:
+The server will automatically use embedded PostgreSQL and persist data at the resolved instance path:
 
-- `~/.paperclip/instances/default/db`
+- `<paperclipHome>/instances/<instanceId>/db`
+- default example when nothing is pinned: `~/.paperclip/instances/default/db`
 
 Override home and instance:
 
@@ -128,7 +153,8 @@ No Docker or external database is required for this mode.
 
 For local development, the default storage provider is `local_disk`, which persists uploaded images/attachments at:
 
-- `~/.paperclip/instances/default/data/storage`
+- `<paperclipHome>/instances/<instanceId>/data/storage`
+- default example when nothing is pinned: `~/.paperclip/instances/default/data/storage`
 
 Configure storage provider/settings:
 
@@ -140,7 +166,8 @@ pnpm paperclipai configure --section storage
 
 When a local agent run has no resolved project/session workspace, Paperclip falls back to an agent home workspace under the instance root:
 
-- `~/.paperclip/instances/default/workspaces/<agent-id>`
+- `<paperclipHome>/instances/<instanceId>/workspaces/<agent-id>`
+- default example when nothing is pinned: `~/.paperclip/instances/default/workspaces/<agent-id>`
 
 This path honors `PAPERCLIP_HOME` and `PAPERCLIP_INSTANCE_ID` in non-default setups.
 
@@ -163,6 +190,9 @@ Expected:
 To wipe local dev data and start fresh:
 
 ```sh
+# Example for the default home/instance only. If this checkout is pinned to a
+# different startup profile, use the DB path shown in the startup banner or
+# `pnpm paperclipai doctor --launch-history` instead.
 rm -rf ~/.paperclip/instances/default/db
 pnpm dev
 ```
@@ -178,7 +208,8 @@ Paperclip can run automatic DB backups on a timer. Defaults:
 - enabled
 - every 60 minutes
 - retain 30 days
-- backup dir: `~/.paperclip/instances/default/data/backups`
+- backup dir: `<paperclipHome>/instances/<instanceId>/data/backups`
+- default example when nothing is pinned: `~/.paperclip/instances/default/data/backups`
 
 Configure these in:
 
@@ -206,6 +237,7 @@ Environment overrides:
 Agent env vars now support secret references. By default, secret values are stored with local encryption and only secret refs are persisted in agent config.
 
 - Default local key path: `~/.paperclip/instances/default/secrets/master.key`
+- Resolved key path formula: `<paperclipHome>/instances/<instanceId>/secrets/master.key`
 - Override key material directly: `PAPERCLIP_SECRETS_MASTER_KEY`
 - Override key file path: `PAPERCLIP_SECRETS_MASTER_KEY_FILE`
 

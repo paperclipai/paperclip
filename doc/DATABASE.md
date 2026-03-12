@@ -10,14 +10,20 @@ If you don't set `DATABASE_URL`, the server automatically starts an embedded Pos
 pnpm start
 ```
 
-That's it. On first start the server:
+That's it. On first start the repo-local startup scripts may prompt for which local Paperclip instance to use, save that choice to `.paperclip/local-start.json`, and then the server:
 
-1. Creates a `~/.paperclip/instances/default/db/` directory for storage
+1. Creates a resolved embedded DB directory at `<paperclipHome>/instances/<instanceId>/db/`
 2. Ensures the `paperclip` database exists
 3. Runs migrations automatically for empty databases
 4. Starts serving requests
 
-Data persists across restarts in `~/.paperclip/instances/default/db/`. To reset local dev data, delete that directory.
+Data persists across restarts in `<paperclipHome>/instances/<instanceId>/db/`.
+
+Default example when nothing is pinned:
+
+- `~/.paperclip/instances/default/db/`
+
+Use the startup banner or `pnpm paperclipai doctor --launch-history` to confirm the actual instance path before deleting local data.
 
 This mode is ideal for local development and one-command installs.
 
@@ -117,7 +123,7 @@ The database mode is controlled by `DATABASE_URL`:
 
 | `DATABASE_URL` | Mode |
 |---|---|
-| Not set | Embedded PostgreSQL (`~/.paperclip/instances/default/db/`) |
+| Not set | Embedded PostgreSQL at `<paperclipHome>/instances/<instanceId>/db/` |
 | `postgres://...localhost...` | Local Docker PostgreSQL |
 | `postgres://...supabase.com...` | Hosted Supabase |
 
@@ -133,8 +139,9 @@ Paperclip stores secret metadata and versions in:
 For local/default installs, the active provider is `local_encrypted`:
 
 - Secret material is encrypted at rest with a local master key.
-- Default key file: `~/.paperclip/instances/default/secrets/master.key` (auto-created if missing).
-- CLI config location: `~/.paperclip/instances/default/config.json` under `secrets.localEncrypted.keyFilePath`.
+- Default key file example: `~/.paperclip/instances/default/secrets/master.key` (auto-created if missing).
+- Resolved key path formula: `<paperclipHome>/instances/<instanceId>/secrets/master.key`.
+- CLI config location formula: `<paperclipHome>/instances/<instanceId>/config.json` under `secrets.localEncrypted.keyFilePath`.
 
 Optional overrides:
 

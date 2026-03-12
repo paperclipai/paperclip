@@ -44,6 +44,14 @@ export function loadAgentJwtEnvFile(filePath = resolveEnvFilePath()): void {
   loadDotenv({ path: filePath, override: false, quiet: true });
 }
 
+/**
+ * Doctor and startup-oriented flows need a neutral env-file loader name even
+ * though the current env file only stores the agent JWT secret.
+ */
+export function loadPaperclipEnvFile(configPath?: string): void {
+  loadAgentJwtEnvFile(resolveEnvFilePath(configPath));
+}
+
 export function readAgentJwtSecretFromEnv(configPath?: string): string | null {
   loadAgentJwtEnvFile(resolveEnvFilePath(configPath));
   const raw = process.env[JWT_SECRET_ENV_KEY];

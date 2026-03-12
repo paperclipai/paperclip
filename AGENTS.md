@@ -51,6 +51,22 @@ This starts:
 - API: `http://localhost:3100`
 - UI: `http://localhost:3100` (served by API server in dev middleware mode)
 
+`pnpm start` and `pnpm dev` now resolve startup context in this order:
+
+1. explicit `PAPERCLIP_HOME` / `PAPERCLIP_INSTANCE_ID` / `PAPERCLIP_CONFIG`
+2. repo-local startup profile at `.paperclip/local-start.json`
+3. interactive chooser in a TTY
+4. fail-fast with a repair command in non-interactive mode
+
+Useful startup commands:
+
+```sh
+pnpm start -- --choose-startup
+pnpm start -- --clear-startup-profile
+pnpm dev -- --choose-startup
+pnpm paperclipai doctor --launch-history
+```
+
 Quick checks:
 
 ```sh
@@ -61,6 +77,9 @@ curl http://localhost:3100/api/companies
 Reset local dev DB:
 
 ```sh
+# Example for the default home/instance only. If this checkout is pinned to a
+# different startup profile, inspect the actual DB path in the startup banner or
+# with `pnpm paperclipai doctor --launch-history` first.
 rm -rf ~/.paperclip/instances/default/db
 pnpm start
 ```

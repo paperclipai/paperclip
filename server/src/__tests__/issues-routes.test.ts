@@ -5,6 +5,7 @@ import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 
 const mockIssueService = vi.hoisted(() => ({
+  list: vi.fn(),
   getById: vi.fn(),
   create: vi.fn(),
   update: vi.fn(),
@@ -159,6 +160,7 @@ function createApp(actor: Record<string, unknown>) {
 describe("issue routes", () => {
   beforeEach(() => {
     mockIssueService.getById.mockReset();
+    mockIssueService.list.mockReset();
     mockIssueService.create.mockReset();
     mockIssueService.update.mockReset();
     mockIssueService.addComment.mockReset();
@@ -183,6 +185,7 @@ describe("issue routes", () => {
 
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
     mockIssueService.assertCheckoutOwner.mockResolvedValue({});
+    mockIssueService.list.mockResolvedValue([]);
     mockIssueService.create.mockResolvedValue(
       createIssue({
         status: "backlog",
@@ -449,5 +452,26 @@ describe("issue routes", () => {
     expect(res.status).toBe(201);
     expect(mockIssueService.create).toHaveBeenCalled();
     expect(mockIssueApprovalService.link).not.toHaveBeenCalled();
+  });
+
+  it("passes parentId filters through to the issue service list call", async () => {
+    const app = createApp({
+      type: "board",
+      source: "local_implicit",
+      userId: "board-user",
+      isInstanceAdmin: true,
+    });
+
+    const res = await request(app)
+      .get(`/api/companies/${COMPANY_ID}/issues`)
+      .query({ parentId: ISSUE_ID });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.list).toHaveBeenCalledWith(
+      COMPANY_ID,
+      expect.objectContaining({
+        parentId: ISSUE_ID,
+      }),
+    );
   });
 });
