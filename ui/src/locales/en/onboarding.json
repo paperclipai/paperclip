@@ -47,5 +47,10 @@
   "step4.task": "Task",
 
   "errors.createCompany": "Failed to create company",
-  "errors.createOrSelect": "Create or select a company..."
+  "errors.createOrSelect": "Create or select a company...",
+
+  "tabs.company": "Company",
+  "tabs.agent": "Agent",
+  "tabs.task": "Task",
+  "tabs.launch": "Launch"
 }

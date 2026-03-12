@@ -47,5 +47,10 @@
   "step4.task": "任务",
 
   "errors.createCompany": "创建公司失败",
-  "errors.createOrSelect": "创建或选择一个公司..."
+  "errors.createOrSelect": "创建或选择一个公司...",
+
+  "tabs.company": "公司",
+  "tabs.agent": "智能体",
+  "tabs.task": "任务",
+  "tabs.launch": "启动"
 }
