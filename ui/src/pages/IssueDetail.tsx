@@ -23,10 +23,23 @@ import { PriorityIcon } from "../components/PriorityIcon";
 import { StatusBadge } from "../components/StatusBadge";
 import { Identity } from "../components/Identity";
 import { Separator } from "@/components/ui/separator";
-import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
+import {
+  Popover,
+  PopoverTrigger,
+  PopoverContent,
+} from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -77,7 +90,8 @@ function humanizeValue(value: unknown): string {
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return null;
   return value as Record<string, unknown>;
 }
 
@@ -95,7 +109,10 @@ function truncate(text: string, max: number): string {
   return text.slice(0, max - 1) + "\u2026";
 }
 
-function formatAction(action: string, details?: Record<string, unknown> | null): string {
+function formatAction(
+  action: string,
+  details?: Record<string, unknown> | null
+): string {
   if (action === "issue.updated" && details) {
     const previous = (details._previous ?? {}) as Record<string, unknown>;
     const parts: string[] = [];
@@ -104,7 +121,9 @@ function formatAction(action: string, details?: Record<string, unknown> | null):
       const from = previous.status;
       parts.push(
         from
-          ? `changed the status from ${humanizeValue(from)} to ${humanizeValue(details.status)}`
+          ? `changed the status from ${humanizeValue(from)} to ${humanizeValue(
+              details.status
+            )}`
           : `changed the status to ${humanizeValue(details.status)}`
       );
     }
@@ -112,26 +131,38 @@ function formatAction(action: string, details?: Record<string, unknown> | null):
       const from = previous.priority;
       parts.push(
         from
-          ? `changed the priority from ${humanizeValue(from)} to ${humanizeValue(details.priority)}`
+          ? `changed the priority from ${humanizeValue(
+              from
+            )} to ${humanizeValue(details.priority)}`
           : `changed the priority to ${humanizeValue(details.priority)}`
       );
     }
-    if (details.assigneeAgentId !== undefined || details.assigneeUserId !== undefined) {
+    if (
+      details.assigneeAgentId !== undefined ||
+      details.assigneeUserId !== undefined
+    ) {
       parts.push(
         details.assigneeAgentId || details.assigneeUserId
           ? "assigned the issue"
-          : "unassigned the issue",
+          : "unassigned the issue"
       );
     }
     if (details.title !== undefined) parts.push("updated the title");
-    if (details.description !== undefined) parts.push("updated the description");
+    if (details.description !== undefined)
+      parts.push("updated the description");
 
     if (parts.length > 0) return parts.join(", ");
   }
   return ACTION_LABELS[action] ?? action.replace(/[._]/g, " ");
 }
 
-function ActorIdentity({ evt, agentMap }: { evt: ActivityEvent; agentMap: Map<string, Agent> }) {
+function ActorIdentity({
+  evt,
+  agentMap,
+}: {
+  evt: ActivityEvent;
+  agentMap: Map<string, Agent>;
+}) {
   const id = evt.actorId;
   if (evt.actorType === "agent") {
     const agent = agentMap.get(id);
@@ -160,7 +191,11 @@ export function IssueDetail() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const lastMarkedReadIssueIdRef = useRef<string | null>(null);
 
-  const { data: issue, isLoading, error } = useQuery({
+  const {
+    data: issue,
+    isLoading,
+    error,
+  } = useQuery({
     queryKey: queryKeys.issues.detail(issueId!),
     queryFn: () => issuesApi.get(issueId!),
     enabled: !!issueId,
@@ -285,11 +320,15 @@ export function IssueDetail() {
     if (!allIssues || !issue) return [];
     return allIssues
       .filter((i) => i.parentId === issue.id)
-      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+      .sort(
+        (a, b) =>
+          new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+      );
   }, [allIssues, issue]);
 
   const commentReassignOptions = useMemo(() => {
-    const options: Array<{ id: string; label: string; searchText?: string }> = [];
+    const options: Array<{ id: string; label: string; searchText?: string }> =
+      [];
     const activeAgents = [...(agents ?? [])]
       .filter((agent) => agent.status !== "terminated")
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -310,7 +349,10 @@ export function IssueDetail() {
   }, [issue?.assigneeAgentId, issue?.assigneeUserId]);
 
   const commentsWithRunMeta = useMemo(() => {
-    const runMetaByCommentId = new Map<string, { runId: string; runAgentId: string | null }>();
+    const runMetaByCommentId = new Map<
+      string,
+      { runId: string; runAgentId: string | null }
+    >();
     const agentIdByRunId = new Map<string, string>();
     for (const run of linkedRuns ?? []) {
       agentIdByRunId.set(run.runId, run.agentId);
@@ -318,7 +360,8 @@ export function IssueDetail() {
     for (const evt of activity ?? []) {
       if (evt.action !== "issue.comment_added" || !evt.runId) continue;
       const details = evt.details ?? {};
-      const commentId = typeof details["commentId"] === "string" ? details["commentId"] : null;
+      const commentId =
+        typeof details["commentId"] === "string" ? details["commentId"] : null;
       if (!commentId || runMetaByCommentId.has(commentId)) continue;
       runMetaByCommentId.set(commentId, {
         runId: evt.runId,
@@ -348,7 +391,7 @@ export function IssueDetail() {
         usage,
         "cachedInputTokens",
         "cached_input_tokens",
-        "cache_read_input_tokens",
+        "cache_read_input_tokens"
       );
       const runCost =
         usageNumber(usage, "costUsd", "cost_usd", "total_cost_usd") ||
@@ -373,18 +416,40 @@ export function IssueDetail() {
   }, [linkedRuns]);
 
   const invalidateIssue = () => {
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId!) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(issueId!) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.approvals(issueId!) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(issueId!) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(issueId!) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(issueId!) });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.issues.detail(issueId!),
+    });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.issues.activity(issueId!),
+    });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.issues.runs(issueId!),
+    });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.issues.approvals(issueId!),
+    });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.issues.attachments(issueId!),
+    });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.issues.liveRuns(issueId!),
+    });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.issues.activeRun(issueId!),
+    });
     if (selectedCompanyId) {
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.issues.list(selectedCompanyId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.sidebarBadges(selectedCompanyId),
+      });
     }
   };
 
@@ -392,15 +457,22 @@ export function IssueDetail() {
     mutationFn: (id: string) => issuesApi.markRead(id),
     onSuccess: () => {
       if (selectedCompanyId) {
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId) });
-        queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId),
+        });
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId),
+        });
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.sidebarBadges(selectedCompanyId),
+        });
       }
     },
   });
 
   const updateIssue = useMutation({
-    mutationFn: (data: Record<string, unknown>) => issuesApi.update(issueId!, data),
+    mutationFn: (data: Record<string, unknown>) =>
+      issuesApi.update(issueId!, data),
     onSuccess: () => {
       invalidateIssue();
     },
@@ -411,7 +483,9 @@ export function IssueDetail() {
       issuesApi.addComment(issueId!, body, reopen),
     onSuccess: () => {
       invalidateIssue();
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId!) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.issues.comments(issueId!),
+      });
     },
   });
 
@@ -433,7 +507,9 @@ export function IssueDetail() {
       }),
     onSuccess: () => {
       invalidateIssue();
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId!) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.issues.comments(issueId!),
+      });
     },
   });
 
@@ -444,7 +520,9 @@ export function IssueDetail() {
     },
     onSuccess: () => {
       setAttachmentError(null);
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(issueId!) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.issues.attachments(issueId!),
+      });
       invalidateIssue();
     },
     onError: (err) => {
@@ -453,10 +531,13 @@ export function IssueDetail() {
   });
 
   const deleteAttachment = useMutation({
-    mutationFn: (attachmentId: string) => issuesApi.deleteAttachment(attachmentId),
+    mutationFn: (attachmentId: string) =>
+      issuesApi.deleteAttachment(attachmentId),
     onSuccess: () => {
       setAttachmentError(null);
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(issueId!) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.issues.attachments(issueId!),
+      });
       invalidateIssue();
     },
     onError: (err) => {
@@ -489,13 +570,17 @@ export function IssueDetail() {
   useEffect(() => {
     if (issue) {
       openPanel(
-        <IssueProperties issue={issue} onUpdate={(data) => updateIssue.mutate(data)} />
+        <IssueProperties
+          issue={issue}
+          onUpdate={(data) => updateIssue.mutate(data)}
+        />
       );
     }
     return () => closePanel();
   }, [issue]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (isLoading) return <p className="text-sm text-muted-foreground">Loading...</p>;
+  if (isLoading)
+    return <p className="text-sm text-muted-foreground">Loading...</p>;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
   if (!issue) return null;
 
@@ -511,7 +596,8 @@ export function IssueDetail() {
     }
   };
 
-  const isImageAttachment = (attachment: IssueAttachment) => attachment.contentType.startsWith("image/");
+  const isImageAttachment = (attachment: IssueAttachment) =>
+    attachment.contentType.startsWith("image/");
 
   return (
     <div className="max-w-2xl space-y-6">
@@ -531,7 +617,9 @@ export function IssueDetail() {
             </span>
           ))}
           <ChevronRight className="h-3 w-3 shrink-0" />
-          <span className="text-foreground/60 truncate max-w-[200px]">{issue.title}</span>
+          <span className="text-foreground/60 truncate max-w-[200px]">
+            {issue.title}
+          </span>
         </nav>
       )}
 
@@ -552,7 +640,9 @@ export function IssueDetail() {
             priority={issue.priority}
             onChange={(priority) => updateIssue.mutate({ priority })}
           />
-          <span className="text-sm font-mono text-muted-foreground shrink-0">{issue.identifier ?? issue.id.slice(0, 8)}</span>
+          <span className="text-sm font-mono text-muted-foreground shrink-0">
+            {issue.identifier ?? issue.id.slice(0, 8)}
+          </span>
 
           {hasLiveRuns && (
             <span className="inline-flex items-center gap-1.5 rounded-full bg-cyan-500/10 border border-cyan-500/30 px-2 py-0.5 text-[10px] font-medium text-cyan-600 dark:text-cyan-400 shrink-0">
@@ -570,7 +660,10 @@ export function IssueDetail() {
               className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors rounded px-1 -mx-1 py-0.5 min-w-0"
             >
               <Hexagon className="h-3 w-3 shrink-0" />
-              <span className="truncate">{(projects ?? []).find((p) => p.id === issue.projectId)?.name ?? issue.projectId.slice(0, 8)}</span>
+              <span className="truncate">
+                {(projects ?? []).find((p) => p.id === issue.projectId)?.name ??
+                  issue.projectId.slice(0, 8)}
+              </span>
             </Link>
           ) : (
             <span className="inline-flex items-center gap-1 text-xs text-muted-foreground opacity-50 px-1 -mx-1 py-0.5">
@@ -595,7 +688,9 @@ export function IssueDetail() {
                 </span>
               ))}
               {(issue.labels ?? []).length > 4 && (
-                <span className="text-[10px] text-muted-foreground">+{(issue.labels ?? []).length - 4}</span>
+                <span className="text-[10px] text-muted-foreground">
+                  +{(issue.labels ?? []).length - 4}
+                </span>
               )}
             </div>
           )}
@@ -616,7 +711,9 @@ export function IssueDetail() {
               size="icon-xs"
               className={cn(
                 "shrink-0 transition-opacity duration-200",
-                panelVisible ? "opacity-0 pointer-events-none w-0 overflow-hidden" : "opacity-100",
+                panelVisible
+                  ? "opacity-0 pointer-events-none w-0 overflow-hidden"
+                  : "opacity-100"
               )}
               onClick={() => setPanelVisible(true)}
               title="Show properties"
@@ -630,21 +727,21 @@ export function IssueDetail() {
                   <MoreHorizontal className="h-4 w-4" />
                 </Button>
               </PopoverTrigger>
-            <PopoverContent className="w-44 p-1" align="end">
-              <button
-                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
-                onClick={() => {
-                  updateIssue.mutate(
-                    { hiddenAt: new Date().toISOString() },
-                    { onSuccess: () => navigate("/issues/all") },
-                  );
-                  setMoreOpen(false);
-                }}
-              >
-                <EyeOff className="h-3 w-3" />
-                Hide this Issue
-              </button>
-            </PopoverContent>
+              <PopoverContent className="w-44 p-1" align="end">
+                <button
+                  className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
+                  onClick={() => {
+                    updateIssue.mutate(
+                      { hiddenAt: new Date().toISOString() },
+                      { onSuccess: () => navigate("/issues/all") }
+                    );
+                    setMoreOpen(false);
+                  }}
+                >
+                  <EyeOff className="h-3 w-3" />
+                  Hide this Issue
+                </button>
+              </PopoverContent>
             </Popover>
           </div>
         </div>
@@ -673,12 +770,14 @@ export function IssueDetail() {
 
       <div className="space-y-3">
         <div className="flex items-center justify-between gap-2">
-          <h3 className="text-sm font-medium text-muted-foreground">Attachments</h3>
+          <h3 className="text-sm font-medium text-muted-foreground">
+            Attachments
+          </h3>
           <div className="flex items-center gap-2">
             <input
               ref={fileInputRef}
               type="file"
-              accept="image/png,image/jpeg,image/webp,image/gif"
+              accept="image/png,image/jpeg,image/webp,image/gif,text/plain,text/markdown,text/csv,text/html,application/json,application/pdf,application/yaml,application/x-yaml"
               className="hidden"
               onChange={handleFilePicked}
             />
@@ -689,7 +788,7 @@ export function IssueDetail() {
               disabled={uploadAttachment.isPending}
             >
               <Paperclip className="h-3.5 w-3.5 mr-1.5" />
-              {uploadAttachment.isPending ? "Uploading..." : "Upload image"}
+              {uploadAttachment.isPending ? "Uploading..." : "Attach file"}
             </Button>
           </div>
         </div>
@@ -698,12 +797,15 @@ export function IssueDetail() {
           <p className="text-xs text-destructive">{attachmentError}</p>
         )}
 
-        {(!attachments || attachments.length === 0) ? (
+        {!attachments || attachments.length === 0 ? (
           <p className="text-xs text-muted-foreground">No attachments yet.</p>
         ) : (
           <div className="space-y-2">
             {attachments.map((attachment) => (
-              <div key={attachment.id} className="border border-border rounded-md p-2">
+              <div
+                key={attachment.id}
+                className="border border-border rounded-md p-2"
+              >
                 <div className="flex items-center justify-between gap-2">
                   <a
                     href={attachment.contentPath}
@@ -725,10 +827,15 @@ export function IssueDetail() {
                   </button>
                 </div>
                 <p className="text-[11px] text-muted-foreground">
-                  {attachment.contentType} · {(attachment.byteSize / 1024).toFixed(1)} KB
+                  {attachment.contentType} ·{" "}
+                  {(attachment.byteSize / 1024).toFixed(1)} KB
                 </p>
                 {isImageAttachment(attachment) && (
-                  <a href={attachment.contentPath} target="_blank" rel="noreferrer">
+                  <a
+                    href={attachment.contentPath}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
                     <img
                       src={attachment.contentPath}
                       alt={attachment.originalFilename ?? "attachment"}
@@ -745,7 +852,11 @@ export function IssueDetail() {
 
       <Separator />
 
-      <Tabs value={detailTab} onValueChange={setDetailTab} className="space-y-3">
+      <Tabs
+        value={detailTab}
+        onValueChange={setDetailTab}
+        className="space-y-3"
+      >
         <TabsList variant="line" className="w-full justify-start gap-1">
           <TabsTrigger value="comments" className="gap-1.5">
             <MessageSquare className="h-3.5 w-3.5" />
@@ -774,7 +885,11 @@ export function IssueDetail() {
             mentions={mentionOptions}
             onAdd={async (body, reopen, reassignment) => {
               if (reassignment) {
-                await addCommentAndReassign.mutateAsync({ body, reopen, reassignment });
+                await addCommentAndReassign.mutateAsync({
+                  body,
+                  reopen,
+                  reassignment,
+                });
                 return;
               }
               await addComment.mutateAsync({ body, reopen });
@@ -786,7 +901,9 @@ export function IssueDetail() {
             onAttachImage={async (file) => {
               await uploadAttachment.mutateAsync(file);
             }}
-            liveRunSlot={<LiveRunWidget issueId={issueId!} companyId={issue.companyId} />}
+            liveRunSlot={
+              <LiveRunWidget issueId={issueId!} companyId={issue.companyId} />
+            }
           />
         </TabsContent>
 
@@ -809,12 +926,17 @@ export function IssueDetail() {
                     </span>
                     <span className="truncate">{child.title}</span>
                   </div>
-                  {child.assigneeAgentId && (() => {
-                    const name = agentMap.get(child.assigneeAgentId)?.name;
-                    return name
-                      ? <Identity name={name} size="sm" />
-                      : <span className="text-muted-foreground font-mono">{child.assigneeAgentId.slice(0, 8)}</span>;
-                  })()}
+                  {child.assigneeAgentId &&
+                    (() => {
+                      const name = agentMap.get(child.assigneeAgentId)?.name;
+                      return name ? (
+                        <Identity name={name} size="sm" />
+                      ) : (
+                        <span className="text-muted-foreground font-mono">
+                          {child.assigneeAgentId.slice(0, 8)}
+                        </span>
+                      );
+                    })()}
                 </Link>
               ))}
             </div>
@@ -827,10 +949,15 @@ export function IssueDetail() {
           ) : (
             <div className="space-y-1.5">
               {activity.slice(0, 20).map((evt) => (
-                <div key={evt.id} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <div
+                  key={evt.id}
+                  className="flex items-center gap-1.5 text-xs text-muted-foreground"
+                >
                   <ActorIdentity evt={evt} agentMap={agentMap} />
                   <span>{formatAction(evt.action, evt.details)}</span>
-                  <span className="ml-auto shrink-0">{relativeTime(evt.createdAt)}</span>
+                  <span className="ml-auto shrink-0">
+                    {relativeTime(evt.createdAt)}
+                  </span>
                 </div>
               ))}
             </div>
@@ -841,7 +968,9 @@ export function IssueDetail() {
       {linkedApprovals && linkedApprovals.length > 0 && (
         <Collapsible
           open={secondaryOpen.approvals}
-          onOpenChange={(open) => setSecondaryOpen((prev) => ({ ...prev, approvals: open }))}
+          onOpenChange={(open) =>
+            setSecondaryOpen((prev) => ({ ...prev, approvals: open }))
+          }
           className="rounded-lg border border-border"
         >
           <CollapsibleTrigger className="flex w-full items-center justify-between px-3 py-2 text-left">
@@ -849,7 +978,10 @@ export function IssueDetail() {
               Linked Approvals ({linkedApprovals.length})
             </span>
             <ChevronDown
-              className={cn("h-4 w-4 text-muted-foreground transition-transform", secondaryOpen.approvals && "rotate-180")}
+              className={cn(
+                "h-4 w-4 text-muted-foreground transition-transform",
+                secondaryOpen.approvals && "rotate-180"
+              )}
             />
           </CollapsibleTrigger>
           <CollapsibleContent>
@@ -863,11 +995,17 @@ export function IssueDetail() {
                   <div className="flex items-center gap-2">
                     <StatusBadge status={approval.status} />
                     <span className="font-medium">
-                      {approval.type.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
+                      {approval.type
+                        .replace(/_/g, " ")
+                        .replace(/\b\w/g, (c) => c.toUpperCase())}
                     </span>
-                    <span className="font-mono text-muted-foreground">{approval.id.slice(0, 8)}</span>
+                    <span className="font-mono text-muted-foreground">
+                      {approval.id.slice(0, 8)}
+                    </span>
                   </div>
-                  <span className="text-muted-foreground">{relativeTime(approval.createdAt)}</span>
+                  <span className="text-muted-foreground">
+                    {relativeTime(approval.createdAt)}
+                  </span>
                 </Link>
               ))}
             </div>
@@ -878,19 +1016,28 @@ export function IssueDetail() {
       {linkedRuns && linkedRuns.length > 0 && (
         <Collapsible
           open={secondaryOpen.cost}
-          onOpenChange={(open) => setSecondaryOpen((prev) => ({ ...prev, cost: open }))}
+          onOpenChange={(open) =>
+            setSecondaryOpen((prev) => ({ ...prev, cost: open }))
+          }
           className="rounded-lg border border-border"
         >
           <CollapsibleTrigger className="flex w-full items-center justify-between px-3 py-2 text-left">
-            <span className="text-sm font-medium text-muted-foreground">Cost Summary</span>
+            <span className="text-sm font-medium text-muted-foreground">
+              Cost Summary
+            </span>
             <ChevronDown
-              className={cn("h-4 w-4 text-muted-foreground transition-transform", secondaryOpen.cost && "rotate-180")}
+              className={cn(
+                "h-4 w-4 text-muted-foreground transition-transform",
+                secondaryOpen.cost && "rotate-180"
+              )}
             />
           </CollapsibleTrigger>
           <CollapsibleContent>
             <div className="border-t border-border px-3 py-2">
               {!issueCostSummary.hasCost && !issueCostSummary.hasTokens ? (
-                <div className="text-xs text-muted-foreground">No cost data yet.</div>
+                <div className="text-xs text-muted-foreground">
+                  No cost data yet.
+                </div>
               ) : (
                 <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
                   {issueCostSummary.hasCost && (
@@ -902,8 +1049,14 @@ export function IssueDetail() {
                     <span>
                       Tokens {formatTokens(issueCostSummary.totalTokens)}
                       {issueCostSummary.cached > 0
-                        ? ` (in ${formatTokens(issueCostSummary.input)}, out ${formatTokens(issueCostSummary.output)}, cached ${formatTokens(issueCostSummary.cached)})`
-                        : ` (in ${formatTokens(issueCostSummary.input)}, out ${formatTokens(issueCostSummary.output)})`}
+                        ? ` (in ${formatTokens(
+                            issueCostSummary.input
+                          )}, out ${formatTokens(
+                            issueCostSummary.output
+                          )}, cached ${formatTokens(issueCostSummary.cached)})`
+                        : ` (in ${formatTokens(
+                            issueCostSummary.input
+                          )}, out ${formatTokens(issueCostSummary.output)})`}
                     </span>
                   )}
                 </div>
@@ -915,13 +1068,20 @@ export function IssueDetail() {
 
       {/* Mobile properties drawer */}
       <Sheet open={mobilePropsOpen} onOpenChange={setMobilePropsOpen}>
-        <SheetContent side="bottom" className="max-h-[85dvh] pb-[env(safe-area-inset-bottom)]">
+        <SheetContent
+          side="bottom"
+          className="max-h-[85dvh] pb-[env(safe-area-inset-bottom)]"
+        >
           <SheetHeader>
             <SheetTitle className="text-sm">Properties</SheetTitle>
           </SheetHeader>
           <ScrollArea className="flex-1 overflow-y-auto">
             <div className="px-4 pb-4">
-              <IssueProperties issue={issue} onUpdate={(data) => updateIssue.mutate(data)} inline />
+              <IssueProperties
+                issue={issue}
+                onUpdate={(data) => updateIssue.mutate(data)}
+                inline
+              />
             </div>
           </ScrollArea>
         </SheetContent>
