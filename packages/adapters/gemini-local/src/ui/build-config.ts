@@ -67,8 +67,8 @@ export function buildGeminiLocalConfig(v: CreateConfigValues): Record<string, un
     }
   }
   if (Object.keys(env).length > 0) ac.env = env;
-  if (v.dangerouslyBypassSandbox) ac.approvalMode = "yolo";
   ac.sandbox = !v.dangerouslyBypassSandbox;
+
   if (v.command) ac.command = v.command;
   if (v.extraArgs) ac.extraArgs = parseCommaArgs(v.extraArgs);
   return ac;

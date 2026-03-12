@@ -699,7 +699,12 @@ export function NewIssueDialog() {
             }}
             readOnly={createIssue.isPending}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.metaKey && !e.ctrlKey) {
+              if (
+                e.key === "Enter" &&
+                !e.metaKey &&
+                !e.ctrlKey &&
+                !e.nativeEvent.isComposing
+              ) {
                 e.preventDefault();
                 descriptionEditorRef.current?.focus();
               }

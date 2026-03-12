@@ -104,23 +104,12 @@ export function Layout() {
 
   const togglePanel = togglePanelVisible;
 
-  // Cmd+1..9 to switch companies
-  const switchCompany = useCallback(
-    (index: number) => {
-      if (index < companies.length) {
-        setSelectedCompanyId(companies[index]!.id);
-      }
-    },
-    [companies, setSelectedCompanyId],
-  );
-
   useCompanyPageMemory();
 
   useKeyboardShortcuts({
     onNewIssue: () => openNewIssue(),
     onToggleSidebar: toggleSidebar,
     onTogglePanel: togglePanel,
-    onSwitchCompany: switchCompany,
   });
 
   useEffect(() => {

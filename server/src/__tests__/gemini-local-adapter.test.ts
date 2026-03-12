@@ -39,6 +39,37 @@ describe("gemini_local parser", () => {
     expect(parsed.costUsd).toBeCloseTo(0.00123, 6);
     expect(parsed.errorMessage).toBe("model access denied");
   });
+
+  it("extracts structured questions", () => {
+    const stdout = [
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          content: [
+            { type: "output_text", text: "I have a question." },
+            {
+              type: "question",
+              prompt: "Which model?",
+              choices: [
+                { key: "pro", label: "Gemini Pro", description: "Better" },
+                { key: "flash", label: "Gemini Flash" },
+              ],
+            },
+          ],
+        },
+      }),
+    ].join("\n");
+
+    const parsed = parseGeminiJsonl(stdout);
+    expect(parsed.summary).toBe("I have a question.");
+    expect(parsed.question).toEqual({
+      prompt: "Which model?",
+      choices: [
+        { key: "pro", label: "Gemini Pro", description: "Better" },
+        { key: "flash", label: "Gemini Flash", description: undefined },
+      ],
+    });
+  });
 });
 
 describe("gemini_local stale session detection", () => {
