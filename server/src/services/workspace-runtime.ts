@@ -11,6 +11,29 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import { asNumber, asString, parseObject, renderTemplate } from "../adapters/utils.js";
 import { resolveHomeAwarePath } from "../home-paths.js";
 
+const ALLOWED_WORKSPACE_COMMANDS = new Set([
+  "pnpm", "npm", "yarn", "bun", "npx",
+  "git", "make", "docker", "docker-compose", "podman",
+  "sh", "bash", "node", "tsx", "ts-node",
+  "pip", "python", "python3", "cargo", "go", "ruby", "bundle",
+  "curl", "wget",
+]);
+
+export function validateWorkspaceCommand(command: string): void {
+  const trimmed = command.trim();
+  if (!trimmed) throw new Error("Empty command is not allowed");
+  // Extract first token (the executable)
+  const firstToken = trimmed.split(/\s+/)[0];
+  // Strip path prefix to get just the binary name
+  const binaryName = firstToken.split("/").pop() ?? firstToken;
+  if (!ALLOWED_WORKSPACE_COMMANDS.has(binaryName)) {
+    throw new Error(
+      `Command "${binaryName}" is not in the allowed commands list. ` +
+      `Allowed: ${[...ALLOWED_WORKSPACE_COMMANDS].join(", ")}`,
+    );
+  }
+}
+
 export interface ExecutionWorkspaceInput {
   baseCwd: string;
   source: "project_primary" | "task_session" | "agent_home";
@@ -202,10 +225,17 @@ function isAbsolutePath(value: string) {
 }
 
 function resolveConfiguredPath(value: string, baseDir: string): string {
-  if (isAbsolutePath(value)) {
-    return resolveHomeAwarePath(value);
+  const resolved = isAbsolutePath(value)
+    ? resolveHomeAwarePath(value)
+    : path.resolve(baseDir, value);
+  // Validate no traversal outside base directory for relative paths
+  if (!isAbsolutePath(value)) {
+    const normalizedBase = path.resolve(baseDir);
+    if (!resolved.startsWith(normalizedBase + path.sep) && resolved !== normalizedBase) {
+      throw new Error(`Relative path "${value}" resolves outside base directory`);
+    }
   }
-  return path.resolve(baseDir, value);
+  return resolved;
 }
 
 async function runGit(args: string[], cwd: string): Promise<string> {
@@ -273,6 +303,7 @@ async function runWorkspaceCommand(input: {
   env: NodeJS.ProcessEnv;
   label: string;
 }) {
+  validateWorkspaceCommand(input.command);
   const shell = process.env.SHELL?.trim() || "/bin/sh";
   const proc = await new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve, reject) => {
     const child = spawn(shell, ["-c", input.command], {
@@ -671,6 +702,7 @@ async function startLocalRuntimeService(input: {
   const lifecycle = asString(input.service.lifecycle, "shared") === "ephemeral" ? "ephemeral" : "shared";
   const command = asString(input.service.command, "");
   if (!command) throw new Error(`Runtime service "${serviceName}" is missing command`);
+  validateWorkspaceCommand(command);
   const serviceCwdTemplate = asString(input.service.cwd, ".");
   const portConfig = parseObject(input.service.port);
   const port = asString(portConfig.type, "") === "auto" ? await allocatePort() : null;
