@@ -2,6 +2,7 @@ import * as p from "@clack/prompts";
 import pc from "picocolors";
 import type { Command } from "commander";
 import {
+  describePluginConfig,
   doctorPlugins,
   getPluginConfig,
   installLocalPlugin,
@@ -11,6 +12,7 @@ import {
   setPluginConfig,
   setPluginEnabled,
   uninstallPlugin,
+  updatePluginConfig,
 } from "./plugin-lib.js";
 
 type PluginCommonOptions = {
@@ -40,6 +42,7 @@ type PluginEnableOptions = PluginCommonOptions;
 
 type PluginConfigSetOptions = PluginCommonOptions & {
   valueJson?: string;
+  restart?: boolean;
 };
 
 function printPluginSummary(plugin: ReturnType<typeof listInstalledPlugins>[number]): void {
@@ -89,7 +92,7 @@ async function pluginInstallCommand(localPath: string, opts: PluginInstallOption
 }
 
 async function pluginUninstallCommand(pluginId: string, opts: PluginUninstallOptions): Promise<void> {
-  const record = uninstallPlugin(pluginId, {
+  const record = await uninstallPlugin(pluginId, {
     instance: opts.instance,
     json: opts.json,
     purgeData: opts.purgeData,
@@ -168,9 +171,13 @@ async function pluginLoadCommand(opts: PluginLoadOptions): Promise<void> {
 
 async function pluginRestartCommand(pluginId: string, opts: PluginCommonOptions): Promise<void> {
   const result = await restartPlugin(pluginId, opts);
+  const plugin = listInstalledPlugins(opts).find((item) => item.pluginId === pluginId);
 
   if (opts.json) {
-    console.log(JSON.stringify({ result }, null, 2));
+    if (!plugin) {
+      throw new Error(`Plugin not found after restart: ${pluginId}`);
+    }
+    console.log(JSON.stringify({ result, plugin }, null, 2));
     return;
   }
 
@@ -183,7 +190,7 @@ async function pluginRestartCommand(pluginId: string, opts: PluginCommonOptions)
 }
 
 async function pluginEnableCommand(pluginId: string, opts: PluginEnableOptions): Promise<void> {
-  const record = setPluginEnabled(pluginId, true, opts);
+  const record = await setPluginEnabled(pluginId, true, opts);
   if (opts.json) {
     console.log(JSON.stringify({ plugin: record }, null, 2));
     return;
@@ -192,7 +199,7 @@ async function pluginEnableCommand(pluginId: string, opts: PluginEnableOptions):
 }
 
 async function pluginDisableCommand(pluginId: string, opts: PluginEnableOptions): Promise<void> {
-  const record = setPluginEnabled(pluginId, false, opts);
+  const record = await setPluginEnabled(pluginId, false, opts);
   if (opts.json) {
     console.log(JSON.stringify({ plugin: record }, null, 2));
     return;
@@ -203,6 +210,11 @@ async function pluginDisableCommand(pluginId: string, opts: PluginEnableOptions)
 async function pluginConfigGetCommand(pluginId: string, opts: PluginCommonOptions): Promise<void> {
   const config = getPluginConfig(pluginId, opts);
   console.log(JSON.stringify({ pluginId, config }, null, 2));
+}
+
+async function pluginConfigDescribeCommand(pluginId: string, opts: PluginCommonOptions): Promise<void> {
+  const described = await describePluginConfig(pluginId, opts);
+  console.log(JSON.stringify(described, null, 2));
 }
 
 async function pluginConfigSetCommand(
@@ -225,13 +237,20 @@ async function pluginConfigSetCommand(
     throw new Error("Config payload must be a JSON object.");
   }
 
-  const record = setPluginConfig(pluginId, parsed as Record<string, unknown>, opts);
+  const result = await updatePluginConfig(pluginId, parsed as Record<string, unknown>, {
+    instance: opts.instance,
+    json: opts.json,
+    restart: opts.restart,
+  });
 
   if (opts.json) {
-    console.log(JSON.stringify({ plugin: record }, null, 2));
+    console.log(JSON.stringify(result, null, 2));
     return;
   }
-  p.log.success(`Updated config for plugin ${record.pluginId}`);
+  p.log.success(`Updated config for plugin ${result.plugin.pluginId}`);
+  if (opts.restart) {
+    p.log.message(pc.dim(`Restart status: ${result.restartResult?.status ?? "unknown"}`));
+  }
 }
 
 export function registerPluginCommands(program: Command): void {
@@ -310,13 +329,23 @@ export function registerPluginCommands(program: Command): void {
     .description("Get plugin config JSON")
     .argument("<pluginId>", "Plugin manifest id")
     .option("-i, --instance <id>", "Paperclip instance id")
+    .option("--json", "Print JSON output")
     .action(pluginConfigGetCommand);
+
+  pluginConfig
+    .command("describe")
+    .description("Describe plugin config schema + current values")
+    .argument("<pluginId>", "Plugin manifest id")
+    .option("-i, --instance <id>", "Paperclip instance id")
+    .option("--json", "Print JSON output")
+    .action(pluginConfigDescribeCommand);
 
   pluginConfig
     .command("set")
     .description("Set plugin config JSON")
     .argument("<pluginId>", "Plugin manifest id")
     .requiredOption("--value-json <value>", "JSON object string for plugin config")
+    .option("--restart", "Restart plugin after config update", false)
     .option("-i, --instance <id>", "Paperclip instance id")
     .option("--json", "Print JSON output")
     .action(pluginConfigSetCommand);

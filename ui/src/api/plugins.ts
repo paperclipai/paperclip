@@ -1,5 +1,7 @@
 import type {
   PluginActionResponse,
+  PluginConfigDescribeResponse,
+  PluginConfigUpdateResponse,
   PluginListResponse,
   PluginRestartResponse,
 } from "@paperclipai/shared";
@@ -30,6 +32,25 @@ export const pluginsApi = {
     return api.post<PluginRestartResponse>(
       `/instance/plugins/${encodeURIComponent(pluginId)}/restart${toInstanceQuery(instanceId)}`,
       {},
+    );
+  },
+  describeConfig(pluginId: string, instanceId?: string) {
+    return api.get<PluginConfigDescribeResponse>(
+      `/instance/plugins/${encodeURIComponent(pluginId)}/config${toInstanceQuery(instanceId)}`,
+    );
+  },
+  updateConfig(
+    pluginId: string,
+    config: Record<string, unknown>,
+    opts: { restart?: boolean } = {},
+    instanceId?: string,
+  ) {
+    return api.patch<PluginConfigUpdateResponse>(
+      `/instance/plugins/${encodeURIComponent(pluginId)}/config${toInstanceQuery(instanceId)}`,
+      {
+        config,
+        restart: opts.restart ?? false,
+      },
     );
   },
 };

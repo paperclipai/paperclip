@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   PluginHostService,
+  describePluginConfig,
   doctorPlugins,
   installLocalPlugin,
   listInstalledPlugins,
@@ -120,7 +121,7 @@ describe("plugin host capability", () => {
     expect(doctor[0]?.ok).toBe(true);
     expect(doctor[0]?.health).toMatchObject({ status: "ok" });
 
-    uninstallPlugin("@paperclip/plugin-sample", {});
+    await uninstallPlugin("@paperclip/plugin-sample", {});
     expect(listInstalledPlugins({})).toHaveLength(0);
   });
 
@@ -131,14 +132,14 @@ describe("plugin host capability", () => {
 
     await installLocalPlugin(pluginPath, {});
 
-    const disabled = setPluginEnabled("@paperclip/plugin-sample", false, {});
+    const disabled = await setPluginEnabled("@paperclip/plugin-sample", false, {});
     expect(disabled.enabled).toBe(false);
     expect(disabled.status).toBe("disabled");
 
     const doctorDisabled = await doctorPlugins({ pluginId: "@paperclip/plugin-sample" });
     expect(doctorDisabled[0]).toMatchObject({ ok: true, status: "disabled" });
 
-    const enabled = setPluginEnabled("@paperclip/plugin-sample", true, {});
+    const enabled = await setPluginEnabled("@paperclip/plugin-sample", true, {});
     expect(enabled.enabled).toBe(true);
 
     const doctorEnabled = await doctorPlugins({ pluginId: "@paperclip/plugin-sample" });
@@ -220,5 +221,20 @@ describe("plugin host capability", () => {
     const registry = readRegistry(home) as { version: number; plugins: Array<{ lifecycle?: unknown }> };
     expect(registry.version).toBe(2);
     expect(registry.plugins[0]?.lifecycle).toBeTruthy();
+  });
+
+  it("describes inferred config schema from current config", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-plugin-config-describe-"));
+    process.env.PAPERCLIP_HOME = path.resolve(tempRoot, "home");
+
+    const pluginPath = createPluginFixture(tempRoot);
+    await installLocalPlugin(pluginPath, {});
+    setPluginConfig("@paperclip/plugin-sample", { apiKey: "abc", retries: 3, enabled: true }, {});
+
+    const described = await describePluginConfig("@paperclip/plugin-sample", {});
+    expect(described.schemaSource).toBe("inferred");
+    expect(described.schema.fields.some((field) => field.key === "apiKey" && field.type === "password")).toBe(true);
+    expect(described.schema.fields.some((field) => field.key === "retries" && field.type === "number")).toBe(true);
+    expect(described.schema.fields.some((field) => field.key === "enabled" && field.type === "boolean")).toBe(true);
   });
 });

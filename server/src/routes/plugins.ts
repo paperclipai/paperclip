@@ -1,9 +1,13 @@
 import { Router } from "express";
 import { existsSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import {
   pluginActionResponseSchema,
+  pluginConfigDescribeResponseSchema,
+  pluginConfigUpdateBodySchema,
+  pluginConfigUpdateResponseSchema,
   pluginInstallBodySchema,
   pluginListResponseSchema,
   pluginRestartResponseSchema,
@@ -17,6 +21,32 @@ type CliJson = Record<string, unknown>;
 
 function resolveRepoRoot(): string {
   return path.resolve(process.cwd());
+}
+
+function resolvePaperclipHomeDir(): string {
+  const envHome = process.env.PAPERCLIP_HOME?.trim();
+  if (envHome) {
+    const expanded = envHome === "~" ? os.homedir() : envHome.startsWith("~/") ? path.join(os.homedir(), envHome.slice(2)) : envHome;
+    return path.resolve(expanded);
+  }
+  return path.resolve(os.homedir(), ".paperclip");
+}
+
+function getAllowedPluginInstallBases(): string[] {
+  const home = resolvePaperclipHomeDir();
+  return [path.resolve(home, "plugins", "local")];
+}
+
+function assertAllowedPluginInstallPath(inputPath: string): string {
+  const resolved = path.resolve(inputPath);
+  const allowedBases = getAllowedPluginInstallBases();
+  const allowed = allowedBases.some((base) => resolved === base || resolved.startsWith(`${base}${path.sep}`));
+  if (!allowed) {
+    throw badRequest(
+      `Plugin install path is not allowed: ${resolved}. Allowed base(s): ${allowedBases.join(", ")}`,
+    );
+  }
+  return resolved;
 }
 
 function maybeInstanceArgs(instanceId: string | null): string[] {
@@ -94,9 +124,10 @@ export function pluginRoutes() {
   router.post("/instance/plugins/install", validate(pluginInstallBodySchema), async (req, res) => {
     assertBoard(req);
     const instanceId = readInstanceQuery(req.query.instance);
+    const safePath = assertAllowedPluginInstallPath(req.body.path);
     const payload = await runPluginCliJson([
       "install",
-      req.body.path,
+      safePath,
       ...(req.body.skipBootstrap ? ["--skip-bootstrap"] : []),
       ...maybeInstanceArgs(instanceId),
     ]);
@@ -121,25 +152,52 @@ export function pluginRoutes() {
     assertBoard(req);
     const instanceId = readInstanceQuery(req.query.instance);
 
-    const resultPayload = await runPluginCliJson([
+    const payload = await runPluginCliJson([
       "restart",
       String(req.params.pluginId),
       ...maybeInstanceArgs(instanceId),
     ]);
 
-    const listPayload = await runPluginCliJson(["list", ...maybeInstanceArgs(instanceId)]);
-
-    const parsedResult = pluginRestartResponseSchema
-      .pick({ result: true })
-      .parse({ result: resultPayload.result });
-    const parsedList = pluginListResponseSchema.parse(listPayload);
-    const plugin = parsedList.plugins.find((item) => item.pluginId === String(req.params.pluginId));
-    if (!plugin) {
-      throw badRequest(`Plugin not found after restart: ${String(req.params.pluginId)}`);
-    }
-
-    res.json({ result: parsedResult.result, plugin });
+    const parsed = pluginRestartResponseSchema.parse(payload);
+    res.json(parsed);
   });
+
+  router.get("/instance/plugins/:pluginId/config", async (req, res) => {
+    assertBoard(req);
+    const instanceId = readInstanceQuery(req.query.instance);
+
+    const payload = await runPluginCliJson([
+      "config",
+      "describe",
+      String(req.params.pluginId),
+      ...maybeInstanceArgs(instanceId),
+    ]);
+
+    const parsed = pluginConfigDescribeResponseSchema.parse(payload);
+    res.json(parsed);
+  });
+
+  router.patch(
+    "/instance/plugins/:pluginId/config",
+    validate(pluginConfigUpdateBodySchema),
+    async (req, res) => {
+      assertBoard(req);
+      const instanceId = readInstanceQuery(req.query.instance);
+
+      const payload = await runPluginCliJson([
+        "config",
+        "set",
+        String(req.params.pluginId),
+        "--value-json",
+        JSON.stringify(req.body.config),
+        ...(req.body.restart ? ["--restart"] : []),
+        ...maybeInstanceArgs(instanceId),
+      ]);
+
+      const parsed = pluginConfigUpdateResponseSchema.parse(payload);
+      res.json(parsed);
+    },
+  );
 
   return router;
 }

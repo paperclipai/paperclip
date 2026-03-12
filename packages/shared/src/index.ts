@@ -249,6 +249,11 @@ export {
   pluginToggleBodySchema,
   pluginRestartResultSchema,
   pluginRestartResponseSchema,
+  pluginConfigFieldSchema,
+  pluginConfigSchemaSchema,
+  pluginConfigDescribeResponseSchema,
+  pluginConfigUpdateBodySchema,
+  pluginConfigUpdateResponseSchema,
   type PluginLifecycleState,
   type PluginRegistryRecord,
   type PluginListResponse,
@@ -257,6 +262,11 @@ export {
   type PluginToggleBody,
   type PluginRestartResult,
   type PluginRestartResponse,
+  type PluginConfigField,
+  type PluginConfigSchema,
+  type PluginConfigDescribeResponse,
+  type PluginConfigUpdateBody,
+  type PluginConfigUpdateResponse,
 } from "./plugin-host.js";
 
 export { API_PREFIX, API } from "./api.js";

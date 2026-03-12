@@ -60,6 +60,7 @@ export type PaperclipPluginManifestV1 = {
   displayName: string;
   description?: string;
   capabilities?: string[];
+  configSchema?: unknown;
 };
 
 type PluginPackageJson = {
@@ -78,6 +79,40 @@ export type ValidatedPluginPackage = {
   manifestPath: string;
   workerPath: string;
   manifest: PaperclipPluginManifestV1;
+};
+
+export type PluginConfigField = {
+  key: string;
+  label?: string;
+  description?: string;
+  type: "string" | "number" | "boolean" | "textarea" | "password" | "select" | "json";
+  required?: boolean;
+  secret?: boolean;
+  defaultValue?: unknown;
+  placeholder?: string;
+  options?: Array<{
+    label: string;
+    value: string | number | boolean;
+  }>;
+};
+
+export type PluginConfigSchemaDescriptor = {
+  title?: string;
+  description?: string;
+  restartRequired?: boolean;
+  fields: PluginConfigField[];
+};
+
+export type PluginConfigDescribeResult = {
+  plugin: PluginRegistryRecord;
+  config: Record<string, unknown>;
+  schema: PluginConfigSchemaDescriptor;
+  schemaSource: "manifest" | "inferred";
+};
+
+export type PluginConfigUpdateResult = {
+  plugin: PluginRegistryRecord;
+  restartResult?: PluginLoadResult;
 };
 
 export type PluginDoctorResult = {
@@ -401,6 +436,142 @@ function resolveWorkerApi(loaded: WorkerModule): WorkerApi {
   };
 }
 
+function isPluginConfigFieldType(value: unknown): value is PluginConfigField["type"] {
+  return (
+    value === "string" ||
+    value === "number" ||
+    value === "boolean" ||
+    value === "textarea" ||
+    value === "password" ||
+    value === "select" ||
+    value === "json"
+  );
+}
+
+function normalizePluginConfigSchema(raw: unknown): PluginConfigSchemaDescriptor | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+
+  const value = raw as {
+    title?: unknown;
+    description?: unknown;
+    restartRequired?: unknown;
+    fields?: unknown;
+  };
+
+  if (!Array.isArray(value.fields)) {
+    return null;
+  }
+
+  const fields: PluginConfigField[] = [];
+  for (const item of value.fields) {
+    if (!item || typeof item !== "object") continue;
+    const field = item as {
+      key?: unknown;
+      label?: unknown;
+      description?: unknown;
+      type?: unknown;
+      required?: unknown;
+      secret?: unknown;
+      defaultValue?: unknown;
+      placeholder?: unknown;
+      options?: unknown;
+    };
+
+    if (typeof field.key !== "string" || field.key.trim().length === 0) continue;
+
+    const type = isPluginConfigFieldType(field.type) ? field.type : "string";
+    const normalized: PluginConfigField = {
+      key: field.key,
+      type,
+    };
+
+    if (typeof field.label === "string") normalized.label = field.label;
+    if (typeof field.description === "string") normalized.description = field.description;
+    if (typeof field.required === "boolean") normalized.required = field.required;
+    if (typeof field.secret === "boolean") normalized.secret = field.secret;
+    if (typeof field.placeholder === "string") normalized.placeholder = field.placeholder;
+    if (field.defaultValue !== undefined) normalized.defaultValue = field.defaultValue;
+
+    if (type === "select" && Array.isArray(field.options)) {
+      const options = field.options
+        .filter((opt): opt is { label?: unknown; value?: unknown } => Boolean(opt && typeof opt === "object"))
+        .map((opt) => {
+          const label = typeof opt.label === "string" ? opt.label : String(opt.value ?? "");
+          const rawValue = opt.value;
+          if (
+            typeof rawValue === "string" ||
+            typeof rawValue === "number" ||
+            typeof rawValue === "boolean"
+          ) {
+            return { label, value: rawValue };
+          }
+          return null;
+        })
+        .filter((opt): opt is { label: string; value: string | number | boolean } => opt !== null);
+
+      if (options.length > 0) {
+        normalized.options = options;
+      }
+    }
+
+    fields.push(normalized);
+  }
+
+  if (fields.length === 0) {
+    return null;
+  }
+
+  return {
+    title: typeof value.title === "string" ? value.title : undefined,
+    description: typeof value.description === "string" ? value.description : undefined,
+    restartRequired: typeof value.restartRequired === "boolean" ? value.restartRequired : undefined,
+    fields,
+  };
+}
+
+function inferPluginConfigSchema(config: Record<string, unknown>): PluginConfigSchemaDescriptor {
+  const fields: PluginConfigField[] = Object.entries(config).map(([key, currentValue]) => {
+    const base = {
+      key,
+      label: key,
+    } satisfies Pick<PluginConfigField, "key" | "label">;
+
+    if (typeof currentValue === "boolean") {
+      return { ...base, type: "boolean", defaultValue: currentValue };
+    }
+    if (typeof currentValue === "number") {
+      return { ...base, type: "number", defaultValue: currentValue };
+    }
+    if (typeof currentValue === "string") {
+      const lower = key.toLowerCase();
+      const isSecretLike =
+        lower.includes("key") || lower.includes("token") || lower.includes("secret") || lower.includes("password");
+      return {
+        ...base,
+        type: isSecretLike ? "password" : key.toLowerCase().includes("prompt") ? "textarea" : "string",
+        secret: isSecretLike || undefined,
+        defaultValue: currentValue,
+      };
+    }
+
+    return {
+      ...base,
+      type: "json",
+      defaultValue: currentValue,
+    };
+  });
+
+  return {
+    title: "Plugin Configuration",
+    description:
+      "Inferred from current config values. Unknown schema fields can be edited as JSON values.",
+    restartRequired: true,
+    fields,
+  };
+}
+
 function buildInitializeInput(input: {
   manifest: PaperclipPluginManifestV1;
   instanceId: string;
@@ -464,6 +635,7 @@ export class PluginHostService {
     const registry = this.loadRegistry();
     const existing = registry.plugins.find((item) => item.pluginId === pluginId);
     const ts = nowIso();
+    const bootstrapSkipped = !(opts.autoLoad ?? true);
     const nextRecord: PluginRegistryRecord = normalizeRecord({
       pluginId,
       packageName: validated.packageName,
@@ -473,12 +645,14 @@ export class PluginHostService {
       manifestPath: validated.manifestPath,
       workerPath: validated.workerPath,
       enabled: existing?.enabled ?? true,
-      status: existing?.enabled === false ? "disabled" : "ready",
+      status: existing?.enabled === false ? "disabled" : bootstrapSkipped ? "error" : "ready",
       config: existing?.config ?? {},
       lifecycle: existing?.lifecycle ?? { loadCount: 0, restartCount: 0 },
       installedAt: existing?.installedAt ?? ts,
       updatedAt: ts,
-      lastError: undefined,
+      lastError: bootstrapSkipped
+        ? "Bootstrap skipped: plugin installed but not initialized/health-checked in host process yet."
+        : undefined,
       lastHealth: existing?.lastHealth,
     });
 
@@ -500,7 +674,7 @@ export class PluginHostService {
     return nextRecord;
   }
 
-  uninstall(pluginId: string, opts: { purgeData?: boolean } = {}): PluginRegistryRecord {
+  async uninstall(pluginId: string, opts: { purgeData?: boolean } = {}): Promise<PluginRegistryRecord> {
     const normalizedPluginId = pluginId.trim();
     if (!normalizedPluginId) {
       throw new Error("Plugin id is required.");
@@ -512,7 +686,7 @@ export class PluginHostService {
       throw new Error(`Plugin not installed: ${normalizedPluginId}`);
     }
 
-    void this.shutdownPlugin(normalizedPluginId, { suppressMissing: true }).catch(() => undefined);
+    await this.shutdownPlugin(normalizedPluginId, { suppressMissing: true }).catch(() => undefined);
 
     rmSync(target.symlinkPath, { recursive: true, force: true });
     if (opts.purgeData) {
@@ -528,17 +702,28 @@ export class PluginHostService {
     return target;
   }
 
-  setEnabled(pluginId: string, enabled: boolean): PluginRegistryRecord {
+  async setEnabled(pluginId: string, enabled: boolean): Promise<PluginRegistryRecord> {
     const registry = this.loadRegistry();
     const record = this.findRecordOrThrow(registry, pluginId);
     record.enabled = enabled;
-    record.status = enabled ? "ready" : "disabled";
+
+    if (!enabled) {
+      record.status = "disabled";
+      record.lastError = undefined;
+      record.updatedAt = nowIso();
+      this.saveRegistry(registry);
+      await this.shutdownPlugin(pluginId, { suppressMissing: true }).catch(() => undefined);
+      return record;
+    }
+
+    record.status = "error";
+    record.lastError = "Plugin enabled but not loaded yet.";
     record.updatedAt = nowIso();
     this.saveRegistry(registry);
-    if (!enabled) {
-      void this.shutdownPlugin(pluginId, { suppressMissing: true }).catch(() => undefined);
-    }
-    return record;
+
+    await this.loadPlugin(pluginId);
+    const refreshed = this.loadRegistry();
+    return this.findRecordOrThrow(refreshed, pluginId);
   }
 
   setConfig(pluginId: string, config: Record<string, unknown>): PluginRegistryRecord {
@@ -554,6 +739,50 @@ export class PluginHostService {
     const registry = this.loadRegistry();
     const record = this.findRecordOrThrow(registry, pluginId);
     return record.config ?? {};
+  }
+
+  async describeConfig(pluginId: string): Promise<PluginConfigDescribeResult> {
+    const registry = this.loadRegistry();
+    const record = this.findRecordOrThrow(registry, pluginId);
+    const validated = await validateLocalPluginPackage(record.sourcePath);
+
+    const manifestSchema = normalizePluginConfigSchema(validated.manifest.configSchema);
+    const config = record.config ?? {};
+
+    if (manifestSchema) {
+      return {
+        plugin: record,
+        config,
+        schema: manifestSchema,
+        schemaSource: "manifest",
+      };
+    }
+
+    return {
+      plugin: record,
+      config,
+      schema: inferPluginConfigSchema(config),
+      schemaSource: "inferred",
+    };
+  }
+
+  async updateConfig(
+    pluginId: string,
+    config: Record<string, unknown>,
+    opts: { restart?: boolean } = {},
+  ): Promise<PluginConfigUpdateResult> {
+    const plugin = this.setConfig(pluginId, config);
+
+    if (opts.restart) {
+      const restartResult = await this.restartPlugin(pluginId);
+      const refreshed = this.loadRegistry();
+      return {
+        plugin: this.findRecordOrThrow(refreshed, pluginId),
+        restartResult,
+      };
+    }
+
+    return { plugin };
   }
 
   async loadPlugin(pluginId: string): Promise<PluginLoadResult> {
@@ -664,11 +893,13 @@ export class PluginHostService {
     await this.shutdownPlugin(pluginId, { suppressMissing: true });
     const result = await this.loadPlugin(pluginId);
 
-    const registry = this.loadRegistry();
-    const record = this.findRecordOrThrow(registry, pluginId);
-    record.lifecycle.restartCount += 1;
-    record.updatedAt = nowIso();
-    this.saveRegistry(registry);
+    if (result.status === "ready") {
+      const registry = this.loadRegistry();
+      const record = this.findRecordOrThrow(registry, pluginId);
+      record.lifecycle.restartCount += 1;
+      record.updatedAt = nowIso();
+      this.saveRegistry(registry);
+    }
 
     return result;
   }
@@ -749,10 +980,10 @@ export async function installLocalPlugin(
   });
 }
 
-export function uninstallPlugin(
+export async function uninstallPlugin(
   pluginId: string,
   opts: PluginCommandCommonOptions & { purgeData?: boolean },
-): PluginRegistryRecord {
+): Promise<PluginRegistryRecord> {
   return createPluginHostService(opts.instance).uninstall(pluginId, {
     purgeData: opts.purgeData,
   });
@@ -784,11 +1015,11 @@ export async function restartPlugin(
   return createPluginHostService(opts.instance).restartPlugin(pluginId);
 }
 
-export function setPluginEnabled(
+export async function setPluginEnabled(
   pluginId: string,
   enabled: boolean,
   opts: PluginCommandCommonOptions,
-): PluginRegistryRecord {
+): Promise<PluginRegistryRecord> {
   return createPluginHostService(opts.instance).setEnabled(pluginId, enabled);
 }
 
@@ -802,4 +1033,21 @@ export function setPluginConfig(
 
 export function getPluginConfig(pluginId: string, opts: PluginCommandCommonOptions): Record<string, unknown> {
   return createPluginHostService(opts.instance).getConfig(pluginId);
+}
+
+export async function describePluginConfig(
+  pluginId: string,
+  opts: PluginCommandCommonOptions,
+): Promise<PluginConfigDescribeResult> {
+  return createPluginHostService(opts.instance).describeConfig(pluginId);
+}
+
+export async function updatePluginConfig(
+  pluginId: string,
+  config: Record<string, unknown>,
+  opts: PluginCommandCommonOptions & { restart?: boolean },
+): Promise<PluginConfigUpdateResult> {
+  return createPluginHostService(opts.instance).updateConfig(pluginId, config, {
+    restart: opts.restart,
+  });
 }

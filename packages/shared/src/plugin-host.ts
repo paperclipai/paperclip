@@ -56,6 +56,49 @@ export const pluginRestartResponseSchema = z.object({
   plugin: pluginRegistryRecordSchema,
 });
 
+export const pluginConfigFieldSchema = z.object({
+  key: z.string().min(1),
+  label: z.string().optional(),
+  description: z.string().optional(),
+  type: z.enum(["string", "number", "boolean", "textarea", "password", "select", "json"]),
+  required: z.boolean().optional(),
+  secret: z.boolean().optional(),
+  defaultValue: z.unknown().optional(),
+  placeholder: z.string().optional(),
+  options: z
+    .array(
+      z.object({
+        label: z.string(),
+        value: z.union([z.string(), z.number(), z.boolean()]),
+      }),
+    )
+    .optional(),
+});
+
+export const pluginConfigSchemaSchema = z.object({
+  title: z.string().optional(),
+  description: z.string().optional(),
+  restartRequired: z.boolean().optional(),
+  fields: z.array(pluginConfigFieldSchema),
+});
+
+export const pluginConfigDescribeResponseSchema = z.object({
+  plugin: pluginRegistryRecordSchema,
+  config: z.record(z.string(), z.unknown()),
+  schema: pluginConfigSchemaSchema,
+  schemaSource: z.enum(["manifest", "inferred"]),
+});
+
+export const pluginConfigUpdateBodySchema = z.object({
+  config: z.record(z.string(), z.unknown()),
+  restart: z.boolean().optional(),
+});
+
+export const pluginConfigUpdateResponseSchema = z.object({
+  plugin: pluginRegistryRecordSchema,
+  restartResult: pluginRestartResultSchema.optional(),
+});
+
 export type PluginLifecycleState = z.infer<typeof pluginLifecycleStateSchema>;
 export type PluginRegistryRecord = z.infer<typeof pluginRegistryRecordSchema>;
 export type PluginListResponse = z.infer<typeof pluginListResponseSchema>;
@@ -64,3 +107,8 @@ export type PluginInstallBody = z.infer<typeof pluginInstallBodySchema>;
 export type PluginToggleBody = z.infer<typeof pluginToggleBodySchema>;
 export type PluginRestartResult = z.infer<typeof pluginRestartResultSchema>;
 export type PluginRestartResponse = z.infer<typeof pluginRestartResponseSchema>;
+export type PluginConfigField = z.infer<typeof pluginConfigFieldSchema>;
+export type PluginConfigSchema = z.infer<typeof pluginConfigSchemaSchema>;
+export type PluginConfigDescribeResponse = z.infer<typeof pluginConfigDescribeResponseSchema>;
+export type PluginConfigUpdateBody = z.infer<typeof pluginConfigUpdateBodySchema>;
+export type PluginConfigUpdateResponse = z.infer<typeof pluginConfigUpdateResponseSchema>;
