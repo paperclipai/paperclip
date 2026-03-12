@@ -1049,46 +1049,27 @@ export function OnboardingWizard() {
                                     ? "GEMINI_API_KEY"
                                     : "OPENAI_API_KEY"}
                               </span>{" "}
-                              in
-                              env or run{" "}
+                              in env or run{" "}
                               <span className="font-mono">
-                                Respond with hello.
-                              </span>
-                            </p>
-                            {adapterType === "cursor" ||
-                            adapterType === "codex_local" ||
-                            adapterType === "gemini_local" ||
-                            adapterType === "opencode_local" ? (
-                              <p className="text-muted-foreground">
-                                If auth fails, set{" "}
-                                <span className="font-mono">
-                                  {adapterType === "cursor"
-                                    ? "CURSOR_API_KEY"
-                                    : adapterType === "gemini_local"
-                                      ? "GEMINI_API_KEY"
-                                    : "OPENAI_API_KEY"}
-                                </span>{" "}
-                                in env or run{" "}
-                                <span className="font-mono">
-                                  {adapterType === "cursor"
-                                    ? "agent login"
-                                    : adapterType === "codex_local"
+                                {adapterType === "cursor"
+                                  ? "agent login"
+                                  : adapterType === "codex_local"
                                     ? "codex login"
                                     : adapterType === "gemini_local"
                                       ? "gemini auth"
-                                    : "opencode auth login"}
-                                </span>
-                                .
-                              </p>
-                            ) : (
-                              <p className="text-muted-foreground">
-                                If login is required, run{" "}
-                                <span className="font-mono">claude login</span>{" "}
-                                and retry.
-                              </p>
-                            )}
-                          </div>
-                        )}
+                                      : "opencode auth login"}
+                              </span>
+                              .
+                            </p>
+                          ) : (
+                            <p className="text-muted-foreground">
+                              If login is required, run{" "}
+                              <span className="font-mono">claude login</span>{" "}
+                              and retry.
+                            </p>
+                          )}
+                        </div>
+                      )}
                     </div>
                   )}
 
