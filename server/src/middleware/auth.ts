@@ -151,6 +151,6 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
   };
 }
 
-export function requireBoard(req: Express.Request) {
+export function requireBoard(req: Request) {
   return req.actor.type === "board";
 }
