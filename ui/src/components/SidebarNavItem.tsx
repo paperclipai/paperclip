@@ -4,7 +4,8 @@ import { useSidebar } from "../context/SidebarContext";
 import type { LucideIcon } from "lucide-react";
 
 interface SidebarNavItemProps {
-  to: string;
+  to?: string;
+  href?: string;
   label: string;
   icon: LucideIcon;
   end?: boolean;
@@ -17,6 +18,7 @@ interface SidebarNavItemProps {
 
 export function SidebarNavItem({
   to,
+  href,
   label,
   icon: Icon,
   end,
@@ -28,6 +30,40 @@ export function SidebarNavItem({
 }: SidebarNavItemProps) {
   const { isMobile, setSidebarOpen } = useSidebar();
 
+  // External link - use <a> tag
+  if (href) {
+    return (
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={cn(
+          "flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors",
+          "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
+          className,
+        )}
+      >
+        <span className="relative shrink-0">
+          <Icon className="h-4 w-4" />
+        </span>
+        <span className="flex-1 truncate">{label}</span>
+        {badge != null && badge > 0 && (
+          <span
+            className={cn(
+              "ml-auto rounded-full px-1.5 py-0.5 text-xs leading-none",
+              badgeTone === "danger"
+                ? "bg-red-600/90 text-red-50"
+                : "bg-primary text-primary-foreground",
+            )}
+          >
+            {badge}
+          </span>
+        )}
+      </a>
+    );
+  }
+
+  // Internal link - use NavLink
   return (
     <NavLink
       to={to}
