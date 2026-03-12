@@ -17,4 +17,28 @@ describe("stderr classifier", () => {
       ),
     ).toBe("benign");
   });
+
+  it("treats paperclip claude session cwd mismatch messages as benign", () => {
+    expect(
+      classifyStderrLine(
+        '[paperclip] Claude session "abc123" was saved for cwd "/workspace/old" and will not be resumed in "/workspace/new".',
+      ),
+    ).toBe("benign");
+  });
+
+  it("treats paperclip codex session cwd mismatch messages as benign", () => {
+    expect(
+      classifyStderrLine(
+        '[paperclip] Codex session "def456" was saved for cwd "/workspace/old" and will not be resumed in "/workspace/new".',
+      ),
+    ).toBe("benign");
+  });
+
+  it("treats paperclip instructions fallback messages as benign", () => {
+    expect(
+      classifyStderrLine(
+        '[paperclip] Configured instructionsFilePath "/tmp/AGENTS.md" was not readable; using "/paperclip/agent-home/AGENTS.md" instead.',
+      ),
+    ).toBe("benign");
+  });
 });

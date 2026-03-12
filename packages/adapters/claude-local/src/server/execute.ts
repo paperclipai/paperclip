@@ -99,6 +99,7 @@ interface ClaudeRuntimeConfig {
   command: string;
   cwd: string;
   workspaceId: string | null;
+  workspaceSource: string;
   workspaceRepoUrl: string | null;
   workspaceRepoRef: string | null;
   env: Record<string, string>;
@@ -274,6 +275,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     command,
     cwd,
     workspaceId,
+    workspaceSource,
     workspaceRepoUrl,
     workspaceRepoRef,
     env,
@@ -341,6 +343,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     command,
     cwd,
     workspaceId,
+    workspaceSource,
     workspaceRepoUrl,
     workspaceRepoRef,
     env,
@@ -555,7 +558,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const resolvedSessionParams = resolvedSessionId
       ? ({
         sessionId: resolvedSessionId,
-        cwd,
+        ...(workspaceSource !== "agent_home" ? { cwd } : {}),
         ...(workspaceId ? { workspaceId } : {}),
         ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
         ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),

@@ -159,6 +159,7 @@ type CodexRuntimeConfig = {
   graceSec: number;
   extraArgs: string[];
   workspaceId: string;
+  workspaceSource: string;
   workspaceRepoUrl: string;
   workspaceRepoRef: string;
   runtimeSessionId: string;
@@ -337,6 +338,7 @@ async function buildCodexRuntimeConfig(
     graceSec,
     extraArgs,
     workspaceId,
+    workspaceSource,
     workspaceRepoUrl,
     workspaceRepoRef,
     runtimeSessionId,
@@ -414,6 +416,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     graceSec,
     extraArgs,
     workspaceId,
+    workspaceSource,
     workspaceRepoUrl,
     workspaceRepoRef,
     runtimeSessionId,
@@ -621,7 +624,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const resolvedSessionParams = resolvedSessionId
       ? ({
         sessionId: resolvedSessionId,
-        cwd,
+        ...(workspaceSource !== "agent_home" ? { cwd } : {}),
         ...(workspaceId ? { workspaceId } : {}),
         ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
         ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),

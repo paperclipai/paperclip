@@ -111,6 +111,71 @@ console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, c
     }
   });
 
+  it("omits cwd in session params for agent_home workspaces", async () => {
+    const root = path.join(
+      os.tmpdir(),
+      `paperclip-codex-local-agent-home-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
+    const binDir = path.join(root, "bin");
+    const configuredCwd = path.join(root, "configured-cwd");
+    const workspaceCwd = path.join(root, "workspace-cwd");
+    const fakeCodex = path.join(binDir, "codex");
+    const script = `#!/usr/bin/env node
+console.log(JSON.stringify({ type: "thread.started", thread_id: "test-thread" }));
+console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "hello" } }));
+console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } }));
+`;
+
+    try {
+      await fs.mkdir(binDir, { recursive: true });
+      await fs.mkdir(configuredCwd, { recursive: true });
+      await fs.mkdir(workspaceCwd, { recursive: true });
+      await fs.writeFile(fakeCodex, script, "utf8");
+      await fs.chmod(fakeCodex, 0o755);
+
+      const result = await execute({
+        runId: "run-agent-home",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Agent",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: "codex",
+          cwd: configuredCwd,
+          env: {
+            PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+          },
+        },
+        context: {
+          paperclipWorkspace: {
+            source: "agent_home",
+            cwd: workspaceCwd,
+            workspaceId: "workspace-1",
+          },
+        },
+        onLog: async () => {},
+        onMeta: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.sessionParams).toEqual({
+        sessionId: "test-thread",
+        workspaceId: "workspace-1",
+      });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("isolates API-key probes from shared Codex login state", async () => {
     const root = path.join(
       os.tmpdir(),

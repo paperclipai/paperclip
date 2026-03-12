@@ -44,10 +44,15 @@ export const BENIGN_STDERR_PATTERNS: Array<{ name: string; pattern: RegExp }> = 
     name: "rust_tracing_info",
     pattern: / (INFO|DEBUG|TRACE) [\w:]+: /,
   },
-  // Claude CLI session persistence messages emitted to stderr
+  // Claude/Codex CLI session persistence and cwd mismatch messages emitted to stderr
   {
-    name: "claude_session_persistence",
-    pattern: /\[paperclip\] Claude session "[^"]+" was saved/,
+    name: "paperclip_session_cwd_mismatch",
+    pattern: /\[paperclip\] (?:Claude|Codex) session "[^"]+" was saved/i,
+  },
+  // Claude-local instructions file fallback logs are informational
+  {
+    name: "paperclip_instructions_fallback",
+    pattern: /\[paperclip\] Configured instructionsFilePath .* was not readable/i,
   },
   // Paperclip internal retry/warning prefixed lines
   {

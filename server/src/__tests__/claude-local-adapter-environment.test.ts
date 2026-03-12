@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { testEnvironment } from "@paperclipai/adapter-claude-local/server";
+import { execute, testEnvironment } from "@paperclipai/adapter-claude-local/server";
 
 const ORIGINAL_ANTHROPIC = process.env.ANTHROPIC_API_KEY;
 
@@ -117,5 +117,72 @@ describe("claude_local environment diagnostics", () => {
     const stats = await fs.stat(cwd);
     expect(stats.isDirectory()).toBe(true);
     await fs.rm(path.dirname(cwd), { recursive: true, force: true });
+  });
+
+  it("omits cwd in session params for agent_home workspaces", async () => {
+    const root = path.join(
+      os.tmpdir(),
+      `paperclip-claude-local-agent-home-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
+    const binDir = path.join(root, "bin");
+    const configuredCwd = path.join(root, "configured-cwd");
+    const workspaceCwd = path.join(root, "workspace-cwd");
+    const fakeClaude = path.join(binDir, "claude");
+    const script = `#!/usr/bin/env node
+console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "claude-session-1", model: "claude-test" }));
+console.log(JSON.stringify({ type: "assistant", session_id: "claude-session-1", message: { content: [{ type: "text", text: "hello" }] } }));
+console.log(JSON.stringify({ type: "result", subtype: "success", session_id: "claude-session-1", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
+`;
+
+    try {
+      process.env.PAPERCLIP_AGENT_RUNTIME_DIR = root;
+      await fs.mkdir(binDir, { recursive: true });
+      await fs.mkdir(configuredCwd, { recursive: true });
+      await fs.mkdir(workspaceCwd, { recursive: true });
+      await fs.writeFile(fakeClaude, script, "utf8");
+      await fs.chmod(fakeClaude, 0o755);
+
+      const result = await execute({
+        runId: "run-agent-home",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Agent",
+          adapterType: "claude_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: "claude",
+          cwd: configuredCwd,
+          env: {
+            PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+          },
+        },
+        context: {
+          paperclipWorkspace: {
+            source: "agent_home",
+            cwd: workspaceCwd,
+            workspaceId: "workspace-1",
+          },
+        },
+        onLog: async () => {},
+        onMeta: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.sessionParams).toEqual({
+        sessionId: "claude-session-1",
+        workspaceId: "workspace-1",
+      });
+    } finally {
+      delete process.env.PAPERCLIP_AGENT_RUNTIME_DIR;
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 });
