@@ -101,6 +101,7 @@ export function OnboardingWizard() {
   const [forceUnsetAnthropicApiKey, setForceUnsetAnthropicApiKey] =
     useState(false);
   const [unsetAnthropicLoading, setUnsetAnthropicLoading] = useState(false);
+  const [pendingClaudeModelInit, setPendingClaudeModelInit] = useState(true);
 
   // Step 3
   const [taskTitle, setTaskTitle] = useState("Create your CEO HEARTBEAT.md");
@@ -236,6 +237,27 @@ export function OnboardingWizard() {
         entries: [...entries].sort((a, b) => a.id.localeCompare(b.id)),
       }));
   }, [filteredModels, adapterType]);
+
+  useEffect(() => {
+    if (adapterType === "claude_local") {
+      setPendingClaudeModelInit(!model.trim());
+      return;
+    }
+    setPendingClaudeModelInit(false);
+  }, [adapterType]);
+
+  useEffect(() => {
+    if (!pendingClaudeModelInit) return;
+    if (adapterType !== "claude_local") return;
+    if (model.trim()) {
+      setPendingClaudeModelInit(false);
+      return;
+    }
+    const nextModel = adapterModels?.[0]?.id?.trim() ?? "";
+    if (!nextModel) return;
+    setModel(nextModel);
+    setPendingClaudeModelInit(false);
+  }, [adapterModels, adapterType, model, pendingClaudeModelInit]);
 
   function reset() {
     setStep(1);
@@ -726,6 +748,9 @@ export function OnboardingWizard() {
                                 setModel("");
                               }
                               return;
+                            }
+                            if (nextType === "claude_local") {
+                              setPendingClaudeModelInit(true);
                             }
                             setModel("");
                           }}

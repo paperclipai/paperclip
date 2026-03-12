@@ -71,6 +71,9 @@ export function NewAgent() {
   const [roleOpen, setRoleOpen] = useState(false);
   const [reportsToOpen, setReportsToOpen] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [pendingClaudeModelInit, setPendingClaudeModelInit] = useState(
+    defaultCreateValues.adapterType === "claude_local",
+  );
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -119,6 +122,30 @@ export function NewAgent() {
       return createValuesForAdapterType(requested as CreateConfigValues["adapterType"]);
     });
   }, [presetAdapterType]);
+
+  useEffect(() => {
+    if (configValues.adapterType === "claude_local") {
+      setPendingClaudeModelInit(!configValues.model.trim());
+      return;
+    }
+    setPendingClaudeModelInit(false);
+  }, [configValues.adapterType]);
+
+  useEffect(() => {
+    if (!pendingClaudeModelInit) return;
+    if (configValues.adapterType !== "claude_local") return;
+    if (configValues.model.trim()) {
+      setPendingClaudeModelInit(false);
+      return;
+    }
+    const nextModel = adapterModels?.[0]?.id?.trim() ?? "";
+    if (!nextModel) return;
+    setConfigValues((prev) => {
+      if (prev.adapterType !== "claude_local" || prev.model.trim()) return prev;
+      return { ...prev, model: nextModel };
+    });
+    setPendingClaudeModelInit(false);
+  }, [adapterModels, configValues.adapterType, configValues.model, pendingClaudeModelInit]);
 
   const createAgent = useMutation({
     mutationFn: (data: Record<string, unknown>) =>
