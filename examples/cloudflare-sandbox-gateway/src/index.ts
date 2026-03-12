@@ -148,8 +148,6 @@ async function streamExec(
   });
 }
 
-/** Durable Object binding class for generic sandbox instances. */
-export class Sandbox extends CloudflareSandbox {}
 /** Durable Object binding class used by the Paperclip gateway namespace. */
 export class PaperclipSandbox extends CloudflareSandbox {}
 

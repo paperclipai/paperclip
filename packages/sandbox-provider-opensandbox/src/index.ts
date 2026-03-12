@@ -12,7 +12,7 @@ import type {
   SandboxProvider,
   SandboxTestResult,
 } from "@paperclipai/adapter-utils";
-import { asNumber, asString, parseObject } from "@paperclipai/adapter-utils/server-utils";
+import { asNumber, asString, parseObject, shellEscape } from "@paperclipai/adapter-utils/server-utils";
 
 const DEFAULT_OPEN_SANDBOX_REQUEST_TIMEOUT_SECONDS = 180;
 
@@ -22,10 +22,6 @@ interface OpenSandboxProviderConfig {
   image?: string;
   useServerProxy: boolean;
   requestTimeoutSeconds: number;
-}
-
-function shellEscape(value: string) {
-  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
 }
 
 function toStringMetadata(metadata: Record<string, unknown> | undefined): Record<string, string> | undefined {
@@ -115,8 +111,12 @@ class OpenSandboxInstance implements SandboxInstance {
           timeoutSeconds: timeoutSeconds(opts.timeoutSec),
         },
         {
-          onStdout: (msg) => void opts.onStdout?.(msg.text),
-          onStderr: (msg) => void opts.onStderr?.(msg.text),
+          onStdout: async (msg) => {
+            await opts.onStdout?.(msg.text);
+          },
+          onStderr: async (msg) => {
+            await opts.onStderr?.(msg.text);
+          },
         },
       );
 

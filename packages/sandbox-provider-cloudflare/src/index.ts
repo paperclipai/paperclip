@@ -6,7 +6,7 @@ import type {
   SandboxProvider,
   SandboxTestResult,
 } from "@paperclipai/adapter-utils";
-import { asString, parseObject } from "@paperclipai/adapter-utils/server-utils";
+import { asString, parseObject, shellEscape } from "@paperclipai/adapter-utils/server-utils";
 import { randomUUID } from "node:crypto";
 
 const DEFAULT_NAMESPACE = "paperclip";
@@ -49,10 +49,6 @@ async function readJson<T>(response: Response): Promise<T> {
     return {} as T;
   }
   return JSON.parse(text) as T;
-}
-
-function shellEscape(value: string) {
-  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
 }
 
 async function fetchWithTimeout(input: URL | RequestInfo, init: RequestInit, timeoutMs = DEFAULT_GATEWAY_TIMEOUT_MS) {

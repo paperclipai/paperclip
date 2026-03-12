@@ -16,6 +16,7 @@ import {
   parseObject,
   redactEnvForLogs,
   renderTemplate,
+  shellEscape,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   parseClaudeStreamJson,
@@ -308,10 +309,6 @@ function billingTypeFor(agentType: SandboxAgentType, env: Record<string, string>
     return typeof env.ANTHROPIC_API_KEY === "string" && env.ANTHROPIC_API_KEY.trim() ? "api" : "subscription";
   }
   return "api";
-}
-
-function shellEscape(value: string) {
-  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
 }
 
 function defaultCwdForProvider(config: Record<string, unknown>) {

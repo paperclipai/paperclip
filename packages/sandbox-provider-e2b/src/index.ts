@@ -8,17 +8,13 @@ import type {
   SandboxProvider,
   SandboxTestResult,
 } from "@paperclipai/adapter-utils";
-import { asString, parseObject } from "@paperclipai/adapter-utils/server-utils";
+import { asString, parseObject, shellEscape } from "@paperclipai/adapter-utils/server-utils";
 
 interface E2BProviderConfig {
   apiKey?: string;
   accessToken?: string;
   domain?: string;
   template?: string;
-}
-
-function shellEscape(value: string) {
-  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
 }
 
 function toStringMetadata(metadata: Record<string, unknown> | undefined): Record<string, string> | undefined {
