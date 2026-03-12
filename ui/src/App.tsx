@@ -23,6 +23,7 @@ import { Activity } from "./pages/Activity";
 import { Inbox } from "./pages/Inbox";
 import { CompanySettings } from "./pages/CompanySettings";
 import { DesignGuide } from "./pages/DesignGuide";
+import { InstanceSettings } from "./pages/InstanceSettings";
 import { RunTranscriptUxLab } from "./pages/RunTranscriptUxLab";
 import { OrgChart } from "./pages/OrgChart";
 import { NewAgent } from "./pages/NewAgent";
@@ -109,6 +110,8 @@ function boardRoutes() {
       <Route path="dashboard" element={<Dashboard />} />
       <Route path="companies" element={<Companies />} />
       <Route path="company/settings" element={<CompanySettings />} />
+      <Route path="settings" element={<LegacySettingsRedirect />} />
+      <Route path="settings/*" element={<LegacySettingsRedirect />} />
       <Route path="org" element={<OrgChart />} />
       <Route path="agents" element={<Navigate to="/agents/all" replace />} />
       <Route path="agents/all" element={<Agents />} />
@@ -154,6 +157,11 @@ function boardRoutes() {
 
 function InboxRootRedirect() {
   return <Navigate to={`/inbox/${loadLastInboxTab()}`} replace />;
+}
+
+function LegacySettingsRedirect() {
+  const location = useLocation();
+  return <Navigate to={`/instance/settings${location.search}${location.hash}`} replace />;
 }
 
 function CompanyRootRedirect() {
@@ -234,9 +242,15 @@ export function App() {
 
         <Route element={<CloudAccessGate />}>
           <Route index element={<CompanyRootRedirect />} />
+          <Route path="instance" element={<Navigate to="/instance/settings" replace />} />
+          <Route path="instance/settings" element={<Layout />}>
+            <Route index element={<InstanceSettings />} />
+          </Route>
           <Route path="companies" element={<UnprefixedBoardRedirect />} />
           <Route path="issues" element={<UnprefixedBoardRedirect />} />
           <Route path="issues/:issueId" element={<UnprefixedBoardRedirect />} />
+          <Route path="settings" element={<LegacySettingsRedirect />} />
+          <Route path="settings/*" element={<LegacySettingsRedirect />} />
           <Route path="agents" element={<UnprefixedBoardRedirect />} />
           <Route path="agents/new" element={<UnprefixedBoardRedirect />} />
           <Route path="agents/:agentId" element={<UnprefixedBoardRedirect />} />
