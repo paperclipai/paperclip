@@ -1,0 +1,159 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: paperclip
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: paperclip-secrets
+  namespace: paperclip
+type: Opaque
+stringData:
+  BETTER_AUTH_SECRET: "REPLACE_WITH_STRONG_RANDOM_SECRET"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: paperclip-data
+  namespace: paperclip
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: paperclip
+  namespace: paperclip
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: paperclip
+  template:
+    metadata:
+      labels:
+        app: paperclip
+    spec:
+      initContainers:
+        - name: init-paperclip-perms
+          image: busybox:1.37
+          command:
+            - sh
+            - -c
+            - |
+              mkdir -p /paperclip/instances/default/logs
+              mkdir -p /paperclip/instances/default/db
+              chown -R 1000:1000 /paperclip
+              chmod -R u+rwX /paperclip
+          volumeMounts:
+            - name: paperclip-data
+              mountPath: /paperclip
+      containers:
+        - name: paperclip
+          image: paperclip-local:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3100
+              name: http
+          env:
+            - name: HOST
+              value: 0.0.0.0
+            - name: PORT
+              value: "3100"
+            - name: SERVE_UI
+              value: "true"
+            - name: PAPERCLIP_ALLOWED_HOSTNAMES
+              value: paperclip.example.com,paperclip,paperclip.paperclip,paperclip.paperclip.svc,paperclip.paperclip.svc.cluster.local
+            - name: PAPERCLIP_HOME
+              value: /paperclip
+            - name: PAPERCLIP_INSTANCE_ID
+              value: default
+            - name: DATABASE_URL
+              value: postgres://paperclip:CHANGE_ME@postgres.paperclip.svc.cluster.local:5432/paperclip
+            - name: PAPERCLIP_CONFIG
+              value: /paperclip/instances/default/config.json
+            - name: PAPERCLIP_DEPLOYMENT_MODE
+              value: authenticated
+            - name: PAPERCLIP_DEPLOYMENT_EXPOSURE
+              value: private
+            - name: PAPERCLIP_PUBLIC_URL
+              value: https://paperclip.example.com
+            - name: BETTER_AUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: paperclip-secrets
+                  key: BETTER_AUTH_SECRET
+          volumeMounts:
+            - name: paperclip-data
+              mountPath: /paperclip
+          readinessProbe:
+            exec:
+              command:
+                - node
+                - -e
+                - |
+                  const http = require('http');
+                  const req = http.request({ host: '127.0.0.1', port: 3100, path: '/api/health', method: 'GET' }, (res) => process.exit(res.statusCode === 200 ? 0 : 1));
+                  req.on('error', () => process.exit(1));
+                  req.end();
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command:
+                - node
+                - -e
+                - |
+                  const http = require('http');
+                  const req = http.request({ host: '127.0.0.1', port: 3100, path: '/api/health', method: 'GET' }, (res) => process.exit(res.statusCode === 200 ? 0 : 1));
+                  req.on('error', () => process.exit(1));
+                  req.end();
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+      volumes:
+        - name: paperclip-data
+          persistentVolumeClaim:
+            claimName: paperclip-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: paperclip
+  namespace: paperclip
+spec:
+  selector:
+    app: paperclip
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: paperclip
+  namespace: paperclip
+spec:
+  rules:
+    - host: paperclip.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: paperclip
+                port:
+                  number: 80
