@@ -22,6 +22,7 @@ import { cn } from "../lib/utils";
 import { queryKeys } from "../lib/queryKeys";
 import { sidebarBadgesApi } from "../api/sidebarBadges";
 import { heartbeatsApi } from "../api/heartbeats";
+import { ApiError } from "../api/client";
 import { useLocation, useNavigate } from "@/lib/router";
 import {
   Tooltip,
@@ -176,7 +177,15 @@ export function CompanyRail() {
     queries: companyIds.map((companyId) => ({
       queryKey: queryKeys.sidebarBadges(companyId),
       queryFn: () => sidebarBadgesApi.get(companyId),
-      refetchInterval: 15_000,
+      refetchInterval: (query: { state: { error: unknown } }) => {
+        const err = query.state.error;
+        if (err instanceof ApiError && err.status === 404) return false;
+        return 15_000;
+      },
+      retry: (_count: number, error: unknown) => {
+        if (error instanceof ApiError && error.status === 404) return false;
+        return _count < 3;
+      },
     })),
   });
   const hasLiveAgentsByCompanyId = useMemo(() => {
