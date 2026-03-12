@@ -12,11 +12,10 @@ import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
-import { StatusIcon } from "../components/StatusIcon";
-import { PriorityIcon } from "../components/PriorityIcon";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { ApprovalCard } from "../components/ApprovalCard";
+import { IssueRow } from "../components/IssueRow";
 import { StatusBadge } from "../components/StatusBadge";
 import { timeAgo } from "../lib/timeAgo";
 import { Button } from "@/components/ui/button";
@@ -805,62 +804,18 @@ export function Inbox() {
                 const isUnread = issue.isUnreadForMe && !fadingOutIssues.has(issue.id);
                 const isFading = fadingOutIssues.has(issue.id);
                 return (
-                  <Link
+                  <IssueRow
                     key={issue.id}
-                    to={`/issues/${issue.identifier ?? issue.id}`}
-                    state={issueLinkState}
-                    className="flex min-w-0 cursor-pointer items-start gap-2 px-3 py-3 no-underline text-inherit transition-colors hover:bg-accent/50 sm:items-center sm:gap-3 sm:px-4"
-                  >
-                    <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center self-center">
-                      {(isUnread || isFading) ? (
-                        <span
-                          role="button"
-                          tabIndex={0}
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            markReadMutation.mutate(issue.id);
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter" || e.key === " ") {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              markReadMutation.mutate(issue.id);
-                            }
-                          }}
-                          className="inline-flex h-4 w-4 cursor-pointer items-center justify-center rounded-full transition-colors hover:bg-blue-500/20"
-                          aria-label="Mark as read"
-                        >
-                          <span
-                            className={`block h-2 w-2 rounded-full bg-blue-600 dark:bg-blue-400 transition-opacity duration-300 ${
-                              isFading ? "opacity-0" : "opacity-100"
-                            }`}
-                          />
-                        </span>
-                      ) : (
-                        <span className="inline-flex h-4 w-4" aria-hidden="true" />
-                      )}
-                    </span>
-
-                    <span className="hidden shrink-0 self-center sm:inline-flex"><PriorityIcon priority={issue.priority} /></span>
-                    <span className="inline-flex shrink-0 self-center"><StatusIcon status={issue.status} /></span>
-                    <span className="hidden shrink-0 self-center text-xs font-mono text-muted-foreground sm:inline">
-                      {issue.identifier ?? issue.id.slice(0, 8)}
-                    </span>
-                    <span className="min-w-0 flex-1 text-sm">
-                      <span className="line-clamp-2 min-w-0 sm:line-clamp-1 sm:block sm:truncate">
-                        {issue.title}
-                      </span>
-                      <span className="mt-1 block text-[11px] font-mono text-muted-foreground sm:hidden">
-                        {issue.identifier ?? issue.id.slice(0, 8)}
-                      </span>
-                    </span>
-                    <span className="hidden shrink-0 self-center text-xs text-muted-foreground sm:block">
-                      {issue.lastExternalCommentAt
+                    issue={issue}
+                    issueLinkState={issueLinkState}
+                    unreadState={isUnread ? "visible" : isFading ? "fading" : "hidden"}
+                    onMarkRead={() => markReadMutation.mutate(issue.id)}
+                    trailingMeta={
+                      issue.lastExternalCommentAt
                         ? `commented ${timeAgo(issue.lastExternalCommentAt)}`
-                        : `updated ${timeAgo(issue.updatedAt)}`}
-                    </span>
-                  </Link>
+                        : `updated ${timeAgo(issue.updatedAt)}`
+                    }
+                  />
                 );
               })}
             </div>
