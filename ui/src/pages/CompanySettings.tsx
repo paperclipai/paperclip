@@ -488,7 +488,7 @@ function HeartbeatSection({ companyId }: { companyId: string }) {
                 onClick={() => bulkMutation.mutate(false)}
                 disabled={bulkMutation.isPending || nonTerminated.length === 0}
               >
-                {bulkMutation.isPending ? "Pausing..." : "Pause all heartbeats"}
+                {bulkMutation.isPending ? "Disabling..." : "Disable all heartbeats"}
               </Button>
             ) : (
               <Button

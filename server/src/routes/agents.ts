@@ -788,18 +788,23 @@ export function agentRoutes(db: Db) {
       .from(agentsTable)
       .where(and(eq(agentsTable.companyId, companyId), not(eq(agentsTable.status, "terminated"))));
 
-    let updated = 0;
-    for (const agent of allAgents) {
+    const toUpdate = allAgents.filter((agent) => {
       const rc = asRecord(agent.runtimeConfig) ?? {};
       const hb = asRecord(rc.heartbeat) ?? {};
       const currentEnabled = typeof hb.enabled === "boolean" ? hb.enabled : true;
-      if (currentEnabled === enabled) continue;
+      return currentEnabled !== enabled;
+    });
 
-      await svc.update(agent.id, {
-        runtimeConfig: { ...rc, heartbeat: { ...hb, enabled } },
-      });
-      updated++;
-    }
+    await Promise.all(
+      toUpdate.map((agent) => {
+        const rc = asRecord(agent.runtimeConfig) ?? {};
+        const hb = asRecord(rc.heartbeat) ?? {};
+        return svc.update(agent.id, {
+          runtimeConfig: { ...rc, heartbeat: { ...hb, enabled } },
+        });
+      }),
+    );
+    const updated = toUpdate.length;
 
     await logActivity(db, {
       companyId,
@@ -808,7 +813,7 @@ export function agentRoutes(db: Db) {
       action: enabled ? "agents.heartbeats_enabled_all" : "agents.heartbeats_disabled_all",
       entityType: "company",
       entityId: companyId,
-      detail: { updated, total: allAgents.length },
+      details: { updated, total: allAgents.length },
     });
 
     res.json({ updated, total: allAgents.length, enabled });
