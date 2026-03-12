@@ -64,6 +64,8 @@ export const adapterLabels: Record<string, string> = {
   opencode_local: "OpenCode (local)",
   openclaw_gateway: "OpenClaw Gateway",
   cursor: "Cursor (local)",
+  pi_local: "Pi (local)",
+  copilot_cli: "GitHub Copilot (local)",
   process: "Process",
   http: "HTTP",
 };
@@ -104,11 +106,13 @@ export function ToggleField({
   hint,
   checked,
   onChange,
+  onColor = "green",
 }: {
   label: string;
   hint?: string;
   checked: boolean;
   onChange: (v: boolean) => void;
+  onColor?: "green" | "red";
 }) {
   return (
     <div className="flex items-center justify-between">
@@ -119,7 +123,9 @@ export function ToggleField({
       <button
         className={cn(
           "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-          checked ? "bg-green-600" : "bg-muted"
+          checked
+            ? (onColor === "red" ? "bg-red-600" : "bg-green-600")
+            : "bg-muted"
         )}
         onClick={() => onChange(!checked)}
       >
