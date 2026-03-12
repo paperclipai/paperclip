@@ -247,7 +247,7 @@ export function Layout() {
           <div className="border-t border-r border-border px-3 py-2 bg-background">
             <div className="flex items-center gap-1">
               <SidebarNavItem
-                to="/docs"
+                href="https://paperclip.ing/docs"
                 label="Documentation"
                 icon={BookOpen}
                 className="flex-1 min-w-0"
@@ -282,7 +282,7 @@ export function Layout() {
           <div className="border-t border-r border-border px-3 py-2">
             <div className="flex items-center gap-1">
               <SidebarNavItem
-                to="/docs"
+                href="https://paperclip.ing/docs"
                 label="Documentation"
                 icon={BookOpen}
                 className="flex-1 min-w-0"

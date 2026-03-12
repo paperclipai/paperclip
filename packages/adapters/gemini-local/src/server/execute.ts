@@ -126,10 +126,9 @@ async function ensureGeminiSkillsInjected(
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, authToken } = ctx;
 
-  const promptTemplate = asString(
-    config.promptTemplate,
-    "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
-  );
+  // Default system context that provides essential agent identity and task information
+  const defaultSystemContext = "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.";
+  const promptTemplate = asString(config.promptTemplate, defaultSystemContext);
   const command = asString(config.command, "gemini");
   const model = asString(config.model, DEFAULT_GEMINI_LOCAL_MODEL).trim();
   const approvalMode = asString(config.approvalMode, asBoolean(config.yolo, false) ? "yolo" : "default");
@@ -275,7 +274,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     context,
   });
   const paperclipEnvNote = renderPaperclipEnvNote(env);
-  const prompt = `${instructionsPrefix}${paperclipEnvNote}${renderedPrompt}`;
+  // Append default system context if user provided a custom promptTemplate
+  // This ensures agent always has essential context about its identity and task
+  const systemSuffix = config.promptTemplate ? `\n\n${defaultSystemContext}` : "";
+  const prompt = `${instructionsPrefix}${paperclipEnvNote}${renderedPrompt}${systemSuffix}`;
 
   const buildArgs = (resumeSessionId: string | null) => {
     const args = ["--output-format", "stream-json"];
