@@ -977,20 +977,21 @@ export function heartbeatService(db: Db) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
 
-    // Find all runs in "queued" or "running" state
+    // Only reap "running" runs — queued runs are legitimately waiting for
+    // a concurrency slot and have no child process yet by design.
+    // NOTE: if a queued run becomes permanently stuck (e.g. the preceding
+    // run finalizes via a path that fails to call startNextQueuedRunForAgent),
+    // it will not be reaped. A long-staleness safety net could be added as
+    // a follow-up if this proves to be a problem in practice.
     const activeRuns = await db
       .select()
       .from(heartbeatRuns)
-      .where(inArray(heartbeatRuns.status, ["queued", "running"]));
+      .where(eq(heartbeatRuns.status, "running"));
 
     const reaped: string[] = [];
 
     for (const run of activeRuns) {
       if (runningProcesses.has(run.id)) continue;
-
-      // Queued runs are legitimately waiting for a concurrency slot —
-      // they have no process yet, so they should not be reaped.
-      if (run.status === "queued") continue;
 
       // Apply staleness threshold to avoid false positives
       if (staleThresholdMs > 0) {
