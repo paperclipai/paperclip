@@ -429,6 +429,13 @@ export function IssueDetail() {
       invalidateIssue();
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId!) });
     },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to add comment",
+        body: err instanceof Error ? err.message : "An error occurred",
+        tone: "error",
+      });
+    },
   });
 
   const addCommentAndReassign = useMutation({
