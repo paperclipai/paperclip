@@ -56,6 +56,32 @@ function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean 
   return typeof raw === "string" && raw.trim().length > 0;
 }
 
+export type OpenaiKeySource = "adapter_config" | "server_env" | "missing";
+
+/**
+ * Resolve the source of OPENAI_API_KEY for the Codex adapter.
+ *
+ * Mutates `env`: removes empty/whitespace-only values and, when the key is
+ * only available in `serverProcessEnv`, copies it into `env` so that
+ * downstream consumers (resolveCodexBillingType, runChildProcess) see a
+ * consistent snapshot.
+ */
+export function resolveOpenaiKeySource(
+  env: Record<string, string>,
+  serverProcessEnv: Record<string, string | undefined>,
+): OpenaiKeySource {
+  if (hasNonEmptyEnvValue(env, "OPENAI_API_KEY")) return "adapter_config";
+  // Remove any whitespace-only or empty value that leaked from adapter config
+  // so it doesn't override a valid key (or confuse Codex) via runChildProcess.
+  if (typeof env.OPENAI_API_KEY === "string") delete env.OPENAI_API_KEY;
+  const fromProcess = serverProcessEnv.OPENAI_API_KEY;
+  if (typeof fromProcess === "string" && fromProcess.trim().length > 0) {
+    env.OPENAI_API_KEY = fromProcess;
+    return "server_env";
+  }
+  return "missing";
+}
+
 function resolveCodexBillingType(env: Record<string, string>): "api" | "subscription" {
   // Codex uses API-key auth when OPENAI_API_KEY is present; otherwise rely on local login/session auth.
   return hasNonEmptyEnvValue(env, "OPENAI_API_KEY") ? "api" : "subscription";
@@ -316,22 +342,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     env.PAPERCLIP_API_KEY = authToken;
   }
 
-  // Explicitly inherit OPENAI_API_KEY from the server's process.env when not
-  // configured in adapter config.  runChildProcess() merges process.env into
-  // the child env, but making this explicit lets us validate the key early and
-  // report the auth source in logs so that 401 errors are easier to diagnose.
-  const openaiKeySource: "adapter_config" | "server_env" | "missing" = (() => {
-    if (hasNonEmptyEnvValue(env, "OPENAI_API_KEY")) return "adapter_config";
-    // Remove any whitespace-only or empty value that leaked from adapter config
-    // so it doesn't override a valid key (or confuse Codex) via runChildProcess.
-    if (typeof env.OPENAI_API_KEY === "string") delete env.OPENAI_API_KEY;
-    const fromProcess = process.env.OPENAI_API_KEY;
-    if (typeof fromProcess === "string" && fromProcess.trim().length > 0) {
-      env.OPENAI_API_KEY = fromProcess;
-      return "server_env";
-    }
-    return "missing";
-  })();
+  const openaiKeySource = resolveOpenaiKeySource(env, process.env);
 
   const billingType = resolveCodexBillingType(env);
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
