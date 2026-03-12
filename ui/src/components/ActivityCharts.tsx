@@ -251,7 +251,12 @@ function usageTokens(run: HeartbeatRun): number {
     }
     return 0;
   };
-  return pick("inputTokens", "input_tokens") + pick("outputTokens", "output_tokens");
+  return (
+    pick("inputTokens", "input_tokens") +
+    pick("outputTokens", "output_tokens") +
+    pick("cacheReadInputTokens", "cache_read_input_tokens") +
+    pick("cacheCreationInputTokens", "cache_creation_input_tokens")
+  );
 }
 
 export function KpiSummaryCards({ runs }: { runs: HeartbeatRun[] }) {
@@ -270,7 +275,7 @@ export function KpiSummaryCards({ runs }: { runs: HeartbeatRun[] }) {
   const avgDuration = durations.length > 0 ? durations.reduce((a, b) => a + b, 0) / durations.length : null;
 
   const cards: { label: string; value: string; sub?: string }[] = [
-    { label: "Success Rate", value: successRate !== null ? `${successRate}%` : "-", sub: `${succeeded}/${completed.length} runs` },
+    { label: "Success Rate", value: successRate !== null ? `${successRate}%` : "-", sub: completed.length > 0 ? `${succeeded}/${completed.length} runs` : undefined },
     { label: "Total Runs", value: String(recent.length), sub: "last 14 days" },
     { label: "Avg Duration", value: avgDuration !== null ? formatDuration(avgDuration) : "-", sub: durations.length > 0 ? `${durations.length} timed runs` : undefined },
     { label: "Errors", value: String(errors), sub: errors > 0 ? "failed or timed out" : "none" },
@@ -351,6 +356,7 @@ export function TokenEfficiencyChart({ runs }: { runs: HeartbeatRun[] }) {
   for (const day of days) grouped.set(day, { totalTokens: 0, count: 0 });
 
   for (const run of runs) {
+    if (run.status !== "succeeded" && run.status !== "failed" && run.status !== "timed_out") continue;
     const tokens = usageTokens(run);
     if (tokens <= 0) continue;
     const day = new Date(run.createdAt).toISOString().slice(0, 10);
