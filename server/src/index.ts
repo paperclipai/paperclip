@@ -513,8 +513,13 @@ export async function startServer(): Promise<StartedServer> {
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any);
   
-    // Reap orphaned runs at startup (no threshold -- runningProcesses is empty)
-    void heartbeat.reapOrphanedRuns().catch((err) => {
+    // Reap orphaned runs at startup.  Use the same staleness threshold as the
+    // periodic reaper so that recently-active runs survive a server restart.
+    // Their child processes may still be alive as OS-level orphans, and our
+    // periodic updatedAt touch (every 60 s) keeps them fresh.
+    // Without this threshold the startup reap would massacre every in-flight
+    // run because runningProcesses is empty right after boot.
+    void heartbeat.reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 }).catch((err) => {
       logger.error({ err }, "startup reap of orphaned heartbeat runs failed");
     });
 

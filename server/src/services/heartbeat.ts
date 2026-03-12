@@ -967,25 +967,63 @@ export function heartbeatService(db: Db) {
         if (now.getTime() - refTime < staleThresholdMs) continue;
       }
 
-      await setRunStatus(run.id, "failed", {
-        error: "Process lost -- server may have restarted",
-        errorCode: "process_lost",
-        finishedAt: now,
+      // Use a conditional UPDATE to avoid overwriting a status that was
+      // already finalised by the normal executeRun flow between our SELECT
+      // and this point (race between reaper and adapter teardown).
+      const [conditionallyReaped] = await db
+        .update(heartbeatRuns)
+        .set({
+          status: "failed",
+          error: "Process lost -- server may have restarted",
+          errorCode: "process_lost",
+          finishedAt: now,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(heartbeatRuns.id, run.id),
+            inArray(heartbeatRuns.status, ["queued", "running"]),
+          ),
+        )
+        .returning();
+
+      if (!conditionallyReaped) {
+        // Run was already finalised by the normal flow — skip.
+        continue;
+      }
+
+      // Publish the status event that setRunStatus would normally emit.
+      publishLiveEvent({
+        companyId: conditionallyReaped.companyId,
+        type: "heartbeat.run.status",
+        payload: {
+          runId: conditionallyReaped.id,
+          agentId: conditionallyReaped.agentId,
+          status: conditionallyReaped.status,
+          invocationSource: conditionallyReaped.invocationSource,
+          triggerDetail: conditionallyReaped.triggerDetail,
+          error: conditionallyReaped.error ?? null,
+          errorCode: conditionallyReaped.errorCode ?? null,
+          startedAt: conditionallyReaped.startedAt
+            ? new Date(conditionallyReaped.startedAt).toISOString()
+            : null,
+          finishedAt: conditionallyReaped.finishedAt
+            ? new Date(conditionallyReaped.finishedAt).toISOString()
+            : null,
+        },
       });
+
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: now,
         error: "Process lost -- server may have restarted",
       });
-      const updatedRun = await getRun(run.id);
-      if (updatedRun) {
-        await appendRunEvent(updatedRun, 1, {
-          eventType: "lifecycle",
-          stream: "system",
-          level: "error",
-          message: "Process lost -- server may have restarted",
-        });
-        await releaseIssueExecutionAndPromote(updatedRun);
-      }
+      await appendRunEvent(conditionallyReaped, 1, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "error",
+        message: "Process lost -- server may have restarted",
+      });
+      await releaseIssueExecutionAndPromote(conditionallyReaped);
       await finalizeAgentStatus(run.agentId, "failed");
       await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
@@ -1328,6 +1366,24 @@ export function heartbeatService(db: Db) {
         })
         .where(eq(heartbeatRuns.id, runId));
 
+      // Periodically touch updatedAt so the reaper's staleness threshold
+      // stays effective for long-running processes.  Without this, a process
+      // that runs >5 min makes the row look stale and vulnerable to reaping
+      // during the brief window after the child exits but before DB status
+      // is finalised.  Using setInterval (not onLog) ensures the touch fires
+      // even when the agent is silent (e.g. waiting on a slow API call).
+      const HEARTBEAT_TOUCH_INTERVAL_MS = 60_000;
+      const heartbeatTouchInterval = setInterval(async () => {
+        try {
+          await db
+            .update(heartbeatRuns)
+            .set({ updatedAt: new Date() })
+            .where(eq(heartbeatRuns.id, run.id));
+        } catch {
+          // Best-effort — don't crash the run if the touch fails.
+        }
+      }, HEARTBEAT_TOUCH_INTERVAL_MS);
+
       const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
         const sanitizedChunk = redactCurrentUserText(chunk);
         if (stream === "stdout") stdoutExcerpt = appendExcerpt(stdoutExcerpt, sanitizedChunk);
@@ -1451,6 +1507,20 @@ export function heartbeatService(db: Db) {
         onMeta: onAdapterMeta,
         authToken: authToken ?? undefined,
       });
+
+      // The child process has exited and runChildProcess has already removed
+      // the entry from runningProcesses.  Re-insert a lightweight sentinel so
+      // the reaper's `runningProcesses.has(run.id)` check still returns true
+      // while we finalize the DB state below.  The sentinel's `child` is a
+      // no-op stub so that cancelRun / cancelActiveForAgent won't crash if
+      // they happen to run concurrently.
+      if (!runningProcesses.has(run.id)) {
+        runningProcesses.set(run.id, {
+          child: { kill: () => false, killed: true } as any,
+          graceSec: 1,
+        });
+      }
+
       const adapterManagedRuntimeServices = adapterResult.runtimeServices
         ? await persistAdapterManagedRuntimeServices({
             db,
@@ -1677,6 +1747,10 @@ export function heartbeatService(db: Db) {
 
       await finalizeAgentStatus(agent.id, "failed");
     } finally {
+      clearInterval(heartbeatTouchInterval);
+      // Clean up the sentinel (or real entry) we may have kept alive during
+      // DB finalization — see the comment after adapter.execute() above.
+      runningProcesses.delete(run.id);
       await releaseRuntimeServicesForRun(run.id);
       await startNextQueuedRunForAgent(agent.id);
     }
