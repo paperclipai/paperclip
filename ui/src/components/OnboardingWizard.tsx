@@ -722,9 +722,11 @@ export function OnboardingWizard() {
                             }
                           }}
                         >
-                          <span className="absolute -top-1.5 right-1.5 bg-green-500 text-white text-[9px] font-semibold px-1.5 py-0.5 rounded-full leading-none">
-                            Recommended
-                          </span>
+                          {opt.recommended && (
+                            <span className="absolute -top-1.5 right-1.5 bg-green-500 text-white text-[9px] font-semibold px-1.5 py-0.5 rounded-full leading-none">
+                              Recommended
+                            </span>
+                          )}
                           <opt.icon className="h-4 w-4" />
                           <span className="font-medium">{opt.label}</span>
                           <span className="text-muted-foreground text-[10px]">
