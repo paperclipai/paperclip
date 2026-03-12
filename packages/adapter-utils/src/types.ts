@@ -75,6 +75,14 @@ export interface AdapterExecutionResult {
   runtimeServices?: AdapterRuntimeServiceReport[];
   summary?: string | null;
   clearSession?: boolean;
+  question?: {
+    prompt: string;
+    choices: Array<{
+      key: string;
+      label: string;
+      description?: string;
+    }>;
+  } | null;
 }
 
 export interface AdapterSessionCodec {

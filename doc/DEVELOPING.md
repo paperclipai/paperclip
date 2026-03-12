@@ -162,15 +162,71 @@ paperclipai worktree env
 eval "$(paperclipai worktree env)"
 ```
 
-Useful options:
+### Worktree CLI Reference
+
+**`pnpm paperclipai worktree init [options]`** — Create repo-local config/env and an isolated instance for the current worktree.
+
+| Option | Description |
+|---|---|
+| `--name <name>` | Display name used to derive the instance id |
+| `--instance <id>` | Explicit isolated instance id |
+| `--home <path>` | Home root for worktree instances (default: `~/.paperclip-worktrees`) |
+| `--from-config <path>` | Source config.json to seed from |
+| `--from-data-dir <path>` | Source PAPERCLIP_HOME used when deriving the source config |
+| `--from-instance <id>` | Source instance id (default: `default`) |
+| `--server-port <port>` | Preferred server port |
+| `--db-port <port>` | Preferred embedded Postgres port |
+| `--seed-mode <mode>` | Seed profile: `minimal` or `full` (default: `minimal`) |
+| `--no-seed` | Skip database seeding from the source instance |
+| `--force` | Replace existing repo-local config and isolated instance data |
+
+Examples:
 
 ```sh
 paperclipai worktree init --no-seed
-paperclipai worktree init --seed-mode minimal
 paperclipai worktree init --seed-mode full
 paperclipai worktree init --from-instance default
 paperclipai worktree init --from-data-dir ~/.paperclip
 paperclipai worktree init --force
+```
+
+**`pnpm paperclipai worktree:make <name> [options]`** — Create `~/NAME` as a git worktree, then initialize an isolated Paperclip instance inside it. This combines `git worktree add` with `worktree init` in a single step.
+
+| Option | Description |
+|---|---|
+| `--start-point <ref>` | Remote ref to base the new branch on (e.g. `origin/main`) |
+| `--instance <id>` | Explicit isolated instance id |
+| `--home <path>` | Home root for worktree instances (default: `~/.paperclip-worktrees`) |
+| `--from-config <path>` | Source config.json to seed from |
+| `--from-data-dir <path>` | Source PAPERCLIP_HOME used when deriving the source config |
+| `--from-instance <id>` | Source instance id (default: `default`) |
+| `--server-port <port>` | Preferred server port |
+| `--db-port <port>` | Preferred embedded Postgres port |
+| `--seed-mode <mode>` | Seed profile: `minimal` or `full` (default: `minimal`) |
+| `--no-seed` | Skip database seeding from the source instance |
+| `--force` | Replace existing repo-local config and isolated instance data |
+
+Examples:
+
+```sh
+pnpm paperclipai worktree:make paperclip-pr-432
+pnpm paperclipai worktree:make my-feature --start-point origin/main
+pnpm paperclipai worktree:make experiment --no-seed
+```
+
+**`pnpm paperclipai worktree env [options]`** — Print shell exports for the current worktree-local Paperclip instance.
+
+| Option | Description |
+|---|---|
+| `-c, --config <path>` | Path to config file |
+| `--json` | Print JSON instead of shell exports |
+
+Examples:
+
+```sh
+pnpm paperclipai worktree env
+pnpm paperclipai worktree env --json
+eval "$(pnpm paperclipai worktree env)"
 ```
 
 For project execution worktrees, Paperclip can also run a project-defined provision command after it creates or reuses an isolated git worktree. Configure this on the project's execution workspace policy (`workspaceStrategy.provisionCommand`). The command runs inside the derived worktree and receives `PAPERCLIP_WORKSPACE_*`, `PAPERCLIP_PROJECT_ID`, `PAPERCLIP_AGENT_ID`, and `PAPERCLIP_ISSUE_*` environment variables so each repo can bootstrap itself however it wants.

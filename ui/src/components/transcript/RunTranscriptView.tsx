@@ -24,6 +24,7 @@ interface RunTranscriptViewProps {
   collapseStdout?: boolean;
   emptyMessage?: string;
   className?: string;
+  thinkingClassName?: string;
 }
 
 type TranscriptBlock =
@@ -96,16 +97,6 @@ function compactWhitespace(value: string): string {
 
 function truncate(value: string, max: number): string {
   return value.length > max ? `${value.slice(0, Math.max(0, max - 1))}…` : value;
-}
-
-function stripMarkdown(value: string): string {
-  return compactWhitespace(
-    value
-      .replace(/```[\s\S]*?```/g, " code ")
-      .replace(/`([^`]+)`/g, "$1")
-      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-      .replace(/[*_#>-]/g, " "),
-  );
 }
 
 function humanizeLabel(value: string): string {
@@ -285,6 +276,11 @@ function parseSystemActivity(text: string): { activityId?: string; name: string;
   };
 }
 
+function shouldHideNiceModeStderr(text: string): boolean {
+  const normalized = compactWhitespace(text).toLowerCase();
+  return normalized.startsWith("[paperclip] skipping saved session resume");
+}
+
 function groupCommandBlocks(blocks: TranscriptBlock[]): TranscriptBlock[] {
   const grouped: TranscriptBlock[] = [];
   let pending: Array<Extract<TranscriptBlock, { type: "command_group" }>["items"][number]> = [];
@@ -329,7 +325,7 @@ function groupCommandBlocks(blocks: TranscriptBlock[]): TranscriptBlock[] {
   return grouped;
 }
 
-function normalizeTranscript(entries: TranscriptEntry[], streaming: boolean): TranscriptBlock[] {
+export function normalizeTranscript(entries: TranscriptEntry[], streaming: boolean): TranscriptBlock[] {
   const blocks: TranscriptBlock[] = [];
   const pendingToolBlocks = new Map<string, Extract<TranscriptBlock, { type: "tool" }>>();
   const pendingActivityBlocks = new Map<string, Extract<TranscriptBlock, { type: "activity" }>>();
@@ -438,6 +434,9 @@ function normalizeTranscript(entries: TranscriptEntry[], streaming: boolean): Tr
     }
 
     if (entry.kind === "stderr") {
+      if (shouldHideNiceModeStderr(entry.text)) {
+        continue;
+      }
       blocks.push({
         type: "event",
         ts: entry.ts,
@@ -486,6 +485,17 @@ function normalizeTranscript(entries: TranscriptEntry[], streaming: boolean): Tr
       continue;
     }
 
+    const activeCommandBlock = [...blocks].reverse().find(
+      (block): block is Extract<TranscriptBlock, { type: "tool" }> =>
+        block.type === "tool" && block.status === "running" && isCommandTool(block.name, block.input),
+    );
+    if (activeCommandBlock) {
+      activeCommandBlock.result = activeCommandBlock.result
+        ? `${activeCommandBlock.result}${activeCommandBlock.result.endsWith("\n") || entry.text.startsWith("\n") ? entry.text : `\n${entry.text}`}`
+        : entry.text;
+      continue;
+    }
+
     if (previous?.type === "stdout") {
       previous.text += previous.text.endsWith("\n") || entry.text.startsWith("\n") ? entry.text : `\n${entry.text}`;
       previous.ts = entry.ts;
@@ -519,15 +529,14 @@ function TranscriptMessageBlock({
           <span>User</span>
         </div>
       )}
-      {compact ? (
-        <div className="text-xs leading-5 text-foreground/85 whitespace-pre-wrap break-words">
-          {truncate(stripMarkdown(block.text), 360)}
-        </div>
-      ) : (
-        <MarkdownBody className="text-sm [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
-          {block.text}
-        </MarkdownBody>
-      )}
+      <MarkdownBody
+        className={cn(
+          "[&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
+          compact ? "text-xs leading-5 text-foreground/85" : "text-sm",
+        )}
+      >
+        {block.text}
+      </MarkdownBody>
       {block.streaming && (
         <div className="mt-2 inline-flex items-center gap-1 text-[10px] font-medium italic text-muted-foreground">
           <span className="relative flex h-1.5 w-1.5">
@@ -544,19 +553,22 @@ function TranscriptMessageBlock({
 function TranscriptThinkingBlock({
   block,
   density,
+  className,
 }: {
   block: Extract<TranscriptBlock, { type: "thinking" }>;
   density: TranscriptDensity;
+  className?: string;
 }) {
   return (
-    <div
+    <MarkdownBody
       className={cn(
-        "whitespace-pre-wrap break-words italic text-foreground/70",
+        "italic text-foreground/70 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
         density === "compact" ? "text-[11px] leading-5" : "text-sm leading-6",
+        className,
       )}
     >
       {block.text}
-    </div>
+    </MarkdownBody>
   );
 }
 
@@ -956,6 +968,7 @@ export function RunTranscriptView({
   collapseStdout = false,
   emptyMessage = "No transcript yet.",
   className,
+  thinkingClassName,
 }: RunTranscriptViewProps) {
   const blocks = useMemo(() => normalizeTranscript(entries, streaming), [entries, streaming]);
   const visibleBlocks = limit ? blocks.slice(-limit) : blocks;
@@ -985,7 +998,9 @@ export function RunTranscriptView({
           className={cn(index === visibleBlocks.length - 1 && streaming && "animate-in fade-in slide-in-from-bottom-1 duration-300")}
         >
           {block.type === "message" && <TranscriptMessageBlock block={block} density={density} />}
-          {block.type === "thinking" && <TranscriptThinkingBlock block={block} density={density} />}
+          {block.type === "thinking" && (
+            <TranscriptThinkingBlock block={block} density={density} className={thinkingClassName} />
+          )}
           {block.type === "tool" && <TranscriptToolCard block={block} density={density} />}
           {block.type === "command_group" && <TranscriptCommandGroup block={block} density={density} />}
           {block.type === "stdout" && (

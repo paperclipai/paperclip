@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { BookOpen, Moon, Sun } from "lucide-react";
-import { Outlet, useLocation, useNavigate, useParams } from "@/lib/router";
+import { BookOpen, Moon, Settings, Sun } from "lucide-react";
+import { Link, Outlet, useLocation, useNavigate, useParams } from "@/lib/router";
 import { CompanyRail } from "./CompanyRail";
 import { Sidebar } from "./Sidebar";
+import { InstanceSidebar } from "./InstanceSidebar";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { BreadcrumbBar } from "./BreadcrumbBar";
 import { PropertiesPanel } from "./PropertiesPanel";
@@ -42,6 +43,7 @@ export function Layout() {
   const { companyPrefix } = useParams<{ companyPrefix: string }>();
   const navigate = useNavigate();
   const location = useLocation();
+  const isInstanceSettingsRoute = location.pathname.startsWith("/instance/");
   const onboardingTriggered = useRef(false);
   const lastMainScrollTop = useRef(0);
   const [mobileNavVisible, setMobileNavVisible] = useState(true);
@@ -242,7 +244,7 @@ export function Layout() {
         >
           <div className="flex flex-1 min-h-0 overflow-hidden">
             <CompanyRail />
-            <Sidebar />
+            {isInstanceSettingsRoute ? <InstanceSidebar /> : <Sidebar />}
           </div>
           <div className="border-t border-r border-border px-3 py-2 bg-background">
             <div className="flex items-center gap-1">
@@ -252,6 +254,18 @@ export function Layout() {
                 icon={BookOpen}
                 className="flex-1 min-w-0"
               />
+              <Button variant="ghost" size="icon-sm" className="text-muted-foreground shrink-0" asChild>
+                <Link
+                  to="/instance/settings"
+                  aria-label="Instance settings"
+                  title="Instance settings"
+                  onClick={() => {
+                    if (isMobile) setSidebarOpen(false);
+                  }}
+                >
+                  <Settings className="h-4 w-4" />
+                </Link>
+              </Button>
               <Button
                 type="button"
                 variant="ghost"
@@ -276,7 +290,7 @@ export function Layout() {
                 sidebarOpen ? "w-60" : "w-0"
               )}
             >
-              <Sidebar />
+              {isInstanceSettingsRoute ? <InstanceSidebar /> : <Sidebar />}
             </div>
           </div>
           <div className="border-t border-r border-border px-3 py-2">
@@ -287,6 +301,18 @@ export function Layout() {
                 icon={BookOpen}
                 className="flex-1 min-w-0"
               />
+              <Button variant="ghost" size="icon-sm" className="text-muted-foreground shrink-0" asChild>
+                <Link
+                  to="/instance/settings"
+                  aria-label="Instance settings"
+                  title="Instance settings"
+                  onClick={() => {
+                    if (isMobile) setSidebarOpen(false);
+                  }}
+                >
+                  <Settings className="h-4 w-4" />
+                </Link>
+              </Button>
               <Button
                 type="button"
                 variant="ghost"

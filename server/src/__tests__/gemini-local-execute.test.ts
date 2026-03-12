@@ -77,7 +77,6 @@ describe("gemini execute", () => {
           command: commandPath,
           cwd: workspace,
           model: "gemini-2.5-pro",
-          yolo: true,
           env: {
             PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
           },
@@ -112,6 +111,51 @@ describe("gemini execute", () => {
       );
       expect(invocationPrompt).toContain("Paperclip runtime note:");
       expect(invocationPrompt).toContain("PAPERCLIP_API_URL");
+      expect(invocationPrompt).toContain("Paperclip API access note:");
+      expect(invocationPrompt).toContain("run_shell_command");
+      expect(result.question).toBeNull();
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = previousHome;
+      }
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("always passes --approval-mode yolo", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-yolo-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "gemini");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeGeminiCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      await execute({
+        runId: "run-yolo",
+        agent: { id: "a1", companyId: "c1", name: "G", adapterType: "gemini_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+        },
+        context: {},
+        authToken: "t",
+        onLog: async () => {},
+      });
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.argv).toContain("--approval-mode");
+      expect(capture.argv).toContain("yolo");
+      expect(capture.argv).not.toContain("--policy");
+      expect(capture.argv).not.toContain("--allow-all");
+      expect(capture.argv).not.toContain("--allow-read");
     } finally {
       if (previousHome === undefined) {
         delete process.env.HOME;

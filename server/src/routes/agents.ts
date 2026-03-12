@@ -8,9 +8,11 @@ import {
   createAgentKeySchema,
   createAgentHireSchema,
   createAgentSchema,
+  deriveAgentUrlKey,
   isUuidLike,
   resetAgentSessionSchema,
   testAdapterEnvironmentSchema,
+  type InstanceSchedulerHeartbeatAgent,
   updateAgentPermissionsSchema,
   updateAgentInstructionsPathSchema,
   wakeAgentSchema,
@@ -31,6 +33,7 @@ import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { findServerAdapter, listAdapterModels } from "../adapters/index.js";
 import { redactEventPayload } from "../redaction.js";
+import { redactCurrentUserValue } from "../log-redaction.js";
 import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
@@ -199,6 +202,21 @@ export function agentRoutes(db: Db) {
       return false;
     }
     return null;
+  }
+
+  function parseNumberLike(value: unknown): number | null {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value !== "string") return null;
+    const parsed = Number(value.trim());
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  function parseSchedulerHeartbeatPolicy(runtimeConfig: unknown) {
+    const heartbeat = asRecord(asRecord(runtimeConfig)?.heartbeat) ?? {};
+    return {
+      enabled: parseBooleanLike(heartbeat.enabled) ?? true,
+      intervalSec: Math.max(0, parseNumberLike(heartbeat.intervalSec) ?? 0),
+    };
   }
 
   function generateEd25519PrivateKeyPem(): string {
@@ -451,6 +469,81 @@ export function agentRoutes(db: Db) {
       return;
     }
     res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
+  });
+
+  router.get("/instance/scheduler-heartbeats", async (req, res) => {
+    assertBoard(req);
+
+    const accessConditions = [];
+    if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
+      const allowedCompanyIds = req.actor.companyIds ?? [];
+      if (allowedCompanyIds.length === 0) {
+        res.json([]);
+        return;
+      }
+      accessConditions.push(inArray(agentsTable.companyId, allowedCompanyIds));
+    }
+
+    const rows = await db
+      .select({
+        id: agentsTable.id,
+        companyId: agentsTable.companyId,
+        agentName: agentsTable.name,
+        role: agentsTable.role,
+        title: agentsTable.title,
+        status: agentsTable.status,
+        adapterType: agentsTable.adapterType,
+        runtimeConfig: agentsTable.runtimeConfig,
+        lastHeartbeatAt: agentsTable.lastHeartbeatAt,
+        companyName: companies.name,
+        companyIssuePrefix: companies.issuePrefix,
+      })
+      .from(agentsTable)
+      .innerJoin(companies, eq(agentsTable.companyId, companies.id))
+      .where(accessConditions.length > 0 ? and(...accessConditions) : undefined)
+      .orderBy(companies.name, agentsTable.name);
+
+    const items: InstanceSchedulerHeartbeatAgent[] = rows
+      .map((row) => {
+        const policy = parseSchedulerHeartbeatPolicy(row.runtimeConfig);
+        const statusEligible =
+          row.status !== "paused" &&
+          row.status !== "terminated" &&
+          row.status !== "pending_approval";
+
+        return {
+          id: row.id,
+          companyId: row.companyId,
+          companyName: row.companyName,
+          companyIssuePrefix: row.companyIssuePrefix,
+          agentName: row.agentName,
+          agentUrlKey: deriveAgentUrlKey(row.agentName, row.id),
+          role: row.role as InstanceSchedulerHeartbeatAgent["role"],
+          title: row.title,
+          status: row.status as InstanceSchedulerHeartbeatAgent["status"],
+          adapterType: row.adapterType,
+          intervalSec: policy.intervalSec,
+          heartbeatEnabled: policy.enabled,
+          schedulerActive: statusEligible && policy.enabled && policy.intervalSec > 0,
+          lastHeartbeatAt: row.lastHeartbeatAt,
+        };
+      })
+      .filter((item) =>
+        item.intervalSec > 0 &&
+        item.status !== "paused" &&
+        item.status !== "terminated" &&
+        item.status !== "pending_approval",
+      )
+      .sort((left, right) => {
+        if (left.schedulerActive !== right.schedulerActive) {
+          return left.schedulerActive ? -1 : 1;
+        }
+        const companyOrder = left.companyName.localeCompare(right.companyName);
+        if (companyOrder !== 0) return companyOrder;
+        return left.agentName.localeCompare(right.agentName);
+      });
+
+    res.json(items);
   });
 
   router.get("/companies/:companyId/org", async (req, res) => {
@@ -1360,7 +1453,7 @@ export function agentRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, run.companyId);
-    res.json(run);
+    res.json(redactCurrentUserValue(run));
   });
 
   router.post("/heartbeat-runs/:runId/cancel", async (req, res) => {
@@ -1395,10 +1488,12 @@ export function agentRoutes(db: Db) {
     const afterSeq = Number(req.query.afterSeq ?? 0);
     const limit = Number(req.query.limit ?? 200);
     const events = await heartbeat.listEvents(runId, Number.isFinite(afterSeq) ? afterSeq : 0, Number.isFinite(limit) ? limit : 200);
-    const redactedEvents = events.map((event) => ({
-      ...event,
-      payload: redactEventPayload(event.payload),
-    }));
+    const redactedEvents = events.map((event) =>
+      redactCurrentUserValue({
+        ...event,
+        payload: redactEventPayload(event.payload),
+      }),
+    );
     res.json(redactedEvents);
   });
 
@@ -1495,7 +1590,7 @@ export function agentRoutes(db: Db) {
     }
 
     res.json({
-      ...run,
+      ...redactCurrentUserValue(run),
       agentId: agent.id,
       agentName: agent.name,
       adapterType: agent.adapterType,

@@ -12,11 +12,12 @@ import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
-import { StatusIcon } from "../components/StatusIcon";
-import { PriorityIcon } from "../components/PriorityIcon";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { ApprovalCard } from "../components/ApprovalCard";
+import { IssueRow } from "../components/IssueRow";
+import { PriorityIcon } from "../components/PriorityIcon";
+import { StatusIcon } from "../components/StatusIcon";
 import { StatusBadge } from "../components/StatusBadge";
 import { timeAgo } from "../lib/timeAgo";
 import { Button } from "@/components/ui/button";
@@ -350,6 +351,15 @@ export function Inbox() {
     () => getLatestFailedRunsByAgent(heartbeatRuns ?? []).filter((r) => !dismissed.has(`run:${r.id}`)),
     [heartbeatRuns, dismissed],
   );
+  const liveIssueIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const run of heartbeatRuns ?? []) {
+      if (run.status !== "running" && run.status !== "queued") continue;
+      const issueId = readIssueIdFromRun(run);
+      if (issueId) ids.add(issueId);
+    }
+    return ids;
+  }, [heartbeatRuns]);
 
   const allApprovals = useMemo(
     () =>
@@ -546,36 +556,37 @@ export function Inbox() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <Tabs value={tab} onValueChange={(value) => navigate(`/inbox/${value}`)}>
-          <PageTabBar
-            items={[
-              {
-                value: "recent",
-                label: "Recent",
-              },
-              { value: "unread", label: "Unread" },
-              { value: "all", label: "All" },
-            ]}
-          />
-        </Tabs>
-
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex flex-wrap items-center gap-2">
+          <Tabs value={tab} onValueChange={(value) => navigate(`/inbox/${value}`)}>
+            <PageTabBar
+              items={[
+                {
+                  value: "recent",
+                  label: "Recent",
+                },
+                { value: "unread", label: "Unread" },
+                { value: "all", label: "All" },
+              ]}
+            />
+          </Tabs>
+
           {canMarkAllRead && (
             <Button
               type="button"
               variant="outline"
               size="sm"
-              className="h-8"
+              className="h-8 shrink-0"
               onClick={() => markAllReadMutation.mutate(unreadIssueIds)}
               disabled={markAllReadMutation.isPending}
             >
               {markAllReadMutation.isPending ? "Marking…" : "Mark all as read"}
             </Button>
           )}
+        </div>
 
-          {tab === "all" && (
-            <>
+        {tab === "all" && (
+          <div className="flex flex-wrap items-center gap-2 sm:justify-end">
             <Select
               value={allCategoryFilter}
               onValueChange={(value) => setAllCategoryFilter(value as InboxCategoryFilter)}
@@ -608,9 +619,8 @@ export function Inbox() {
                 </SelectContent>
               </Select>
             )}
-            </>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
       {approvalsError && <p className="text-sm text-destructive">{approvalsError.message}</p>}
@@ -800,64 +810,52 @@ export function Inbox() {
         <>
           {showSeparatorBefore("issues_i_touched") && <Separator />}
           <div>
-            <div className="divide-y divide-border border border-border">
+            <div>
               {(tab === "unread" ? unreadTouchedIssues : touchedIssues).map((issue) => {
                 const isUnread = issue.isUnreadForMe && !fadingOutIssues.has(issue.id);
                 const isFading = fadingOutIssues.has(issue.id);
                 return (
-                  <Link
+                  <IssueRow
                     key={issue.id}
-                    to={`/issues/${issue.identifier ?? issue.id}`}
-                    state={issueLinkState}
-                    className="flex min-w-0 cursor-pointer items-start gap-2 px-3 py-3 no-underline text-inherit transition-colors hover:bg-accent/50 sm:items-center sm:gap-3 sm:px-4"
-                  >
-                    <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center self-center">
-                      {(isUnread || isFading) ? (
-                        <span
-                          role="button"
-                          tabIndex={0}
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            markReadMutation.mutate(issue.id);
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter" || e.key === " ") {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              markReadMutation.mutate(issue.id);
-                            }
-                          }}
-                          className="inline-flex h-4 w-4 cursor-pointer items-center justify-center rounded-full transition-colors hover:bg-blue-500/20"
-                          aria-label="Mark as read"
-                        >
-                          <span
-                            className={`block h-2 w-2 rounded-full bg-blue-600 dark:bg-blue-400 transition-opacity duration-300 ${
-                              isFading ? "opacity-0" : "opacity-100"
-                            }`}
-                          />
+                    issue={issue}
+                    issueLinkState={issueLinkState}
+                    desktopMetaLeading={(
+                      <>
+                        <span className="hidden sm:inline-flex">
+                          <PriorityIcon priority={issue.priority} />
                         </span>
-                      ) : (
-                        <span className="inline-flex h-4 w-4" aria-hidden="true" />
-                      )}
-                    </span>
-
-                    <span className="inline-flex shrink-0 self-center"><PriorityIcon priority={issue.priority} /></span>
-                    <span className="inline-flex shrink-0 self-center"><StatusIcon status={issue.status} /></span>
-                    <span className="shrink-0 self-center text-xs font-mono text-muted-foreground">
-                      {issue.identifier ?? issue.id.slice(0, 8)}
-                    </span>
-                    <span className="min-w-0 flex-1 text-sm">
-                      <span className="line-clamp-2 min-w-0 sm:line-clamp-1 sm:block sm:truncate">
-                        {issue.title}
-                      </span>
-                    </span>
-                    <span className="hidden shrink-0 self-center text-xs text-muted-foreground sm:block">
-                      {issue.lastExternalCommentAt
+                        <span className="hidden shrink-0 sm:inline-flex">
+                          <StatusIcon status={issue.status} />
+                        </span>
+                        <span className="shrink-0 font-mono text-xs text-muted-foreground">
+                          {issue.identifier ?? issue.id.slice(0, 8)}
+                        </span>
+                        {liveIssueIds.has(issue.id) && (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-blue-500/10 px-1.5 py-0.5 sm:gap-1.5 sm:px-2">
+                            <span className="relative flex h-2 w-2">
+                              <span className="absolute inline-flex h-full w-full animate-pulse rounded-full bg-blue-400 opacity-75" />
+                              <span className="relative inline-flex h-2 w-2 rounded-full bg-blue-500" />
+                            </span>
+                            <span className="hidden text-[11px] font-medium text-blue-600 dark:text-blue-400 sm:inline">
+                              Live
+                            </span>
+                          </span>
+                        )}
+                      </>
+                    )}
+                    mobileMeta={
+                      issue.lastExternalCommentAt
                         ? `commented ${timeAgo(issue.lastExternalCommentAt)}`
-                        : `updated ${timeAgo(issue.updatedAt)}`}
-                    </span>
-                  </Link>
+                        : `updated ${timeAgo(issue.updatedAt)}`
+                    }
+                    unreadState={isUnread ? "visible" : isFading ? "fading" : "hidden"}
+                    onMarkRead={() => markReadMutation.mutate(issue.id)}
+                    trailingMeta={
+                      issue.lastExternalCommentAt
+                        ? `commented ${timeAgo(issue.lastExternalCommentAt)}`
+                        : `updated ${timeAgo(issue.updatedAt)}`
+                    }
+                  />
                 );
               })}
             </div>

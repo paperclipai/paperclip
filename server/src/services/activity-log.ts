@@ -1,6 +1,7 @@
 import type { Db } from "@paperclipai/db";
 import { activityLog } from "@paperclipai/db";
 import { publishLiveEvent } from "./live-events.js";
+import { redactCurrentUserValue } from "../log-redaction.js";
 import { sanitizeRecord } from "../redaction.js";
 
 export interface LogActivityInput {
@@ -17,6 +18,7 @@ export interface LogActivityInput {
 
 export async function logActivity(db: Db, input: LogActivityInput) {
   const sanitizedDetails = input.details ? sanitizeRecord(input.details) : null;
+  const redactedDetails = sanitizedDetails ? redactCurrentUserValue(sanitizedDetails) : null;
   await db.insert(activityLog).values({
     companyId: input.companyId,
     actorType: input.actorType,
@@ -26,7 +28,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     entityId: input.entityId,
     agentId: input.agentId ?? null,
     runId: input.runId ?? null,
-    details: sanitizedDetails,
+    details: redactedDetails,
   });
 
   publishLiveEvent({
@@ -40,7 +42,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
       entityId: input.entityId,
       agentId: input.agentId ?? null,
       runId: input.runId ?? null,
-      details: sanitizedDetails,
+      details: redactedDetails,
     },
   });
 }

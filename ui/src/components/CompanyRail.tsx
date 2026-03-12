@@ -22,6 +22,7 @@ import { cn } from "../lib/utils";
 import { queryKeys } from "../lib/queryKeys";
 import { sidebarBadgesApi } from "../api/sidebarBadges";
 import { heartbeatsApi } from "../api/heartbeats";
+import { useLocation, useNavigate } from "@/lib/router";
 import {
   Tooltip,
   TooltipContent,
@@ -154,6 +155,10 @@ function SortableCompanyItem({
 export function CompanyRail() {
   const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { openOnboarding } = useDialog();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const isInstanceRoute = location.pathname.startsWith("/instance/");
+  const highlightedCompanyId = isInstanceRoute ? null : selectedCompanyId;
   const sidebarCompanies = useMemo(
     () => companies.filter((company) => company.status !== "archived"),
     [companies],
@@ -282,10 +287,15 @@ export function CompanyRail() {
               <SortableCompanyItem
                 key={company.id}
                 company={company}
-                isSelected={company.id === selectedCompanyId}
+                isSelected={company.id === highlightedCompanyId}
                 hasLiveAgents={hasLiveAgentsByCompanyId.get(company.id) ?? false}
                 hasUnreadInbox={hasUnreadInboxByCompanyId.get(company.id) ?? false}
-                onSelect={() => setSelectedCompanyId(company.id)}
+                onSelect={() => {
+                  setSelectedCompanyId(company.id);
+                  if (isInstanceRoute) {
+                    navigate(`/${company.issuePrefix}/dashboard`);
+                  }
+                }}
               />
             ))}
           </SortableContext>

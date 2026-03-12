@@ -1,3 +1,4 @@
+import { redactHomePathUserSegments, redactTranscriptEntryPaths } from "@paperclipai/adapter-utils";
 import type { TranscriptEntry, StdoutLineParser } from "./types";
 
 export type RunLogChunk = { ts: string; stream: "stdout" | "stderr" | "system"; chunk: string };
@@ -26,11 +27,11 @@ export function buildTranscript(chunks: RunLogChunk[], parser: StdoutLineParser)
 
   for (const chunk of chunks) {
     if (chunk.stream === "stderr") {
-      entries.push({ kind: "stderr", ts: chunk.ts, text: chunk.chunk });
+      entries.push({ kind: "stderr", ts: chunk.ts, text: redactHomePathUserSegments(chunk.chunk) });
       continue;
     }
     if (chunk.stream === "system") {
-      entries.push({ kind: "system", ts: chunk.ts, text: chunk.chunk });
+      entries.push({ kind: "system", ts: chunk.ts, text: redactHomePathUserSegments(chunk.chunk) });
       continue;
     }
 
@@ -40,14 +41,14 @@ export function buildTranscript(chunks: RunLogChunk[], parser: StdoutLineParser)
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
-      appendTranscriptEntries(entries, parser(trimmed, chunk.ts));
+      appendTranscriptEntries(entries, parser(trimmed, chunk.ts).map(redactTranscriptEntryPaths));
     }
   }
 
   const trailing = stdoutBuffer.trim();
   if (trailing) {
     const ts = chunks.length > 0 ? chunks[chunks.length - 1]!.ts : new Date().toISOString();
-    appendTranscriptEntries(entries, parser(trailing, ts));
+    appendTranscriptEntries(entries, parser(trailing, ts).map(redactTranscriptEntryPaths));
   }
 
   return entries;
