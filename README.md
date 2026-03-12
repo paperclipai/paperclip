@@ -169,6 +169,12 @@ Paperclip handles the hard orchestration details correctly.
 
 <br/>
 
+## Security Training
+
+Agents handling external input (emails, webhooks, API responses) are injected with a security training skill (`skills/security/SKILL.md`) that teaches them to resist prompt injection, social engineering, and credential phishing. Enabled by default for all agents — see the skill file for full coverage.
+
+<br/>
+
 ## Quickstart
 
 Open source. Self-hosted. No Paperclip account required.
