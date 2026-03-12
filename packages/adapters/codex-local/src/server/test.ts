@@ -101,6 +101,11 @@ export async function testEnvironment(
   const hostOpenAiKey = process.env.OPENAI_API_KEY;
   if (isNonEmpty(configOpenAiKey) || isNonEmpty(hostOpenAiKey)) {
     const source = isNonEmpty(configOpenAiKey) ? "adapter config env" : "server environment";
+    // Explicitly inherit from process.env when not in adapter config, so the
+    // hello probe (and later execute runs) use a consistent env snapshot.
+    if (!isNonEmpty(configOpenAiKey) && isNonEmpty(hostOpenAiKey)) {
+      env.OPENAI_API_KEY = hostOpenAiKey;
+    }
     checks.push({
       code: "codex_openai_api_key_present",
       level: "info",

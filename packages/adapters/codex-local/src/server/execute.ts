@@ -315,9 +315,41 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
+
+  // Explicitly inherit OPENAI_API_KEY from the server's process.env when not
+  // configured in adapter config.  runChildProcess() merges process.env into
+  // the child env, but making this explicit lets us validate the key early and
+  // report the auth source in logs so that 401 errors are easier to diagnose.
+  const openaiKeySource: "adapter_config" | "server_env" | "missing" = (() => {
+    if (hasNonEmptyEnvValue(env, "OPENAI_API_KEY")) return "adapter_config";
+    // Remove any whitespace-only or empty value that leaked from adapter config
+    // so it doesn't override a valid key (or confuse Codex) via runChildProcess.
+    if (typeof env.OPENAI_API_KEY === "string") delete env.OPENAI_API_KEY;
+    const fromProcess = process.env.OPENAI_API_KEY;
+    if (typeof fromProcess === "string" && fromProcess.trim().length > 0) {
+      env.OPENAI_API_KEY = fromProcess;
+      return "server_env";
+    }
+    return "missing";
+  })();
+
   const billingType = resolveCodexBillingType(env);
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   await ensureCommandResolvable(command, cwd, runtimeEnv);
+
+  if (openaiKeySource === "missing") {
+    await onLog(
+      "stderr",
+      "[paperclip] Warning: OPENAI_API_KEY is not set in adapter config or server environment. " +
+        "Codex will fall back to local login auth (codex login). " +
+        "If you see a 401 error, set OPENAI_API_KEY in adapter env or export it in the shell that runs Paperclip.\n",
+    );
+  } else {
+    await onLog(
+      "stderr",
+      `[paperclip] Codex auth: OPENAI_API_KEY sourced from ${openaiKeySource === "adapter_config" ? "adapter config" : "server environment"} (billing: ${billingType}).\n`,
+    );
+  }
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 20);
