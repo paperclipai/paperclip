@@ -15,6 +15,7 @@ import { validate } from "../middleware/validate.js";
 import {
   accessService,
   agentService,
+  findRootCeoAgent,
   goalService,
   heartbeatService,
   issueApprovalService,
@@ -471,8 +472,22 @@ export function issueRoutes(db: Db, storage: StorageService) {
       !!existing.createdByUserId &&
       req.body.assigneeUserId === existing.createdByUserId;
 
+    let isAgentEscalatingToCeo = false;
+    if (
+      assigneeWillChange &&
+      req.actor.type === "agent" &&
+      !!req.actor.agentId &&
+      existing.assigneeAgentId === req.actor.agentId &&
+      typeof req.body.assigneeAgentId === "string"
+    ) {
+      const ceoAgent = await findRootCeoAgent(db, existing.companyId);
+      if (ceoAgent && req.body.assigneeAgentId === ceoAgent.id) {
+        isAgentEscalatingToCeo = true;
+      }
+    }
+
     if (assigneeWillChange) {
-      if (!isAgentReturningIssueToCreator) {
+      if (!isAgentReturningIssueToCreator && !isAgentEscalatingToCeo) {
         await assertCanAssignTasks(req, existing.companyId);
       }
     }
@@ -610,6 +625,23 @@ export function issueRoutes(db: Db, storage: StorageService) {
           logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
         }
 
+        // If an agent mentions the CEO in a comment, auto-reassign the issue to the CEO.
+        if (actor.actorType === "agent" && mentionedIds.length > 0) {
+          try {
+            const ceoAgent = await findRootCeoAgent(db, issue.companyId);
+            if (ceoAgent && mentionedIds.includes(ceoAgent.id) && issue.assigneeAgentId !== ceoAgent.id) {
+              await db
+                .update(issues)
+                .set({ assigneeAgentId: ceoAgent.id, assigneeUserId: null, updatedAt: new Date() })
+                .where(eq(issues.id, issue.id));
+              issue = { ...issue, assigneeAgentId: ceoAgent.id, assigneeUserId: null };
+              logger.info({ issueId: issue.id, ceoAgentId: ceoAgent.id }, "auto-assigned issue to CEO on mention");
+            }
+          } catch (err) {
+            logger.warn({ err, issueId: id }, "failed to auto-assign to CEO on mention");
+          }
+        }
+
         for (const mentionedId of mentionedIds) {
           if (wakeups.has(mentionedId)) continue;
           if (actor.actorType === "agent" && actor.actorId === mentionedId) continue;
@@ -640,13 +672,17 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
       // Auto-route parent to CEO when a subtask is marked done
       if (issue.status === "done" && existing.status !== "done") {
-        await runCompletionHook(db, {
-          id: issue.id,
-          identifier: issue.identifier,
-          title: issue.title,
-          companyId: issue.companyId,
-          parentId: issue.parentId ?? null,
-        }).catch((err) => logger.warn({ err, issueId: issue.id }, "completion-hook failed"));
+        await runCompletionHook(
+          db,
+          {
+            id: issue.id,
+            identifier: issue.identifier,
+            title: issue.title,
+            companyId: issue.companyId,
+            parentId: issue.parentId ?? null,
+          },
+          heartbeat,
+        ).catch((err) => logger.warn({ err, issueId: issue.id }, "completion-hook failed"));
       }
     })();
 

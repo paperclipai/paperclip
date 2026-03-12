@@ -1,9 +1,10 @@
-import { pgTable, uuid, text, timestamp, integer, index } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, integer, index, uniqueIndex, sql } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 import { issues } from "./issues.js";
 import { projects } from "./projects.js";
 import { goals } from "./goals.js";
+import { heartbeatRuns } from "./heartbeat_runs.js";
 
 export const costEvents = pgTable(
   "cost_events",
@@ -11,6 +12,7 @@ export const costEvents = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id),
     agentId: uuid("agent_id").notNull().references(() => agents.id),
+    runId: uuid("run_id").references(() => heartbeatRuns.id),
     issueId: uuid("issue_id").references(() => issues.id),
     projectId: uuid("project_id").references(() => projects.id),
     goalId: uuid("goal_id").references(() => goals.id),
@@ -30,5 +32,6 @@ export const costEvents = pgTable(
       table.agentId,
       table.occurredAt,
     ),
+    runIdUniqueIdx: uniqueIndex("cost_events_run_id_unique_idx").on(table.runId).where(sql`run_id IS NOT NULL`),
   }),
 );

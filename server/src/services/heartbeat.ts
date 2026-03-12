@@ -993,16 +993,20 @@ export function heartbeatService(db: Db) {
       .where(eq(agentRuntimeState.agentId, agent.id));
 
     if (additionalCostCents > 0 || hasTokenUsage) {
-      await db.insert(costEvents).values({
-        companyId: agent.companyId,
-        agentId: agent.id,
-        provider: result.provider ?? "unknown",
-        model: result.model ?? "unknown",
-        inputTokens,
-        outputTokens,
-        costCents: additionalCostCents,
-        occurredAt: new Date(),
-      });
+      await db
+        .insert(costEvents)
+        .values({
+          companyId: agent.companyId,
+          agentId: agent.id,
+          runId: run.id,
+          provider: result.provider ?? "unknown",
+          model: result.model ?? "unknown",
+          inputTokens,
+          outputTokens,
+          costCents: additionalCostCents,
+          occurredAt: new Date(),
+        })
+        .onConflictDoNothing();
     }
 
     if (additionalCostCents > 0) {

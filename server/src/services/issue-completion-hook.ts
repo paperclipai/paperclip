@@ -3,11 +3,35 @@ import type { Db } from "@paperclipai/db";
 import { agents, issueComments, issues } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
+import type { heartbeatService } from "./heartbeat.js";
+
+type HeartbeatService = ReturnType<typeof heartbeatService>;
+
+/**
+ * Finds the root CEO agent for a company (prefers reportsTo=null, falls back to any CEO).
+ */
+export async function findRootCeoAgent(
+  db: Db,
+  companyId: string,
+): Promise<{ id: string; name: string } | null> {
+  const candidates = await db
+    .select({ id: agents.id, name: agents.name, reportsTo: agents.reportsTo })
+    .from(agents)
+    .where(
+      and(
+        eq(agents.companyId, companyId),
+        eq(agents.role, "ceo"),
+        ne(agents.status, "terminated"),
+      ),
+    );
+  return candidates.find((a) => a.reportsTo === null) ?? candidates[0] ?? null;
+}
 
 /**
  * Called after an issue is updated to `done`.
  * If the completed issue has a parentId, auto-reassigns the parent issue to
  * the company's root CEO agent (status → todo) so it can route next steps.
+ * Also wakes the CEO with the comment ID for routing context.
  * Non-fatal: logs failures without throwing.
  */
 export async function runCompletionHook(
@@ -19,6 +43,7 @@ export async function runCompletionHook(
     companyId: string;
     parentId: string | null;
   },
+  heartbeat?: HeartbeatService,
 ): Promise<void> {
   if (!completedIssue.parentId) return;
 
@@ -40,19 +65,7 @@ export async function runCompletionHook(
   if (parent.status === "done" || parent.status === "cancelled") return;
 
   // Find root CEO agent in the company (prefer reportsTo=null, fall back to any CEO)
-  const ceoCandidates = await db
-    .select({ id: agents.id, name: agents.name, reportsTo: agents.reportsTo })
-    .from(agents)
-    .where(
-      and(
-        eq(agents.companyId, completedIssue.companyId),
-        eq(agents.role, "ceo"),
-        ne(agents.status, "terminated"),
-      ),
-    );
-
-  const ceoAgent =
-    ceoCandidates.find((a) => a.reportsTo === null) ?? ceoCandidates[0] ?? null;
+  const ceoAgent = await findRootCeoAgent(db, completedIssue.companyId);
 
   if (!ceoAgent) {
     logger.warn(
@@ -82,13 +95,42 @@ export async function runCompletionHook(
       })
       .where(eq(issues.id, parent.id));
 
-    await db.insert(issueComments).values({
-      issueId: parent.id,
-      companyId: completedIssue.companyId,
-      body: commentBody,
-      authorAgentId: null,
-      authorUserId: null,
-    });
+    const [newComment] = await db
+      .insert(issueComments)
+      .values({
+        issueId: parent.id,
+        companyId: completedIssue.companyId,
+        body: commentBody,
+        authorAgentId: null,
+        authorUserId: null,
+      })
+      .returning();
+
+    if (heartbeat && newComment) {
+      heartbeat
+        .wakeup(ceoAgent.id, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "subtask_completed",
+          payload: { issueId: parent.id, commentId: newComment.id },
+          requestedByActorType: "system",
+          requestedByActorId: "completion_hook",
+          contextSnapshot: {
+            issueId: parent.id,
+            taskId: parent.id,
+            commentId: newComment.id,
+            wakeCommentId: newComment.id,
+            wakeReason: "subtask_completed",
+            source: "completion_hook",
+          },
+        })
+        .catch((err) =>
+          logger.warn(
+            { err, parentIssueId: parent.id, ceoAgentId: ceoAgent.id },
+            "completion-hook: failed to wake CEO after subtask completion",
+          ),
+        );
+    }
 
     await logActivity(db, {
       companyId: completedIssue.companyId,

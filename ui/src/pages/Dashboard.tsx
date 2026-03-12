@@ -16,6 +16,7 @@ import { Bot, CircleDot, ShieldCheck, LayoutDashboard, Zap } from "lucide-react"
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ActiveWorkWidget } from "../components/ActiveWorkWidget";
 import { AwaitingBoardWidget } from "../components/AwaitingBoardWidget";
+import { RecentActivityWidget } from "../components/RecentActivityWidget";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
 import type { Agent } from "@paperclipai/shared";
@@ -117,6 +118,8 @@ export function Dashboard() {
       <ActiveAgentsPanel companyId={selectedCompanyId!} />
 
       <ActiveWorkWidget companyId={selectedCompanyId!} />
+
+      <RecentActivityWidget companyId={selectedCompanyId!} />
 
       {data && (
         <>
