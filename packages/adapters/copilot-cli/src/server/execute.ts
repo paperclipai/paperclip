@@ -326,12 +326,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
       } as Record<string, unknown>)
     : null;
+  const failed = (proc.exitCode ?? 0) !== 0;
+  // Clear the stored session when a run fails and produced no fresh session ID.
+  // This avoids endlessly re-attaching a stale thread ID on subsequent heartbeats.
+  const clearSession = failed && !parsed.sessionId;
 
   return {
     exitCode: proc.exitCode,
     signal: proc.signal,
     timedOut: false,
-    errorMessage: (proc.exitCode ?? 0) === 0 ? null : fallbackErrorMessage,
+    errorMessage: failed ? fallbackErrorMessage : null,
     usage: parsed.usage,
     sessionId: resolvedSessionId,
     sessionParams: resolvedSessionParams,
@@ -345,5 +349,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stderr: proc.stderr,
     },
     summary: parsed.summary,
+    clearSession,
   };
 }
