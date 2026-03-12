@@ -32,6 +32,9 @@ const PAPERCLIP_SKILLS_CANDIDATES = [
   path.resolve(__moduleDir, "../../skills"),         // published: <pkg>/dist/server/ -> <pkg>/skills/
   path.resolve(__moduleDir, "../../../../../skills"), // dev: src/server/ -> repo root/skills/
 ];
+const AGENT_HOME_RUNS_DIRNAME = ".paperclip-runs";
+const AGENT_HOME_RUN_RETENTION_DAYS = 30;
+const AGENT_HOME_RUN_RETENTION_MS = AGENT_HOME_RUN_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 
 async function resolvePaperclipSkillsDir(): Promise<string | null> {
   for (const candidate of PAPERCLIP_SKILLS_CANDIDATES) {
@@ -51,6 +54,26 @@ async function resolvePaperclipSkillFile(name: string): Promise<string | null> {
 
 async function buildRuntimeDir(): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-"));
+}
+
+async function pruneStaleAgentHomeRunDirs(agentHomeCwd: string, activeRunId: string): Promise<number> {
+  const runsDir = path.join(agentHomeCwd, AGENT_HOME_RUNS_DIRNAME);
+  const cutoffMs = Date.now() - AGENT_HOME_RUN_RETENTION_MS;
+  const entries = await fs.readdir(runsDir, { withFileTypes: true }).catch(() => []);
+  let prunedCount = 0;
+
+  await Promise.all(entries.map(async (entry) => {
+    if (!entry.isDirectory() || entry.name === activeRunId) return;
+
+    const candidate = path.join(runsDir, entry.name);
+    const stat = await fs.stat(candidate).catch(() => null);
+    if (!stat || stat.mtimeMs >= cutoffMs) return;
+
+    await fs.rm(candidate, { recursive: true, force: true });
+    prunedCount += 1;
+  }));
+
+  return prunedCount;
 }
 
 interface ClaudeExecutionInput {
@@ -372,8 +395,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (sessionId && runtimeSessionCwd.length > 0) {
     effectiveCwd = runtimeSessionCwd;
   } else if (workspaceSource === "agent_home" && !sessionId) {
-    effectiveCwd = path.join(cwd, ".paperclip-runs", runId);
+    effectiveCwd = path.join(cwd, AGENT_HOME_RUNS_DIRNAME, runId);
     await ensureAbsoluteDirectory(effectiveCwd, { createIfMissing: true });
+    try {
+      const prunedCount = await pruneStaleAgentHomeRunDirs(cwd, runId);
+      if (prunedCount > 0) {
+        await onLog(
+          "stderr",
+          `[paperclip] Pruned ${prunedCount} stale agent-home run director${prunedCount === 1 ? "y" : "ies"} older than ${AGENT_HOME_RUN_RETENTION_DAYS}d.\n`,
+        );
+      }
+    } catch (error) {
+      await onLog(
+        "stderr",
+        `[paperclip] Failed to prune stale agent-home run directories: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    }
     await onLog(
       "stderr",
       `[paperclip] Using isolated agent-home run directory "${effectiveCwd}" to avoid Claude cwd session carry-over.\n`,

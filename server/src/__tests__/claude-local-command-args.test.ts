@@ -49,6 +49,7 @@ function mockClaudeSuccess(summary: string) {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.clearAllMocks();
 });
 
@@ -100,7 +101,6 @@ describe("claude_local argv handling", () => {
     );
     expect(metaCalls[0]?.commandArgs).not.toContain("-");
     expect(metaCalls[0]?.commandArgs).not.toContain("--add-dir");
-    expect(metaCalls[0]?.commandArgs).toContain("--append-system-prompt-file");
     expect(metaCalls[0]?.commandArgs.at(-1)).toBe("Respond with only Polytope.");
     expect(mockedRunChildProcess).toHaveBeenCalledWith(
       "run-1",
@@ -160,7 +160,6 @@ describe("claude_local argv handling", () => {
     const args = mockedRunChildProcess.mock.calls[0]?.[2] ?? [];
     expect(args).not.toContain("-");
     expect(args).not.toContain("--add-dir");
-    expect(args).toContain("--append-system-prompt-file");
     expect(args.at(-1)).toBe("Respond with only Polytope.");
   });
 
@@ -198,5 +197,104 @@ describe("claude_local argv handling", () => {
 
     const args = mockedRunChildProcess.mock.calls[0]?.[2] ?? [];
     expect(args.slice(-2)).toEqual(["--", prompt]);
+  });
+
+  it("prunes stale agent_home run directories on fresh runs", async () => {
+    mockClaudeSuccess("ok");
+    const agentHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-agent-home-"));
+    const staleRunCwd = path.join(agentHome, ".paperclip-runs", "stale-run");
+    await fs.mkdir(staleRunCwd, { recursive: true });
+    const staleTime = new Date(Date.now() - 45 * 24 * 60 * 60 * 1000);
+    await fs.utimes(staleRunCwd, staleTime, staleTime);
+
+    await execute({
+      runId: "run-4",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Polytope",
+      } as any,
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+      } as any,
+      config: {
+        command: "claude",
+        model: "claude-opus-4-6",
+        promptTemplate: "Respond with only {{agent.name}}.",
+      },
+      context: {
+        issueId: "issue-1",
+        wakeReason: "issue_assigned",
+        paperclipWorkspace: {
+          cwd: agentHome,
+          source: "agent_home",
+        },
+      },
+      onLog: async () => {},
+    } as any);
+
+    await expect(fs.stat(staleRunCwd)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.stat(path.join(agentHome, ".paperclip-runs", "run-4"))).resolves.toMatchObject({
+      isDirectory: expect.any(Function),
+    });
+  });
+
+  it("injects the paperclip skill without relying on repo filesystem layout", async () => {
+    mockClaudeSuccess("ok");
+    const agentHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-agent-home-"));
+    const actualStat = fs.stat.bind(fs);
+    const actualReadFile = fs.readFile.bind(fs);
+    const skillsDirSuffix = `${path.sep}skills`;
+    const skillFileSuffix = `${path.sep}skills${path.sep}paperclip${path.sep}SKILL.md`;
+
+    vi.spyOn(fs, "stat").mockImplementation(async (target) => {
+      const candidate = String(target);
+      if (candidate.endsWith(skillsDirSuffix)) {
+        return { isDirectory: () => true } as any;
+      }
+      if (candidate.endsWith(skillFileSuffix)) {
+        return { isFile: () => true } as any;
+      }
+      return actualStat(target);
+    });
+    const readFileSpy = vi.spyOn(fs, "readFile").mockImplementation(async (target, options) => {
+      const candidate = String(target);
+      if (candidate.endsWith(skillFileSuffix)) {
+        return "# Mocked paperclip skill";
+      }
+      return actualReadFile(target, options as any);
+    });
+
+    await execute({
+      runId: "run-5",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Polytope",
+      } as any,
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+      } as any,
+      config: {
+        command: "claude",
+        model: "claude-opus-4-6",
+        promptTemplate: "Respond with only {{agent.name}}.",
+      },
+      context: {
+        issueId: "issue-1",
+        wakeReason: "issue_assigned",
+        paperclipWorkspace: {
+          cwd: agentHome,
+          source: "agent_home",
+        },
+      },
+      onLog: async () => {},
+    } as any);
+
+    const args = mockedRunChildProcess.mock.calls[0]?.[2] ?? [];
+    expect(args).toContain("--append-system-prompt-file");
+    expect(readFileSpy).toHaveBeenCalledWith(expect.stringMatching(/skills[\/\\]paperclip[\/\\]SKILL\.md$/), "utf-8");
   });
 });
