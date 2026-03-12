@@ -13,8 +13,6 @@ jobs:
   policy:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    permissions:
-      pull-requests: read
 
     steps:
       - name: Checkout repository
@@ -33,38 +31,19 @@ jobs:
         with:
           node-version: 20
 
-      - name: Enforce lockfile policy when manifests change
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Block manual lockfile edits
+        if: github.head_ref != 'chore/refresh-lockfile'
         run: |
-          changed="$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" --paginate --jq '.[].filename')"
-          manifest_pattern='(^|/)package\.json$|^pnpm-workspace\.yaml$|^\.npmrc$|^pnpmfile\.(cjs|js|mjs)$'
-
-          manifest_changed=false
-          lockfile_changed=false
-
-          if printf '%s\n' "$changed" | grep -Eq "$manifest_pattern"; then
-            manifest_changed=true
-          fi
-
+          changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}")"
           if printf '%s\n' "$changed" | grep -qx 'pnpm-lock.yaml'; then
-            lockfile_changed=true
-          fi
-
-          if [ "$lockfile_changed" = true ] && [ "$manifest_changed" != true ]; then
-            echo "pnpm-lock.yaml changed without a dependency manifest change." >&2
+            echo "Do not commit pnpm-lock.yaml in pull requests. CI owns lockfile updates."
             exit 1
           fi
 
-          if [ "$manifest_changed" = true ]; then
+      - name: Validate dependency resolution when manifests change
+        run: |
+          changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}")"
+          manifest_pattern='(^|/)package\.json$|^pnpm-workspace\.yaml$|^\.npmrc$|^pnpmfile\.(cjs|js|mjs)$'
+          if printf '%s\n' "$changed" | grep -Eq "$manifest_pattern"; then
             pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
-
-            if ! git diff --quiet -- pnpm-lock.yaml; then
-              if [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
-                echo "pnpm-lock.yaml is stale for this PR. Wait for the Refresh Lockfile workflow to push the bot commit, then rerun checks." >&2
-              else
-                echo "pnpm-lock.yaml is stale for this fork PR. Run pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile and commit pnpm-lock.yaml." >&2
-              fi
-              exit 1
-            fi
           fi

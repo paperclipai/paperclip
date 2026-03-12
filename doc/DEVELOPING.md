@@ -19,9 +19,9 @@ Current implementation status:
 
 GitHub Actions owns `pnpm-lock.yaml`.
 
-- Same-repo pull requests that change dependency manifests are auto-refreshed by GitHub Actions before merge.
-- Fork pull requests that change dependency manifests must include the refreshed `pnpm-lock.yaml`.
-- Pull request CI validates lockfile freshness when manifests change and verifies with `--frozen-lockfile`.
+- Do not commit `pnpm-lock.yaml` in pull requests.
+- Pull request CI validates dependency resolution when manifests change.
+- Pushes to `master` regenerate `pnpm-lock.yaml` with `pnpm install --lockfile-only --no-frozen-lockfile`, commit it back if needed, and then run verification with `--frozen-lockfile`.
 
 ## Start Dev
 
