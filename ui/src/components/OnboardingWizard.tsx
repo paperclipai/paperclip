@@ -189,6 +189,8 @@ export function OnboardingWizard() {
       ? "codex"
       : adapterType === "gemini_local"
         ? "gemini"
+      : adapterType === "pi_local"
+        ? "pi"
       : adapterType === "qwen_local"
         ? "qwen"
       : adapterType === "cursor"
@@ -1051,6 +1053,8 @@ export function OnboardingWizard() {
                               ? `${effectiveAdapterCommand} -p --mode ask --output-format json \"Respond with hello.\"`
                               : adapterType === "codex_local"
                               ? `${effectiveAdapterCommand} exec --json -`
+                              : adapterType === "pi_local"
+                                ? `${effectiveAdapterCommand} -p "Respond with hello." --mode json${model.includes("/") ? ` --provider ${model.slice(0, model.indexOf("/"))} --model ${model.slice(model.indexOf("/") + 1)}` : model ? ` --model ${model}` : ""} --tools read`
                               : adapterType === "qwen_local"
                                 ? `${effectiveAdapterCommand} -p \"Respond with hello.\" --output-format stream-json`
                               : adapterType === "gemini_local"
@@ -1063,10 +1067,7 @@ export function OnboardingWizard() {
                             Prompt:{" "}
                             <span className="font-mono">Respond with hello.</span>
                           </p>
-                          {adapterType === "cursor" ||
-                          adapterType === "codex_local" ||
-                          adapterType === "gemini_local" ||
-                          adapterType === "opencode_local" ? (
+                          {adapterType === "cursor" || adapterType === "codex_local" || adapterType === "gemini_local" || adapterType === "opencode_local" || adapterType === "qwen_local" ? (
                             <p className="text-muted-foreground">
                               If auth fails, set{" "}
                               <span className="font-mono">
@@ -1074,9 +1075,12 @@ export function OnboardingWizard() {
                                   ? "CURSOR_API_KEY"
                                   : adapterType === "gemini_local"
                                     ? "GEMINI_API_KEY"
-                                    : "OPENAI_API_KEY"}
+                                    : adapterType === "qwen_local"
+                                      ? "DASHSCOPE_API_KEY"
+                                  : "OPENAI_API_KEY"}
                               </span>{" "}
-                              in env or run{" "}
+                              in
+                              env or run{" "}
                               <span className="font-mono">
                                 {adapterType === "cursor"
                                   ? "agent login"
@@ -1084,15 +1088,22 @@ export function OnboardingWizard() {
                                     ? "codex login"
                                     : adapterType === "gemini_local"
                                       ? "gemini auth"
-                                      : "opencode auth login"}
-                              </span>
-                              .
+                                      : adapterType === "qwen_local"
+                                        ? "qwen login"
+                                  : "opencode auth login"}
+                              </span>.
+                            </p>
+                          ) : adapterType === "pi_local" ? (
+                            <p className="text-muted-foreground">
+                              If auth fails, run{" "}
+                              <span className="font-mono">pi --list-models</span>{" "}
+                              to verify provider auth and the configured model.
                             </p>
                           ) : (
                             <p className="text-muted-foreground">
                               If login is required, run{" "}
-                              <span className="font-mono">claude login</span>{" "}
-                              and retry.
+                              <span className="font-mono">claude login</span> and
+                              retry.
                             </p>
                           )}
                         </div>

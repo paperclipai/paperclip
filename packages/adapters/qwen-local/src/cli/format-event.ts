@@ -55,7 +55,13 @@ export function printQwenStreamEvent(raw: string, debug: boolean): void {
     return;
   }
   if (type === "assistant" || type === "text") {
-    const text = flattenText(parsed.text) || flattenText(parsed.content) || flattenText(parsed.message);
+    const text =
+      flattenText(parsed.text) ||
+      flattenText(parsed.content) ||
+      flattenText(parsed.message) ||
+      flattenText(parsed.part) ||
+      flattenText(parsed.parts) ||
+      flattenText(parsed.contentParts);
     if (text) console.log(pc.green(`assistant: ${text}`));
     return;
   }
@@ -73,8 +79,17 @@ export function printQwenStreamEvent(raw: string, debug: boolean): void {
     const usage = asRecord(parsed.usage);
     const input = asNumber(usage?.inputTokens, 0) || asNumber(usage?.input_tokens, 0);
     const output = asNumber(usage?.outputTokens, 0) || asNumber(usage?.output_tokens, 0);
-    const cost = asNumber(usage?.costUsd, 0) || asNumber(usage?.cost_usd, 0) || asNumber(parsed.costUsd, 0);
-    console.log(pc.blue(`result: ${flattenText(parsed.summary) || flattenText(parsed.message) || "completed"}`));
+    const cost =
+      asNumber(usage?.costUsd, 0) ||
+      asNumber(usage?.cost_usd, 0) ||
+      asNumber(parsed.costUsd, 0) ||
+      asNumber(parsed.cost_usd, 0) ||
+      asNumber(parsed.cost, 0);
+    console.log(
+      pc.blue(
+        `result: ${flattenText(parsed.summary) || flattenText(parsed.message) || flattenText(parsed.result) || "completed"}`,
+      ),
+    );
     console.log(pc.blue(`tokens: in=${input} out=${output} cost=$${cost.toFixed(6)}`));
     return;
   }

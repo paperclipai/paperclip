@@ -16,6 +16,7 @@ function textFromUnknown(value: unknown): string {
     asString(record.text, "").trim() ||
     asString(record.content, "").trim() ||
     asString(record.message, "").trim() ||
+    asString(record.summary, "").trim() ||
     asString(result.summary, "").trim() ||
     asString(result.message, "").trim() ||
     asString(result.text, "").trim() ||
@@ -31,6 +32,7 @@ export function parseQwenStreamJson(stdout: string) {
   let provider: string | null = null;
   let costUsd = 0;
   let resultJson: Record<string, unknown> | null = null;
+  let resultSummary: string | null = null;
   const messages: string[] = [];
   const errors: string[] = [];
   const usage = {
@@ -75,6 +77,11 @@ export function parseQwenStreamJson(stdout: string) {
 
     if (type === "result") {
       resultJson = event;
+      resultSummary ||=
+        textFromUnknown(event.summary) ||
+        textFromUnknown(event.message) ||
+        textFromUnknown(event.result) ||
+        null;
       usage.inputTokens +=
         asNumber(usageRecord.inputTokens, 0) ||
         asNumber(usageRecord.input_tokens, 0) ||
@@ -114,7 +121,7 @@ export function parseQwenStreamJson(stdout: string) {
     usage,
     costUsd,
     resultJson,
-    summary: messages.join("\n\n").trim() || null,
+    summary: messages.join("\n\n").trim() || resultSummary,
     errorMessage: errors.length > 0 ? errors.join("\n") : null,
   };
 }

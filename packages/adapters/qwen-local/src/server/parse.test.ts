@@ -43,6 +43,19 @@ describe("qwen parser", () => {
     expect(parsed.summary).toBe("hello\nfrom parts");
   });
 
+  it("retains result-only summary text when no assistant chunk is emitted", () => {
+    const stdout = [
+      JSON.stringify({
+        type: "result",
+        result: { summary: "completed from result" },
+        usage: { inputTokens: 1, outputTokens: 1 },
+      }),
+    ].join("\n");
+
+    const parsed = parseQwenStreamJson(stdout);
+    expect(parsed.summary).toBe("completed from result");
+  });
+
   it("detects unknown resume-session failures", () => {
     expect(isQwenUnknownSessionError("", "Error: unknown session id abc")).toBe(true);
     expect(isQwenUnknownSessionError("", "cannot resume session")).toBe(true);
