@@ -44,7 +44,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ steps.pm.outputs.version }}
-          cache: ${{ steps.pm.outputs.manager }}
 
       - name: Setup pnpm
         if: steps.pm.outputs.manager == 'pnpm'
