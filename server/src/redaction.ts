@@ -1,3 +1,5 @@
+import os from "node:os";
+
 const SECRET_PAYLOAD_KEY_RE =
   /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
 const JWT_VALUE_RE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?$/;
@@ -7,6 +9,19 @@ const SENSITIVE_TEXT_JSON_RE =
   /(["'](?:[^"'\n]*(?:api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)[^"'\n]*)["']\s*:\s*["'])([^"'\n]+)(["'])/gi;
 const SENSITIVE_TEXT_BEARER_RE = /(Authorization\s*:\s*Bearer\s+)([^\s"'`]+)/gi;
 export const REDACTED_EVENT_VALUE = "***REDACTED***";
+const HOME_DIR_CANDIDATES = Array.from(
+  new Set(
+    [os.homedir(), process.env.HOME, process.env.USERPROFILE]
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0),
+  ),
+);
+const CURRENT_USERNAME = (() => {
+  try {
+    return os.userInfo().username.trim() || null;
+  } catch {
+    return null;
+  }
+})();
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
@@ -37,7 +52,7 @@ function isPlainBinding(value: unknown): value is { type: "plain"; value: unknow
 export function redactSensitiveText(value: string): string {
   // Transcript payloads are often plain text, so secret-bearing substrings need
   // redaction even when the surrounding payload shape is otherwise harmless.
-  return value
+  let redacted = value
     .replace(
       SENSITIVE_TEXT_ASSIGNMENT_RE,
       (_match, prefix: string, key: string) => `${prefix}${key}=${REDACTED_EVENT_VALUE}`,
@@ -48,6 +63,26 @@ export function redactSensitiveText(value: string): string {
         `${prefix}${REDACTED_EVENT_VALUE}${suffix}`,
     )
     .replace(SENSITIVE_TEXT_BEARER_RE, `$1${REDACTED_EVENT_VALUE}`);
+
+  // Keep operator-facing logs readable by collapsing the local home directory
+  // into a shell-style hint instead of exposing the machine-specific path.
+  for (const homeDir of HOME_DIR_CANDIDATES) {
+    const normalized = homeDir.replace(/\\/g, "/");
+    const variants = new Set<string>([homeDir, normalized]);
+    if (!normalized.endsWith("/")) {
+      variants.add(`${normalized}/`);
+    }
+    for (const variant of variants) {
+      redacted = redacted.split(variant).join(variant.endsWith("/") ? "~/" : "~");
+    }
+  }
+
+  if (CURRENT_USERNAME) {
+    const escaped = CURRENT_USERNAME.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    redacted = redacted.replace(new RegExp(`\\b${escaped}\\b`, "g"), "current-user");
+  }
+
+  return redacted;
 }
 
 function sanitizeString(value: string): string {

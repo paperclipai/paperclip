@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import type { LiveEvent, LiveEventType } from "@paperclipai/shared";
+import { redactEventPayload } from "../redaction.js";
 
 type LiveEventPayload = Record<string, unknown>;
 type LiveEventListener = (event: LiveEvent) => void;
@@ -20,7 +21,7 @@ function toLiveEvent(input: {
     companyId: input.companyId,
     type: input.type,
     createdAt: new Date().toISOString(),
-    payload: input.payload ?? {},
+    payload: redactEventPayload(input.payload ?? {}) ?? {},
   };
 }
 

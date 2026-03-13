@@ -16,6 +16,13 @@ Implemented in this fork from the upstream comparison work:
   - startup/doctor ergonomics, but implemented in a fork-specific way that preserves dual-repo workflows
   - run transcript UX ideas, adapted into the existing agent detail surface
   - configuration-tab ideas, adapted while preserving explicit save semantics
+  - issue-assignment QoL improvements:
+    - `Me` and `No assignee` operator shortcuts
+    - requester/current-user distinction in assignment menus
+    - user-assignee aware new-issue dialog draft persistence and keyboard flow
+  - privacy hardening ideas:
+    - redact current-user identifiers and home paths in operator-visible transcript/log surfaces
+    - quote generated `.env` values with special characters
 
 Explicitly deferred:
 

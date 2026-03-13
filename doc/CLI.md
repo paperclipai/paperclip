@@ -75,6 +75,7 @@ The root repo scripts `pnpm start` and `pnpm dev` now keep a checkout-specific s
 - It records the chosen `PAPERCLIP_HOME`, `PAPERCLIP_INSTANCE_ID`, and `PAPERCLIP_CONFIG`.
 - `paperclipai doctor --launch-history` reads that profile and shows the recent launch records for the resolved instance.
 - `paperclipai run --data-dir ...` remains the explicit CLI path when you want to bypass repo-local startup profiles entirely.
+- Paperclip-generated `.env` files now quote special-character values automatically so operator secrets and local overrides round-trip safely.
 
 ## Context Profiles
 
@@ -125,6 +126,8 @@ pnpm paperclipai issue comment <issue-id> --body "..." [--reopen]
 pnpm paperclipai issue checkout <issue-id> --agent-id <agent-id> [--expected-statuses todo,backlog,blocked]
 pnpm paperclipai issue release <issue-id>
 ```
+
+Board issue assignment UX now includes `Me` and `No assignee` shortcuts anywhere assignment is operator-facing. The server contract is unchanged and still uses `assigneeAgentId` and `assigneeUserId`.
 
 ## Agent Commands
 

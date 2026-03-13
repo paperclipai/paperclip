@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, Link, useBeforeUnload } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { agentsApi, type AgentKey, type ClaudeLoginResult } from "../api/agents";
+import { authApi } from "../api/auth";
 import { heartbeatsApi } from "../api/heartbeats";
 import { recordsApi } from "../api/records";
 import { ApiError } from "../api/client";
@@ -18,6 +19,7 @@ import { AgentConfigForm } from "../components/AgentConfigForm";
 import { adapterLabels, roleLabels } from "../components/agent-config-primitives";
 import { getUIAdapter, buildTranscript } from "../adapters";
 import type { TranscriptEntry } from "../adapters";
+import { redactOperatorFacingText, redactOperatorFacingUnknown } from "../lib/log-redaction";
 import { StatusBadge } from "../components/StatusBadge";
 import { agentStatusDot, agentStatusDotDefault } from "../lib/status-colors";
 import { MarkdownBody } from "../components/MarkdownBody";
@@ -1373,6 +1375,11 @@ function RunsTab({
 function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRun; agentRouteId: string; adapterType: string }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const { data: session } = useQuery({
+    queryKey: queryKeys.auth.session,
+    queryFn: () => authApi.getSession(),
+  });
+  const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const metrics = runMetrics(run);
   const [sessionOpen, setSessionOpen] = useState(false);
   const [claudeLoginResult, setClaudeLoginResult] = useState<ClaudeLoginResult | null>(null);
@@ -1533,6 +1540,16 @@ function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRun; agen
   const workspaceBranch = asNonEmptyString(workspaceMeta?.branchName);
   const workspaceStatus = asNonEmptyString(workspaceMeta?.checkoutStatus);
   const isolationUnavailable = workspaceMeta?.isolationUnavailable === true;
+  const redactedWorkspacePath = workspacePath
+    ? redactOperatorFacingText(workspacePath, { currentUserId })
+    : null;
+  const redactedRunError = run.error ? redactOperatorFacingText(run.error, { currentUserId }) : null;
+  const redactedStderrExcerpt = run.stderrExcerpt
+    ? redactOperatorFacingText(run.stderrExcerpt, { currentUserId })
+    : null;
+  const redactedStdoutExcerpt = run.stdoutExcerpt
+    ? redactOperatorFacingText(run.stdoutExcerpt, { currentUserId })
+    : null;
 
   return (
     <div className="space-y-4 min-w-0">
@@ -1621,16 +1638,16 @@ function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRun; agen
                 )}
               </div>
             )}
-            {run.error && (
+            {redactedRunError && (
               <div className="text-xs">
-                <span className="text-red-600 dark:text-red-400">{run.error}</span>
+                <span className="text-red-600 dark:text-red-400">{redactedRunError}</span>
                 {run.errorCode && <span className="text-muted-foreground ml-1">({run.errorCode})</span>}
               </div>
             )}
-            {workspacePath && (
+            {redactedWorkspacePath && (
               <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs">
                 <div className="font-medium text-foreground">Workspace</div>
-                <div className="mt-1 break-all text-muted-foreground">{workspacePath}</div>
+                <div className="mt-1 break-all text-muted-foreground">{redactedWorkspacePath}</div>
                 <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
                   {workspaceBranch ? <span>Branch {workspaceBranch}</span> : null}
                   {workspaceStatus ? <span>Status {workspaceStatus}</span> : null}
@@ -1673,12 +1690,12 @@ function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRun; agen
                   <>
                     {!!claudeLoginResult.stdout && (
                       <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">
-                        {claudeLoginResult.stdout}
+                        {redactOperatorFacingText(claudeLoginResult.stdout, { currentUserId })}
                       </pre>
                     )}
                     {!!claudeLoginResult.stderr && (
                       <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap">
-                        {claudeLoginResult.stderr}
+                        {redactOperatorFacingText(claudeLoginResult.stderr, { currentUserId })}
                       </pre>
                     )}
                   </>
@@ -1798,30 +1815,54 @@ function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRun; agen
       )}
 
       {/* stderr excerpt for failed runs */}
-      {run.stderrExcerpt && (
+      {redactedStderrExcerpt && (
         <div className="space-y-1">
           <span className="text-xs font-medium text-red-600 dark:text-red-400">stderr</span>
-          <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap">{run.stderrExcerpt}</pre>
+          <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap">{redactedStderrExcerpt}</pre>
         </div>
       )}
 
       {/* stdout excerpt when no log is available */}
-      {run.stdoutExcerpt && !run.logRef && (
+      {redactedStdoutExcerpt && !run.logRef && (
         <div className="space-y-1">
           <span className="text-xs font-medium text-muted-foreground">stdout</span>
-          <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">{run.stdoutExcerpt}</pre>
+          <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">{redactedStdoutExcerpt}</pre>
         </div>
       )}
 
       {/* Log viewer */}
-      <LogViewer run={run} adapterType={adapterType} />
+      <LogViewer
+        run={run}
+        adapterType={adapterType}
+        currentUserId={currentUserId}
+        redactedRunError={redactedRunError}
+        redactedStderrExcerpt={redactedStderrExcerpt}
+        redactedStdoutExcerpt={redactedStdoutExcerpt}
+        redactedResultJson={redactOperatorFacingUnknown(run.resultJson, { currentUserId })}
+      />
     </div>
   );
 }
 
 /* ---- Log Viewer ---- */
 
-function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: string }) {
+function LogViewer({
+  run,
+  adapterType,
+  currentUserId,
+  redactedRunError,
+  redactedResultJson,
+  redactedStderrExcerpt,
+  redactedStdoutExcerpt,
+}: {
+  run: HeartbeatRun;
+  adapterType: string;
+  currentUserId: string | null;
+  redactedRunError: string | null;
+  redactedResultJson: unknown;
+  redactedStderrExcerpt: string | null;
+  redactedStdoutExcerpt: string | null;
+}) {
   const [events, setEvents] = useState<HeartbeatRunEvent[]>([]);
   const [logLines, setLogLines] = useState<Array<{ ts: string; stream: "stdout" | "stderr" | "system"; chunk: string }>>([]);
   const [loading, setLoading] = useState(true);
@@ -2180,15 +2221,46 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     const evt = events.find((e) => e.eventType === "adapter.invoke");
     return asRecord(evt?.payload ?? null);
   }, [events]);
+  const redactedAdapterInvokePayload = useMemo(
+    () => redactOperatorFacingUnknown(adapterInvokePayload, { currentUserId }),
+    [adapterInvokePayload, currentUserId],
+  );
+  // Build the transcript from redacted chunks so readable mode never leaks
+  // machine-local paths or the current operator id while preserving structure.
+  const redactedLogLines = useMemo(
+    () =>
+      logLines.map((line) => ({
+        ...line,
+        chunk: redactOperatorFacingText(line.chunk, { currentUserId }),
+      })),
+    [logLines, currentUserId],
+  );
 
   const adapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
-  const transcript = useMemo(() => buildTranscript(logLines, adapter.parseStdoutLine), [logLines, adapter]);
+  const transcript = useMemo(
+    () => buildTranscript(redactedLogLines, adapter.parseStdoutLine),
+    [redactedLogLines, adapter],
+  );
+  const redactedEvents = useMemo(
+    () =>
+      events.map((event) => ({
+        ...event,
+        message: event.message
+          ? redactOperatorFacingText(event.message, { currentUserId })
+          : event.message,
+        payload: redactOperatorFacingUnknown(event.payload, { currentUserId }),
+      })),
+    [events, currentUserId],
+  );
+  const redactedLogError = logError
+    ? redactOperatorFacingText(logError, { currentUserId })
+    : null;
 
   if (loading && logLoading) {
     return <p className="text-xs text-muted-foreground">Loading run logs...</p>;
   }
 
-  if (events.length === 0 && logLines.length === 0 && !logError) {
+  if (redactedEvents.length === 0 && redactedLogLines.length === 0 && !logError) {
     return <p className="text-xs text-muted-foreground">No log events.</p>;
   }
 
@@ -2206,33 +2278,33 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
   return (
     <div className="space-y-3">
-      {adapterInvokePayload && (
+      {redactedAdapterInvokePayload && (
         <div className="rounded-lg border border-border bg-background/60 p-3 space-y-2">
           <div className="text-xs font-medium text-muted-foreground">Invocation</div>
-          {typeof adapterInvokePayload.adapterType === "string" && (
-            <div className="text-xs"><span className="text-muted-foreground">Adapter: </span>{adapterInvokePayload.adapterType}</div>
+          {typeof redactedAdapterInvokePayload.adapterType === "string" && (
+            <div className="text-xs"><span className="text-muted-foreground">Adapter: </span>{redactedAdapterInvokePayload.adapterType}</div>
           )}
-          {typeof adapterInvokePayload.cwd === "string" && (
-            <div className="text-xs break-all"><span className="text-muted-foreground">Working dir: </span><span className="font-mono">{adapterInvokePayload.cwd}</span></div>
+          {typeof redactedAdapterInvokePayload.cwd === "string" && (
+            <div className="text-xs break-all"><span className="text-muted-foreground">Working dir: </span><span className="font-mono">{redactedAdapterInvokePayload.cwd}</span></div>
           )}
-          {typeof adapterInvokePayload.command === "string" && (
+          {typeof redactedAdapterInvokePayload.command === "string" && (
             <div className="text-xs break-all">
               <span className="text-muted-foreground">Command: </span>
               <span className="font-mono">
                 {[
-                  adapterInvokePayload.command,
-                  ...(Array.isArray(adapterInvokePayload.commandArgs)
-                    ? adapterInvokePayload.commandArgs.filter((v): v is string => typeof v === "string")
+                  redactedAdapterInvokePayload.command,
+                  ...(Array.isArray(redactedAdapterInvokePayload.commandArgs)
+                    ? redactedAdapterInvokePayload.commandArgs.filter((v): v is string => typeof v === "string")
                     : []),
                 ].join(" ")}
               </span>
             </div>
           )}
-          {Array.isArray(adapterInvokePayload.commandNotes) && adapterInvokePayload.commandNotes.length > 0 && (
+          {Array.isArray(redactedAdapterInvokePayload.commandNotes) && redactedAdapterInvokePayload.commandNotes.length > 0 && (
             <div>
               <div className="text-xs text-muted-foreground mb-1">Command notes</div>
               <ul className="list-disc pl-5 space-y-1">
-                {adapterInvokePayload.commandNotes
+                {redactedAdapterInvokePayload.commandNotes
                   .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
                   .map((note, idx) => (
                     <li key={`${idx}-${note}`} className="text-xs break-all font-mono">
@@ -2242,29 +2314,29 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
               </ul>
             </div>
           )}
-          {adapterInvokePayload.prompt !== undefined && (
+          {redactedAdapterInvokePayload.prompt !== undefined && (
             <div>
               <div className="text-xs text-muted-foreground mb-1">Prompt</div>
               <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
-                {typeof adapterInvokePayload.prompt === "string"
-                  ? adapterInvokePayload.prompt
-                  : JSON.stringify(adapterInvokePayload.prompt, null, 2)}
+                {typeof redactedAdapterInvokePayload.prompt === "string"
+                  ? redactedAdapterInvokePayload.prompt
+                  : JSON.stringify(redactedAdapterInvokePayload.prompt, null, 2)}
               </pre>
             </div>
           )}
-          {adapterInvokePayload.context !== undefined && (
+          {redactedAdapterInvokePayload.context !== undefined && (
             <div>
               <div className="text-xs text-muted-foreground mb-1">Context</div>
               <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
-                {JSON.stringify(adapterInvokePayload.context, null, 2)}
+                {JSON.stringify(redactedAdapterInvokePayload.context, null, 2)}
               </pre>
             </div>
           )}
-          {adapterInvokePayload.env !== undefined && (
+          {redactedAdapterInvokePayload.env !== undefined && (
             <div>
               <div className="text-xs text-muted-foreground mb-1">Environment</div>
               <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap font-mono">
-                {formatEnvForDisplay(adapterInvokePayload.env)}
+                {formatEnvForDisplay(redactedAdapterInvokePayload.env)}
               </pre>
             </div>
           )}
@@ -2322,55 +2394,55 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
       <div className="bg-neutral-100 dark:bg-neutral-950 rounded-lg p-3 font-mono text-xs space-y-0.5 overflow-x-hidden">
         <RunTranscriptView
           entries={transcript}
-          rawLines={logLines}
+          rawLines={redactedLogLines}
           mode={transcriptMode}
           emptyMessage={run.logRef ? "No persisted transcript for this run." : "No transcript available."}
         />
-        {logError && <div className="text-red-600 dark:text-red-300">{logError}</div>}
+        {redactedLogError && <div className="text-red-600 dark:text-red-300">{redactedLogError}</div>}
         <div ref={logEndRef} />
       </div>
 
       {(run.status === "failed" || run.status === "timed_out") && (
         <div className="rounded-lg border border-red-300 dark:border-red-500/30 bg-red-50 dark:bg-red-950/20 p-3 space-y-2">
           <div className="text-xs font-medium text-red-700 dark:text-red-300">Failure details</div>
-          {run.error && (
+          {redactedRunError && (
             <div className="text-xs text-red-600 dark:text-red-200">
               <span className="text-red-700 dark:text-red-300">Error: </span>
-              {run.error}
+              {redactedRunError}
             </div>
           )}
-          {run.stderrExcerpt && run.stderrExcerpt.trim() && (
+          {redactedStderrExcerpt && redactedStderrExcerpt.trim() && (
             <div>
               <div className="text-xs text-red-700 dark:text-red-300 mb-1">stderr excerpt</div>
               <pre className="bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100">
-                {run.stderrExcerpt}
+                {redactedStderrExcerpt}
               </pre>
             </div>
           )}
-          {run.resultJson && (
+          {redactedResultJson !== null && redactedResultJson !== undefined && (
             <div>
               <div className="text-xs text-red-700 dark:text-red-300 mb-1">adapter result JSON</div>
               <pre className="bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100">
-                {JSON.stringify(run.resultJson, null, 2)}
+                {JSON.stringify(redactedResultJson, null, 2)}
               </pre>
             </div>
           )}
-          {run.stdoutExcerpt && run.stdoutExcerpt.trim() && !run.resultJson && (
+          {redactedStdoutExcerpt && redactedStdoutExcerpt.trim() && !redactedResultJson && (
             <div>
               <div className="text-xs text-red-700 dark:text-red-300 mb-1">stdout excerpt</div>
               <pre className="bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100">
-                {run.stdoutExcerpt}
+                {redactedStdoutExcerpt}
               </pre>
             </div>
           )}
         </div>
       )}
 
-      {events.length > 0 && (
+      {redactedEvents.length > 0 && (
         <div>
-          <div className="mb-2 text-xs font-medium text-muted-foreground">Events ({events.length})</div>
+          <div className="mb-2 text-xs font-medium text-muted-foreground">Events ({redactedEvents.length})</div>
           <div className="bg-neutral-100 dark:bg-neutral-950 rounded-lg p-3 font-mono text-xs space-y-0.5">
-            {events.map((evt) => {
+            {redactedEvents.map((evt) => {
               const color = evt.color
                 ?? (evt.level ? levelColors[evt.level] : null)
                 ?? (evt.stream ? streamColors[evt.stream] : null)

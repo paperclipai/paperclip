@@ -1,5 +1,30 @@
 # Work Log
 
+## 2026-03-13
+
+### Session: QoL upstream adoption for assignee UX, dialog flow, and privacy hardening
+
+- Added shared assignee-selection helpers so operator-facing issue surfaces can treat agent and user assignees consistently.
+- Updated issue lists and issue properties to support:
+  - `Me`
+  - `No assignee`
+  - requester shortcuts that stay visible when requester and current operator differ
+  - clearer user-assignee labels (`Me`, `Board`, short stable id)
+- Refactored the new issue dialog to store a stable assignee selection value instead of an agent-only id:
+  - user assignees now persist through local draft restore
+  - legacy drafts with raw agent ids still restore correctly
+  - title `Tab` flow now skips prefilled assignee and project fields
+- Broadened operator-facing redaction:
+  - transcript and run-detail surfaces now hide current-user identifiers and home-directory paths while keeping surrounding context readable
+  - live event payloads pass through the same redaction layer before reaching the UI
+- Hardened CLI env-file writing so generated `.env` values quote spaces, `#`, quotes, and other shell-significant characters safely.
+- Added focused automated coverage for:
+  - assignee helper parsing/formatting
+  - new issue dialog focus/draft helpers
+  - UI-side operator log redaction
+  - server-side path and username redaction
+  - env-file quoting round trips
+
 ## 2026-03-11
 
 ### Session: selective upstream adoption, startup safety, and docs sync

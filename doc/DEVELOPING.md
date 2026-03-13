@@ -65,6 +65,8 @@ pnpm paperclipai doctor --launch-history
 
 If startup says dependencies are incomplete, rerun `pnpm install`. If the problem persists, remove `node_modules` and reinstall once.
 
+Generated env files such as the adjacent agent-JWT `.env` now quote special-character values automatically, so spaces, `#`, and quotes round-trip safely.
+
 ## Start Dev
 
 From repo root:
@@ -86,6 +88,26 @@ This starts:
 - UI: served by the API server in dev middleware mode (same origin as API)
 
 `pnpm dev` runs the server in watch mode and restarts on changes from workspace packages (including adapter packages). Use `pnpm dev:once` to run without file watching.
+
+## Issue Assignment Shortcuts
+
+Operator-facing issue surfaces now support both agent and user assignees cleanly.
+
+- `Me` assigns or filters to the currently authenticated board user.
+- `No assignee` clears both `assigneeAgentId` and `assigneeUserId`.
+- `Assign to requester` stays available when the requester is different from the current board user.
+- User assignees render as `Me`, `Board`, or a short stable id for other users.
+
+This applies to list filters, assignee grouping, row-level assignment popovers, and issue detail properties.
+
+## New Issue Keyboard Flow
+
+The new issue dialog keeps keyboard-first behavior while avoiding unnecessary stops on prefilled fields.
+
+- `Tab` from the title field jumps to the next empty field.
+- If assignee and project are both already prefilled, `Tab` jumps straight to the description editor.
+- User assignee selections now persist through local draft restore the same way agent assignees do.
+- Recent-assignee tracking still applies only to agent selections.
 
 Tailscale/private-auth dev mode:
 

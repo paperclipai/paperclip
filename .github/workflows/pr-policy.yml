@@ -37,7 +37,10 @@ jobs:
         run: |
           changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}")"
           if printf '%s\n' "$changed" | grep -qx 'pnpm-lock.yaml'; then
-            if [ "${{ github.base_ref }}" = "master" ] && [ "${{ github.head_ref }}" = "development" ]; then
+            # Only the canonical in-repo development promotion is allowed to carry the CI-owned lockfile.
+            if [ "${{ github.base_ref }}" = "master" ] && \
+               [ "${{ github.head_ref }}" = "development" ] && \
+               [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
               echo "Allowing CI-owned pnpm-lock.yaml updates on development promotion PRs."
               exit 0
             fi

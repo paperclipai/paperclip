@@ -1,3 +1,4 @@
+import os from "node:os";
 import { describe, expect, it } from "vitest";
 import {
   REDACTED_EVENT_VALUE,
@@ -86,5 +87,19 @@ describe("redaction", () => {
 
     expect(redactSensitiveText(text)).toBe(expected);
     expect(redactEventPayload({ content: text })).toEqual({ content: expected });
+  });
+
+  it("redacts local home paths in operator-facing text", () => {
+    const homeDir = os.homedir();
+    const text = `cwd=${homeDir}/paperclip/project`;
+
+    expect(redactSensitiveText(text)).toBe("cwd=~/paperclip/project");
+  });
+
+  it("redacts the current username in operator-facing text", () => {
+    const username = os.userInfo().username;
+    const text = `operator ${username} resumed the run`;
+
+    expect(redactSensitiveText(text)).toBe("operator current-user resumed the run");
   });
 });
