@@ -2174,7 +2174,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
                 )}
               </div>
             );
-          })()}
+          })() as React.ReactNode}
           {typeof adapterInvokePayload.command === "string" && (
             <div className="text-xs break-all">
               <span className="text-muted-foreground">Command: </span>
