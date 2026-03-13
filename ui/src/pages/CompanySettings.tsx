@@ -51,9 +51,14 @@ export function CompanySettings() {
   const [snippetCopyDelightId, setSnippetCopyDelightId] = useState(0);
 
   const [humanInviteUrl, setHumanInviteUrl] = useState<string | null>(null);
+  const [humanInviteId, setHumanInviteId] = useState<string | null>(null);
+  const [humanInviteToken, setHumanInviteToken] = useState<string | null>(null);
   const [humanInviteError, setHumanInviteError] = useState<string | null>(null);
   const [humanInviteRole, setHumanInviteRole] = useState<MembershipRole>("contributor");
   const [humanInviteCopied, setHumanInviteCopied] = useState(false);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteEmailSent, setInviteEmailSent] = useState(false);
+  const [inviteEmailError, setInviteEmailError] = useState<string | null>(null);
 
   const generalDirty =
     !!selectedCompany &&
@@ -147,10 +152,33 @@ export function CompanySettings() {
     },
     onSuccess: (data) => {
       setHumanInviteUrl(data.inviteUrl);
+      setHumanInviteId(data.id);
+      setHumanInviteToken(data.token);
       setHumanInviteError(null);
+      setInviteEmail("");
+      setInviteEmailSent(false);
+      setInviteEmailError(null);
     },
     onError: (err: Error) => {
       setHumanInviteError(err.message);
+    },
+  });
+
+  const sendInviteEmailMutation = useMutation({
+    mutationFn: async () => {
+      if (!humanInviteId || !humanInviteToken) throw new Error("No invite to send");
+      return accessApi.sendInviteEmail(selectedCompanyId!, humanInviteId, {
+        email: inviteEmail.trim(),
+        token: humanInviteToken,
+      });
+    },
+    onSuccess: () => {
+      setInviteEmailSent(true);
+      setInviteEmailError(null);
+      setTimeout(() => setInviteEmailSent(false), 3000);
+    },
+    onError: (err: Error) => {
+      setInviteEmailError(err.message);
     },
   });
 
@@ -160,8 +188,13 @@ export function CompanySettings() {
     setSnippetCopied(false);
     setSnippetCopyDelightId(0);
     setHumanInviteUrl(null);
+    setHumanInviteId(null);
+    setHumanInviteToken(null);
     setHumanInviteError(null);
     setHumanInviteCopied(false);
+    setInviteEmail("");
+    setInviteEmailSent(false);
+    setInviteEmailError(null);
   }, [selectedCompanyId]);
   const archiveMutation = useMutation({
     mutationFn: ({
@@ -448,28 +481,65 @@ export function CompanySettings() {
           )}
 
           {humanInviteUrl && (
-            <div className="rounded-md border border-border bg-muted/30 p-2">
-              <textarea
-                readOnly
-                value={humanInviteUrl}
-                rows={2}
-                className="w-full rounded-md border border-border bg-background px-2 py-1.5 font-mono text-xs outline-none"
-              />
-              <div className="mt-2 flex items-center gap-2">
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => {
-                    navigator.clipboard.writeText(humanInviteUrl);
-                    setHumanInviteCopied(true);
-                    setTimeout(() => setHumanInviteCopied(false), 2000);
-                  }}
-                >
-                  {humanInviteCopied ? "Copied!" : "Copy Link"}
-                </Button>
-                <span className="text-xs text-muted-foreground">
-                  Expires in 24 hours
-                </span>
+            <div className="rounded-md border border-border bg-muted/30 p-2 space-y-3">
+              <div>
+                <label className="text-xs text-muted-foreground mb-1 block">Invite URL</label>
+                <textarea
+                  readOnly
+                  value={humanInviteUrl}
+                  rows={2}
+                  className="w-full rounded-md border border-border bg-background px-2 py-1.5 font-mono text-xs outline-none"
+                />
+                <div className="mt-2 flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      navigator.clipboard.writeText(humanInviteUrl);
+                      setHumanInviteCopied(true);
+                      setTimeout(() => setHumanInviteCopied(false), 2000);
+                    }}
+                  >
+                    {humanInviteCopied ? "Copied!" : "Copy Link"}
+                  </Button>
+                  <span className="text-xs text-muted-foreground">
+                    Expires in 24 hours
+                  </span>
+                </div>
+              </div>
+              <div className="border-t border-border pt-3">
+                <label className="text-xs text-muted-foreground mb-1 block">Send invite via email</label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="email"
+                    placeholder="colleague@example.com"
+                    value={inviteEmail}
+                    onChange={(e) => {
+                      setInviteEmail(e.target.value);
+                      setInviteEmailSent(false);
+                      setInviteEmailError(null);
+                    }}
+                    className="flex-1 rounded-md border border-border bg-background px-2.5 py-1.5 text-sm outline-none"
+                  />
+                  <Button
+                    size="sm"
+                    disabled={
+                      !inviteEmail.trim() ||
+                      sendInviteEmailMutation.isPending ||
+                      inviteEmailSent
+                    }
+                    onClick={() => sendInviteEmailMutation.mutate()}
+                  >
+                    {inviteEmailSent
+                      ? "Sent!"
+                      : sendInviteEmailMutation.isPending
+                        ? "Sending..."
+                        : "Send Invite Email"}
+                  </Button>
+                </div>
+                {inviteEmailError && (
+                  <p className="mt-1 text-xs text-destructive">{inviteEmailError}</p>
+                )}
               </div>
             </div>
           )}
