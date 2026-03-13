@@ -9,7 +9,7 @@ function isLocaleAvailable(): boolean {
     // locale -a outputs names like "en_US.utf8" or "en_US.UTF-8" depending on distro
     return output
       .split(/\r?\n/)
-      .some((line) => line.trim().replace(/[.-]/g, "").toLowerCase() === "enusutf8");
+      .some((line) => line.trim().replace(/[_.-]/g, "").toLowerCase() === "enusutf8");
   } catch {
     // If locale command is unavailable, skip the check rather than block setup
     return true;
