@@ -34,6 +34,9 @@ Core fields:
 - workspaceStrategy (object, optional): execution workspace strategy; currently supports { type: "git_worktree", baseRef?, branchTemplate?, worktreeParentDir? }
 - workspaceRuntime (object, optional): workspace runtime service intents; local host-managed services are realized before Codex starts and exposed back via context/env
 
+Heartbeat triage:
+- heartbeatModel (string, optional): cheaper model for heartbeat triage pre-screening; when set, timer-triggered heartbeats run a short triage phase first to check for work before launching the full model
+
 Operational fields:
 - timeoutSec (number, optional): run timeout in seconds
 - graceSec (number, optional): SIGTERM grace period in seconds
