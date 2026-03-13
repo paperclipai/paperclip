@@ -77,12 +77,16 @@ type EmbeddedPostgresInstance = {
   stop(): Promise<void>;
 };
 
-type EmbeddedPostgresCtor = new (opts: {
+type EmbeddedPostgresCtor = new (opts?: {
   databaseDir: string;
   user: string;
   password: string;
   port: number;
   persistent: boolean;
+  authMethod?: "scram-sha-256" | "password" | "md5";
+  initdbFlags?: string[];
+  postgresFlags?: string[];
+  createPostgresUser?: boolean;
   onLog?: (message: unknown) => void;
   onError?: (message: unknown) => void;
 }) => EmbeddedPostgresInstance;

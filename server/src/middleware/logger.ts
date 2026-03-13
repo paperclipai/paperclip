@@ -26,6 +26,11 @@ const sharedOpts = {
   singleLine: true,
 };
 
+function isHealthRequest(req: { url?: string | undefined }): boolean {
+  const url = req.url ?? "";
+  return url === "/api/health" || url.startsWith("/api/health?");
+}
+
 export const logger = pino({
   level: "debug",
 }, pino.transport({
@@ -48,6 +53,7 @@ export const httpLogger = pinoHttp({
   customLogLevel(_req, res, err) {
     if (err || res.statusCode >= 500) return "error";
     if (res.statusCode >= 400) return "warn";
+    if (isHealthRequest(_req)) return "silent";
     return "info";
   },
   customSuccessMessage(req, res) {

@@ -33,6 +33,7 @@ import {
 } from "../config/home.js";
 import { bootstrapCeoInvite } from "./auth-bootstrap-ceo.js";
 import { printPaperclipCliBanner } from "../utils/banner.js";
+import { probePaperclipHealth } from "../utils/net.js";
 
 type SetupMode = "quickstart" | "advanced";
 
@@ -231,6 +232,10 @@ function quickstartDefaultsFromEnv(): {
 
 function canCreateBootstrapInviteImmediately(config: Pick<PaperclipConfig, "database" | "server">): boolean {
   return config.server.deploymentMode === "authenticated" && config.database.mode !== "embedded-postgres";
+}
+
+function shouldCreateBootstrapInviteForRunningServer(config: Pick<PaperclipConfig, "database" | "server">): boolean {
+  return config.server.deploymentMode === "authenticated" && config.database.mode === "embedded-postgres";
 }
 
 export async function onboard(opts: OnboardOptions): Promise<void> {
@@ -454,13 +459,21 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     "Next commands",
   );
 
-  if (canCreateBootstrapInviteImmediately({ database, server })) {
+  const runningProbe = await probePaperclipHealth(server.host, server.port);
+  const alreadyRunning = runningProbe.healthy;
+  if (alreadyRunning) {
+    p.log.info(
+      `Paperclip is already running at ${pc.cyan(runningProbe.url ?? `http://127.0.0.1:${server.port}/api/health`)}. Skipping local start.`,
+    );
+  }
+
+  if (canCreateBootstrapInviteImmediately({ database, server }) || (alreadyRunning && shouldCreateBootstrapInviteForRunningServer({ database, server }))) {
     p.log.step("Generating bootstrap CEO invite");
     await bootstrapCeoInvite({ config: configPath });
   }
 
-  let shouldRunNow = opts.run === true || opts.yes === true;
-  if (!shouldRunNow && !opts.invokedByRun && process.stdin.isTTY && process.stdout.isTTY) {
+  let shouldRunNow = !alreadyRunning && (opts.run === true || opts.yes === true);
+  if (!shouldRunNow && !alreadyRunning && !opts.invokedByRun && process.stdin.isTTY && process.stdout.isTTY) {
     const answer = await p.confirm({
       message: "Start Paperclip now?",
       initialValue: true,
@@ -477,7 +490,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     return;
   }
 
-  if (server.deploymentMode === "authenticated" && database.mode === "embedded-postgres") {
+  if (!alreadyRunning && server.deploymentMode === "authenticated" && database.mode === "embedded-postgres") {
     p.log.info(
       [
         "Bootstrap CEO invite will be created after the server starts.",
