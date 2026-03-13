@@ -48,6 +48,54 @@ const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 
+const TRIAGE_MAX_TURNS = 3;
+
+export type TriageAction = "none" | "handle" | "escalate";
+
+export interface TriageResult {
+  action: TriageAction;
+  reason: string;
+  usage?: { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number; costUsd?: number };
+}
+
+export const TRIAGE_SYSTEM_PROMPT = `You are a heartbeat triage agent for Paperclip. Your job is to quickly check whether there is any work to do.
+
+Check the Paperclip API for:
+1. Issues assigned to you that are in "todo" or "in_progress" status
+2. Recent comments or mentions requiring a response
+3. Any pending notifications or tasks
+
+After checking, respond with ONLY a JSON object (no markdown, no code fences):
+{"_paperclipTriageAction": "<action>", "reason": "<brief explanation>"}
+
+Where <action> is one of:
+- "none" — No work found. Nothing assigned, no comments to respond to.
+- "handle" — Simple work found and you handled it (e.g. a status update, quick reply).
+- "escalate" — Complex work found that requires the full model (e.g. coding tasks, detailed analysis).
+
+Be conservative: if unsure, escalate. Never silently skip work.`;
+
+export function parseTriageOutput(stdout: string): TriageResult {
+  // Try to find a JSON object with _paperclipTriageAction in the output
+  const jsonMatch = stdout.match(/\{[^}]*"_paperclipTriageAction"\s*:\s*"[^"]*"[^}]*\}/);
+  if (!jsonMatch) {
+    return { action: "escalate", reason: "Triage output not parseable — defaulting to escalate" };
+  }
+  try {
+    const parsed = JSON.parse(jsonMatch[0]) as Record<string, unknown>;
+    const action = parsed._paperclipTriageAction;
+    if (action === "none" || action === "handle" || action === "escalate") {
+      return {
+        action,
+        reason: typeof parsed.reason === "string" ? parsed.reason : "No reason provided",
+      };
+    }
+    return { action: "escalate", reason: `Unknown triage action "${String(action)}" — defaulting to escalate` };
+  } catch {
+    return { action: "escalate", reason: "Triage JSON parse failed — defaulting to escalate" };
+  }
+}
+
 const heartbeatRunListColumns = {
   id: heartbeatRuns.id,
   companyId: heartbeatRuns.companyId,
@@ -1457,6 +1505,97 @@ export function heartbeatService(db: Db) {
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
       }
+      // ── Heartbeat triage phase ──────────────────────────────────────────
+      const heartbeatModel = readNonEmptyString(config.heartbeatModel);
+      const isTimerSource = run.invocationSource === "timer";
+      let triageUsage: Record<string, unknown> | null = null;
+
+      if (heartbeatModel && isTimerSource) {
+        await onLog("stderr", `[paperclip] Running heartbeat triage with model ${heartbeatModel}\n`);
+
+        const triageConfig = {
+          ...resolvedConfig,
+          model: heartbeatModel,
+          maxTurnsPerRun: TRIAGE_MAX_TURNS,
+        };
+
+        let triageStdout = "";
+        const triageOnLog = async (stream: "stdout" | "stderr", chunk: string) => {
+          if (stream === "stdout") triageStdout += chunk;
+          await onLog(stream, chunk);
+        };
+
+        try {
+          const triageResult = await adapter.execute({
+            runId: run.id,
+            agent,
+            runtime: { ...runtimeForAdapter, sessionId: null, sessionParams: null, sessionDisplayId: null },
+            config: triageConfig,
+            context: { ...context, _paperclipTriageMode: true, systemPrompt: TRIAGE_SYSTEM_PROMPT },
+            onLog: triageOnLog,
+            onMeta: onAdapterMeta,
+            authToken: authToken ?? undefined,
+          });
+
+          if (triageResult.usage || triageResult.costUsd != null) {
+            triageUsage = {
+              ...(triageResult.usage ?? {}),
+              ...(triageResult.costUsd != null ? { costUsd: triageResult.costUsd } : {}),
+            };
+          }
+
+          const triage = parseTriageOutput(triageStdout);
+          await onLog("stderr", `[paperclip] Triage result: ${triage.action} — ${triage.reason}\n`);
+
+          if (triage.action === "none" || triage.action === "handle") {
+            // Triage resolved — finalize run without launching full model
+            let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
+            if (handle) {
+              logSummary = await runLogStore.finalize(handle);
+            }
+
+            const combinedUsage = triageUsage
+              ? ({ ...triageUsage, triageOnly: true } as Record<string, unknown>)
+              : null;
+
+            await setRunStatus(run.id, "succeeded", {
+              finishedAt: new Date(),
+              usageJson: combinedUsage,
+              resultJson: { triageAction: triage.action, triageReason: triage.reason },
+              stdoutExcerpt,
+              stderrExcerpt,
+              logBytes: logSummary?.bytes,
+              logSha256: logSummary?.sha256,
+              logCompressed: logSummary?.compressed ?? false,
+            });
+            await setWakeupStatus(run.wakeupRequestId, "completed", {
+              finishedAt: new Date(),
+            });
+            const finalizedRun = await getRun(run.id);
+            if (finalizedRun) {
+              await appendRunEvent(finalizedRun, seq++, {
+                eventType: "lifecycle",
+                stream: "system",
+                level: "info",
+                message: `run finished via triage (${triage.action})`,
+              });
+              await releaseIssueExecutionAndPromote(finalizedRun);
+            }
+            await finalizeAgentStatus(agent.id, "succeeded");
+            return;
+          }
+          // action === "escalate" or parse failure — continue to full model
+          await onLog("stderr", "[paperclip] Triage escalated — launching full model\n");
+        } catch (triageErr) {
+          // Triage failure = escalate, never skip work
+          await onLog(
+            "stderr",
+            `[paperclip] Triage phase failed: ${triageErr instanceof Error ? triageErr.message : String(triageErr)} — escalating to full model\n`,
+          );
+        }
+      }
+      // ── End triage phase ─────────────────────────────────────────────────
+
       const adapterResult = await adapter.execute({
         runId: run.id,
         agent,
@@ -1549,7 +1688,7 @@ export function heartbeatService(db: Db) {
               ? "timed_out"
               : "failed";
 
-      const usageJson =
+      const baseUsageJson =
         adapterResult.usage || adapterResult.costUsd != null
           ? ({
               ...(adapterResult.usage ?? {}),
@@ -1557,6 +1696,14 @@ export function heartbeatService(db: Db) {
               ...(adapterResult.billingType ? { billingType: adapterResult.billingType } : {}),
             } as Record<string, unknown>)
           : null;
+
+      // Merge triage usage into the run's usage if triage phase ran
+      const usageJson = triageUsage
+        ? ({
+            ...(baseUsageJson ?? {}),
+            triageUsage,
+          } as Record<string, unknown>)
+        : baseUsageJson;
 
       await setRunStatus(run.id, status, {
         finishedAt: new Date(),
