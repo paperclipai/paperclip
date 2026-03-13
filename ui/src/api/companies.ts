@@ -1,5 +1,6 @@
 import type {
   Company,
+  CompanySettings,
   CompanyPortabilityExportResult,
   CompanyPortabilityImportRequest,
   CompanyPortabilityImportResult,
@@ -23,7 +24,7 @@ export const companiesApi = {
         Company,
         "name" | "description" | "status" | "budgetMonthlyCents" | "requireBoardApprovalForNewAgents" | "brandColor"
       >
-    >,
+    > & { settings?: CompanySettings },
   ) => api.patch<Company>(`/companies/${companyId}`, data),
   archive: (companyId: string) => api.post<Company>(`/companies/${companyId}/archive`, {}),
   remove: (companyId: string) => api.delete<{ ok: true }>(`/companies/${companyId}`),

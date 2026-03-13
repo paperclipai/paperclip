@@ -1,29 +1,64 @@
 import type { LiveEvent } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { subscribeAllLiveEvents } from "./live-events.js";
+import type { Db } from "@paperclipai/db";
+import { companies } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
 
 const TELEGRAM_API = "https://api.telegram.org";
 
 interface TelegramConfig {
   botToken: string;
-  chatId: string;
+  defaultChatId: string;
 }
 
 function getConfig(): TelegramConfig | null {
   const botToken = process.env.TELEGRAM_BOT_TOKEN?.trim();
-  const chatId = process.env.TELEGRAM_CHAT_ID?.trim();
-  if (!botToken || !chatId) return null;
-  return { botToken, chatId };
+  const defaultChatId = process.env.TELEGRAM_CHAT_ID?.trim();
+  if (!botToken || !defaultChatId) return null;
+  return { botToken, defaultChatId };
 }
 
-async function sendMessage(config: TelegramConfig, text: string): Promise<void> {
-  const url = `${TELEGRAM_API}/bot${config.botToken}/sendMessage`;
+// ---------------------------------------------------------------------------
+// Per-company chat ID resolution (cached)
+// ---------------------------------------------------------------------------
+
+const companyChatIdCache = new Map<string, { chatId: string | null; expiresAt: number }>();
+const CACHE_TTL_MS = 60_000; // 1 minute
+
+async function getCompanyChatId(db: Db, companyId: string): Promise<string | null> {
+  const cached = companyChatIdCache.get(companyId);
+  if (cached && cached.expiresAt > Date.now()) return cached.chatId;
+
+  try {
+    const rows = await db
+      .select({ settings: companies.settings })
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .limit(1);
+    const settings = rows[0]?.settings as Record<string, unknown> | undefined;
+    const telegram = settings?.telegram as { chatId?: string } | undefined;
+    const chatId = telegram?.chatId?.trim() || null;
+    companyChatIdCache.set(companyId, { chatId, expiresAt: Date.now() + CACHE_TTL_MS });
+    return chatId;
+  } catch (err) {
+    logger.warn({ err, companyId }, "Failed to look up company telegram chatId");
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Messaging
+// ---------------------------------------------------------------------------
+
+async function sendMessage(botToken: string, chatId: string, text: string): Promise<void> {
+  const url = `${TELEGRAM_API}/bot${botToken}/sendMessage`;
   try {
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        chat_id: config.chatId,
+        chat_id: chatId,
         text,
         parse_mode: "HTML",
         disable_web_page_preview: true,
@@ -36,6 +71,19 @@ async function sendMessage(config: TelegramConfig, text: string): Promise<void> 
   } catch (err) {
     logger.warn({ err }, "Telegram sendMessage request error");
   }
+}
+
+/** Resolve the chatId for an event (per-company override or global fallback). */
+async function resolveChatId(
+  db: Db,
+  config: TelegramConfig,
+  companyId: string | undefined,
+): Promise<string> {
+  if (companyId) {
+    const override = await getCompanyChatId(db, companyId);
+    if (override) return override;
+  }
+  return config.defaultChatId;
 }
 
 function escapeHtml(text: string): string {
@@ -64,7 +112,11 @@ type ActivityPayload = {
   details?: Record<string, unknown> | null;
 };
 
-function handleActivityLogged(event: LiveEvent, config: TelegramConfig): void {
+async function handleActivityLogged(
+  event: LiveEvent,
+  db: Db,
+  config: TelegramConfig,
+): Promise<void> {
   const p = event.payload as unknown as ActivityPayload;
   const action = p.action;
   if (!action) return;
@@ -76,7 +128,6 @@ function handleActivityLogged(event: LiveEvent, config: TelegramConfig): void {
     const bodySnippet = (details.bodySnippet as string) ?? "";
     const issueTitle = (details.issueTitle as string) ?? "";
     const hasMention = /\B@[^\s@,!?.]+/.test(bodySnippet);
-    // Always notify on comments — they indicate activity worth seeing.
     const mentionTag = hasMention ? " (has @mention)" : "";
     const actorLabel = p.agentId ?? p.actorId ?? "someone";
     const lines = [
@@ -85,7 +136,8 @@ function handleActivityLogged(event: LiveEvent, config: TelegramConfig): void {
     ];
     if (issueTitle) lines.push(`<i>${escapeHtml(truncate(issueTitle, 100))}</i>`);
     lines.push(`by ${escapeHtml(actorLabel)}`);
-    void sendMessage(config, lines.join("\n"));
+    const chatId = await resolveChatId(db, config, event.companyId);
+    void sendMessage(config.botToken, chatId, lines.join("\n"));
     return;
   }
 
@@ -97,7 +149,8 @@ function handleActivityLogged(event: LiveEvent, config: TelegramConfig): void {
         `\u{1F514} <b>${escapeHtml(identifier)} is now ${escapeHtml(newStatus)}</b>`,
       ];
       if (issueTitle) lines.push(`<i>${escapeHtml(truncate(issueTitle, 100))}</i>`);
-      void sendMessage(config, lines.join("\n"));
+      const chatId = await resolveChatId(db, config, event.companyId);
+      void sendMessage(config.botToken, chatId, lines.join("\n"));
     }
     return;
   }
@@ -110,7 +163,8 @@ function handleActivityLogged(event: LiveEvent, config: TelegramConfig): void {
       `Entity: ${escapeHtml(p.entityId ?? "")}`,
     ];
     if (p.agentId) lines.push(`Requested by agent: ${escapeHtml(p.agentId)}`);
-    void sendMessage(config, lines.join("\n"));
+    const chatId = await resolveChatId(db, config, event.companyId);
+    void sendMessage(config.botToken, chatId, lines.join("\n"));
     return;
   }
 
@@ -119,12 +173,17 @@ function handleActivityLogged(event: LiveEvent, config: TelegramConfig): void {
       `\u{1F4AC} <b>Comment on approval ${escapeHtml(p.entityId ?? "")}</b>`,
     ];
     if (p.agentId) lines.push(`by agent: ${escapeHtml(p.agentId)}`);
-    void sendMessage(config, lines.join("\n"));
+    const chatId = await resolveChatId(db, config, event.companyId);
+    void sendMessage(config.botToken, chatId, lines.join("\n"));
     return;
   }
 }
 
-function handleHeartbeatRunStatus(event: LiveEvent, config: TelegramConfig): void {
+async function handleHeartbeatRunStatus(
+  event: LiveEvent,
+  db: Db,
+  config: TelegramConfig,
+): Promise<void> {
   const p = event.payload as Record<string, unknown>;
   const status = p.status as string | undefined;
   if (status !== "failed") return;
@@ -141,14 +200,15 @@ function handleHeartbeatRunStatus(event: LiveEvent, config: TelegramConfig): voi
   ];
   if (errorCode) lines.push(`Code: ${escapeHtml(errorCode)}`);
   if (error) lines.push(`Error: ${escapeHtml(truncate(error, 200))}`);
-  void sendMessage(config, lines.join("\n"));
+  const chatId = await resolveChatId(db, config, event.companyId);
+  void sendMessage(config.botToken, chatId, lines.join("\n"));
 }
 
 // ---------------------------------------------------------------------------
 // Initialization
 // ---------------------------------------------------------------------------
 
-export function initTelegramNotifications(): boolean {
+export function initTelegramNotifications(db: Db): boolean {
   const config = getConfig();
   if (!config) {
     logger.info("Telegram notifications disabled (TELEGRAM_BOT_TOKEN not set)");
@@ -159,14 +219,11 @@ export function initTelegramNotifications(): boolean {
     try {
       switch (event.type) {
         case "activity.logged":
-          handleActivityLogged(event, config);
+          void handleActivityLogged(event, db, config);
           break;
         case "heartbeat.run.status":
-          handleHeartbeatRunStatus(event, config);
+          void handleHeartbeatRunStatus(event, db, config);
           break;
-        // Other event types (heartbeat.run.queued, heartbeat.run.event,
-        // heartbeat.run.log, agent.status) are high-frequency or low-value
-        // for Telegram — skip them.
         default:
           break;
       }
@@ -176,6 +233,6 @@ export function initTelegramNotifications(): boolean {
   });
 
   logger.info("Telegram notifications enabled");
-  void sendMessage(config, "\u{1F7E2} Paperclip server started — Telegram notifications active");
+  void sendMessage(config.botToken, config.defaultChatId, "\u{1F7E2} Paperclip server started — Telegram notifications active");
   return true;
 }

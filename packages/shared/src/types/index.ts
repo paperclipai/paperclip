@@ -1,4 +1,4 @@
-export type { Company } from "./company.js";
+export type { Company, CompanySettings } from "./company.js";
 export type {
   Agent,
   AgentPermissions,

@@ -1,5 +1,11 @@
 import type { CompanyStatus } from "../constants.js";
 
+export interface CompanySettings {
+  telegram?: {
+    chatId?: string;
+  };
+}
+
 export interface Company {
   id: string;
   name: string;
@@ -11,6 +17,7 @@ export interface Company {
   spentMonthlyCents: number;
   requireBoardApprovalForNewAgents: boolean;
   brandColor: string | null;
+  settings: CompanySettings;
   createdAt: Date;
   updatedAt: Date;
 }

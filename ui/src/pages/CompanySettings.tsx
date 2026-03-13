@@ -6,13 +6,14 @@ import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { Settings, Check } from "lucide-react";
+import { Settings, Check, Send } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
   ToggleField,
   HintIcon
 } from "../components/agent-config-primitives";
+import type { CompanySettings as CompanySettingsType } from "@paperclipai/shared";
 
 type AgentSnippetInput = {
   onboardingTextUrl: string;
@@ -34,6 +35,7 @@ export function CompanySettings() {
   const [companyName, setCompanyName] = useState("");
   const [description, setDescription] = useState("");
   const [brandColor, setBrandColor] = useState("");
+  const [telegramChatId, setTelegramChatId] = useState("");
 
   // Sync local state from selected company
   useEffect(() => {
@@ -41,6 +43,8 @@ export function CompanySettings() {
     setCompanyName(selectedCompany.name);
     setDescription(selectedCompany.description ?? "");
     setBrandColor(selectedCompany.brandColor ?? "");
+    const s = selectedCompany.settings as CompanySettingsType | undefined;
+    setTelegramChatId(s?.telegram?.chatId ?? "");
   }, [selectedCompany]);
 
   const [inviteError, setInviteError] = useState<string | null>(null);
@@ -309,6 +313,14 @@ export function CompanySettings() {
         </div>
       </div>
 
+      {/* Notifications */}
+      <TelegramSection
+        companyId={selectedCompanyId!}
+        telegramChatId={telegramChatId}
+        setTelegramChatId={setTelegramChatId}
+        savedChatId={(selectedCompany.settings as CompanySettingsType | undefined)?.telegram?.chatId ?? ""}
+      />
+
       {/* Invites */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
@@ -432,6 +444,82 @@ export function CompanySettings() {
             )}
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function TelegramSection({
+  companyId,
+  telegramChatId,
+  setTelegramChatId,
+  savedChatId,
+}: {
+  companyId: string;
+  telegramChatId: string;
+  setTelegramChatId: (v: string) => void;
+  savedChatId: string;
+}) {
+  const queryClient = useQueryClient();
+  const dirty = telegramChatId !== savedChatId;
+
+  const saveMutation = useMutation({
+    mutationFn: () =>
+      companiesApi.update(companyId, {
+        settings: {
+          telegram: { chatId: telegramChatId.trim() || undefined },
+        },
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+    },
+  });
+
+  return (
+    <div className="space-y-4">
+      <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        Notifications
+      </div>
+      <div className="space-y-3 rounded-md border border-border px-4 py-4">
+        <Field
+          label="Telegram Chat ID"
+          hint="Telegram group/channel chat ID for this workspace. Overrides the global default. Use a bot like @userinfobot or the Telegram Bot API getUpdates to find the chat ID."
+        >
+          <div className="flex items-center gap-2">
+            <Send className="h-4 w-4 text-muted-foreground shrink-0" />
+            <input
+              className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
+              type="text"
+              value={telegramChatId}
+              onChange={(e) => setTelegramChatId(e.target.value)}
+              placeholder="-100xxxxxxxxxx"
+            />
+          </div>
+        </Field>
+        {dirty && (
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              onClick={() => saveMutation.mutate()}
+              disabled={saveMutation.isPending}
+            >
+              {saveMutation.isPending ? "Saving..." : "Save"}
+            </Button>
+            {saveMutation.isSuccess && (
+              <span className="text-xs text-muted-foreground">Saved</span>
+            )}
+            {saveMutation.isError && (
+              <span className="text-xs text-destructive">
+                {saveMutation.error instanceof Error
+                  ? saveMutation.error.message
+                  : "Failed to save"}
+              </span>
+            )}
+          </div>
+        )}
+        <p className="text-xs text-muted-foreground">
+          When set, Telegram notifications for this workspace (comments, blocked/review issues, failed runs) are sent to this chat instead of the global default.
+        </p>
       </div>
     </div>
   );

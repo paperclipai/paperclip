@@ -129,6 +129,18 @@ export function companyRoutes(db: Db) {
     assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+
+    // Deep-merge settings if provided (so partial updates don't clobber other keys)
+    if (req.body.settings) {
+      const existing = await svc.getById(companyId);
+      if (!existing) {
+        res.status(404).json({ error: "Company not found" });
+        return;
+      }
+      const existingSettings = (existing.settings ?? {}) as Record<string, unknown>;
+      req.body.settings = { ...existingSettings, ...req.body.settings };
+    }
+
     const company = await svc.update(companyId, req.body);
     if (!company) {
       res.status(404).json({ error: "Company not found" });
