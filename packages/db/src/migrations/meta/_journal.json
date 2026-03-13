@@ -183,6 +183,20 @@
       "when": 1772807461603,
       "tag": "0025_nasty_salo",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1773376376938,
+      "tag": "0026_unknown_chat",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1773383659907,
+      "tag": "0027_sour_ultimatum",
+      "breakpoints": true
     }
   ]
 }

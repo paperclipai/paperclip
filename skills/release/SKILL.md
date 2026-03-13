@@ -1,5 +1,6 @@
 ---
 name: release
+tags: [devops]
 description: >
   Coordinate a full Paperclip release across engineering, website publishing,
   and social announcement. Use when CTO/CEO requests "do a release" or

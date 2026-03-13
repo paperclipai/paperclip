@@ -31,6 +31,8 @@ export {
   JOIN_REQUEST_TYPES,
   JOIN_REQUEST_STATUSES,
   PERMISSION_KEYS,
+  MEMORY_SCOPE_TYPES,
+  MEMORY_CATEGORIES,
   type CompanyStatus,
   type DeploymentMode,
   type DeploymentExposure,
@@ -61,6 +63,8 @@ export {
   type JoinRequestType,
   type JoinRequestStatus,
   type PermissionKey,
+  type MemoryScopeType,
+  type MemoryCategory,
 } from "./constants.js";
 
 export type {
@@ -122,6 +126,7 @@ export type {
   AgentEnvConfig,
   CompanySecret,
   SecretProviderDescriptor,
+  Memory,
 } from "./types/index.js";
 
 export {
@@ -174,6 +179,10 @@ export {
   updateGoalSchema,
   type CreateGoal,
   type UpdateGoal,
+  createMemorySchema,
+  queryMemoriesSchema,
+  type CreateMemory,
+  type QueryMemories,
   createApprovalSchema,
   resolveApprovalSchema,
   requestApprovalRevisionSchema,

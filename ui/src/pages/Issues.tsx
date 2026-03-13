@@ -5,6 +5,7 @@ import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { useCompany } from "../context/CompanyContext";
+import { useLiveUpdates } from "../context/LiveUpdatesProvider";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
@@ -13,6 +14,7 @@ import { CircleDot } from "lucide-react";
 
 export function Issues() {
   const { selectedCompanyId } = useCompany();
+  const { isConnected: isWsConnected } = useLiveUpdates();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
@@ -52,7 +54,7 @@ export function Issues() {
     queryKey: queryKeys.liveRuns(selectedCompanyId!),
     queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
     enabled: !!selectedCompanyId,
-    refetchInterval: 5000,
+    refetchInterval: isWsConnected ? false : 10_000,
   });
 
   const liveIssueIds = useMemo(() => {

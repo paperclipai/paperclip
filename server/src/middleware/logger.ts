@@ -35,8 +35,12 @@ export const logger = pino({
       level: "info",
     },
     {
-      target: "pino-pretty",
-      options: { ...sharedOpts, colorize: false, destination: logFile, mkdir: true },
+      target: "pino-roll",
+      options: {
+        file: logFile,
+        size: "10m",
+        limit: { count: 5 },
+      },
       level: "debug",
     },
   ],

@@ -1,6 +1,6 @@
 FROM node:lts-trixie-slim AS base
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl git \
+  && apt-get install -y --no-install-recommends ca-certificates curl git jq python3 openssh-client gh \
   && rm -rf /var/lib/apt/lists/*
 RUN corepack enable
 
@@ -19,6 +19,7 @@ COPY packages/adapters/cursor-local/package.json packages/adapters/cursor-local/
 COPY packages/adapters/openclaw-gateway/package.json packages/adapters/openclaw-gateway/
 COPY packages/adapters/opencode-local/package.json packages/adapters/opencode-local/
 COPY packages/adapters/pi-local/package.json packages/adapters/pi-local/
+COPY packages/adapters/deerflow/package.json packages/adapters/deerflow/
 
 RUN pnpm install --frozen-lockfile
 
@@ -33,7 +34,12 @@ RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" &
 FROM base AS production
 WORKDIR /app
 COPY --from=build /app /app
-RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai
+RUN npm install --global --omit=dev @anthropic-ai/claude-code@stable @openai/codex@latest opencode-ai
+
+# Run as the existing non-root 'node' user (uid 1000) — Claude Code refuses
+# --dangerously-skip-permissions when running as root
+RUN mkdir -p /paperclip && chown -R node:node /paperclip \
+  && chown -R node:node /app
 
 ENV NODE_ENV=production \
   HOME=/paperclip \
@@ -49,4 +55,5 @@ ENV NODE_ENV=production \
 VOLUME ["/paperclip"]
 EXPOSE 3100
 
+USER node
 CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]

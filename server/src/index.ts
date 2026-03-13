@@ -531,16 +531,14 @@ if (config.databaseBackupEnabled) {
         retentionDays: config.databaseBackupRetentionDays,
         filenamePrefix: "paperclip",
       });
-      logger.info(
-        {
-          backupFile: result.backupFile,
-          sizeBytes: result.sizeBytes,
-          prunedCount: result.prunedCount,
-          backupDir: config.databaseBackupDir,
-          retentionDays: config.databaseBackupRetentionDays,
-        },
-        `Automatic database backup complete: ${formatDatabaseBackupResult(result)}`,
-      );
+      logger.debug({
+        backupFile: result.backupFile,
+        sizeBytes: result.sizeBytes,
+        prunedCount: result.prunedCount,
+        backupDir: config.databaseBackupDir,
+        retentionDays: config.databaseBackupRetentionDays,
+      }, "database backup details");
+      logger.info(`Automatic database backup complete: ${formatDatabaseBackupResult(result)}`);
     } catch (err) {
       logger.error({ err, backupDir: config.databaseBackupDir }, "Automatic database backup failed");
     } finally {

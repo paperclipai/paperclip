@@ -41,27 +41,131 @@ async function resolvePaperclipSkillsDir(): Promise<string | null> {
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// Skill tag system — agent title → default tag sets (OR-match against skill tags)
+// ---------------------------------------------------------------------------
+
+const ROLE_TAG_MAP: Record<string, string[]> = {
+  "Chief Executive Officer": ["core", "management", "meta"],
+  "CEO":                     ["core", "management", "meta"],
+  "Chief Technology Officer": ["core", "management", "development", "review", "devops"],
+  "CTO":                     ["core", "management", "development", "review", "devops"],
+  "Frontend Engineer":       ["core", "development", "frontend", "review"],
+  "Backend Engineer":        ["core", "development", "review", "devops"],
+  "Full Stack Engineer":     ["core", "development", "frontend", "review", "devops"],
+  "UX Designer":             ["core", "frontend"],
+  "DevOps Engineer":         ["core", "devops", "development"],
+};
+const DEFAULT_TAGS = ["core", "development"];
+
 /**
- * Create a tmpdir with `.claude/skills/` containing symlinks to skills from
- * the repo's `skills/` directory, so `--add-dir` makes Claude Code discover
- * them as proper registered skills.
+ * Parse YAML frontmatter from a SKILL.md to extract name, description, and tags.
+ * Only reads the first ~2KB to avoid loading huge files.
  */
-async function buildSkillsDir(): Promise<string> {
+async function parseSkillFrontmatter(
+  skillMdPath: string,
+): Promise<{ name: string; description: string; tags: string[] } | null> {
+  let content: string;
+  try {
+    const handle = await fs.open(skillMdPath, "r");
+    const buf = Buffer.alloc(2048);
+    const { bytesRead } = await handle.read(buf, 0, 2048, 0);
+    await handle.close();
+    content = buf.toString("utf-8", 0, bytesRead);
+  } catch {
+    return null;
+  }
+  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+  if (!fmMatch) return null;
+  const fm = fmMatch[1];
+
+  const nameMatch = fm.match(/^name:\s*(.+)$/m);
+  const name = nameMatch ? nameMatch[1].trim() : "";
+
+  // description may be single-line or multi-line (using >)
+  const descMatch = fm.match(/^description:\s*>?\s*\n?([\s\S]*?)(?=\n\w|\n---)/m);
+  const descSingle = fm.match(/^description:\s*(?!>)(.+)$/m);
+  const description = descSingle
+    ? descSingle[1].trim()
+    : descMatch
+      ? descMatch[1].replace(/\n\s*/g, " ").trim()
+      : "";
+
+  // tags: [core, development] or tags:\n  - core\n  - development
+  const tagsInline = fm.match(/^tags:\s*\[([^\]]*)\]/m);
+  const tags: string[] = [];
+  if (tagsInline) {
+    for (const t of tagsInline[1].split(",")) {
+      const trimmed = t.trim();
+      if (trimmed) tags.push(trimmed);
+    }
+  }
+
+  return { name: name || path.basename(path.dirname(skillMdPath)), description, tags };
+}
+
+interface SkillsResult {
+  /** Temp dir to pass as --add-dir */
+  dir: string;
+  /** Path to the generated skills-index.json */
+  indexPath: string;
+}
+
+/**
+ * Create a tmpdir with `.claude/skills/` containing symlinks to skills
+ * filtered by the agent's role tags. Also generates a skills-index.json
+ * listing ALL available skills for on-demand discovery.
+ */
+async function buildSkillsDir(agentTags: string[]): Promise<SkillsResult> {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skills-"));
   const target = path.join(tmp, ".claude", "skills");
   await fs.mkdir(target, { recursive: true });
   const skillsDir = await resolvePaperclipSkillsDir();
-  if (!skillsDir) return tmp;
+  if (!skillsDir) return { dir: tmp, indexPath: "" };
+
   const entries = await fs.readdir(skillsDir, { withFileTypes: true });
+  const loaded: string[] = [];
+  const available: Array<{ name: string; description: string; tags: string[]; path: string }> = [];
+
   for (const entry of entries) {
-    if (entry.isDirectory()) {
-      await fs.symlink(
-        path.join(skillsDir, entry.name),
-        path.join(target, entry.name),
-      );
+    if (!entry.isDirectory()) continue;
+    const skillPath = path.join(skillsDir, entry.name);
+    const skillMd = path.join(skillPath, "SKILL.md");
+    const meta = await parseSkillFrontmatter(skillMd);
+
+    if (!meta) {
+      // No parseable frontmatter — include it (safe fallback)
+      await fs.symlink(skillPath, path.join(target, entry.name));
+      loaded.push(entry.name);
+      continue;
+    }
+
+    // Check if any of the skill's tags match any of the agent's tags (OR-match)
+    const shouldLoad =
+      meta.tags.length === 0 ||
+      meta.tags.some((t) => agentTags.includes(t));
+
+    if (shouldLoad) {
+      await fs.symlink(skillPath, path.join(target, entry.name));
+      loaded.push(meta.name || entry.name);
+    } else {
+      available.push({
+        name: meta.name || entry.name,
+        description: meta.description,
+        tags: meta.tags,
+        path: skillMd,
+      });
     }
   }
-  return tmp;
+
+  // Write the skills index for on-demand discovery
+  const indexPath = path.join(tmp, "skills-index.json");
+  await fs.writeFile(
+    indexPath,
+    JSON.stringify({ loaded, available }, null, 2),
+  );
+
+  return { dir: tmp, indexPath };
 }
 
 interface ClaudeExecutionInput {
@@ -265,6 +369,252 @@ export async function runClaudeLogin(input: {
   });
 }
 
+async function injectTaskContext(
+  skillsDir: string,
+  env: Record<string, string>,
+): Promise<void> {
+  const apiUrl = env.PAPERCLIP_API_URL;
+  const apiKey = env.PAPERCLIP_API_KEY;
+  const taskId = env.PAPERCLIP_TASK_ID;
+  if (!apiUrl || !apiKey || !taskId) return;
+
+  try {
+    const headers = { authorization: `Bearer ${apiKey}` };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+
+    // Fetch task details + comments in parallel
+    const [issueRes, commentsRes] = await Promise.all([
+      fetch(`${apiUrl}/api/issues/${taskId}`, { headers, signal: controller.signal }),
+      fetch(`${apiUrl}/api/issues/${taskId}/comments`, { headers, signal: controller.signal }),
+    ]);
+    clearTimeout(timer);
+
+    if (!issueRes.ok) return;
+    const issue = await issueRes.json();
+    const comments = commentsRes.ok ? await commentsRes.json() : [];
+
+    // Format as markdown reference
+    const wakeReason = env.PAPERCLIP_WAKE_REASON ?? "unknown";
+    const wakeCommentId = env.PAPERCLIP_WAKE_COMMENT_ID ?? "";
+    const lines = [
+      `# Pre-loaded Run Context`,
+      ``,
+      `This context was pre-fetched by the adapter. You can skip Steps 1, 3, 4, and 6 of the Heartbeat Procedure.`,
+      `**Still do Step 5 (checkout) before working.**`,
+      ``,
+      `## Wake Info`,
+      `- Reason: ${wakeReason}`,
+      `- Task: ${issue.identifier ?? taskId}`,
+      wakeCommentId ? `- Trigger comment: ${wakeCommentId}` : ``,
+      ``,
+      `## Your Identity`,
+      `- Agent ID: ${env.PAPERCLIP_AGENT_ID}`,
+      `- Company ID: ${env.PAPERCLIP_COMPANY_ID}`,
+      `- Run ID: ${env.PAPERCLIP_RUN_ID}`,
+      ``,
+      `## Task Details`,
+      `- ID: ${issue.id}`,
+      `- Identifier: ${issue.identifier}`,
+      `- Title: ${issue.title}`,
+      `- Status: ${issue.status}`,
+      `- Priority: ${issue.priority}`,
+      `- Assignee Agent ID: ${issue.assigneeAgentId}`,
+      issue.parentId ? `- Parent ID: ${issue.parentId}` : ``,
+      issue.projectId ? `- Project ID: ${issue.projectId}` : ``,
+      issue.goalId ? `- Goal ID: ${issue.goalId}` : ``,
+      ``,
+      `### Description`,
+      `${issue.description ?? "(none)"}`,
+    ];
+
+    // Add ancestor chain if present
+    if (issue.ancestors?.length > 0) {
+      lines.push(``, `### Ancestors (parent chain)`);
+      for (const a of issue.ancestors) {
+        lines.push(`- ${a.identifier}: ${a.title} (${a.status})`);
+      }
+    }
+
+    // Add project info if present
+    if (issue.project) {
+      lines.push(``, `### Project`);
+      lines.push(`- Name: ${issue.project.name}`);
+      if (issue.project.description) lines.push(`- Description: ${issue.project.description}`);
+    }
+
+    // Add comments
+    if (Array.isArray(comments) && comments.length > 0) {
+      lines.push(``, `## Comments (${comments.length})`);
+      for (const c of comments.slice(-20)) { // last 20 comments
+        const author = c.authorAgent?.name ?? c.authorUser?.name ?? "unknown";
+        lines.push(``, `### ${author} (${c.createdAt})`);
+        lines.push(c.body ?? "(empty)");
+      }
+    }
+
+    const refDir = path.join(skillsDir, ".claude", "skills", "paperclip", "references");
+    await fs.mkdir(refDir, { recursive: true });
+    await fs.writeFile(path.join(refDir, "run-context.md"), lines.filter(Boolean).join("\n"), "utf-8");
+  } catch {
+    // Non-fatal — agent falls back to standard heartbeat procedure
+  }
+}
+
+async function injectSharedMemories(
+  skillsDir: string,
+  env: Record<string, string>,
+): Promise<void> {
+  const apiUrl = env.PAPERCLIP_API_URL;
+  const apiKey = env.PAPERCLIP_API_KEY;
+  const companyId = env.PAPERCLIP_COMPANY_ID;
+  if (!apiUrl || !apiKey || !companyId) return;
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch(
+      `${apiUrl}/api/companies/${companyId}/memories?limit=20`,
+      {
+        headers: { authorization: `Bearer ${apiKey}` },
+        signal: controller.signal,
+      },
+    );
+    clearTimeout(timer);
+    if (!res.ok) return;
+
+    const facts = (await res.json()) as Array<{ content: string; category: string; confidence: number }>;
+    if (!Array.isArray(facts) || facts.length === 0) return;
+
+    const lines = facts.map(
+      (f) => `- [${f.category}] (${f.confidence}) ${f.content}`,
+    );
+    const content = `# Shared Agent Memory\n\nThese facts were stored by agents across previous sessions.\n\n${lines.join("\n")}\n`;
+
+    const refDir = path.join(skillsDir, ".claude", "skills", "memory", "references");
+    await fs.mkdir(refDir, { recursive: true });
+    await fs.writeFile(path.join(refDir, "shared-memories.md"), content, "utf-8");
+  } catch {
+    // Non-fatal — agent runs without injected memories
+  }
+}
+
+async function extractAndStoreMemories(
+  summary: string,
+  taskContext: string,
+  env: Record<string, string>,
+): Promise<void> {
+  const vllmUrl = process.env.VLLM_API_URL;
+  const apiUrl = env.PAPERCLIP_API_URL;
+  const apiKey = env.PAPERCLIP_API_KEY;
+  const companyId = env.PAPERCLIP_COMPANY_ID;
+  if (!vllmUrl || !apiUrl || !apiKey || !companyId) return;
+  if (!summary || summary.length < 100) return; // Skip trivial runs
+
+  // Fetch existing memories to avoid duplicates
+  let existingFacts = "";
+  try {
+    const existingRes = await fetch(
+      `${apiUrl}/api/companies/${companyId}/memories?limit=50`,
+      {
+        headers: { authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(3000),
+      },
+    );
+    if (existingRes.ok) {
+      const existing = (await existingRes.json()) as Array<{ content: string }>;
+      if (Array.isArray(existing) && existing.length > 0) {
+        existingFacts =
+          "\n\nExisting memories (do NOT duplicate these):\n" +
+          existing.map((f) => `- ${f.content}`).join("\n");
+      }
+    }
+  } catch {
+    /* non-fatal */
+  }
+
+  // Build extraction prompt
+  const userPrompt = [
+    "Extract reusable factual information from this agent work session.",
+    "",
+    `Task: ${taskContext}`,
+    "",
+    `Result:\n${summary.slice(0, 3000)}`,
+    existingFacts,
+    "",
+    'Return a JSON object: {"facts": [{"content": "...", "category": "preference|knowledge|context|behavior|goal", "confidence": 0.0-1.0}]}',
+    "",
+    "Rules:",
+    "- Only extract clear, specific, reusable facts that benefit other agents",
+    "- Skip session-specific details (file paths, line numbers, temporary state)",
+    "- Focus on: project patterns, architecture decisions, tool preferences, conventions",
+    "- Confidence 0.9+ for confirmed facts, 0.7-0.8 for inferred",
+    "- Do NOT duplicate any existing memories listed above",
+    '- If nothing worth storing, return {"facts": []}',
+    "- Return ONLY valid JSON, no explanation",
+  ].join("\n");
+
+  // Call vLLM for extraction
+  const llmRes = await fetch(`${vllmUrl}/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: process.env.VLLM_MODEL || "Qwen/Qwen3.5-9B",
+      messages: [
+        { role: "system", content: "You are a fact extraction assistant. Return ONLY valid JSON, no explanation." },
+        { role: "user", content: userPrompt },
+      ],
+      max_tokens: 1024,
+      temperature: 0.1,
+      chat_template_kwargs: { enable_thinking: false },
+    }),
+    signal: AbortSignal.timeout(30000),
+  });
+  if (!llmRes.ok) return;
+
+  const llmResult = (await llmRes.json()) as {
+    choices?: Array<{ message?: { content?: string } }>;
+  };
+  const text = llmResult.choices?.[0]?.message?.content?.trim();
+  if (!text) return;
+
+  // Parse — handle markdown-wrapped JSON
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) return;
+  let parsed: {
+    facts?: Array<{ content: string; category?: string; confidence?: number }>;
+  };
+  try {
+    parsed = JSON.parse(jsonMatch[0]);
+  } catch {
+    return;
+  }
+  if (!Array.isArray(parsed.facts) || parsed.facts.length === 0) return;
+
+  // Store each fact in Paperclip
+  for (const fact of parsed.facts) {
+    if (!fact.content || fact.content.length < 10) continue;
+    try {
+      await fetch(`${apiUrl}/api/companies/${companyId}/memories`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          content: fact.content.slice(0, 4000),
+          category: fact.category || "knowledge",
+          confidence: fact.confidence ?? 0.9,
+          scopeType: "company",
+        }),
+        signal: AbortSignal.timeout(3000),
+      });
+    } catch {
+      /* best-effort, continue */
+    }
+  }
+}
+
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, authToken } = ctx;
 
@@ -304,7 +654,34 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     extraArgs,
   } = runtimeConfig;
   const billingType = resolveClaudeBillingType(env);
-  const skillsDir = await buildSkillsDir();
+
+  // Determine which skill tags this agent needs.
+  // Explicit skillTags in adapterConfig take priority, then title-based lookup.
+  const configSkillTags = asStringArray(config.skillTags);
+  const agentTags =
+    configSkillTags.length > 0
+      ? configSkillTags
+      : ROLE_TAG_MAP[(agent as unknown as Record<string, unknown>).title as string ?? ""] ??
+        ROLE_TAG_MAP[agent.name] ??
+        DEFAULT_TAGS;
+  const skills = await buildSkillsDir(agentTags);
+  const skillsDir = skills.dir;
+
+  // Inject shared memories into the skills dir as a reference file
+  await injectSharedMemories(skillsDir, env);
+
+  // Pre-fetch triggering task context so agent can skip heartbeat steps 1-4,6
+  await injectTaskContext(skillsDir, env);
+
+  // Point agents to the skills index for on-demand discovery
+  if (skills.indexPath) {
+    env.PAPERCLIP_SKILLS_INDEX = skills.indexPath;
+  }
+  // Point to the OpenClaw community skills directory (if mounted)
+  const openclawDir = "/app/skills/custom/openclaw";
+  if (!env.PAPERCLIP_OPENCLAW_SKILLS_DIR) {
+    env.PAPERCLIP_OPENCLAW_SKILLS_DIR = openclawDir;
+  }
 
   // When instructionsFilePath is configured, create a combined temp file that
   // includes both the file content and the path directive, so we only need
@@ -514,10 +891,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[paperclip] Claude resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
       );
       const retry = await runAttempt(null);
-      return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
+      const retryResult = toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
+
+      // Fire-and-forget: extract memories from successful runs
+      if (!retryResult.timedOut && (retryResult.exitCode ?? 0) === 0 && retryResult.summary) {
+        const taskDesc = env.PAPERCLIP_WAKE_REASON ?? "";
+        extractAndStoreMemories(retryResult.summary, taskDesc, env).catch(() => {});
+      }
+
+      return retryResult;
     }
 
-    return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
+    const result = toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
+
+    // Fire-and-forget: extract memories from successful runs
+    if (!result.timedOut && (result.exitCode ?? 0) === 0 && result.summary) {
+      const taskDesc = env.PAPERCLIP_WAKE_REASON ?? "";
+      extractAndStoreMemories(result.summary, taskDesc, env).catch(() => {});
+    }
+
+    return result;
   } finally {
     fs.rm(skillsDir, { recursive: true, force: true }).catch(() => {});
   }

@@ -1,5 +1,6 @@
 ---
 name: paperclip
+tags: [core]
 description: >
   Interact with the Paperclip control plane API to manage tasks, coordinate with
   other agents, and follow company governance. Use when you need to check
@@ -20,11 +21,47 @@ Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli
 
 **Run audit trail:** You MUST include `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
 
+## Key Endpoints (Quick Reference)
+
+Read this table before making any API calls. Do NOT guess endpoint URLs.
+
+| Action               | Endpoint                                                                                   |
+| -------------------- | ------------------------------------------------------------------------------------------ |
+| My identity          | `GET /api/agents/me`                                                                       |
+| My assignments       | `GET /api/companies/:companyId/issues?assigneeAgentId=:id&status=todo,in_progress,blocked` |
+| Checkout task        | `POST /api/issues/:issueId/checkout`                                                       |
+| Get task + ancestors | `GET /api/issues/:issueId`                                                                 |
+| Get comments         | `GET /api/issues/:issueId/comments`                                                        |
+| Get specific comment | `GET /api/issues/:issueId/comments/:commentId`                                              |
+| Update task          | `PATCH /api/issues/:issueId` (optional `comment` field)                                    |
+| Add comment          | `POST /api/issues/:issueId/comments`                                                       |
+| Create subtask       | `POST /api/companies/:companyId/issues`                                                    |
+| Generate OpenClaw invite prompt (CEO) | `POST /api/companies/:companyId/openclaw/invite-prompt`                   |
+| Create project       | `POST /api/companies/:companyId/projects`                                                  |
+| Create project workspace | `POST /api/projects/:projectId/workspaces`                                             |
+| Set instructions path | `PATCH /api/agents/:agentId/instructions-path`                                            |
+| Release task         | `POST /api/issues/:issueId/release`                                                        |
+| List agents          | `GET /api/companies/:companyId/agents`                                                     |
+| Agent configuration  | `GET /api/agents/:id/configuration`                                                        |
+| Dashboard            | `GET /api/companies/:companyId/dashboard`                                                  |
+| Search issues        | `GET /api/companies/:companyId/issues?q=search+term`                                       |
+
+## Fast Path (Pre-loaded Context)
+
+If `skills/paperclip/references/run-context.md` exists, the adapter has pre-fetched your task context. In this case:
+
+1. **Skip Steps 1, 3, 4, 6** — identity, inbox, pick work, and context are already loaded.
+2. **Still do Step 5 (checkout)** — you must claim the task before working.
+3. Proceed to **Step 7** (do the work).
+4. Follow Steps 8-9 normally (update status, delegate).
+
+If the pre-loaded context seems stale or the checkout returns 409, fall back to the full heartbeat procedure.
+
 ## The Heartbeat Procedure
 
-Follow these steps every time you wake up:
+Follow these steps every time you wake up. Read the Key Endpoints table above before making any API calls. Do NOT guess endpoint URLs.
 
-**Step 1 — Identity.** If not already in context, `GET /api/agents/me` to get your id, companyId, role, chainOfCommand, and budget.
+**Step 1 — Identity.** If env `PAPERCLIP_AGENT_ID` is set, you already have your ID. Only call `GET /api/agents/me` if you need role, chainOfCommand, or budget info.
 
 **Step 2 — Approval follow-up (when triggered).** If `PAPERCLIP_APPROVAL_ID` is set (or wake reason indicates approval resolution), review the approval first:
 
@@ -216,28 +253,6 @@ PATCH /api/agents/{agentId}/instructions-path
   "adapterConfigKey": "yourAdapterSpecificPathField"
 }
 ```
-
-## Key Endpoints (Quick Reference)
-
-| Action               | Endpoint                                                                                   |
-| -------------------- | ------------------------------------------------------------------------------------------ |
-| My identity          | `GET /api/agents/me`                                                                       |
-| My assignments       | `GET /api/companies/:companyId/issues?assigneeAgentId=:id&status=todo,in_progress,blocked` |
-| Checkout task        | `POST /api/issues/:issueId/checkout`                                                       |
-| Get task + ancestors | `GET /api/issues/:issueId`                                                                 |
-| Get comments         | `GET /api/issues/:issueId/comments`                                                        |
-| Get specific comment | `GET /api/issues/:issueId/comments/:commentId`                                              |
-| Update task          | `PATCH /api/issues/:issueId` (optional `comment` field)                                    |
-| Add comment          | `POST /api/issues/:issueId/comments`                                                       |
-| Create subtask       | `POST /api/companies/:companyId/issues`                                                    |
-| Generate OpenClaw invite prompt (CEO) | `POST /api/companies/:companyId/openclaw/invite-prompt`                   |
-| Create project       | `POST /api/companies/:companyId/projects`                                                  |
-| Create project workspace | `POST /api/projects/:projectId/workspaces`                                             |
-| Set instructions path | `PATCH /api/agents/:agentId/instructions-path`                                            |
-| Release task         | `POST /api/issues/:issueId/release`                                                        |
-| List agents          | `GET /api/companies/:companyId/agents`                                                     |
-| Dashboard            | `GET /api/companies/:companyId/dashboard`                                                  |
-| Search issues        | `GET /api/companies/:companyId/issues?q=search+term`                                       |
 
 ## Searching Issues
 

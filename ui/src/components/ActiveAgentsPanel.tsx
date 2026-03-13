@@ -28,7 +28,6 @@ interface FeedItem {
 const MAX_FEED_ITEMS = 40;
 const MAX_FEED_TEXT_LENGTH = 220;
 const MAX_STREAMING_TEXT_LENGTH = 4000;
-const MIN_DASHBOARD_RUNS = 4;
 
 function readString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
@@ -202,7 +201,7 @@ export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
 
   const { data: liveRuns } = useQuery({
     queryKey: [...queryKeys.liveRuns(companyId), "dashboard"],
-    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId, MIN_DASHBOARD_RUNS),
+    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId),
   });
 
   const runs = liveRuns ?? [];
@@ -386,16 +385,18 @@ export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
           <p className="text-sm text-muted-foreground">No recent agent runs.</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2 sm:gap-4">
-          {runs.map((run) => (
-            <AgentRunCard
-              key={run.id}
-              run={run}
-              issue={run.issueId ? issueById.get(run.issueId) : undefined}
-              feed={feedByRun.get(run.id) ?? []}
-              isActive={isRunActive(run)}
-            />
-          ))}
+        <div className="max-h-[600px] overflow-y-auto rounded-lg">
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2 sm:gap-4">
+            {runs.map((run) => (
+              <AgentRunCard
+                key={run.id}
+                run={run}
+                issue={run.issueId ? issueById.get(run.issueId) : undefined}
+                feed={feedByRun.get(run.id) ?? []}
+                isActive={isRunActive(run)}
+              />
+            ))}
+          </div>
         </div>
       )}
     </div>
@@ -419,7 +420,10 @@ function AgentRunCard({
   useEffect(() => {
     const body = bodyRef.current;
     if (!body) return;
-    body.scrollTo({ top: body.scrollHeight, behavior: "smooth" });
+    // Use rAF + instant scroll so rapid updates don't interrupt each other
+    requestAnimationFrame(() => {
+      body.scrollTo({ top: body.scrollHeight, behavior: "auto" });
+    });
   }, [feed.length]);
 
   return (

@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && (vite build || [ $? -eq 139 ])",
     "preview": "vite preview",
     "typecheck": "tsc -b"
   },

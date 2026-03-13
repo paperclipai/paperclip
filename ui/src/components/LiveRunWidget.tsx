@@ -345,7 +345,9 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
   useEffect(() => {
     const body = bodyRef.current;
     if (!body) return;
-    body.scrollTo({ top: body.scrollHeight, behavior: "smooth" });
+    requestAnimationFrame(() => {
+      body.scrollTo({ top: body.scrollHeight, behavior: "auto" });
+    });
   }, [feed.length]);
 
   useEffect(() => {

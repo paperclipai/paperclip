@@ -1,5 +1,6 @@
 ---
 name: create-agent-adapter
+tags: [meta]
 description: >
   Technical guide for creating a new Paperclip agent adapter. Use when building
   a new adapter package, adding support for a new AI coding tool (e.g. a new

@@ -9,6 +9,7 @@ import { heartbeatsApi } from "../api/heartbeats";
 import { assetsApi } from "../api/assets";
 import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
+import { useLiveUpdates } from "../context/LiveUpdatesProvider";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { ProjectProperties } from "../components/ProjectProperties";
@@ -138,6 +139,7 @@ function ColorPicker({
 
 function ProjectIssuesList({ projectId, companyId }: { projectId: string; companyId: string }) {
   const queryClient = useQueryClient();
+  const { isConnected: isWsConnected } = useLiveUpdates();
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(companyId),
@@ -149,7 +151,7 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
     queryKey: queryKeys.liveRuns(companyId),
     queryFn: () => heartbeatsApi.liveRunsForCompany(companyId),
     enabled: !!companyId,
-    refetchInterval: 5000,
+    refetchInterval: isWsConnected ? false : 10_000,
   });
 
   const liveIssueIds = useMemo(() => {

@@ -1,5 +1,6 @@
 ---
 name: release-changelog
+tags: [devops]
 description: >
   Generate user-facing release changelogs for Paperclip. Reads git history,
   merged PRs, and changeset files since the last release tag. Detects breaking

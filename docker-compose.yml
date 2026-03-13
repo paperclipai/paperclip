@@ -1,3 +1,18 @@
+# Paperclip + DeerFlow Agent Network
+#
+# Usage: docker compose up --build
+#
+# Services:
+#   - db:                  PostgreSQL database (port 5432)
+#   - server:              Paperclip API + UI (port 3100)
+#   - deerflow-langgraph:  DeerFlow LangGraph agent server (port 2024)
+#   - deerflow-gateway:    DeerFlow REST gateway (port 8001)
+#
+# Web tools: DuckDuckGo search + Jina fetch (no API keys needed)
+# vLLM: Qwen3.5-9B running on host (port 8000)
+#
+# Access: http://localhost:3100
+
 services:
   db:
     image: postgres:17-alpine
@@ -14,6 +29,8 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    networks:
+      - agent-network
 
   server:
     build: .
@@ -27,12 +44,89 @@ services:
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+      PAPERCLIP_AGENT_JWT_SECRET: "${PAPERCLIP_AGENT_JWT_SECRET:-REDACTED_JWT_SECRET}"
     volumes:
       - paperclip-data:/paperclip
+      # local home mount removed
     depends_on:
       db:
         condition: service_healthy
+    networks:
+      - agent-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # ── DeerFlow LangGraph Server ───────────────────────────────────────────
+  deerflow-langgraph:
+    build:
+      context: ./deerflow
+      dockerfile: backend/Dockerfile
+    container_name: deerflow-langgraph
+    command: >
+      sh -c "cd backend && uv run langgraph dev
+      --no-browser --allow-blocking
+      --host 0.0.0.0 --port 2024"
+    ports:
+      - "2024:2024"
+    volumes:
+      - ./deerflow/backend/:/app/backend/
+      - langgraph-venv:/app/backend/.venv
+      - ./deerflow/config.yaml:/app/config.yaml:ro
+      - ./deerflow/skills:/app/skills
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      CI: "true"
+      VLLM_API_URL: ${VLLM_API_URL:-http://host.docker.internal:8000/v1}
+    env_file:
+      - path: .env
+        required: false
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - agent-network
+    restart: unless-stopped
+
+  # ── DeerFlow Gateway API ────────────────────────────────────────────────
+  deerflow-gateway:
+    build:
+      context: ./deerflow
+      dockerfile: backend/Dockerfile
+    container_name: deerflow-gateway
+    command: >
+      sh -c "cd backend && uv run uvicorn src.gateway.app:app
+      --host 0.0.0.0 --port 8001"
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./deerflow/backend/:/app/backend/
+      - gateway-venv:/app/backend/.venv
+      - ./deerflow/config.yaml:/app/config.yaml:ro
+      - ./deerflow/skills:/app/skills
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      CI: "true"
+      VLLM_API_URL: ${VLLM_API_URL:-http://host.docker.internal:8000/v1}
+    env_file:
+      - path: .env
+        required: false
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - agent-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
 
 volumes:
   pgdata:
   paperclip-data:
+  gateway-venv:
+  langgraph-venv:
+
+networks:
+  agent-network:
+    driver: bridge

@@ -32,6 +32,9 @@ server/src/**/*.d.ts
 server/src/**/*.d.ts.map
 tmp/
 
+# DeerFlow cloned subrepo (managed separately)
+deerflow/
+
 # Editor / tool temp files
 *.tmp
 .vscode/

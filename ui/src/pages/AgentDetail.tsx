@@ -1850,8 +1850,15 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
       return;
     }
 
-    updateFollowingState();
-  }, [isLive, run.id, updateFollowingState]);
+    // For live runs, start following immediately and scroll to bottom
+    isFollowingRef.current = true;
+    setIsFollowing(true);
+    requestAnimationFrame(() => {
+      const container = getScrollContainer();
+      scrollToContainerBottom(container, "auto");
+      lastMetricsRef.current = readScrollMetrics(container);
+    });
+  }, [isLive, run.id, getScrollContainer]);
 
   useEffect(() => {
     if (!isLive) return;
