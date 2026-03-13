@@ -31,6 +31,7 @@ type ChildProcessWithEvents = ChildProcess & {
 export const runningProcesses = new Map<string, RunningProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
+export const MAX_WAKE_COMMENT_BODY_CHARS = 8_000;
 const SENSITIVE_ENV_KEY = /(key|token|secret|password|passwd|authorization|cookie)/i;
 const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
   "../../skills",
@@ -110,6 +111,35 @@ export function resolvePathValue(obj: Record<string, unknown>, dottedPath: strin
 
 export function renderTemplate(template: string, data: Record<string, unknown>) {
   return template.replace(/{{\s*([a-zA-Z0-9_.-]+)\s*}}/g, (_, path) => resolvePathValue(data, path));
+}
+
+export function normalizeWakeCommentBody(value: unknown, maxChars = MAX_WAKE_COMMENT_BODY_CHARS): string | null {
+  if (typeof value !== "string" || value.trim().length === 0) return null;
+  const sliced = value.length > maxChars ? value.slice(0, maxChars) : value;
+  return /[\uD800-\uDBFF]$/.test(sliced) ? sliced.slice(0, -1) : sliced;
+}
+
+function escapeWakeCommentBodyForPrompt(value: string) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+export function appendWakeCommentToPrompt(prompt: string, context: Record<string, unknown>) {
+  const wakeCommentBody = normalizeWakeCommentBody(context.wakeCommentBody);
+  if (!wakeCommentBody) return prompt;
+  const escapedWakeCommentBody = escapeWakeCommentBodyForPrompt(wakeCommentBody);
+
+  const promptBase = prompt.replace(/\s+$/, "");
+  const wakeCommentBlock = [
+    "The following <user_comment> block is the latest user comment that triggered this wake. Respond to or act on it in this run.",
+    "<user_comment>",
+    escapedWakeCommentBody,
+    "</user_comment>",
+  ].join("\n");
+
+  return promptBase ? `${promptBase}\n\n${wakeCommentBlock}` : wakeCommentBlock;
 }
 
 export function redactEnvForLogs(env: Record<string, string>): Record<string, string> {

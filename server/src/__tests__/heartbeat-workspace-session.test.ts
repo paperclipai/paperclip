@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
+  enrichWakeContextSnapshot,
+  mergeCoalescedContextSnapshot,
   resolveRuntimeSessionParamsForWorkspace,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
@@ -128,6 +130,15 @@ describe("shouldResetTaskSessionForWake", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "issue_commented" })).toBe(false);
   });
 
+  it("does not reset session context on reopen-via-comment wake", () => {
+    expect(
+      shouldResetTaskSessionForWake({
+        wakeReason: "issue_reopened_via_comment",
+        wakeCommentId: "comment-3",
+      }),
+    ).toBe(false);
+  });
+
   it("does not reset when wake reason is missing", () => {
     expect(shouldResetTaskSessionForWake({})).toBe(false);
   });
@@ -139,5 +150,51 @@ describe("shouldResetTaskSessionForWake", () => {
         wakeTriggerDetail: "callback",
       }),
     ).toBe(false);
+  });
+});
+
+describe("wake comment context propagation", () => {
+  it("copies wakeCommentBody from payload into context snapshot", () => {
+    const result = enrichWakeContextSnapshot({
+      contextSnapshot: {},
+      reason: "issue_commented",
+      source: "automation",
+      triggerDetail: "system",
+      payload: {
+        issueId: "issue-1",
+        commentId: "comment-1",
+        wakeCommentBody: "Please handle the new request.",
+      },
+    });
+
+    expect(result.contextSnapshot).toMatchObject({
+      issueId: "issue-1",
+      taskId: "issue-1",
+      commentId: "comment-1",
+      wakeCommentId: "comment-1",
+      wakeCommentBody: "Please handle the new request.",
+      wakeReason: "issue_commented",
+    });
+  });
+
+  it("keeps the latest wakeCommentBody when coalescing comment wakes", () => {
+    const merged = mergeCoalescedContextSnapshot(
+      {
+        commentId: "comment-1",
+        wakeCommentId: "comment-1",
+        wakeCommentBody: "Old comment body",
+      },
+      {
+        commentId: "comment-2",
+        wakeCommentId: "comment-2",
+        wakeCommentBody: "Newest comment body",
+      },
+    );
+
+    expect(merged).toMatchObject({
+      commentId: "comment-2",
+      wakeCommentId: "comment-2",
+      wakeCommentBody: "Newest comment body",
+    });
   });
 });

@@ -33,6 +33,7 @@ import {
   releaseRuntimeServicesForRun,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
+import { normalizeWakeCommentBody } from "@paperclipai/adapter-utils/server-utils";
 import {
   buildExecutionWorkspaceAdapterConfig,
   parseIssueExecutionWorkspaceSettings,
@@ -284,7 +285,14 @@ function deriveCommentId(
   );
 }
 
-function enrichWakeContextSnapshot(input: {
+function deriveWakeCommentBody(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+  payload: Record<string, unknown> | null | undefined,
+) {
+  return normalizeWakeCommentBody(contextSnapshot?.wakeCommentBody) ?? normalizeWakeCommentBody(payload?.wakeCommentBody) ?? null;
+}
+
+export function enrichWakeContextSnapshot(input: {
   contextSnapshot: Record<string, unknown>;
   reason: string | null;
   source: WakeupOptions["source"];
@@ -296,6 +304,7 @@ function enrichWakeContextSnapshot(input: {
   const commentIdFromPayload = readNonEmptyString(payload?.["commentId"]);
   const taskKey = deriveTaskKey(contextSnapshot, payload);
   const wakeCommentId = deriveCommentId(contextSnapshot, payload);
+  const wakeCommentBody = deriveWakeCommentBody(contextSnapshot, payload);
 
   if (!readNonEmptyString(contextSnapshot["wakeReason"]) && reason) {
     contextSnapshot.wakeReason = reason;
@@ -315,6 +324,9 @@ function enrichWakeContextSnapshot(input: {
   if (!readNonEmptyString(contextSnapshot["wakeCommentId"]) && wakeCommentId) {
     contextSnapshot.wakeCommentId = wakeCommentId;
   }
+  if (!normalizeWakeCommentBody(contextSnapshot["wakeCommentBody"]) && wakeCommentBody) {
+    contextSnapshot.wakeCommentBody = wakeCommentBody;
+  }
   if (!readNonEmptyString(contextSnapshot["wakeSource"]) && source) {
     contextSnapshot.wakeSource = source;
   }
@@ -328,10 +340,11 @@ function enrichWakeContextSnapshot(input: {
     commentIdFromPayload,
     taskKey,
     wakeCommentId,
+    wakeCommentBody,
   };
 }
 
-function mergeCoalescedContextSnapshot(
+export function mergeCoalescedContextSnapshot(
   existingRaw: unknown,
   incoming: Record<string, unknown>,
 ) {
@@ -344,6 +357,10 @@ function mergeCoalescedContextSnapshot(
   if (commentId) {
     merged.commentId = commentId;
     merged.wakeCommentId = commentId;
+  }
+  const wakeCommentBody = deriveWakeCommentBody(incoming, null);
+  if (wakeCommentBody) {
+    merged.wakeCommentBody = wakeCommentBody;
   }
   return merged;
 }

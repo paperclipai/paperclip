@@ -17,6 +17,7 @@ import {
   listPaperclipSkillEntries,
   removeMaintainerOnlySkillSymlinks,
   renderTemplate,
+  appendWakeCommentToPrompt,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import { isPiUnknownSessionError, parsePiJsonl } from "./parse.js";
@@ -281,7 +282,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
 
   // User prompt is simple - just the rendered prompt template without instructions
-  const userPrompt = renderTemplate(promptTemplate, {
+  const userPrompt = appendWakeCommentToPrompt(renderTemplate(promptTemplate, {
     agentId: agent.id,
     companyId: agent.companyId,
     runId,
@@ -289,7 +290,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     agent,
     run: { id: runId, source: "on_demand" },
     context,
-  });
+  }), context);
 
   const commandNotes = (() => {
     if (!resolvedInstructionsFilePath) return [] as string[];

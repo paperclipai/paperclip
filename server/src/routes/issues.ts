@@ -27,6 +27,10 @@ import { forbidden, HttpError, unauthorized } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
+import {
+  buildIssueCommentWakeContextSnapshot,
+  buildIssueCommentWakePayload,
+} from "./issue-comment-wakeup.js";
 
 export function issueRoutes(db: Db, storage: StorageService) {
   const router = Router();
@@ -627,17 +631,21 @@ export function issueRoutes(db: Db, storage: StorageService) {
             source: "automation",
             triggerDetail: "system",
             reason: "issue_comment_mentioned",
-            payload: { issueId: id, commentId: comment.id },
+            payload: buildIssueCommentWakePayload({
+              issueId: id,
+              commentId: comment.id,
+              commentBody: comment.body,
+            }),
             requestedByActorType: actor.actorType,
             requestedByActorId: actor.actorId,
-            contextSnapshot: {
+            contextSnapshot: buildIssueCommentWakeContextSnapshot({
               issueId: id,
-              taskId: id,
               commentId: comment.id,
-              wakeCommentId: comment.id,
               wakeReason: "issue_comment_mentioned",
               source: "comment.mention",
-            },
+              commentBody: comment.body,
+              includeWakeCommentId: true,
+            }),
           });
         }
       }
@@ -943,46 +951,56 @@ export function issueRoutes(db: Db, storage: StorageService) {
             source: "automation",
             triggerDetail: "system",
             reason: "issue_reopened_via_comment",
-            payload: {
+            payload: buildIssueCommentWakePayload({
               issueId: currentIssue.id,
               commentId: comment.id,
-              reopenedFrom: reopenFromStatus,
-              mutation: "comment",
-              ...(interruptedRunId ? { interruptedRunId } : {}),
-            },
+              commentBody: comment.body,
+              extras: {
+                reopenedFrom: reopenFromStatus,
+                mutation: "comment",
+                ...(interruptedRunId ? { interruptedRunId } : {}),
+              },
+            }),
             requestedByActorType: actor.actorType,
             requestedByActorId: actor.actorId,
-            contextSnapshot: {
+            contextSnapshot: buildIssueCommentWakeContextSnapshot({
               issueId: currentIssue.id,
-              taskId: currentIssue.id,
               commentId: comment.id,
-              source: "issue.comment.reopen",
+              commentBody: comment.body,
               wakeReason: "issue_reopened_via_comment",
-              reopenedFrom: reopenFromStatus,
-              ...(interruptedRunId ? { interruptedRunId } : {}),
-            },
+              source: "issue.comment.reopen",
+              extras: {
+                reopenedFrom: reopenFromStatus,
+                ...(interruptedRunId ? { interruptedRunId } : {}),
+              },
+            }),
           });
         } else {
           wakeups.set(assigneeId, {
             source: "automation",
             triggerDetail: "system",
             reason: "issue_commented",
-            payload: {
+            payload: buildIssueCommentWakePayload({
               issueId: currentIssue.id,
               commentId: comment.id,
-              mutation: "comment",
-              ...(interruptedRunId ? { interruptedRunId } : {}),
-            },
+              commentBody: comment.body,
+              extras: {
+                mutation: "comment",
+                ...(interruptedRunId ? { interruptedRunId } : {}),
+              },
+            }),
             requestedByActorType: actor.actorType,
             requestedByActorId: actor.actorId,
-            contextSnapshot: {
+            contextSnapshot: buildIssueCommentWakeContextSnapshot({
               issueId: currentIssue.id,
-              taskId: currentIssue.id,
               commentId: comment.id,
-              source: "issue.comment",
+              commentBody: comment.body,
               wakeReason: "issue_commented",
-              ...(interruptedRunId ? { interruptedRunId } : {}),
-            },
+              source: "issue.comment",
+              extras: {
+                ...(interruptedRunId ? { interruptedRunId } : {}),
+              },
+            }),
           });
         }
       }
@@ -1001,17 +1019,21 @@ export function issueRoutes(db: Db, storage: StorageService) {
           source: "automation",
           triggerDetail: "system",
           reason: "issue_comment_mentioned",
-          payload: { issueId: id, commentId: comment.id },
+          payload: buildIssueCommentWakePayload({
+            issueId: id,
+            commentId: comment.id,
+            commentBody: comment.body,
+          }),
           requestedByActorType: actor.actorType,
           requestedByActorId: actor.actorId,
-          contextSnapshot: {
+          contextSnapshot: buildIssueCommentWakeContextSnapshot({
             issueId: id,
-            taskId: id,
             commentId: comment.id,
-            wakeCommentId: comment.id,
+            commentBody: comment.body,
             wakeReason: "issue_comment_mentioned",
             source: "comment.mention",
-          },
+            includeWakeCommentId: true,
+          }),
         });
       }
 

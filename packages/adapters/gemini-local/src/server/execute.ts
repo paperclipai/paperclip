@@ -19,6 +19,7 @@ import {
   parseObject,
   redactEnvForLogs,
   renderTemplate,
+  appendWakeCommentToPrompt,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "../index.js";
@@ -279,7 +280,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
   const paperclipEnvNote = renderPaperclipEnvNote(env);
   const apiAccessNote = renderApiAccessNote(env);
-  const prompt = `${instructionsPrefix}${paperclipEnvNote}${apiAccessNote}${renderedPrompt}`;
+  const prompt = appendWakeCommentToPrompt(
+    `${instructionsPrefix}${paperclipEnvNote}${apiAccessNote}${renderedPrompt}`,
+    context,
+  );
 
   const buildArgs = (resumeSessionId: string | null) => {
     const args = ["--output-format", "stream-json"];
