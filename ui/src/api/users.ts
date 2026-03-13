@@ -50,4 +50,10 @@ export const usersApi = {
 
   revokeAllSessions: () =>
     api.post<{ revoked: boolean }>("/users/me/sessions/revoke-all", {}),
+
+  forgotPassword: (email: string) =>
+    api.post<{ sent: boolean }>("/users/forgot-password", { email }),
+
+  resetPassword: (token: string, newPassword: string) =>
+    api.post<{ success: boolean }>("/users/reset-password", { token, newPassword }),
 };

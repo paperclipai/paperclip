@@ -1,7 +1,7 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { and, count, eq, gt, isNull, sql } from "drizzle-orm";
-import { instanceUserRoles, invites } from "@paperclipai/db";
+import { authUsers, instanceUserRoles, invites } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 
 export function healthRoutes(
@@ -54,6 +54,11 @@ export function healthRoutes(
       }
     }
 
+    const hasUsers = await db
+      .select({ count: count() })
+      .from(authUsers)
+      .then((rows) => Number(rows[0]?.count ?? 0) > 0);
+
     res.json({
       status: "ok",
       deploymentMode: opts.deploymentMode,
@@ -61,6 +66,7 @@ export function healthRoutes(
       authReady: opts.authReady,
       bootstrapStatus,
       bootstrapInviteActive,
+      hasUsers,
       features: {
         companyDeletionEnabled: opts.companyDeletionEnabled,
       },
