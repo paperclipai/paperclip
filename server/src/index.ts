@@ -29,6 +29,7 @@ import { heartbeatService, reconcilePersistedRuntimeServicesOnStartup } from "./
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
+import { initPluginSystem } from "./plugins/index.js";
 
 type BetterAuthSessionUser = {
   id: string;
@@ -460,6 +461,23 @@ export async function startServer(): Promise<StartedServer> {
     authReady = true;
   }
   
+  // Plugin system initialization
+  let pluginSystem: Awaited<ReturnType<typeof initPluginSystem>> | null = null;
+  try {
+    pluginSystem = await initPluginSystem(db as any);
+
+    // Job scheduler tick — every 15 seconds
+    setInterval(() => {
+      void pluginSystem!.jobScheduler.tick().catch((err) => {
+        logger.error({ err }, "plugin job scheduler tick failed");
+      });
+    }, 15_000);
+
+    logger.info("Plugin system initialized");
+  } catch (err) {
+    logger.error({ err }, "Plugin system failed to initialize — continuing without plugins");
+  }
+
   const listenPort = await detectPort(config.port);
   const uiMode = config.uiDevMiddleware ? "vite-dev" : config.serveUi ? "static" : "none";
   const storageService = createStorageServiceFromConfig(config);
@@ -475,6 +493,7 @@ export async function startServer(): Promise<StartedServer> {
     companyDeletionEnabled: config.companyDeletionEnabled,
     betterAuthHandler,
     resolveSession,
+    pluginRouter: pluginSystem?.router,
   });
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
   
@@ -537,7 +556,7 @@ export async function startServer(): Promise<StartedServer> {
         });
     }, config.heartbeatSchedulerIntervalMs);
   }
-  
+
   if (config.databaseBackupEnabled) {
     const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
     let backupInFlight = false;

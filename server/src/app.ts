@@ -43,6 +43,7 @@ export async function createApp(
     companyDeletionEnabled: boolean;
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
+    pluginRouter?: Router;
   },
 ) {
   const app = express();
@@ -122,6 +123,9 @@ export async function createApp(
       allowedHostnames: opts.allowedHostnames,
     }),
   );
+  if (opts.pluginRouter) {
+    api.use("/plugins", opts.pluginRouter);
+  }
   app.use("/api", api);
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "API route not found" });
