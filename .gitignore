@@ -33,7 +33,7 @@ server/src/**/*.d.ts.map
 tmp/
 
 # DeerFlow cloned subrepo (managed separately)
-deerflow/
+/deerflow/
 
 # Editor / tool temp files
 *.tmp
