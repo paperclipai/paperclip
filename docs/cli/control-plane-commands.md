@@ -102,6 +102,34 @@ pnpm paperclipai activity list [--agent-id <id>] [--entity-type issue] [--entity
 pnpm paperclipai dashboard get
 ```
 
+## Node Commands
+
+```sh
+# Register a new remote node
+pnpm paperclipai node register <name> -C <company-id> [--capabilities '{"browser":true}']
+
+# List registered nodes
+pnpm paperclipai node list -C <company-id>
+
+# Show node details
+pnpm paperclipai node status <node-id> [-C <company-id>]
+
+# Run the node daemon (claims and executes remote agent runs)
+pnpm paperclipai node run \
+  --node-id <id> \
+  --api-url <url> \
+  --api-key <key> \
+  [--max-concurrent <n>]
+```
+
+The `node run` command can also read from environment variables:
+
+| Flag | Env Variable |
+|------|-------------|
+| `--node-id` | `PAPERCLIP_NODE_ID` |
+| `--api-url` | `PAPERCLIP_API_URL` |
+| `--api-key` | `PAPERCLIP_NODE_KEY` |
+
 ## Heartbeat
 
 ```sh

@@ -24,6 +24,7 @@ When a heartbeat fires, Paperclip:
 | OpenCode Local | `opencode_local` | Runs OpenCode CLI locally (multi-provider `provider/model`) |
 | OpenClaw | `openclaw` | Sends wake payloads to an OpenClaw webhook |
 | [Process](/adapters/process) | `process` | Executes arbitrary shell commands |
+| [Remote Node](/adapters/remote-node) | `remote_node` | Runs agents on registered remote machines |
 | [HTTP](/adapters/http) | `http` | Sends webhooks to external agents |
 
 ## Adapter Architecture
@@ -58,4 +59,5 @@ Three registries consume these modules:
 - **Need a coding agent?** Use `claude_local`, `codex_local`, `gemini_local`, or `opencode_local`
 - **Need to run a script or command?** Use `process`
 - **Need to call an external service?** Use `http`
+- **Need to run on a remote machine?** Use `remote_node`
 - **Need something custom?** [Create your own adapter](/adapters/creating-an-adapter)

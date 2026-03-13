@@ -94,6 +94,7 @@
               "adapters/claude-local",
               "adapters/codex-local",
               "adapters/process",
+              "adapters/remote-node",
               "adapters/http",
               "adapters/creating-an-adapter"
             ]
@@ -115,6 +116,7 @@
               "api/goals-and-projects",
               "api/costs",
               "api/secrets",
+              "api/nodes",
               "api/activity",
               "api/dashboard"
             ]

@@ -20,7 +20,7 @@ Paperclip is a monorepo with four main layers.
 ├─────────────────────────────────────┤
 │  Adapters                           │
 │  Claude Local, Codex Local,         │
-│  Process, HTTP                      │
+│  Remote Node, Process, HTTP         │
 └─────────────────────────────────────┘
 ```
 
@@ -32,7 +32,7 @@ Paperclip is a monorepo with four main layers.
 | Backend | Node.js 20+, Express.js 5, TypeScript |
 | Database | PostgreSQL 17 (or embedded PGlite), Drizzle ORM |
 | Auth | Better Auth (sessions + API keys) |
-| Adapters | Claude Code CLI, Codex CLI, shell process, HTTP webhook |
+| Adapters | Claude Code CLI, Codex CLI, remote node, shell process, HTTP webhook |
 | Package manager | pnpm 9 with workspaces |
 
 ## Repository Structure
@@ -87,7 +87,7 @@ Adapters are the bridge between Paperclip and agent runtimes. Each adapter is a 
 - **UI module** — stdout parser for the run viewer, config form fields for agent creation
 - **CLI module** — terminal formatter for `paperclipai run --watch`
 
-Built-in adapters: `claude_local`, `codex_local`, `process`, `http`. You can create custom adapters for any runtime.
+Built-in adapters: `claude_local`, `codex_local`, `remote_node`, `process`, `http`. You can create custom adapters for any runtime.
 
 ## Key Design Decisions
 
