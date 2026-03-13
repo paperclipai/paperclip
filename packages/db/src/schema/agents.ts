@@ -7,6 +7,7 @@ import {
   timestamp,
   jsonb,
   index,
+  boolean,
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 
@@ -32,9 +33,18 @@ export const agents = pgTable(
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+
+    // --- AllCare: Agent Identity & HIPAA Extensions ---
+    scopes: jsonb("scopes").$type<string[]>().notNull().default([]),
+    maxScopeDepth: integer("max_scope_depth").notNull().default(0),
+    phiAccessLevel: text("phi_access_level").notNull().default("none"),
+    publicKeyJwk: jsonb("public_key_jwk").$type<Record<string, unknown>>(),
+    parentAgentId: uuid("parent_agent_id").references((): AnyPgColumn => agents.id),
+    dpopEnabled: boolean("dpop_enabled").notNull().default(false),
   },
   (table) => ({
     companyStatusIdx: index("agents_company_status_idx").on(table.companyId, table.status),
     companyReportsToIdx: index("agents_company_reports_to_idx").on(table.companyId, table.reportsTo),
+    parentAgentIdx: index("agents_parent_agent_idx").on(table.parentAgentId),
   }),
 );

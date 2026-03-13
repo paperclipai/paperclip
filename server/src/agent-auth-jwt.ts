@@ -1,4 +1,5 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, createSign, createVerify, createPublicKey, timingSafeEqual } from "node:crypto";
+import { verifyDpopProof, extractDpopHeader, computeAccessTokenHash, type JwkPublicKey } from "./dpop.js";
 
 interface JwtHeader {
   alg: string;
@@ -15,9 +16,13 @@ export interface LocalAgentJwtClaims {
   iss?: string;
   aud?: string;
   jti?: string;
+  // AllCare: DPoP confirmation claim
+  cnf?: { jkt: string };
+  scopes?: string[];
 }
 
-const JWT_ALGORITHM = "HS256";
+const JWT_ALGORITHM_HMAC = "HS256";
+const JWT_ALGORITHM_EC = "ES256";
 
 function parseNumber(value: string | undefined, fallback: number) {
   const parsed = Number(value);
@@ -65,6 +70,9 @@ function safeCompare(a: string, b: string) {
   return timingSafeEqual(left, right);
 }
 
+/**
+ * Create an HS256 JWT (original Paperclip behavior, backward compatible).
+ */
 export function createLocalAgentJwt(agentId: string, companyId: string, adapterType: string, runId: string) {
   const config = jwtConfig();
   if (!config) return null;
@@ -82,7 +90,7 @@ export function createLocalAgentJwt(agentId: string, companyId: string, adapterT
   };
 
   const header = {
-    alg: JWT_ALGORITHM,
+    alg: JWT_ALGORITHM_HMAC,
     typ: "JWT",
   };
 
@@ -92,6 +100,51 @@ export function createLocalAgentJwt(agentId: string, companyId: string, adapterT
   return `${signingInput}.${signature}`;
 }
 
+/**
+ * Create a DPoP-bound ES256 JWT with cnf.jkt claim.
+ * The token is bound to the agent's public key thumbprint.
+ */
+export function createDpopBoundAgentJwt(
+  agentId: string,
+  companyId: string,
+  adapterType: string,
+  runId: string,
+  jkt: string,
+  scopes: string[],
+) {
+  const config = jwtConfig();
+  if (!config) return null;
+
+  const now = Math.floor(Date.now() / 1000);
+  const ttl = parseNumber(process.env.PAPERCLIP_DPOP_JWT_TTL_SECONDS, 60 * 60); // 1hr default for DPoP
+  const claims: LocalAgentJwtClaims = {
+    sub: agentId,
+    company_id: companyId,
+    adapter_type: adapterType,
+    run_id: runId,
+    iat: now,
+    exp: now + ttl,
+    iss: config.issuer,
+    aud: config.audience,
+    cnf: { jkt },
+    scopes,
+  };
+
+  const header = {
+    alg: JWT_ALGORITHM_HMAC, // Server-side token still uses HMAC (server secret signs it)
+    typ: "JWT",
+  };
+
+  const signingInput = `${base64UrlEncode(JSON.stringify(header))}.${base64UrlEncode(JSON.stringify(claims))}`;
+  const signature = signPayload(config.secret, signingInput);
+
+  return `${signingInput}.${signature}`;
+}
+
+/**
+ * Verify an agent JWT. Supports both plain HS256 and DPoP-bound tokens.
+ * For DPoP-bound tokens (those with cnf.jkt), also verifies the DPoP proof header.
+ */
 export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
   if (!token) return null;
   const config = jwtConfig();
@@ -102,7 +155,7 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
   const [headerB64, claimsB64, signature] = parts;
 
   const header = parseJson(base64UrlDecode(headerB64));
-  if (!header || header.alg !== JWT_ALGORITHM) return null;
+  if (!header || header.alg !== JWT_ALGORITHM_HMAC) return null;
 
   const signingInput = `${headerB64}.${claimsB64}`;
   const expectedSig = signPayload(config.secret, signingInput);
@@ -127,6 +180,14 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
   if (issuer && issuer !== config.issuer) return null;
   if (audience && audience !== config.audience) return null;
 
+  // Parse DPoP confirmation claim if present
+  const cnf = claims.cnf && typeof claims.cnf === "object" && !Array.isArray(claims.cnf)
+    ? { jkt: (claims.cnf as Record<string, unknown>).jkt as string }
+    : undefined;
+
+  // Parse scopes if present
+  const scopes = Array.isArray(claims.scopes) ? claims.scopes as string[] : undefined;
+
   return {
     sub,
     company_id: companyId,
@@ -137,5 +198,34 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
     ...(issuer ? { iss: issuer } : {}),
     ...(audience ? { aud: audience } : {}),
     jti: typeof claims.jti === "string" ? claims.jti : undefined,
+    ...(cnf ? { cnf } : {}),
+    ...(scopes ? { scopes } : {}),
   };
+}
+
+/**
+ * Full DPoP-aware verification: verify both the access token and the DPoP proof.
+ * Use this for endpoints that require DPoP when the agent has dpop_enabled.
+ */
+export function verifyDpopBoundRequest(
+  accessToken: string,
+  dpopHeader: string | null,
+  httpMethod: string,
+  httpUri: string,
+): { claims: LocalAgentJwtClaims | null; error: string | null } {
+  const claims = verifyLocalAgentJwt(accessToken);
+  if (!claims) return { claims: null, error: "Invalid access token" };
+
+  // If token has no cnf claim, it's a plain token (backward compatible)
+  if (!claims.cnf?.jkt) return { claims, error: null };
+
+  // Token is DPoP-bound: require DPoP proof header
+  if (!dpopHeader) return { claims: null, error: "DPoP proof required for sender-constrained token" };
+
+  const ath = computeAccessTokenHash(accessToken);
+  const result = verifyDpopProof(dpopHeader, httpMethod, httpUri, claims.cnf.jkt, ath);
+
+  if (!result.valid) return { claims: null, error: `DPoP verification failed: ${result.error}` };
+
+  return { claims, error: null };
 }

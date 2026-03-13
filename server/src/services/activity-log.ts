@@ -14,6 +14,13 @@ export interface LogActivityInput {
   agentId?: string | null;
   runId?: string | null;
   details?: Record<string, unknown> | null;
+  // AllCare: HIPAA audit fields
+  phiAccessed?: boolean;
+  patientId?: string | null;
+  accessJustification?: string | null;
+  delegationChain?: string[] | null;
+  retentionPolicy?: "hipaa_6yr" | "standard";
+  dpopJkt?: string | null;
 }
 
 export async function logActivity(db: Db, input: LogActivityInput) {
@@ -29,6 +36,13 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     agentId: input.agentId ?? null,
     runId: input.runId ?? null,
     details: redactedDetails,
+    // AllCare: HIPAA audit fields
+    phiAccessed: input.phiAccessed ?? false,
+    patientId: input.patientId ?? null,
+    accessJustification: input.accessJustification ?? null,
+    delegationChain: input.delegationChain ?? null,
+    retentionPolicy: input.retentionPolicy ?? "hipaa_6yr",
+    dpopJkt: input.dpopJkt ?? null,
   });
 
   publishLiveEvent({
@@ -43,6 +57,8 @@ export async function logActivity(db: Db, input: LogActivityInput) {
       agentId: input.agentId ?? null,
       runId: input.runId ?? null,
       details: redactedDetails,
+      phiAccessed: input.phiAccessed ?? false,
+      patientId: input.patientId ?? null,
     },
   });
 }

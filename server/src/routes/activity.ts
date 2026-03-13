@@ -15,6 +15,13 @@ const createActivitySchema = z.object({
   entityId: z.string().min(1),
   agentId: z.string().uuid().optional().nullable(),
   details: z.record(z.unknown()).optional().nullable(),
+  // AllCare: HIPAA audit fields
+  phiAccessed: z.boolean().optional().default(false),
+  patientId: z.string().optional().nullable(),
+  accessJustification: z.string().optional().nullable(),
+  delegationChain: z.array(z.string()).optional().nullable(),
+  retentionPolicy: z.enum(["hipaa_6yr", "standard"]).optional().default("hipaa_6yr"),
+  dpopJkt: z.string().optional().nullable(),
 });
 
 export function activityRoutes(db: Db) {
@@ -38,6 +45,9 @@ export function activityRoutes(db: Db) {
       agentId: req.query.agentId as string | undefined,
       entityType: req.query.entityType as string | undefined,
       entityId: req.query.entityId as string | undefined,
+      // AllCare: HIPAA audit filters
+      phiOnly: req.query.phiOnly === "true" ? true : undefined,
+      patientId: req.query.patientId as string | undefined,
     };
     const result = await svc.list(filters);
     res.json(result);

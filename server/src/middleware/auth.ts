@@ -3,7 +3,8 @@ import type { Request, RequestHandler } from "express";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentApiKeys, agents, companyMemberships, instanceUserRoles } from "@paperclipai/db";
-import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
+import { verifyLocalAgentJwt, verifyDpopBoundRequest } from "../agent-auth-jwt.js";
+import { extractDpopHeader } from "../dpop.js";
 import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
@@ -88,8 +89,21 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       .then((rows) => rows[0] ?? null);
 
     if (!key) {
-      const claims = verifyLocalAgentJwt(token);
+      // Check for DPoP proof header (AllCare: agent identity)
+      const dpopHeader = extractDpopHeader(req.headers as Record<string, string | string[] | undefined>);
+      const httpUri = `${req.protocol}://${req.get("host")}${req.originalUrl}`;
+
+      const { claims, error: dpopError } = verifyDpopBoundRequest(
+        token,
+        dpopHeader,
+        req.method,
+        httpUri,
+      );
+
       if (!claims) {
+        if (dpopError) {
+          logger.warn({ err: dpopError, method: req.method, url: req.originalUrl }, "Agent JWT/DPoP verification failed");
+        }
         next();
         return;
       }
@@ -116,7 +130,9 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         companyId: claims.company_id,
         keyId: undefined,
         runId: runIdHeader || claims.run_id || undefined,
-        source: "agent_jwt",
+        source: claims.cnf?.jkt ? "agent_dpop" : "agent_jwt",
+        scopes: claims.scopes,
+        dpopJkt: claims.cnf?.jkt,
       };
       next();
       return;

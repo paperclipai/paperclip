@@ -7,6 +7,9 @@ export interface ActivityFilters {
   agentId?: string;
   entityType?: string;
   entityId?: string;
+  // AllCare: HIPAA audit filters
+  phiOnly?: boolean;
+  patientId?: string;
 }
 
 export function activityService(db: Db) {
@@ -23,6 +26,13 @@ export function activityService(db: Db) {
       }
       if (filters.entityId) {
         conditions.push(eq(activityLog.entityId, filters.entityId));
+      }
+      // AllCare: HIPAA audit filters
+      if (filters.phiOnly) {
+        conditions.push(eq(activityLog.phiAccessed, true));
+      }
+      if (filters.patientId) {
+        conditions.push(eq(activityLog.patientId, filters.patientId));
       }
 
       return db

@@ -31,6 +31,8 @@ import {
 } from "../services/index.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { validateScopeNarrowing, validateScopeDepth } from "../middleware/scope-enforcement.js";
+import { generateAgentKeypair } from "../dpop.js";
 import { findServerAdapter, listAdapterModels } from "../adapters/index.js";
 import { redactEventPayload } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
@@ -892,12 +894,51 @@ export function agentRoutes(db: Db) {
       normalizedAdapterConfig,
     );
 
+    // AllCare: Scope narrowing enforcement when agent spawns child agent
+    const requestedScopes: string[] = Array.isArray(req.body.scopes) ? req.body.scopes : [];
+    const requestedDpop: boolean = req.body.dpopEnabled === true;
+    let parentAgentId: string | null = null;
+
+    if (req.actor.type === "agent" && req.actor.agentId) {
+      const parentAgent = await svc.getById(req.actor.agentId);
+      if (parentAgent) {
+        parentAgentId = parentAgent.id;
+        const parentScopes: string[] = Array.isArray(parentAgent.scopes) ? parentAgent.scopes as string[] : [];
+        const scopeError = validateScopeNarrowing(parentScopes, requestedScopes);
+        if (scopeError) {
+          res.status(403).json({ error: scopeError, code: "SCOPE_ESCALATION" });
+          return;
+        }
+        const depthError = validateScopeDepth(0, parentAgent.maxScopeDepth);
+        if (depthError) {
+          res.status(403).json({ error: depthError, code: "SCOPE_DEPTH_EXCEEDED" });
+          return;
+        }
+      }
+    }
+
+    // AllCare: Generate DPoP keypair if requested
+    let publicKeyJwk: Record<string, unknown> | undefined;
+    let privateKeyJwk: Record<string, unknown> | undefined;
+    if (requestedDpop) {
+      const keypair = generateAgentKeypair();
+      publicKeyJwk = keypair.publicKeyJwk;
+      privateKeyJwk = keypair.privateKeyJwk;
+    }
+
     const agent = await svc.create(companyId, {
       ...req.body,
       adapterConfig: normalizedAdapterConfig,
       status: "idle",
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
+      // AllCare: Identity fields
+      scopes: requestedScopes,
+      dpopEnabled: requestedDpop,
+      publicKeyJwk: publicKeyJwk ?? null,
+      parentAgentId,
+      phiAccessLevel: req.body.phiAccessLevel ?? "none",
+      maxScopeDepth: req.body.maxScopeDepth ?? 0,
     });
 
     const actor = getActorInfo(req);
@@ -910,10 +951,21 @@ export function agentRoutes(db: Db) {
       action: "agent.created",
       entityType: "agent",
       entityId: agent.id,
-      details: { name: agent.name, role: agent.role },
+      details: {
+        name: agent.name,
+        role: agent.role,
+        scopes: requestedScopes,
+        dpopEnabled: requestedDpop,
+        parentAgentId,
+      },
     });
 
-    res.status(201).json(agent);
+    // Return agent + private key (only on creation, never stored server-side)
+    const response: Record<string, unknown> = { ...agent };
+    if (privateKeyJwk) {
+      response.privateKeyJwk = privateKeyJwk;
+    }
+    res.status(201).json(response);
   });
 
   router.patch("/agents/:id/permissions", validate(updateAgentPermissionsSchema), async (req, res) => {
