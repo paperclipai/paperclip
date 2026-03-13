@@ -14,6 +14,7 @@ import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { AgentConfigForm } from "../components/AgentConfigForm";
+import { AgentSkillsEditor } from "../components/AgentSkillsEditor";
 import { adapterLabels, roleLabels } from "../components/agent-config-primitives";
 import { getUIAdapter, buildTranscript } from "../adapters";
 import type { TranscriptEntry } from "../adapters";
@@ -1075,6 +1076,9 @@ function AgentConfigurePage({
         updatePermissions={updatePermissions}
         companyId={companyId}
       />
+      {agent.adapterType === "claude_local" && (
+        <AgentSkillsEditor agent={agent} companyId={companyId} />
+      )}
       <div>
         <h3 className="text-sm font-medium mb-3">API Keys</h3>
         <KeysTab agentId={agentId} companyId={companyId} />

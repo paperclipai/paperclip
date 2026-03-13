@@ -41,24 +41,49 @@ async function resolvePaperclipSkillsDir(): Promise<string | null> {
   return null;
 }
 
+interface AgentSkill {
+  name: string;
+  description?: string;
+  content: string;
+  enabled?: boolean;
+}
+
 /**
  * Create a tmpdir with `.claude/skills/` containing symlinks to skills from
  * the repo's `skills/` directory, so `--add-dir` makes Claude Code discover
- * them as proper registered skills.
+ * them as proper registered skills.  Optionally writes per-agent custom skills.
  */
-async function buildSkillsDir(): Promise<string> {
+async function buildSkillsDir(agentSkills?: AgentSkill[]): Promise<string> {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skills-"));
   const target = path.join(tmp, ".claude", "skills");
   await fs.mkdir(target, { recursive: true });
   const skillsDir = await resolvePaperclipSkillsDir();
-  if (!skillsDir) return tmp;
-  const entries = await fs.readdir(skillsDir, { withFileTypes: true });
-  for (const entry of entries) {
-    if (entry.isDirectory()) {
-      await fs.symlink(
-        path.join(skillsDir, entry.name),
-        path.join(target, entry.name),
-      );
+  if (skillsDir) {
+    const entries = await fs.readdir(skillsDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        await fs.symlink(
+          path.join(skillsDir, entry.name),
+          path.join(target, entry.name),
+        );
+      }
+    }
+  }
+  // Write per-agent custom skills
+  if (agentSkills?.length) {
+    for (const skill of agentSkills) {
+      if (skill.enabled === false) continue;
+      const safeName = skill.name.replace(/[^a-zA-Z0-9_-]/g, "-").toLowerCase();
+      const skillDir = path.join(target, safeName);
+      await fs.mkdir(skillDir, { recursive: true });
+      const frontmatter = [
+        "---",
+        `name: ${skill.name}`,
+        ...(skill.description ? [`description: ${skill.description}`] : []),
+        "---",
+        "",
+      ].join("\n");
+      await fs.writeFile(path.join(skillDir, `${safeName}.md`), frontmatter + skill.content, "utf-8");
     }
   }
   return tmp;
@@ -304,7 +329,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     extraArgs,
   } = runtimeConfig;
   const billingType = resolveClaudeBillingType(env);
-  const skillsDir = await buildSkillsDir();
+  const agentSkills = Array.isArray(config.skills)
+    ? (config.skills as AgentSkill[]).filter(
+        (s) => s && typeof s.name === "string" && typeof s.content === "string",
+      )
+    : [];
+  const skillsDir = await buildSkillsDir(agentSkills);
 
   // When instructionsFilePath is configured, create a combined temp file that
   // includes both the file content and the path directive, so we only need

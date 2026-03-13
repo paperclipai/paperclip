@@ -83,13 +83,12 @@ export function NewAgentDialog() {
 
   const createAgent = useMutation({
     mutationFn: (data: Record<string, unknown>) =>
-      agentsApi.hire(selectedCompanyId!, data),
-    onSuccess: (result) => {
+      agentsApi.create(selectedCompanyId!, data),
+    onSuccess: (agent) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId!) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
       reset();
       closeNewAgent();
-      navigate(agentUrl(result.agent));
+      navigate(agentUrl(agent));
     },
     onError: (error) => {
       setFormError(error instanceof Error ? error.message : "Failed to create agent");
