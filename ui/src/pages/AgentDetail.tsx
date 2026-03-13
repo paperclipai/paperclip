@@ -2159,7 +2159,8 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           {typeof adapterInvokePayload.cwd === "string" && (
             <div className="text-xs break-all"><span className="text-muted-foreground">Working dir: </span><span className="font-mono">{adapterInvokePayload.cwd}</span></div>
           )}
-          {adapterInvokePayload.git && typeof adapterInvokePayload.git === "object" && (() => {
+          {(() => {
+            if (!adapterInvokePayload.git || typeof adapterInvokePayload.git !== "object") return null;
             const git = adapterInvokePayload.git as Record<string, string>;
             return (
               <div className="flex items-center gap-3 text-xs">
@@ -2174,7 +2175,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
                 )}
               </div>
             );
-          })() as React.ReactNode}
+          })()}
           {typeof adapterInvokePayload.command === "string" && (
             <div className="text-xs break-all">
               <span className="text-muted-foreground">Command: </span>

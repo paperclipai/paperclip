@@ -64,6 +64,7 @@ export {
 
 export type {
   Company,
+  CompanySettings,
   Agent,
   AgentPermissions,
   AgentKeyCreated,
