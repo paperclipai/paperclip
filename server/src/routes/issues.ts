@@ -314,6 +314,39 @@ export function issueRoutes(db: Db, storage: StorageService) {
     });
   });
 
+  // Agents receive PAPERCLIP_TASK_ID (which is an issue ID) as an env var but have no
+  // endpoint to fetch the task/issue body. GET /api/tasks/:id provides that context.
+  router.get("/tasks/:id", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Task not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const [ancestors, project, goal, mentionedProjectIds] = await Promise.all([
+      svc.getAncestors(issue.id),
+      issue.projectId ? projectsSvc.getById(issue.projectId) : null,
+      issue.goalId
+        ? goalsSvc.getById(issue.goalId)
+        : !issue.projectId
+          ? goalsSvc.getDefaultCompanyGoal(issue.companyId)
+          : null,
+      svc.findMentionedProjectIds(issue.id),
+    ]);
+    const mentionedProjects = mentionedProjectIds.length > 0
+      ? await projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
+      : [];
+    res.json({
+      ...issue,
+      goalId: goal?.id ?? issue.goalId,
+      ancestors,
+      project: project ?? null,
+      goal: goal ?? null,
+      mentionedProjects,
+    });
+  });
+
   router.post("/issues/:id/read", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
