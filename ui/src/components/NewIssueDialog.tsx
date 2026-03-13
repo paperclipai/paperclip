@@ -5,6 +5,7 @@ import { useCompany } from "../context/CompanyContext";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { agentsApi } from "../api/agents";
+import { healthApi } from "../api/health";
 import { authApi } from "../api/auth";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
@@ -272,6 +273,13 @@ export function NewIssueDialog() {
   const assigneeSelectorRef = useRef<HTMLButtonElement | null>(null);
   const projectSelectorRef = useRef<HTMLButtonElement | null>(null);
 
+  const issueHealthQuery = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+    retry: false,
+  });
+  const isHosted = issueHealthQuery.data?.hostedMode === true;
+
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(effectiveCompanyId!),
     queryFn: () => agentsApi.list(effectiveCompanyId!),
@@ -299,7 +307,7 @@ export function NewIssueDialog() {
   const selectedAssigneeUserId = selectedAssignee.assigneeUserId;
 
   const assigneeAdapterType = (agents ?? []).find((agent) => agent.id === selectedAssigneeAgentId)?.adapterType ?? null;
-  const supportsAssigneeOverrides = Boolean(
+  const supportsAssigneeOverrides = !isHosted && Boolean(
     assigneeAdapterType && ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType),
   );
   const mentionOptions = useMemo<MentionOption[]>(() => {

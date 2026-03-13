@@ -66,6 +66,8 @@ export function InviteLandingPage() {
     retry: false,
   });
 
+  const isHosted = healthQuery.data?.hostedMode === true;
+
   const invite = inviteQuery.data;
   const allowedJoinTypes = invite?.allowedJoinTypes ?? "both";
   const availableJoinTypes = useMemo(() => {
@@ -258,20 +260,22 @@ export function InviteLandingPage() {
                 onChange={(event) => setAgentName(event.target.value)}
               />
             </label>
-            <label className="block text-sm">
-              <span className="mb-1 block text-muted-foreground">Adapter type</span>
-              <select
-                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
-                value={adapterType}
-                onChange={(event) => setAdapterType(event.target.value as AgentAdapterType)}
-              >
-                {joinAdapterOptions.map((type) => (
-                  <option key={type} value={type} disabled={!ENABLED_INVITE_ADAPTERS.has(type)}>
-                    {adapterLabels[type]}{!ENABLED_INVITE_ADAPTERS.has(type) ? " (Coming soon)" : ""}
-                  </option>
-                ))}
-              </select>
-            </label>
+            {!isHosted && (
+              <label className="block text-sm">
+                <span className="mb-1 block text-muted-foreground">Adapter type</span>
+                <select
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                  value={adapterType}
+                  onChange={(event) => setAdapterType(event.target.value as AgentAdapterType)}
+                >
+                  {joinAdapterOptions.map((type) => (
+                    <option key={type} value={type} disabled={!ENABLED_INVITE_ADAPTERS.has(type)}>
+                      {adapterLabels[type]}{!ENABLED_INVITE_ADAPTERS.has(type) ? " (Coming soon)" : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <label className="block text-sm">
               <span className="mb-1 block text-muted-foreground">Capabilities (optional)</span>
               <textarea

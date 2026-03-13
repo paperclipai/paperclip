@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import { useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { agentsApi, type OrgNode } from "../api/agents";
+import { healthApi } from "../api/health";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -142,6 +143,13 @@ export function OrgChart() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
+
+  const healthQuery = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+    retry: false,
+  });
+  const isHosted = healthQuery.data?.hostedMode === true;
 
   const { data: orgTree, isLoading } = useQuery({
     queryKey: queryKeys.org(selectedCompanyId!),
@@ -407,7 +415,7 @@ export function OrgChart() {
                   <span className="text-[11px] text-muted-foreground leading-tight mt-0.5">
                     {agent?.title ?? roleLabel(node.role)}
                   </span>
-                  {agent && (
+                  {agent && !isHosted && (
                     <span className="text-[10px] text-muted-foreground/60 font-mono leading-tight mt-1">
                       {adapterLabels[agent.adapterType] ?? agent.adapterType}
                     </span>
