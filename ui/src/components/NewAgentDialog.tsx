@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
+import { KiroLogoIcon } from "./KiroLogoIcon";
 
 type AdvancedAdapterType =
   | "claude_local"
@@ -62,7 +63,7 @@ const ADVANCED_ADAPTER_OPTIONS: Array<{
   {
     value: "kiro_local",
     label: "Kiro CLI",
-    icon: Terminal,
+    icon: KiroLogoIcon,
     desc: "Local Kiro agent (AWS)",
   },
   {

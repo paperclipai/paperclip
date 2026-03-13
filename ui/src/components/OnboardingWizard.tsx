@@ -34,6 +34,7 @@ import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { ChoosePathButton } from "./PathInstructionsModal";
 import { HintIcon } from "./agent-config-primitives";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
+import { KiroLogoIcon } from "./KiroLogoIcon";
 import {
   Building2,
   Bot,
@@ -775,7 +776,7 @@ export function OnboardingWizard() {
                           {
                             value: "kiro_local" as const,
                             label: "Kiro CLI",
-                            icon: Terminal,
+                            icon: KiroLogoIcon,
                             desc: "Local Kiro agent"
                           },
                           {
