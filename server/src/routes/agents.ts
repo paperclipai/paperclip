@@ -42,6 +42,8 @@ import {
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "@paperclipai/adapter-opencode-local/server";
+import { projectWorkspaces } from "@paperclipai/db";
+import { preferProjectPrimaryWorkspaceCwd } from "../services/agent-workspace-cwd.js";
 
 export function agentRoutes(db: Db) {
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
@@ -261,6 +263,19 @@ export function agentRoutes(db: Db) {
       next.model = DEFAULT_CURSOR_LOCAL_MODEL;
     }
     return ensureGatewayDeviceKey(adapterType, next);
+  }
+
+  async function resolveCompanyPrimaryWorkspaceCwd(companyId: string): Promise<string | null> {
+    const rows = await db
+      .select({ cwd: projectWorkspaces.cwd })
+      .from(projectWorkspaces)
+      .where(and(eq(projectWorkspaces.companyId, companyId), eq(projectWorkspaces.isPrimary, true)))
+      .orderBy(projectWorkspaces.createdAt, projectWorkspaces.id);
+    for (const row of rows) {
+      const cwd = asNonEmptyString(row.cwd);
+      if (cwd && cwd !== "/__paperclip_repo_only__") return cwd;
+    }
+    return null;
   }
 
   async function assertAdapterConfigConstraints(
@@ -737,10 +752,15 @@ export function agentRoutes(db: Db) {
     await assertCanCreateAgentsForCompany(req, companyId);
     const sourceIssueIds = parseSourceIssueIds(req.body);
     const { sourceIssueId: _sourceIssueId, sourceIssueIds: _sourceIssueIds, ...hireInput } = req.body;
-    const requestedAdapterConfig = applyCreateDefaultsByAdapterType(
+    const createDefaultedAdapterConfig = applyCreateDefaultsByAdapterType(
       hireInput.adapterType,
       ((hireInput.adapterConfig ?? {}) as Record<string, unknown>),
     );
+    const requestedAdapterConfig = preferProjectPrimaryWorkspaceCwd({
+      adapterType: hireInput.adapterType,
+      adapterConfig: createDefaultedAdapterConfig,
+      projectPrimaryWorkspaceCwd: await resolveCompanyPrimaryWorkspaceCwd(companyId),
+    });
     const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
       companyId,
       requestedAdapterConfig,
@@ -877,10 +897,15 @@ export function agentRoutes(db: Db) {
       assertBoard(req);
     }
 
-    const requestedAdapterConfig = applyCreateDefaultsByAdapterType(
+    const createDefaultedAdapterConfig = applyCreateDefaultsByAdapterType(
       req.body.adapterType,
       ((req.body.adapterConfig ?? {}) as Record<string, unknown>),
     );
+    const requestedAdapterConfig = preferProjectPrimaryWorkspaceCwd({
+      adapterType: req.body.adapterType,
+      adapterConfig: createDefaultedAdapterConfig,
+      projectPrimaryWorkspaceCwd: await resolveCompanyPrimaryWorkspaceCwd(companyId),
+    });
     const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
       companyId,
       requestedAdapterConfig,
@@ -1079,9 +1104,16 @@ export function agentRoutes(db: Db) {
         requestedAdapterType,
         rawEffectiveAdapterConfig,
       );
+      const projectPrimaryWorkspaceCwd = await resolveCompanyPrimaryWorkspaceCwd(existing.companyId);
+      const normalizedWorkspaceAdapterConfig = preferProjectPrimaryWorkspaceCwd({
+        adapterType: requestedAdapterType,
+        adapterConfig: effectiveAdapterConfig,
+        projectPrimaryWorkspaceCwd,
+        agentId: existing.id,
+      });
       const normalizedEffectiveAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
         existing.companyId,
-        effectiveAdapterConfig,
+        normalizedWorkspaceAdapterConfig,
         { strictMode: strictSecretsMode },
       );
       patchData.adapterConfig = normalizedEffectiveAdapterConfig;

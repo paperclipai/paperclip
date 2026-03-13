@@ -39,6 +39,7 @@ import {
   parseProjectExecutionWorkspacePolicy,
   resolveExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
+import { isPaperclipFallbackWorkspaceCwd } from "./agent-workspace-cwd.js";
 import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
@@ -172,7 +173,10 @@ export function resolveRuntimeSessionParamsForWorkspace(input: {
   }
   const fallbackAgentHomeCwd = resolveDefaultAgentWorkspaceDir(agentId);
   const configuredCwd = readNonEmptyString(input.configuredCwd);
-  const migratableFallbackCwds = [fallbackAgentHomeCwd, configuredCwd]
+  const migratableFallbackCwds = [
+    fallbackAgentHomeCwd,
+    isPaperclipFallbackWorkspaceCwd({ cwd: configuredCwd, agentId }) ? configuredCwd : null,
+  ]
     .filter((value): value is string => Boolean(value))
     .map((value) => path.resolve(value));
   if (!migratableFallbackCwds.includes(path.resolve(previousCwd))) {

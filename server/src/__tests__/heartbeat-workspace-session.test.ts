@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
+import path from "node:path";
+import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import {
   resolveRuntimeSessionParamsForWorkspace,
   shouldResetTaskSessionForWake,
@@ -63,15 +65,20 @@ describe("resolveRuntimeSessionParamsForWorkspace", () => {
   });
 
   it("migrates configured wrapper cwd sessions to project workspace when project cwd becomes available", () => {
+    const wrapperWorkspaceCwd = path.resolve(
+      resolvePaperclipInstanceRoot(),
+      "workspaces",
+      "project-wrapper",
+    );
     const result = resolveRuntimeSessionParamsForWorkspace({
       agentId: "agent-123",
       previousSessionParams: {
         sessionId: "session-1",
-        cwd: "/tmp/wrapper-workspace",
+        cwd: wrapperWorkspaceCwd,
         workspaceId: "workspace-1",
       },
       resolvedWorkspace: buildResolvedWorkspace({ cwd: "/tmp/new-project-cwd" }),
-      configuredCwd: "/tmp/wrapper-workspace",
+      configuredCwd: wrapperWorkspaceCwd,
     });
 
     expect(result.sessionParams).toMatchObject({
@@ -80,6 +87,26 @@ describe("resolveRuntimeSessionParamsForWorkspace", () => {
       workspaceId: "workspace-1",
     });
     expect(result.warning).toContain("Attempting to resume session");
+  });
+
+  it("does not migrate arbitrary configured cwd sessions to project workspace", () => {
+    const result = resolveRuntimeSessionParamsForWorkspace({
+      agentId: "agent-123",
+      previousSessionParams: {
+        sessionId: "session-1",
+        cwd: "/tmp/custom-checkout",
+        workspaceId: "workspace-1",
+      },
+      resolvedWorkspace: buildResolvedWorkspace({ cwd: "/tmp/new-project-cwd" }),
+      configuredCwd: "/tmp/custom-checkout",
+    });
+
+    expect(result.sessionParams).toEqual({
+      sessionId: "session-1",
+      cwd: "/tmp/custom-checkout",
+      workspaceId: "workspace-1",
+    });
+    expect(result.warning).toBeNull();
   });
 
   it("does not migrate when resolved workspace id differs from previous session workspace id", () => {
