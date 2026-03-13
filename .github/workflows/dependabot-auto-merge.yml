@@ -6,5 +6,49 @@ on:
 
 jobs:
   auto-merge:
-    uses: wopr-network/.github/.github/workflows/dependabot-auto-merge.yml@main
-    secrets: inherit
+    runs-on: [self-hosted, Linux, X64]
+    if: github.actor == 'dependabot[bot]'
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Get PR metadata
+        id: meta
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            if (!pr) { core.setOutput('skip', 'true'); return; }
+
+            const { data: details } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+            });
+
+            // Only auto-merge patch and minor updates (not major)
+            const title = details.title;
+            const isMajor = /from \d+ to \d+/.test(title) &&
+              title.match(/from (\d+)/)?.[ 1] !== title.match(/to (\d+)/)?.[ 1];
+
+            core.setOutput('skip', isMajor ? 'true' : 'false');
+            core.setOutput('pr_number', String(pr.number));
+
+      - name: Approve PR
+        if: steps.meta.outputs.skip != 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.pulls.createReview({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: parseInt('${{ steps.meta.outputs.pr_number }}'),
+              event: 'APPROVE',
+            });
+
+      - name: Enable auto-merge
+        if: steps.meta.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr merge --auto --squash ${{ steps.meta.outputs.pr_number }} || true
