@@ -125,7 +125,9 @@ export async function testEnvironment(
           hint: "Retry the probe. If this persists, verify Kiro can run from this directory manually.",
         });
       } else if ((probe.exitCode ?? 1) === 0) {
-        const hasHello = /\bhello\b/i.test(probe.stdout);
+        // Strip ANSI escape codes before matching — kiro-cli outputs styled text
+        const plainStdout = probe.stdout.replace(/\x1b\[[0-9;]*m/g, "");
+        const hasHello = /\bhello\b/i.test(plainStdout);
         checks.push({
           code: hasHello ? "kiro_hello_probe_passed" : "kiro_hello_probe_unexpected_output",
           level: hasHello ? "info" : "warn",
