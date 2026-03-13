@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import type { Agent } from "@paperclipai/shared";
+import { AGENT_ADAPTER_TYPES, AGENT_ROLES } from "@paperclipai/shared";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -15,6 +16,27 @@ import {
 
 interface AgentListOptions extends BaseClientOptions {
   companyId?: string;
+}
+
+interface AgentCreateOptions extends BaseClientOptions {
+  companyId?: string;
+  name: string;
+  adapterType: string;
+  role?: string;
+  title?: string;
+  reportsTo?: string;
+}
+
+interface AgentUpdateOptions extends BaseClientOptions {
+  name?: string;
+  adapterType?: string;
+  role?: string;
+  title?: string;
+  reportsTo?: string;
+}
+
+interface AgentDeleteOptions extends BaseClientOptions {
+  force?: boolean;
 }
 
 interface AgentLocalCliOptions extends BaseClientOptions {
@@ -273,5 +295,173 @@ export function registerAgentCommands(program: Command): void {
         }
       }),
     { includeCompany: false },
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("create")
+      .description("Create a new agent")
+      .requiredOption("-C, --company-id <id>", "Company ID")
+      .requiredOption("-n, --name <name>", "Agent name")
+      .requiredOption(
+        "-a, --adapter-type <type>",
+        `Adapter type (${AGENT_ADAPTER_TYPES.join(", ")})`,
+      )
+      .option("-r, --role <role>", `Agent role (${AGENT_ROLES.join(", ")})`, "general")
+      .option("-t, --title <title>", "Agent title")
+      .option("--reports-to <agentId>", "Manager agent ID")
+      .action(async (opts: AgentCreateOptions) => {
+        try {
+          if (!AGENT_ADAPTER_TYPES.includes(opts.adapterType)) {
+            throw new Error(
+              `Invalid adapter type "${opts.adapterType}". Must be one of: ${AGENT_ADAPTER_TYPES.join(", ")}`,
+            );
+          }
+          if (opts.role && !AGENT_ROLES.includes(opts.role)) {
+            throw new Error(
+              `Invalid role "${opts.role}". Must be one of: ${AGENT_ROLES.join(", ")}`,
+            );
+          }
+          const ctx = resolveCommandContext(opts, { requireCompany: true });
+          const body: Record<string, unknown> = {
+            name: opts.name,
+            adapterType: opts.adapterType,
+            role: opts.role,
+          };
+          if (opts.title) body.title = opts.title;
+          if (opts.reportsTo) body.reportsTo = opts.reportsTo;
+
+          const row = await ctx.api.post<Agent>(
+            `/api/companies/${ctx.companyId}/agents`,
+            body,
+          );
+
+          if (ctx.json) {
+            printOutput(row, { json: true });
+            return;
+          }
+
+          if (row) {
+            console.log(
+              formatInlineRecord({
+                id: row.id,
+                name: row.name,
+                role: row.role,
+                status: row.status,
+                adapterType: row.adapterType,
+              }),
+            );
+          }
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: false },
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("update")
+      .description("Update an existing agent")
+      .argument("<agentId>", "Agent ID")
+      .option("-n, --name <name>", "Agent name")
+      .option(
+        "-a, --adapter-type <type>",
+        `Adapter type (${AGENT_ADAPTER_TYPES.join(", ")})`,
+      )
+      .option("-r, --role <role>", `Agent role (${AGENT_ROLES.join(", ")})`)
+      .option("-t, --title <title>", "Agent title")
+      .option("--reports-to <agentId>", "Manager agent ID")
+      .action(async (agentId: string, opts: AgentUpdateOptions) => {
+        try {
+          if (opts.adapterType && !AGENT_ADAPTER_TYPES.includes(opts.adapterType)) {
+            throw new Error(
+              `Invalid adapter type "${opts.adapterType}". Must be one of: ${AGENT_ADAPTER_TYPES.join(", ")}`,
+            );
+          }
+          if (opts.role && !AGENT_ROLES.includes(opts.role)) {
+            throw new Error(
+              `Invalid role "${opts.role}". Must be one of: ${AGENT_ROLES.join(", ")}`,
+            );
+          }
+          const ctx = resolveCommandContext(opts);
+          const body: Record<string, unknown> = {};
+          if (opts.name) body.name = opts.name;
+          if (opts.adapterType) body.adapterType = opts.adapterType;
+          if (opts.role) body.role = opts.role;
+          if (opts.title) body.title = opts.title;
+          if (opts.reportsTo) body.reportsTo = opts.reportsTo;
+
+          if (Object.keys(body).length === 0) {
+            throw new Error(
+              "No update fields provided. Use --name, --role, --title, --adapter-type, or --reports-to.",
+            );
+          }
+
+          const row = await ctx.api.patch<Agent>(`/api/agents/${agentId}`, body);
+
+          if (ctx.json) {
+            printOutput(row, { json: true });
+            return;
+          }
+
+          if (row) {
+            console.log(
+              formatInlineRecord({
+                id: row.id,
+                name: row.name,
+                role: row.role,
+                status: row.status,
+                adapterType: row.adapterType,
+              }),
+            );
+          }
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("delete")
+      .description("Terminate (permanently deactivate) an agent")
+      .argument("<agentId>", "Agent ID")
+      .option("-f, --force", "Skip confirmation")
+      .action(async (agentId: string, opts: AgentDeleteOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+
+          if (!opts.force) {
+            const readline = await import("node:readline");
+            const rl = readline.createInterface({
+              input: process.stdin,
+              output: process.stdout,
+            });
+            const answer = await new Promise<string>((resolve) => {
+              rl.question(
+                `Terminate agent ${agentId}? This is irreversible. (yes/no) `,
+                resolve,
+              );
+            });
+            rl.close();
+            if (answer.trim().toLowerCase() !== "yes") {
+              console.log("Aborted.");
+              return;
+            }
+          }
+
+          await ctx.api.post(`/api/agents/${agentId}/terminate`);
+
+          if (ctx.json) {
+            printOutput({ id: agentId, status: "terminated" }, { json: true });
+            return;
+          }
+
+          console.log(`Agent ${agentId} terminated.`);
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
   );
 }
