@@ -52,7 +52,6 @@ jobs:
 
       - name: Enable auto-merge
         if: steps.meta.outputs.skip != 'true'
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh pr merge --auto --squash ${{ steps.meta.outputs.pr_number }}
