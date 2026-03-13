@@ -69,6 +69,8 @@ The board UI exposes `sandbox` as a normal adapter type in the existing agent cr
 
 The rest of the sandbox section stays shared: inner CLI runtime, keep-alive policy, bootstrap command, instructions file, command/model/env controls, and environment testing.
 
+For the `sandbox` adapter, `instructionsFilePath` is read from inside the sandbox filesystem after workspace sync/bootstrap, not from the Paperclip host filesystem. Relative paths resolve from the sandbox working directory.
+
 ## Notes from live validation
 
 - E2B `codex` and `opencode` templates are reachable with the provider key and include those CLIs on path.

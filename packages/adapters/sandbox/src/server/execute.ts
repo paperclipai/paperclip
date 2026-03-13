@@ -1,4 +1,3 @@
-import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type {
@@ -101,27 +100,38 @@ function buildRuntimeEnv(input: AdapterExecutionContext, cwd: string): Record<st
   return env;
 }
 
-async function readInstructionsPrefix(config: Record<string, unknown>): Promise<{ prefix: string; notes: string[] }> {
+function resolveSandboxInstructionsPath(cwd: string, instructionsFilePath: string) {
+  return path.posix.isAbsolute(instructionsFilePath)
+    ? instructionsFilePath
+    : path.posix.resolve(cwd, instructionsFilePath);
+}
+
+async function readInstructionsPrefix(
+  instance: Awaited<ReturnType<SandboxProvider["create"]>>,
+  config: Record<string, unknown>,
+  cwd: string,
+): Promise<{ prefix: string; notes: string[] }> {
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   if (!instructionsFilePath) {
     return { prefix: "", notes: [] };
   }
 
+  const sandboxInstructionsPath = resolveSandboxInstructionsPath(cwd, instructionsFilePath);
   try {
-    const contents = await fs.readFile(instructionsFilePath, "utf-8");
-    const instructionsDir = `${path.dirname(instructionsFilePath)}/`;
+    const contents = await instance.readFile(sandboxInstructionsPath);
+    const instructionsDir = `${path.posix.dirname(sandboxInstructionsPath)}/`;
     return {
       prefix:
         `${contents.trim()}\n\n` +
-        `The above agent instructions were loaded from ${instructionsFilePath}. ` +
+        `The above agent instructions were loaded from ${sandboxInstructionsPath}. ` +
         `Resolve relative references from ${instructionsDir}.\n\n`,
-      notes: [`Loaded agent instructions from ${instructionsFilePath}`],
+      notes: [`Loaded agent instructions from sandbox path ${sandboxInstructionsPath}`],
     };
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     return {
       prefix: "",
-      notes: [`Failed to read instructionsFilePath ${instructionsFilePath}: ${reason}`],
+      notes: [`Failed to read sandbox instructionsFilePath ${sandboxInstructionsPath}: ${reason}`],
     };
   }
 }
@@ -402,7 +412,7 @@ async function runInnerAgent(input: {
   cliSessionId: string | null;
 }) {
   const { ctx, instance, agentType, config, cwd, env, cliSessionId } = input;
-  const instructions = await readInstructionsPrefix(config);
+  const instructions = await readInstructionsPrefix(instance, config, cwd);
   const prompt = buildPrompt(ctx, config, !cliSessionId, instructions.prefix);
   const invocation = buildCliInvocation({
     agentType,

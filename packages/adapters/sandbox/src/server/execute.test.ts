@@ -483,4 +483,98 @@ describe("sandbox adapter execute", () => {
       outputTokens: 2,
     });
   });
+
+  it("loads instructionsFilePath from the sandbox workspace instead of the host filesystem", async () => {
+    const readFileCalls: string[] = [];
+    const execCalls: Array<{ command: string; stdin?: string }> = [];
+
+    setSandboxProviderFactoryForTests(() => ({
+      type: "opensandbox",
+      async create(opts) {
+        return {
+          id: opts.sandboxId,
+          async exec(command, execOpts = {}) {
+            execCalls.push({ command, stdin: execOpts.stdin });
+            if (typeof execOpts.stdin === "string" && execOpts.stdin.includes("Do the thing")) {
+              await execOpts.onStdout?.(`${JSON.stringify({ type: "thread.started", thread_id: "thread-instructions" })}\n`);
+              await execOpts.onStdout?.(
+                `${JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "instructions loaded" } })}\n`,
+              );
+            }
+            return { exitCode: 0, signal: null, timedOut: false };
+          },
+          async writeFile() {},
+          async readFile(filePath) {
+            readFileCalls.push(filePath);
+            return "Follow /workspace/project/docs/README.md before acting.";
+          },
+          async status() {
+            return { status: "running", endpoint: null };
+          },
+          async destroy() {},
+        };
+      },
+      async reconnect(id) {
+        return {
+          id,
+          async exec() {
+            return { exitCode: 0, signal: null, timedOut: false };
+          },
+          async writeFile() {},
+          async readFile() {
+            return "";
+          },
+          async status() {
+            return { status: "running", endpoint: null };
+          },
+          async destroy() {},
+        };
+      },
+      async testConnection() {
+        return { ok: true };
+      },
+    }));
+
+    const meta: Array<{ commandNotes?: string[] }> = [];
+
+    const result = await execute({
+      runId: "run-instructions",
+      agent: {
+        id: "agent-instructions",
+        companyId: "company-1",
+        name: "Sandbox Agent",
+        adapterType: "sandbox",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        providerType: "opensandbox",
+        sandboxAgentType: "codex_local",
+        keepAlive: false,
+        cwd: "/workspace/project",
+        instructionsFilePath: "AGENTS.md",
+        promptTemplate: "Do the thing",
+        providerConfig: {
+          image: "ghcr.io/paperclipai/agent-sandbox:latest",
+        },
+      },
+      context: {},
+      onLog: async () => {},
+      onMeta: async (entry) => {
+        meta.push({ commandNotes: entry.commandNotes });
+      },
+      authToken: "jwt-token",
+    });
+
+    expect(readFileCalls).toEqual(["/workspace/project/AGENTS.md"]);
+    expect(execCalls[1]?.stdin).toContain("Follow /workspace/project/docs/README.md before acting.");
+    expect(execCalls[1]?.stdin).toContain("The above agent instructions were loaded from /workspace/project/AGENTS.md.");
+    expect(meta[0]?.commandNotes).toContain("Loaded agent instructions from sandbox path /workspace/project/AGENTS.md");
+    expect(result.summary).toBe("instructions loaded");
+  });
 });
