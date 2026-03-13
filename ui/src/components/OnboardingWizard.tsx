@@ -59,6 +59,7 @@ type AdapterType =
   | "codex_local"
   | "gemini_local"
   | "opencode_local"
+  | "kiro_local"
   | "pi_local"
   | "cursor"
   | "process"
@@ -178,6 +179,7 @@ export function OnboardingWizard() {
     adapterType === "codex_local" ||
     adapterType === "gemini_local" ||
     adapterType === "opencode_local" ||
+    adapterType === "kiro_local" ||
     adapterType === "cursor";
   const effectiveAdapterCommand =
     command.trim() ||
@@ -189,6 +191,8 @@ export function OnboardingWizard() {
       ? "agent"
       : adapterType === "opencode_local"
       ? "opencode"
+      : adapterType === "kiro_local"
+      ? "kiro-cli"
       : "claude");
 
   useEffect(() => {
@@ -769,6 +773,12 @@ export function OnboardingWizard() {
                             desc: "Local multi-provider agent"
                           },
                           {
+                            value: "kiro_local" as const,
+                            label: "Kiro CLI",
+                            icon: Terminal,
+                            desc: "Local Kiro agent"
+                          },
+                          {
                             value: "pi_local" as const,
                             label: "Pi",
                             icon: Terminal,
@@ -840,6 +850,7 @@ export function OnboardingWizard() {
                     adapterType === "codex_local" ||
                     adapterType === "gemini_local" ||
                     adapterType === "opencode_local" ||
+                    adapterType === "kiro_local" ||
                     adapterType === "pi_local" ||
                     adapterType === "cursor") && (
                     <div className="space-y-3">
