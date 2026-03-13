@@ -517,11 +517,14 @@ export async function startServer(): Promise<StartedServer> {
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any);
   
-    // Reap orphaned runs at startup (no threshold -- runningProcesses is empty)
-    void heartbeat.reapOrphanedRuns().catch((err) => {
-      logger.error({ err }, "startup reap of orphaned heartbeat runs failed");
-    });
-
+    // Reap orphaned running runs at startup while in-memory execution state is empty,
+    // then resume any persisted queued runs that were waiting on the previous process.
+    void heartbeat
+      .reapOrphanedRuns()
+      .then(() => heartbeat.resumeQueuedRuns())
+      .catch((err) => {
+        logger.error({ err }, "startup heartbeat recovery failed");
+      });
     setInterval(() => {
       void heartbeat
         .tickTimers(new Date())
@@ -534,11 +537,13 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "heartbeat timer tick failed");
         });
   
-      // Periodically reap orphaned runs (5-min staleness threshold)
+      // Periodically reap orphaned runs (5-min staleness threshold) and make sure
+      // persisted queued work is still being driven forward.
       void heartbeat
         .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
+        .then(() => heartbeat.resumeQueuedRuns())
         .catch((err) => {
-          logger.error({ err }, "periodic reap of orphaned heartbeat runs failed");
+          logger.error({ err }, "periodic heartbeat recovery failed");
         });
     }, config.heartbeatSchedulerIntervalMs);
   }
