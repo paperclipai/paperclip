@@ -1542,7 +1542,8 @@ export function heartbeatService(db: Db) {
         let triageStdout = "";
         const triageOnLog = async (stream: "stdout" | "stderr", chunk: string) => {
           if (stream === "stdout") triageStdout += chunk;
-          await onLog(stream, chunk);
+          // Prefix triage output so it's distinguishable from full-model output in excerpts
+          await onLog(stream, `[triage] ${chunk}`);
         };
 
         try {
@@ -1601,6 +1602,25 @@ export function heartbeatService(db: Db) {
                 message: `run finished via triage (${triage.action})`,
               });
               await releaseIssueExecutionAndPromote(finalizedRun);
+
+              // Update task session so next heartbeat sees this triage run
+              if (triage.action === "handle") {
+                await updateRuntimeState(agent, finalizedRun, triageResult, {
+                  legacySessionId: null,
+                });
+                if (taskKey) {
+                  await upsertTaskSession({
+                    companyId: agent.companyId,
+                    agentId: agent.id,
+                    adapterType: agent.adapterType,
+                    taskKey,
+                    sessionParamsJson: null,
+                    sessionDisplayId: null,
+                    lastRunId: finalizedRun.id,
+                    lastError: null,
+                  });
+                }
+              }
             }
             await finalizeAgentStatus(agent.id, "succeeded");
             return;
