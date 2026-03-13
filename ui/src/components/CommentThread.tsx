@@ -20,6 +20,7 @@ interface LinkedRunItem {
   runId: string;
   status: string;
   agentId: string;
+  agentName?: string | null;
   createdAt: Date | string;
   startedAt: Date | string | null;
 }
@@ -138,7 +139,7 @@ const TimelineList = memo(function TimelineList({
               <div className="flex items-center justify-between mb-2">
                 <Link to={`/agents/${run.agentId}`} className="hover:underline">
                   <Identity
-                    name={agentMap?.get(run.agentId)?.name ?? run.agentId.slice(0, 8)}
+                    name={agentMap?.get(run.agentId)?.name ?? run.agentName ?? run.agentId.slice(0, 8)}
                     size="sm"
                   />
                 </Link>

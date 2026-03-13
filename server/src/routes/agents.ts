@@ -1286,7 +1286,49 @@ export function agentRoutes(db: Db) {
     const agentId = req.query.agentId as string | undefined;
     const limitParam = req.query.limit as string | undefined;
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
-    const runs = await heartbeat.list(companyId, agentId, limit);
+
+    const query = db
+      .select({
+        id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
+        agentId: heartbeatRuns.agentId,
+        agentName: agentsTable.name,
+        invocationSource: heartbeatRuns.invocationSource,
+        triggerDetail: heartbeatRuns.triggerDetail,
+        status: heartbeatRuns.status,
+        startedAt: heartbeatRuns.startedAt,
+        finishedAt: heartbeatRuns.finishedAt,
+        error: heartbeatRuns.error,
+        wakeupRequestId: heartbeatRuns.wakeupRequestId,
+        exitCode: heartbeatRuns.exitCode,
+        signal: heartbeatRuns.signal,
+        usageJson: heartbeatRuns.usageJson,
+        resultJson: heartbeatRuns.resultJson,
+        sessionIdBefore: heartbeatRuns.sessionIdBefore,
+        sessionIdAfter: heartbeatRuns.sessionIdAfter,
+        logStore: heartbeatRuns.logStore,
+        logRef: heartbeatRuns.logRef,
+        logBytes: heartbeatRuns.logBytes,
+        logSha256: heartbeatRuns.logSha256,
+        logCompressed: heartbeatRuns.logCompressed,
+        stdoutExcerpt: heartbeatRuns.stdoutExcerpt,
+        stderrExcerpt: heartbeatRuns.stderrExcerpt,
+        errorCode: heartbeatRuns.errorCode,
+        externalRunId: heartbeatRuns.externalRunId,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+        createdAt: heartbeatRuns.createdAt,
+        updatedAt: heartbeatRuns.updatedAt,
+      })
+      .from(heartbeatRuns)
+      .leftJoin(agentsTable, eq(heartbeatRuns.agentId, agentsTable.id))
+      .where(
+        agentId
+          ? and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId))
+          : eq(heartbeatRuns.companyId, companyId),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt));
+
+    const runs = limit ? await query.limit(limit) : await query;
     res.json(runs);
   });
 

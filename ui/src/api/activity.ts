@@ -5,6 +5,7 @@ export interface RunForIssue {
   runId: string;
   status: string;
   agentId: string;
+  agentName: string | null;
   startedAt: string | null;
   finishedAt: string | null;
   createdAt: string;

@@ -9,6 +9,7 @@ export interface HeartbeatRun {
   id: string;
   companyId: string;
   agentId: string;
+  agentName?: string | null;
   invocationSource: HeartbeatInvocationSource;
   triggerDetail: WakeupTriggerDetail | null;
   status: HeartbeatRunStatus;

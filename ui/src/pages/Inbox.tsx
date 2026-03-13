@@ -249,7 +249,7 @@ function FailedRunCard({
               {linkedAgentName ? (
                 <Identity name={linkedAgentName} size="sm" />
               ) : (
-                <span className="text-sm font-medium">Agent {run.agentId.slice(0, 8)}</span>
+                <span className="text-sm font-medium">{run.agentName ?? `Agent ${run.agentId.slice(0, 8)}`}</span>
               )}
               <StatusBadge status={run.status} />
             </div>
