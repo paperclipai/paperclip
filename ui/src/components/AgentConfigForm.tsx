@@ -1380,8 +1380,19 @@ function HeartbeatTriageModelDropdown({
   const [open, setOpen] = useState(false);
   const selected = models.find((m) => m.id === value);
 
+  const isExpensiveModel = value && /opus|sonnet/i.test(value) && !/haiku/i.test(value);
+  const hint = isExpensiveModel
+    ? "⚠ Selected model may be expensive for triage. Consider a lighter model (e.g. Haiku) to save tokens."
+    : "Optional cheaper model for heartbeat triage. Checks for work first, escalates to main model for complex tasks.";
+
+  const sortedModels = [...models].sort((a, b) => {
+    const aLight = /haiku/i.test(a.id) ? 0 : /sonnet/i.test(a.id) ? 1 : 2;
+    const bLight = /haiku/i.test(b.id) ? 0 : /sonnet/i.test(b.id) ? 1 : 2;
+    return aLight - bLight;
+  });
+
   return (
-    <Field label="Heartbeat triage model" hint="Optional cheaper model for heartbeat triage. Checks for work first, escalates to main model for complex tasks.">
+    <Field label="Heartbeat triage model" hint={hint}>
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
           <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
@@ -1405,7 +1416,7 @@ function HeartbeatTriageModelDropdown({
             >
               None (skip triage)
             </button>
-            {models.map((m) => (
+            {sortedModels.map((m) => (
               <button
                 key={m.id}
                 className={cn(
