@@ -24,6 +24,8 @@ function toLiveEvent(input: {
   };
 }
 
+const GLOBAL_CHANNEL = "__all__";
+
 export function publishLiveEvent(input: {
   companyId: string;
   type: LiveEventType;
@@ -31,10 +33,16 @@ export function publishLiveEvent(input: {
 }) {
   const event = toLiveEvent(input);
   emitter.emit(input.companyId, event);
+  emitter.emit(GLOBAL_CHANNEL, event);
   return event;
 }
 
 export function subscribeCompanyLiveEvents(companyId: string, listener: LiveEventListener) {
   emitter.on(companyId, listener);
   return () => emitter.off(companyId, listener);
+}
+
+export function subscribeAllLiveEvents(listener: LiveEventListener) {
+  emitter.on(GLOBAL_CHANNEL, listener);
+  return () => emitter.off(GLOBAL_CHANNEL, listener);
 }

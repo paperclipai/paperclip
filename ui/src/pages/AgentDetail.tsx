@@ -1757,6 +1757,10 @@ function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRun; agen
 
 /* ---- Log Viewer ---- */
 
+type TranscriptViewMode = "clean" | "debug";
+
+const CLEAN_ENTRY_KINDS = new Set(["assistant", "result", "init", "stderr", "system"]);
+
 function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: string }) {
   const [events, setEvents] = useState<HeartbeatRunEvent[]>([]);
   const [logLines, setLogLines] = useState<Array<{ ts: string; stream: "stdout" | "stderr" | "system"; chunk: string }>>([]);
@@ -1766,6 +1770,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
   const [logOffset, setLogOffset] = useState(0);
   const [isFollowing, setIsFollowing] = useState(false);
   const [isStreamingConnected, setIsStreamingConnected] = useState(false);
+  const [viewMode, setViewMode] = useState<TranscriptViewMode>("clean");
   const logEndRef = useRef<HTMLDivElement>(null);
   const pendingLogLineRef = useRef("");
   const scrollContainerRef = useRef<ScrollContainer | null>(null);
@@ -2118,6 +2123,10 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
   const adapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
   const transcript = useMemo(() => buildTranscript(logLines, adapter.parseStdoutLine), [logLines, adapter]);
+  const filteredTranscript = useMemo(
+    () => viewMode === "clean" ? transcript.filter((e) => CLEAN_ENTRY_KINDS.has(e.kind)) : transcript,
+    [transcript, viewMode],
+  );
 
   if (loading && logLoading) {
     return <p className="text-xs text-muted-foreground">Loading run logs...</p>;
@@ -2150,6 +2159,22 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           {typeof adapterInvokePayload.cwd === "string" && (
             <div className="text-xs break-all"><span className="text-muted-foreground">Working dir: </span><span className="font-mono">{adapterInvokePayload.cwd}</span></div>
           )}
+          {adapterInvokePayload.git && typeof adapterInvokePayload.git === "object" && (() => {
+            const git = adapterInvokePayload.git as Record<string, string>;
+            return (
+              <div className="flex items-center gap-3 text-xs">
+                {git.branch && (
+                  <span><span className="text-muted-foreground">Branch: </span><span className="font-mono font-medium">{git.branch}</span></span>
+                )}
+                {git.commit && (
+                  <span><span className="text-muted-foreground">Commit: </span><span className="font-mono">{git.commit}</span></span>
+                )}
+                {git.dirty === "yes" && (
+                  <span className="text-yellow-600 dark:text-yellow-400">{git.changedFiles} file{git.changedFiles === "1" ? "" : "s"} changed</span>
+                )}
+              </div>
+            );
+          })()}
           {typeof adapterInvokePayload.command === "string" && (
             <div className="text-xs break-all">
               <span className="text-muted-foreground">Command: </span>
@@ -2207,9 +2232,31 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
       )}
 
       <div className="flex items-center justify-between">
-        <span className="text-xs font-medium text-muted-foreground">
-          Transcript ({transcript.length})
-        </span>
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium text-muted-foreground">
+            Transcript ({filteredTranscript.length}{viewMode === "clean" && filteredTranscript.length !== transcript.length ? `/${transcript.length}` : ""})
+          </span>
+          <div className="flex items-center border border-border rounded-sm overflow-hidden">
+            <button
+              className={cn(
+                "px-2 py-0.5 text-[10px] transition-colors",
+                viewMode === "clean" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
+              )}
+              onClick={() => setViewMode("clean")}
+            >
+              Clean
+            </button>
+            <button
+              className={cn(
+                "px-2 py-0.5 text-[10px] transition-colors",
+                viewMode === "debug" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
+              )}
+              onClick={() => setViewMode("debug")}
+            >
+              Debug
+            </button>
+          </div>
+        </div>
         <div className="flex items-center gap-2">
           {isLive && !isFollowing && (
             <Button
@@ -2238,10 +2285,10 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
         </div>
       </div>
       <div className="bg-neutral-100 dark:bg-neutral-950 rounded-lg p-3 font-mono text-xs space-y-0.5 overflow-x-hidden">
-        {transcript.length === 0 && !run.logRef && (
-          <div className="text-neutral-500">No persisted transcript for this run.</div>
+        {filteredTranscript.length === 0 && !run.logRef && (
+          <div className="text-neutral-500">{viewMode === "clean" && transcript.length > 0 ? "No assistant output yet. Switch to Debug to see all entries." : "No persisted transcript for this run."}</div>
         )}
-        {transcript.map((entry, idx) => {
+        {filteredTranscript.map((entry, idx) => {
           const time = new Date(entry.ts).toLocaleTimeString("en-US", { hour12: false });
           const grid = "grid grid-cols-[auto_auto_1fr] gap-x-2 sm:gap-x-3 items-baseline";
           const tsCell = "text-neutral-400 dark:text-neutral-600 select-none w-12 sm:w-16 text-[10px] sm:text-xs";

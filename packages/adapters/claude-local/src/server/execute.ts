@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
@@ -87,6 +88,29 @@ async function buildSkillsDir(agentSkills?: AgentSkill[]): Promise<string> {
     }
   }
   return tmp;
+}
+
+async function captureGitInfo(cwd: string): Promise<Record<string, string> | null> {
+  const run = (args: string[]): Promise<string> =>
+    new Promise((resolve) => {
+      execFile("git", args, { cwd, timeout: 3000 }, (err, stdout) => {
+        resolve(err ? "" : stdout.trim());
+      });
+    });
+  try {
+    const branch = await run(["rev-parse", "--abbrev-ref", "HEAD"]);
+    if (!branch) return null;
+    const commit = await run(["rev-parse", "--short", "HEAD"]);
+    const dirty = await run(["status", "--porcelain"]);
+    return {
+      branch,
+      commit,
+      dirty: dirty ? "yes" : "no",
+      ...(dirty ? { changedFiles: String(dirty.split("\n").filter(Boolean).length) } : {}),
+    };
+  } catch {
+    return null;
+  }
 }
 
 interface ClaudeExecutionInput {
@@ -403,10 +427,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : `Claude exited with code ${proc.exitCode ?? -1}`;
   };
 
+  const gitInfo = await captureGitInfo(cwd);
+
   const runAttempt = async (resumeSessionId: string | null) => {
     const args = buildClaudeArgs(resumeSessionId);
     if (onMeta) {
-      await onMeta({
+      const meta = {
         adapterType: "claude_local",
         command,
         cwd,
@@ -415,7 +441,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         env: redactEnvForLogs(env),
         prompt,
         context,
-      });
+        ...(gitInfo ? { git: gitInfo } : {}),
+      };
+      await onMeta(meta as typeof meta & { git?: Record<string, string> });
     }
 
     const proc = await runChildProcess(runId, command, args, {

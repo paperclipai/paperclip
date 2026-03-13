@@ -111,6 +111,10 @@ else
   fi
 fi
 
+# Telegram notifications (optional)
+# TELEGRAM_BOT_TOKEN  — Bot API token from @BotFather
+# TELEGRAM_CHAT_ID    — Chat/group ID to send notifications to
+
 # Start Qwen proxy in background (if API key is configured)
 if [ -n "$QWEN_API_KEY" ]; then
   echo "[entrypoint] Starting Qwen proxy on port ${QWEN_PROXY_PORT:-3199}..."
