@@ -1837,6 +1837,7 @@ export function heartbeatService(db: Db) {
           promptTemplate: TRIAGE_PROMPT_TEMPLATE,
           bootstrapPrompt: "",
           instructionsFilePath: undefined,
+          workspaceStrategy: undefined, // triage is API-only, no workspace needed
           timeoutSec: 120, // triage should complete in seconds, not minutes
         };
 
@@ -1877,7 +1878,12 @@ export function heartbeatService(db: Db) {
             }
 
             const combinedUsage = triageUsage
-              ? ({ ...triageUsage, triageOnly: true } as Record<string, unknown>)
+              ? ({
+                  inputTokens: null,
+                  outputTokens: null,
+                  costUsd: null,
+                  triageUsage,
+                } as Record<string, unknown>)
               : null;
 
             // Guard against cancellation race — don't overwrite a cancelled status

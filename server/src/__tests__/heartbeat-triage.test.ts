@@ -168,15 +168,26 @@ describe("heartbeat triage integration logic", () => {
     const triageUsage = { inputTokens: 100, outputTokens: 50, costUsd: 0.001 };
     const mainUsage = { inputTokens: 5000, outputTokens: 2000, costUsd: 0.05 };
 
-    // The merging pattern used in heartbeat.ts
-    const combinedUsage = {
+    // Escalate path: main usage at top level, triage nested
+    const escalateUsage = {
       ...mainUsage,
       triageUsage,
     };
 
-    expect(combinedUsage.inputTokens).toBe(5000);
-    expect(combinedUsage.outputTokens).toBe(2000);
-    expect(combinedUsage.costUsd).toBe(0.05);
-    expect(combinedUsage.triageUsage).toEqual(triageUsage);
+    expect(escalateUsage.inputTokens).toBe(5000);
+    expect(escalateUsage.outputTokens).toBe(2000);
+    expect(escalateUsage.costUsd).toBe(0.05);
+    expect(escalateUsage.triageUsage).toEqual(triageUsage);
+
+    // Triage-only path: null main usage, triage nested — consistent schema
+    const triageOnlyUsage = {
+      inputTokens: null,
+      outputTokens: null,
+      costUsd: null,
+      triageUsage,
+    };
+
+    expect(triageOnlyUsage.inputTokens).toBeNull();
+    expect(triageOnlyUsage.triageUsage).toEqual(triageUsage);
   });
 });
