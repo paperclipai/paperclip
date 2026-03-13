@@ -1,6 +1,11 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { RpcChannel } from "@paperclipai/plugin-sdk";
 import { RPC_TIMEOUTS } from "./types.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const tsxBin = path.resolve(__dirname, "../../node_modules/.bin/tsx");
 
 export interface PluginWorkerEntry {
   pluginId: string;
@@ -49,7 +54,7 @@ export class ProcessManager {
     initParams: InitializeParams,
     opts?: SpawnOptions,
   ): Promise<void> {
-    const child = spawn("node", [workerEntrypoint], {
+    const child = spawn(tsxBin, [workerEntrypoint], {
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env },
     });

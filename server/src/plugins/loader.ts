@@ -32,7 +32,7 @@ export async function scanPluginPackages(pluginsDir: string): Promise<ScannedPlu
   const packageDirs: string[] = [];
 
   for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
+    if (!(entry.isDirectory() || entry.isSymbolicLink())) continue;
     if (entry.name.startsWith(".")) continue;
 
     if (entry.name.startsWith("@")) {
@@ -40,7 +40,7 @@ export async function scanPluginPackages(pluginsDir: string): Promise<ScannedPlu
       const scopeDir = path.join(nodeModules, entry.name);
       const scopeEntries = fs.readdirSync(scopeDir, { withFileTypes: true });
       for (const sub of scopeEntries) {
-        if (sub.isDirectory()) {
+        if (sub.isDirectory() || sub.isSymbolicLink()) {
           packageDirs.push(path.join(scopeDir, sub.name));
         }
       }

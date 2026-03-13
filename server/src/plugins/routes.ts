@@ -10,9 +10,9 @@ import type { ProcessManager } from "./process-manager.js";
 export function pluginRoutes(db: Db, processManager: ProcessManager): Router {
   const router = Router();
 
-  router.all("/:pluginId/*", async (req: Request, res: Response) => {
+  router.all("/:pluginId/{*path}", async (req: Request, res: Response) => {
     const pluginId = String(req.params.pluginId);
-    const subPath = "/" + String(req.params[0] ?? "");
+    const subPath = "/" + String(req.params.path ?? "");
 
     if (!processManager.isReady(pluginId)) {
       res.status(503).json({ error: `Plugin ${pluginId} is not available` });
