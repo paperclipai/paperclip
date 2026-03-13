@@ -1579,6 +1579,13 @@ export function heartbeatService(db: Db) {
               ? ({ ...triageUsage, triageOnly: true } as Record<string, unknown>)
               : null;
 
+            // Guard against cancellation race — don't overwrite a cancelled status
+            const latestRunCheck = await getRun(run.id);
+            if (latestRunCheck?.status === "cancelled") {
+              await finalizeAgentStatus(agent.id, "cancelled");
+              return;
+            }
+
             await setRunStatus(run.id, "succeeded", {
               finishedAt: new Date(),
               usageJson: combinedUsage,
