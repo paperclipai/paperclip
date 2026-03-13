@@ -91,6 +91,11 @@ export function OnboardingWizard() {
   const [command, setCommand] = useState("");
   const [args, setArgs] = useState("");
   const [url, setUrl] = useState("");
+  const [openclawGatewayToken, setOpenclawGatewayToken] = useState("");
+  const [harnessMode, setHarnessMode] = useState<"balanced" | "fast" | "safe">("balanced");
+  const [pluginKnowledgebase, setPluginKnowledgebase] = useState(false);
+  const [pluginTracing, setPluginTracing] = useState(false);
+  const [pluginQueues, setPluginQueues] = useState(false);
   const [adapterEnvResult, setAdapterEnvResult] =
     useState<AdapterEnvironmentTestResult | null>(null);
   const [adapterEnvError, setAdapterEnvError] = useState<string | null>(null);
@@ -241,6 +246,11 @@ export function OnboardingWizard() {
     setCommand("");
     setArgs("");
     setUrl("");
+    setOpenclawGatewayToken("");
+    setHarnessMode("balanced");
+    setPluginKnowledgebase(false);
+    setPluginTracing(false);
+    setPluginQueues(false);
     setAdapterEnvResult(null);
     setAdapterEnvError(null);
     setAdapterEnvLoading(false);
@@ -274,6 +284,11 @@ export function OnboardingWizard() {
       command,
       args,
       url,
+      openclawGatewayToken,
+      harnessMode,
+      pluginKnowledgebase,
+      pluginTracing,
+      pluginQueues,
       dangerouslySkipPermissions: adapterType === "claude_local",
       dangerouslyBypassSandbox:
         adapterType === "codex_local"
@@ -385,6 +400,11 @@ export function OnboardingWizard() {
           );
           return;
         }
+      }
+
+      if (adapterType === "openclaw_gateway" && !openclawGatewayToken.trim()) {
+        setError("OpenClaw gateway token is required.");
+        return;
       }
 
       if (isLocalAdapter) {
@@ -671,9 +691,8 @@ export function OnboardingWizard() {
                           value: "openclaw_gateway" as const,
                           label: "OpenClaw Gateway",
                           icon: Bot,
-                          desc: "Invoke OpenClaw via gateway protocol",
-                          comingSoon: true,
-                          disabledLabel: "Configure OpenClaw within the App"
+                          desc: "Best for OpenClaw operators",
+                          recommended: true
                         },
                         {
                           value: "cursor" as const,
@@ -684,17 +703,13 @@ export function OnboardingWizard() {
                       ].map((opt) => (
                         <button
                           key={opt.value}
-                          disabled={!!opt.comingSoon}
                           className={cn(
                             "flex flex-col items-center gap-1.5 rounded-md border p-3 text-xs transition-colors relative",
-                            opt.comingSoon
-                              ? "border-border opacity-40 cursor-not-allowed"
-                              : adapterType === opt.value
+                            adapterType === opt.value
                                 ? "border-foreground bg-accent"
                                 : "border-border hover:bg-accent/50"
                           )}
                           onClick={() => {
-                            if (opt.comingSoon) return;
                             const nextType = opt.value as AdapterType;
                             setAdapterType(nextType);
                             if (nextType === "codex_local" && !model) {
@@ -718,15 +733,16 @@ export function OnboardingWizard() {
                           )}
                           <opt.icon className="h-4 w-4" />
                           <span className="font-medium">{opt.label}</span>
-                          <span className="text-muted-foreground text-[10px]">
-                            {opt.comingSoon
-                              ? (opt as { disabledLabel?: string }).disabledLabel ??
-                                "Coming soon"
-                              : opt.desc}
-                          </span>
+                          <span className="text-muted-foreground text-[10px]">{opt.desc}</span>
                         </button>
                       ))}
                     </div>
+                    {adapterType === "openclaw_gateway" && (
+                      <p className="mt-2 text-[11px] text-muted-foreground">
+                        Tip: Paste your OpenClaw gateway WebSocket URL and token from
+                        <span className="font-mono"> ~/.openclaw/openclaw.json</span> to complete onboarding.
+                      </p>
+                    )}
                   </div>
 
                   {/* Conditional adapter fields */}
@@ -967,16 +983,61 @@ export function OnboardingWizard() {
                   )}
 
                   {(adapterType === "http" || adapterType === "openclaw_gateway") && (
-                    <div>
-                      <label className="text-xs text-muted-foreground mb-1 block">
-                        {adapterType === "openclaw_gateway" ? "Gateway URL" : "Webhook URL"}
-                      </label>
-                      <input
-                        className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                        placeholder={adapterType === "openclaw_gateway" ? "ws://127.0.0.1:18789" : "https://..."}
-                        value={url}
-                        onChange={(e) => setUrl(e.target.value)}
-                      />
+                    <div className="space-y-3">
+                      <div>
+                        <label className="text-xs text-muted-foreground mb-1 block">
+                          {adapterType === "openclaw_gateway" ? "Gateway URL" : "Webhook URL"}
+                        </label>
+                        <input
+                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                          placeholder={adapterType === "openclaw_gateway" ? "ws://127.0.0.1:18789" : "https://..."}
+                          value={url}
+                          onChange={(e) => setUrl(e.target.value)}
+                        />
+                      </div>
+                      {adapterType === "openclaw_gateway" && (
+                        <>
+                          <div>
+                            <label className="text-xs text-muted-foreground mb-1 block">Gateway token</label>
+                            <input
+                              className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                              placeholder="x-openclaw-token"
+                              type="password"
+                              value={openclawGatewayToken}
+                              onChange={(e) => setOpenclawGatewayToken(e.target.value)}
+                            />
+                          </div>
+                          <div>
+                            <label className="text-xs text-muted-foreground mb-1 block">Harness mode</label>
+                            <select
+                              className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring"
+                              value={harnessMode}
+                              onChange={(e) => setHarnessMode(e.target.value as "balanced" | "fast" | "safe")}
+                            >
+                              <option value="balanced">Balanced</option>
+                              <option value="fast">Fast</option>
+                              <option value="safe">Safe</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="text-xs text-muted-foreground mb-1 block">Plugins</label>
+                            <div className="grid grid-cols-1 gap-1 text-xs">
+                              <label className="flex items-center gap-2">
+                                <input type="checkbox" checked={pluginKnowledgebase} onChange={(e) => setPluginKnowledgebase(e.target.checked)} />
+                                Knowledgebase plugin
+                              </label>
+                              <label className="flex items-center gap-2">
+                                <input type="checkbox" checked={pluginTracing} onChange={(e) => setPluginTracing(e.target.checked)} />
+                                Tracing plugin
+                              </label>
+                              <label className="flex items-center gap-2">
+                                <input type="checkbox" checked={pluginQueues} onChange={(e) => setPluginQueues(e.target.checked)} />
+                                Queue bridge plugin
+                              </label>
+                            </div>
+                          </div>
+                        </>
+                      )}
                     </div>
                   )}
                 </div>

@@ -207,6 +207,11 @@ export interface CreateConfigValues {
   envVars: string;
   envBindings: Record<string, unknown>;
   url: string;
+  openclawGatewayToken?: string;
+  harnessMode?: "balanced" | "fast" | "safe";
+  pluginKnowledgebase?: boolean;
+  pluginTracing?: boolean;
+  pluginQueues?: boolean;
   bootstrapPrompt: string;
   maxTurnsPerRun: number;
   heartbeatEnabled: boolean;

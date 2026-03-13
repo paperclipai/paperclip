@@ -1334,6 +1334,17 @@ export function resolveJoinRequestAgentManagerId(
   return (rootCeo ?? ceoCandidates[0] ?? null)?.id ?? null;
 }
 
+export function resolveJoinRequestAgentPlacement(
+  candidates: JoinRequestManagerCandidate[]
+): { role: "ceo" | "general"; reportsTo: string | null } | null {
+  if (candidates.length === 0) {
+    return { role: "ceo", reportsTo: null };
+  }
+  const managerId = resolveJoinRequestAgentManagerId(candidates);
+  if (!managerId) return null;
+  return { role: "general", reportsTo: managerId };
+}
+
 function isInviteTokenHashCollisionError(error: unknown) {
   const candidates = [
     error,
@@ -2309,8 +2320,8 @@ export function accessRoutes(
         );
       } else {
         const existingAgents = await agents.list(companyId);
-        const managerId = resolveJoinRequestAgentManagerId(existingAgents);
-        if (!managerId) {
+        const placement = resolveJoinRequestAgentPlacement(existingAgents);
+        if (!placement) {
           throw conflict(
             "Join request cannot be approved because this company has no active CEO"
           );
@@ -2327,10 +2338,10 @@ export function accessRoutes(
 
         const created = await agents.create(companyId, {
           name: agentName,
-          role: "general",
+          role: placement.role,
           title: null,
           status: "idle",
-          reportsTo: managerId,
+          reportsTo: placement.reportsTo,
           capabilities: existing.capabilities ?? null,
           adapterType: existing.adapterType ?? "process",
           adapterConfig:

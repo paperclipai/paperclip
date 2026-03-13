@@ -112,7 +112,59 @@ export function OpenClawGatewayConfigFields({
         />
       </Field>
 
-      {!isCreate && (
+      {isCreate ? (
+        <>
+          <SecretField
+            label="Gateway auth token (x-openclaw-token)"
+            value={values?.openclawGatewayToken ?? ""}
+            onCommit={(v) => set!({ openclawGatewayToken: v })}
+            placeholder="OpenClaw gateway token"
+          />
+
+          <Field label="Harness mode">
+            <select
+              value={values?.harnessMode ?? "balanced"}
+              onChange={(e) =>
+                set!({ harnessMode: e.target.value as "balanced" | "fast" | "safe" })
+              }
+              className={inputClass}
+            >
+              <option value="balanced">Balanced</option>
+              <option value="fast">Fast</option>
+              <option value="safe">Safe</option>
+            </select>
+          </Field>
+
+          <Field label="Plugins">
+            <div className="space-y-1 text-sm">
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={values?.pluginKnowledgebase === true}
+                  onChange={(e) => set!({ pluginKnowledgebase: e.target.checked })}
+                />
+                Knowledgebase
+              </label>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={values?.pluginTracing === true}
+                  onChange={(e) => set!({ pluginTracing: e.target.checked })}
+                />
+                Tracing
+              </label>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={values?.pluginQueues === true}
+                  onChange={(e) => set!({ pluginQueues: e.target.checked })}
+                />
+                Queue bridge
+              </label>
+            </div>
+          </Field>
+        </>
+      ) : (
         <>
           <Field label="Paperclip API URL override">
             <DraftInput
