@@ -131,11 +131,39 @@ describe("shouldReleaseIssueCheckouts", () => {
     ).toBe(true);
   });
 
+  it("releases checkouts when in-progress work moves between board users", () => {
+    // Board-owned execution should not keep a stale workspace checkout attached after handoff.
+    expect(
+      shouldReleaseIssueCheckouts(
+        { status: "in_progress", assigneeAgentId: null, assigneeUserId: "user-1" },
+        { status: "in_progress", assigneeAgentId: null, assigneeUserId: "user-2" },
+      ),
+    ).toBe(true);
+  });
+
+  it("releases checkouts when execution moves from a board user to an agent", () => {
+    expect(
+      shouldReleaseIssueCheckouts(
+        { status: "in_progress", assigneeAgentId: null, assigneeUserId: "user-1" },
+        { status: "in_progress", assigneeAgentId: "agent-1", assigneeUserId: null },
+      ),
+    ).toBe(true);
+  });
+
   it("keeps checkouts active while the same agent stays in progress", () => {
     expect(
       shouldReleaseIssueCheckouts(
         { status: "in_progress", assigneeAgentId: "agent-1", assigneeUserId: null },
         { status: "in_progress", assigneeAgentId: "agent-1", assigneeUserId: null },
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps checkouts active while the same board user stays in progress", () => {
+    expect(
+      shouldReleaseIssueCheckouts(
+        { status: "in_progress", assigneeAgentId: null, assigneeUserId: "user-1" },
+        { status: "in_progress", assigneeAgentId: null, assigneeUserId: "user-1" },
       ),
     ).toBe(false);
   });
