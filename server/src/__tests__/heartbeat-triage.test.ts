@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseTriageOutput, TRIAGE_SYSTEM_PROMPT } from "../services/heartbeat.js";
+import { parseTriageOutput, TRIAGE_PROMPT_TEMPLATE } from "../services/heartbeat.js";
 import type { TriageResult } from "../services/heartbeat.js";
 
 describe("parseTriageOutput", () => {
@@ -86,20 +86,20 @@ Done.`;
   });
 });
 
-describe("TRIAGE_SYSTEM_PROMPT", () => {
+describe("TRIAGE_PROMPT_TEMPLATE", () => {
   it("is a non-empty string constant", () => {
-    expect(typeof TRIAGE_SYSTEM_PROMPT).toBe("string");
-    expect(TRIAGE_SYSTEM_PROMPT.length).toBeGreaterThan(100);
+    expect(typeof TRIAGE_PROMPT_TEMPLATE).toBe("string");
+    expect(TRIAGE_PROMPT_TEMPLATE.length).toBeGreaterThan(100);
   });
 
   it("mentions the three possible actions", () => {
-    expect(TRIAGE_SYSTEM_PROMPT).toContain('"none"');
-    expect(TRIAGE_SYSTEM_PROMPT).toContain('"handle"');
-    expect(TRIAGE_SYSTEM_PROMPT).toContain('"escalate"');
+    expect(TRIAGE_PROMPT_TEMPLATE).toContain('"none"');
+    expect(TRIAGE_PROMPT_TEMPLATE).toContain('"handle"');
+    expect(TRIAGE_PROMPT_TEMPLATE).toContain('"escalate"');
   });
 
   it("mentions _paperclipTriageAction", () => {
-    expect(TRIAGE_SYSTEM_PROMPT).toContain("_paperclipTriageAction");
+    expect(TRIAGE_PROMPT_TEMPLATE).toContain("_paperclipTriageAction");
   });
 });
 

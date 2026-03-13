@@ -65,7 +65,7 @@ export interface TriageResult {
   reason: string;
 }
 
-export const TRIAGE_SYSTEM_PROMPT = `You are a heartbeat triage agent for Paperclip. Your job is to quickly check whether there is any work to do.
+export const TRIAGE_PROMPT_TEMPLATE = `You are a heartbeat triage agent for Paperclip. Your job is to quickly check whether there is any work to do.
 
 Check the Paperclip API for:
 1. Issues assigned to you that are in "todo" or "in_progress" status
@@ -1834,9 +1834,10 @@ export function heartbeatService(db: Db) {
           ...resolvedConfig,
           model: heartbeatModel,
           maxTurnsPerRun: TRIAGE_MAX_TURNS,
-          promptTemplate: TRIAGE_SYSTEM_PROMPT,
+          promptTemplate: TRIAGE_PROMPT_TEMPLATE,
           bootstrapPrompt: "",
           instructionsFilePath: undefined,
+          timeoutSec: 120, // triage should complete in seconds, not minutes
         };
 
         let triageStdout = "";
