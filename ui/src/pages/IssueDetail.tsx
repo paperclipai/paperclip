@@ -415,7 +415,7 @@ export function IssueDetail() {
 
   const addComment = useMutation({
     mutationFn: ({ body, reopen }: { body: string; reopen?: boolean }) =>
-      issuesApi.addComment(issueId!, body, reopen),
+      issuesApi.addComment(issueId!, body, reopen).then(c => c.id),
     onSuccess: () => {
       invalidateIssue();
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId!) });
@@ -445,9 +445,9 @@ export function IssueDetail() {
   });
 
   const uploadAttachment = useMutation({
-    mutationFn: async (file: File) => {
+    mutationFn: async ({ file, commentId }: { file: File; commentId?: string }) => {
       if (!selectedCompanyId) throw new Error("No company selected");
-      return issuesApi.uploadAttachment(selectedCompanyId, issueId!, file);
+      return issuesApi.uploadAttachment(selectedCompanyId, issueId!, file, commentId);
     },
     onSuccess: () => {
       setAttachmentError(null);
@@ -512,7 +512,7 @@ export function IssueDetail() {
   const handleFilePicked = async (evt: ChangeEvent<HTMLInputElement>) => {
     const file = evt.target.files?.[0];
     if (!file) return;
-    await uploadAttachment.mutateAsync(file);
+    await uploadAttachment.mutateAsync({ file });
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
@@ -673,7 +673,7 @@ export function IssueDetail() {
           multiline
           mentions={mentionOptions}
           imageUploadHandler={async (file) => {
-            const attachment = await uploadAttachment.mutateAsync(file);
+            const attachment = await uploadAttachment.mutateAsync({ file });
             return attachment.contentPath;
           }}
         />
@@ -785,14 +785,14 @@ export function IssueDetail() {
                 await addCommentAndReassign.mutateAsync({ body, reopen, reassignment });
                 return;
               }
-              await addComment.mutateAsync({ body, reopen });
+              return await addComment.mutateAsync({ body, reopen });
             }}
             imageUploadHandler={async (file) => {
-              const attachment = await uploadAttachment.mutateAsync(file);
+              const attachment = await uploadAttachment.mutateAsync({ file });
               return attachment.contentPath;
             }}
-            onAttachImage={async (file) => {
-              await uploadAttachment.mutateAsync(file);
+            onAttachImage={async (file, commentId) => {
+              await uploadAttachment.mutateAsync({ file, commentId });
             }}
             liveRunSlot={<LiveRunWidget issueId={issueId!} companyId={issue.companyId} />}
           />
