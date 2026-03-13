@@ -250,8 +250,6 @@ export function shouldResetTaskSessionForWake(
   if (wakeReason === "issue_assigned") return true;
 
   const wakeSource = readNonEmptyString(contextSnapshot?.wakeSource);
-  if (wakeSource === "timer") return true;
-
   const wakeTriggerDetail = readNonEmptyString(contextSnapshot?.wakeTriggerDetail);
   return wakeSource === "on_demand" && wakeTriggerDetail === "manual";
 }
@@ -263,8 +261,6 @@ function describeSessionResetReason(
   if (wakeReason === "issue_assigned") return "wake reason is issue_assigned";
 
   const wakeSource = readNonEmptyString(contextSnapshot?.wakeSource);
-  if (wakeSource === "timer") return "wake source is timer";
-
   const wakeTriggerDetail = readNonEmptyString(contextSnapshot?.wakeTriggerDetail);
   if (wakeSource === "on_demand" && wakeTriggerDetail === "manual") {
     return "this is a manual invoke";
@@ -2499,7 +2495,6 @@ export function heartbeatService(db: Db) {
           contextSnapshot: {
             source: "scheduler",
             reason: "interval_elapsed",
-            now: now.toISOString(),
           },
         });
         if (run) enqueued += 1;
