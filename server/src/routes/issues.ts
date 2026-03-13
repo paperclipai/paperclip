@@ -324,7 +324,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    const [ancestors, project, goal] = await Promise.all([
+    const [ancestors, project, goal, mentionedProjectIds] = await Promise.all([
       svc.getAncestors(issue.id),
       issue.projectId ? projectsSvc.getById(issue.projectId) : null,
       issue.goalId
@@ -332,13 +332,18 @@ export function issueRoutes(db: Db, storage: StorageService) {
         : !issue.projectId
           ? goalsSvc.getDefaultCompanyGoal(issue.companyId)
           : null,
+      svc.findMentionedProjectIds(issue.id),
     ]);
+    const mentionedProjects = mentionedProjectIds.length > 0
+      ? await projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
+      : [];
     res.json({
       ...issue,
       goalId: goal?.id ?? issue.goalId,
       ancestors,
       project: project ?? null,
       goal: goal ?? null,
+      mentionedProjects,
     });
   });
 
