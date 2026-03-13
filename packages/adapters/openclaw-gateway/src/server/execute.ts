@@ -335,8 +335,17 @@ function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: Wak
   return paperclipEnv;
 }
 
-function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string>): string {
-  const claimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
+function resolveClaimedApiKeyPath(value: unknown): string {
+  const raw = nonEmpty(value);
+  if (!raw) return "~/.openclaw/workspace/paperclip-claimed-api-key.json";
+  return raw;
+}
+
+function buildWakeText(
+  payload: WakePayload,
+  paperclipEnv: Record<string, string>,
+  claimedApiKeyPath: string,
+): string {
   const orderedKeys = [
     "PAPERCLIP_RUN_ID",
     "PAPERCLIP_AGENT_ID",
@@ -370,6 +379,10 @@ function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string
     `PAPERCLIP_API_KEY=<token from ${claimedApiKeyPath}>`,
     "",
     `Load PAPERCLIP_API_KEY from ${claimedApiKeyPath} (the token you saved after claim-api-key).`,
+    "Preflight key checks (must pass before API calls):",
+    `- test -f ${claimedApiKeyPath}`,
+    `- parse token from ${claimedApiKeyPath} JSON: {\"token\":\"pcp_...\"}`,
+    "- export PAPERCLIP_API_KEY to run context and verify non-empty",
     "",
     `api_base=${apiBaseHint}`,
     `task_id=${payload.taskId ?? ""}`,
@@ -1052,7 +1065,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const wakePayload = buildWakePayload(ctx);
   const paperclipEnv = buildPaperclipEnvForWake(ctx, wakePayload);
-  const wakeText = buildWakeText(wakePayload, paperclipEnv);
+  const claimedApiKeyPath = resolveClaimedApiKeyPath(ctx.config.claimedApiKeyPath);
+  const wakeText = buildWakeText(wakePayload, paperclipEnv, claimedApiKeyPath);
 
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
   const configuredSessionKey = nonEmpty(ctx.config.sessionKey);

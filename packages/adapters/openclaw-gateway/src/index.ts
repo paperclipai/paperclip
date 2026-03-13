@@ -36,6 +36,7 @@ Request behavior fields:
 - waitTimeoutMs (number, optional): agent.wait timeout override (default timeoutSec * 1000)
 - autoPairOnFirstConnect (boolean, optional): on first "pairing required", attempt device.pair.list/device.pair.approve via shared auth, then retry once (default true)
 - paperclipApiUrl (string, optional): absolute Paperclip base URL advertised in wake text
+- claimedApiKeyPath (string, optional): path hint for the claimed Paperclip API key JSON used in wake instructions
 
 Session routing fields:
 - sessionKeyStrategy (string, optional): issue (default), fixed, or run
