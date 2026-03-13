@@ -240,6 +240,35 @@ export {
   type CompanyPortabilityImport,
 } from "./validators/index.js";
 
+export {
+  pluginLifecycleStateSchema,
+  pluginRegistryRecordSchema,
+  pluginListResponseSchema,
+  pluginActionResponseSchema,
+  pluginInstallBodySchema,
+  pluginToggleBodySchema,
+  pluginRestartResultSchema,
+  pluginRestartResponseSchema,
+  pluginConfigFieldSchema,
+  pluginConfigSchemaSchema,
+  pluginConfigDescribeResponseSchema,
+  pluginConfigUpdateBodySchema,
+  pluginConfigUpdateResponseSchema,
+  type PluginLifecycleState,
+  type PluginRegistryRecord,
+  type PluginListResponse,
+  type PluginActionResponse,
+  type PluginInstallBody,
+  type PluginToggleBody,
+  type PluginRestartResult,
+  type PluginRestartResponse,
+  type PluginConfigField,
+  type PluginConfigSchema,
+  type PluginConfigDescribeResponse,
+  type PluginConfigUpdateBody,
+  type PluginConfigUpdateResponse,
+} from "./plugin-host.js";
+
 export { API_PREFIX, API } from "./api.js";
 export { normalizeAgentUrlKey, deriveAgentUrlKey, isUuidLike } from "./agent-url-key.js";
 export { deriveProjectUrlKey, normalizeProjectUrlKey } from "./project-url-key.js";

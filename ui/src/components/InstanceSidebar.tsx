@@ -1,4 +1,4 @@
-import { Clock3, Settings } from "lucide-react";
+import { Clock3, Plug, Settings } from "lucide-react";
 import { SidebarNavItem } from "./SidebarNavItem";
 
 export function InstanceSidebar() {
@@ -14,6 +14,7 @@ export function InstanceSidebar() {
       <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide flex flex-col gap-4 px-3 py-2">
         <div className="flex flex-col gap-0.5">
           <SidebarNavItem to="/instance/settings" label="Heartbeats" icon={Clock3} />
+          <SidebarNavItem to="/instance/settings/plugins" label="Plugins" icon={Plug} />
         </div>
       </nav>
     </aside>

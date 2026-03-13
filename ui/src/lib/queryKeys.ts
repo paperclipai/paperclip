@@ -58,6 +58,7 @@ export const queryKeys = {
   },
   instance: {
     schedulerHeartbeats: ["instance", "scheduler-heartbeats"] as const,
+    plugins: (instanceId?: string) => ["instance", "plugins", instanceId ?? "default"] as const,
   },
   health: ["health"] as const,
   secrets: {
