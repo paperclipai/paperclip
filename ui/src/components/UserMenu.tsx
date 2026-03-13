@@ -25,8 +25,8 @@ export function UserMenu() {
 
   const signOut = useMutation({
     mutationFn: () => authApi.signOut(),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
+    onSuccess: () => {
+      queryClient.setQueryData(queryKeys.auth.session, null);
       navigate("/auth", { replace: true });
     },
   });
