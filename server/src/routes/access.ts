@@ -27,7 +27,7 @@ import {
   updateUserCompanyAccessSchema,
   PERMISSION_KEYS
 } from "@paperclipai/shared";
-import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import type { DeploymentExposure, DeploymentMode, PermissionKey } from "@paperclipai/shared";
 import {
   forbidden,
   conflict,
@@ -1508,7 +1508,7 @@ export function accessRoutes(
   async function assertCompanyPermission(
     req: Request,
     companyId: string,
-    permissionKey: any
+    permissionKey: PermissionKey
   ) {
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "agent") {
@@ -2538,6 +2538,24 @@ export function accessRoutes(
     await assertCompanyPermission(req, companyId, "users:manage_permissions");
     const members = await access.listMembers(companyId);
     res.json(members);
+  });
+
+  router.get("/companies/:companyId/members/:memberId/permissions", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const memberId = req.params.memberId as string;
+    await assertCompanyPermission(req, companyId, "users:manage_permissions");
+    const result = await access.getMemberPermissions(companyId, memberId);
+    if (!result) throw notFound("Member not found");
+    res.json(result);
+  });
+
+  router.get("/companies/:companyId/agents/:agentId/permissions", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const agentId = req.params.agentId as string;
+    await assertCompanyPermission(req, companyId, "users:manage_permissions");
+    const result = await access.getAgentPermissions(companyId, agentId);
+    if (!result) throw notFound("Agent membership not found");
+    res.json(result);
   });
 
   router.patch(

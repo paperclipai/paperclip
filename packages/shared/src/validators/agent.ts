@@ -7,9 +7,7 @@ import {
 } from "../constants.js";
 import { envConfigSchema } from "./secret.js";
 
-export const agentPermissionsSchema = z.object({
-  canCreateAgents: z.boolean().optional().default(false),
-});
+export const agentPermissionsSchema = z.record(z.unknown());
 
 const adapterConfigSchema = z.record(z.unknown()).superRefine((value, ctx) => {
   const envValue = value.env;
@@ -94,8 +92,3 @@ export const testAdapterEnvironmentSchema = z.object({
 
 export type TestAdapterEnvironment = z.infer<typeof testAdapterEnvironmentSchema>;
 
-export const updateAgentPermissionsSchema = z.object({
-  canCreateAgents: z.boolean(),
-});
-
-export type UpdateAgentPermissions = z.infer<typeof updateAgentPermissionsSchema>;
