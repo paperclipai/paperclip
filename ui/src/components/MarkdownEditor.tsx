@@ -9,6 +9,7 @@ import {
   type CSSProperties,
   type DragEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   CodeMirrorEditor,
   MDXEditor,
@@ -67,6 +68,10 @@ interface MentionState {
   query: string;
   top: number;
   left: number;
+  /** Viewport-relative Y for fixed positioning (used by portal dropdown) */
+  fixedTop: number;
+  /** Viewport-relative X for fixed positioning (used by portal dropdown) */
+  fixedLeft: number;
   textNode: Text;
   atPos: number;
   endPos: number;
@@ -140,6 +145,8 @@ function detectMention(container: HTMLElement): MentionState | null {
     query,
     top: rect.bottom - containerRect.top,
     left: rect.left - containerRect.left,
+    fixedTop: rect.bottom,
+    fixedLeft: rect.left,
     textNode: textNode as Text,
     atPos,
     endPos: offset,
@@ -485,7 +492,6 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         "relative paperclip-mdxeditor-scope",
         bordered ? "rounded-md border border-border bg-transparent" : "bg-transparent",
         isDragOver && "ring-1 ring-primary/60 bg-accent/20",
-        mentionActive && "z-50",
         className,
       )}
       onKeyDownCapture={(e) => {
@@ -574,11 +580,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         plugins={plugins}
       />
 
-      {/* Mention dropdown */}
-      {mentionActive && filteredMentions.length > 0 && (
+      {/* Mention dropdown – rendered via portal with fixed positioning to escape overflow clipping */}
+      {mentionActive && filteredMentions.length > 0 && createPortal(
         <div
-          className="absolute z-50 min-w-[180px] max-h-[200px] overflow-y-auto rounded-md border border-border bg-popover shadow-md"
-          style={{ top: mentionState.top + 4, left: mentionState.left }}
+          className="fixed z-[9999] min-w-[180px] max-h-[200px] overflow-y-auto rounded-md border border-border bg-popover shadow-md"
+          style={{ top: mentionState.fixedTop + 4, left: mentionState.fixedLeft }}
         >
           {filteredMentions.map((option, i) => (
             <button
@@ -613,7 +619,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
               )}
             </button>
           ))}
-        </div>
+        </div>,
+        document.body,
       )}
 
       {isDragOver && canDropImage && (
