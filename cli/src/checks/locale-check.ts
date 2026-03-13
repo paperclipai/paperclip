@@ -38,6 +38,6 @@ export function localeCheck(): CheckResult {
     status: "fail",
     message: `${REQUIRED_LOCALE} locale is missing — embedded PostgreSQL requires it`,
     canRepair: false,
-    repairHint: `Run: sudo locale-gen ${REQUIRED_LOCALE} && sudo dpkg-reconfigure locales`,
+    repairHint: `On Debian/Ubuntu: sudo locale-gen ${REQUIRED_LOCALE} && sudo dpkg-reconfigure locales\nOn RHEL/Fedora: sudo localedef -i en_US -f UTF-8 en_US.UTF-8`,
   };
 }
