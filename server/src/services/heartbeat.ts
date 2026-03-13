@@ -55,7 +55,6 @@ export type TriageAction = "none" | "handle" | "escalate";
 export interface TriageResult {
   action: TriageAction;
   reason: string;
-  usage?: { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number; costUsd?: number };
 }
 
 export const TRIAGE_SYSTEM_PROMPT = `You are a heartbeat triage agent for Paperclip. Your job is to quickly check whether there is any work to do.
@@ -76,24 +75,42 @@ Where <action> is one of:
 Be conservative: if unsure, escalate. Never silently skip work.`;
 
 export function parseTriageOutput(stdout: string): TriageResult {
-  // Try to find a JSON object with _paperclipTriageAction in the output
-  const jsonMatch = stdout.match(/\{[^}]*"_paperclipTriageAction"\s*:\s*"[^"]*"[^}]*\}/);
-  if (!jsonMatch) {
-    return { action: "escalate", reason: "Triage output not parseable — defaulting to escalate" };
-  }
-  try {
-    const parsed = JSON.parse(jsonMatch[0]) as Record<string, unknown>;
-    const action = parsed._paperclipTriageAction;
-    if (action === "none" || action === "handle" || action === "escalate") {
-      return {
-        action,
-        reason: typeof parsed.reason === "string" ? parsed.reason : "No reason provided",
-      };
+  // Extract balanced JSON objects and find one with _paperclipTriageAction.
+  for (let i = 0; i < stdout.length; i++) {
+    if (stdout[i] !== "{") continue;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let j = i; j < stdout.length; j++) {
+      const ch = stdout[j];
+      if (escaped) { escaped = false; continue; }
+      if (ch === "\\") { escaped = true; continue; }
+      if (ch === '"') { inString = !inString; continue; }
+      if (inString) continue;
+      if (ch === "{") depth++;
+      else if (ch === "}") {
+        depth--;
+        if (depth === 0) {
+          try {
+            const parsed = JSON.parse(stdout.slice(i, j + 1)) as Record<string, unknown>;
+            if ("_paperclipTriageAction" in parsed) {
+              const action = parsed._paperclipTriageAction;
+              if (action === "none" || action === "handle" || action === "escalate") {
+                return {
+                  action,
+                  reason: typeof parsed.reason === "string" ? parsed.reason : "No reason provided",
+                };
+              }
+              return { action: "escalate", reason: `Unknown triage action "${String(action)}" — defaulting to escalate` };
+            }
+          } catch { /* not valid JSON, skip */ }
+          i = j; // skip past this object, outer loop will increment to j+1
+          break;
+        }
+      }
     }
-    return { action: "escalate", reason: `Unknown triage action "${String(action)}" — defaulting to escalate` };
-  } catch {
-    return { action: "escalate", reason: "Triage JSON parse failed — defaulting to escalate" };
   }
+  return { action: "escalate", reason: "Triage output not parseable — defaulting to escalate" };
 }
 
 const heartbeatRunListColumns = {
@@ -1517,6 +1534,7 @@ export function heartbeatService(db: Db) {
           ...resolvedConfig,
           model: heartbeatModel,
           maxTurnsPerRun: TRIAGE_MAX_TURNS,
+          promptTemplate: TRIAGE_SYSTEM_PROMPT,
         };
 
         let triageStdout = "";
@@ -1531,7 +1549,7 @@ export function heartbeatService(db: Db) {
             agent,
             runtime: { ...runtimeForAdapter, sessionId: null, sessionParams: null, sessionDisplayId: null },
             config: triageConfig,
-            context: { ...context, _paperclipTriageMode: true, systemPrompt: TRIAGE_SYSTEM_PROMPT },
+            context,
             onLog: triageOnLog,
             onMeta: onAdapterMeta,
             authToken: authToken ?? undefined,
@@ -1562,6 +1580,7 @@ export function heartbeatService(db: Db) {
               finishedAt: new Date(),
               usageJson: combinedUsage,
               resultJson: { triageAction: triage.action, triageReason: triage.reason },
+              sessionIdAfter: runtimeForAdapter.sessionDisplayId ?? runtimeForAdapter.sessionId ?? null,
               stdoutExcerpt,
               stderrExcerpt,
               logBytes: logSummary?.bytes,

@@ -63,6 +63,27 @@ Done.`;
     expect(result.action).toBe("escalate");
     expect(result.reason).toContain("not parseable");
   });
+
+  it("handles reason strings containing braces", () => {
+    const stdout = '{"_paperclipTriageAction": "none", "reason": "No work found (queue: {})"}';
+    const result = parseTriageOutput(stdout);
+    expect(result.action).toBe("none");
+    expect(result.reason).toBe("No work found (queue: {})");
+  });
+
+  it("handles reason with nested braces and special chars", () => {
+    const stdout = '{"_paperclipTriageAction": "escalate", "reason": "Checked {issues} list — found 2 tasks"}';
+    const result = parseTriageOutput(stdout);
+    expect(result.action).toBe("escalate");
+    expect(result.reason).toBe("Checked {issues} list — found 2 tasks");
+  });
+
+  it("skips non-matching JSON objects before the triage result", () => {
+    const stdout = '{"tool": "list_issues", "result": []}\n{"_paperclipTriageAction": "none", "reason": "No work"}';
+    const result = parseTriageOutput(stdout);
+    expect(result.action).toBe("none");
+    expect(result.reason).toBe("No work");
+  });
 });
 
 describe("TRIAGE_SYSTEM_PROMPT", () => {
