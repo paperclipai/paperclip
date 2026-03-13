@@ -1,6 +1,10 @@
-import { describe, expect, it } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
+  resolveAgentHomeWorkspace,
   resolveRuntimeSessionParamsForWorkspace,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
@@ -19,6 +23,14 @@ function buildResolvedWorkspace(overrides: Partial<ResolvedWorkspaceForRun> = {}
     ...overrides,
   };
 }
+
+const tempDirs: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(
+    tempDirs.splice(0, tempDirs.length).map((dir) => fs.rm(dir, { recursive: true, force: true })),
+  );
+});
 
 describe("resolveRuntimeSessionParamsForWorkspace", () => {
   it("migrates fallback workspace sessions to project workspace when project cwd becomes available", () => {
@@ -139,5 +151,32 @@ describe("shouldResetTaskSessionForWake", () => {
         wakeTriggerDetail: "callback",
       }),
     ).toBe(false);
+  });
+});
+
+describe("resolveAgentHomeWorkspace", () => {
+  it("prefers configured agent cwd over fallback when it exists", async () => {
+    const configuredCwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-agent-home-"));
+    tempDirs.push(configuredCwd);
+
+    const result = await resolveAgentHomeWorkspace({
+      agentId: "agent-123",
+      adapterConfig: { cwd: configuredCwd },
+      warningContext: "no_project_or_session",
+    });
+
+    expect(result.cwd).toBe(configuredCwd);
+    expect(result.warning).toBeNull();
+  });
+
+  it("keeps fallback warning when no configured cwd exists", async () => {
+    const result = await resolveAgentHomeWorkspace({
+      agentId: "agent-123",
+      adapterConfig: {},
+      warningContext: "no_project_or_session",
+    });
+
+    expect(result.cwd).toBe(resolveDefaultAgentWorkspaceDir("agent-123"));
+    expect(result.warning).toContain("Using fallback workspace");
   });
 });

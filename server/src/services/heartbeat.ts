@@ -142,6 +142,46 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+export async function resolveAgentHomeWorkspace(input: {
+  agentId: string;
+  adapterConfig: unknown;
+  warningContext: "no_project_or_session" | "missing_session" | "missing_issue_project";
+  previousSessionCwd?: string | null;
+}) {
+  const configuredCwd = readNonEmptyString(parseObject(input.adapterConfig).cwd);
+  if (configuredCwd) {
+    const configuredCwdExists = await fs
+      .stat(configuredCwd)
+      .then((stats) => stats.isDirectory())
+      .catch(() => false);
+    if (configuredCwdExists) {
+      return {
+        cwd: configuredCwd,
+        warning:
+          input.warningContext === "missing_session"
+            ? `Saved session workspace "${input.previousSessionCwd}" is not available. Using configured agent workspace "${configuredCwd}" for this run.`
+            : input.warningContext === "missing_issue_project"
+              ? `No issue-scoped project workspace is available. Using configured agent workspace "${configuredCwd}" for this run.`
+              : null,
+      };
+    }
+  }
+
+  const fallbackCwd = resolveDefaultAgentWorkspaceDir(input.agentId);
+  await fs.mkdir(fallbackCwd, { recursive: true });
+  const warning =
+    input.warningContext === "missing_session"
+      ? `Saved session workspace "${input.previousSessionCwd}" is not available. Using fallback workspace "${fallbackCwd}" for this run.`
+      : input.warningContext === "missing_issue_project"
+        ? `No project workspace directory is currently available for this issue. Using fallback workspace "${fallbackCwd}" for this run.`
+        : `No project or prior session workspace was available. Using fallback workspace "${fallbackCwd}" for this run.`;
+
+  return {
+    cwd: fallbackCwd,
+    warning,
+  };
+}
+
 export function resolveRuntimeSessionParamsForWorkspace(input: {
   agentId: string;
   previousSessionParams: Record<string, unknown> | null;
@@ -642,24 +682,19 @@ export function heartbeatService(db: Db) {
       }
     }
 
-    const cwd = resolveDefaultAgentWorkspaceDir(agent.id);
-    await fs.mkdir(cwd, { recursive: true });
-    const warnings: string[] = [];
-    if (sessionCwd) {
-      warnings.push(
-        `Saved session workspace "${sessionCwd}" is not available. Using fallback workspace "${cwd}" for this run.`,
-      );
-    } else if (resolvedProjectId) {
-      warnings.push(
-        `No project workspace directory is currently available for this issue. Using fallback workspace "${cwd}" for this run.`,
-      );
-    } else {
-      warnings.push(
-        `No project or prior session workspace was available. Using fallback workspace "${cwd}" for this run.`,
-      );
-    }
+    const agentHomeWorkspace = await resolveAgentHomeWorkspace({
+      agentId: agent.id,
+      adapterConfig: agent.adapterConfig,
+      warningContext: sessionCwd
+        ? "missing_session"
+        : resolvedProjectId
+          ? "missing_issue_project"
+          : "no_project_or_session",
+      previousSessionCwd: sessionCwd,
+    });
+    const warnings: string[] = agentHomeWorkspace.warning ? [agentHomeWorkspace.warning] : [];
     return {
-      cwd,
+      cwd: agentHomeWorkspace.cwd,
       source: "agent_home" as const,
       projectId: resolvedProjectId,
       workspaceId: null,
