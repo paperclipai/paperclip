@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Link } from "@/lib/router";
 import type { Issue } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { accessApi } from "../api/access";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { issuesApi } from "../api/issues";
@@ -10,6 +11,7 @@ import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
+import { useMyPermissions } from "../hooks/useMyPermissions";
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
@@ -17,7 +19,7 @@ import { formatDate, cn, projectUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { User, Hexagon, ArrowUpRight, Tag, Plus, Trash2 } from "lucide-react";
+import { User, Hexagon, ArrowUpRight, Tag, Plus, Trash2, Check } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 
 // TODO(issue-worktree-support): re-enable this UI once the workflow is ready to ship.
@@ -104,6 +106,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const companyId = issue.companyId ?? selectedCompanyId;
+  const { can } = useMyPermissions(companyId);
   const [assigneeOpen, setAssigneeOpen] = useState(false);
   const [assigneeSearch, setAssigneeSearch] = useState("");
   const [projectOpen, setProjectOpen] = useState(false);
@@ -122,6 +125,12 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(companyId!),
     queryFn: () => agentsApi.list(companyId!),
+    enabled: !!companyId,
+  });
+
+  const { data: people } = useQuery({
+    queryKey: queryKeys.access.people(companyId!),
+    queryFn: () => accessApi.listPeople(companyId!),
     enabled: !!companyId,
   });
 
@@ -203,8 +212,16 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
     [agents, recentAssigneeIds],
   );
 
+  const activePeople = useMemo(
+    () => (people ?? []).filter((p) => p.status === "active"),
+    [people],
+  );
+
   const assignee = issue.assigneeAgentId
     ? agents?.find((a) => a.id === issue.assigneeAgentId)
+    : null;
+  const assigneePerson = issue.assigneeUserId
+    ? activePeople.find((p) => p.id === issue.assigneeUserId)
     : null;
   const userLabel = (userId: string | null | undefined) =>
     userId
@@ -212,7 +229,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
         ? "Board"
         : currentUserId && userId === currentUserId
           ? "Me"
-          : userId.slice(0, 5)
+          : activePeople.find((p) => p.id === userId)?.name ?? userId.slice(0, 5)
       : null;
   const assigneeUserLabel = userLabel(issue.assigneeUserId);
   const creatorUserLabel = userLabel(issue.createdByUserId);
@@ -318,6 +335,8 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
 
   const assigneeTrigger = assignee ? (
     <Identity name={assignee.name} size="sm" />
+  ) : assigneePerson ? (
+    <Identity name={assigneePerson.name} avatarUrl={assigneePerson.avatar} size="sm" />
   ) : assigneeUserLabel ? (
     <>
       <User className="h-3.5 w-3.5 text-muted-foreground" />
@@ -328,6 +347,24 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
       <User className="h-3.5 w-3.5 text-muted-foreground" />
       <span className="text-sm text-muted-foreground">Unassigned</span>
     </>
+  );
+
+  const filteredPeople = useMemo(
+    () => activePeople.filter((p) => {
+      if (!assigneeSearch.trim()) return true;
+      const q = assigneeSearch.toLowerCase();
+      return p.name.toLowerCase().includes(q) || p.email.toLowerCase().includes(q);
+    }),
+    [activePeople, assigneeSearch],
+  );
+
+  const filteredAgents = useMemo(
+    () => sortedAgents.filter((a) => {
+      if (!assigneeSearch.trim()) return true;
+      const q = assigneeSearch.toLowerCase();
+      return a.name.toLowerCase().includes(q);
+    }),
+    [sortedAgents, assigneeSearch],
   );
 
   const assigneeContent = (
@@ -349,40 +386,50 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
         >
           No assignee
         </button>
-        {issue.createdByUserId && (
-          <button
-            className={cn(
-              "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-              issue.assigneeUserId === issue.createdByUserId && "bg-accent",
-            )}
-            onClick={() => {
-              onUpdate({ assigneeAgentId: null, assigneeUserId: issue.createdByUserId });
-              setAssigneeOpen(false);
-            }}
-          >
-            <User className="h-3 w-3 shrink-0 text-muted-foreground" />
-            {creatorUserLabel ? `Assign to ${creatorUserLabel === "Me" ? "me" : creatorUserLabel}` : "Assign to requester"}
-          </button>
+        {filteredPeople.length > 0 && (
+          <>
+            <div className="px-2 py-1 text-xs text-muted-foreground uppercase tracking-wide">Team Members</div>
+            {filteredPeople.map((p) => (
+              <button
+                key={p.id}
+                className={cn(
+                  "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                  issue.assigneeUserId === p.id && !issue.assigneeAgentId && "bg-accent"
+                )}
+                onClick={() => {
+                  onUpdate({ assigneeAgentId: null, assigneeUserId: p.id });
+                  setAssigneeOpen(false);
+                }}
+              >
+                <Identity name={p.name} avatarUrl={p.avatar} size="xs" />
+                {issue.assigneeUserId === p.id && !issue.assigneeAgentId && (
+                  <Check className="h-3 w-3 ml-auto shrink-0 text-muted-foreground" />
+                )}
+              </button>
+            ))}
+          </>
         )}
-        {sortedAgents
-          .filter((a) => {
-            if (!assigneeSearch.trim()) return true;
-            const q = assigneeSearch.toLowerCase();
-            return a.name.toLowerCase().includes(q);
-          })
-          .map((a) => (
-          <button
-            key={a.id}
-            className={cn(
-              "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-              a.id === issue.assigneeAgentId && "bg-accent"
-            )}
-            onClick={() => { trackRecentAssignee(a.id); onUpdate({ assigneeAgentId: a.id, assigneeUserId: null }); setAssigneeOpen(false); }}
-          >
-            <AgentIcon icon={a.icon} className="shrink-0 h-3 w-3 text-muted-foreground" />
-            {a.name}
-          </button>
-        ))}
+        {filteredAgents.length > 0 && (
+          <>
+            <div className="px-2 py-1 text-xs text-muted-foreground uppercase tracking-wide">Agents</div>
+            {filteredAgents.map((a) => (
+              <button
+                key={a.id}
+                className={cn(
+                  "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                  a.id === issue.assigneeAgentId && "bg-accent"
+                )}
+                onClick={() => { trackRecentAssignee(a.id); onUpdate({ assigneeAgentId: a.id, assigneeUserId: null }); setAssigneeOpen(false); }}
+              >
+                <AgentIcon icon={a.icon} className="shrink-0 h-3 w-3 text-muted-foreground" />
+                {a.name}
+                {a.id === issue.assigneeAgentId && (
+                  <Check className="h-3 w-3 ml-auto shrink-0 text-muted-foreground" />
+                )}
+              </button>
+            ))}
+          </>
+        )}
       </div>
     </>
   );
@@ -489,25 +536,31 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
           {labelsContent}
         </PropertyPicker>
 
-        <PropertyPicker
-          inline={inline}
-          label="Assignee"
-          open={assigneeOpen}
-          onOpenChange={(open) => { setAssigneeOpen(open); if (!open) setAssigneeSearch(""); }}
-          triggerContent={assigneeTrigger}
-          popoverClassName="w-52"
-          extra={issue.assigneeAgentId ? (
-            <Link
-              to={`/agents/${issue.assigneeAgentId}`}
-              className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <ArrowUpRight className="h-3 w-3" />
-            </Link>
-          ) : undefined}
-        >
-          {assigneeContent}
-        </PropertyPicker>
+        {can("tasks:assign") ? (
+          <PropertyPicker
+            inline={inline}
+            label="Assignee"
+            open={assigneeOpen}
+            onOpenChange={(open) => { setAssigneeOpen(open); if (!open) setAssigneeSearch(""); }}
+            triggerContent={assigneeTrigger}
+            popoverClassName="w-52"
+            extra={issue.assigneeAgentId ? (
+              <Link
+                to={`/agents/${issue.assigneeAgentId}`}
+                className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <ArrowUpRight className="h-3 w-3" />
+              </Link>
+            ) : undefined}
+          >
+            {assigneeContent}
+          </PropertyPicker>
+        ) : (
+          <PropertyRow label="Assignee">
+            {assigneeTrigger}
+          </PropertyRow>
+        )}
 
         <PropertyPicker
           inline={inline}

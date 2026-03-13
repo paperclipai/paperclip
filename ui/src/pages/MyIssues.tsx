@@ -21,8 +21,8 @@ export function MyIssues() {
   }, [setBreadcrumbs]);
 
   const { data: issues, isLoading, error } = useQuery({
-    queryKey: queryKeys.issues.list(selectedCompanyId!),
-    queryFn: () => issuesApi.list(selectedCompanyId!),
+    queryKey: queryKeys.issues.listAssignedToMe(selectedCompanyId!),
+    queryFn: () => issuesApi.list(selectedCompanyId!, { assigneeUserId: "me" }),
     enabled: !!selectedCompanyId,
   });
 
@@ -34,9 +34,8 @@ export function MyIssues() {
     return <PageSkeleton variant="list" />;
   }
 
-  // Show issues that are not assigned (user-created or unassigned)
   const myIssues = (issues ?? []).filter(
-    (i) => !i.assigneeAgentId && !["done", "cancelled"].includes(i.status)
+    (i) => !["done", "cancelled"].includes(i.status)
   );
 
   return (

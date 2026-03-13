@@ -1,12 +1,13 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  authUsers,
   companyMemberships,
   instanceUserRoles,
   principalPermissionGrants,
 } from "@paperclipai/db";
 import type { MembershipRole, PermissionKey, PrincipalType } from "@paperclipai/shared";
-import { ROLE_HIERARCHY } from "@paperclipai/shared";
+import { ROLE_HIERARCHY, PERMISSION_KEYS } from "@paperclipai/shared";
 import { logActivity } from "./activity-log.js";
 
 type MembershipRow = typeof companyMemberships.$inferSelect;
@@ -358,6 +359,59 @@ export function accessService(db: Db) {
     return updated;
   }
 
+  async function listPeople(companyId: string) {
+    const rows = await db
+      .select({
+        id: authUsers.id,
+        name: authUsers.name,
+        email: authUsers.email,
+        avatar: authUsers.image,
+        membershipRole: companyMemberships.membershipRole,
+        status: companyMemberships.status,
+      })
+      .from(companyMemberships)
+      .leftJoin(authUsers, eq(companyMemberships.principalId, authUsers.id))
+      .where(
+        and(
+          eq(companyMemberships.companyId, companyId),
+          eq(companyMemberships.principalType, "user"),
+        ),
+      )
+      .orderBy(sql`${authUsers.name} asc nulls last`);
+    return rows.filter((r) => r.id !== null);
+  }
+
+  async function getMyPermissions(
+    companyId: string,
+    principalType: PrincipalType,
+    principalId: string,
+  ): Promise<{ membershipRole: MembershipRole | null; permissions: PermissionKey[] }> {
+    const membership = await getMembership(companyId, principalType, principalId);
+    if (!membership || membership.status !== "active") {
+      return { membershipRole: null, permissions: [] };
+    }
+
+    const grants = await db
+      .select({ permissionKey: principalPermissionGrants.permissionKey })
+      .from(principalPermissionGrants)
+      .where(
+        and(
+          eq(principalPermissionGrants.companyId, companyId),
+          eq(principalPermissionGrants.principalType, principalType),
+          eq(principalPermissionGrants.principalId, principalId),
+        ),
+      );
+
+    const permissions = grants
+      .map((g) => g.permissionKey)
+      .filter((k): k is PermissionKey => PERMISSION_KEYS.includes(k as PermissionKey));
+
+    return {
+      membershipRole: (membership.membershipRole as MembershipRole) ?? null,
+      permissions,
+    };
+  }
+
   return {
     isInstanceAdmin,
     canUser,
@@ -365,6 +419,7 @@ export function accessService(db: Db) {
     getMembership,
     ensureMembership,
     listMembers,
+    listPeople,
     canModifyMember,
     setMemberPermissions,
     promoteInstanceAdmin,
@@ -375,5 +430,6 @@ export function accessService(db: Db) {
     removeMember,
     suspendMember,
     unsuspendMember,
+    getMyPermissions,
   };
 }

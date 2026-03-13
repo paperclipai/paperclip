@@ -1,6 +1,8 @@
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
+import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { authUsers } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
   createIssueAttachmentMetadataSchema,
@@ -23,6 +25,7 @@ import {
   projectService,
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
+import type { EmailService } from "../services/email.js";
 import { forbidden, HttpError, unauthorized } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
@@ -667,6 +670,31 @@ export function issueRoutes(db: Db, storage: StorageService) {
           .catch((err) => logger.warn({ err, issueId: issue.id, agentId }, "failed to wake agent on issue update"));
       }
     })();
+
+    // Send assignment email when assigned to a human user
+    if (assigneeChanged && issue.assigneeUserId) {
+      const emailSvc = req.app.locals.emailService as EmailService | undefined;
+      if (emailSvc?.isConfigured()) {
+        void (async () => {
+          try {
+            const userRows = await db
+              .select({ email: authUsers.email })
+              .from(authUsers)
+              .where(eq(authUsers.id, issue.assigneeUserId!));
+            const user = userRows[0];
+            if (!user?.email) return;
+            const baseUrl = `${req.protocol}://${req.get("host")}`;
+            const issueUrl = `${baseUrl}/issues/${issue.identifier ?? issue.id}`;
+            await emailSvc.sendAssignmentEmail(user.email, {
+              issueTitle: issue.title,
+              issueUrl,
+            });
+          } catch (err) {
+            logger.warn({ err, issueId: issue.id }, "failed to send assignment email");
+          }
+        })();
+      }
+    }
 
     res.json({ ...issue, comment });
   });

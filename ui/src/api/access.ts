@@ -185,4 +185,30 @@ export const accessApi = {
 
   revokeInvite: (inviteId: string) =>
     api.post<{ revoked: true }>(`/invites/${inviteId}/revoke`, {}),
+
+  listPeople: (companyId: string) =>
+    api.get<Array<{
+      id: string;
+      name: string;
+      email: string;
+      avatar: string | null;
+      membershipRole: string | null;
+      status: string;
+    }>>(`/companies/${companyId}/people`),
+
+  getMyPermissions: (companyId: string) =>
+    api.get<{
+      membershipRole: string | null;
+      permissions: string[];
+    }>(`/companies/${companyId}/my-permissions`),
+
+  sendInviteEmail: (
+    companyId: string,
+    inviteId: string,
+    input: { email: string; token: string },
+  ) =>
+    api.post<{ sent: true; to: string }>(
+      `/companies/${companyId}/invites/${inviteId}/send-email`,
+      input,
+    ),
 };
