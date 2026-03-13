@@ -170,8 +170,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const skillsDir = await buildSkillsDir();
 
   const buildKiroArgs = (resumeSessionId: string | null) => {
-    // kiro-cli chat --no-interactive --trust-all-tools --format json "<prompt>"
-    const args = ["chat", "--no-interactive", "--format", "json"];
+    // kiro-cli chat --no-interactive --trust-all-tools "<prompt>"
+    const args = ["chat", "--no-interactive"];
     if (resumeSessionId) args.push("--resume", resumeSessionId);
     if (trustAllTools) args.push("--trust-all-tools");
     if (model) args.push("--model", model);

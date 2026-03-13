@@ -105,7 +105,7 @@ export async function testEnvironment(
       const probe = await runChildProcess(
         `kiro-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`,
         command,
-        ["chat", "--no-interactive", "--format", "json", "--trust-all-tools", "Respond with hello."],
+        ["chat", "--no-interactive", "--trust-all-tools", "Respond with hello."],
         {
           cwd,
           env,
@@ -136,7 +136,7 @@ export async function testEnvironment(
           ...(hasHello
             ? {}
             : {
-                hint: "Try running `kiro-cli chat --no-interactive --format json \"Respond with hello.\"` manually.",
+                hint: "Try running `kiro-cli chat --no-interactive \"Respond with hello.\"` manually.",
               }),
         });
       } else {
@@ -157,7 +157,7 @@ export async function testEnvironment(
             level: "error",
             message: "Kiro hello probe failed.",
             ...(detail ? { detail } : {}),
-            hint: "Run `kiro-cli chat --no-interactive --format json \"Respond with hello.\"` manually to debug.",
+            hint: "Run `kiro-cli chat --no-interactive \"Respond with hello.\"` manually to debug.",
           });
         }
       }

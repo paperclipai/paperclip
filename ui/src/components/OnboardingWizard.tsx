@@ -1048,6 +1048,8 @@ export function OnboardingWizard() {
                                 ? `${effectiveAdapterCommand} --output-format json "Respond with hello."`
                               : adapterType === "opencode_local"
                                 ? `${effectiveAdapterCommand} run --format json "Respond with hello."`
+                              : adapterType === "kiro_local"
+                                ? `${effectiveAdapterCommand} chat --no-interactive "Respond with hello."`
                               : `${effectiveAdapterCommand} --print - --output-format stream-json --verbose`}
                           </p>
                           <p className="text-muted-foreground">
@@ -1078,6 +1080,12 @@ export function OnboardingWizard() {
                                       : "opencode auth login"}
                               </span>
                               .
+                            </p>
+                          ) : adapterType === "kiro_local" ? (
+                            <p className="text-muted-foreground">
+                              If login is required, run{" "}
+                              <span className="font-mono">kiro-cli login</span>{" "}
+                              and retry.
                             </p>
                           ) : (
                             <p className="text-muted-foreground">
