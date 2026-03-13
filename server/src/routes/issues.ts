@@ -788,7 +788,11 @@ export function issueRoutes(db: Db, storage: StorageService) {
     } catch (err: unknown) {
       // FK violation when run_id doesn't exist in heartbeat_runs — retry without it
       const isFkOnRunId =
-        err != null && typeof err === "object" && "code" in err && (err as { code: string; constraint?: string }).code === "23503" && (err as { constraint?: string }).constraint?.includes("run_id");
+        err != null &&
+        typeof err === "object" &&
+        "code" in err &&
+        (err as { code: string; constraint?: string }).code === "23503" &&
+        (err as { constraint?: string }).constraint?.includes("run_id");
       if (isFkOnRunId && checkoutRunId) {
         updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, null);
       } else {
