@@ -87,3 +87,10 @@ export const createIssueAttachmentMetadataSchema = z.object({
 });
 
 export type CreateIssueAttachmentMetadata = z.infer<typeof createIssueAttachmentMetadataSchema>;
+
+export const updateIssuePipelineStateSchema = z.object({
+  state: z.record(z.unknown()),
+  merge: z.boolean().optional().default(true),
+});
+
+export type UpdateIssuePipelineState = z.infer<typeof updateIssuePipelineStateSchema>;

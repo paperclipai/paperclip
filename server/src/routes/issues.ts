@@ -9,6 +9,7 @@ import {
   createIssueSchema,
   linkIssueApprovalSchema,
   updateIssueSchema,
+  updateIssuePipelineStateSchema,
 } from "@paperclipai/shared";
 import type { StorageService } from "../storage/types.js";
 import { validate } from "../middleware/validate.js";
@@ -312,6 +313,50 @@ export function issueRoutes(db: Db, storage: StorageService) {
       goal: goal ?? null,
       mentionedProjects,
     });
+  });
+
+  router.get("/issues/:id/pipeline-state", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    res.json(issue.pipelineState ?? {});
+  });
+
+  router.patch("/issues/:id/pipeline-state", validate(updateIssuePipelineStateSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+
+    const { state, merge } = req.body;
+    const newState = merge ? { ...(issue.pipelineState ?? {}), ...state } : state;
+    const updated = await svc.update(id, { pipelineState: newState });
+    if (!updated) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.pipeline_state_updated",
+      entityType: "issue",
+      entityId: issue.id,
+      details: { merge, keys: Object.keys(state) },
+    });
+
+    res.json(updated.pipelineState ?? {});
   });
 
   router.post("/issues/:id/read", async (req, res) => {
