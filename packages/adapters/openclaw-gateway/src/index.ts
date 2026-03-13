@@ -37,6 +37,9 @@ Request behavior fields:
 - autoPairOnFirstConnect (boolean, optional): on first "pairing required", attempt device.pair.list/device.pair.approve via shared auth, then retry once (default true)
 - paperclipApiUrl (string, optional): absolute Paperclip base URL advertised in wake text
 
+Heartbeat triage:
+- heartbeatModel (string, optional): cheaper model for heartbeat triage pre-screening; when set, timer-triggered heartbeats run a short triage phase first to check for work before launching the full model
+
 Session routing fields:
 - sessionKeyStrategy (string, optional): issue (default), fixed, or run
 - sessionKey (string, optional): fixed session key when strategy=fixed (default paperclip)

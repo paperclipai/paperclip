@@ -27,6 +27,9 @@ Core fields:
 - command (string, optional): defaults to "pi"
 - env (object, optional): KEY=VALUE environment variables
 
+Heartbeat triage:
+- heartbeatModel (string, optional): cheaper model for heartbeat triage pre-screening; when set, timer-triggered heartbeats run a short triage phase first to check for work before launching the full model
+
 Operational fields:
 - timeoutSec (number, optional): run timeout in seconds
 - graceSec (number, optional): SIGTERM grace period in seconds
