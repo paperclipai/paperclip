@@ -29,5 +29,7 @@ export const projectsApi = {
     ),
   removeWorkspace: (projectId: string, workspaceId: string, companyId?: string) =>
     api.delete<ProjectWorkspace>(projectPath(projectId, companyId, `/workspaces/${encodeURIComponent(workspaceId)}`)),
+  archive: (id: string, companyId?: string) => api.post<Project>(projectPath(id, companyId, "/archive"), {}),
+  unarchive: (id: string, companyId?: string) => api.post<Project>(projectPath(id, companyId, "/unarchive"), {}),
   remove: (id: string, companyId?: string) => api.delete<Project>(projectPath(id, companyId)),
 };

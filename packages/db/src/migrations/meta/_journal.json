@@ -197,6 +197,13 @@
       "when": 1773150731736,
       "tag": "0027_tranquil_tenebrous",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1773413502339,
+      "tag": "0028_uneven_lethal_legion",
+      "breakpoints": true
     }
   ]
 }

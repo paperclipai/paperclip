@@ -391,6 +391,33 @@ export function agentService(db: Db) {
       return updated ? normalizeAgentRow(updated) : null;
     },
 
+    archive: async (id: string) => {
+      const existing = await getById(id);
+      if (!existing) return null;
+      if (existing.status === "terminated") throw conflict("Cannot archive terminated agent");
+
+      const updated = await db
+        .update(agents)
+        .set({ archivedAt: new Date(), status: "paused", updatedAt: new Date() })
+        .where(eq(agents.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      return updated ? normalizeAgentRow(updated) : null;
+    },
+
+    unarchive: async (id: string) => {
+      const existing = await getById(id);
+      if (!existing) return null;
+
+      const updated = await db
+        .update(agents)
+        .set({ archivedAt: null, updatedAt: new Date() })
+        .where(eq(agents.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      return updated ? normalizeAgentRow(updated) : null;
+    },
+
     terminate: async (id: string) => {
       const existing = await getById(id);
       if (!existing) return null;

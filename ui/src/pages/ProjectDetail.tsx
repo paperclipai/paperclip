@@ -19,6 +19,13 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
 import { projectRouteRef, cn } from "../lib/utils";
 import { Tabs } from "@/components/ui/tabs";
+import { Button } from "@/components/ui/button";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { MoreHorizontal, Archive, ArchiveRestore } from "lucide-react";
 
 /* ── Top-level tab types ── */
 
@@ -244,6 +251,16 @@ export function ProjectDetail() {
     onSuccess: invalidateProject,
   });
 
+  const [moreOpen, setMoreOpen] = useState(false);
+
+  const archiveProject = useMutation({
+    mutationFn: () =>
+      project?.archivedAt
+        ? projectsApi.unarchive(projectLookupRef, resolvedCompanyId ?? lookupCompanyId)
+        : projectsApi.archive(projectLookupRef, resolvedCompanyId ?? lookupCompanyId),
+    onSuccess: invalidateProject,
+  });
+
   const uploadImage = useMutation({
     mutationFn: async (file: File) => {
       if (!resolvedCompanyId) throw new Error("No company selected");
@@ -362,6 +379,39 @@ export function ProjectDetail() {
           as="h2"
           className="text-xl font-bold"
         />
+        <div className="ml-auto flex items-center gap-2">
+          {project.archivedAt && (
+            <span className="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded">Archived</span>
+          )}
+          <Popover open={moreOpen} onOpenChange={setMoreOpen}>
+            <PopoverTrigger asChild>
+              <Button variant="ghost" size="icon-xs">
+                <MoreHorizontal className="h-4 w-4" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-44 p-1" align="end">
+              <button
+                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
+                onClick={() => {
+                  archiveProject.mutate();
+                  setMoreOpen(false);
+                }}
+              >
+                {project.archivedAt ? (
+                  <>
+                    <ArchiveRestore className="h-3 w-3" />
+                    Unarchive
+                  </>
+                ) : (
+                  <>
+                    <Archive className="h-3 w-3" />
+                    Archive
+                  </>
+                )}
+              </button>
+            </PopoverContent>
+          </Popover>
+        </div>
       </div>
 
       <Tabs value={activeTab ?? "list"} onValueChange={(value) => handleTabChange(value as ProjectTab)}>

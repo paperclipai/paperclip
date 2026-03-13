@@ -35,6 +35,8 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import {
+  Archive,
+  ArchiveRestore,
   MoreHorizontal,
   Play,
   Pause,
@@ -330,13 +332,15 @@ export function AgentDetail() {
   }, [agent?.companyId, selectedCompanyId, setSelectedCompanyId]);
 
   const agentAction = useMutation({
-    mutationFn: async (action: "invoke" | "pause" | "resume" | "terminate") => {
+    mutationFn: async (action: "invoke" | "pause" | "resume" | "terminate" | "archive" | "unarchive") => {
       if (!agentLookupRef) return Promise.reject(new Error("No agent reference"));
       switch (action) {
         case "invoke": return agentsApi.invoke(agentLookupRef, resolvedCompanyId ?? undefined);
         case "pause": return agentsApi.pause(agentLookupRef, resolvedCompanyId ?? undefined);
         case "resume": return agentsApi.resume(agentLookupRef, resolvedCompanyId ?? undefined);
         case "terminate": return agentsApi.terminate(agentLookupRef, resolvedCompanyId ?? undefined);
+        case "archive": return agentsApi.archive(agentLookupRef, resolvedCompanyId ?? undefined);
+        case "unarchive": return agentsApi.unarchive(agentLookupRef, resolvedCompanyId ?? undefined);
       }
     },
     onSuccess: (data, action) => {
@@ -459,7 +463,12 @@ export function AgentDetail() {
             </button>
           </AgentIconPicker>
           <div className="min-w-0">
-            <h2 className="text-2xl font-bold truncate">{agent.name}</h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-2xl font-bold truncate">{agent.name}</h2>
+              {agent.archivedAt && (
+                <span className="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded shrink-0">Archived</span>
+              )}
+            </div>
             <p className="text-sm text-muted-foreground truncate">
               {roleLabels[agent.role] ?? agent.role}
               {agent.title ? ` - ${agent.title}` : ""}
@@ -546,6 +555,25 @@ export function AgentDetail() {
               >
                 <RotateCcw className="h-3 w-3" />
                 Reset Sessions
+              </button>
+              <button
+                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
+                onClick={() => {
+                  agentAction.mutate(agent.archivedAt ? "unarchive" : "archive");
+                  setMoreOpen(false);
+                }}
+              >
+                {agent.archivedAt ? (
+                  <>
+                    <ArchiveRestore className="h-3 w-3" />
+                    Unarchive
+                  </>
+                ) : (
+                  <>
+                    <Archive className="h-3 w-3" />
+                    Archive
+                  </>
+                )}
               </button>
               <button
                 className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"

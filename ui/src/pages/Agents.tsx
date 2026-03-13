@@ -35,8 +35,9 @@ const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 
 type FilterTab = "all" | "active" | "paused" | "error";
 
-function matchesFilter(status: string, tab: FilterTab, showTerminated: boolean): boolean {
+function matchesFilter(status: string, tab: FilterTab, showTerminated: boolean, archivedAt?: Date | null, showArchived?: boolean): boolean {
   if (status === "terminated") return showTerminated;
+  if (archivedAt && !showArchived) return false;
   if (tab === "all") return true;
   if (tab === "active") return status === "active" || status === "running" || status === "idle";
   if (tab === "paused") return status === "paused";
@@ -44,14 +45,15 @@ function matchesFilter(status: string, tab: FilterTab, showTerminated: boolean):
   return true;
 }
 
-function filterAgents(agents: Agent[], tab: FilterTab, showTerminated: boolean): Agent[] {
-  return agents.filter((a) => matchesFilter(a.status, tab, showTerminated));
+function filterAgents(agents: Agent[], tab: FilterTab, showTerminated: boolean, showArchived: boolean): Agent[] {
+  return agents.filter((a) => matchesFilter(a.status, tab, showTerminated, a.archivedAt, showArchived));
 }
 
-function filterOrgTree(nodes: OrgNode[], tab: FilterTab, showTerminated: boolean): OrgNode[] {
+function filterOrgTree(nodes: OrgNode[], tab: FilterTab, showTerminated: boolean, showArchived: boolean, agentMap?: Map<string, Agent>): OrgNode[] {
   return nodes.reduce<OrgNode[]>((acc, node) => {
-    const filteredReports = filterOrgTree(node.reports, tab, showTerminated);
-    if (matchesFilter(node.status, tab, showTerminated) || filteredReports.length > 0) {
+    const agent = agentMap?.get(node.id);
+    const filteredReports = filterOrgTree(node.reports, tab, showTerminated, showArchived, agentMap);
+    if (matchesFilter(node.status, tab, showTerminated, agent?.archivedAt, showArchived) || filteredReports.length > 0) {
       acc.push({ ...node, reports: filteredReports });
     }
     return acc;
@@ -71,6 +73,7 @@ export function Agents() {
   const forceListView = isMobile;
   const effectiveView: "list" | "org" = forceListView ? "list" : view;
   const [showTerminated, setShowTerminated] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
 
   const { data: agents, isLoading, error } = useQuery({
@@ -125,8 +128,8 @@ export function Agents() {
     return <PageSkeleton variant="list" />;
   }
 
-  const filtered = filterAgents(agents ?? [], tab, showTerminated);
-  const filteredOrg = filterOrgTree(orgTree ?? [], tab, showTerminated);
+  const filtered = filterAgents(agents ?? [], tab, showTerminated, showArchived);
+  const filteredOrg = filterOrgTree(orgTree ?? [], tab, showTerminated, showArchived, agentMap);
 
   return (
     <div className="space-y-4">
@@ -149,16 +152,32 @@ export function Agents() {
             <button
               className={cn(
                 "flex items-center gap-1.5 px-2 py-1.5 text-xs transition-colors border border-border",
-                filtersOpen || showTerminated ? "text-foreground bg-accent" : "text-muted-foreground hover:bg-accent/50"
+                filtersOpen || showTerminated || showArchived ? "text-foreground bg-accent" : "text-muted-foreground hover:bg-accent/50"
               )}
               onClick={() => setFiltersOpen(!filtersOpen)}
             >
               <SlidersHorizontal className="h-3 w-3" />
               Filters
-              {showTerminated && <span className="ml-0.5 px-1 bg-foreground/10 rounded text-[10px]">1</span>}
+              {(showTerminated || showArchived) && (
+                <span className="ml-0.5 px-1 bg-foreground/10 rounded text-[10px]">
+                  {(showTerminated ? 1 : 0) + (showArchived ? 1 : 0)}
+                </span>
+              )}
             </button>
             {filtersOpen && (
               <div className="absolute right-0 top-full mt-1 z-50 w-48 border border-border bg-popover shadow-md p-1">
+                <button
+                  className="flex items-center gap-2 w-full px-2 py-1.5 text-xs text-left hover:bg-accent/50 transition-colors"
+                  onClick={() => setShowArchived(!showArchived)}
+                >
+                  <span className={cn(
+                    "flex items-center justify-center h-3.5 w-3.5 border border-border rounded-sm",
+                    showArchived && "bg-foreground"
+                  )}>
+                    {showArchived && <span className="text-background text-[10px] leading-none">&#10003;</span>}
+                  </span>
+                  Show archived
+                </button>
                 <button
                   className="flex items-center gap-2 w-full px-2 py-1.5 text-xs text-left hover:bg-accent/50 transition-colors"
                   onClick={() => setShowTerminated(!showTerminated)}

@@ -447,6 +447,32 @@ export function projectService(db: Db) {
       return enriched ?? null;
     },
 
+    archive: async (id: string): Promise<ProjectWithGoals | null> => {
+      const row = await db
+        .update(projects)
+        .set({ archivedAt: new Date(), updatedAt: new Date() })
+        .where(eq(projects.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!row) return null;
+      const [withGoals] = await attachGoals(db, [row]);
+      const [enriched] = withGoals ? await attachWorkspaces(db, [withGoals]) : [];
+      return enriched ?? null;
+    },
+
+    unarchive: async (id: string): Promise<ProjectWithGoals | null> => {
+      const row = await db
+        .update(projects)
+        .set({ archivedAt: null, updatedAt: new Date() })
+        .where(eq(projects.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!row) return null;
+      const [withGoals] = await attachGoals(db, [row]);
+      const [enriched] = withGoals ? await attachWorkspaces(db, [withGoals]) : [];
+      return enriched ?? null;
+    },
+
     remove: (id: string) =>
       db
         .delete(projects)
