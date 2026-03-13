@@ -1,6 +1,6 @@
 # Issue worktree support
 
-Status: experimental, runtime-only, not shipping as a user-facing feature yet.
+Status: experimental, operator-visible UI enabled for validation.
 
 This branch contains the runtime and seeding work needed for issue-scoped worktrees:
 
@@ -11,7 +11,7 @@ This branch contains the runtime and seeding work needed for issue-scoped worktr
 - seeded worktree fixes for secrets key compatibility
 - seeded project workspace rebinding to the current git worktree
 
-We are intentionally not shipping the UI for this yet. The runtime code remains in place, but the main UI entrypoints are hard-gated off for now.
+The runtime code remains experimental, but the main operator-facing UI entrypoints are now enabled so the workflow can be validated end to end.
 
 ## What works today
 
@@ -22,9 +22,9 @@ We are intentionally not shipping the UI for this yet. The runtime code remains 
 - seeded worktree instances can keep local-encrypted secrets working
 - seeded worktree instances can rebind same-repo project workspace paths onto the current git worktree
 
-## Hidden UI entrypoints
+## Enabled UI entrypoints
 
-These are the current user-facing UI surfaces for the feature, now intentionally disabled:
+These are the current user-facing UI surfaces for the feature, now enabled for experimental validation:
 
 - project settings:
   - `ui/src/components/ProjectProperties.tsx`
@@ -46,17 +46,16 @@ These are the current user-facing UI surfaces for the feature, now intentionally
   - `ui/src/adapters/runtime-json-fields.tsx`
   - runtime services JSON field, which is part of the broader workspace-runtime support surface
 
-## Why the UI is hidden
+## Validation caveats
 
 - the runtime behavior is still being validated
 - the workflow and operator ergonomics are not final
-- we do not want to expose a partially-baked user-facing feature in issues, projects, or settings
+- the feature should still be treated as experimental until broader product verification is complete
 
-## Re-enable plan
+## Next validation steps
 
-When this is ready to ship:
+Before treating this as fully shipped:
 
-- re-enable the gated UI sections in the files above
 - review wording and defaults for project and issue controls
 - decide which agent/runtime settings should remain advanced-only
 - add end-to-end product-level verification for the full UI workflow

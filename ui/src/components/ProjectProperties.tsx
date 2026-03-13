@@ -26,8 +26,7 @@ const PROJECT_STATUSES = [
   { value: "cancelled", label: "Cancelled" },
 ];
 
-// TODO(issue-worktree-support): re-enable this UI once the workflow is ready to ship.
-const SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI = false;
+const SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI = true;
 
 interface ProjectPropertiesProps {
   project: Project;

@@ -126,3 +126,32 @@ Notes:
 - In authenticated mode, the smoke script defaults `SMOKE_AUTO_BOOTSTRAP=true` and drives the real bootstrap path automatically: it signs up a real user, runs `paperclipai auth bootstrap-ceo` inside the container to mint a real bootstrap invite, accepts that invite over HTTP, and verifies board session access.
 - Run the script in the foreground to watch the onboarding flow; stop with `Ctrl+C` after validation.
 - The image definition is in `Dockerfile.onboard-smoke`.
+
+## Kubernetes Starter Manifest
+
+An example manifest lives at `k8s/paperclip.yaml`.
+
+Build and tag an image first:
+
+```sh
+docker build -t paperclip-local:latest .
+```
+
+Then review these placeholders before applying the manifest:
+
+- set `BETTER_AUTH_SECRET` in `k8s/paperclip.yaml` to a strong generated secret
+- set `PAPERCLIP_PUBLIC_URL` to the real URL operators will use
+- replace the example `DATABASE_URL` with your PostgreSQL service/credentials
+- replace the example image reference if you publish to a registry
+
+Apply:
+
+```sh
+kubectl apply -f k8s/paperclip.yaml
+```
+
+Notes:
+
+- the manifest uses authenticated/private deployment mode
+- the PVC mounted at `/paperclip` persists instance config, logs, local secrets, and other runtime data
+- the example manifest assumes PostgreSQL is provided separately and does not deploy a database for you
