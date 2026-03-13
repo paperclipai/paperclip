@@ -276,6 +276,13 @@ export function NewIssueDialog() {
         action: { label: `View ${issue.identifier ?? "issue"}`, href: `/issues/${issue.identifier ?? issue.id}` },
       });
     },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to create issue",
+        body: err instanceof Error ? err.message : "An unexpected error occurred",
+        tone: "error",
+      });
+    },
   });
 
   const uploadDescriptionImage = useMutation({

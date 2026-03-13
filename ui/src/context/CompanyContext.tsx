@@ -10,7 +10,7 @@ import {
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Company } from "@paperclipai/shared";
 import { companiesApi } from "../api/companies";
-import { ApiError } from "../api/client";
+
 import { queryKeys } from "../lib/queryKeys";
 
 type CompanySelectionSource = "manual" | "route_sync" | "bootstrap";
@@ -43,16 +43,7 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
 
   const { data: companies = [], isLoading, error } = useQuery({
     queryKey: queryKeys.companies.all,
-    queryFn: async () => {
-      try {
-        return await companiesApi.list();
-      } catch (err) {
-        if (err instanceof ApiError && err.status === 401) {
-          return [];
-        }
-        throw err;
-      }
-    },
+    queryFn: () => companiesApi.list(),
     retry: false,
   });
   const sidebarCompanies = useMemo(

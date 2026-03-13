@@ -25,6 +25,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   });
   if (!res.ok) {
+    // Session expired or invalidated — redirect to login
+    if (res.status === 401) {
+      const next = encodeURIComponent(window.location.pathname + window.location.search);
+      window.location.href = `/auth?next=${next}`;
+      // Return a never-resolving promise so callers don't see an error flash
+      return new Promise<T>(() => {});
+    }
     const errorBody = await res.json().catch(() => null);
     throw new ApiError(
       (errorBody as { error?: string } | null)?.error ?? `Request failed: ${res.status}`,
