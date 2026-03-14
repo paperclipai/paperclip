@@ -14,6 +14,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { discoverOpenCodeModels, ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
 import { parseOpenCodeJsonl } from "./parse.js";
+import { hydrateLiteLlmApiKey, isLiteLlmModel } from "./auth.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -86,11 +87,45 @@ export async function testEnvironment(
       code: "opencode_openai_api_key_missing",
       level: "warn",
       message: "OPENAI_API_KEY override is empty.",
-      hint: "The OPENAI_API_KEY override is empty. Set a valid key or remove the override.",
+      hint: "The OPENAI_API_KEY override is empty. Set a valid key, set LITELLM_API_KEY, or remove the override.",
+    });
+  }
+  const litellmKeyOverride = "LITELLM_API_KEY" in envConfig ? asString(envConfig.LITELLM_API_KEY, "") : null;
+  if (litellmKeyOverride !== null && litellmKeyOverride.trim() === "") {
+    checks.push({
+      code: "opencode_litellm_api_key_missing",
+      level: "warn",
+      message: "LITELLM_API_KEY override is empty.",
+      hint: "The LITELLM_API_KEY override is empty. Set a valid key or remove the override.",
     });
   }
 
-  const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...env }));
+  let runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...env }));
+  const configuredModel = asString(config.model, "").trim();
+  if (isLiteLlmModel(configuredModel)) {
+    const hydrated = await hydrateLiteLlmApiKey(runtimeEnv);
+    runtimeEnv = hydrated.env;
+    if (hydrated.source === "openai_env") {
+      checks.push({
+        code: "opencode_litellm_api_key_from_openai_env",
+        level: "info",
+        message: "Prepared LITELLM_API_KEY from OPENAI_API_KEY for the OpenCode litellm provider.",
+      });
+    } else if (hydrated.source === "opencode_auth") {
+      checks.push({
+        code: "opencode_litellm_api_key_from_auth_store",
+        level: "info",
+        message: "Prepared LITELLM_API_KEY from the existing OpenCode auth store.",
+      });
+    } else if (hydrated.source === "missing") {
+      checks.push({
+        code: "opencode_litellm_api_key_unavailable",
+        level: "warn",
+        message: "No LITELLM_API_KEY was available for the OpenCode litellm provider.",
+        hint: "Set LITELLM_API_KEY, set OPENAI_API_KEY, or run `opencode auth login` so Paperclip can reuse OpenCode auth.",
+      });
+    }
+  }
 
   const cwdInvalid = checks.some((check) => check.code === "opencode_cwd_invalid");
   if (cwdInvalid) {
@@ -122,7 +157,6 @@ export async function testEnvironment(
     checks.every((check) => check.code !== "opencode_cwd_invalid" && check.code !== "opencode_command_unresolvable");
 
   let modelValidationPassed = false;
-  const configuredModel = asString(config.model, "").trim();
 
   if (canRunProbe && configuredModel) {
     try {

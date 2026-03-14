@@ -19,6 +19,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
+import { hydrateLiteLlmApiKey, isLiteLlmModel, parseModelProvider } from "./auth.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const PAPERCLIP_SKILLS_CANDIDATES = [
@@ -33,13 +34,6 @@ function firstNonEmptyLine(text: string): string {
       .map((line) => line.trim())
       .find(Boolean) ?? ""
   );
-}
-
-function parseModelProvider(model: string | null): string | null {
-  if (!model) return null;
-  const trimmed = model.trim();
-  if (!trimmed.includes("/")) return null;
-  return trimmed.slice(0, trimmed.indexOf("/")).trim() || null;
 }
 
 function claudeSkillsHome(): string {
@@ -159,11 +153,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
-  const runtimeEnv = Object.fromEntries(
+  let runtimeEnv = Object.fromEntries(
     Object.entries(ensurePathInEnv({ ...process.env, ...env })).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
+  if (isLiteLlmModel(model)) {
+    const hydrated = await hydrateLiteLlmApiKey(runtimeEnv);
+    runtimeEnv = hydrated.env;
+    if (hydrated.source === "openai_env" || hydrated.source === "opencode_auth") {
+      await onLog(
+        "stderr",
+        `[paperclip] Prepared LITELLM_API_KEY for OpenCode (${hydrated.source === "openai_env" ? "from OPENAI_API_KEY" : `from ${hydrated.detail}`}).\n`,
+      );
+    }
+  }
   await ensureCommandResolvable(command, cwd, runtimeEnv);
 
   await ensureOpenCodeModelConfiguredAndAvailable({
