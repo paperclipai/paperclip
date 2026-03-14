@@ -12,7 +12,7 @@ import { validate } from "../middleware/validate.js";
 import { accessService, companyPortabilityService, companyService, logActivity } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 
-export function companyRoutes(db: Db) {
+export function companyRoutes(db: Db, opts: { companyDeletionEnabled: boolean } = { companyDeletionEnabled: false }) {
   const router = Router();
   const svc = companyService(db);
   const portability = companyPortabilityService(db);
@@ -168,6 +168,10 @@ export function companyRoutes(db: Db) {
 
   router.delete("/:companyId", async (req, res) => {
     assertBoard(req);
+    if (!opts.companyDeletionEnabled) {
+      res.status(403).json({ error: "Company deletion is disabled on this instance" });
+      return;
+    }
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const company = await svc.remove(companyId);
