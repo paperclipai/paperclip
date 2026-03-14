@@ -54,6 +54,7 @@ export const help: Record<string, string> = {
   wakeOnDemand: "Allow this agent to be woken by assignments, API calls, UI actions, or automated systems.",
   cooldownSec: "Minimum seconds between consecutive heartbeat runs.",
   maxConcurrentRuns: "Maximum number of heartbeat runs that can execute simultaneously for this agent.",
+  skipTimerWhenNoAssignedOpenIssue: "When enabled, scheduled interval heartbeats are skipped if the agent has no assigned task in an actionable state (todo, in progress, blocked, or in review). Assignment, approval, comment, and manual wakes are unaffected.",
   budgetMonthlyCents: "Monthly spending limit in cents. 0 means no limit.",
 };
 
