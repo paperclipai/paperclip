@@ -330,13 +330,14 @@ export function AgentDetail() {
   }, [agent?.companyId, selectedCompanyId, setSelectedCompanyId]);
 
   const agentAction = useMutation({
-    mutationFn: async (action: "invoke" | "pause" | "resume" | "terminate") => {
+    mutationFn: async (action: "invoke" | "pause" | "resume" | "terminate" | "reactivate") => {
       if (!agentLookupRef) return Promise.reject(new Error("No agent reference"));
       switch (action) {
         case "invoke": return agentsApi.invoke(agentLookupRef, resolvedCompanyId ?? undefined);
         case "pause": return agentsApi.pause(agentLookupRef, resolvedCompanyId ?? undefined);
         case "resume": return agentsApi.resume(agentLookupRef, resolvedCompanyId ?? undefined);
         case "terminate": return agentsApi.terminate(agentLookupRef, resolvedCompanyId ?? undefined);
+        case "reactivate": return agentsApi.reactivate(agentLookupRef, resolvedCompanyId ?? undefined);
       }
     },
     onSuccess: (data, action) => {
@@ -547,16 +548,29 @@ export function AgentDetail() {
                 <RotateCcw className="h-3 w-3" />
                 Reset Sessions
               </button>
-              <button
-                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
-                onClick={() => {
-                  agentAction.mutate("terminate");
-                  setMoreOpen(false);
-                }}
-              >
-                <Trash2 className="h-3 w-3" />
-                Terminate
-              </button>
+              {agent.status === "terminated" ? (
+                <button
+                  className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-emerald-600"
+                  onClick={() => {
+                    agentAction.mutate("reactivate");
+                    setMoreOpen(false);
+                  }}
+                >
+                  <RotateCcw className="h-3 w-3" />
+                  Reactivate
+                </button>
+              ) : (
+                <button
+                  className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
+                  onClick={() => {
+                    agentAction.mutate("terminate");
+                    setMoreOpen(false);
+                  }}
+                >
+                  <Trash2 className="h-3 w-3" />
+                  Terminate
+                </button>
+              )}
             </PopoverContent>
           </Popover>
         </div>

@@ -103,3 +103,9 @@ export const updateAgentPermissionsSchema = z.object({
 });
 
 export type UpdateAgentPermissions = z.infer<typeof updateAgentPermissionsSchema>;
+
+export const terminateAgentSchema = z.object({
+  force: z.boolean().optional().default(false),
+});
+
+export type TerminateAgent = z.infer<typeof terminateAgentSchema>;
