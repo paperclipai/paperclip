@@ -15,6 +15,7 @@ type WakePayload = {
   companyId: string;
   taskId: string | null;
   issueId: string | null;
+  goalId: string | null;
   wakeReason: string | null;
   wakeCommentId: string | null;
   approvalId: string | null;
@@ -289,6 +290,7 @@ function buildWakePayload(ctx: AdapterExecutionContext): WakePayload {
     companyId: agent.companyId,
     taskId: nonEmpty(context.taskId) ?? nonEmpty(context.issueId),
     issueId: nonEmpty(context.issueId),
+    goalId: nonEmpty(context.goalId),
     wakeReason: nonEmpty(context.wakeReason),
     wakeCommentId: nonEmpty(context.wakeCommentId) ?? nonEmpty(context.commentId),
     approvalId: nonEmpty(context.approvalId),
@@ -324,6 +326,7 @@ function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: Wak
     paperclipEnv.PAPERCLIP_API_URL = paperclipApiUrlOverride;
   }
   if (wakePayload.taskId) paperclipEnv.PAPERCLIP_TASK_ID = wakePayload.taskId;
+  if (wakePayload.goalId) paperclipEnv.PAPERCLIP_GOAL_ID = wakePayload.goalId;
   if (wakePayload.wakeReason) paperclipEnv.PAPERCLIP_WAKE_REASON = wakePayload.wakeReason;
   if (wakePayload.wakeCommentId) paperclipEnv.PAPERCLIP_WAKE_COMMENT_ID = wakePayload.wakeCommentId;
   if (wakePayload.approvalId) paperclipEnv.PAPERCLIP_APPROVAL_ID = wakePayload.approvalId;

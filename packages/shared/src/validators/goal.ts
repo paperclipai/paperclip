@@ -1,6 +1,9 @@
 import { z } from "zod";
 import { GOAL_LEVELS, GOAL_STATUSES } from "../constants.js";
 
+export const GOAL_REVIEW_POLICIES = ["owner", "board"] as const;
+export type GoalReviewPolicy = (typeof GOAL_REVIEW_POLICIES)[number];
+
 export const createGoalSchema = z.object({
   title: z.string().min(1),
   description: z.string().optional().nullable(),
@@ -8,6 +11,7 @@ export const createGoalSchema = z.object({
   status: z.enum(GOAL_STATUSES).optional().default("planned"),
   parentId: z.string().uuid().optional().nullable(),
   ownerAgentId: z.string().uuid().optional().nullable(),
+  reviewPolicy: z.enum(GOAL_REVIEW_POLICIES).optional().default("owner"),
 });
 
 export type CreateGoal = z.infer<typeof createGoalSchema>;

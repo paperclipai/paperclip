@@ -223,6 +223,10 @@ export function approvalRoutes(db: Db) {
     );
 
     if (applied) {
+      const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
+      const linkedIssueIds = linkedIssues.map((issue) => issue.id);
+      const primaryIssueId = linkedIssueIds[0] ?? null;
+
       await logActivity(db, {
         companyId: approval.companyId,
         actorType: "user",
@@ -232,6 +236,35 @@ export function approvalRoutes(db: Db) {
         entityId: approval.id,
         details: { type: approval.type },
       });
+
+      if (approval.requestedByAgentId) {
+        heartbeat
+          .wakeup(approval.requestedByAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "approval_rejected",
+            payload: {
+              approvalId: approval.id,
+              approvalStatus: approval.status,
+              issueId: primaryIssueId,
+              issueIds: linkedIssueIds,
+            },
+            requestedByActorType: "user",
+            requestedByActorId: req.actor.userId ?? "board",
+            contextSnapshot: {
+              source: "approval.rejected",
+              approvalId: approval.id,
+              approvalStatus: approval.status,
+              issueId: primaryIssueId,
+              issueIds: linkedIssueIds,
+              taskId: primaryIssueId,
+              wakeReason: "approval_rejected",
+            },
+          })
+          .catch((err) =>
+            logger.warn({ err, approvalId: approval.id }, "failed to queue requester wakeup after rejection"),
+          );
+      }
     }
 
     res.json(redactApprovalPayload(approval));
@@ -249,6 +282,10 @@ export function approvalRoutes(db: Db) {
         req.body.decisionNote,
       );
 
+      const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
+      const linkedIssueIds = linkedIssues.map((issue) => issue.id);
+      const primaryIssueId = linkedIssueIds[0] ?? null;
+
       await logActivity(db, {
         companyId: approval.companyId,
         actorType: "user",
@@ -258,6 +295,35 @@ export function approvalRoutes(db: Db) {
         entityId: approval.id,
         details: { type: approval.type },
       });
+
+      if (approval.requestedByAgentId) {
+        heartbeat
+          .wakeup(approval.requestedByAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "approval_revision_requested",
+            payload: {
+              approvalId: approval.id,
+              approvalStatus: approval.status,
+              issueId: primaryIssueId,
+              issueIds: linkedIssueIds,
+            },
+            requestedByActorType: "user",
+            requestedByActorId: req.actor.userId ?? "board",
+            contextSnapshot: {
+              source: "approval.revision_requested",
+              approvalId: approval.id,
+              approvalStatus: approval.status,
+              issueId: primaryIssueId,
+              issueIds: linkedIssueIds,
+              taskId: primaryIssueId,
+              wakeReason: "approval_revision_requested",
+            },
+          })
+          .catch((err) =>
+            logger.warn({ err, approvalId: approval.id }, "failed to queue requester wakeup after revision request"),
+          );
+      }
 
       res.json(redactApprovalPayload(approval));
     },

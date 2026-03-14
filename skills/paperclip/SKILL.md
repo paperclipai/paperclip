@@ -14,7 +14,7 @@ You run in **heartbeats** — short execution windows triggered by Paperclip. Ea
 
 ## Authentication
 
-Env vars auto-injected: `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, `PAPERCLIP_API_URL`, `PAPERCLIP_RUN_ID`. Optional wake-context vars may also be present: `PAPERCLIP_TASK_ID` (issue/task that triggered this wake), `PAPERCLIP_WAKE_REASON` (why this run was triggered), `PAPERCLIP_WAKE_COMMENT_ID` (specific comment that triggered this wake), `PAPERCLIP_APPROVAL_ID`, `PAPERCLIP_APPROVAL_STATUS`, and `PAPERCLIP_LINKED_ISSUE_IDS` (comma-separated). For local adapters, `PAPERCLIP_API_KEY` is auto-injected as a short-lived run JWT. For non-local adapters, your operator should set `PAPERCLIP_API_KEY` in adapter config. All requests use `Authorization: Bearer $PAPERCLIP_API_KEY`. All endpoints under `/api`, all JSON. Never hard-code the API URL.
+Env vars auto-injected: `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, `PAPERCLIP_API_URL`, `PAPERCLIP_RUN_ID`. Optional wake-context vars may also be present: `PAPERCLIP_TASK_ID` (issue/task that triggered this wake), `PAPERCLIP_WAKE_REASON` (why this run was triggered), `PAPERCLIP_WAKE_COMMENT_ID` (specific comment that triggered this wake), `PAPERCLIP_APPROVAL_ID`, `PAPERCLIP_APPROVAL_STATUS`, `PAPERCLIP_LINKED_ISSUE_IDS` (comma-separated), and `PAPERCLIP_GOAL_ID` (goal that triggered this wake, set for goal-related wake reasons). For local adapters, `PAPERCLIP_API_KEY` is auto-injected as a short-lived run JWT. For non-local adapters, your operator should set `PAPERCLIP_API_KEY` in adapter config. All requests use `Authorization: Bearer $PAPERCLIP_API_KEY`. All endpoints under `/api`, all JSON. Never hard-code the API URL.
 
 Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>` to install Paperclip skills for Claude/Codex and print/export the required `PAPERCLIP_*` environment variables for that agent identity.
 
@@ -29,11 +29,14 @@ Follow these steps every time you wake up:
 **Step 2 — Approval follow-up (when triggered).** If `PAPERCLIP_APPROVAL_ID` is set (or wake reason indicates approval resolution), review the approval first:
 
 - `GET /api/approvals/{approvalId}`
+- If the approval type is `goal_plan` or `goal_completion`, follow the **Goal Pursuit** section below instead of the default issue-closing behavior. Do not continue to Step 3.
 - `GET /api/approvals/{approvalId}/issues`
 - For each linked issue:
   - close it (`PATCH` status to `done`) if the approval fully resolves requested work, or
   - add a markdown comment explaining why it remains open and what happens next.
     Always include links to the approval and issue in that comment.
+
+**Step 2b — Goal pursuit (when triggered).** If `PAPERCLIP_WAKE_REASON` is `goal_activated` or `goal_work_complete`, follow the **Goal Pursuit** section below. `PAPERCLIP_GOAL_ID` contains the goal to act on. Do not continue to Step 3 — goal pursuit replaces the normal assignment flow for this heartbeat.
 
 **Step 3 — Get assignments.** Prefer `GET /api/agents/me/inbox-lite` for the normal heartbeat inbox. It returns the compact assignment list you need for prioritization. Fall back to `GET /api/companies/{companyId}/issues?assigneeAgentId={your-agent-id}&status=todo,in_progress,blocked` only when you need the full issue objects.
 
@@ -84,6 +87,95 @@ Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
 
 **Step 9 — Delegate if needed.** Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. Set `billingCode` for cross-team work.
+
+## Goal Pursuit (CEO)
+
+Goals are first-class citizens. When a goal is activated or pursued, the CEO is woken up to plan and execute it. The flow uses the approval system for board oversight.
+
+### Wake Reason: `goal_activated`
+
+Triggered when a goal transitions to "active" or a human clicks "Pursue" on a goal. `PAPERCLIP_GOAL_ID` is set.
+
+1. **Understand** — Call `GET /api/goals/{PAPERCLIP_GOAL_ID}/heartbeat-context` to see the full picture: goal metadata, ancestor goals, child goals, linked projects, all issues, and recent activity.
+2. **Plan** — Decompose the goal into subgoals, projects, and initial issues. Consider which existing agents can handle the work.
+3. **Submit for review** — Create a `goal_plan` approval:
+
+```
+POST /api/companies/{companyId}/approvals
+{
+  "type": "goal_plan",
+  "requestedByAgentId": "{your-agent-id}",
+  "payload": {
+    "goalId": "{PAPERCLIP_GOAL_ID}",
+    "goalTitle": "...",
+    "plan": "...",
+    "subgoals": [...],
+    "projects": [...],
+    "issues": [...],
+    "agentAssignments": "...",
+    "budgetEstimate": "..."
+  }
+}
+```
+
+4. **Wait** — Exit the heartbeat. You will be re-woken when the board responds.
+
+### Wake Reason: `approval_approved` (for `goal_plan` type)
+
+When `PAPERCLIP_APPROVAL_ID` is set and `GET /api/approvals/{approvalId}` returns `type: "goal_plan"`:
+
+1. **Execute the plan** — Create subgoals (`POST /companies/{companyId}/goals`), projects (`POST /companies/{companyId}/projects`), and issues (`POST /companies/{companyId}/issues`) with appropriate assignments.
+   - Always set `parentId` on subgoals pointing to the parent goal.
+   - Always set `ownerAgentId` on subgoals — use your own agent ID (CEO) unless a specific agent should own that subgoal.
+   - Always set `goalId` on issues pointing to the relevant subgoal (or parent goal if no subgoal applies).
+   - After creating each project, link it to its goal: `POST /api/goals/{goalId}/link-project` with `{ "projectId": "{projectId}" }`.
+2. **Hire if needed** — If the plan includes new agent roles and the company allows it, use the `paperclip-create-agent` skill to propose hires.
+3. **Report** — Comment on related issues with the execution plan.
+
+### Wake Reason: `approval_revision_requested` (for `goal_plan` type)
+
+When `PAPERCLIP_APPROVAL_ID` is set and `GET /api/approvals/{approvalId}` returns `type: "goal_plan"` with `status: "revision_requested"`:
+
+1. **Revise** — Read the approval's `decisionNote` for board feedback. Adjust your plan.
+2. **Resubmit** — `POST /api/approvals/{approvalId}/resubmit` with the updated payload.
+3. **Wait** — Exit the heartbeat.
+
+### Wake Reason: `approval_rejected` (for `goal_plan` type)
+
+When `PAPERCLIP_APPROVAL_ID` is set and `GET /api/approvals/{approvalId}` returns `type: "goal_plan"` with `status: "rejected"`:
+
+1. **Acknowledge** — The board declined the plan. Comment on any related issues noting the rejection. The goal remains active for future re-planning if the board chooses.
+
+### Wake Reason: `goal_work_complete`
+
+Triggered when all issues under a goal are done/cancelled, or all subgoals are achieved/cancelled. `PAPERCLIP_GOAL_ID` is set.
+
+1. **Review** — Call `GET /api/goals/{PAPERCLIP_GOAL_ID}/heartbeat-context` to see completed work.
+2. **Check review policy** — The goal's `reviewPolicy` field determines next steps:
+   - `"owner"` — You (CEO) assess whether KPIs in the goal description are met. If satisfied, `PATCH /api/goals/{goalId}` with `{ "status": "achieved" }`. If not, create new issues for remaining work.
+   - `"board"` — Prepare a completion report and submit a `goal_completion` approval for board review.
+
+For `reviewPolicy: "board"`:
+
+```
+POST /api/companies/{companyId}/approvals
+{
+  "type": "goal_completion",
+  "requestedByAgentId": "{your-agent-id}",
+  "payload": {
+    "goalId": "{PAPERCLIP_GOAL_ID}",
+    "goalTitle": "...",
+    "report": "...",
+    "outcome": "...",
+    "issuesDone": 10,
+    "issuesTotal": 10
+  }
+}
+```
+
+### Wake Reason: `approval_approved` (for `goal_completion` type)
+
+Mark the goal as achieved: `PATCH /api/goals/{goalId}` with `{ "status": "achieved" }`.
 
 ## Project Setup Workflow (CEO/Manager Common Path)
 
@@ -252,6 +344,13 @@ PATCH /api/agents/{agentId}/instructions-path
 | List agents                           | `GET /api/companies/:companyId/agents`                                                     |
 | Dashboard                             | `GET /api/companies/:companyId/dashboard`                                                  |
 | Search issues                         | `GET /api/companies/:companyId/issues?q=search+term`                                       |
+| Get goal heartbeat context            | `GET /api/goals/:goalId/heartbeat-context`                                                 |
+| Pursue a goal                         | `POST /api/goals/:goalId/pursue`                                                           |
+| List goals                            | `GET /api/companies/:companyId/goals`                                                      |
+| Create goal                           | `POST /api/companies/:companyId/goals`                                                     |
+| Update goal                           | `PATCH /api/goals/:goalId`                                                                 |
+| Link project to goal                  | `POST /api/goals/:goalId/link-project` body `{ "projectId": "..." }`                      |
+| Unlink project from goal              | `DELETE /api/goals/:goalId/link-project/:projectId`                                        |
 
 ## Searching Issues
 

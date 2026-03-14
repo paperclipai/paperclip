@@ -1,0 +1,1 @@
+ALTER TABLE "goals" ADD COLUMN "review_policy" text DEFAULT 'owner' NOT NULL;
