@@ -51,6 +51,12 @@ import {
 import {
   agentConfigurationDoc as piAgentConfigurationDoc,
 } from "@paperclipai/adapter-pi-local";
+import {
+  execute as kiroExecute,
+  testEnvironment as kiroTestEnvironment,
+  sessionCodec as kiroSessionCodec,
+} from "@paperclipai/adapter-kiro-local/server";
+import { agentConfigurationDoc as kiroAgentConfigurationDoc, models as kiroModels } from "@paperclipai/adapter-kiro-local";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
 
@@ -127,6 +133,16 @@ const piLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: piAgentConfigurationDoc,
 };
 
+const kiroLocalAdapter: ServerAdapterModule = {
+  type: "kiro_local",
+  execute: kiroExecute,
+  testEnvironment: kiroTestEnvironment,
+  sessionCodec: kiroSessionCodec,
+  models: kiroModels,
+  supportsLocalAgentJwt: true,
+  agentConfigurationDoc: kiroAgentConfigurationDoc,
+};
+
 const adaptersByType = new Map<string, ServerAdapterModule>(
   [
     claudeLocalAdapter,
@@ -135,6 +151,7 @@ const adaptersByType = new Map<string, ServerAdapterModule>(
     piLocalAdapter,
     cursorLocalAdapter,
     geminiLocalAdapter,
+    kiroLocalAdapter,
     openclawGatewayAdapter,
     processAdapter,
     httpAdapter,

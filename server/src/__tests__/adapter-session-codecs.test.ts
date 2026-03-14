@@ -10,6 +10,10 @@ import {
   isGeminiUnknownSessionError,
 } from "@paperclipai/adapter-gemini-local/server";
 import {
+  sessionCodec as kiroSessionCodec,
+  isKiroUnknownSessionError,
+} from "@paperclipai/adapter-kiro-local/server";
+import {
   sessionCodec as opencodeSessionCodec,
   isOpenCodeUnknownSessionError,
 } from "@paperclipai/adapter-opencode-local/server";
@@ -85,6 +89,24 @@ describe("adapter session codecs", () => {
       cwd: "/tmp/cursor",
     });
     expect(cursorSessionCodec.getDisplayId?.(serialized ?? null)).toBe("cursor-session-1");
+  });
+
+  it("normalizes kiro session params with cwd", () => {
+    const parsed = kiroSessionCodec.deserialize({
+      session_id: "kiro-session-1",
+      folder: "/tmp/kiro",
+    });
+    expect(parsed).toEqual({
+      sessionId: "kiro-session-1",
+      cwd: "/tmp/kiro",
+    });
+
+    const serialized = kiroSessionCodec.serialize(parsed);
+    expect(serialized).toEqual({
+      sessionId: "kiro-session-1",
+      cwd: "/tmp/kiro",
+    });
+    expect(kiroSessionCodec.getDisplayId?.(serialized ?? null)).toBe("kiro-session-1");
   });
 
   it("normalizes gemini session params with cwd", () => {
@@ -163,6 +185,29 @@ describe("cursor resume recovery detection", () => {
     expect(
       isCursorUnknownSessionError(
         "{\"type\":\"result\",\"subtype\":\"success\"}",
+        "",
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("kiro resume recovery detection", () => {
+  it("detects unknown session errors from kiro output", () => {
+    expect(
+      isKiroUnknownSessionError(
+        "unknown session id abc-123",
+        "",
+      ),
+    ).toBe(true);
+    expect(
+      isKiroUnknownSessionError(
+        "",
+        "session abc not found",
+      ),
+    ).toBe(true);
+    expect(
+      isKiroUnknownSessionError(
+        '{"type":"result","result":"done"}',
         "",
       ),
     ).toBe(false);

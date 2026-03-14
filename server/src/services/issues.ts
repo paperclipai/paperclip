@@ -1356,6 +1356,10 @@ export function issueService(db: Db) {
       let m: RegExpExecArray | null;
       while ((m = re.exec(body)) !== null) tokens.add(m[1].toLowerCase());
       if (tokens.size === 0) return [];
+      // Also add hyphen-to-space variants so @code-reviewer matches "Code Reviewer"
+      for (const t of [...tokens]) {
+        if (t.includes('-')) tokens.add(t.replace(/-/g, ' '));
+      }
       const rows = await db.select({ id: agents.id, name: agents.name })
         .from(agents).where(eq(agents.companyId, companyId));
       return rows.filter(a => tokens.has(a.name.toLowerCase())).map(a => a.id);
