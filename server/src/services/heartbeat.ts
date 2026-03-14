@@ -1126,7 +1126,10 @@ export function heartbeatService(db: Db) {
       payload: buildBudgetPayload(parseObject(run.contextSnapshot), budgetBlock),
     });
 
-    if (!cancelledRun) return;
+    if (!cancelledRun) {
+      await releaseIssueExecutionAndPromote(run);
+      return;
+    }
 
     await appendRunEvent(cancelledRun, 1, {
       eventType: "budget_blocked",
