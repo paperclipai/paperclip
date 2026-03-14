@@ -1001,7 +1001,7 @@ function EnvVarEditor({
     secretId: string;
   };
 
-  function toRows(rec: Record<string, EnvBinding> | null | undefined): Row[] {
+  const toRows = useCallback((rec: Record<string, EnvBinding> | null | undefined): Row[] => {
     if (!rec || typeof rec !== "object") {
       return [{ key: "", source: "plain", plainValue: "", secretId: "" }];
     }
@@ -1050,19 +1050,59 @@ function EnvVarEditor({
       };
     });
     return [...entries, { key: "", source: "plain", plainValue: "", secretId: "" }];
-  }
+  }, []);
+
+  const normalizeEnvRecord = useCallback((rec: Record<string, EnvBinding> | null | undefined): string => {
+    if (!rec || typeof rec !== "object" || Object.keys(rec).length === 0) return "{}";
+    const normalized = Object.entries(rec)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, binding]) => {
+        if (typeof binding === "string") {
+          return [key, { type: "plain", value: binding }];
+        }
+        if (typeof binding === "object" && binding !== null) {
+          if ((binding as { type?: unknown }).type === "secret_ref") {
+            return [key, {
+              type: "secret_ref",
+              secretId: typeof (binding as { secretId?: unknown }).secretId === "string"
+                ? (binding as { secretId: string }).secretId
+                : "",
+              version: typeof (binding as { version?: unknown }).version === "string"
+                ? (binding as { version: string }).version
+                : "latest",
+            }];
+          }
+          if ((binding as { type?: unknown }).type === "plain") {
+            return [key, {
+              type: "plain",
+              value: typeof (binding as { value?: unknown }).value === "string"
+                ? (binding as { value: string }).value
+                : "",
+            }];
+          }
+        }
+        return [key, { type: "plain", value: "" }];
+      });
+    return JSON.stringify(normalized);
+  }, []);
 
   const [rows, setRows] = useState<Row[]>(() => toRows(value));
   const [sealError, setSealError] = useState<string | null>(null);
-  const valueRef = useRef(value);
+  const lastExternalValueRef = useRef(normalizeEnvRecord(value));
+  const lastEmittedValueRef = useRef<string | null>(null);
 
-  // Sync when value identity changes (overlay reset after save)
+  // Sync only for true external updates (save/reset/server refresh), not our own in-progress edits.
   useEffect(() => {
-    if (value !== valueRef.current) {
-      valueRef.current = value;
+    const normalizedValue = normalizeEnvRecord(value);
+    if (normalizedValue === lastEmittedValueRef.current) {
+      lastExternalValueRef.current = normalizedValue;
+      return;
+    }
+    if (normalizedValue !== lastExternalValueRef.current) {
+      lastExternalValueRef.current = normalizedValue;
       setRows(toRows(value));
     }
-  }, [value]);
+  }, [value, normalizeEnvRecord, toRows]);
 
   function emit(nextRows: Row[]) {
     const rec: Record<string, EnvBinding> = {};
@@ -1076,7 +1116,9 @@ function EnvVarEditor({
         rec[k] = { type: "plain", value: row.plainValue };
       }
     }
-    onChange(Object.keys(rec).length > 0 ? rec : undefined);
+    const emitted = Object.keys(rec).length > 0 ? rec : undefined;
+    lastEmittedValueRef.current = normalizeEnvRecord(emitted);
+    onChange(emitted);
   }
 
   function updateRow(i: number, patch: Partial<Row>) {
