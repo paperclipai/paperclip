@@ -1,5 +1,7 @@
 # Contributing Guide
 
+English | [简体中文](./CONTRIBUTING.zh-CN.md) | [繁體中文](./CONTRIBUTING.zh-TW.md)
+
 Thanks for wanting to contribute!
 
 We really appreciate both small fixes and thoughtful larger changes.
@@ -16,8 +18,8 @@ We really appreciate both small fixes and thoughtful larger changes.
 These almost always get merged quickly when they're clean.
 
 ### Path 2: Bigger or Impactful Changes
-- **First** talk about it in Discord → #dev channel  
-  → Describe what you're trying to solve  
+- **First** talk about it in Discord → #dev channel
+  → Describe what you're trying to solve
   → Share rough ideas / approach
 - Once there's rough agreement, build it
 - In your PR include:
