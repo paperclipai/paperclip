@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { Request, RequestHandler } from "express";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentApiKeys, agents, companyMemberships, instanceUserRoles } from "@paperclipai/db";
+import { agentApiKeys, agents, companyMemberships, heartbeatRuns, instanceUserRoles } from "@paperclipai/db";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
@@ -25,6 +25,45 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         : { type: "none", source: "none" };
 
     const runIdHeader = req.header("x-paperclip-run-id");
+
+    // In local_trusted mode, resolve agent identity from X-Paperclip-Run-Id header
+    // when no Bearer token is provided. This ensures agent API calls (via curl) are
+    // attributed to the correct agent in activity logs instead of falling back to "board".
+    if (opts.deploymentMode === "local_trusted" && runIdHeader && !req.header("authorization")) {
+      try {
+        const run = await db
+          .select({ agentId: heartbeatRuns.agentId, companyId: heartbeatRuns.companyId })
+          .from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.id, runIdHeader), isNull(heartbeatRuns.finishedAt)))
+          .then((rows) => rows[0] ?? null);
+
+        if (run) {
+          const agentRecord = await db
+            .select()
+            .from(agents)
+            .where(eq(agents.id, run.agentId))
+            .then((rows) => rows[0] ?? null);
+
+          if (!agentRecord || agentRecord.status === "terminated" || agentRecord.status === "pending_approval") {
+            next();
+            return;
+          }
+
+          req.actor = {
+            type: "agent",
+            agentId: run.agentId,
+            companyId: run.companyId,
+            keyId: undefined,
+            runId: runIdHeader,
+            source: "run_id",
+          };
+          next();
+          return;
+        }
+      } catch {
+        // Fall through to default board identity
+      }
+    }
 
     const authHeader = req.header("authorization");
     if (!authHeader?.toLowerCase().startsWith("bearer ")) {
