@@ -267,6 +267,23 @@ export function Layout() {
     }
   }, [location.hash, location.pathname, location.search]);
 
+  useEffect(() => {
+    if (location.hash) return;
+
+    if (isMobile) {
+      window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+      return;
+    }
+
+    const mainContent = document.getElementById("main-content");
+    if (mainContent) {
+      mainContent.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    }
+    // Only fire on actual route changes, not hash changes.
+    // location.hash is read but intentionally excluded from deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isMobile, location.pathname]);
+
   return (
     <div
       className={cn(
