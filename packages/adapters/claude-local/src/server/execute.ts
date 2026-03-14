@@ -571,6 +571,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
   } finally {
-    fs.rm(skillsDir, { recursive: true, force: true }).catch(() => {});
+    fs.rm(skillsDir, { recursive: true, force: true }).catch((err) => {
+      onLog("stderr", `[paperclip] Failed to clean up skills dir: ${err instanceof Error ? err.message : String(err)}\n`).catch(() => {});
+    });
   }
 }

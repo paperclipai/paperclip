@@ -80,7 +80,7 @@ function normalizeContext(raw: unknown): ClientContext {
   }
 
   const record = raw as Record<string, unknown>;
-  const version = record.version === 1 ? 1 : 1;
+  const version = 1;
   const currentProfile = toStringOrUndefined(record.currentProfile) ?? DEFAULT_PROFILE;
 
   const rawProfiles = record.profiles;

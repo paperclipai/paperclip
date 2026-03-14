@@ -22,48 +22,52 @@ export function costService(db: Db) {
         throw unprocessable("Agent does not belong to company");
       }
 
-      const event = await db
-        .insert(costEvents)
-        .values({ ...data, companyId })
-        .returning()
-        .then((rows) => rows[0]);
+      return db.transaction(async (tx) => {
+        const event = await tx
+          .insert(costEvents)
+          .values({ ...data, companyId })
+          .returning()
+          .then((rows) => rows[0] ?? null);
 
-      await db
-        .update(agents)
-        .set({
-          spentMonthlyCents: sql`${agents.spentMonthlyCents} + ${event.costCents}`,
-          updatedAt: new Date(),
-        })
-        .where(eq(agents.id, event.agentId));
+        if (!event) throw new Error("Failed to insert cost event");
 
-      await db
-        .update(companies)
-        .set({
-          spentMonthlyCents: sql`${companies.spentMonthlyCents} + ${event.costCents}`,
-          updatedAt: new Date(),
-        })
-        .where(eq(companies.id, companyId));
-
-      const updatedAgent = await db
-        .select()
-        .from(agents)
-        .where(eq(agents.id, event.agentId))
-        .then((rows) => rows[0] ?? null);
-
-      if (
-        updatedAgent &&
-        updatedAgent.budgetMonthlyCents > 0 &&
-        updatedAgent.spentMonthlyCents >= updatedAgent.budgetMonthlyCents &&
-        updatedAgent.status !== "paused" &&
-        updatedAgent.status !== "terminated"
-      ) {
-        await db
+        await tx
           .update(agents)
-          .set({ status: "paused", updatedAt: new Date() })
-          .where(eq(agents.id, updatedAgent.id));
-      }
+          .set({
+            spentMonthlyCents: sql`${agents.spentMonthlyCents} + ${event.costCents}`,
+            updatedAt: new Date(),
+          })
+          .where(eq(agents.id, event.agentId));
 
-      return event;
+        await tx
+          .update(companies)
+          .set({
+            spentMonthlyCents: sql`${companies.spentMonthlyCents} + ${event.costCents}`,
+            updatedAt: new Date(),
+          })
+          .where(eq(companies.id, companyId));
+
+        const updatedAgent = await tx
+          .select()
+          .from(agents)
+          .where(eq(agents.id, event.agentId))
+          .then((rows) => rows[0] ?? null);
+
+        if (
+          updatedAgent &&
+          updatedAgent.budgetMonthlyCents > 0 &&
+          updatedAgent.spentMonthlyCents >= updatedAgent.budgetMonthlyCents &&
+          updatedAgent.status !== "paused" &&
+          updatedAgent.status !== "terminated"
+        ) {
+          await tx
+            .update(agents)
+            .set({ status: "paused", updatedAt: new Date() })
+            .where(eq(agents.id, updatedAgent.id));
+        }
+
+        return event;
+      });
     },
 
     summary: async (companyId: string, range?: CostDateRange) => {
