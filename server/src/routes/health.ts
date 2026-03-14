@@ -28,7 +28,7 @@ export function healthRoutes(
 
     let bootstrapStatus: "ready" | "bootstrap_pending" = "ready";
     let bootstrapInviteActive = false;
-    if (opts.deploymentMode === "authenticated") {
+    if (opts.deploymentMode === "authenticated" || opts.deploymentMode === "proxy_auth") {
       const roleCount = await db
         .select({ count: count() })
         .from(instanceUserRoles)
@@ -36,7 +36,7 @@ export function healthRoutes(
         .then((rows) => Number(rows[0]?.count ?? 0));
       bootstrapStatus = roleCount > 0 ? "ready" : "bootstrap_pending";
 
-      if (bootstrapStatus === "bootstrap_pending") {
+      if (bootstrapStatus === "bootstrap_pending" && opts.deploymentMode === "authenticated") {
         const now = new Date();
         const inviteCount = await db
           .select({ count: count() })

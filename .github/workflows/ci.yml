@@ -1,0 +1,19 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    uses: Anomalous-Ventures/.github/.github/workflows/ci-nodejs.yml@main
+    with:
+      node-version: '22'
+      package-manager: 'pnpm'
+      working-directory: '.'
+      run-tests: true
+      run-docker-build: true
+      docker-registry: 'harbor.spooty.io'
+    secrets: inherit

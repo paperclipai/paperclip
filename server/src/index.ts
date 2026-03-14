@@ -421,6 +421,9 @@ export async function startServer(): Promise<StartedServer> {
   if (config.deploymentMode === "local_trusted") {
     await ensureLocalTrustedBoardPrincipal(db as any);
   }
+  if (config.deploymentMode === "proxy_auth") {
+    authReady = true;
+  }
   if (config.deploymentMode === "authenticated") {
     const {
       createBetterAuthHandler,

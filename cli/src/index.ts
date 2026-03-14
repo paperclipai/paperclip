@@ -6,7 +6,7 @@ import { configure } from "./commands/configure.js";
 import { addAllowedHostname } from "./commands/allowed-hostname.js";
 import { heartbeatRun } from "./commands/heartbeat-run.js";
 import { runCommand } from "./commands/run.js";
-import { bootstrapCeoInvite } from "./commands/auth-bootstrap-ceo.js";
+import { bootstrapCeoInvite, provisionAdmin } from "./commands/auth-bootstrap-ceo.js";
 import { dbBackupCommand } from "./commands/db-backup.js";
 import { registerContextCommands } from "./commands/client/context.js";
 import { registerCompanyCommands } from "./commands/client/company.js";
@@ -148,6 +148,17 @@ auth
   .option("--expires-hours <hours>", "Invite expiration window in hours", (value) => Number(value))
   .option("--base-url <url>", "Public base URL used to print invite link")
   .action(bootstrapCeoInvite);
+
+auth
+  .command("provision-admin")
+  .description("Directly create an instance admin user")
+  .requiredOption("-e, --email <email>", "User email address")
+  .option("-n, --name <name>", "User display name")
+  .option("-i, --id <id>", "Explicit user ID (defaults to sso:email)")
+  .option("-c, --config <path>", "Path to config file")
+  .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
+  .option("--db-url <url>", "Explicit database connection string")
+  .action(provisionAdmin);
 
 program.parseAsync().catch((err) => {
   console.error(err instanceof Error ? err.message : String(err));

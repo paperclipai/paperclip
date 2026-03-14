@@ -62,24 +62,28 @@ function CloudAccessGate() {
     retry: false,
     refetchInterval: (query) => {
       const data = query.state.data as
-        | { deploymentMode?: "local_trusted" | "authenticated"; bootstrapStatus?: "ready" | "bootstrap_pending" }
+        | { deploymentMode?: "local_trusted" | "authenticated" | "proxy_auth"; bootstrapStatus?: "ready" | "bootstrap_pending" }
         | undefined;
-      return data?.deploymentMode === "authenticated" && data.bootstrapStatus === "bootstrap_pending"
+      return (data?.deploymentMode === "authenticated" || data?.deploymentMode === "proxy_auth") && 
+        data.bootstrapStatus === "bootstrap_pending"
         ? 2000
         : false;
     },
     refetchIntervalInBackground: true,
   });
 
-  const isAuthenticatedMode = healthQuery.data?.deploymentMode === "authenticated";
+  const isProtectedMode = 
+    healthQuery.data?.deploymentMode === "authenticated" || 
+    healthQuery.data?.deploymentMode === "proxy_auth";
+  
   const sessionQuery = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
-    enabled: isAuthenticatedMode,
+    enabled: isProtectedMode,
     retry: false,
   });
 
-  if (healthQuery.isLoading || (isAuthenticatedMode && sessionQuery.isLoading)) {
+  if (healthQuery.isLoading || (isProtectedMode && sessionQuery.isLoading)) {
     return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
   }
 
@@ -91,11 +95,24 @@ function CloudAccessGate() {
     );
   }
 
-  if (isAuthenticatedMode && healthQuery.data?.bootstrapStatus === "bootstrap_pending") {
+  if (isProtectedMode && healthQuery.data?.bootstrapStatus === "bootstrap_pending") {
     return <BootstrapPendingPage hasActiveInvite={healthQuery.data.bootstrapInviteActive} />;
   }
 
-  if (isAuthenticatedMode && !sessionQuery.data) {
+  if (isProtectedMode && !sessionQuery.data) {
+    // If in proxy_auth mode and no session, it means the proxy headers are missing or invalid
+    if (healthQuery.data?.deploymentMode === "proxy_auth") {
+      return (
+        <div className="mx-auto max-w-xl py-10">
+          <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-6 text-destructive">
+            <h1 className="text-xl font-semibold">Authentication Error</h1>
+            <p className="mt-2 text-sm">
+              This instance is configured for Proxy Authentication, but no valid user headers were provided by the upstream proxy.
+            </p>
+          </div>
+        </div>
+      );
+    }
     const next = encodeURIComponent(`${location.pathname}${location.search}`);
     return <Navigate to={`/auth?next=${next}`} replace />;
   }

@@ -26,6 +26,86 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
 
     const runIdHeader = req.header("x-paperclip-run-id");
 
+    // SSO / Proxy Auth Support
+    if (opts.deploymentMode === "proxy_auth") {
+      const ssoEmail = req.header("x-authentik-email") || req.header("x-forwarded-email");
+      const ssoName = req.header("x-authentik-name") || req.header("x-forwarded-user");
+      const ssoUid = req.header("x-authentik-uid") || req.header("x-forwarded-uid");
+
+      if (ssoEmail) {
+        // Find or create user from SSO headers
+        let user = await db
+          .select()
+          .from(authUsers)
+          .where(eq(authUsers.email, ssoEmail))
+          .then((rows) => rows[0] ?? null);
+
+        if (!user) {
+          const now = new Date();
+          const userId = ssoUid || `sso:${ssoEmail}`;
+          await db.insert(authUsers).values({
+            id: userId,
+            email: ssoEmail,
+            name: ssoName || ssoEmail.split("@")[0],
+            emailVerified: true,
+            createdAt: now,
+            updatedAt: now,
+          });
+          user = await db
+            .select()
+            .from(authUsers)
+            .where(eq(authUsers.id, userId))
+            .then((rows) => rows[0]);
+          
+          // Auto-promote first user to instance admin
+          const adminCount = await db
+            .select()
+            .from(instanceUserRoles)
+            .where(eq(instanceUserRoles.role, "instance_admin"))
+            .then((rows) => rows.length);
+          
+          if (adminCount === 0) {
+            await db.insert(instanceUserRoles).values({
+              id: `role:${user.id}:admin`,
+              userId: user.id,
+              role: "instance_admin",
+              createdAt: now,
+              updatedAt: now,
+            });
+          }
+        }
+
+        const [roleRow, memberships] = await Promise.all([
+          db
+            .select({ id: instanceUserRoles.id })
+            .from(instanceUserRoles)
+            .where(and(eq(instanceUserRoles.userId, user.id), eq(instanceUserRoles.role, "instance_admin")))
+            .then((rows) => rows[0] ?? null),
+          db
+            .select({ companyId: companyMemberships.companyId })
+            .from(companyMemberships)
+            .where(
+              and(
+                eq(companyMemberships.principalType, "user"),
+                eq(companyMemberships.principalId, user.id),
+                eq(companyMemberships.status, "active"),
+              ),
+            ),
+        ]);
+
+        req.actor = {
+          type: "board",
+          userId: user.id,
+          companyIds: memberships.map((row) => row.companyId),
+          isInstanceAdmin: Boolean(roleRow),
+          runId: runIdHeader ?? undefined,
+          source: "proxy_auth",
+        };
+        next();
+        return;
+      }
+    }
+
     const authHeader = req.header("authorization");
     if (!authHeader?.toLowerCase().startsWith("bearer ")) {
       if (opts.deploymentMode === "authenticated" && opts.resolveSession) {
