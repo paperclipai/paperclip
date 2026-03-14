@@ -126,6 +126,8 @@ heartbeat
   .option("--timeout-ms <ms>", "Max time to wait before giving up", "0")
   .option("--json", "Output raw JSON where applicable")
   .option("--debug", "Show raw adapter stdout/stderr JSON chunks")
+  .option("--local", "Execute the adapter locally instead of on the server")
+  .option("--cwd <path>", "Working directory for local execution (requires --local)")
   .action(heartbeatRun);
 
 registerContextCommands(program);

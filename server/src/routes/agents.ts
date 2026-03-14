@@ -1545,6 +1545,63 @@ export function agentRoutes(db: Db) {
     res.json(result);
   });
 
+  // ── Local Agent Execution endpoints ──────────────────────────────────
+
+  router.post("/heartbeat-runs/:runId/claim-local", async (req, res) => {
+    const runId = req.params.runId as string;
+    try {
+      const result = await heartbeat.claimForLocalExecution(runId);
+      res.json(result);
+    } catch (err: unknown) {
+      const status = (err as { statusCode?: number }).statusCode ?? 500;
+      const message = err instanceof Error ? err.message : "Failed to claim run";
+      res.status(status).json({ error: message });
+    }
+  });
+
+  router.post("/heartbeat-runs/:runId/append-log", async (req, res) => {
+    const runId = req.params.runId as string;
+    const stream = req.body.stream as "stdout" | "stderr" | undefined;
+    const chunk = req.body.chunk as string | undefined;
+    if (!stream || !chunk) {
+      res.status(400).json({ error: "stream and chunk are required" });
+      return;
+    }
+    try {
+      await heartbeat.appendLocalRunLog(runId, stream, chunk);
+      res.json({ ok: true });
+    } catch (err: unknown) {
+      const status = (err as { statusCode?: number }).statusCode ?? 500;
+      const message = err instanceof Error ? err.message : "Failed to append log";
+      res.status(status).json({ error: message });
+    }
+  });
+
+  router.post("/heartbeat-runs/:runId/complete", async (req, res) => {
+    const runId = req.params.runId as string;
+    try {
+      const finalRun = await heartbeat.completeLocalRun(runId, {
+        status: req.body.status,
+        exitCode: req.body.exitCode ?? null,
+        signal: req.body.signal ?? null,
+        error: req.body.error ?? null,
+        errorCode: req.body.errorCode ?? null,
+        resultJson: req.body.resultJson ?? null,
+        usageJson: req.body.usageJson ?? null,
+        sessionIdAfter: req.body.sessionIdAfter ?? null,
+        stdoutExcerpt: req.body.stdoutExcerpt ?? null,
+        stderrExcerpt: req.body.stderrExcerpt ?? null,
+      });
+      res.json(finalRun);
+    } catch (err: unknown) {
+      const status = (err as { statusCode?: number }).statusCode ?? 500;
+      const message = err instanceof Error ? err.message : "Failed to complete run";
+      res.status(status).json({ error: message });
+    }
+  });
+
+  // ────────────────────────────────────────────────────────────────────
+
   router.get("/issues/:issueId/live-runs", async (req, res) => {
     const rawId = req.params.issueId as string;
     const issueSvc = issueService(db);
