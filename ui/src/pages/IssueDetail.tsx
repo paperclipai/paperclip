@@ -8,6 +8,7 @@ import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
+import { useDialog } from "../context/DialogContext";
 import { usePanel } from "../context/PanelContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -42,6 +43,7 @@ import {
   MessageSquare,
   MoreHorizontal,
   Paperclip,
+  Plus,
   SlidersHorizontal,
   Trash2,
 } from "lucide-react";
@@ -189,6 +191,7 @@ function ActorIdentity({ evt, agentMap }: { evt: ActivityEvent; agentMap: Map<st
 export function IssueDetail() {
   const { issueId } = useParams<{ issueId: string }>();
   const { selectedCompanyId } = useCompany();
+  const { openNewIssue } = useDialog();
   const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -882,10 +885,17 @@ export function IssueDetail() {
             <MessageSquare className="h-3.5 w-3.5" />
             Comments
           </TabsTrigger>
-          <TabsTrigger value="subissues" className="gap-1.5">
-            <ListTree className="h-3.5 w-3.5" />
-            Sub-issues
-          </TabsTrigger>
+          {!issue.parentId && (
+            <TabsTrigger value="subissues" className="gap-1.5">
+              <ListTree className="h-3.5 w-3.5" />
+              Sub-issues
+              {childIssues.length > 0 && (
+                <span className="ml-1 rounded-full bg-muted px-1.5 py-0.5 text-xs font-medium">
+                  {childIssues.length}
+                </span>
+              )}
+            </TabsTrigger>
+          )}
           <TabsTrigger value="activity" className="gap-1.5">
             <ActivityIcon className="h-3.5 w-3.5" />
             Activity
@@ -921,37 +931,58 @@ export function IssueDetail() {
           />
         </TabsContent>
 
-        <TabsContent value="subissues">
-          {childIssues.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No sub-issues.</p>
-          ) : (
-            <div className="border border-border rounded-lg divide-y divide-border">
-              {childIssues.map((child) => (
-                <Link
-                  key={child.id}
-                  to={`/issues/${child.identifier ?? child.id}`}
-                  state={location.state}
-                  className="flex items-center justify-between px-3 py-2 text-sm hover:bg-accent/20 transition-colors"
-                >
-                  <div className="flex items-center gap-2 min-w-0">
-                    <StatusIcon status={child.status} />
-                    <PriorityIcon priority={child.priority} />
-                    <span className="font-mono text-muted-foreground shrink-0">
-                      {child.identifier ?? child.id.slice(0, 8)}
-                    </span>
-                    <span className="truncate">{child.title}</span>
-                  </div>
-                  {child.assigneeAgentId && (() => {
-                    const name = agentMap.get(child.assigneeAgentId)?.name;
-                    return name
-                      ? <Identity name={name} size="sm" />
-                      : <span className="text-muted-foreground font-mono">{child.assigneeAgentId.slice(0, 8)}</span>;
-                  })()}
-                </Link>
-              ))}
+        {!issue.parentId && (
+          <TabsContent value="subissues">
+            <div className="space-y-2">
+              {childIssues.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No sub-issues.</p>
+              ) : (
+                <div className="space-y-1.5">
+                  {childIssues.map((child) => (
+                    <Link
+                      key={child.id}
+                      to={`/issues/${child.identifier ?? child.id}`}
+                      state={location.state}
+                      className="block rounded-md border bg-card p-2.5 hover:bg-accent/20 transition-colors"
+                    >
+                      <div className="flex items-center gap-1.5 mb-1">
+                        <span className="font-mono text-xs text-muted-foreground shrink-0">
+                          {child.identifier ?? child.id.slice(0, 8)}
+                        </span>
+                      </div>
+                      <p className="text-sm leading-snug line-clamp-2 mb-1.5">{child.title}</p>
+                      <div className="flex items-center gap-1.5">
+                        <StatusIcon status={child.status} />
+                        <PriorityIcon priority={child.priority} />
+                        {child.assigneeAgentId && (() => {
+                          const name = agentMap.get(child.assigneeAgentId)?.name;
+                          return name
+                            ? <Identity name={name} size="xs" />
+                            : <span className="text-xs text-muted-foreground font-mono">{child.assigneeAgentId.slice(0, 8)}</span>;
+                        })()}
+                      </div>
+                    </Link>
+                  ))}
+                </div>
+              )}
+              <Button
+                variant="ghost"
+                size="sm"
+                className="gap-1.5 text-muted-foreground"
+                onClick={() =>
+                  openNewIssue({
+                    parentId: issue.id,
+                    projectId: issue.projectId ?? undefined,
+                    goalId: issue.goalId ?? undefined,
+                  })
+                }
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Create sub-issue
+              </Button>
             </div>
-          )}
-        </TabsContent>
+          </TabsContent>
+        )}
 
         <TabsContent value="activity">
           {!activity || activity.length === 0 ? (
