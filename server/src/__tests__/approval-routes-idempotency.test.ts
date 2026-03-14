@@ -65,6 +65,31 @@ describe("approval routes idempotent retries", () => {
     mockLogActivity.mockResolvedValue(undefined);
   });
 
+  it("rejects cross-company approval list requests before service execution", async () => {
+    mockApprovalService.list.mockResolvedValue([]);
+
+    const res = await request(createApp()).get("/api/companies/company-2/approvals");
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("User does not have access to this company");
+    expect(mockApprovalService.list).not.toHaveBeenCalled();
+  });
+
+  it("rejects approval detail access when the approval belongs to another company", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-1",
+      companyId: "company-2",
+      type: "hire_agent",
+      status: "pending",
+      payload: {},
+    });
+
+    const res = await request(createApp()).get("/api/approvals/approval-1");
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("User does not have access to this company");
+  });
+
   it("does not emit duplicate approval side effects when approve is already resolved", async () => {
     mockApprovalService.approve.mockResolvedValue({
       approval: {
