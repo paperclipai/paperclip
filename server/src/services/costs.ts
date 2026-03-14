@@ -3,24 +3,95 @@ import type { Db } from "@paperclipai/db";
 import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 
+export type BudgetBlockScope = "company" | "agent";
+export type BudgetBlockReason = "budget.company_limit_reached" | "budget.agent_limit_reached";
+
+export interface BudgetBlock {
+  scope: BudgetBlockScope;
+  reason: BudgetBlockReason;
+  message: string;
+  budgetCents: number;
+  spentCents: number;
+}
+
+export function resolveBudgetBlock(input: {
+  companyBudgetMonthlyCents: number;
+  companySpentMonthlyCents: number;
+  agentBudgetMonthlyCents: number;
+  agentSpentMonthlyCents: number;
+}): BudgetBlock | null {
+  if (
+    input.companyBudgetMonthlyCents > 0 &&
+    input.companySpentMonthlyCents >= input.companyBudgetMonthlyCents
+  ) {
+    return {
+      scope: "company",
+      reason: "budget.company_limit_reached",
+      message: "Company monthly budget has been exhausted; new heartbeats are blocked until the budget is raised or the month rolls over.",
+      budgetCents: input.companyBudgetMonthlyCents,
+      spentCents: input.companySpentMonthlyCents,
+    };
+  }
+
+  if (
+    input.agentBudgetMonthlyCents > 0 &&
+    input.agentSpentMonthlyCents >= input.agentBudgetMonthlyCents
+  ) {
+    return {
+      scope: "agent",
+      reason: "budget.agent_limit_reached",
+      message: "Agent monthly budget has been exhausted; new heartbeats are blocked until the budget is raised or the month rolls over.",
+      budgetCents: input.agentBudgetMonthlyCents,
+      spentCents: input.agentSpentMonthlyCents,
+    };
+  }
+
+  return null;
+}
+
 export interface CostDateRange {
   from?: Date;
   to?: Date;
 }
 
 export function costService(db: Db) {
-  return {
-    createEvent: async (companyId: string, data: Omit<typeof costEvents.$inferInsert, "companyId">) => {
-      const agent = await db
+  async function getBudgetSnapshot(companyId: string, agentId: string) {
+    const [company, agent] = await Promise.all([
+      db
+        .select()
+        .from(companies)
+        .where(eq(companies.id, companyId))
+        .then((rows) => rows[0] ?? null),
+      db
         .select()
         .from(agents)
-        .where(eq(agents.id, data.agentId))
-        .then((rows) => rows[0] ?? null);
+        .where(eq(agents.id, agentId))
+        .then((rows) => rows[0] ?? null),
+    ]);
 
-      if (!agent) throw notFound("Agent not found");
-      if (agent.companyId !== companyId) {
-        throw unprocessable("Agent does not belong to company");
-      }
+    if (!company) throw notFound("Company not found");
+    if (!agent) throw notFound("Agent not found");
+    if (agent.companyId !== companyId) {
+      throw unprocessable("Agent does not belong to company");
+    }
+
+    return { company, agent };
+  }
+
+  async function pauseAgentIfBudgetBlocked(agentId: string, status: string) {
+    if (status === "paused" || status === "terminated" || status === "pending_approval") {
+      return;
+    }
+
+    await db
+      .update(agents)
+      .set({ status: "paused", updatedAt: new Date() })
+      .where(eq(agents.id, agentId));
+  }
+
+  return {
+    createEvent: async (companyId: string, data: Omit<typeof costEvents.$inferInsert, "companyId">) => {
+      await getBudgetSnapshot(companyId, data.agentId);
 
       const event = await db
         .insert(costEvents)
@@ -44,26 +115,48 @@ export function costService(db: Db) {
         })
         .where(eq(companies.id, companyId));
 
-      const updatedAgent = await db
-        .select()
-        .from(agents)
-        .where(eq(agents.id, event.agentId))
-        .then((rows) => rows[0] ?? null);
+      const {
+        company: updatedCompany,
+        agent: updatedAgent,
+      } = await getBudgetSnapshot(companyId, event.agentId);
+      const budgetBlock = resolveBudgetBlock({
+        companyBudgetMonthlyCents: updatedCompany.budgetMonthlyCents,
+        companySpentMonthlyCents: updatedCompany.spentMonthlyCents,
+        agentBudgetMonthlyCents: updatedAgent.budgetMonthlyCents,
+        agentSpentMonthlyCents: updatedAgent.spentMonthlyCents,
+      });
 
-      if (
-        updatedAgent &&
-        updatedAgent.budgetMonthlyCents > 0 &&
-        updatedAgent.spentMonthlyCents >= updatedAgent.budgetMonthlyCents &&
-        updatedAgent.status !== "paused" &&
-        updatedAgent.status !== "terminated"
-      ) {
-        await db
-          .update(agents)
-          .set({ status: "paused", updatedAt: new Date() })
-          .where(eq(agents.id, updatedAgent.id));
+      if (budgetBlock) {
+        await pauseAgentIfBudgetBlocked(updatedAgent.id, updatedAgent.status);
       }
 
       return event;
+    },
+
+    getBudgetBlock: async (companyId: string, agentId: string) => {
+      const { company, agent } = await getBudgetSnapshot(companyId, agentId);
+      return resolveBudgetBlock({
+        companyBudgetMonthlyCents: company.budgetMonthlyCents,
+        companySpentMonthlyCents: company.spentMonthlyCents,
+        agentBudgetMonthlyCents: agent.budgetMonthlyCents,
+        agentSpentMonthlyCents: agent.spentMonthlyCents,
+      });
+    },
+
+    enforceBudgetBlock: async (companyId: string, agentId: string) => {
+      const { company, agent } = await getBudgetSnapshot(companyId, agentId);
+      const budgetBlock = resolveBudgetBlock({
+        companyBudgetMonthlyCents: company.budgetMonthlyCents,
+        companySpentMonthlyCents: company.spentMonthlyCents,
+        agentBudgetMonthlyCents: agent.budgetMonthlyCents,
+        agentSpentMonthlyCents: agent.spentMonthlyCents,
+      });
+
+      if (budgetBlock) {
+        await pauseAgentIfBudgetBlocked(agent.id, agent.status);
+      }
+
+      return budgetBlock;
     },
 
     summary: async (companyId: string, range?: CostDateRange) => {
