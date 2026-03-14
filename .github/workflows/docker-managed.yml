@@ -2,7 +2,7 @@ name: Docker Managed Image
 
 on:
   push:
-    branches: [main]
+    branches: [master]
     paths:
       - "Dockerfile.managed"
       - "server/**"
