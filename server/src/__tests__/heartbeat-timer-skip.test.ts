@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isTimerSkipEnabled } from "../services/heartbeat.ts";
+import { isTimerSkipEnabled, shouldSkipTimerWake } from "../services/heartbeat.ts";
 
 describe("isTimerSkipEnabled", () => {
   it("returns false when runtimeConfig is absent", () => {
@@ -40,5 +40,34 @@ describe("isTimerSkipEnabled", () => {
     expect(
       isTimerSkipEnabled({ budget: { monthlyCents: 5000 }, heartbeat: { skipTimerWhenNoAssignedOpenIssue: true } }),
     ).toBe(true);
+  });
+});
+
+const enabledConfig = { heartbeat: { skipTimerWhenNoAssignedOpenIssue: true } };
+const disabledConfig = { heartbeat: { skipTimerWhenNoAssignedOpenIssue: false } };
+
+describe("shouldSkipTimerWake", () => {
+  it("skips when flag is enabled and agent has no open issues", () => {
+    expect(shouldSkipTimerWake(enabledConfig, 0)).toBe(true);
+  });
+
+  it("does not skip when flag is enabled and agent has open issues", () => {
+    expect(shouldSkipTimerWake(enabledConfig, 1)).toBe(false);
+    expect(shouldSkipTimerWake(enabledConfig, 5)).toBe(false);
+  });
+
+  it("does not skip when flag is disabled, regardless of issue count", () => {
+    expect(shouldSkipTimerWake(disabledConfig, 0)).toBe(false);
+    expect(shouldSkipTimerWake(disabledConfig, 3)).toBe(false);
+  });
+
+  it("does not skip when flag is absent, regardless of issue count", () => {
+    expect(shouldSkipTimerWake(null, 0)).toBe(false);
+    expect(shouldSkipTimerWake({}, 0)).toBe(false);
+    expect(shouldSkipTimerWake({ heartbeat: {} }, 0)).toBe(false);
+  });
+
+  it("does not skip when count is non-zero with flag enabled (boundary check)", () => {
+    expect(shouldSkipTimerWake(enabledConfig, 1)).toBe(false);
   });
 });
