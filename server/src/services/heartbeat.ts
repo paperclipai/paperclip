@@ -2234,8 +2234,10 @@ export function heartbeatService(db: Db) {
       throw conflict("Agent is not invokable in its current state", { status: agent.status });
     }
 
-    // Check agent and company budgets with row-level lock to prevent race conditions
-    // This ensures the budget values can't change between check and wakeup
+    // Check agent and company budgets using row-level locking to ensure we read
+    // the latest committed spend values. Note: the lock is released before the
+    // wakeup is enqueued, so there is still a small TOCTOU window; this is
+    // accepted as a best-effort enforcement.
     const budgetCheck = await db.transaction(async (tx) => {
       // Lock agent row for update to get latest spentMonthlyCents
       const lockedAgent = await tx

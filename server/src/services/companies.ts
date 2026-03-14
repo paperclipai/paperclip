@@ -96,7 +96,7 @@ export function companyService(db: Db) {
           updated.spentMonthlyCents >= updated.budgetMonthlyCents;
 
         if (shouldPauseAgents) {
-          // Pause all non-terminated agents
+          // Pause all active/idle agents (skip already-paused, pending_approval, terminated)
           const result = await db
             .update(agents)
             .set({ status: "paused", updatedAt: new Date() })
@@ -104,6 +104,8 @@ export function companyService(db: Db) {
               and(
                 eq(agents.companyId, id),
                 ne(agents.status, "terminated"),
+                ne(agents.status, "paused"),
+                ne(agents.status, "pending_approval"),
               ),
             )
             .returning({ id: agents.id, name: agents.name });
