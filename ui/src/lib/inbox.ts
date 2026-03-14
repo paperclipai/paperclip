@@ -59,9 +59,9 @@ export function saveLastInboxTab(tab: InboxTab) {
 }
 
 export function getLatestFailedRunsByAgent(runs: HeartbeatRun[]): HeartbeatRun[] {
-  const sorted = [...runs].sort(
-    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-  );
+  const sorted = [...runs]
+    .filter((run) => !run.dismissedAt)
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   const latestByAgent = new Map<string, HeartbeatRun>();
 
   for (const run of sorted) {
@@ -122,9 +122,7 @@ export function computeInboxBadgeData({
   const actionableApprovals = approvals.filter((approval) =>
     ACTIONABLE_APPROVAL_STATUSES.has(approval.status),
   ).length;
-  const failedRuns = getLatestFailedRunsByAgent(heartbeatRuns).filter(
-    (run) => !dismissed.has(`run:${run.id}`),
-  ).length;
+  const failedRuns = getLatestFailedRunsByAgent(heartbeatRuns).length;
   const unreadTouchedIssues = unreadIssues.length;
   const agentErrorCount = dashboard?.agents.error ?? 0;
   const monthBudgetCents = dashboard?.costs.monthBudgetCents ?? 0;

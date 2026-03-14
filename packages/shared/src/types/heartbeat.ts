@@ -34,6 +34,7 @@ export interface HeartbeatRun {
   errorCode: string | null;
   externalRunId: string | null;
   contextSnapshot: Record<string, unknown> | null;
+  dismissedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }

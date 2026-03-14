@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -83,6 +83,7 @@ const heartbeatRunListColumns = {
   errorCode: heartbeatRuns.errorCode,
   externalRunId: heartbeatRuns.externalRunId,
   contextSnapshot: heartbeatRuns.contextSnapshot,
+  dismissedAt: heartbeatRuns.dismissedAt,
   createdAt: heartbeatRuns.createdAt,
   updatedAt: heartbeatRuns.updatedAt,
 } as const;
@@ -2871,6 +2872,15 @@ export function heartbeatService(db: Db) {
       await finalizeAgentStatus(run.agentId, "cancelled");
       await startNextQueuedRunForAgent(run.agentId);
       return cancelled;
+    },
+
+    dismissRun: async (runId: string) => {
+      const [updated] = await db
+        .update(heartbeatRuns)
+        .set({ dismissedAt: new Date(), updatedAt: new Date() })
+        .where(and(eq(heartbeatRuns.id, runId), isNull(heartbeatRuns.dismissedAt)))
+        .returning();
+      return updated ?? (await getRun(runId));
     },
 
     cancelActiveForAgent: async (agentId: string) => {
