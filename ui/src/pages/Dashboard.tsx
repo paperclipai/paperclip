@@ -21,6 +21,7 @@ import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
 import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
+import { useAgentHeaderActions } from "../hooks/useAgentHeaderActions";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
 import type { Agent, Issue } from "@paperclipai/shared";
@@ -48,6 +49,8 @@ export function Dashboard() {
   useEffect(() => {
     setBreadcrumbs([{ label: "Dashboard" }]);
   }, [setBreadcrumbs]);
+
+  useAgentHeaderActions(agents, selectedCompanyId);
 
   const { data, isLoading, error } = useQuery({
     queryKey: queryKeys.dashboard(selectedCompanyId!),

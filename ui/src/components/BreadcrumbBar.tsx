@@ -14,7 +14,7 @@ import {
 import { Fragment } from "react";
 
 export function BreadcrumbBar() {
-  const { breadcrumbs } = useBreadcrumbs();
+  const { breadcrumbs, actions } = useBreadcrumbs();
   const { toggleSidebar, isMobile } = useSidebar();
 
   if (breadcrumbs.length === 0) return null;
@@ -31,14 +31,19 @@ export function BreadcrumbBar() {
     </Button>
   );
 
+  const actionsSlot = actions ? (
+    <div className="flex items-center gap-1.5 shrink-0 ml-auto pl-2">{actions}</div>
+  ) : null;
+
   // Single breadcrumb = page title (uppercase)
   if (breadcrumbs.length === 1) {
     return (
       <div className="border-b border-border px-4 md:px-6 h-12 shrink-0 flex items-center min-w-0 overflow-hidden">
         {menuButton}
-        <h1 className="text-sm font-semibold uppercase tracking-wider truncate">
+        <h1 className="text-sm font-semibold uppercase tracking-wider truncate flex-1 min-w-0">
           {breadcrumbs[0].label}
         </h1>
+        {actionsSlot}
       </div>
     );
   }
@@ -47,7 +52,7 @@ export function BreadcrumbBar() {
   return (
     <div className="border-b border-border px-4 md:px-6 h-12 shrink-0 flex items-center min-w-0 overflow-hidden">
       {menuButton}
-      <Breadcrumb className="min-w-0 overflow-hidden">
+      <Breadcrumb className="min-w-0 overflow-hidden flex-1">
         <BreadcrumbList className="flex-nowrap">
           {breadcrumbs.map((crumb, i) => {
             const isLast = i === breadcrumbs.length - 1;
@@ -68,6 +73,7 @@ export function BreadcrumbBar() {
           })}
         </BreadcrumbList>
       </Breadcrumb>
+      {actionsSlot}
     </div>
   );
 }

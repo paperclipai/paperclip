@@ -19,6 +19,7 @@ import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Bot, Plus, List, GitBranch, SlidersHorizontal } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
+import { useAgentHeaderActions } from "../hooks/useAgentHeaderActions";
 
 const adapterLabels: Record<string, string> = {
   claude_local: "Claude",
@@ -116,6 +117,8 @@ export function Agents() {
   useEffect(() => {
     setBreadcrumbs([{ label: "Agents" }]);
   }, [setBreadcrumbs]);
+
+  useAgentHeaderActions(agents, selectedCompanyId);
 
   if (!selectedCompanyId) {
     return <EmptyState icon={Bot} message="Select a company to view agents." />;
@@ -408,3 +411,4 @@ function LiveRunIndicator({
     </Link>
   );
 }
+
