@@ -345,6 +345,19 @@ export async function startServer(): Promise<StartedServer> {
           await embeddedPostgres.initialise();
         } catch (err) {
           logEmbeddedPostgresFailure("initialise", err);
+          
+          // Check for locale-related errors in the log buffer
+          const logContent = embeddedPostgresLogBuffer.join("\n");
+          if (/locale|LC_|invalid locale/i.test(logContent)) {
+            throw new Error(
+              "PostgreSQL initialization failed with a locale error.\n\n" +
+              "This is unexpected — initdb is configured with --locale=C which should be available on all POSIX systems.\n" +
+              "This may indicate the embedded-postgres library is not forwarding initdb flags correctly on your system.\n\n" +
+              "Workaround: try setting LANG=C in your shell before starting Paperclip, e.g.:\n" +
+              "  LANG=C npx paperclipai start",
+              { cause: err },
+            );
+          }
           throw err;
         }
       } else {
