@@ -71,6 +71,7 @@ interface IssueDraft {
   assigneeValue: string;
   assigneeId?: string;
   projectId: string;
+  parentId?: string;
   assigneeModelOverride: string;
   assigneeThinkingEffort: string;
   assigneeChrome: boolean;
@@ -181,6 +182,7 @@ export function NewIssueDialog() {
   const [priority, setPriority] = useState("");
   const [assigneeValue, setAssigneeValue] = useState("");
   const [projectId, setProjectId] = useState("");
+  const [parentId, setParentId] = useState("");
   const [assigneeOptionsOpen, setAssigneeOptionsOpen] = useState(false);
   const [assigneeModelOverride, setAssigneeModelOverride] = useState("");
   const [assigneeThinkingEffort, setAssigneeThinkingEffort] = useState("");
@@ -215,6 +217,13 @@ export function NewIssueDialog() {
     queryFn: () => projectsApi.list(effectiveCompanyId!),
     enabled: !!effectiveCompanyId && newIssueOpen,
   });
+
+  const { data: allIssues } = useQuery({
+    queryKey: queryKeys.issues.list(effectiveCompanyId!),
+    queryFn: () => issuesApi.list(effectiveCompanyId!, {}),
+    enabled: !!effectiveCompanyId && newIssueOpen,
+  });
+
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -307,6 +316,7 @@ export function NewIssueDialog() {
       priority,
       assigneeValue,
       projectId,
+      parentId,
       assigneeModelOverride,
       assigneeThinkingEffort,
       assigneeChrome,
@@ -319,6 +329,7 @@ export function NewIssueDialog() {
     priority,
     assigneeValue,
     projectId,
+    parentId,
     assigneeModelOverride,
     assigneeThinkingEffort,
     assigneeChrome,
@@ -340,6 +351,7 @@ export function NewIssueDialog() {
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
       setProjectId(newIssueDefaults.projectId ?? "");
+      setParentId(newIssueDefaults.parentId ?? "");
       setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
@@ -356,6 +368,7 @@ export function NewIssueDialog() {
           : (draft.assigneeValue ?? draft.assigneeId ?? ""),
       );
       setProjectId(newIssueDefaults.projectId ?? draft.projectId);
+      setParentId(newIssueDefaults.parentId ?? draft.parentId ?? "");
       setAssigneeModelOverride(draft.assigneeModelOverride ?? "");
       setAssigneeThinkingEffort(draft.assigneeThinkingEffort ?? "");
       setAssigneeChrome(draft.assigneeChrome ?? false);
@@ -364,6 +377,7 @@ export function NewIssueDialog() {
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
       setProjectId(newIssueDefaults.projectId ?? "");
+      setParentId(newIssueDefaults.parentId ?? "");
       setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
@@ -406,6 +420,7 @@ export function NewIssueDialog() {
     setPriority("");
     setAssigneeValue("");
     setProjectId("");
+    setParentId("");
     setAssigneeOptionsOpen(false);
     setAssigneeModelOverride("");
     setAssigneeThinkingEffort("");
@@ -422,6 +437,7 @@ export function NewIssueDialog() {
     setDialogCompanyId(companyId);
     setAssigneeValue("");
     setProjectId("");
+    setParentId("");
     setAssigneeModelOverride("");
     setAssigneeThinkingEffort("");
     setAssigneeChrome(false);
@@ -460,6 +476,7 @@ export function NewIssueDialog() {
       ...(selectedAssigneeAgentId ? { assigneeAgentId: selectedAssigneeAgentId } : {}),
       ...(selectedAssigneeUserId ? { assigneeUserId: selectedAssigneeUserId } : {}),
       ...(projectId ? { projectId } : {}),
+      ...(parentId ? { parentId } : {}),
       ...(assigneeAdapterOverrides ? { assigneeAdapterOverrides } : {}),
       ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
     });
@@ -536,6 +553,17 @@ export function NewIssueDialog() {
       })),
     [orderedProjects],
   );
+
+  const parentOptions = useMemo<InlineEntityOption[]>(
+    () =>
+      (allIssues ?? []).map((issue) => ({
+        id: issue.id,
+        label: `${issue.identifier ?? issue.id.slice(0, 8)} ${issue.title}`,
+        searchText: `${issue.identifier ?? issue.id.slice(0, 8)} ${issue.title}`,
+      })),
+    [allIssues],
+  );
+
   const savedDraft = loadDraft();
   const hasSavedDraft = Boolean(savedDraft?.title.trim() || savedDraft?.description.trim());
   const canDiscardDraft = hasDraft || hasSavedDraft;
@@ -837,6 +865,44 @@ export function NewIssueDialog() {
                       />
                       <span className="truncate">{option.label}</span>
                     </>
+                  );
+                }}
+              />
+              <span>under</span>
+              <InlineEntitySelector
+                value={parentId}
+                options={parentOptions}
+                placeholder="Parent"
+                disablePortal
+                noneLabel="No parent"
+                searchPlaceholder="Search by title or ID..."
+                emptyMessage="No issues found."
+                onChange={setParentId}
+                onConfirm={() => {
+                  descriptionEditorRef.current?.focus();
+                }}
+                renderTriggerValue={(option) => {
+                  if (!option) return <span className="text-muted-foreground">Parent</span>;
+                  const spaceIdx = option.label.indexOf(" ");
+                  const identifier = spaceIdx >= 0 ? option.label.slice(0, spaceIdx) : option.label;
+                  const title = spaceIdx >= 0 ? option.label.slice(spaceIdx + 1) : "";
+                  return (
+                    <span className="flex items-center gap-1 min-w-0 max-w-[180px]">
+                      <span className="shrink-0 text-muted-foreground">⤴</span>
+                      <span className="shrink-0">{identifier}</span>
+                      {title && <span className="truncate text-muted-foreground">{title}</span>}
+                    </span>
+                  );
+                }}
+                renderOption={(option) => {
+                  const spaceIdx = option.label.indexOf(" ");
+                  const identifier = spaceIdx >= 0 ? option.label.slice(0, spaceIdx) : option.label;
+                  const title = spaceIdx >= 0 ? option.label.slice(spaceIdx + 1) : "";
+                  return (
+                    <span className="flex items-center gap-2 min-w-0 w-full">
+                      <span className="shrink-0 text-muted-foreground text-xs font-mono">{identifier}</span>
+                      {title && <span className="truncate">{title}</span>}
+                    </span>
                   );
                 }}
               />
