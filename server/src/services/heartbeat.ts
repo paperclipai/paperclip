@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -1222,11 +1222,11 @@ export function heartbeatService(db: Db) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
 
-    // Find all runs in "queued" or "running" state
+    // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
     const activeRuns = await db
       .select()
       .from(heartbeatRuns)
-      .where(inArray(heartbeatRuns.status, ["queued", "running"]));
+      .where(eq(heartbeatRuns.status, "running"));
 
     const reaped: string[] = [];
 
@@ -1267,7 +1267,76 @@ export function heartbeatService(db: Db) {
     if (reaped.length > 0) {
       logger.warn({ reapedCount: reaped.length, runIds: reaped }, "reaped orphaned heartbeat runs");
     }
-    return { reaped: reaped.length, runIds: reaped };
+
+    // Auto-restart agents after process_lost. Check recent failure history
+    // to prevent infinite restart loops (max 3 process_lost failures in 10 minutes).
+    const MAX_AUTO_RESTARTS = 3;
+    const AUTO_RESTART_WINDOW_MS = 10 * 60 * 1000;
+    const reapedSet = new Set(reaped);
+    const reapedAgentIds = [...new Set(activeRuns.filter((r) => reapedSet.has(r.id)).map((r) => r.agentId))];
+
+    let autoRestarted = 0;
+    for (const agentId of reapedAgentIds) {
+      const agent = await getAgent(agentId);
+      if (!agent) continue;
+      if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
+
+      const policy = parseHeartbeatPolicy(agent);
+      if (!policy.enabled) continue;
+
+      // Count recent process_lost failures to prevent infinite restart loops
+      const recentFailures = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.agentId, agentId),
+            eq(heartbeatRuns.status, "failed"),
+            eq(heartbeatRuns.errorCode, "process_lost"),
+            gte(heartbeatRuns.finishedAt, new Date(now.getTime() - AUTO_RESTART_WINDOW_MS)),
+          ),
+        )
+        .then((rows) => Number(rows[0]?.count ?? 0));
+
+      if (recentFailures > MAX_AUTO_RESTARTS) {
+        logger.warn(
+          { agentId, recentFailures, maxAutoRestarts: MAX_AUTO_RESTARTS },
+          "skipping auto-restart: too many recent process_lost failures",
+        );
+        continue;
+      }
+
+      try {
+        const wakeupResult = await enqueueWakeup(agentId, {
+          source: "on_demand",
+          triggerDetail: "system",
+          reason: "auto_restart_after_process_lost",
+          requestedByActorType: "system",
+          requestedByActorId: "orphan_reaper",
+          contextSnapshot: {
+            source: "auto_restart",
+            reason: "process_lost_recovery",
+            consecutiveFailures: recentFailures + 1,
+          },
+        });
+        if (wakeupResult) {
+          autoRestarted += 1;
+          logger.info(
+            { agentId, consecutiveFailures: recentFailures + 1 },
+            "auto-restarted agent after process_lost",
+          );
+        } else {
+          logger.info(
+            { agentId },
+            "auto-restart wakeup skipped (agent policy or execution lock)",
+          );
+        }
+      } catch (err) {
+        logger.warn({ agentId, err }, "failed to auto-restart agent after process_lost");
+      }
+    }
+
+    return { reaped: reaped.length, runIds: reaped, autoRestarted };
   }
 
   async function resumeQueuedRuns() {
