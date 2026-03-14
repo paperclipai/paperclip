@@ -19,6 +19,7 @@ import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Bot, Plus, List, GitBranch, SlidersHorizontal } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
+import { AgentBulkActions } from "../components/AgentBulkActions";
 
 const adapterLabels: Record<string, string> = {
   claude_local: "Claude",
@@ -61,7 +62,7 @@ function filterOrgTree(nodes: OrgNode[], tab: FilterTab, showTerminated: boolean
 export function Agents() {
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialog();
-  const { setBreadcrumbs } = useBreadcrumbs();
+  const { setBreadcrumbs, setActions } = useBreadcrumbs();
   const navigate = useNavigate();
   const location = useLocation();
   const { isMobile } = useSidebar();
@@ -116,6 +117,15 @@ export function Agents() {
   useEffect(() => {
     setBreadcrumbs([{ label: "Agents" }]);
   }, [setBreadcrumbs]);
+
+  useEffect(() => {
+    if (!agents || !selectedCompanyId) {
+      setActions(null);
+      return;
+    }
+    setActions(<AgentBulkActions agents={agents} companyId={selectedCompanyId} />);
+    return () => setActions(null);
+  }, [agents, selectedCompanyId, setActions]);
 
   if (!selectedCompanyId) {
     return <EmptyState icon={Bot} message="Select a company to view agents." />;
@@ -408,3 +418,4 @@ function LiveRunIndicator({
     </Link>
   );
 }
+

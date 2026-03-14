@@ -8,15 +8,22 @@ export interface Breadcrumb {
 interface BreadcrumbContextValue {
   breadcrumbs: Breadcrumb[];
   setBreadcrumbs: (crumbs: Breadcrumb[]) => void;
+  actions: ReactNode;
+  setActions: (node: ReactNode) => void;
 }
 
 const BreadcrumbContext = createContext<BreadcrumbContextValue | null>(null);
 
 export function BreadcrumbProvider({ children }: { children: ReactNode }) {
   const [breadcrumbs, setBreadcrumbsState] = useState<Breadcrumb[]>([]);
+  const [actions, setActionsState] = useState<ReactNode>(null);
 
   const setBreadcrumbs = useCallback((crumbs: Breadcrumb[]) => {
     setBreadcrumbsState(crumbs);
+  }, []);
+
+  const setActions = useCallback((node: ReactNode) => {
+    setActionsState(node);
   }, []);
 
   useEffect(() => {
@@ -29,7 +36,7 @@ export function BreadcrumbProvider({ children }: { children: ReactNode }) {
   }, [breadcrumbs]);
 
   return (
-    <BreadcrumbContext.Provider value={{ breadcrumbs, setBreadcrumbs }}>
+    <BreadcrumbContext.Provider value={{ breadcrumbs, setBreadcrumbs, actions, setActions }}>
       {children}
     </BreadcrumbContext.Provider>
   );
