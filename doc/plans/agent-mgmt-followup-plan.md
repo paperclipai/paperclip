@@ -213,6 +213,7 @@ Require:
 
 - Fix CEO patch authz in agent route
 - Restrict privileged generic patch fields
+- Redact sensitive HTTP log material (`authorization`, `cookie`, token-like payload keys) in server request logging
 - Add tests for authz matrix
 
 ## Phase B: Config revision ledger
