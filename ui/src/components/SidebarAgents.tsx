@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { NavLink, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronRight, Plus } from "lucide-react";
+import { ChevronRight, Clock3, Plus, Zap } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useSidebar } from "../context/SidebarContext";
@@ -9,6 +9,7 @@ import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, agentRouteRef, agentUrl } from "../lib/utils";
+import { getAgentRunPolicy } from "../lib/agent-run-policy";
 import { AgentIcon } from "./AgentIconPicker";
 import {
   Collapsible,
@@ -108,6 +109,7 @@ export function SidebarAgents() {
         <div className="flex flex-col gap-0.5 mt-0.5">
           {visibleAgents.map((agent: Agent) => {
             const runCount = liveCountByAgent.get(agent.id) ?? 0;
+            const runPolicy = getAgentRunPolicy(agent.runtimeConfig);
             return (
               <NavLink
                 key={agent.id}
@@ -123,7 +125,31 @@ export function SidebarAgents() {
                 )}
               >
                 <AgentIcon icon={agent.icon} className="shrink-0 h-3.5 w-3.5 text-muted-foreground" />
-                <span className="flex-1 truncate">{agent.name}</span>
+                <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                  <span className="truncate">{agent.name}</span>
+                  {(runPolicy.hasTimerHeartbeat || runPolicy.wakeOnDemand) && (
+                    <span className="flex shrink-0 items-center gap-1">
+                      {runPolicy.hasTimerHeartbeat && (
+                        <span
+                          className="text-amber-600 dark:text-amber-400"
+                          title={`Timer heartbeat every ${runPolicy.intervalSec}s`}
+                          aria-label={`Timer heartbeat every ${runPolicy.intervalSec} seconds`}
+                        >
+                          <Clock3 aria-hidden="true" className="h-3 w-3" />
+                        </span>
+                      )}
+                      {runPolicy.wakeOnDemand && (
+                        <span
+                          className="text-sky-600 dark:text-sky-400"
+                          title="Wake on demand enabled"
+                          aria-label="Wake on demand enabled"
+                        >
+                          <Zap aria-hidden="true" className="h-3 w-3" />
+                        </span>
+                      )}
+                    </span>
+                  )}
+                </div>
                 {runCount > 0 && (
                   <span className="ml-auto flex items-center gap-1.5 shrink-0">
                     <span className="relative flex h-2 w-2">
