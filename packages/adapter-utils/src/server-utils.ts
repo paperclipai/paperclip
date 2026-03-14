@@ -133,7 +133,9 @@ export function redactEnvForLogs(env: Record<string, string>): Record<string, st
 export function buildPaperclipEnv(agent: { id: string; companyId: string }): Record<string, string> {
   const resolveHostForUrl = (rawHost: string): string => {
     const host = rawHost.trim();
-    if (!host || host === "0.0.0.0" || host === "::") return "localhost";
+    if (!host) return "127.0.0.1";
+    if (host === "0.0.0.0") return "127.0.0.1";
+    if (host === "::") return "localhost";
     if (host.includes(":") && !host.startsWith("[") && !host.endsWith("]")) return `[${host}]`;
     return host;
   };
