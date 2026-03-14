@@ -24,36 +24,36 @@ If you do not have this permission, escalate to your CEO or board.
 1. Confirm identity and company context.
 
 ```sh
-curl -sS "$PAPERCLIP_API_URL/api/agents/me" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+curl -sS "$(printenv PAPERCLIP_API_URL)/api/agents/me" \
+  -H "Authorization: Bearer $(printenv PAPERCLIP_API_KEY)"
 ```
 
 2. Discover available adapter configuration docs for this Paperclip instance.
 
 ```sh
-curl -sS "$PAPERCLIP_API_URL/llms/agent-configuration.txt" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+curl -sS "$(printenv PAPERCLIP_API_URL)/llms/agent-configuration.txt" \
+  -H "Authorization: Bearer $(printenv PAPERCLIP_API_KEY)"
 ```
 
 3. Read adapter-specific docs (example: `claude_local`).
 
 ```sh
-curl -sS "$PAPERCLIP_API_URL/llms/agent-configuration/claude_local.txt" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+curl -sS "$(printenv PAPERCLIP_API_URL)/llms/agent-configuration/claude_local.txt" \
+  -H "Authorization: Bearer $(printenv PAPERCLIP_API_KEY)"
 ```
 
 4. Compare existing agent configurations in your company.
 
 ```sh
-curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-configurations" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+curl -sS "$(printenv PAPERCLIP_API_URL)/api/companies/$PAPERCLIP_COMPANY_ID/agent-configurations" \
+  -H "Authorization: Bearer $(printenv PAPERCLIP_API_KEY)"
 ```
 
 5. Discover allowed agent icons and pick one that matches the role.
 
 ```sh
-curl -sS "$PAPERCLIP_API_URL/llms/agent-icons.txt" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+curl -sS "$(printenv PAPERCLIP_API_URL)/llms/agent-icons.txt" \
+  -H "Authorization: Bearer $(printenv PAPERCLIP_API_KEY)"
 ```
 
 6. Draft the new hire config:
@@ -70,8 +70,8 @@ curl -sS "$PAPERCLIP_API_URL/llms/agent-icons.txt" \
 7. Submit hire request.
 
 ```sh
-curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-hires" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+curl -sS -X POST "$(printenv PAPERCLIP_API_URL)/api/companies/$PAPERCLIP_COMPANY_ID/agent-hires" \
+  -H "Authorization: Bearer $(printenv PAPERCLIP_API_KEY)" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "CTO",
@@ -94,11 +94,11 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-h
 - when the board approves, you will be woken with `PAPERCLIP_APPROVAL_ID`; read linked issues and close/comment follow-up
 
 ```sh
-curl -sS "$PAPERCLIP_API_URL/api/approvals/<approval-id>" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+curl -sS "$(printenv PAPERCLIP_API_URL)/api/approvals/<approval-id>" \
+  -H "Authorization: Bearer $(printenv PAPERCLIP_API_KEY)"
 
-curl -sS -X POST "$PAPERCLIP_API_URL/api/approvals/<approval-id>/comments" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+curl -sS -X POST "$(printenv PAPERCLIP_API_URL)/api/approvals/<approval-id>/comments" \
+  -H "Authorization: Bearer $(printenv PAPERCLIP_API_KEY)" \
   -H "Content-Type: application/json" \
   -d '{"body":"## CTO hire request submitted\n\n- Approval: [<approval-id>](/approvals/<approval-id>)\n- Pending agent: [<agent-ref>](/agents/<agent-url-key-or-id>)\n- Source issue: [<issue-ref>](/issues/<issue-identifier-or-id>)\n\nUpdated prompt and adapter config per board feedback."}'
 ```
@@ -106,8 +106,8 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/approvals/<approval-id>/comments" \
 If the approval already exists and needs manual linking to the issue:
 
 ```sh
-curl -sS -X POST "$PAPERCLIP_API_URL/api/issues/<issue-id>/approvals" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+curl -sS -X POST "$(printenv PAPERCLIP_API_URL)/api/issues/<issue-id>/approvals" \
+  -H "Authorization: Bearer $(printenv PAPERCLIP_API_KEY)" \
   -H "Content-Type: application/json" \
   -d '{"approvalId":"<approval-id>"}'
 ```
@@ -115,11 +115,11 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/issues/<issue-id>/approvals" \
 After approval is granted, run this follow-up loop:
 
 ```sh
-curl -sS "$PAPERCLIP_API_URL/api/approvals/$PAPERCLIP_APPROVAL_ID" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+curl -sS "$(printenv PAPERCLIP_API_URL)/api/approvals/$PAPERCLIP_APPROVAL_ID" \
+  -H "Authorization: Bearer $(printenv PAPERCLIP_API_KEY)"
 
-curl -sS "$PAPERCLIP_API_URL/api/approvals/$PAPERCLIP_APPROVAL_ID/issues" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+curl -sS "$(printenv PAPERCLIP_API_URL)/api/approvals/$PAPERCLIP_APPROVAL_ID/issues" \
+  -H "Authorization: Bearer $(printenv PAPERCLIP_API_KEY)"
 ```
 
 For each linked issue, either:
