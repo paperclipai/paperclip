@@ -314,6 +314,26 @@ function withActiveRuns(
   }));
 }
 
+/**
+ * Extract @mention tokens from a comment body and return normalised
+ * variants so that both slug-format (`@code-reviewer`) and plain names
+ * (`@CTO`) can be matched against `agent.name`.
+ *
+ * The `\B` anchor prevents matching inside emails like `user@example.com`
+ * (where `@` is preceded by a word character).
+ */
+export function extractMentionTokens(body: string): Set<string> {
+  const re = /\B@([\w-]+)/g;
+  const tokens = new Set<string>();
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(body)) !== null) {
+    const mention = m[1].toLowerCase();
+    tokens.add(mention);
+    tokens.add(mention.replace(/-/g, " ")); // "code-reviewer" → "code reviewer"
+  }
+  return tokens;
+}
+
 export function issueService(db: Db) {
   async function assertAssignableAgent(companyId: string, agentId: string) {
     const assignee = await db
@@ -1351,10 +1371,7 @@ export function issueService(db: Db) {
       }),
 
     findMentionedAgents: async (companyId: string, body: string) => {
-      const re = /\B@([^\s@,!?.]+)/g;
-      const tokens = new Set<string>();
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(body)) !== null) tokens.add(m[1].toLowerCase());
+      const tokens = extractMentionTokens(body);
       if (tokens.size === 0) return [];
       const rows = await db.select({ id: agents.id, name: agents.name })
         .from(agents).where(eq(agents.companyId, companyId));
