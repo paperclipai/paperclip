@@ -218,6 +218,22 @@ export function accessService(db: Db) {
       .then((rows) => rows[0]);
   }
 
+  async function removeMembership(
+    companyId: string,
+    principalType: PrincipalType,
+    principalId: string,
+  ): Promise<void> {
+    await db
+      .delete(companyMemberships)
+      .where(
+        and(
+          eq(companyMemberships.companyId, companyId),
+          eq(companyMemberships.principalType, principalType),
+          eq(companyMemberships.principalId, principalId),
+        ),
+      );
+  }
+
   async function setPrincipalGrants(
     companyId: string,
     principalType: PrincipalType,
@@ -263,6 +279,7 @@ export function accessService(db: Db) {
     demoteInstanceAdmin,
     listUserCompanyAccess,
     setUserCompanyAccess,
+    removeMembership,
     setPrincipalGrants,
   };
 }
