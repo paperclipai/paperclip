@@ -116,6 +116,9 @@ export const accessApi = {
   rejectJoinRequest: (companyId: string, requestId: string) =>
     api.post<JoinRequest>(`/companies/${companyId}/join-requests/${requestId}/reject`, {}),
 
+  deleteJoinRequest: (companyId: string, requestId: string) =>
+    api.delete<{ deleted: true; id: string }>(`/companies/${companyId}/join-requests/${requestId}`),
+
   claimJoinRequestApiKey: (requestId: string, claimSecret: string) =>
     api.post<{ keyId: string; token: string; agentId: string; createdAt: string }>(
       `/join-requests/${requestId}/claim-api-key`,
