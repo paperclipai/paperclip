@@ -21,7 +21,7 @@ import { getServerAdapter, runningProcesses } from "../adapters/index.js";
 import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec, UsageSummary } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
-import { costService } from "./costs.js";
+import { costService, type BudgetBlock } from "./costs.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import { summarizeHeartbeatRunResultJson } from "./heartbeat-run-summary.js";
@@ -556,6 +556,7 @@ export function heartbeatService(db: Db) {
   const runLogStore = getRunLogStore();
   const secretsSvc = secretService(db);
   const issuesSvc = issueService(db);
+  const costs = costService(db);
   const activeRunExecutions = new Set<string>();
 
   async function getAgent(agentId: string) {
@@ -1072,6 +1073,91 @@ export function heartbeatService(db: Db) {
       .where(eq(agentWakeupRequests.id, wakeupRequestId));
   }
 
+  function buildBudgetPayload(
+    existingPayload: Record<string, unknown> | null,
+    budgetBlock: BudgetBlock,
+  ) {
+    return {
+      ...(existingPayload ?? {}),
+      budgetScope: budgetBlock.scope,
+      budgetReason: budgetBlock.reason,
+      budgetCents: budgetBlock.budgetCents,
+      spentCents: budgetBlock.spentCents,
+    };
+  }
+
+  async function recordSkippedBudgetWakeup(input: {
+    agent: typeof agents.$inferSelect;
+    source: WakeupOptions["source"];
+    triggerDetail: WakeupOptions["triggerDetail"] | null;
+    payload: Record<string, unknown> | null;
+    opts: WakeupOptions;
+    budgetBlock: BudgetBlock;
+  }) {
+    const { agent, source, triggerDetail, payload, opts, budgetBlock } = input;
+    await db.insert(agentWakeupRequests).values({
+      companyId: agent.companyId,
+      agentId: agent.id,
+      source,
+      triggerDetail,
+      reason: budgetBlock.reason,
+      payload: buildBudgetPayload(payload, budgetBlock),
+      status: "skipped",
+      requestedByActorType: opts.requestedByActorType ?? null,
+      requestedByActorId: opts.requestedByActorId ?? null,
+      idempotencyKey: opts.idempotencyKey ?? null,
+      finishedAt: new Date(),
+      error: budgetBlock.message,
+    });
+  }
+
+  async function cancelRunForBudgetBlock(run: typeof heartbeatRuns.$inferSelect, budgetBlock: BudgetBlock) {
+    const now = new Date();
+    const cancelledRun = await setRunStatus(run.id, "cancelled", {
+      error: budgetBlock.message,
+      errorCode: budgetBlock.reason,
+      finishedAt: now,
+    });
+
+    await setWakeupStatus(run.wakeupRequestId, "failed", {
+      finishedAt: now,
+      error: budgetBlock.message,
+      reason: budgetBlock.reason,
+      payload: buildBudgetPayload(parseObject(run.contextSnapshot), budgetBlock),
+    });
+
+    if (!cancelledRun) {
+      await releaseIssueExecutionAndPromote(run);
+      return;
+    }
+
+    await appendRunEvent(cancelledRun, 1, {
+      eventType: "budget_blocked",
+      stream: "system",
+      level: "error",
+      message: budgetBlock.message,
+      payload: {
+        budgetScope: budgetBlock.scope,
+        budgetReason: budgetBlock.reason,
+        budgetCents: budgetBlock.budgetCents,
+        spentCents: budgetBlock.spentCents,
+      },
+    });
+    await releaseIssueExecutionAndPromote(cancelledRun);
+  }
+
+  async function cancelQueuedRunsForBudgetBlock(agentId: string, budgetBlock: BudgetBlock) {
+    const queuedRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")))
+      .orderBy(asc(heartbeatRuns.createdAt));
+
+    for (const queuedRun of queuedRuns) {
+      await cancelRunForBudgetBlock(queuedRun, budgetBlock);
+    }
+  }
+
   async function appendRunEvent(
     run: typeof heartbeatRuns.$inferSelect,
     seq: number,
@@ -1314,7 +1400,6 @@ export function heartbeatService(db: Db) {
       .where(eq(agentRuntimeState.agentId, agent.id));
 
     if (additionalCostCents > 0 || hasTokenUsage) {
-      const costs = costService(db);
       await costs.createEvent(agent.companyId, {
         agentId: agent.id,
         provider: result.provider ?? "unknown",
@@ -1331,6 +1416,11 @@ export function heartbeatService(db: Db) {
     return withAgentStartLock(agentId, async () => {
       const agent = await getAgent(agentId);
       if (!agent) return [];
+      const budgetBlock = await costs.enforceBudgetBlock(agent.companyId, agent.id);
+      if (budgetBlock) {
+        await cancelQueuedRunsForBudgetBlock(agent.id, budgetBlock);
+        return [];
+      }
       const policy = parseHeartbeatPolicy(agent);
       const runningCount = await countRunningRunsForAgent(agentId);
       const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
@@ -1390,6 +1480,12 @@ export function heartbeatService(db: Db) {
       });
       const failedRun = await getRun(runId);
       if (failedRun) await releaseIssueExecutionAndPromote(failedRun);
+      return;
+    }
+
+    const budgetBlock = await costs.enforceBudgetBlock(agent.companyId, agent.id);
+    if (budgetBlock) {
+      await cancelRunForBudgetBlock(run, budgetBlock);
       return;
     }
 
@@ -2231,6 +2327,19 @@ export function heartbeatService(db: Db) {
       agent.status === "pending_approval"
     ) {
       throw conflict("Agent is not invokable in its current state", { status: agent.status });
+    }
+
+    const budgetBlock = await costs.enforceBudgetBlock(agent.companyId, agent.id);
+    if (budgetBlock) {
+      await recordSkippedBudgetWakeup({
+        agent,
+        source,
+        triggerDetail,
+        payload,
+        opts,
+        budgetBlock,
+      });
+      return null;
     }
 
     const policy = parseHeartbeatPolicy(agent);
