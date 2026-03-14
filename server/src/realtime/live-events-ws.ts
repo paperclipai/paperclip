@@ -205,9 +205,7 @@ export function setupLiveEventsWebSocketServer(
       return;
     }
 
-    logger.info({ companyId: context.companyId, actorType: context.actorType, totalClients: wss.clients.size }, "live-events-ws: subscribing to events");
     const unsubscribe = subscribeCompanyLiveEvents(context.companyId, (event) => {
-      logger.info({ companyId: context.companyId, eventType: event.type, readyState: socket.readyState }, "live-events-ws: dispatching event to client");
       if (socket.readyState !== WebSocket.OPEN) return;
       socket.send(JSON.stringify(event));
     });

@@ -30,14 +30,11 @@ export function publishLiveEvent(input: {
   payload?: LiveEventPayload;
 }) {
   const event = toLiveEvent(input);
-  const listenerCount = emitter.listenerCount(input.companyId);
-  console.log(`[live-events] PUBLISH type=${input.type} companyId=${input.companyId} listeners=${listenerCount}`);
   emitter.emit(input.companyId, event);
   return event;
 }
 
 export function subscribeCompanyLiveEvents(companyId: string, listener: LiveEventListener) {
-  console.log(`[live-events] SUBSCRIBE companyId=${companyId} totalListeners=${emitter.listenerCount(companyId) + 1}`);
   emitter.on(companyId, listener);
   return () => emitter.off(companyId, listener);
 }

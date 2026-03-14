@@ -58,7 +58,7 @@ export function handleWsOpen(msg: WsOpen, localPort: number, send: SendFn): void
       return;
     }
     const text = typeof data === "string" ? data : data.toString();
-    logger.info({ wsId: msg.id, len: text.length }, "ws-bridge: local → tunnel message");
+    logger.debug({ wsId: msg.id, len: text.length }, "ws-bridge: local → tunnel message");
     send({
       type: "ws-message",
       id: msg.id,
