@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { Request, RequestHandler } from "express";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentApiKeys, agents, companyMemberships, instanceUserRoles } from "@paperclipai/db";
+import { agentApiKeys, agents, companyMemberships, heartbeatRuns, instanceUserRoles } from "@paperclipai/db";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
@@ -10,6 +10,25 @@ import { logger } from "./logger.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
+}
+
+async function resolveAgentRunId(
+  db: Db,
+  runId: string | null | undefined,
+  agentId: string,
+  companyId: string,
+): Promise<string | undefined> {
+  if (!runId) return undefined;
+  try {
+    const row = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.companyId, companyId)))
+      .then((rows) => rows[0] ?? null);
+    return row ? runId : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 interface ActorMiddlewareOptions {
@@ -62,14 +81,13 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
             userId,
             companyIds: memberships.map((row) => row.companyId),
             isInstanceAdmin: Boolean(roleRow),
-            runId: runIdHeader ?? undefined,
             source: "session",
           };
           next();
           return;
         }
       }
-      if (runIdHeader) req.actor.runId = runIdHeader;
+      // Board and unauthenticated actors do not carry a run ID
       next();
       return;
     }
@@ -110,12 +128,13 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         return;
       }
 
+      const jwtRunId = runIdHeader || claims.run_id || undefined;
       req.actor = {
         type: "agent",
         agentId: claims.sub,
         companyId: claims.company_id,
         keyId: undefined,
-        runId: runIdHeader || claims.run_id || undefined,
+        runId: await resolveAgentRunId(db, jwtRunId, claims.sub, claims.company_id),
         source: "agent_jwt",
       };
       next();
@@ -143,7 +162,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       agentId: key.agentId,
       companyId: key.companyId,
       keyId: key.id,
-      runId: runIdHeader || undefined,
+      runId: await resolveAgentRunId(db, runIdHeader, key.agentId, key.companyId),
       source: "agent_key",
     };
 
