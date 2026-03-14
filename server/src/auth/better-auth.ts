@@ -65,9 +65,19 @@ export function deriveAuthTrustedOrigins(config: Config): string[] {
   return Array.from(trustedOrigins);
 }
 
+const DEV_SECRET = "paperclip-dev-secret";
+
 export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?: string[]): BetterAuthInstance {
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
-  const secret = process.env.BETTER_AUTH_SECRET ?? process.env.PAPERCLIP_AGENT_JWT_SECRET ?? "paperclip-dev-secret";
+  const secret = process.env.BETTER_AUTH_SECRET ?? process.env.PAPERCLIP_AGENT_JWT_SECRET ?? DEV_SECRET;
+
+  if (config.deploymentMode === "authenticated" && secret === DEV_SECRET) {
+    throw new Error(
+      "BETTER_AUTH_SECRET must be set to a strong random value in authenticated deployment mode. " +
+      "The default dev secret cannot be used in production. Set the BETTER_AUTH_SECRET environment variable.",
+    );
+  }
+
   const effectiveTrustedOrigins = trustedOrigins ?? deriveAuthTrustedOrigins(config);
 
   const publicUrl = process.env.PAPERCLIP_PUBLIC_URL ?? baseUrl;

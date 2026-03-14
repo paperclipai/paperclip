@@ -57,6 +57,8 @@ import {
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
+import { BudgetStatusBanner } from "../components/BudgetStatusBanner";
+import { CircuitBreakerBanner } from "../components/CircuitBreakerBanner";
 import { RunTranscriptView, type TranscriptMode } from "../components/transcript/RunTranscriptView";
 import { isUuidLike, type Agent, type HeartbeatRun, type HeartbeatRunEvent, type AgentRuntimeState, type LiveEvent } from "@paperclipai/shared";
 import { redactHomePathUserSegments, redactHomePathUserSegmentsInValue } from "@paperclipai/adapter-utils";
@@ -586,6 +588,10 @@ export function AgentDetail() {
         </p>
       )}
 
+      {/* Cost safety banners */}
+      <BudgetStatusBanner agent={agent} companyId={resolvedCompanyId ?? undefined} />
+      <CircuitBreakerBanner agent={agent} />
+
       {/* Floating Save/Cancel (desktop) */}
       {!isMobile && (
         <div
@@ -832,7 +838,7 @@ function AgentOverview({
       {/* Costs */}
       <div className="space-y-3">
         <h3 className="text-sm font-medium">Costs</h3>
-        <CostsSection runtimeState={runtimeState} runs={runs} />
+        <CostsSection agent={agent} runtimeState={runtimeState} runs={runs} />
       </div>
     </div>
   );
@@ -841,9 +847,11 @@ function AgentOverview({
 /* ---- Costs Section (inline) ---- */
 
 function CostsSection({
+  agent,
   runtimeState,
   runs,
 }: {
+  agent: Agent;
   runtimeState?: AgentRuntimeState;
   runs: HeartbeatRun[];
 }) {
@@ -854,8 +862,41 @@ function CostsSection({
     })
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
+  const hasBudget = agent.budgetMonthlyCents > 0;
+  const budgetUtilPercent = hasBudget
+    ? Math.round((agent.spentMonthlyCents / agent.budgetMonthlyCents) * 100)
+    : 0;
+
   return (
     <div className="space-y-4">
+      {/* Monthly budget utilization */}
+      {hasBudget && (
+        <div className="border border-border rounded-lg p-4 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-muted-foreground">Monthly budget</span>
+            <span className="text-xs text-muted-foreground tabular-nums">{budgetUtilPercent}% used</span>
+          </div>
+          <p className="text-lg font-semibold tabular-nums">
+            {formatCents(agent.spentMonthlyCents)}{" "}
+            <span className="text-sm font-normal text-muted-foreground">
+              / {formatCents(agent.budgetMonthlyCents)}
+            </span>
+          </p>
+          <div className="w-full h-2 bg-muted rounded-full overflow-hidden">
+            <div
+              className={cn(
+                "h-full rounded-full transition-all",
+                budgetUtilPercent >= 100
+                  ? "bg-red-500"
+                  : budgetUtilPercent >= 80
+                    ? "bg-yellow-500"
+                    : "bg-green-500",
+              )}
+              style={{ width: `${Math.min(100, budgetUtilPercent)}%` }}
+            />
+          </div>
+        </div>
+      )}
       {runtimeState && (
         <div className="border border-border rounded-lg p-4">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 tabular-nums">

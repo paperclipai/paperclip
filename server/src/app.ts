@@ -1,4 +1,5 @@
 import express, { Router, type Request as ExpressRequest } from "express";
+import rateLimit from "express-rate-limit";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -110,6 +111,14 @@ export async function createApp(
     });
   });
   if (opts.betterAuthHandler) {
+    const authRateLimiter = rateLimit({
+      windowMs: 15 * 60 * 1000, // 15 minutes
+      limit: 20,
+      standardHeaders: true,
+      legacyHeaders: false,
+      message: { error: "Too many authentication attempts. Please try again later." },
+    });
+    app.use("/api/auth", authRateLimiter);
     app.all("/api/auth/*authPath", opts.betterAuthHandler);
   }
   app.use(llmRoutes(db));

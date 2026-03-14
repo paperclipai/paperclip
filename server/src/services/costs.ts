@@ -2,6 +2,7 @@ import { and, desc, eq, gte, isNotNull, lte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
+import { checkBudgetGate, logBudgetEvent, hasBudgetOverride } from "./budget-guard.js";
 
 export interface CostDateRange {
   from?: Date;
@@ -50,17 +51,29 @@ export function costService(db: Db) {
         .where(eq(agents.id, event.agentId))
         .then((rows) => rows[0] ?? null);
 
-      if (
-        updatedAgent &&
-        updatedAgent.budgetMonthlyCents > 0 &&
-        updatedAgent.spentMonthlyCents >= updatedAgent.budgetMonthlyCents &&
-        updatedAgent.status !== "paused" &&
-        updatedAgent.status !== "terminated"
-      ) {
-        await db
-          .update(agents)
-          .set({ status: "paused", updatedAt: new Date() })
-          .where(eq(agents.id, updatedAgent.id));
+      // Check both agent AND company budgets after recording cost
+      if (updatedAgent) {
+        const budgetResult = await checkBudgetGate(db, updatedAgent);
+        if (!budgetResult.allowed && !hasBudgetOverride(updatedAgent)) {
+          await logBudgetEvent(db, updatedAgent, budgetResult);
+          if (updatedAgent.status !== "paused" && updatedAgent.status !== "terminated") {
+            await db
+              .update(agents)
+              .set({
+                status: "paused",
+                updatedAt: new Date(),
+                metadata: {
+                  ...((updatedAgent.metadata as Record<string, unknown> | null) ?? {}),
+                  pauseReason: "budget_exceeded",
+                  pauseDetail: budgetResult.reason,
+                  pausedAt: new Date().toISOString(),
+                },
+              })
+              .where(eq(agents.id, updatedAgent.id));
+          }
+        } else if (budgetResult.level === "warning") {
+          await logBudgetEvent(db, updatedAgent, budgetResult);
+        }
       }
 
       return event;

@@ -41,3 +41,10 @@ tmp/
 # Playwright
 tests/e2e/test-results/
 tests/e2e/playwright-report/
+
+# Agent and skill directories
+.agent/
+.agents/
+.claude/
+.omc/
+skills-lock.json

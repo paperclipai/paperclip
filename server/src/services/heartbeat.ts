@@ -33,6 +33,9 @@ import {
   releaseRuntimeServicesForRun,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
+import { checkBudgetGate, hasBudgetOverride, logBudgetEvent } from "./budget-guard.js";
+import { checkAndResetIfNewMonth } from "./budget-reset.js";
+import { checkCircuitBreaker, tripCircuitBreaker } from "./circuit-breaker.js";
 import {
   buildExecutionWorkspaceAdapterConfig,
   parseIssueExecutionWorkspaceSettings,
@@ -2234,6 +2237,46 @@ export function heartbeatService(db: Db) {
       throw conflict("Agent is not invokable in its current state", { status: agent.status });
     }
 
+    // ── Budget gate ──────────────────────────────────────────────────
+    const budgetResult = await checkBudgetGate(db, agent);
+    if (!budgetResult.allowed && !hasBudgetOverride(agent)) {
+      await logBudgetEvent(db, agent, budgetResult);
+      // Auto-pause the agent if not already paused
+      if (agent.status !== "paused") {
+        await db
+          .update(agents)
+          .set({
+            status: "paused",
+            updatedAt: new Date(),
+            metadata: {
+              ...((agent.metadata as Record<string, unknown> | null) ?? {}),
+              pauseReason: "budget_exceeded",
+              pauseDetail: budgetResult.reason,
+              pausedAt: new Date().toISOString(),
+            },
+          })
+          .where(eq(agents.id, agent.id));
+      }
+      throw conflict("Agent budget exceeded", {
+        level: budgetResult.level,
+        agentUtilization: budgetResult.agentUtilization,
+        companyUtilization: budgetResult.companyUtilization,
+      });
+    }
+    if (budgetResult.level === "warning") {
+      await logBudgetEvent(db, agent, budgetResult);
+    }
+
+    // ── Circuit breaker gate ─────────────────────────────────────────
+    const breakerResult = await checkCircuitBreaker(db, agent);
+    if (!breakerResult.allowed) {
+      await tripCircuitBreaker(db, agent, breakerResult);
+      throw conflict("Agent circuit breaker tripped", {
+        reason: breakerResult.reason,
+        detail: breakerResult.detail,
+      });
+    }
+
     const policy = parseHeartbeatPolicy(agent);
     const writeSkippedRequest = async (reason: string) => {
       await db.insert(agentWakeupRequests).values({
@@ -2797,6 +2840,7 @@ export function heartbeatService(db: Db) {
     resumeQueuedRuns,
 
     tickTimers: async (now = new Date()) => {
+      await checkAndResetIfNewMonth(db);
       const allAgents = await db.select().from(agents);
       let checked = 0;
       let enqueued = 0;

@@ -25,7 +25,7 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
-import { heartbeatService, reconcilePersistedRuntimeServicesOnStartup } from "./services/index.js";
+import { heartbeatService, reconcilePersistedRuntimeServicesOnStartup, checkAndResetIfNewMonth } from "./services/index.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
@@ -509,6 +509,16 @@ export async function startServer(): Promise<StartedServer> {
     })
     .catch((err) => {
       logger.error({ err }, "startup reconciliation of persisted runtime services failed");
+    });
+
+  void checkAndResetIfNewMonth(db as any)
+    .then((result) => {
+      if (result.reset) {
+        logger.info({ month: result.month }, "monthly budget counters reset at startup");
+      }
+    })
+    .catch((err) => {
+      logger.error({ err }, "startup monthly budget reset check failed");
     });
   
   if (config.heartbeatSchedulerEnabled) {
