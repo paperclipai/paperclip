@@ -79,7 +79,9 @@ export function redactSensitiveText(value: string): string {
     );
     for (const variant of variants) {
       const escaped = escapeRegExp(variant);
-      redacted = redacted.replace(new RegExp(`${escaped}(?=$|[\\\\/])`, "g"), "~");
+      // Treat punctuation/whitespace as valid path boundaries while still
+      // rejecting sibling segments like `/Users/alice2`.
+      redacted = redacted.replace(new RegExp(`${escaped}(?![A-Za-z0-9._-])`, "g"), "~");
     }
   }
 

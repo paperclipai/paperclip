@@ -103,6 +103,13 @@ describe("redaction", () => {
     expect(redactSensitiveText(text)).toBe(text);
   });
 
+  it("redacts exact home-dir roots even when delimited by punctuation", () => {
+    const homeDir = os.homedir().replace(/[\\/]+$/g, "");
+    const text = `cwd='${homeDir}'`;
+
+    expect(redactSensitiveText(text)).toBe("cwd='~'");
+  });
+
   it("redacts the current username in operator-facing text", () => {
     const username = os.userInfo().username;
     const text = `operator ${username} resumed the run`;
