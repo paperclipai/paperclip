@@ -1431,9 +1431,16 @@ export function heartbeatService(db: Db) {
     const taskSession = taskKey
       ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, taskKey)
       : null;
+    // Determine if we should reset the session for this wake
     const resetTaskSession = shouldResetTaskSessionForWake(context);
-    const sessionResetReason = describeSessionResetReason(context);
-    const taskSessionForRun = resetTaskSession ? null : taskSession;
+    // Also reset if the previous run failed (lastError is set)
+    // A failed run's session state is unreliable and should not be resumed
+    const resetDueToPreviousFailure = taskSession?.lastError != null && taskSession.lastError.length > 0;
+    const shouldReset = resetTaskSession || resetDueToPreviousFailure;
+    const sessionResetReason = resetDueToPreviousFailure
+      ? "previous run ended with an error"
+      : describeSessionResetReason(context);
+    const taskSessionForRun = shouldReset ? null : taskSession;
     const previousSessionParams = normalizeSessionParams(
       sessionCodec.deserialize(taskSessionForRun?.sessionParamsJson ?? null),
     );
