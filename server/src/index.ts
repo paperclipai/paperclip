@@ -483,6 +483,7 @@ export async function startServer(): Promise<StartedServer> {
     resendApiKey: config.emailResendApiKey,
     fromAddress: config.emailFromAddress,
   });
+  const server = createServer();
   const app = await createApp(db as any, {
     uiMode,
     serverPort: listenPort,
@@ -496,8 +497,9 @@ export async function startServer(): Promise<StartedServer> {
     emailService,
     betterAuthHandler,
     resolveSession,
+    httpServer: server,
   });
-  const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
+  server.on("request", app as unknown as Parameters<typeof server.on>[1]);
   
   if (listenPort !== config.port) {
     logger.warn(`Requested port is busy; using next free port (requestedPort=${config.port}, selectedPort=${listenPort})`);
