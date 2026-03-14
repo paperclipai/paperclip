@@ -330,11 +330,25 @@ export async function readPaperclipSkillMarkdown(
   }
 }
 
+/**
+ * Create a symlink, falling back to a directory junction on Windows where
+ * symlinks require Developer Mode or admin privileges.  The "junction" type
+ * is silently ignored on non-Windows platforms.
+ */
+export async function symlinkOrJunction(source: string, target: string): Promise<void> {
+  try {
+    await fs.symlink(source, target);
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code !== "EPERM") throw err;
+    // Windows: directory symlinks need admin; junctions don't.
+    await fs.symlink(source, target, "junction");
+  }
+}
+
 export async function ensurePaperclipSkillSymlink(
   source: string,
   target: string,
-  linkSkill: (source: string, target: string) => Promise<void> = (linkSource, linkTarget) =>
-    fs.symlink(linkSource, linkTarget),
+  linkSkill: (source: string, target: string) => Promise<void> = symlinkOrJunction,
 ): Promise<"created" | "repaired" | "skipped"> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
