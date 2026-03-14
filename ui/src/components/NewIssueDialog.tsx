@@ -881,16 +881,30 @@ export function NewIssueDialog() {
                 onConfirm={() => {
                   descriptionEditorRef.current?.focus();
                 }}
-                renderTriggerValue={(option) =>
-                  option ? (
-                    <span className="flex items-center gap-1 truncate max-w-[160px]">
+                renderTriggerValue={(option) => {
+                  if (!option) return <span className="text-muted-foreground">Parent</span>;
+                  const spaceIdx = option.label.indexOf(" ");
+                  const identifier = spaceIdx >= 0 ? option.label.slice(0, spaceIdx) : option.label;
+                  const title = spaceIdx >= 0 ? option.label.slice(spaceIdx + 1) : "";
+                  return (
+                    <span className="flex items-center gap-1 min-w-0 max-w-[180px]">
                       <span className="shrink-0 text-muted-foreground">⤴</span>
-                      <span className="truncate">{option.label}</span>
+                      <span className="shrink-0">{identifier}</span>
+                      {title && <span className="truncate text-muted-foreground">{title}</span>}
                     </span>
-                  ) : (
-                    <span className="text-muted-foreground">Parent</span>
-                  )
-                }
+                  );
+                }}
+                renderOption={(option) => {
+                  const spaceIdx = option.label.indexOf(" ");
+                  const identifier = spaceIdx >= 0 ? option.label.slice(0, spaceIdx) : option.label;
+                  const title = spaceIdx >= 0 ? option.label.slice(spaceIdx + 1) : "";
+                  return (
+                    <span className="flex items-center gap-2 min-w-0 w-full">
+                      <span className="shrink-0 text-muted-foreground text-xs font-mono">{identifier}</span>
+                      {title && <span className="truncate">{title}</span>}
+                    </span>
+                  );
+                }}
               />
             </div>
           </div>
