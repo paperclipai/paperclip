@@ -101,7 +101,7 @@ export function activityService(db: Db) {
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, runId))
         .then((rows) => rows[0] ?? null);
-      if (!run) return [];
+      if (!run) return { companyId: null, issues: [] };
 
       const fromActivity = await db
         .selectDistinctOn([issueIdAsText], {
@@ -128,8 +128,8 @@ export function activityService(db: Db) {
         context && typeof context === "object" && typeof (context as Record<string, unknown>).issueId === "string"
           ? ((context as Record<string, unknown>).issueId as string)
           : null;
-      if (!contextIssueId) return fromActivity;
-      if (fromActivity.some((issue) => issue.issueId === contextIssueId)) return fromActivity;
+      if (!contextIssueId) return { companyId: run.companyId, issues: fromActivity };
+      if (fromActivity.some((issue) => issue.issueId === contextIssueId)) return { companyId: run.companyId, issues: fromActivity };
 
       const fromContext = await db
         .select({
@@ -149,8 +149,8 @@ export function activityService(db: Db) {
         )
         .then((rows) => rows[0] ?? null);
 
-      if (!fromContext) return fromActivity;
-      return [fromContext, ...fromActivity];
+      if (!fromContext) return { companyId: run.companyId, issues: fromActivity };
+      return { companyId: run.companyId, issues: [fromContext, ...fromActivity] };
     },
 
     create: (data: typeof activityLog.$inferInsert) =>

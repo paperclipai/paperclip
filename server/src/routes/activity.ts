@@ -46,6 +46,7 @@ export function activityRoutes(db: Db) {
   router.post("/companies/:companyId/activity", validate(createActivitySchema), async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
     const event = await svc.create({
       companyId,
       ...req.body,
@@ -80,8 +81,13 @@ export function activityRoutes(db: Db) {
 
   router.get("/heartbeat-runs/:runId/issues", async (req, res) => {
     const runId = req.params.runId as string;
-    const result = await svc.issuesForRun(runId);
-    res.json(result);
+    const { companyId, issues } = await svc.issuesForRun(runId);
+    if (!companyId) {
+      res.status(404).json({ error: "Run not found" });
+      return;
+    }
+    assertCompanyAccess(req, companyId);
+    res.json(issues);
   });
 
   return router;
