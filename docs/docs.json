@@ -20,116 +20,357 @@
     }
   ],
   "navigation": {
-    "tabs": [
+    "languages": [
       {
-        "tab": "Get Started",
-        "groups": [
+        "language": "en",
+        "tabs": [
           {
-            "group": "Introduction",
-            "pages": [
-              "start/what-is-paperclip",
-              "start/quickstart",
-              "start/core-concepts",
-              "start/architecture"
-            ]
-          }
-        ]
-      },
-      {
-        "tab": "Guides",
-        "groups": [
-          {
-            "group": "Board Operator",
-            "pages": [
-              "guides/board-operator/dashboard",
-              "guides/board-operator/creating-a-company",
-              "guides/board-operator/managing-agents",
-              "guides/board-operator/org-structure",
-              "guides/board-operator/managing-tasks",
-              "guides/board-operator/approvals",
-              "guides/board-operator/costs-and-budgets",
-              "guides/board-operator/activity-log"
+            "tab": "Get Started",
+            "groups": [
+              {
+                "group": "Introduction",
+                "pages": [
+                  "start/what-is-paperclip",
+                  "start/quickstart",
+                  "start/core-concepts",
+                  "start/architecture"
+                ]
+              }
             ]
           },
           {
-            "group": "Agent Developer",
-            "pages": [
-              "guides/agent-developer/how-agents-work",
-              "guides/agent-developer/heartbeat-protocol",
-              "guides/agent-developer/writing-a-skill",
-              "guides/agent-developer/task-workflow",
-              "guides/agent-developer/comments-and-communication",
-              "guides/agent-developer/handling-approvals",
-              "guides/agent-developer/cost-reporting"
+            "tab": "Guides",
+            "groups": [
+              {
+                "group": "Board Operator",
+                "pages": [
+                  "guides/board-operator/dashboard",
+                  "guides/board-operator/creating-a-company",
+                  "guides/board-operator/managing-agents",
+                  "guides/board-operator/org-structure",
+                  "guides/board-operator/managing-tasks",
+                  "guides/board-operator/approvals",
+                  "guides/board-operator/costs-and-budgets",
+                  "guides/board-operator/activity-log"
+                ]
+              },
+              {
+                "group": "Agent Developer",
+                "pages": [
+                  "guides/agent-developer/how-agents-work",
+                  "guides/agent-developer/heartbeat-protocol",
+                  "guides/agent-developer/writing-a-skill",
+                  "guides/agent-developer/task-workflow",
+                  "guides/agent-developer/comments-and-communication",
+                  "guides/agent-developer/handling-approvals",
+                  "guides/agent-developer/cost-reporting"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "Deploy",
+            "groups": [
+              {
+                "group": "Deployment",
+                "pages": [
+                  "deploy/overview",
+                  "deploy/local-development",
+                  "deploy/tailscale-private-access",
+                  "deploy/docker",
+                  "deploy/deployment-modes",
+                  "deploy/database",
+                  "deploy/secrets",
+                  "deploy/storage",
+                  "deploy/environment-variables"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "Adapters",
+            "groups": [
+              {
+                "group": "Agent Adapters",
+                "pages": [
+                  "adapters/overview",
+                  "adapters/claude-local",
+                  "adapters/codex-local",
+                  "adapters/process",
+                  "adapters/http",
+                  "adapters/creating-an-adapter"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "API Reference",
+            "groups": [
+              {
+                "group": "REST API",
+                "pages": [
+                  "api/overview",
+                  "api/authentication",
+                  "api/companies",
+                  "api/agents",
+                  "api/issues",
+                  "api/approvals",
+                  "api/goals-and-projects",
+                  "api/costs",
+                  "api/secrets",
+                  "api/activity",
+                  "api/dashboard"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "CLI",
+            "groups": [
+              {
+                "group": "CLI Reference",
+                "pages": [
+                  "cli/overview",
+                  "cli/setup-commands",
+                  "cli/control-plane-commands"
+                ]
+              }
             ]
           }
         ]
       },
       {
-        "tab": "Deploy",
-        "groups": [
+        "language": "cn",
+        "tabs": [
           {
-            "group": "Deployment",
-            "pages": [
-              "deploy/overview",
-              "deploy/local-development",
-              "deploy/tailscale-private-access",
-              "deploy/docker",
-              "deploy/deployment-modes",
-              "deploy/database",
-              "deploy/secrets",
-              "deploy/storage",
-              "deploy/environment-variables"
+            "tab": "快速开始",
+            "groups": [
+              {
+                "group": "入门介绍",
+                "pages": [
+                  "zh-CN/start/what-is-paperclip",
+                  "zh-CN/start/quickstart",
+                  "zh-CN/start/core-concepts",
+                  "zh-CN/start/architecture"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "使用指南",
+            "groups": [
+              {
+                "group": "董事会操作员",
+                "pages": [
+                  "cn/guides/board-operator/dashboard",
+                  "cn/guides/board-operator/creating-a-company",
+                  "cn/guides/board-operator/managing-agents",
+                  "cn/guides/board-operator/org-structure",
+                  "cn/guides/board-operator/managing-tasks",
+                  "cn/guides/board-operator/approvals",
+                  "cn/guides/board-operator/costs-and-budgets",
+                  "cn/guides/board-operator/activity-log"
+                ]
+              },
+              {
+                "group": "智能体开发者",
+                "pages": [
+                  "cn/guides/agent-developer/how-agents-work",
+                  "cn/guides/agent-developer/heartbeat-protocol",
+                  "cn/guides/agent-developer/writing-a-skill",
+                  "cn/guides/agent-developer/task-workflow",
+                  "cn/guides/agent-developer/comments-and-communication",
+                  "cn/guides/agent-developer/handling-approvals",
+                  "cn/guides/agent-developer/cost-reporting"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "部署",
+            "groups": [
+              {
+                "group": "部署方式",
+                "pages": [
+                  "cn/deploy/overview",
+                  "cn/deploy/local-development",
+                  "cn/deploy/tailscale-private-access",
+                  "cn/deploy/docker",
+                  "cn/deploy/deployment-modes",
+                  "cn/deploy/database",
+                  "cn/deploy/secrets",
+                  "cn/deploy/storage",
+                  "cn/deploy/environment-variables"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "适配器",
+            "groups": [
+              {
+                "group": "智能体适配器",
+                "pages": [
+                  "cn/adapters/overview",
+                  "cn/adapters/claude-local",
+                  "cn/adapters/codex-local",
+                  "cn/adapters/process",
+                  "cn/adapters/http",
+                  "cn/adapters/creating-an-adapter"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "API 参考",
+            "groups": [
+              {
+                "group": "REST API",
+                "pages": [
+                  "cn/api/overview",
+                  "cn/api/authentication",
+                  "cn/api/companies",
+                  "cn/api/agents",
+                  "cn/api/issues",
+                  "cn/api/approvals",
+                  "cn/api/goals-and-projects",
+                  "cn/api/costs",
+                  "cn/api/secrets",
+                  "cn/api/activity",
+                  "cn/api/dashboard"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "CLI",
+            "groups": [
+              {
+                "group": "CLI 参考",
+                "pages": [
+                  "cn/cli/overview",
+                  "cn/cli/setup-commands",
+                  "cn/cli/control-plane-commands"
+                ]
+              }
             ]
           }
         ]
       },
       {
-        "tab": "Adapters",
-        "groups": [
+        "language": "zh-Hant",
+        "tabs": [
           {
-            "group": "Agent Adapters",
-            "pages": [
-              "adapters/overview",
-              "adapters/claude-local",
-              "adapters/codex-local",
-              "adapters/process",
-              "adapters/http",
-              "adapters/creating-an-adapter"
+            "tab": "快速開始",
+            "groups": [
+              {
+                "group": "入門介紹",
+                "pages": [
+                  "zh-Hant/start/what-is-paperclip",
+                  "zh-Hant/start/quickstart",
+                  "zh-Hant/start/core-concepts",
+                  "zh-Hant/start/architecture"
+                ]
+              }
             ]
-          }
-        ]
-      },
-      {
-        "tab": "API Reference",
-        "groups": [
+          },
           {
-            "group": "REST API",
-            "pages": [
-              "api/overview",
-              "api/authentication",
-              "api/companies",
-              "api/agents",
-              "api/issues",
-              "api/approvals",
-              "api/goals-and-projects",
-              "api/costs",
-              "api/secrets",
-              "api/activity",
-              "api/dashboard"
+            "tab": "使用指南",
+            "groups": [
+              {
+                "group": "董事會操作員",
+                "pages": [
+                  "zh-Hant/guides/board-operator/dashboard",
+                  "zh-Hant/guides/board-operator/creating-a-company",
+                  "zh-Hant/guides/board-operator/managing-agents",
+                  "zh-Hant/guides/board-operator/org-structure",
+                  "zh-Hant/guides/board-operator/managing-tasks",
+                  "zh-Hant/guides/board-operator/approvals",
+                  "zh-Hant/guides/board-operator/costs-and-budgets",
+                  "zh-Hant/guides/board-operator/activity-log"
+                ]
+              },
+              {
+                "group": "智能體開發者",
+                "pages": [
+                  "zh-Hant/guides/agent-developer/how-agents-work",
+                  "zh-Hant/guides/agent-developer/heartbeat-protocol",
+                  "zh-Hant/guides/agent-developer/writing-a-skill",
+                  "zh-Hant/guides/agent-developer/task-workflow",
+                  "zh-Hant/guides/agent-developer/comments-and-communication",
+                  "zh-Hant/guides/agent-developer/handling-approvals",
+                  "zh-Hant/guides/agent-developer/cost-reporting"
+                ]
+              }
             ]
-          }
-        ]
-      },
-      {
-        "tab": "CLI",
-        "groups": [
+          },
           {
-            "group": "CLI Reference",
-            "pages": [
-              "cli/overview",
-              "cli/setup-commands",
-              "cli/control-plane-commands"
+            "tab": "部署",
+            "groups": [
+              {
+                "group": "部署方式",
+                "pages": [
+                  "zh-Hant/deploy/overview",
+                  "zh-Hant/deploy/local-development",
+                  "zh-Hant/deploy/tailscale-private-access",
+                  "zh-Hant/deploy/docker",
+                  "zh-Hant/deploy/deployment-modes",
+                  "zh-Hant/deploy/database",
+                  "zh-Hant/deploy/secrets",
+                  "zh-Hant/deploy/storage",
+                  "zh-Hant/deploy/environment-variables"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "適配器",
+            "groups": [
+              {
+                "group": "智能體適配器",
+                "pages": [
+                  "zh-Hant/adapters/overview",
+                  "zh-Hant/adapters/claude-local",
+                  "zh-Hant/adapters/codex-local",
+                  "zh-Hant/adapters/process",
+                  "zh-Hant/adapters/http",
+                  "zh-Hant/adapters/creating-an-adapter"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "API 參考",
+            "groups": [
+              {
+                "group": "REST API",
+                "pages": [
+                  "zh-Hant/api/overview",
+                  "zh-Hant/api/authentication",
+                  "zh-Hant/api/companies",
+                  "zh-Hant/api/agents",
+                  "zh-Hant/api/issues",
+                  "zh-Hant/api/approvals",
+                  "zh-Hant/api/goals-and-projects",
+                  "zh-Hant/api/costs",
+                  "zh-Hant/api/secrets",
+                  "zh-Hant/api/activity",
+                  "zh-Hant/api/dashboard"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "CLI",
+            "groups": [
+              {
+                "group": "CLI 參考",
+                "pages": [
+                  "zh-Hant/cli/overview",
+                  "zh-Hant/cli/setup-commands",
+                  "zh-Hant/cli/control-plane-commands"
+                ]
+              }
             ]
           }
         ]

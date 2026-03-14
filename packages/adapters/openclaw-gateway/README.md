@@ -1,5 +1,7 @@
 # OpenClaw Gateway Adapter
 
+English | [简体中文](./README.zh-CN.md) | [繁體中文](./README.zh-TW.md)
+
 This document describes how `@paperclipai/adapter-openclaw-gateway` invokes OpenClaw over the Gateway protocol.
 
 ## Transport
