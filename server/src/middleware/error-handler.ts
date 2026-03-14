@@ -57,6 +57,16 @@ export function errorHandler(
     return;
   }
 
+  // Postgres invalid-input errors (e.g. "test" passed as UUID) are client errors, not 500s.
+  if (
+    err instanceof Error &&
+    "code" in err &&
+    (err as { code: string }).code === "22P02"
+  ) {
+    res.status(400).json({ error: err.message });
+    return;
+  }
+
   const rootError = err instanceof Error ? err : new Error(String(err));
   attachErrorContext(
     req,

@@ -19,7 +19,9 @@ export interface LogActivityInput {
 export async function logActivity(db: Db, input: LogActivityInput) {
   const sanitizedDetails = input.details ? sanitizeRecord(input.details) : null;
   const redactedDetails = sanitizedDetails ? redactCurrentUserValue(sanitizedDetails) : null;
-  await db.insert(activityLog).values({
+  const runId = input.runId ?? null;
+
+  const values = {
     companyId: input.companyId,
     actorType: input.actorType,
     actorId: input.actorId,
@@ -27,9 +29,27 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     entityType: input.entityType,
     entityId: input.entityId,
     agentId: input.agentId ?? null,
-    runId: input.runId ?? null,
+    runId,
     details: redactedDetails,
-  });
+  };
+
+  try {
+    await db.insert(activityLog).values(values);
+  } catch (err: unknown) {
+    // If runId references a heartbeat_run that doesn't exist (FK violation),
+    // retry the insert without the runId rather than losing the activity log.
+    const isFkViolation =
+      err != null &&
+      typeof err === "object" &&
+      "code" in err &&
+      (err as { code: string }).code === "23503" &&
+      runId != null;
+    if (isFkViolation) {
+      await db.insert(activityLog).values({ ...values, runId: null });
+    } else {
+      throw err;
+    }
+  }
 
   publishLiveEvent({
     companyId: input.companyId,
@@ -41,7 +61,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
       entityType: input.entityType,
       entityId: input.entityId,
       agentId: input.agentId ?? null,
-      runId: input.runId ?? null,
+      runId,
       details: redactedDetails,
     },
   });

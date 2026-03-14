@@ -139,9 +139,9 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     : [];
   const runtimePrimaryUrl = asString(context.paperclipRuntimePrimaryUrl, "");
   const configuredCwd = asString(config.cwd, "");
-  const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
-  const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
-  const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
+  // Agent's configured CWD always takes priority — it is the operator's
+  // explicit intent and should not be overridden by workspace resolution.
+  const cwd = configuredCwd || workspaceCwd || process.cwd();
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
 
   const envConfig = parseObject(config.env);
@@ -192,8 +192,8 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   if (linkedIssueIds.length > 0) {
     env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
   }
-  if (effectiveWorkspaceCwd) {
-    env.PAPERCLIP_WORKSPACE_CWD = effectiveWorkspaceCwd;
+  if (workspaceCwd) {
+    env.PAPERCLIP_WORKSPACE_CWD = workspaceCwd;
   }
   if (workspaceSource) {
     env.PAPERCLIP_WORKSPACE_SOURCE = workspaceSource;
@@ -344,11 +344,55 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // --append-system-prompt-file (Claude CLI forbids using both flags together).
   let effectiveInstructionsFilePath = instructionsFilePath;
   if (instructionsFilePath) {
-    const instructionsContent = await fs.readFile(instructionsFilePath, "utf-8");
-    const pathDirective = `\nThe above agent instructions were loaded from ${instructionsFilePath}. Resolve any relative file references from ${instructionsFileDir}.`;
-    const combinedPath = path.join(skillsDir, "agent-instructions.md");
-    await fs.writeFile(combinedPath, instructionsContent + pathDirective, "utf-8");
-    effectiveInstructionsFilePath = combinedPath;
+    try {
+      const instructionsContent = await fs.readFile(instructionsFilePath, "utf-8");
+      const pathDirective = `\nThe above agent instructions were loaded from ${instructionsFilePath}. Resolve any relative file references from ${instructionsFileDir}.`;
+      const combinedPath = path.join(skillsDir, "agent-instructions.md");
+      await fs.writeFile(combinedPath, instructionsContent + pathDirective, "utf-8");
+      effectiveInstructionsFilePath = combinedPath;
+    } catch (err) {
+      await onLog(
+        "stderr",
+        `[paperclip] Warning: could not read instructionsFilePath "${instructionsFilePath}": ${err instanceof Error ? err.message : String(err)}. Continuing without injected instructions.\n`,
+      );
+      effectiveInstructionsFilePath = "";
+    }
+  }
+
+  // Write a sourceable env file so agents can `source` it in bash commands.
+  // Claude Code's Bash tool does not propagate parent process env vars, so
+  // agents need this file to access PAPERCLIP_* variables in shell commands.
+  const envFilePath = path.join(skillsDir, ".paperclip-env");
+  const envFileLines = Object.entries(env)
+    .filter(([k]) => k.startsWith("PAPERCLIP_"))
+    .map(([k, v]) => `export ${k}='${v.replace(/'/g, "'\\''")}'`)
+    .join("\n");
+  await fs.writeFile(envFilePath, envFileLines + "\n", "utf-8");
+
+  // Also append env reference to the instructions file (or create one) so the
+  // agent knows about the env file and the literal values.
+  const envBlock = [
+    "\n\n## Paperclip Runtime Environment",
+    "",
+    "Claude Code's Bash tool does NOT inherit process env vars. To use PAPERCLIP_* vars in bash, either:",
+    `1. Run \`source "${envFilePath}"\` at the start of your bash command`,
+    "2. Or use these literal values directly:",
+    "",
+    "```",
+    ...Object.entries(env)
+      .filter(([k]) => k.startsWith("PAPERCLIP_") && k !== "PAPERCLIP_API_KEY")
+      .map(([k, v]) => `${k}=${v}`),
+    ...(env.PAPERCLIP_API_KEY ? [`PAPERCLIP_API_KEY=<set, use source command above>`] : []),
+    "```",
+  ].join("\n");
+
+  if (effectiveInstructionsFilePath) {
+    await fs.appendFile(effectiveInstructionsFilePath, envBlock, "utf-8");
+  } else {
+    // No instructions file — create a minimal one just for env info
+    const envInstructionsPath = path.join(skillsDir, "agent-instructions.md");
+    await fs.writeFile(envInstructionsPath, envBlock.trim() + "\n", "utf-8");
+    effectiveInstructionsFilePath = envInstructionsPath;
   }
 
   const runtimeSessionParams = parseObject(runtime.sessionParams);
