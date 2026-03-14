@@ -46,7 +46,7 @@ export type {
   CompanySecret,
   SecretProviderDescriptor,
 } from "./secrets.js";
-export type { CostEvent, CostSummary, CostByAgent } from "./cost.js";
+export type { CostEvent, CostSummary, CostByAgent, CostByProviderModel, CostByAgentModel, CostWindowSpendRow, CostByProject } from "./cost.js";
 export type {
   HeartbeatRun,
   HeartbeatRunEvent,
@@ -66,6 +66,7 @@ export type {
   JoinRequest,
   InstanceUserRoleGrant,
 } from "./access.js";
+export type { QuotaWindow, ProviderQuotaResult } from "./quota.js";
 export type {
   CompanyPortabilityInclude,
   CompanyPortabilitySecretRequirement,

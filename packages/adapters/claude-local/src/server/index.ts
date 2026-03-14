@@ -6,6 +6,14 @@ export {
   isClaudeMaxTurnsResult,
   isClaudeUnknownSessionError,
 } from "./parse.js";
+export {
+  getQuotaWindows,
+  readClaudeToken,
+  fetchClaudeQuota,
+  toPercent,
+  fetchWithTimeout,
+  claudeConfigDir,
+} from "./quota.js";
 import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
 
 function readNonEmptyString(value: unknown): string | null {

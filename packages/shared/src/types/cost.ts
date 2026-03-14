@@ -34,3 +34,47 @@ export interface CostByAgent {
   subscriptionInputTokens: number;
   subscriptionOutputTokens: number;
 }
+
+export interface CostByProviderModel {
+  provider: string;
+  model: string;
+  costCents: number;
+  inputTokens: number;
+  outputTokens: number;
+  apiRunCount: number;
+  subscriptionRunCount: number;
+  subscriptionInputTokens: number;
+  subscriptionOutputTokens: number;
+}
+
+/** per-agent breakdown by provider + model, for identifying token-hungry agents */
+export interface CostByAgentModel {
+  agentId: string;
+  agentName: string | null;
+  provider: string;
+  model: string;
+  costCents: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+/** spend per provider for a fixed rolling time window */
+export interface CostWindowSpendRow {
+  provider: string;
+  /** duration label, e.g. "5h", "24h", "7d" */
+  window: string;
+  /** rolling window duration in hours */
+  windowHours: number;
+  costCents: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+/** cost attributed to a project via heartbeat run → activity log → issue → project chain */
+export interface CostByProject {
+  projectId: string | null;
+  projectName: string | null;
+  costCents: number;
+  inputTokens: number;
+  outputTokens: number;
+}

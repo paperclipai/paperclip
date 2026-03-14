@@ -99,6 +99,10 @@ export type {
   CostEvent,
   CostSummary,
   CostByAgent,
+  CostByProviderModel,
+  CostByAgentModel,
+  CostWindowSpendRow,
+  CostByProject,
   HeartbeatRun,
   HeartbeatRunEvent,
   AgentRuntimeState,
@@ -134,6 +138,8 @@ export type {
   AgentEnvConfig,
   CompanySecret,
   SecretProviderDescriptor,
+  QuotaWindow,
+  ProviderQuotaResult,
 } from "./types/index.js";
 
 export {

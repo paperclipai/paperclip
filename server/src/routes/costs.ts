@@ -4,6 +4,8 @@ import { createCostEventSchema, updateBudgetSchema } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { costService, companyService, agentService, logActivity } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { fetchAllQuotaWindows } from "../services/quota-windows.js";
+import { badRequest } from "../errors.js";
 
 export function costRoutes(db: Db) {
   const router = Router();
@@ -41,8 +43,12 @@ export function costRoutes(db: Db) {
   });
 
   function parseDateRange(query: Record<string, unknown>) {
-    const from = query.from ? new Date(query.from as string) : undefined;
-    const to = query.to ? new Date(query.to as string) : undefined;
+    const fromRaw = query.from as string | undefined;
+    const toRaw = query.to as string | undefined;
+    const from = fromRaw ? new Date(fromRaw) : undefined;
+    const to = toRaw ? new Date(toRaw) : undefined;
+    if (from && isNaN(from.getTime())) throw badRequest("invalid 'from' date");
+    if (to && isNaN(to.getTime())) throw badRequest("invalid 'to' date");
     return (from || to) ? { from, to } : undefined;
   }
 
@@ -60,6 +66,44 @@ export function costRoutes(db: Db) {
     const range = parseDateRange(req.query);
     const rows = await costs.byAgent(companyId, range);
     res.json(rows);
+  });
+
+  router.get("/companies/:companyId/costs/by-agent-model", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const range = parseDateRange(req.query);
+    const rows = await costs.byAgentModel(companyId, range);
+    res.json(rows);
+  });
+
+  router.get("/companies/:companyId/costs/by-provider", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const range = parseDateRange(req.query);
+    const rows = await costs.byProvider(companyId, range);
+    res.json(rows);
+  });
+
+  router.get("/companies/:companyId/costs/window-spend", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const rows = await costs.windowSpend(companyId);
+    res.json(rows);
+  });
+
+  router.get("/companies/:companyId/costs/quota-windows", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    // validate companyId resolves to a real company so the "__none__" sentinel
+    // and any forged ids are rejected before we touch provider credentials
+    const company = await companies.getById(companyId);
+    if (!company) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
+    const results = await fetchAllQuotaWindows();
+    res.json(results);
   });
 
   router.get("/companies/:companyId/costs/by-project", async (req, res) => {
