@@ -237,7 +237,16 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     env.PAPERCLIP_API_KEY = authToken;
   }
 
+  // Build the full runtime environment by merging process.env with Paperclip
+  // variables. We must return this merged env (not just the Paperclip vars)
+  // because runChildProcess() also merges with process.env — if we only return
+  // the Paperclip vars, any nesting-detection env vars from the parent process
+  // get re-introduced by that second merge.
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  // Remove nesting-detection variables so the spawned Claude CLI doesn't think
+  // it's running inside another Claude Code session.
+  delete runtimeEnv.CLAUDECODE;
+  delete runtimeEnv.CLAUDE_CODE_ENTRYPOINT;
   await ensureCommandResolvable(command, cwd, runtimeEnv);
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
@@ -254,7 +263,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     workspaceId,
     workspaceRepoUrl,
     workspaceRepoRef,
-    env,
+    env: runtimeEnv,
     timeoutSec,
     graceSec,
     extraArgs,
