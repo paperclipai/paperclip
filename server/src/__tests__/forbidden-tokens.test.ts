@@ -1,10 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-
-const {
+import {
   resolveDynamicForbiddenTokens,
   resolveForbiddenTokens,
   runForbiddenTokenCheck,
-} = await import("../../../scripts/check-forbidden-tokens.mjs");
+} from "../../../scripts/check-forbidden-tokens-lib.js";
 
 describe("forbidden token check", () => {
   it("derives username tokens without relying on whoami", () => {

@@ -5,7 +5,7 @@ import path from "node:path";
 import { testEnvironment } from "@paperclipai/adapter-gemini-local/server";
 
 async function writeFakeGeminiCommand(binDir: string, argsCapturePath: string): Promise<string> {
-  const commandPath = path.join(binDir, "gemini");
+  const scriptPath = path.join(binDir, "gemini.js");
   const script = `#!/usr/bin/env node
 const fs = require("node:fs");
 const outPath = process.env.PAPERCLIP_TEST_ARGS_PATH;
@@ -22,6 +22,14 @@ console.log(JSON.stringify({
   result: "hello",
 }));
 `;
+  await fs.writeFile(scriptPath, script, "utf8");
+  if (process.platform === "win32") {
+    const commandPath = path.join(binDir, "gemini.cmd");
+    const scriptWin = scriptPath.replaceAll("/", "\\");
+    await fs.writeFile(commandPath, `@echo off\r\n"${process.execPath}" "${scriptWin}" %*\r\n`, "utf8");
+    return commandPath;
+  }
+  const commandPath = path.join(binDir, "gemini");
   await fs.writeFile(commandPath, script, "utf8");
   await fs.chmod(commandPath, 0o755);
   return commandPath;

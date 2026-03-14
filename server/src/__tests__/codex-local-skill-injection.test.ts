@@ -30,6 +30,10 @@ async function createCustomSkill(root: string, skillName: string) {
   );
 }
 
+async function linkDirectory(source: string, target: string): Promise<void> {
+  await fs.symlink(source, target, process.platform === "win32" ? "junction" : undefined);
+}
+
 describe("codex local adapter skill injection", () => {
   const cleanupDirs = new Set<string>();
 
@@ -48,7 +52,7 @@ describe("codex local adapter skill injection", () => {
 
     await createPaperclipRepoSkill(currentRepo, "paperclip");
     await createPaperclipRepoSkill(oldRepo, "paperclip");
-    await fs.symlink(path.join(oldRepo, "skills", "paperclip"), path.join(skillsHome, "paperclip"));
+    await linkDirectory(path.join(oldRepo, "skills", "paperclip"), path.join(skillsHome, "paperclip"));
 
     const logs: string[] = [];
     await ensureCodexSkillsInjected(
@@ -77,7 +81,7 @@ describe("codex local adapter skill injection", () => {
 
     await createPaperclipRepoSkill(currentRepo, "paperclip");
     await createCustomSkill(customRoot, "paperclip");
-    await fs.symlink(path.join(customRoot, "custom", "paperclip"), path.join(skillsHome, "paperclip"));
+    await linkDirectory(path.join(customRoot, "custom", "paperclip"), path.join(skillsHome, "paperclip"));
 
     await ensureCodexSkillsInjected(async () => {}, {
       skillsHome,
