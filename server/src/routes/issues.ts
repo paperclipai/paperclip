@@ -75,8 +75,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
     return false;
   }
 
-  function canCreateAgentsLegacy(agent: { permissions: Record<string, unknown> | null | undefined; role: string }) {
-    if (agent.role === "ceo") return true;
+  const C_SUITE_ROLES = new Set(["ceo", "cto", "cmo", "cfo"]);
+
+  function canAssignTasksImplicitly(agent: { permissions: Record<string, unknown> | null | undefined; role: string }) {
+    if (C_SUITE_ROLES.has(agent.role)) return true;
     if (!agent.permissions || typeof agent.permissions !== "object") return false;
     return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
   }
@@ -94,7 +96,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       const allowedByGrant = await access.hasPermission(companyId, "agent", req.actor.agentId, "tasks:assign");
       if (allowedByGrant) return;
       const actorAgent = await agentsSvc.getById(req.actor.agentId);
-      if (actorAgent && actorAgent.companyId === companyId && canCreateAgentsLegacy(actorAgent)) return;
+      if (actorAgent && actorAgent.companyId === companyId && canAssignTasksImplicitly(actorAgent)) return;
       throw forbidden("Missing permission: tasks:assign");
     }
     throw unauthorized();
@@ -425,11 +427,20 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
 
     const actor = getActorInfo(req);
-    const issue = await svc.create(companyId, {
-      ...req.body,
-      createdByAgentId: actor.agentId,
-      createdByUserId: actor.actorType === "user" ? actor.actorId : null,
-    });
+    let issue;
+    try {
+      issue = await svc.create(companyId, {
+        ...req.body,
+        createdByAgentId: actor.agentId,
+        createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      });
+    } catch (err) {
+      if (err instanceof HttpError && err.status === 409) {
+        res.status(409).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
 
     await logActivity(db, {
       companyId,

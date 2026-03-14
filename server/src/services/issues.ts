@@ -26,6 +26,15 @@ import { redactCurrentUserText } from "../log-redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getDefaultCompanyGoal } from "./goals.js";
 
+const ISSUE_IDENTIFIER_CONSTRAINT = "issues_identifier_idx";
+const MAX_IDENTIFIER_RETRIES = 3;
+
+function isIdentifierConflict(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const e = err as Record<string, unknown>;
+  return e.code === "23505" && e.constraint_name === ISSUE_IDENTIFIER_CONSTRAINT;
+}
+
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 
 function assertTransition(from: string, to: string) {
@@ -650,59 +659,82 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
-      return db.transaction(async (tx) => {
-        const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
-        let executionWorkspaceSettings =
-          (issueData.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? null;
-        if (executionWorkspaceSettings == null && issueData.projectId) {
-          const project = await tx
-            .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
-            .from(projects)
-            .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, companyId)))
-            .then((rows) => rows[0] ?? null);
-          executionWorkspaceSettings =
-            defaultIssueExecutionWorkspaceSettingsForProject(
-              parseProjectExecutionWorkspacePolicy(project?.executionWorkspacePolicy),
-            ) as Record<string, unknown> | null;
-        }
-        const [company] = await tx
-          .update(companies)
-          .set({ issueCounter: sql`${companies.issueCounter} + 1` })
-          .where(eq(companies.id, companyId))
-          .returning({ issueCounter: companies.issueCounter, issuePrefix: companies.issuePrefix });
 
-        const issueNumber = company.issueCounter;
-        const identifier = `${company.issuePrefix}-${issueNumber}`;
+      for (let attempt = 0; attempt < MAX_IDENTIFIER_RETRIES; attempt++) {
+        try {
+          return await db.transaction(async (tx) => {
+            const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
+            let executionWorkspaceSettings =
+              (issueData.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? null;
+            if (executionWorkspaceSettings == null && issueData.projectId) {
+              const project = await tx
+                .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+                .from(projects)
+                .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, companyId)))
+                .then((rows) => rows[0] ?? null);
+              executionWorkspaceSettings =
+                defaultIssueExecutionWorkspaceSettingsForProject(
+                  parseProjectExecutionWorkspacePolicy(project?.executionWorkspacePolicy),
+                ) as Record<string, unknown> | null;
+            }
+            const [company] = await tx
+              .update(companies)
+              .set({ issueCounter: sql`${companies.issueCounter} + 1` })
+              .where(eq(companies.id, companyId))
+              .returning({ issueCounter: companies.issueCounter, issuePrefix: companies.issuePrefix });
 
-        const values = {
-          ...issueData,
-          goalId: resolveIssueGoalId({
-            projectId: issueData.projectId,
-            goalId: issueData.goalId,
-            defaultGoalId: defaultCompanyGoal?.id ?? null,
-          }),
-          ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
-          companyId,
-          issueNumber,
-          identifier,
-        } as typeof issues.$inferInsert;
-        if (values.status === "in_progress" && !values.startedAt) {
-          values.startedAt = new Date();
-        }
-        if (values.status === "done") {
-          values.completedAt = new Date();
-        }
-        if (values.status === "cancelled") {
-          values.cancelledAt = new Date();
-        }
+            const issueNumber = company.issueCounter;
+            const identifier = `${company.issuePrefix}-${issueNumber}`;
 
-        const [issue] = await tx.insert(issues).values(values).returning();
-        if (inputLabelIds) {
-          await syncIssueLabels(issue.id, companyId, inputLabelIds, tx);
+            const values = {
+              ...issueData,
+              goalId: resolveIssueGoalId({
+                projectId: issueData.projectId,
+                goalId: issueData.goalId,
+                defaultGoalId: defaultCompanyGoal?.id ?? null,
+              }),
+              ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
+              companyId,
+              issueNumber,
+              identifier,
+            } as typeof issues.$inferInsert;
+            if (values.status === "in_progress" && !values.startedAt) {
+              values.startedAt = new Date();
+            }
+            if (values.status === "done") {
+              values.completedAt = new Date();
+            }
+            if (values.status === "cancelled") {
+              values.cancelledAt = new Date();
+            }
+
+            const [issue] = await tx.insert(issues).values(values).returning();
+            if (inputLabelIds) {
+              await syncIssueLabels(issue.id, companyId, inputLabelIds, tx);
+            }
+            const [enriched] = await withIssueLabels(tx, [issue]);
+            return enriched;
+          });
+        } catch (err) {
+          if (isIdentifierConflict(err) && attempt < MAX_IDENTIFIER_RETRIES - 1) {
+            // Counter is behind existing issues (e.g. a prior transaction committed then the
+            // process was killed before responding). Resync to the current max and retry.
+            await db
+              .update(companies)
+              .set({
+                issueCounter: sql`GREATEST(${companies.issueCounter}, (SELECT COALESCE(MAX(issue_number), 0) FROM ${issues} WHERE company_id = ${companyId}))`,
+              })
+              .where(eq(companies.id, companyId));
+            continue;
+          }
+          if (isIdentifierConflict(err)) {
+            throw conflict("Issue identifier collision — counter could not be resynced after retries");
+          }
+          throw err;
         }
-        const [enriched] = await withIssueLabels(tx, [issue]);
-        return enriched;
-      });
+      }
+      // Unreachable but satisfies TypeScript
+      throw conflict("Issue creation failed after retries");
     },
 
     update: async (id: string, data: Partial<typeof issues.$inferInsert> & { labelIds?: string[] }) => {
