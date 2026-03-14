@@ -273,7 +273,7 @@ async function runWorkspaceCommand(input: {
   env: NodeJS.ProcessEnv;
   label: string;
 }) {
-  const shell = process.env.SHELL?.trim() || "/bin/sh";
+  const shell = process.env.SHELL?.trim() || (process.platform === "win32" ? "sh" : "/bin/sh");
   const proc = await new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve, reject) => {
     const child = spawn(shell, ["-c", input.command], {
       cwd: input.cwd,
@@ -693,7 +693,7 @@ async function startLocalRuntimeService(input: {
     const portEnvKey = asString(portConfig.envKey, "PORT");
     env[portEnvKey] = String(port);
   }
-  const shell = process.env.SHELL?.trim() || "/bin/sh";
+  const shell = process.env.SHELL?.trim() || (process.platform === "win32" ? "sh" : "/bin/sh");
   const child = spawn(shell, ["-lc", command], {
     cwd: serviceCwd,
     env,
