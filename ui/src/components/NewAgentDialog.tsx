@@ -26,6 +26,7 @@ type AdvancedAdapterType =
   | "claude_local"
   | "codex_local"
   | "gemini_local"
+  | "kiro_local"
   | "opencode_local"
   | "pi_local"
   | "cursor"
@@ -57,6 +58,12 @@ const ADVANCED_ADAPTER_OPTIONS: Array<{
     label: "Gemini CLI",
     icon: Gem,
     desc: "Local Gemini agent",
+  },
+  {
+    value: "kiro_local",
+    label: "Kiro CLI",
+    icon: Terminal,
+    desc: "Local Kiro agent",
   },
   {
     value: "opencode_local",
