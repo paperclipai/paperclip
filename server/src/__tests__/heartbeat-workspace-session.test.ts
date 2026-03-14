@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
   resolveRuntimeSessionParamsForWorkspace,
+  shouldClearTaskSessionAfterRun,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
 } from "../services/heartbeat.ts";
@@ -149,5 +150,107 @@ describe("shouldResetTaskSessionForWake", () => {
         wakeTriggerDetail: "callback",
       }),
     ).toBe(false);
+  });
+});
+
+describe("shouldClearTaskSessionAfterRun", () => {
+  // --- The core bug fix: non-success outcomes MUST clear the session ---
+
+  it("clears session when outcome is failed", () => {
+    expect(
+      shouldClearTaskSessionAfterRun({
+        outcome: "failed",
+        hasSessionParams: true,
+        hasSessionDisplayId: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("clears session when outcome is timed_out", () => {
+    expect(
+      shouldClearTaskSessionAfterRun({
+        outcome: "timed_out",
+        hasSessionParams: true,
+        hasSessionDisplayId: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("clears session when outcome is cancelled", () => {
+    expect(
+      shouldClearTaskSessionAfterRun({
+        outcome: "cancelled",
+        hasSessionParams: true,
+        hasSessionDisplayId: true,
+      }),
+    ).toBe(true);
+  });
+
+  // --- Failed outcomes clear even when adapter says keep session ---
+
+  it("clears session on failure even when clearSession is false", () => {
+    expect(
+      shouldClearTaskSessionAfterRun({
+        outcome: "failed",
+        clearSession: false,
+        hasSessionParams: true,
+        hasSessionDisplayId: true,
+      }),
+    ).toBe(true);
+  });
+
+  // --- Successful runs: preserve session ---
+
+  it("preserves session on success with valid params", () => {
+    expect(
+      shouldClearTaskSessionAfterRun({
+        outcome: "succeeded",
+        hasSessionParams: true,
+        hasSessionDisplayId: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("preserves session on success with params but no displayId", () => {
+    expect(
+      shouldClearTaskSessionAfterRun({
+        outcome: "succeeded",
+        hasSessionParams: true,
+        hasSessionDisplayId: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("preserves session on success with displayId but no params", () => {
+    expect(
+      shouldClearTaskSessionAfterRun({
+        outcome: "succeeded",
+        hasSessionParams: false,
+        hasSessionDisplayId: true,
+      }),
+    ).toBe(false);
+  });
+
+  // --- Successful runs: clear when adapter requests or no session state ---
+
+  it("clears session on success when adapter requests clearSession", () => {
+    expect(
+      shouldClearTaskSessionAfterRun({
+        outcome: "succeeded",
+        clearSession: true,
+        hasSessionParams: true,
+        hasSessionDisplayId: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("clears session on success when no params and no displayId", () => {
+    expect(
+      shouldClearTaskSessionAfterRun({
+        outcome: "succeeded",
+        hasSessionParams: false,
+        hasSessionDisplayId: false,
+      }),
+    ).toBe(true);
   });
 });

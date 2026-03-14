@@ -363,6 +363,23 @@ export function shouldResetTaskSessionForWake(
   return false;
 }
 
+/**
+ * Determines whether a completed run should clear its task session.
+ * Returns true when the session should be deleted (agent starts fresh next run).
+ */
+export function shouldClearTaskSessionAfterRun(input: {
+  outcome: "succeeded" | "failed" | "cancelled" | "timed_out";
+  clearSession?: boolean;
+  hasSessionParams: boolean;
+  hasSessionDisplayId: boolean;
+}): boolean {
+  return (
+    input.outcome !== "succeeded" ||
+    !!input.clearSession ||
+    (!input.hasSessionParams && !input.hasSessionDisplayId)
+  );
+}
+
 function describeSessionResetReason(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
@@ -1258,6 +1275,19 @@ export function heartbeatService(db: Db) {
         });
         await releaseIssueExecutionAndPromote(updatedRun);
       }
+
+      // Clear any stale task session so the next run starts fresh.
+      const taskKey = runTaskKey(run);
+      if (taskKey) {
+        const agent = await getAgent(run.agentId);
+        if (agent) {
+          await clearTaskSessions(agent.companyId, agent.id, {
+            taskKey,
+            adapterType: agent.adapterType,
+          });
+        }
+      }
+
       await finalizeAgentStatus(run.agentId, "failed");
       await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
@@ -1932,7 +1962,14 @@ export function heartbeatService(db: Db) {
           legacySessionId: nextSessionState.legacySessionId,
         }, normalizedUsage);
         if (taskKey) {
-          if (adapterResult.clearSession || (!nextSessionState.params && !nextSessionState.displayId)) {
+          if (
+            shouldClearTaskSessionAfterRun({
+              outcome,
+              clearSession: adapterResult.clearSession,
+              hasSessionParams: !!nextSessionState.params,
+              hasSessionDisplayId: !!nextSessionState.displayId,
+            })
+          ) {
             await clearTaskSessions(agent.companyId, agent.id, {
               taskKey,
               adapterType: agent.adapterType,
@@ -1946,7 +1983,7 @@ export function heartbeatService(db: Db) {
               sessionParamsJson: nextSessionState.params,
               sessionDisplayId: nextSessionState.displayId,
               lastRunId: finalizedRun.id,
-              lastError: outcome === "succeeded" ? null : (adapterResult.errorMessage ?? "run_failed"),
+              lastError: null,
             });
           }
         }
@@ -1998,16 +2035,12 @@ export function heartbeatService(db: Db) {
           legacySessionId: runtimeForAdapter.sessionId,
         });
 
-        if (taskKey && (previousSessionParams || previousSessionDisplayId || taskSession)) {
-          await upsertTaskSession({
-            companyId: agent.companyId,
-            agentId: agent.id,
-            adapterType: agent.adapterType,
+        if (taskKey) {
+          // Clear the stale session so the next run starts fresh
+          // rather than resuming a corrupt/incomplete session.
+          await clearTaskSessions(agent.companyId, agent.id, {
             taskKey,
-            sessionParamsJson: previousSessionParams,
-            sessionDisplayId: previousSessionDisplayId,
-            lastRunId: failedRun.id,
-            lastError: message,
+            adapterType: agent.adapterType,
           });
         }
       }
