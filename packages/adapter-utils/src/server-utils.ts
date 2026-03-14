@@ -213,6 +213,11 @@ function quoteForCmd(arg: string) {
   return /[\s"&<>|^()]/.test(escaped) ? `"${escaped}"` : escaped;
 }
 
+function hasNonEmptyEnvValue(env: NodeJS.ProcessEnv, key: string): boolean {
+  const value = env[key];
+  return typeof value === "string" && value.trim().length > 0;
+}
+
 async function resolveSpawnTarget(
   command: string,
   args: string[],
@@ -249,6 +254,21 @@ export function ensurePathInEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   if (typeof env.PATH === "string" && env.PATH.length > 0) return env;
   if (typeof env.Path === "string" && env.Path.length > 0) return env;
   return { ...env, PATH: defaultPathForPlatform() };
+}
+
+export function buildChildProcessEnv(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): NodeJS.ProcessEnv {
+  const next = ensurePathInEnv({ ...env });
+  if (platform !== "win32") return next;
+  if (!hasNonEmptyEnvValue(next, "PYTHONUTF8")) {
+    next.PYTHONUTF8 = "1";
+  }
+  if (!hasNonEmptyEnvValue(next, "PYTHONIOENCODING")) {
+    next.PYTHONIOENCODING = "utf-8";
+  }
+  return next;
 }
 
 export async function ensureAbsoluteDirectory(
@@ -461,7 +481,7 @@ export async function runChildProcess(
       delete rawMerged[key];
     }
 
-    const mergedEnv = ensurePathInEnv(rawMerged);
+    const mergedEnv = buildChildProcessEnv(rawMerged);
     void resolveSpawnTarget(command, args, opts.cwd, mergedEnv)
       .then((target) => {
         const child = spawn(target.command, target.args, {
