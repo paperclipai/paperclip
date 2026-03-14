@@ -258,6 +258,20 @@ function formatCommandForDisplay(command: string, args: string[]) {
     .join(" ");
 }
 
+/**
+ * Build a process env that injects safe.directory=* via one-shot GIT_CONFIG
+ * env vars so git doesn't reject cross-filesystem paths (e.g. WSL mounts
+ * accessed from Windows). Only affects the spawned subprocess.
+ */
+function buildGitSafeDirectoryEnv(): NodeJS.ProcessEnv {
+  const gitEnv = { ...process.env } as Record<string, string>;
+  const existingCount = parseInt(gitEnv.GIT_CONFIG_COUNT ?? "0", 10) || 0;
+  gitEnv.GIT_CONFIG_COUNT = String(existingCount + 1);
+  gitEnv[`GIT_CONFIG_KEY_${existingCount}`] = "safe.directory";
+  gitEnv[`GIT_CONFIG_VALUE_${existingCount}`] = "*";
+  return gitEnv;
+}
+
 async function executeProcess(input: {
   command: string;
   args: string[];
@@ -289,6 +303,7 @@ async function runGit(args: string[], cwd: string): Promise<string> {
     command: "git",
     args,
     cwd,
+    env: buildGitSafeDirectoryEnv(),
   });
   if (proc.code !== 0) {
     throw new Error(proc.stderr.trim() || proc.stdout.trim() || `git ${args.join(" ")} failed`);
