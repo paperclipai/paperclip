@@ -31,6 +31,32 @@ import { getDefaultCompanyGoal } from "./goals.js";
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 
+/**
+ * Check whether `@name` appears as a standalone mention in `body`.
+ * The `@` must be at the start of the string or preceded by a non-alphanumeric
+ * character (whitespace, markdown formatting, punctuation). The name must be
+ * followed by whitespace, punctuation, markdown formatting, or end of string.
+ * Matching is case-insensitive. Supports multi-word agent names.
+ */
+export function bodyContainsMention(body: string, name: string): boolean {
+  const bodyLower = body.toLowerCase();
+  const needle = `@${name.toLowerCase()}`;
+  let idx = bodyLower.indexOf(needle);
+  while (idx !== -1) {
+    // Allow @ after whitespace, start-of-string, or common markdown/punctuation
+    // characters (blockquote >, parens, bold/italic markers, etc.) to avoid
+    // false negatives while still rejecting email-style word@Name patterns.
+    if (idx === 0 || /[^a-z0-9]/.test(bodyLower[idx - 1])) {
+      const afterPos = idx + needle.length;
+      if (afterPos >= bodyLower.length || /[\s,!?.;:\])}>*_~`]/.test(bodyLower[afterPos])) {
+        return true;
+      }
+    }
+    idx = bodyLower.indexOf(needle, idx + 1);
+  }
+  return false;
+}
+
 function assertTransition(from: string, to: string) {
   if (from === to) return;
   if (!ALL_ISSUE_STATUSES.includes(to)) {
@@ -1351,14 +1377,10 @@ export function issueService(db: Db) {
       }),
 
     findMentionedAgents: async (companyId: string, body: string) => {
-      const re = /\B@([^\s@,!?.]+)/g;
-      const tokens = new Set<string>();
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(body)) !== null) tokens.add(m[1].toLowerCase());
-      if (tokens.size === 0) return [];
+      if (!body.includes("@")) return [];
       const rows = await db.select({ id: agents.id, name: agents.name })
         .from(agents).where(eq(agents.companyId, companyId));
-      return rows.filter(a => tokens.has(a.name.toLowerCase())).map(a => a.id);
+      return rows.filter(a => bodyContainsMention(body, a.name)).map(a => a.id);
     },
 
     findMentionedProjectIds: async (issueId: string) => {
