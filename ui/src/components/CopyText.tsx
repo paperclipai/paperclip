@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
+import { copyTextToClipboard } from "@/lib/clipboard";
 
 interface CopyTextProps {
   text: string;
@@ -18,7 +19,8 @@ export function CopyText({ text, children, className, copiedLabel = "Copied!" }:
 
   const handleClick = useCallback(async () => {
     try {
-      await navigator.clipboard.writeText(text);
+      const copied = await copyTextToClipboard(text);
+      if (!copied) throw new Error("copy failed");
       setLabel(copiedLabel);
     } catch {
       setLabel("Copy failed");
