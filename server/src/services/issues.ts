@@ -18,7 +18,7 @@ import {
   projectWorkspaces,
   projects,
 } from "@paperclipai/db";
-import { extractProjectMentionIds } from "@paperclipai/shared";
+import { extractProjectMentionIds, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
@@ -1351,14 +1351,31 @@ export function issueService(db: Db) {
       }),
 
     findMentionedAgents: async (companyId: string, body: string) => {
+      // Strip fenced code blocks and inline code spans so @mentions in examples don't trigger wakes
+      const stripped = body.replace(/```[\s\S]*?```/g, "").replace(/`[^`]+`/g, "");
       const re = /\B@([^\s@,!?.]+)/g;
       const tokens = new Set<string>();
       let m: RegExpExecArray | null;
-      while ((m = re.exec(body)) !== null) tokens.add(m[1].toLowerCase());
-      if (tokens.size === 0) return [];
+      while ((m = re.exec(stripped)) !== null) {
+        const raw = m[1];
+        tokens.add(raw.toLowerCase());
+        const urlKey = normalizeAgentUrlKey(raw);
+        if (urlKey) tokens.add(urlKey);
+        // Split CamelCase so @FoundingEngineer → founding-engineer
+        const camelSplit = normalizeAgentUrlKey(raw.replace(/([a-z])([A-Z])/g, "$1-$2"));
+        if (camelSplit && camelSplit !== urlKey) tokens.add(camelSplit);
+      }
       const rows = await db.select({ id: agents.id, name: agents.name })
         .from(agents).where(eq(agents.companyId, companyId));
-      return rows.filter(a => tokens.has(a.name.toLowerCase())).map(a => a.id);
+      const bodyLower = stripped.toLowerCase();
+      return rows.filter(a => {
+        // Token-based match (handles @ceo, @founding-engineer, @CodeReviewer)
+        const nameKey = normalizeAgentUrlKey(a.name);
+        if (tokens.has(a.name.toLowerCase()) || (nameKey !== null && tokens.has(nameKey))) return true;
+        // Direct substring match for multi-word names (handles "@Code Reviewer")
+        if (a.name.includes(" ") && bodyLower.includes("@" + a.name.toLowerCase())) return true;
+        return false;
+      }).map(a => a.id);
     },
 
     findMentionedProjectIds: async (issueId: string) => {
