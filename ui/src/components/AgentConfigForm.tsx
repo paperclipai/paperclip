@@ -41,6 +41,7 @@ import {
 import { defaultCreateValues } from "./agent-config-defaults";
 import { getUIAdapter } from "../adapters";
 import { ClaudeLocalAdvancedFields } from "../adapters/claude-local/config-fields";
+import { MistralVibeAdvancedFields } from "../adapters/mistral-vibe/config-fields";
 import { MarkdownEditor } from "./MarkdownEditor";
 import { ChoosePathButton } from "./PathInstructionsModal";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
@@ -719,6 +720,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               </div>
               {adapterType === "claude_local" && (
                 <ClaudeLocalAdvancedFields {...adapterFieldProps} />
+              )}
+              {adapterType === "mistral_vibe" && (
+                <MistralVibeAdvancedFields {...adapterFieldProps} />
               )}
 
               <Field label="Extra args (comma-separated)" hint={help.extraArgs}>
