@@ -7,6 +7,7 @@ import {
   PointerSensor,
   useSensor,
   useSensors,
+  TouchSensor,
   type DragEndEvent,
 } from "@dnd-kit/core";
 import {
@@ -94,6 +95,7 @@ function SortableCompanyItem({
     transition,
     zIndex: isDragging ? 10 : undefined,
     opacity: isDragging ? 0.8 : 1,
+    touchAction: 'none' // stops scrolling from taking precedence over dnd
   };
 
   return (
@@ -245,7 +247,8 @@ export function CompanyRail() {
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: { distance: 8 },
-    })
+    }),
+    useSensor(TouchSensor)
   );
 
   const handleDragEnd = useCallback(
