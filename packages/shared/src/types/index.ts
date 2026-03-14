@@ -10,6 +10,7 @@ export type {
   AdapterEnvironmentTestResult,
 } from "./agent.js";
 export type { AssetImage } from "./asset.js";
+export type { KnowledgeDocument, KnowledgeContextDocument } from "./knowledge.js";
 export type { Project, ProjectGoalRef, ProjectWorkspace } from "./project.js";
 export type {
   WorkspaceRuntimeService,

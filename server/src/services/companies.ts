@@ -18,6 +18,7 @@ import {
   approvals,
   activityLog,
   companySecrets,
+  knowledgeDocuments,
   joinRequests,
   invites,
   principalPermissionGrants,
@@ -111,6 +112,7 @@ export function companyService(db: Db) {
         await tx.delete(approvalComments).where(eq(approvalComments.companyId, id));
         await tx.delete(approvals).where(eq(approvals.companyId, id));
         await tx.delete(companySecrets).where(eq(companySecrets.companyId, id));
+        await tx.delete(knowledgeDocuments).where(eq(knowledgeDocuments.companyId, id));
         await tx.delete(joinRequests).where(eq(joinRequests.companyId, id));
         await tx.delete(invites).where(eq(invites.companyId, id));
         await tx.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, id));

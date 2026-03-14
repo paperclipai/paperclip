@@ -482,7 +482,6 @@ Each is a distinct page/route:
 ### Not V1
 
 - Template export/import
-- Knowledge base - a future plugin
 - Advanced governance models (hiring budgets, multi-member boards)
 - Revenue/expense tracking beyond token costs - a future plugin
 - Public job board / open company features
@@ -491,9 +490,9 @@ Each is a distinct page/route:
 
 ## 11. Knowledge Base
 
-**Anti-goal for core.** The knowledge base is not part of the Paperclip core — it will be a plugin. The task system + comments + agent descriptions provide sufficient shared context.
+Paperclip now includes a built-in company knowledge base for durable decisions, operational notes, and implementation guidance that should survive beyond a single issue thread.
 
-The architecture must support adding a knowledge base plugin later (clean API boundaries, hookable lifecycle events) but the core system explicitly does not include one.
+V1 scope is intentionally narrow: company-scoped documents, simple keyword search, and additive heartbeat-context enrichment for relevant work. Advanced semantic retrieval, vector search, and external knowledge providers remain plugin territory.
 
 ---
 
@@ -502,7 +501,7 @@ The architecture must support adding a knowledge base plugin later (clean API bo
 Things Paperclip explicitly does **not** do:
 
 - **Not an Agent runtime** — Paperclip orchestrates, Agents run elsewhere
-- **Not a knowledge base** — core has no wiki/docs/vector-DB (plugin territory)
+- **Not a general wiki platform** — core keeps knowledge lightweight and company-scoped; advanced RAG and external knowledge systems stay in plugin territory
 - **Not a SaaS** — single-tenant, self-hosted
 - **Not opinionated about Agent implementation** — any language, any framework, any runtime
 - **Not automatically self-healing** — surfaces problems, doesn't silently fix them

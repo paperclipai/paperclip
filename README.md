@@ -123,6 +123,12 @@ Hierarchies, roles, reporting lines. Your agents have a boss, a title, and a job
 Monitor and manage your autonomous businesses from anywhere.
 </td>
 </tr>
+<tr>
+<td align="center" colspan="3">
+<h3>🧠 Knowledge Base</h3>
+Capture architecture, operations, and decisions once so future heartbeats can reuse them.
+</td>
+</tr>
 </table>
 
 <br/>

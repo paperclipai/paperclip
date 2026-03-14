@@ -19,6 +19,7 @@ import {
   heartbeatService,
   issueApprovalService,
   issueService,
+  knowledgeService,
   logActivity,
   projectService,
 } from "../services/index.js";
@@ -38,6 +39,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
   const agentsSvc = agentService(db);
   const projectsSvc = projectService(db);
   const goalsSvc = goalService(db);
+  const knowledgeSvc = knowledgeService(db);
   const issueApprovalsSvc = issueApprovalService(db);
   const upload = multer({
     storage: multer.memoryStorage(),
@@ -341,6 +343,13 @@ export function issueRoutes(db: Db, storage: StorageService) {
       svc.getCommentCursor(issue.id),
       wakeCommentId ? svc.getComment(wakeCommentId) : null,
     ]);
+    const knowledge = await knowledgeSvc.listRelevantForIssueContext(issue.companyId, {
+      title: issue.title,
+      description: issue.description,
+      project: project ? { name: project.name } : null,
+      goal,
+      ancestors,
+    });
 
     res.json({
       issue: {
@@ -382,6 +391,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
           }
         : null,
       commentCursor,
+      knowledge,
       wakeComment:
         wakeComment && wakeComment.issueId === issue.id
           ? wakeComment

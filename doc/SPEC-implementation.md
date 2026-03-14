@@ -68,6 +68,7 @@ V1 implementation extends this baseline into a company-centric, governance-aware
 - Cost event ingestion and rollups (agent/task/project/company)
 - Budget settings and hard-stop enforcement
 - Board web UI for dashboard, org chart, tasks, agents, approvals, costs
+- Company knowledge base with searchable documents and heartbeat context enrichment
 - Agent-facing API contract (task read/write, heartbeat report, cost report)
 - Auditable activity log for all mutating actions
 
@@ -75,7 +76,6 @@ V1 implementation extends this baseline into a company-centric, governance-aware
 
 - Plugin framework and third-party extension SDK
 - Revenue/expense accounting beyond model/token costs
-- Knowledge base subsystem
 - Public marketplace (ClipHub)
 - Multi-board governance or role-based human permission granularity
 - Automatic self-healing orchestration (auto-reassign/retry planners)
