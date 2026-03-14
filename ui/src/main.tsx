@@ -12,6 +12,7 @@ import { DialogProvider } from "./context/DialogContext";
 import { ToastProvider } from "./context/ToastContext";
 import { ThemeProvider } from "./context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import "@mdxeditor/editor/style.css";
 import "./index.css";
 
@@ -32,6 +33,7 @@ const queryClient = new QueryClient({
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
+    <ErrorBoundary>
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
         <CompanyProvider>
@@ -55,5 +57,6 @@ createRoot(document.getElementById("root")!).render(
         </CompanyProvider>
       </ThemeProvider>
     </QueryClientProvider>
+    </ErrorBoundary>
   </StrictMode>
 );

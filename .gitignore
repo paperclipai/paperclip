@@ -41,3 +41,6 @@ tmp/
 # Playwright
 tests/e2e/test-results/
 tests/e2e/playwright-report/
+# Tauri desktop
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
