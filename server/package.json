@@ -45,6 +45,7 @@
     "@paperclipai/db": "workspace:*",
     "@paperclipai/shared": "workspace:*",
     "better-auth": "1.4.18",
+    "cron-parser": "^5.5.0",
     "detect-port": "^2.1.0",
     "dotenv": "^17.0.1",
     "drizzle-orm": "^0.38.4",
