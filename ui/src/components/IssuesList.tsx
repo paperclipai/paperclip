@@ -501,8 +501,8 @@ export function IssuesList({
             </PopoverContent>
           </Popover>
 
-          {/* Sort (list view only) */}
-          {viewState.viewMode === "list" && (
+          {/* Sort */}
+          {(
             <Popover>
               <PopoverTrigger asChild>
                 <Button variant="ghost" size="sm" className="text-xs">
@@ -518,7 +518,9 @@ export function IssuesList({
                     ["title", "Title"],
                     ["created", "Created"],
                     ["updated", "Updated"],
-                  ] as const).map(([field, label]) => (
+                  ] as const)
+                  .filter(([field]) => viewState.viewMode === "board" ? field !== "status" : true)
+                  .map(([field, label]) => (
                     <button
                       key={field}
                       className={`flex items-center justify-between w-full px-2 py-1.5 text-sm rounded-sm ${
