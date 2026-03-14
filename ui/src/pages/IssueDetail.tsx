@@ -321,8 +321,7 @@ export function IssueDetail() {
       options.push({ id: `agent:${agent.id}`, label: agent.name });
     }
     if (currentUserId) {
-      const label = currentUserId === "local-board" ? "Board" : "Me (Board)";
-      options.push({ id: `user:${currentUserId}`, label });
+      options.push({ id: `user:${currentUserId}`, label: "Me" });
     }
     return options;
   }, [agents, currentUserId]);

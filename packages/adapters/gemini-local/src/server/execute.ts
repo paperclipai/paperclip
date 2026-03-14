@@ -12,7 +12,11 @@ import {
   buildPaperclipEnv,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
+  ensurePaperclipSkillSymlink,
+  joinPromptSections,
   ensurePathInEnv,
+  listPaperclipSkillEntries,
+  removeMaintainerOnlySkillSymlinks,
   parseObject,
   redactEnvForLogs,
   renderTemplate,
@@ -29,10 +33,6 @@ import {
 import { firstNonEmptyLine } from "./utils.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
-const PAPERCLIP_SKILLS_CANDIDATES = [
-  path.resolve(__moduleDir, "../../skills"),
-  path.resolve(__moduleDir, "../../../../../skills"),
-];
 
 function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
   const raw = env[key];
@@ -59,12 +59,18 @@ function renderPaperclipEnvNote(env: Record<string, string>): string {
   ].join("\n");
 }
 
-async function resolvePaperclipSkillsDir(): Promise<string | null> {
-  for (const candidate of PAPERCLIP_SKILLS_CANDIDATES) {
-    const isDir = await fs.stat(candidate).then((s) => s.isDirectory()).catch(() => false);
-    if (isDir) return candidate;
-  }
-  return null;
+function renderApiAccessNote(env: Record<string, string>): string {
+  if (!hasNonEmptyEnvValue(env, "PAPERCLIP_API_URL") || !hasNonEmptyEnvValue(env, "PAPERCLIP_API_KEY")) return "";
+  return [
+    "Paperclip API access note:",
+    "Use run_shell_command with curl to make Paperclip API requests.",
+    "GET example:",
+    `  run_shell_command({ command: "curl -s -H \\"Authorization: Bearer $PAPERCLIP_API_KEY\\" \\"$PAPERCLIP_API_URL/api/agents/me\\"" })`,
+    "POST/PATCH example:",
+    `  run_shell_command({ command: "curl -s -X POST -H \\"Authorization: Bearer $PAPERCLIP_API_KEY\\" -H 'Content-Type: application/json' -H \\"X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID\\" -d '{...}' \\"$PAPERCLIP_API_URL/api/issues/{id}/checkout\\"" })`,
+    "",
+    "",
+  ].join("\n");
 }
 
 function geminiSkillsHome(): string {
@@ -79,8 +85,8 @@ function geminiSkillsHome(): string {
 async function ensureGeminiSkillsInjected(
   onLog: AdapterExecutionContext["onLog"],
 ): Promise<void> {
-  const skillsDir = await resolvePaperclipSkillsDir();
-  if (!skillsDir) return;
+  const skillsEntries = await listPaperclipSkillEntries(__moduleDir);
+  if (skillsEntries.length === 0) return;
 
   const skillsHome = geminiSkillsHome();
   try {
@@ -92,28 +98,27 @@ async function ensureGeminiSkillsInjected(
     );
     return;
   }
-
-  let entries: Dirent[];
-  try {
-    entries = await fs.readdir(skillsDir, { withFileTypes: true });
-  } catch (err) {
+  const removedSkills = await removeMaintainerOnlySkillSymlinks(
+    skillsHome,
+    skillsEntries.map((entry) => entry.name),
+  );
+  for (const skillName of removedSkills) {
     await onLog(
       "stderr",
-      `[paperclip] Failed to read Paperclip skills from ${skillsDir}: ${err instanceof Error ? err.message : String(err)}\n`,
+      `[paperclip] Removed maintainer-only Gemini skill "${skillName}" from ${skillsHome}\n`,
     );
-    return;
   }
 
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const source = path.join(skillsDir, entry.name);
+  for (const entry of skillsEntries) {
     const target = path.join(skillsHome, entry.name);
-    const existing = await fs.lstat(target).catch(() => null);
-    if (existing) continue;
 
     try {
-      await fs.symlink(source, target);
-      await onLog("stderr", `[paperclip] Linked Gemini skill: ${entry.name}\n`);
+      const result = await ensurePaperclipSkillSymlink(entry.source, target);
+      if (result === "skipped") continue;
+      await onLog(
+        "stderr",
+        `[paperclip] ${result === "repaired" ? "Repaired" : "Linked"} Gemini skill: ${entry.name}\n`,
+      );
     } catch (err) {
       await onLog(
         "stderr",
@@ -132,7 +137,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const command = asString(config.command, "gemini");
   const model = asString(config.model, DEFAULT_GEMINI_LOCAL_MODEL).trim();
-  const approvalMode = asString(config.approvalMode, asBoolean(config.yolo, false) ? "yolo" : "default");
   const sandbox = asBoolean(config.sandbox, false);
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
@@ -250,7 +254,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
   const commandNotes = (() => {
     const notes: string[] = ["Prompt is passed to Gemini as the final positional argument."];
-    if (approvalMode !== "default") notes.push(`Added --approval-mode ${approvalMode} for unattended execution.`);
+    notes.push("Added --approval-mode yolo for unattended execution.");
     if (!instructionsFilePath) return notes;
     if (instructionsPrefix.length > 0) {
       notes.push(
@@ -265,7 +269,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     return notes;
   })();
 
-  const renderedPrompt = renderTemplate(promptTemplate, {
+  const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
+  const templateData = {
     agentId: agent.id,
     companyId: agent.companyId,
     runId,
@@ -273,15 +278,37 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     agent,
     run: { id: runId, source: "on_demand" },
     context,
-  });
+  };
+  const renderedPrompt = renderTemplate(promptTemplate, templateData);
+  const renderedBootstrapPrompt =
+    !sessionId && bootstrapPromptTemplate.trim().length > 0
+      ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
+      : "";
+  const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const paperclipEnvNote = renderPaperclipEnvNote(env);
-  const prompt = `${instructionsPrefix}${paperclipEnvNote}${renderedPrompt}`;
+  const apiAccessNote = renderApiAccessNote(env);
+  const prompt = joinPromptSections([
+    instructionsPrefix,
+    renderedBootstrapPrompt,
+    sessionHandoffNote,
+    paperclipEnvNote,
+    apiAccessNote,
+    renderedPrompt,
+  ]);
+  const promptMetrics = {
+    promptChars: prompt.length,
+    instructionsChars: instructionsPrefix.length,
+    bootstrapPromptChars: renderedBootstrapPrompt.length,
+    sessionHandoffChars: sessionHandoffNote.length,
+    runtimeNoteChars: paperclipEnvNote.length + apiAccessNote.length,
+    heartbeatPromptChars: renderedPrompt.length,
+  };
 
   const buildArgs = (resumeSessionId: string | null) => {
     const args = ["--output-format", "stream-json"];
     if (resumeSessionId) args.push("--resume", resumeSessionId);
     if (model && model !== DEFAULT_GEMINI_LOCAL_MODEL) args.push("--model", model);
-    if (approvalMode !== "default") args.push("--approval-mode", approvalMode);
+    args.push("--approval-mode", "yolo");
     if (sandbox) {
       args.push("--sandbox");
     } else {
@@ -305,6 +332,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         )),
         env: redactEnvForLogs(env),
         prompt,
+        promptMetrics,
         context,
       });
     }
@@ -398,6 +426,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stderr: attempt.proc.stderr,
       },
       summary: attempt.parsed.summary,
+      question: attempt.parsed.question,
       clearSession: clearSessionForTurnLimit || Boolean(clearSessionOnMissingSession && !resolvedSessionId),
     };
   };

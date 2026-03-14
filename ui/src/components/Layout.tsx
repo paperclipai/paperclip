@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { BookOpen, Moon, Sun } from "lucide-react";
-import { Outlet, useLocation, useNavigate, useParams } from "@/lib/router";
+import { BookOpen, Moon, Settings, Sun } from "lucide-react";
+import { Link, Outlet, useLocation, useNavigate, useParams } from "@/lib/router";
 import { CompanyRail } from "./CompanyRail";
 import { Sidebar } from "./Sidebar";
-import { SidebarNavItem } from "./SidebarNavItem";
+import { InstanceSidebar } from "./InstanceSidebar";
 import { BreadcrumbBar } from "./BreadcrumbBar";
 import { PropertiesPanel } from "./PropertiesPanel";
 import { CommandPalette } from "./CommandPalette";
@@ -14,6 +14,7 @@ import { NewGoalDialog } from "./NewGoalDialog";
 import { NewAgentDialog } from "./NewAgentDialog";
 import { ToastViewport } from "./ToastViewport";
 import { MobileBottomNav } from "./MobileBottomNav";
+import { WorktreeBanner } from "./WorktreeBanner";
 import { useDialog } from "../context/DialogContext";
 import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
@@ -22,6 +23,7 @@ import { useTheme } from "../context/ThemeContext";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
 import { healthApi } from "../api/health";
+import { shouldSyncCompanySelectionFromRoute } from "../lib/company-selection";
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
 import { NotFoundPage } from "../pages/NotFound";
@@ -36,12 +38,14 @@ export function Layout() {
     loading: companiesLoading,
     selectedCompany,
     selectedCompanyId,
+    selectionSource,
     setSelectedCompanyId,
   } = useCompany();
   const { theme, toggleTheme } = useTheme();
   const { companyPrefix } = useParams<{ companyPrefix: string }>();
   const navigate = useNavigate();
   const location = useLocation();
+  const isInstanceSettingsRoute = location.pathname.startsWith("/instance/");
   const onboardingTriggered = useRef(false);
   const lastMainScrollTop = useRef(0);
   const [mobileNavVisible, setMobileNavVisible] = useState(true);
@@ -87,7 +91,13 @@ export function Layout() {
       return;
     }
 
-    if (selectedCompanyId !== matchedCompany.id) {
+    if (
+      shouldSyncCompanySelectionFromRoute({
+        selectionSource,
+        selectedCompanyId,
+        routeCompanyId: matchedCompany.id,
+      })
+    ) {
       setSelectedCompanyId(matchedCompany.id, { source: "route_sync" });
     }
   }, [
@@ -98,6 +108,7 @@ export function Layout() {
     location.pathname,
     location.search,
     navigate,
+    selectionSource,
     selectedCompanyId,
     setSelectedCompanyId,
   ]);
@@ -213,7 +224,7 @@ export function Layout() {
     <div
       className={cn(
         "bg-background text-foreground pt-[env(safe-area-inset-top)]",
-        isMobile ? "min-h-dvh" : "flex h-dvh overflow-hidden",
+        isMobile ? "min-h-dvh" : "flex h-dvh flex-col overflow-hidden",
       )}
     >
       <a
@@ -222,115 +233,148 @@ export function Layout() {
       >
         Skip to Main Content
       </a>
-      {/* Mobile backdrop */}
-      {isMobile && sidebarOpen && (
-        <button
-          type="button"
-          className="fixed inset-0 z-40 bg-black/50"
-          onClick={() => setSidebarOpen(false)}
-          aria-label="Close sidebar"
-        />
-      )}
+      <WorktreeBanner />
+      <div className={cn("min-h-0 flex-1", isMobile ? "w-full" : "flex overflow-hidden")}>
+        {/* Mobile backdrop */}
+        {isMobile && sidebarOpen && (
+          <button
+            type="button"
+            className="fixed inset-0 z-40 bg-black/50"
+            onClick={() => setSidebarOpen(false)}
+            aria-label="Close sidebar"
+          />
+        )}
 
-      {/* Combined sidebar area: company rail + inner sidebar + docs bar */}
-      {isMobile ? (
-        <div
-          className={cn(
-            "fixed inset-y-0 left-0 z-50 flex flex-col overflow-hidden pt-[env(safe-area-inset-top)] transition-transform duration-100 ease-out",
-            sidebarOpen ? "translate-x-0" : "-translate-x-full"
-          )}
-        >
-          <div className="flex flex-1 min-h-0 overflow-hidden">
-            <CompanyRail />
-            <Sidebar />
-          </div>
-          <div className="border-t border-r border-border px-3 py-2 bg-background">
-            <div className="flex items-center gap-1">
-              <SidebarNavItem
-                to="/docs"
-                label="Documentation"
-                icon={BookOpen}
-                className="flex-1 min-w-0"
-              />
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                className="text-muted-foreground shrink-0"
-                onClick={toggleTheme}
-                aria-label={`Switch to ${nextTheme} mode`}
-                title={`Switch to ${nextTheme} mode`}
-              >
-                {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-              </Button>
-            </div>
-          </div>
-        </div>
-      ) : (
-        <div className="flex flex-col shrink-0 h-full">
-          <div className="flex flex-1 min-h-0">
-            <CompanyRail />
-            <div
-              className={cn(
-                "overflow-hidden transition-[width] duration-100 ease-out",
-                sidebarOpen ? "w-60" : "w-0"
-              )}
-            >
-              <Sidebar />
-            </div>
-          </div>
-          <div className="border-t border-r border-border px-3 py-2">
-            <div className="flex items-center gap-1">
-              <SidebarNavItem
-                to="/docs"
-                label="Documentation"
-                icon={BookOpen}
-                className="flex-1 min-w-0"
-              />
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                className="text-muted-foreground shrink-0"
-                onClick={toggleTheme}
-                aria-label={`Switch to ${nextTheme} mode`}
-                title={`Switch to ${nextTheme} mode`}
-              >
-                {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Main content */}
-      <div className={cn("flex min-w-0 flex-col", isMobile ? "w-full" : "h-full flex-1")}>
-        <div
-          className={cn(
-            isMobile && "sticky top-0 z-20 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85",
-          )}
-        >
-          <BreadcrumbBar />
-        </div>
-        <div className={cn(isMobile ? "block" : "flex flex-1 min-h-0")}>
-          <main
-            id="main-content"
-            tabIndex={-1}
+        {/* Combined sidebar area: company rail + inner sidebar + docs bar */}
+        {isMobile ? (
+          <div
             className={cn(
-              "flex-1 p-4 md:p-6",
-              isMobile ? "overflow-visible pb-[calc(5rem+env(safe-area-inset-bottom))]" : "overflow-auto",
+              "fixed inset-y-0 left-0 z-50 flex flex-col overflow-hidden pt-[env(safe-area-inset-top)] transition-transform duration-100 ease-out",
+              sidebarOpen ? "translate-x-0" : "-translate-x-full"
             )}
           >
-            {hasUnknownCompanyPrefix ? (
-              <NotFoundPage
-                scope="invalid_company_prefix"
-                requestedPrefix={companyPrefix ?? selectedCompany?.issuePrefix}
-              />
-            ) : (
-              <Outlet />
+            <div className="flex flex-1 min-h-0 overflow-hidden">
+              <CompanyRail />
+              {isInstanceSettingsRoute ? <InstanceSidebar /> : <Sidebar />}
+            </div>
+            <div className="border-t border-r border-border px-3 py-2 bg-background">
+              <div className="flex items-center gap-1">
+                <a
+                  href="https://docs.paperclip.ing/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors text-foreground/80 hover:bg-accent/50 hover:text-foreground flex-1 min-w-0"
+                >
+                  <BookOpen className="h-4 w-4 shrink-0" />
+                  <span className="truncate">Documentation</span>
+                </a>
+                <Button variant="ghost" size="icon-sm" className="text-muted-foreground shrink-0" asChild>
+                  <Link
+                    to="/instance/settings"
+                    aria-label="Instance settings"
+                    title="Instance settings"
+                    onClick={() => {
+                      if (isMobile) setSidebarOpen(false);
+                    }}
+                  >
+                    <Settings className="h-4 w-4" />
+                  </Link>
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  className="text-muted-foreground shrink-0"
+                  onClick={toggleTheme}
+                  aria-label={`Switch to ${nextTheme} mode`}
+                  title={`Switch to ${nextTheme} mode`}
+                >
+                  {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+                </Button>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="flex h-full flex-col shrink-0">
+            <div className="flex flex-1 min-h-0">
+              <CompanyRail />
+              <div
+                className={cn(
+                  "overflow-hidden transition-[width] duration-100 ease-out",
+                  sidebarOpen ? "w-60" : "w-0"
+                )}
+              >
+                {isInstanceSettingsRoute ? <InstanceSidebar /> : <Sidebar />}
+              </div>
+            </div>
+            <div className="border-t border-r border-border px-3 py-2">
+              <div className="flex items-center gap-1">
+                <a
+                  href="https://docs.paperclip.ing/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors text-foreground/80 hover:bg-accent/50 hover:text-foreground flex-1 min-w-0"
+                >
+                  <BookOpen className="h-4 w-4 shrink-0" />
+                  <span className="truncate">Documentation</span>
+                </a>
+                <Button variant="ghost" size="icon-sm" className="text-muted-foreground shrink-0" asChild>
+                  <Link
+                    to="/instance/settings"
+                    aria-label="Instance settings"
+                    title="Instance settings"
+                    onClick={() => {
+                      if (isMobile) setSidebarOpen(false);
+                    }}
+                  >
+                    <Settings className="h-4 w-4" />
+                  </Link>
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  className="text-muted-foreground shrink-0"
+                  onClick={toggleTheme}
+                  aria-label={`Switch to ${nextTheme} mode`}
+                  title={`Switch to ${nextTheme} mode`}
+                >
+                  {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Main content */}
+        <div className={cn("flex min-w-0 flex-col", isMobile ? "w-full" : "h-full flex-1")}>
+          <div
+            className={cn(
+              isMobile && "sticky top-0 z-20 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85",
             )}
-          </main>
-          <PropertiesPanel />
+          >
+            <BreadcrumbBar />
+          </div>
+          <div className={cn(isMobile ? "block" : "flex flex-1 min-h-0")}>
+            <main
+              id="main-content"
+              tabIndex={-1}
+              className={cn(
+                "flex-1 p-4 md:p-6",
+                isMobile ? "overflow-visible pb-[calc(5rem+env(safe-area-inset-bottom))]" : "overflow-auto",
+              )}
+            >
+              {hasUnknownCompanyPrefix ? (
+                <NotFoundPage
+                  scope="invalid_company_prefix"
+                  requestedPrefix={companyPrefix ?? selectedCompany?.issuePrefix}
+                />
+              ) : (
+                <Outlet />
+              )}
+            </main>
+            <PropertiesPanel />
+          </div>
         </div>
       </div>
       {isMobile && <MobileBottomNav visible={mobileNavVisible} />}

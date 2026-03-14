@@ -11,6 +11,11 @@ import { queryKeys } from "../lib/queryKeys";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import {
+  assigneeValueFromSelection,
+  currentUserAssigneeOption,
+  parseAssigneeValue,
+} from "../lib/assignees";
+import {
   Dialog,
   DialogContent,
 } from "@/components/ui/dialog";
@@ -63,7 +68,8 @@ interface IssueDraft {
   description: string;
   status: string;
   priority: string;
-  assigneeId: string;
+  assigneeValue: string;
+  assigneeId?: string;
   projectId: string;
   assigneeModelOverride: string;
   assigneeThinkingEffort: string;
@@ -173,7 +179,7 @@ export function NewIssueDialog() {
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState("todo");
   const [priority, setPriority] = useState("");
-  const [assigneeId, setAssigneeId] = useState("");
+  const [assigneeValue, setAssigneeValue] = useState("");
   const [projectId, setProjectId] = useState("");
   const [assigneeOptionsOpen, setAssigneeOptionsOpen] = useState(false);
   const [assigneeModelOverride, setAssigneeModelOverride] = useState("");
@@ -220,7 +226,11 @@ export function NewIssueDialog() {
     userId: currentUserId,
   });
 
-  const assigneeAdapterType = (agents ?? []).find((agent) => agent.id === assigneeId)?.adapterType ?? null;
+  const selectedAssignee = useMemo(() => parseAssigneeValue(assigneeValue), [assigneeValue]);
+  const selectedAssigneeAgentId = selectedAssignee.assigneeAgentId;
+  const selectedAssigneeUserId = selectedAssignee.assigneeUserId;
+
+  const assigneeAdapterType = (agents ?? []).find((agent) => agent.id === selectedAssigneeAgentId)?.adapterType ?? null;
   const supportsAssigneeOverrides = Boolean(
     assigneeAdapterType && ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType),
   );
@@ -295,7 +305,7 @@ export function NewIssueDialog() {
       description,
       status,
       priority,
-      assigneeId,
+      assigneeValue,
       projectId,
       assigneeModelOverride,
       assigneeThinkingEffort,
@@ -307,7 +317,7 @@ export function NewIssueDialog() {
     description,
     status,
     priority,
-    assigneeId,
+    assigneeValue,
     projectId,
     assigneeModelOverride,
     assigneeThinkingEffort,
@@ -330,7 +340,7 @@ export function NewIssueDialog() {
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
       setProjectId(newIssueDefaults.projectId ?? "");
-      setAssigneeId(newIssueDefaults.assigneeAgentId ?? "");
+      setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
@@ -340,7 +350,11 @@ export function NewIssueDialog() {
       setDescription(draft.description);
       setStatus(draft.status || "todo");
       setPriority(draft.priority);
-      setAssigneeId(newIssueDefaults.assigneeAgentId ?? draft.assigneeId);
+      setAssigneeValue(
+        newIssueDefaults.assigneeAgentId || newIssueDefaults.assigneeUserId
+          ? assigneeValueFromSelection(newIssueDefaults)
+          : (draft.assigneeValue ?? draft.assigneeId ?? ""),
+      );
       setProjectId(newIssueDefaults.projectId ?? draft.projectId);
       setAssigneeModelOverride(draft.assigneeModelOverride ?? "");
       setAssigneeThinkingEffort(draft.assigneeThinkingEffort ?? "");
@@ -350,7 +364,7 @@ export function NewIssueDialog() {
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
       setProjectId(newIssueDefaults.projectId ?? "");
-      setAssigneeId(newIssueDefaults.assigneeAgentId ?? "");
+      setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
@@ -390,7 +404,7 @@ export function NewIssueDialog() {
     setDescription("");
     setStatus("todo");
     setPriority("");
-    setAssigneeId("");
+    setAssigneeValue("");
     setProjectId("");
     setAssigneeOptionsOpen(false);
     setAssigneeModelOverride("");
@@ -406,7 +420,7 @@ export function NewIssueDialog() {
   function handleCompanyChange(companyId: string) {
     if (companyId === effectiveCompanyId) return;
     setDialogCompanyId(companyId);
-    setAssigneeId("");
+    setAssigneeValue("");
     setProjectId("");
     setAssigneeModelOverride("");
     setAssigneeThinkingEffort("");
@@ -443,7 +457,8 @@ export function NewIssueDialog() {
       description: description.trim() || undefined,
       status,
       priority: priority || "medium",
-      ...(assigneeId ? { assigneeAgentId: assigneeId } : {}),
+      ...(selectedAssigneeAgentId ? { assigneeAgentId: selectedAssigneeAgentId } : {}),
+      ...(selectedAssigneeUserId ? { assigneeUserId: selectedAssigneeUserId } : {}),
       ...(projectId ? { projectId } : {}),
       ...(assigneeAdapterOverrides ? { assigneeAdapterOverrides } : {}),
       ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
@@ -475,7 +490,9 @@ export function NewIssueDialog() {
   const hasDraft = title.trim().length > 0 || description.trim().length > 0;
   const currentStatus = statuses.find((s) => s.value === status) ?? statuses[1]!;
   const currentPriority = priorities.find((p) => p.value === priority);
-  const currentAssignee = (agents ?? []).find((a) => a.id === assigneeId);
+  const currentAssignee = selectedAssigneeAgentId
+    ? (agents ?? []).find((a) => a.id === selectedAssigneeAgentId)
+    : null;
   const currentProject = orderedProjects.find((project) => project.id === projectId);
   const currentProjectExecutionWorkspacePolicy = SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI
     ? currentProject?.executionWorkspacePolicy ?? null
@@ -497,16 +514,18 @@ export function NewIssueDialog() {
       : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [newIssueOpen]);
   const assigneeOptions = useMemo<InlineEntityOption[]>(
-    () =>
-      sortAgentsByRecency(
+    () => [
+      ...currentUserAssigneeOption(currentUserId),
+      ...sortAgentsByRecency(
         (agents ?? []).filter((agent) => agent.status !== "terminated"),
         recentAssigneeIds,
       ).map((agent) => ({
-        id: agent.id,
+        id: assigneeValueFromSelection({ assigneeAgentId: agent.id }),
         label: agent.name,
         searchText: `${agent.name} ${agent.role} ${agent.title ?? ""}`,
       })),
-    [agents, recentAssigneeIds],
+    ],
+    [agents, currentUserId, recentAssigneeIds],
   );
   const projectOptions = useMemo<InlineEntityOption[]>(
     () =>
@@ -710,7 +729,16 @@ export function NewIssueDialog() {
               }
               if (e.key === "Tab" && !e.shiftKey) {
                 e.preventDefault();
-                assigneeSelectorRef.current?.focus();
+                if (assigneeValue) {
+                  // Assignee already set — skip to project or description
+                  if (projectId) {
+                    descriptionEditorRef.current?.focus();
+                  } else {
+                    projectSelectorRef.current?.focus();
+                  }
+                } else {
+                  assigneeSelectorRef.current?.focus();
+                }
               }
             }}
             autoFocus
@@ -723,33 +751,49 @@ export function NewIssueDialog() {
               <span>For</span>
               <InlineEntitySelector
                 ref={assigneeSelectorRef}
-                value={assigneeId}
+                value={assigneeValue}
                 options={assigneeOptions}
                 placeholder="Assignee"
                 disablePortal
                 noneLabel="No assignee"
                 searchPlaceholder="Search assignees..."
                 emptyMessage="No assignees found."
-                onChange={(id) => { if (id) trackRecentAssignee(id); setAssigneeId(id); }}
+                onChange={(value) => {
+                  const nextAssignee = parseAssigneeValue(value);
+                  if (nextAssignee.assigneeAgentId) {
+                    trackRecentAssignee(nextAssignee.assigneeAgentId);
+                  }
+                  setAssigneeValue(value);
+                }}
                 onConfirm={() => {
-                  projectSelectorRef.current?.focus();
+                  if (projectId) {
+                    descriptionEditorRef.current?.focus();
+                  } else {
+                    projectSelectorRef.current?.focus();
+                  }
                 }}
                 renderTriggerValue={(option) =>
-                  option && currentAssignee ? (
-                    <>
-                      <AgentIcon icon={currentAssignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  option ? (
+                    currentAssignee ? (
+                      <>
+                        <AgentIcon icon={currentAssignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        <span className="truncate">{option.label}</span>
+                      </>
+                    ) : (
                       <span className="truncate">{option.label}</span>
-                    </>
+                    )
                   ) : (
                     <span className="text-muted-foreground">Assignee</span>
                   )
                 }
                 renderOption={(option) => {
                   if (!option.id) return <span className="truncate">{option.label}</span>;
-                  const assignee = (agents ?? []).find((agent) => agent.id === option.id);
+                  const assignee = parseAssigneeValue(option.id).assigneeAgentId
+                    ? (agents ?? []).find((agent) => agent.id === parseAssigneeValue(option.id).assigneeAgentId)
+                    : null;
                   return (
                     <>
-                      <AgentIcon icon={assignee?.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      {assignee ? <AgentIcon icon={assignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
                       <span className="truncate">{option.label}</span>
                     </>
                   );
@@ -1034,8 +1078,6 @@ export function NewIssueDialog() {
                 </span>
               ) : createIssue.isError ? (
                 <span className="text-xs text-destructive">{createIssueErrorMessage}</span>
-              ) : canDiscardDraft ? (
-                <span className="text-xs text-muted-foreground">Draft autosaves locally</span>
               ) : null}
             </div>
             <Button

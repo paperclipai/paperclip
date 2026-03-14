@@ -26,8 +26,12 @@ import {
   defaultIssueExecutionWorkspaceSettingsForProject,
   parseProjectExecutionWorkspacePolicy,
 } from "./execution-workspace-policy.js";
+import { redactCurrentUserText } from "../log-redaction.js";
+import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
+import { getDefaultCompanyGoal } from "./goals.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
+const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 
 function assertTransition(from: string, to: string) {
   if (from === to) return;
@@ -91,6 +95,13 @@ type IssueUserContextInput = {
   createdAt: Date | string;
   updatedAt: Date | string;
 };
+
+function redactIssueComment<T extends { body: string }>(comment: T): T {
+  return {
+    ...comment,
+    body: redactCurrentUserText(comment.body),
+  };
+}
 
 function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
   if (actorRunId) return checkoutRunId === actorRunId;
@@ -671,6 +682,7 @@ export function issueService(db: Db) {
         throw unprocessable("in_progress issues require an assignee");
       }
       return db.transaction(async (tx) => {
+        const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         let executionWorkspaceSettings =
           (issueData.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? null;
         if (executionWorkspaceSettings == null && issueData.projectId) {
@@ -695,6 +707,11 @@ export function issueService(db: Db) {
 
         const values = {
           ...issueData,
+          goalId: resolveIssueGoalId({
+            projectId: issueData.projectId,
+            goalId: issueData.goalId,
+            defaultGoalId: defaultCompanyGoal?.id ?? null,
+          }),
           ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
           companyId,
           issueNumber,
@@ -774,6 +791,14 @@ export function issueService(db: Db) {
       }
 
       return db.transaction(async (tx) => {
+        const defaultCompanyGoal = await getDefaultCompanyGoal(tx, existing.companyId);
+        patch.goalId = resolveNextIssueGoalId({
+          currentProjectId: existing.projectId,
+          currentGoalId: existing.goalId,
+          projectId: issueData.projectId,
+          goalId: issueData.goalId,
+          defaultGoalId: defaultCompanyGoal?.id ?? null,
+        });
         const updated = await tx
           .update(issues)
           .set(patch)
@@ -1066,19 +1091,96 @@ export function issueService(db: Db) {
         .returning()
         .then((rows) => rows[0] ?? null),
 
-    listComments: (issueId: string) =>
-      db
+    listComments: async (
+      issueId: string,
+      opts?: {
+        afterCommentId?: string | null;
+        order?: "asc" | "desc";
+        limit?: number | null;
+      },
+    ) => {
+      const order = opts?.order === "asc" ? "asc" : "desc";
+      const afterCommentId = opts?.afterCommentId?.trim() || null;
+      const limit =
+        opts?.limit && opts.limit > 0
+          ? Math.min(Math.floor(opts.limit), MAX_ISSUE_COMMENT_PAGE_LIMIT)
+          : null;
+
+      const conditions = [eq(issueComments.issueId, issueId)];
+      if (afterCommentId) {
+        const anchor = await db
+          .select({
+            id: issueComments.id,
+            createdAt: issueComments.createdAt,
+          })
+          .from(issueComments)
+          .where(and(eq(issueComments.issueId, issueId), eq(issueComments.id, afterCommentId)))
+          .then((rows) => rows[0] ?? null);
+
+        if (!anchor) return [];
+        conditions.push(
+          order === "asc"
+            ? sql<boolean>`(
+                ${issueComments.createdAt} > ${anchor.createdAt}
+                OR (${issueComments.createdAt} = ${anchor.createdAt} AND ${issueComments.id} > ${anchor.id})
+              )`
+            : sql<boolean>`(
+                ${issueComments.createdAt} < ${anchor.createdAt}
+                OR (${issueComments.createdAt} = ${anchor.createdAt} AND ${issueComments.id} < ${anchor.id})
+              )`,
+        );
+      }
+
+      const query = db
         .select()
         .from(issueComments)
-        .where(eq(issueComments.issueId, issueId))
-        .orderBy(desc(issueComments.createdAt)),
+        .where(and(...conditions))
+        .orderBy(
+          order === "asc" ? asc(issueComments.createdAt) : desc(issueComments.createdAt),
+          order === "asc" ? asc(issueComments.id) : desc(issueComments.id),
+        );
+
+      const comments = limit ? await query.limit(limit) : await query;
+      return comments.map(redactIssueComment);
+    },
+
+    getCommentCursor: async (issueId: string) => {
+      const [latest, countRow] = await Promise.all([
+        db
+          .select({
+            latestCommentId: issueComments.id,
+            latestCommentAt: issueComments.createdAt,
+          })
+          .from(issueComments)
+          .where(eq(issueComments.issueId, issueId))
+          .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
+          .limit(1)
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({
+            totalComments: sql<number>`count(*)::int`,
+          })
+          .from(issueComments)
+          .where(eq(issueComments.issueId, issueId))
+          .then((rows) => rows[0] ?? null),
+      ]);
+
+      return {
+        totalComments: Number(countRow?.totalComments ?? 0),
+        latestCommentId: latest?.latestCommentId ?? null,
+        latestCommentAt: latest?.latestCommentAt ?? null,
+      };
+    },
 
     getComment: (commentId: string) =>
       db
         .select()
         .from(issueComments)
         .where(eq(issueComments.id, commentId))
-        .then((rows) => rows[0] ?? null),
+        .then((rows) => {
+          const comment = rows[0] ?? null;
+          return comment ? redactIssueComment(comment) : null;
+        }),
 
     addComment: async (issueId: string, body: string, actor: { agentId?: string; userId?: string }) => {
       const issue = await db
@@ -1089,6 +1191,7 @@ export function issueService(db: Db) {
 
       if (!issue) throw notFound("Issue not found");
 
+      const redactedBody = redactCurrentUserText(body);
       const [comment] = await db
         .insert(issueComments)
         .values({
@@ -1096,7 +1199,7 @@ export function issueService(db: Db) {
           issueId,
           authorAgentId: actor.agentId ?? null,
           authorUserId: actor.userId ?? null,
-          body,
+          body: redactedBody,
         })
         .returning();
 
@@ -1106,7 +1209,7 @@ export function issueService(db: Db) {
         .set({ updatedAt: new Date() })
         .where(eq(issues.id, issueId));
 
-      return comment;
+      return redactIssueComment(comment);
     },
 
     createAttachment: async (input: {

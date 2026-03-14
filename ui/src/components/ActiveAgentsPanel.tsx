@@ -108,7 +108,7 @@ function AgentRunCard({
               ) : (
                 <span className="inline-flex h-2.5 w-2.5 rounded-full bg-muted-foreground/35" />
               )}
-              <Identity name={run.agentName} size="sm" />
+              <Identity name={run.agentName} size="sm" className="[&>span:last-child]:!text-[11px]" />
             </div>
             <div className="mt-2 flex items-center gap-2 text-[11px] text-muted-foreground">
               <span>{isActive ? "Live now" : run.finishedAt ? `Finished ${relativeTime(run.finishedAt)}` : `Started ${relativeTime(run.createdAt)}`}</span>
@@ -147,6 +147,7 @@ function AgentRunCard({
           limit={5}
           streaming={isActive}
           collapseStdout
+          thinkingClassName="!text-[10px] !leading-4"
           emptyMessage={hasOutput ? "Waiting for transcript parsing..." : isActive ? "Waiting for output..." : "No transcript captured."}
         />
       </div>

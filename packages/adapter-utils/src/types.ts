@@ -75,6 +75,14 @@ export interface AdapterExecutionResult {
   runtimeServices?: AdapterRuntimeServiceReport[];
   summary?: string | null;
   clearSession?: boolean;
+  question?: {
+    prompt: string;
+    choices: Array<{
+      key: string;
+      label: string;
+      description?: string;
+    }>;
+  } | null;
 }
 
 export interface AdapterSessionCodec {
@@ -91,6 +99,7 @@ export interface AdapterInvocationMeta {
   commandNotes?: string[];
   env?: Record<string, string>;
   prompt?: string;
+  promptMetrics?: Record<string, number>;
   context?: Record<string, unknown>;
 }
 

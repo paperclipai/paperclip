@@ -122,9 +122,9 @@ export function ClaudeLocalAdvancedFields({
             value={eff(
               "adapterConfig",
               "maxTurnsPerRun",
-              Number(config.maxTurnsPerRun ?? 80),
+              Number(config.maxTurnsPerRun ?? 300),
             )}
-            onCommit={(v) => mark("adapterConfig", "maxTurnsPerRun", v || 80)}
+            onCommit={(v) => mark("adapterConfig", "maxTurnsPerRun", v || 300)}
             immediate
             className={inputClass}
           />

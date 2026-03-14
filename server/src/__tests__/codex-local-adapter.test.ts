@@ -107,7 +107,7 @@ describe("codex_local ui stdout parser", () => {
           item: {
             id: "item_52",
             type: "file_change",
-            changes: [{ path: "/home/user/project/ui/src/pages/AgentDetail.tsx", kind: "update" }],
+            changes: [{ path: "/Users/paperclipuser/project/ui/src/pages/AgentDetail.tsx", kind: "update" }],
             status: "completed",
           },
         }),
@@ -117,7 +117,7 @@ describe("codex_local ui stdout parser", () => {
       {
         kind: "system",
         ts,
-        text: "file changes: update /home/user/project/ui/src/pages/AgentDetail.tsx",
+        text: "file changes: update /Users/[]/project/ui/src/pages/AgentDetail.tsx",
       },
     ]);
   });

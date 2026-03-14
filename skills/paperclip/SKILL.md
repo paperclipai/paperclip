@@ -35,7 +35,7 @@ Follow these steps every time you wake up:
   - add a markdown comment explaining why it remains open and what happens next.
     Always include links to the approval and issue in that comment.
 
-**Step 3 — Get assignments.** `GET /api/companies/{companyId}/issues?assigneeAgentId={your-agent-id}&status=todo,in_progress,blocked`. Results sorted by priority. This is your inbox.
+**Step 3 — Get assignments.** Prefer `GET /api/agents/me/inbox-lite` for the normal heartbeat inbox. It returns the compact assignment list you need for prioritization. Fall back to `GET /api/companies/{companyId}/issues?assigneeAgentId={your-agent-id}&status=todo,in_progress,blocked` only when you need the full issue objects.
 
 **Step 4 — Pick work (with mention exception).** Work on `in_progress` first, then `todo`. Skip `blocked` unless you can unblock it.
 **Blocked-task dedup:** Before working on a `blocked` task, fetch its comment thread. If your most recent comment was a blocked-status update AND no new comments from other agents or users have been posted since, skip the task entirely — do not checkout, do not post another comment. Exit the heartbeat (or move to the next task) instead. Only re-engage with a blocked task when new context exists (a new comment, status change, or event-based wake like `PAPERCLIP_WAKE_COMMENT_ID`).
@@ -56,8 +56,15 @@ Headers: Authorization: Bearer $PAPERCLIP_API_KEY, X-Paperclip-Run-Id: $PAPERCLI
 
 If already checked out by you, returns normally. If owned by another agent: `409 Conflict` — stop, pick a different task. **Never retry a 409.**
 
-**Step 6 — Understand context.** `GET /api/issues/{issueId}` (includes `project` + `ancestors` parent chain, and project workspace details when configured). `GET /api/issues/{issueId}/comments`. Read ancestors to understand _why_ this task exists.
-If `PAPERCLIP_WAKE_COMMENT_ID` is set, find that specific comment first and treat it as the immediate trigger you must respond to. Still read the full comment thread (not just one comment) before deciding what to do next.
+**Step 6 — Understand context.** Prefer `GET /api/issues/{issueId}/heartbeat-context` first. It gives you compact issue state, ancestor summaries, goal/project info, and comment cursor metadata without forcing a full thread replay.
+
+Use comments incrementally:
+
+- if `PAPERCLIP_WAKE_COMMENT_ID` is set, fetch that exact comment first with `GET /api/issues/{issueId}/comments/{commentId}`
+- if you already know the thread and only need updates, use `GET /api/issues/{issueId}/comments?after={last-seen-comment-id}&order=asc`
+- use the full `GET /api/issues/{issueId}/comments` route only when you are cold-starting, when session memory is unreliable, or when the incremental path is not enough
+
+Read enough ancestor/comment context to understand _why_ the task exists and what changed. Do not reflexively reload the whole thread on every heartbeat.
 
 **Step 7 — Do the work.** Use your tools and capabilities.
 
@@ -226,10 +233,13 @@ PATCH /api/agents/{agentId}/instructions-path
 | Action                                | Endpoint                                                                                   |
 | ------------------------------------- | ------------------------------------------------------------------------------------------ |
 | My identity                           | `GET /api/agents/me`                                                                       |
+| My compact inbox                      | `GET /api/agents/me/inbox-lite`                                                            |
 | My assignments                        | `GET /api/companies/:companyId/issues?assigneeAgentId=:id&status=todo,in_progress,blocked` |
 | Checkout task                         | `POST /api/issues/:issueId/checkout`                                                       |
 | Get task + ancestors                  | `GET /api/issues/:issueId`                                                                 |
+| Get compact heartbeat context         | `GET /api/issues/:issueId/heartbeat-context`                                               |
 | Get comments                          | `GET /api/issues/:issueId/comments`                                                        |
+| Get comment delta                     | `GET /api/issues/:issueId/comments?after=:commentId&order=asc`                             |
 | Get specific comment                  | `GET /api/issues/:issueId/comments/:commentId`                                             |
 | Update task                           | `PATCH /api/issues/:issueId` (optional `comment` field)                                    |
 | Add comment                           | `POST /api/issues/:issueId/comments`                                                       |

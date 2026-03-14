@@ -444,23 +444,28 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               />
             </Field>
             {isLocal && (
-              <Field label="Prompt Template" hint={help.promptTemplate}>
-                <MarkdownEditor
-                  value={eff(
-                    "adapterConfig",
-                    "promptTemplate",
-                    String(config.promptTemplate ?? ""),
-                  )}
-                  onChange={(v) => mark("adapterConfig", "promptTemplate", v ?? "")}
-                  placeholder="You are agent {{ agent.name }}. Your role is {{ agent.role }}..."
-                  contentClassName="min-h-[88px] text-sm font-mono"
-                  imageUploadHandler={async (file) => {
-                    const namespace = `agents/${props.agent.id}/prompt-template`;
-                    const asset = await uploadMarkdownImage.mutateAsync({ file, namespace });
-                    return asset.contentPath;
-                  }}
-                />
-              </Field>
+              <>
+                <Field label="Prompt Template" hint={help.promptTemplate}>
+                  <MarkdownEditor
+                    value={eff(
+                      "adapterConfig",
+                      "promptTemplate",
+                      String(config.promptTemplate ?? ""),
+                    )}
+                    onChange={(v) => mark("adapterConfig", "promptTemplate", v ?? "")}
+                    placeholder="You are agent {{ agent.name }}. Your role is {{ agent.role }}..."
+                    contentClassName="min-h-[88px] text-sm font-mono"
+                    imageUploadHandler={async (file) => {
+                      const namespace = `agents/${props.agent.id}/prompt-template`;
+                      const asset = await uploadMarkdownImage.mutateAsync({ file, namespace });
+                      return asset.contentPath;
+                    }}
+                  />
+                </Field>
+                <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                  Prompt template is replayed on every heartbeat. Keep it compact and dynamic to avoid recurring token cost and cache churn.
+                </div>
+              </>
             )}
           </div>
         </div>
@@ -576,19 +581,24 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
           {/* Prompt template (create mode only — edit mode shows this in Identity) */}
           {isLocal && isCreate && (
-            <Field label="Prompt Template" hint={help.promptTemplate}>
-              <MarkdownEditor
-                value={val!.promptTemplate}
-                onChange={(v) => set!({ promptTemplate: v })}
-                placeholder="You are agent {{ agent.name }}. Your role is {{ agent.role }}..."
-                contentClassName="min-h-[88px] text-sm font-mono"
-                imageUploadHandler={async (file) => {
-                  const namespace = "agents/drafts/prompt-template";
-                  const asset = await uploadMarkdownImage.mutateAsync({ file, namespace });
-                  return asset.contentPath;
-                }}
-              />
-            </Field>
+            <>
+              <Field label="Prompt Template" hint={help.promptTemplate}>
+                <MarkdownEditor
+                  value={val!.promptTemplate}
+                  onChange={(v) => set!({ promptTemplate: v })}
+                  placeholder="You are agent {{ agent.name }}. Your role is {{ agent.role }}..."
+                  contentClassName="min-h-[88px] text-sm font-mono"
+                  imageUploadHandler={async (file) => {
+                    const namespace = "agents/drafts/prompt-template";
+                    const asset = await uploadMarkdownImage.mutateAsync({ file, namespace });
+                    return asset.contentPath;
+                  }}
+                />
+              </Field>
+              <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                Prompt template is replayed on every heartbeat. Prefer small task framing and variables like <code>{"{{ context.* }}"}</code> or <code>{"{{ run.* }}"}</code>; avoid repeating stable instructions here.
+              </div>
+            </>
           )}
 
           {/* Adapter-specific fields */}
@@ -704,6 +714,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   }}
                 />
               </Field>
+              <div className="rounded-md border border-sky-500/25 bg-sky-500/10 px-3 py-2 text-xs text-sky-100">
+                Bootstrap prompt is only sent for fresh sessions. Put stable setup, habits, and longer reusable guidance here. Frequent changes reduce the value of session reuse because new sessions must replay it.
+              </div>
               {adapterType === "claude_local" && (
                 <ClaudeLocalAdvancedFields {...adapterFieldProps} />
               )}

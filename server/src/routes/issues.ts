@@ -31,6 +31,8 @@ import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 
+const MAX_ISSUE_COMMENT_LIMIT = 500;
+
 export function issueRoutes(db: Db, storage: StorageService) {
   const router = Router();
   const svc = issueService(db);
@@ -351,14 +353,98 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const [ancestors, project, goal, mentionedProjectIds] = await Promise.all([
       svc.getAncestors(issue.id),
       issue.projectId ? projectsSvc.getById(issue.projectId) : null,
-      issue.goalId ? goalsSvc.getById(issue.goalId) : null,
+      issue.goalId
+        ? goalsSvc.getById(issue.goalId)
+        : !issue.projectId
+          ? goalsSvc.getDefaultCompanyGoal(issue.companyId)
+          : null,
       svc.findMentionedProjectIds(issue.id),
     ]);
     const mentionedProjects = mentionedProjectIds.length > 0
       ? await projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
       : [];
     const userMap = await resolveUserNames([issue.createdByUserId, issue.assigneeUserId]);
-    res.json({ ...enrichIssueWithUserNames(issue, userMap), ancestors, project: project ?? null, goal: goal ?? null, mentionedProjects });
+    res.json({
+      ...enrichIssueWithUserNames(issue, userMap),
+      goalId: goal?.id ?? issue.goalId,
+      ancestors,
+      project: project ?? null,
+      goal: goal ?? null,
+      mentionedProjects,
+    });
+  });
+
+  router.get("/issues/:id/heartbeat-context", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+
+    const wakeCommentId =
+      typeof req.query.wakeCommentId === "string" && req.query.wakeCommentId.trim().length > 0
+        ? req.query.wakeCommentId.trim()
+        : null;
+
+    const [ancestors, project, goal, commentCursor, wakeComment] = await Promise.all([
+      svc.getAncestors(issue.id),
+      issue.projectId ? projectsSvc.getById(issue.projectId) : null,
+      issue.goalId
+        ? goalsSvc.getById(issue.goalId)
+        : !issue.projectId
+          ? goalsSvc.getDefaultCompanyGoal(issue.companyId)
+          : null,
+      svc.getCommentCursor(issue.id),
+      wakeCommentId ? svc.getComment(wakeCommentId) : null,
+    ]);
+
+    res.json({
+      issue: {
+        id: issue.id,
+        identifier: issue.identifier,
+        title: issue.title,
+        description: issue.description,
+        status: issue.status,
+        priority: issue.priority,
+        projectId: issue.projectId,
+        goalId: goal?.id ?? issue.goalId,
+        parentId: issue.parentId,
+        assigneeAgentId: issue.assigneeAgentId,
+        assigneeUserId: issue.assigneeUserId,
+        updatedAt: issue.updatedAt,
+      },
+      ancestors: ancestors.map((ancestor) => ({
+        id: ancestor.id,
+        identifier: ancestor.identifier,
+        title: ancestor.title,
+        status: ancestor.status,
+        priority: ancestor.priority,
+      })),
+      project: project
+        ? {
+            id: project.id,
+            name: project.name,
+            status: project.status,
+            targetDate: project.targetDate,
+          }
+        : null,
+      goal: goal
+        ? {
+            id: goal.id,
+            title: goal.title,
+            status: goal.status,
+            level: goal.level,
+            parentId: goal.parentId,
+          }
+        : null,
+      commentCursor,
+      wakeComment:
+        wakeComment && wakeComment.issueId === issue.id
+          ? wakeComment
+          : null,
+    });
   });
 
   router.post("/issues/:id/read", async (req, res) => {
@@ -848,7 +934,29 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    const comments = await svc.listComments(id);
+    const afterCommentId =
+      typeof req.query.after === "string" && req.query.after.trim().length > 0
+        ? req.query.after.trim()
+        : typeof req.query.afterCommentId === "string" && req.query.afterCommentId.trim().length > 0
+          ? req.query.afterCommentId.trim()
+          : null;
+    const order =
+      typeof req.query.order === "string" && req.query.order.trim().toLowerCase() === "asc"
+        ? "asc"
+        : "desc";
+    const limitRaw =
+      typeof req.query.limit === "string" && req.query.limit.trim().length > 0
+        ? Number(req.query.limit)
+        : null;
+    const limit =
+      limitRaw && Number.isFinite(limitRaw) && limitRaw > 0
+        ? Math.min(Math.floor(limitRaw), MAX_ISSUE_COMMENT_LIMIT)
+        : null;
+    const comments = await svc.listComments(id, {
+      afterCommentId,
+      order,
+      limit,
+    });
     const commentUserMap = await resolveUserNames(comments.map((c) => c.authorUserId));
     res.json(
       comments.map((c) => ({
