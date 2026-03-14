@@ -309,6 +309,7 @@ export function NewIssueDialog() {
       priority,
       assigneeValue,
       projectId,
+      parentId,
       assigneeModelOverride,
       assigneeThinkingEffort,
       assigneeChrome,
@@ -321,6 +322,7 @@ export function NewIssueDialog() {
     priority,
     assigneeValue,
     projectId,
+    parentId,
     assigneeModelOverride,
     assigneeThinkingEffort,
     assigneeChrome,
@@ -342,6 +344,7 @@ export function NewIssueDialog() {
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
       setProjectId(newIssueDefaults.projectId ?? "");
+      setParentId(newIssueDefaults.parentId ?? "");
       setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
@@ -358,6 +361,7 @@ export function NewIssueDialog() {
           : (draft.assigneeValue ?? draft.assigneeId ?? ""),
       );
       setProjectId(newIssueDefaults.projectId ?? draft.projectId);
+      setParentId(newIssueDefaults.parentId ?? draft.parentId ?? "");
       setAssigneeModelOverride(draft.assigneeModelOverride ?? "");
       setAssigneeThinkingEffort(draft.assigneeThinkingEffort ?? "");
       setAssigneeChrome(draft.assigneeChrome ?? false);
@@ -366,6 +370,7 @@ export function NewIssueDialog() {
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
       setProjectId(newIssueDefaults.projectId ?? "");
+      setParentId(newIssueDefaults.parentId ?? "");
       setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
