@@ -9,6 +9,8 @@ import { agentUrl } from "../lib/utils";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentIcon } from "../components/AgentIconPicker";
+import { cn } from "../lib/utils";
+import { agentRoleBorder, agentRoleBorderDefault, agentRoleDot, agentRoleDotDefault, agentStatusDot, agentStatusDotDefault } from "../lib/status-colors";
 import { Network } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
 
@@ -135,6 +137,12 @@ const statusDotColor: Record<string, string> = {
   terminated: "#a3a3a3",
 };
 const defaultDotColor = "#a3a3a3";
+
+const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
+
+function roleLabel(role: string): string {
+  return roleLabels[role] ?? role;
+}
 
 // ── Main component ──────────────────────────────────────────────────────
 
@@ -374,12 +382,16 @@ export function OrgChart() {
         {allNodes.map((node) => {
           const agent = agentMap.get(node.id);
           const dotColor = statusDotColor[node.status] ?? defaultDotColor;
+          const roleBorderClass = agentRoleBorder[node.role] ?? agentRoleBorderDefault;
 
           return (
             <div
               key={node.id}
               data-org-card
-              className="absolute bg-card border border-border rounded-lg shadow-sm hover:shadow-md hover:border-foreground/20 transition-[box-shadow,border-color] duration-150 cursor-pointer select-none"
+              className={cn(
+                "absolute bg-card border border-border border-l-[3px] rounded-lg shadow-sm hover:shadow-md hover:border-foreground/20 hover:border-l-[3px] transition-[box-shadow,border-color] duration-150 cursor-pointer select-none",
+                roleBorderClass,
+              )}
               style={{
                 left: node.x,
                 top: node.y,
@@ -412,18 +424,41 @@ export function OrgChart() {
                       {adapterLabels[agent.adapterType] ?? agent.adapterType}
                     </span>
                   )}
+                  {agent && (
+                    <span className="inline-flex items-center gap-1 text-[10px] leading-tight mt-1">
+                      <span className={cn("h-1.5 w-1.5 rounded-full", agentStatusDot[node.status] ?? agentStatusDotDefault)} />
+                      <span className="text-muted-foreground/60 capitalize">{node.status}</span>
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
           );
         })}
       </div>
+
+      {/* Legend */}
+      <div className="absolute bottom-3 left-3 z-10 bg-background/90 backdrop-blur-sm border border-border rounded-lg p-3 text-xs space-y-2">
+        <div className="font-medium text-foreground/80 mb-1">Legend</div>
+        <div className="space-y-1">
+          <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Roles</div>
+          {Object.entries(roleLabels).map(([role, label]) => (
+            <div key={role} className="flex items-center gap-2">
+              <span className={cn("h-2 w-2 rounded-full", agentRoleDot[role] ?? agentRoleDotDefault)} />
+              <span className="text-muted-foreground">{label}</span>
+            </div>
+          ))}
+        </div>
+        <div className="border-t border-border pt-1.5 space-y-1">
+          <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Status</div>
+          {Object.entries(statusDotColor).map(([status, color]) => (
+            <div key={status} className="flex items-center gap-2">
+              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: color }} />
+              <span className="text-muted-foreground capitalize">{status}</span>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
-}
-
-const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
-
-function roleLabel(role: string): string {
-  return roleLabels[role] ?? role;
 }

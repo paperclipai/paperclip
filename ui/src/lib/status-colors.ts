@@ -106,3 +106,39 @@ export const priorityColor: Record<string, string> = {
 };
 
 export const priorityColorDefault = "text-yellow-600 dark:text-yellow-400";
+
+// ---------------------------------------------------------------------------
+// Agent role colors — left-border accent for org chart nodes
+// ---------------------------------------------------------------------------
+
+export const agentRoleBorder: Record<string, string> = {
+  ceo: "border-l-purple-500",
+  cto: "border-l-blue-500",
+  cmo: "border-l-pink-500",
+  cfo: "border-l-emerald-500",
+  engineer: "border-l-sky-500",
+  designer: "border-l-rose-500",
+  pm: "border-l-amber-500",
+  qa: "border-l-orange-500",
+  devops: "border-l-teal-500",
+  researcher: "border-l-violet-500",
+  general: "border-l-neutral-400",
+};
+
+export const agentRoleBorderDefault = "border-l-neutral-400";
+
+export const agentRoleDot: Record<string, string> = {
+  ceo: "bg-purple-500",
+  cto: "bg-blue-500",
+  cmo: "bg-pink-500",
+  cfo: "bg-emerald-500",
+  engineer: "bg-sky-500",
+  designer: "bg-rose-500",
+  pm: "bg-amber-500",
+  qa: "bg-orange-500",
+  devops: "bg-teal-500",
+  researcher: "bg-violet-500",
+  general: "bg-neutral-400",
+};
+
+export const agentRoleDotDefault = "bg-neutral-400";
