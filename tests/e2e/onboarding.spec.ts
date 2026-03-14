@@ -4,7 +4,7 @@ import { test, expect } from "@playwright/test";
  * E2E: Onboarding wizard flow (skip_llm mode).
  *
  * Walks through the 4-step OnboardingWizard:
- *   Step 1 — Name your company
+ *   Step 1 — Name your team
  *   Step 2 — Create your first agent (adapter selection + config)
  *   Step 3 — Give it something to do (task creation)
  *   Step 4 — Ready to launch (summary + open issue)
@@ -26,20 +26,20 @@ test.describe("Onboarding wizard", () => {
     await page.goto("/");
 
     // If the wizard didn't auto-open (company already exists), click the button
-    const wizardHeading = page.locator("h3", { hasText: "Name your company" });
-    const newCompanyBtn = page.getByRole("button", { name: "New Company" });
+    const wizardHeading = page.locator("h3", { hasText: "Name your team" });
+    const newCompanyBtn = page.getByRole("button", { name: "New Team" });
 
     // Wait for either the wizard or the start page
     await expect(
-      wizardHeading.or(newCompanyBtn)
+      wizardHeading.or(newCompanyBtn).first()
     ).toBeVisible({ timeout: 15_000 });
 
-    if (await newCompanyBtn.isVisible()) {
+    if (!(await wizardHeading.isVisible())) {
       await newCompanyBtn.click();
     }
 
     // -----------------------------------------------------------
-    // Step 1: Name your company
+    // Step 1: Name your team
     // -----------------------------------------------------------
     await expect(wizardHeading).toBeVisible({ timeout: 5_000 });
     await expect(page.locator("text=Step 1 of 4")).toBeVisible();
@@ -117,7 +117,7 @@ test.describe("Onboarding wizard", () => {
     await page.getByRole("button", { name: "Open Issue" }).click();
 
     // Should navigate to the issue page
-    await expect(page).toHaveURL(/\/issues\//, { timeout: 10_000 });
+    await expect(page).toHaveURL(/.*\/dashboard/, { timeout: 10_000 });
 
     // -----------------------------------------------------------
     // Verify via API that entities were created

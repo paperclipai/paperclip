@@ -576,15 +576,15 @@ export function OnboardingWizard() {
                       <Building2 className="h-5 w-5 text-muted-foreground" />
                     </div>
                     <div>
-                      <h3 className="font-medium">Name your company</h3>
+                      <h3 className="font-medium">Name your team</h3>
                       <p className="text-xs text-muted-foreground">
-                        This is the organization your agents will work for.
+                        This is the team your agents will work in.
                       </p>
                     </div>
                   </div>
                   <div>
                     <label className="text-xs text-muted-foreground mb-1 block">
-                      Company name
+                      Team name
                     </label>
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
@@ -680,6 +680,12 @@ export function OnboardingWizard() {
                           label: "Cursor",
                           icon: MousePointer2,
                           desc: "Local Cursor agent"
+                        },
+                        {
+                          value: "process" as const,
+                          label: "Process",
+                          icon: Terminal,
+                          desc: "Subprocess execution"
                         }
                       ].map((opt) => (
                         <button
