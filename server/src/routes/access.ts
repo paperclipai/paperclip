@@ -5,6 +5,9 @@ import {
   timingSafeEqual
 } from "node:crypto";
 import fs from "node:fs";
+import dns from "node:dns";
+import http from "node:http";
+import https from "node:https";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Router } from "express";
@@ -1378,67 +1381,77 @@ type InviteResolutionProbe = {
 
 async function probeInviteResolutionTarget(
   url: URL,
-  timeoutMs: number
+  timeoutMs: number,
+  pinnedIp: string
 ): Promise<InviteResolutionProbe> {
   const startedAt = Date.now();
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(url, {
+  const originalHost = url.host; // includes port if non-standard
+  const originalHostname = url.hostname;
+  const protocol = url.protocol === "https:" ? https : http;
+
+  return new Promise((resolve) => {
+    const options: http.RequestOptions & { servername?: string } = {
       method: "HEAD",
-      redirect: "manual",
-      signal: controller.signal
-    });
-    const durationMs = Date.now() - startedAt;
-    if (
-      response.ok ||
-      response.status === 401 ||
-      response.status === 403 ||
-      response.status === 404 ||
-      response.status === 405 ||
-      response.status === 422 ||
-      response.status === 500 ||
-      response.status === 501
-    ) {
-      return {
-        status: "reachable",
+      hostname: pinnedIp,
+      port: url.port || (url.protocol === "https:" ? 443 : 80),
+      path: url.pathname + url.search,
+      headers: {
+        Host: originalHost,
+      },
+    };
+
+    if (url.protocol === "https:") {
+      options.servername = originalHostname.replace(/^\[|]$/g, ""); // Ensure SNI works without brackets for IPv6 literals
+    }
+
+    const req = protocol.request(options, (res) => {
+      clearTimeout(hardTimeout);
+      const durationMs = Date.now() - startedAt;
+      const status = res.statusCode;
+      const reachable =
+        (status && status >= 200 && status < 300) ||
+        [401, 403, 404, 405, 422, 500, 501].includes(status || 0);
+
+      resolve({
+        status: reachable ? "reachable" : "unreachable",
         method: "HEAD",
         durationMs,
-        httpStatus: response.status,
-        message: `Webhook endpoint responded to HEAD with HTTP ${response.status}.`
-      };
-    }
-    return {
-      status: "unreachable",
-      method: "HEAD",
-      durationMs,
-      httpStatus: response.status,
-      message: `Webhook endpoint probe returned HTTP ${response.status}.`
-    };
-  } catch (error) {
-    const durationMs = Date.now() - startedAt;
-    if (isAbortError(error)) {
-      return {
+        httpStatus: status || null,
+        message: status
+          ? `Webhook endpoint responded to HEAD with HTTP ${status}.`
+          : "Webhook endpoint probe returned no status code.",
+      });
+      res.resume();
+    });
+
+    const hardTimeout = setTimeout(() => {
+      req.destroy();
+      resolve({
         status: "timeout",
         method: "HEAD",
-        durationMs,
+        durationMs: Date.now() - startedAt,
         httpStatus: null,
-        message: `Webhook endpoint probe timed out after ${timeoutMs}ms.`
-      };
-    }
-    return {
-      status: "unreachable",
-      method: "HEAD",
-      durationMs,
-      httpStatus: null,
-      message:
-        error instanceof Error
-          ? error.message
-          : "Webhook endpoint probe failed."
-    };
-  } finally {
-    clearTimeout(timeout);
-  }
+        message: `Webhook endpoint probe timed out after ${timeoutMs}ms.`,
+      });
+    }, timeoutMs);
+
+    req.on("close", () => {
+      clearTimeout(hardTimeout);
+    });
+
+    req.on("error", (error) => {
+      if (Date.now() - startedAt >= timeoutMs) return; // Ignore errors after timeout resolved
+      resolve({
+        status: "unreachable",
+        method: "HEAD",
+        durationMs: Date.now() - startedAt,
+        httpStatus: null,
+        message: error instanceof Error ? error.message : "Webhook endpoint probe failed.",
+      });
+    });
+
+    req.end();
+  });
 }
 
 export function accessRoutes(
@@ -1800,6 +1813,67 @@ export function accessRoutes(
       throw badRequest("url must use http or https");
     }
 
+    const host = target.hostname.replace(/^\[|]$/g, "").toLowerCase();
+    const isPrivate = (h: string): boolean => {
+      const ip = h.replace(/^\[|]$/g, "").toLowerCase();
+
+      // Handle IPv4-mapped IPv6 (including hex representation)
+      if (ip.startsWith("::ffff:")) {
+        const v4Part = ip.slice(7);
+        if (v4Part.includes(".")) {
+          return isPrivate(v4Part);
+        }
+        const segments = v4Part.split(":");
+        if (segments.length === 2) {
+          const s1 = parseInt(segments[0], 16);
+          const s2 = parseInt(segments[1], 16);
+          if (!isNaN(s1) && !isNaN(s2)) {
+            return isPrivate(
+              `${(s1 >> 8) & 0xff}.${s1 & 0xff}.${(s2 >> 8) & 0xff}.${s2 & 0xff}`
+            );
+          }
+        }
+      }
+
+      // IPv4 ranges
+      if (/^\d+\.\d+\.\d+\.\d+$/.test(ip)) {
+        const p = ip.split(".").map(Number);
+        if (p[0] === 10 || p[0] === 127 || p[0] === 0) return true;
+        if (p[0] === 192 && p[1] === 168) return true;
+        if (p[0] === 169 && p[1] === 254) return true;
+        if (p[0] === 172 && p[1] >= 16 && p[1] <= 31) return true;
+        if (p[0] === 100 && p[1] >= 64 && p[1] <= 127) return true;
+        return false;
+      }
+
+      // IPv6 ranges
+      return (
+        ip === "localhost" ||
+        ip === "::1" ||
+        ip === "::" ||
+        /^fe[89ab][0-9a-f]*:/i.test(ip) || // fe80::/10 (Link-local)
+        /^f[cd][0-9a-f]*:/i.test(ip)      // fc00::/7 (Unique Local)
+      );
+    };
+
+    if (isPrivate(host)) {
+      throw badRequest("url must not be a local or private address");
+    }
+
+    let resolvedIps: string[];
+    try {
+      const lookupResults = await dns.promises.lookup(host, { all: true });
+      resolvedIps = lookupResults.map((r) => r.address.toLowerCase());
+    } catch {
+      throw badRequest(`could not resolve host: ${host}`);
+    }
+
+    for (const ip of resolvedIps) {
+      if (isPrivate(ip)) {
+        throw badRequest("url must not be a local or private address");
+      }
+    }
+
     const parsedTimeoutMs =
       typeof req.query.timeoutMs === "string"
         ? Number(req.query.timeoutMs)
@@ -1807,7 +1881,9 @@ export function accessRoutes(
     const timeoutMs = Number.isFinite(parsedTimeoutMs)
       ? Math.max(1000, Math.min(15000, Math.floor(parsedTimeoutMs)))
       : 5000;
-    const probe = await probeInviteResolutionTarget(target, timeoutMs);
+
+    // Use the first resolved IP for pinning, but all were validated
+    const probe = await probeInviteResolutionTarget(target, timeoutMs, resolvedIps[0]);
     res.json({
       inviteId: invite.id,
       testResolutionPath: `/api/invites/${token}/test-resolution`,
