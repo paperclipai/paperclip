@@ -45,15 +45,11 @@ export function goalRoutes(db: Db) {
     res.status(201).json(goal);
   });
 
-  router.patch("/goals/:id", validate(updateGoalSchema), async (req, res) => {
-    const id = req.params.id as string;
-    const existing = await svc.getById(id);
-    if (!existing) {
-      res.status(404).json({ error: "Goal not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
-    const goal = await svc.update(id, req.body);
+  router.patch("/companies/:companyId/goals/:goalId", validate(updateGoalSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const goalId = req.params.goalId as string;
+    assertCompanyAccess(req, companyId);
+    const goal = await svc.update(goalId, req.body);
     if (!goal) {
       res.status(404).json({ error: "Goal not found" });
       return;
@@ -61,7 +57,7 @@ export function goalRoutes(db: Db) {
 
     const actor = getActorInfo(req);
     await logActivity(db, {
-      companyId: goal.companyId,
+      companyId,
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
@@ -74,15 +70,11 @@ export function goalRoutes(db: Db) {
     res.json(goal);
   });
 
-  router.delete("/goals/:id", async (req, res) => {
-    const id = req.params.id as string;
-    const existing = await svc.getById(id);
-    if (!existing) {
-      res.status(404).json({ error: "Goal not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
-    const goal = await svc.remove(id);
+  router.delete("/companies/:companyId/goals/:goalId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const goalId = req.params.goalId as string;
+    assertCompanyAccess(req, companyId);
+    const goal = await svc.remove(goalId);
     if (!goal) {
       res.status(404).json({ error: "Goal not found" });
       return;
@@ -90,7 +82,7 @@ export function goalRoutes(db: Db) {
 
     const actor = getActorInfo(req);
     await logActivity(db, {
-      companyId: goal.companyId,
+      companyId,
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,

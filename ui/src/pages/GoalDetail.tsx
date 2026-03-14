@@ -59,7 +59,7 @@ export function GoalDetail() {
 
   const updateGoal = useMutation({
     mutationFn: (data: Record<string, unknown>) =>
-      goalsApi.update(goalId!, data),
+      goalsApi.update(resolvedCompanyId!, goalId!, data),
     onSuccess: () => {
       queryClient.invalidateQueries({
         queryKey: queryKeys.goals.detail(goalId!)
