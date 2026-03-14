@@ -5,10 +5,11 @@ paperclip_home="${PAPERCLIP_HOME:-/paperclip}"
 paperclip_bin_dir="${paperclip_home}/bin"
 xdg_config_home="${XDG_CONFIG_HOME:-${paperclip_home}/.config}"
 xdg_data_home="${XDG_DATA_HOME:-${paperclip_home}/.local/share}"
+gemini_home="${paperclip_home}/.gemini"
 opencode_install_dir="${PAPERCLIP_OPENCODE_INSTALL_DIR:-/opt/paperclip-opencode}"
 opencode_bin="${opencode_install_dir}/node_modules/.bin/opencode"
 
-mkdir -p "$paperclip_bin_dir" "$xdg_config_home" "$xdg_data_home"
+mkdir -p "$paperclip_bin_dir" "$xdg_config_home" "$xdg_data_home" "$gemini_home"
 
 if [ ! -x "$opencode_bin" ]; then
   echo "Missing OpenCode install at $opencode_bin" >&2

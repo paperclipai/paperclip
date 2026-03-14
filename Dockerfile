@@ -39,7 +39,7 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends openssh-client \
   && rm -rf /var/lib/apt/lists/*
 RUN mkdir -p /opt/paperclip-opencode /paperclip \
-  && npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest \
+  && npm install --global --omit=dev @anthropic-ai/claude-code@latest @google/gemini-cli@latest @openai/codex@latest \
   && npm install --prefix /opt/paperclip-opencode --omit=dev opencode-ai \
   && chmod +x /app/scripts/docker-entrypoint.sh \
   && chown -R node:node /paperclip /opt/paperclip-opencode

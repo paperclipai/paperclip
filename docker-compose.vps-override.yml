@@ -1,6 +1,0 @@
-# Override for fast VPS build when using db+server stack.
-# Use: docker compose -f docker-compose.yml -f docker-compose.vps-override.yml build server
-services:
-  server:
-    build:
-      dockerfile: Dockerfile.vps
