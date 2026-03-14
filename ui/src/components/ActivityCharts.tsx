@@ -113,7 +113,7 @@ const priorityColors: Record<string, string> = {
 
 const priorityOrder = ["critical", "high", "medium", "low"] as const;
 
-export function PriorityChart({ issues }: { issues: { priority: string; createdAt: Date }[] }) {
+export function PriorityChart({ issues }: { issues: { priority: string; createdAt: string | Date }[] }) {
   const days = getLast14Days();
   const grouped = new Map<string, Record<string, number>>();
   for (const day of days) grouped.set(day, { critical: 0, high: 0, medium: 0, low: 0 });
@@ -177,7 +177,7 @@ const statusLabels: Record<string, string> = {
   backlog: "Backlog",
 };
 
-export function IssueStatusChart({ issues }: { issues: { status: string; createdAt: Date }[] }) {
+export function IssueStatusChart({ issues }: { issues: { status: string; createdAt: string | Date }[] }) {
   const days = getLast14Days();
   const allStatuses = new Set<string>();
   const grouped = new Map<string, Record<string, number>>();
