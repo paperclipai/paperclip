@@ -2,13 +2,14 @@ import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { createGoalSchema, updateGoalSchema } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { activityService, goalService, heartbeatService, logActivity, resolveCeoAgentId } from "../services/index.js";
+import { activityService, goalService, heartbeatService, logActivity, projectService, resolveCeoAgentId } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
 export function goalRoutes(db: Db) {
   const router = Router();
   const svc = goalService(db);
+  const projectsSvc = projectService(db);
   const heartbeat = heartbeatService(db);
   const activitySvc = activityService(db);
 
@@ -176,6 +177,11 @@ export function goalRoutes(db: Db) {
     }
     assertCompanyAccess(req, goal.companyId);
 
+    if (goal.status === "achieved" || goal.status === "cancelled") {
+      res.status(409).json({ error: `Cannot pursue a goal with status "${goal.status}"` });
+      return;
+    }
+
     // Set ownerAgentId to CEO if not already set
     let updatedGoal = goal;
     if (!goal.ownerAgentId) {
@@ -233,6 +239,11 @@ export function goalRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, goal.companyId);
+    const project = await projectsSvc.getById(projectId);
+    if (!project || project.companyId !== goal.companyId) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
     await svc.linkProject(goalId, projectId, goal.companyId);
     res.json({ linked: true, goalId, projectId });
   });

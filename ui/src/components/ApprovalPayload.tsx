@@ -104,7 +104,18 @@ export function GoalPlanPayload({ payload }: { payload: Record<string, unknown> 
           <span>{issues.length} estimated</span>
         </div>
       )}
-      <PayloadField label="Agents" value={payload.agentAssignments} />
+      {!!payload.agentAssignments && (
+        typeof payload.agentAssignments === "object" ? (
+          <div className="flex items-start gap-2">
+            <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-xs pt-0.5">Agents</span>
+            <pre className="rounded-md bg-muted/40 px-2 py-1 text-xs text-muted-foreground overflow-x-auto max-h-32">
+              {JSON.stringify(payload.agentAssignments, null, 2)}
+            </pre>
+          </div>
+        ) : (
+          <PayloadField label="Agents" value={payload.agentAssignments} />
+        )
+      )}
       <PayloadField label="Budget" value={payload.budgetEstimate} />
       {!plan && subgoals.length === 0 && projects.length === 0 && issues.length === 0 && (
         <pre className="mt-2 rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground overflow-x-auto max-h-48">
