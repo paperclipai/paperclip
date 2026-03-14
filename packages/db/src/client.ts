@@ -107,7 +107,10 @@ async function listJournalMigrationFiles(): Promise<string[]> {
 }
 
 async function readMigrationFileContent(migrationFile: string): Promise<string> {
-  return readFile(new URL(`./migrations/${migrationFile}`, import.meta.url), "utf8");
+  const content = await readFile(new URL(`./migrations/${migrationFile}`, import.meta.url), "utf8");
+  // Normalize CRLF → LF so hashes are consistent across platforms.
+  // npm-published dist/ uses LF; git checkouts on Windows use CRLF.
+  return content.replace(/\r\n/g, "\n");
 }
 
 async function orderMigrationsByJournal(migrationFiles: string[]): Promise<string[]> {
@@ -660,6 +663,18 @@ export async function inspectMigrations(url: string): Promise<MigrationState> {
 export async function applyPendingMigrations(url: string): Promise<void> {
   const initialState = await inspectMigrations(url);
   if (initialState.status === "upToDate") return;
+
+  // Reconcile first: mark already-applied migrations in the journal before
+  // Drizzle tries to re-run them (which would crash on "relation already exists").
+  // This handles hash mismatches from CRLF/LF differences on Windows.
+  // Only needed for the "pending-migrations" reason (not fresh installs or no-journal paths).
+  if (initialState.status === "needsMigrations" && initialState.reason === "pending-migrations") {
+    const preRepair = await reconcilePendingMigrationHistory(url);
+    if (preRepair.repairedMigrations.length > 0) {
+      const repairedState = await inspectMigrations(url);
+      if (repairedState.status === "upToDate") return;
+    }
+  }
 
   if (initialState.reason === "no-migration-journal-empty-db") {
     const sql = createUtilitySql(url);
