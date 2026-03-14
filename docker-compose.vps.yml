@@ -19,6 +19,7 @@ services:
       context: .
       dockerfile: Dockerfile.vps
     restart: unless-stopped
+    stop_grace_period: 30s
     ports:
       - "${PAPERCLIP_PORT:-3100}:3100"
     environment:
