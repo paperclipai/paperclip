@@ -129,12 +129,14 @@ function normalizeSessionKeyStrategy(value: unknown): SessionKeyStrategy {
 function resolveSessionKey(input: {
   strategy: SessionKeyStrategy;
   configuredSessionKey: string | null;
+  agentId: string | null;
   runId: string;
   issueId: string | null;
 }): string {
-  const fallback = input.configuredSessionKey ?? "paperclip";
-  if (input.strategy === "run") return `paperclip:run:${input.runId}`;
-  if (input.strategy === "issue" && input.issueId) return `paperclip:issue:${input.issueId}`;
+  const agentSlug = input.agentId ?? "main";
+  const fallback = input.configuredSessionKey ?? agentSlug;
+  if (input.strategy === "run") return `agent:${agentSlug}:run:${input.runId}`;
+  if (input.strategy === "issue" && input.issueId) return `agent:${agentSlug}:issue:${input.issueId}`;
   return fallback;
 }
 
@@ -1056,9 +1058,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
   const configuredSessionKey = nonEmpty(ctx.config.sessionKey);
+  const configuredAgentId = nonEmpty(ctx.config.agentId);
+  const resolvedAgentId = nonEmpty(payloadTemplate.agentId) ?? configuredAgentId;
   const sessionKey = resolveSessionKey({
     strategy: sessionKeyStrategy,
     configuredSessionKey,
+    agentId: resolvedAgentId,
     runId: ctx.runId,
     issueId: wakePayload.issueId,
   });
@@ -1075,9 +1080,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
   delete agentParams.text;
 
-  const configuredAgentId = nonEmpty(ctx.config.agentId);
-  if (configuredAgentId && !nonEmpty(agentParams.agentId)) {
-    agentParams.agentId = configuredAgentId;
+  const effectiveAgentId = resolvedAgentId ?? "main";
+  if (!nonEmpty(agentParams.agentId)) {
+    agentParams.agentId = effectiveAgentId;
   }
 
   if (typeof agentParams.timeout !== "number") {
