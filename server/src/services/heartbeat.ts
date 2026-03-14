@@ -1421,13 +1421,19 @@ export function heartbeatService(db: Db) {
     );
     const contextProjectId = readNonEmptyString(context.projectId);
     const executionProjectId = issueAssigneeConfig?.projectId ?? contextProjectId;
-    const projectExecutionWorkspacePolicy = executionProjectId
+    const projectRow = executionProjectId
       ? await db
-          .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+          .select({
+            executionWorkspacePolicy: projects.executionWorkspacePolicy,
+            sessionKey: projects.sessionKey,
+          })
           .from(projects)
           .where(and(eq(projects.id, executionProjectId), eq(projects.companyId, agent.companyId)))
-          .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy))
+          .then((rows) => rows[0] ?? null)
       : null;
+    const projectExecutionWorkspacePolicy = parseProjectExecutionWorkspacePolicy(
+      projectRow?.executionWorkspacePolicy,
+    );
     const taskSession = taskKey
       ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, taskKey)
       : null;
@@ -1540,6 +1546,11 @@ export function heartbeatService(db: Db) {
     }
     if (executionWorkspace.projectId && !readNonEmptyString(context.projectId)) {
       context.projectId = executionWorkspace.projectId;
+    }
+    if (projectRow?.sessionKey) {
+      context.projectSessionKey = projectRow.sessionKey;
+    } else {
+      delete context.projectSessionKey;
     }
     const runtimeSessionFallback = taskKey || resetTaskSession ? null : runtime.sessionId;
     let previousSessionDisplayId = truncateDisplayId(
