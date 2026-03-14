@@ -18,7 +18,7 @@ import {
   projectWorkspaces,
   projects,
 } from "@paperclipai/db";
-import { extractProjectMentionIds } from "@paperclipai/shared";
+import { extractProjectMentionIds, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
@@ -30,6 +30,28 @@ import { getDefaultCompanyGoal } from "./goals.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
+
+/**
+ * Pure, database-free helper: given a comment/description body and a list of
+ * agents (id + name), return the ids of agents whose name or urlKey appears
+ * as an @-mention in the body.
+ */
+export function matchMentionedAgentIds(
+  body: string,
+  agentRows: { id: string; name: string }[],
+): string[] {
+  const re = /\B@([^\s@,!?.]+)/g;
+  const tokens = new Set<string>();
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(body)) !== null) tokens.add(m[1].toLowerCase());
+  if (tokens.size === 0) return [];
+  return agentRows
+    .filter(a => {
+      const urlKey = normalizeAgentUrlKey(a.name);
+      return tokens.has(a.name.toLowerCase()) || (urlKey !== null && tokens.has(urlKey));
+    })
+    .map(a => a.id);
+}
 
 function assertTransition(from: string, to: string) {
   if (from === to) return;
@@ -1351,14 +1373,9 @@ export function issueService(db: Db) {
       }),
 
     findMentionedAgents: async (companyId: string, body: string) => {
-      const re = /\B@([^\s@,!?.]+)/g;
-      const tokens = new Set<string>();
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(body)) !== null) tokens.add(m[1].toLowerCase());
-      if (tokens.size === 0) return [];
       const rows = await db.select({ id: agents.id, name: agents.name })
         .from(agents).where(eq(agents.companyId, companyId));
-      return rows.filter(a => tokens.has(a.name.toLowerCase())).map(a => a.id);
+      return matchMentionedAgentIds(body, rows);
     },
 
     findMentionedProjectIds: async (issueId: string) => {
