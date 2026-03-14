@@ -62,7 +62,7 @@ async function ensureSymlink(target: string, source: string): Promise<void> {
   if (resolvedLinkedPath === source) return;
 
   await fs.unlink(target);
-  await fs.symlink(source, target);
+  await symlinkOrJunction(source, target);
 }
 
 async function ensureCopiedFile(target: string, source: string): Promise<void> {
