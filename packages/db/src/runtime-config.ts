@@ -22,7 +22,12 @@ export type ResolvedDatabaseTarget =
   | {
       mode: "postgres";
       connectionString: string;
-      source: "DATABASE_URL" | "paperclip-env" | "config.database.connectionString";
+      source:
+        | "DATABASE_URL"
+        | "paperclip-env"
+        | "repo-env"
+        | "packages-db-env"
+        | "config.database.connectionString";
       configPath: string;
       envPath: string;
     }
@@ -94,6 +99,19 @@ function resolvePaperclipConfigPath(): string {
 
 function resolvePaperclipEnvPath(configPath: string): string {
   return path.resolve(path.dirname(configPath), ENV_BASENAME);
+}
+
+function findRepoRoot(startDir: string): string | null {
+  let currentDir = path.resolve(startDir);
+
+  while (true) {
+    const workspaceMarker = path.resolve(currentDir, "pnpm-workspace.yaml");
+    if (existsSync(workspaceMarker)) return currentDir;
+
+    const nextDir = path.resolve(currentDir, "..");
+    if (nextDir === currentDir) return null;
+    currentDir = nextDir;
+  }
 }
 
 function parseEnvFile(contents: string): Record<string, string> {
@@ -215,7 +233,6 @@ function readConfig(configPath: string): PartialConfig | null {
 export function resolveDatabaseTarget(): ResolvedDatabaseTarget {
   const configPath = resolvePaperclipConfigPath();
   const envPath = resolvePaperclipEnvPath(configPath);
-  const envEntries = readEnvEntries(envPath);
 
   const envUrl = process.env.DATABASE_URL?.trim();
   if (envUrl) {
@@ -228,12 +245,28 @@ export function resolveDatabaseTarget(): ResolvedDatabaseTarget {
     };
   }
 
-  const fileEnvUrl = envEntries.DATABASE_URL?.trim();
-  if (fileEnvUrl) {
+  const paperclipEnvUrl = readEnvEntries(envPath).DATABASE_URL?.trim();
+  if (paperclipEnvUrl) {
     return {
       mode: "postgres",
-      connectionString: fileEnvUrl,
+      connectionString: paperclipEnvUrl,
       source: "paperclip-env",
+      configPath,
+      envPath,
+    };
+  }
+
+  const repoRoot = findRepoRoot(process.cwd());
+  for (const [source, candidatePath] of [
+    ["repo-env", repoRoot ? path.resolve(repoRoot, ENV_BASENAME) : null],
+    ["packages-db-env", repoRoot ? path.resolve(repoRoot, "packages", "db", ENV_BASENAME) : null],
+  ] as const) {
+    const connectionString = candidatePath ? readEnvEntries(candidatePath).DATABASE_URL?.trim() : undefined;
+    if (!connectionString) continue;
+    return {
+      mode: "postgres",
+      connectionString,
+      source,
       configPath,
       envPath,
     };

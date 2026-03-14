@@ -129,6 +129,8 @@ The database mode is controlled by `DATABASE_URL`:
 | `postgres://...localhost...` | Local Docker PostgreSQL |
 | `postgres://...supabase.com...` | Hosted Supabase |
 
+Paperclip resolves `DATABASE_URL` from the shell first, then `.paperclip/.env`, repo `.env`, and `packages/db/.env`.
+
 Your Drizzle schema (`packages/db/src/schema/`) stays the same regardless of mode.
 
 ## Secret storage

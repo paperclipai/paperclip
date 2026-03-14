@@ -1,7 +1,8 @@
 import { readConfigFile } from "./config-file.js";
 import { existsSync } from "node:fs";
-import { config as loadDotenv } from "dotenv";
+import path from "node:path";
 import { resolvePaperclipEnvPath } from "./paths.js";
+import { config as loadDotenv, populate as populateDotenv } from "dotenv";
 import {
   AUTH_BASE_URL_MODES,
   DEPLOYMENT_EXPOSURES,
@@ -22,9 +23,36 @@ import {
   resolveHomeAwarePath,
 } from "./home-paths.js";
 
+function findRepoRoot(startDir: string): string | null {
+  let currentDir = path.resolve(startDir);
+
+  while (true) {
+    const workspaceMarker = path.resolve(currentDir, "pnpm-workspace.yaml");
+    if (existsSync(workspaceMarker)) return currentDir;
+
+    const nextDir = path.resolve(currentDir, "..");
+    if (nextDir === currentDir) return null;
+    currentDir = nextDir;
+  }
+}
+
 const PAPERCLIP_ENV_FILE_PATH = resolvePaperclipEnvPath();
-if (existsSync(PAPERCLIP_ENV_FILE_PATH)) {
-  loadDotenv({ path: PAPERCLIP_ENV_FILE_PATH, override: false, quiet: true });
+const repoRoot = findRepoRoot(process.cwd());
+const envPaths = [
+  repoRoot ? path.resolve(repoRoot, "packages", "db", ".env") : null,
+  repoRoot ? path.resolve(repoRoot, ".env") : null,
+  PAPERCLIP_ENV_FILE_PATH,
+].filter((filePath): filePath is string => typeof filePath === "string" && existsSync(filePath));
+if (envPaths.length > 0) {
+  const loaded = loadDotenv({
+    path: envPaths,
+    override: true,
+    processEnv: {},
+    quiet: true,
+  });
+  if (loaded.parsed) {
+    populateDotenv(process.env, loaded.parsed, { override: false });
+  }
 }
 
 type DatabaseMode = "embedded-postgres" | "postgres";

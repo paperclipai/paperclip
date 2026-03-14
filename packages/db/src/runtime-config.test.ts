@@ -41,6 +41,42 @@ describe("resolveDatabaseTarget", () => {
     });
   });
 
+  it.each([
+    {
+      name: "repo root .env",
+      cwdParts: [] as string[],
+      envRelativePath: ".env",
+      connectionString: "postgres://repo-user:repo-pass@db.example.com:5432/paperclip",
+      source: "repo-env",
+    },
+    {
+      name: "packages/db/.env",
+      cwdParts: ["packages", "db"],
+      envRelativePath: path.join("packages", "db", ".env"),
+      connectionString: "postgres://pkg-user:pkg-pass@db.example.com:6543/paperclip",
+      source: "packages-db-env",
+    },
+  ] as const)("uses DATABASE_URL from $name", ({ cwdParts, envRelativePath, connectionString, source }) => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-db-runtime-"));
+    const projectDir = path.join(tempDir, "repo");
+    const cwd = path.join(projectDir, ...cwdParts);
+    fs.mkdirSync(cwd, { recursive: true });
+    process.chdir(cwd);
+    process.env.PAPERCLIP_HOME = path.join(tempDir, "paperclip-home");
+    delete process.env.PAPERCLIP_CONFIG;
+    delete process.env.DATABASE_URL;
+    writeText(path.join(projectDir, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n");
+    writeText(path.join(projectDir, envRelativePath), `DATABASE_URL="${connectionString}"\n`);
+
+    const target = resolveDatabaseTarget();
+
+    expect(target).toMatchObject({
+      mode: "postgres",
+      connectionString,
+      source,
+    });
+  });
+
   it("uses DATABASE_URL from repo-local .paperclip/.env", () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-db-runtime-"));
     const projectDir = path.join(tempDir, "repo");
@@ -67,6 +103,7 @@ describe("resolveDatabaseTarget", () => {
   it("uses config postgres connection string when configured", () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-db-runtime-"));
     const configPath = path.join(tempDir, "instance", "config.json");
+    process.chdir(tempDir);
     process.env.PAPERCLIP_CONFIG = configPath;
     writeJson(configPath, {
       database: {
@@ -87,6 +124,7 @@ describe("resolveDatabaseTarget", () => {
   it("falls back to embedded postgres settings from config", () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-db-runtime-"));
     const configPath = path.join(tempDir, "instance", "config.json");
+    process.chdir(tempDir);
     process.env.PAPERCLIP_CONFIG = configPath;
     writeJson(configPath, {
       database: {
