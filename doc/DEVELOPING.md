@@ -142,7 +142,7 @@ This command:
 - creates an isolated instance under `~/.paperclip-worktrees/instances/<worktree-id>/`
 - when run inside a linked git worktree, mirrors the effective git hooks into that worktree's private git dir
 - picks a free app port and embedded PostgreSQL port
-- by default seeds the isolated DB in `minimal` mode from your main instance via a logical SQL snapshot
+- by default seeds the isolated DB in `minimal` mode from the current effective Paperclip instance/config (repo-local worktree config when present, otherwise the default instance) via a logical SQL snapshot
 
 Seed modes:
 
@@ -152,7 +152,13 @@ Seed modes:
 
 After `worktree init`, both the server and the CLI auto-load the repo-local `.paperclip/.env` when run inside that worktree, so normal commands like `pnpm dev`, `paperclipai doctor`, and `paperclipai db:backup` stay scoped to the worktree instance.
 
-That repo-local env also sets `PAPERCLIP_IN_WORKTREE=true`, which the server can use for worktree-specific UI behavior such as an alternate favicon.
+That repo-local env also sets:
+
+- `PAPERCLIP_IN_WORKTREE=true`
+- `PAPERCLIP_WORKTREE_NAME=<worktree-name>`
+- `PAPERCLIP_WORKTREE_COLOR=<hex-color>`
+
+The server/UI use those values for worktree-specific branding such as the top banner and dynamically colored favicon.
 
 Print shell exports explicitly when needed:
 

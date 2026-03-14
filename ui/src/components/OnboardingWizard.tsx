@@ -495,41 +495,45 @@ export function OnboardingWizard() {
 
   async function handleStep3Next() {
     if (!createdCompanyId || !createdAgentId) return;
+    setError(null);
+    setStep(4);
+  }
+
+  async function handleLaunch() {
+    if (!createdCompanyId || !createdAgentId) return;
     setLoading(true);
     setError(null);
     try {
-      const issue = await issuesApi.create(createdCompanyId, {
-        title: taskTitle.trim(),
-        ...(taskDescription.trim()
-          ? { description: taskDescription.trim() }
-          : {}),
-        assigneeAgentId: createdAgentId,
-        status: "todo"
-      });
-      setCreatedIssueRef(issue.identifier ?? issue.id);
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.issues.list(createdCompanyId)
-      });
-      setStep(4);
+      let issueRef = createdIssueRef;
+      if (!issueRef) {
+        const issue = await issuesApi.create(createdCompanyId, {
+          title: taskTitle.trim(),
+          ...(taskDescription.trim()
+            ? { description: taskDescription.trim() }
+            : {}),
+          assigneeAgentId: createdAgentId,
+          status: "todo"
+        });
+        issueRef = issue.identifier ?? issue.id;
+        setCreatedIssueRef(issueRef);
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.issues.list(createdCompanyId)
+        });
+      }
+
+      setSelectedCompanyId(createdCompanyId);
+      reset();
+      closeOnboarding();
+      navigate(
+        createdCompanyPrefix
+          ? `/${createdCompanyPrefix}/issues/${issueRef}`
+          : `/issues/${issueRef}`
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create task");
     } finally {
       setLoading(false);
     }
-  }
-
-  async function handleLaunch() {
-    if (!createdAgentId) return;
-    setLoading(true);
-    setError(null);
-    setLoading(false);
-    reset();
-    closeOnboarding();
-    if (createdCompanyPrefix) {
-      navigate(`/${createdCompanyPrefix}/dashboard`);
-      return;
-    }
-    navigate("/dashboard");
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -1175,8 +1179,8 @@ export function OnboardingWizard() {
                     <div>
                       <h3 className="font-medium">Ready to launch</h3>
                       <p className="text-xs text-muted-foreground">
-                        Everything is set up. Your assigned task already woke
-                        the agent, so you can jump straight to the issue.
+                        Everything is set up. Launching now will create the
+                        starter task, wake the agent, and open the issue.
                       </p>
                     </div>
                   </div>
@@ -1291,7 +1295,7 @@ export function OnboardingWizard() {
                       ) : (
                         <ArrowRight className="h-3.5 w-3.5 mr-1" />
                       )}
-                      {loading ? "Opening..." : "Open Issue"}
+                      {loading ? "Creating..." : "Create & Open Issue"}
                     </Button>
                   )}
                 </div>

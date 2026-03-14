@@ -156,6 +156,24 @@ async function maybePreflightMigrations() {
 
 await maybePreflightMigrations();
 
+async function buildPluginSdk() {
+  console.log("[paperclip] building plugin sdk...");
+  const result = await runPnpm(
+    ["--filter", "@paperclipai/plugin-sdk", "build"],
+    { stdio: "inherit" },
+  );
+  if (result.signal) {
+    process.kill(process.pid, result.signal);
+    return;
+  }
+  if (result.code !== 0) {
+    console.error("[paperclip] plugin sdk build failed");
+    process.exit(result.code);
+  }
+}
+
+await buildPluginSdk();
+
 if (mode === "watch") {
   env.PAPERCLIP_MIGRATION_PROMPT = "never";
 }

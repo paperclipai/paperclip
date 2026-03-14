@@ -1,5 +1,9 @@
 import { Command } from "commander";
 import type { Agent } from "@paperclipai/shared";
+import {
+  removeMaintainerOnlySkillSymlinks,
+  resolvePaperclipSkillsDir,
+} from "@paperclipai/adapter-utils/server-utils";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -34,15 +38,12 @@ interface SkillsInstallSummary {
   tool: "codex" | "claude";
   target: string;
   linked: string[];
+  removed: string[];
   skipped: string[];
   failed: Array<{ name: string; error: string }>;
 }
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
-const PAPERCLIP_SKILLS_CANDIDATES = [
-  path.resolve(__moduleDir, "../../../../../skills"), // dev: cli/src/commands/client -> repo root/skills
-  path.resolve(process.cwd(), "skills"),
-];
 
 function codexSkillsHome(): string {
   const fromEnv = process.env.CODEX_HOME?.trim();
@@ -56,14 +57,6 @@ function claudeSkillsHome(): string {
   return path.join(base, "skills");
 }
 
-async function resolvePaperclipSkillsDir(): Promise<string | null> {
-  for (const candidate of PAPERCLIP_SKILLS_CANDIDATES) {
-    const isDir = await fs.stat(candidate).then((s) => s.isDirectory()).catch(() => false);
-    if (isDir) return candidate;
-  }
-  return null;
-}
-
 async function installSkillsForTarget(
   sourceSkillsDir: string,
   targetSkillsDir: string,
@@ -73,20 +66,65 @@ async function installSkillsForTarget(
     tool,
     target: targetSkillsDir,
     linked: [],
+    removed: [],
     skipped: [],
     failed: [],
   };
 
   await fs.mkdir(targetSkillsDir, { recursive: true });
   const entries = await fs.readdir(sourceSkillsDir, { withFileTypes: true });
+  summary.removed = await removeMaintainerOnlySkillSymlinks(
+    targetSkillsDir,
+    entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name),
+  );
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const source = path.join(sourceSkillsDir, entry.name);
     const target = path.join(targetSkillsDir, entry.name);
     const existing = await fs.lstat(target).catch(() => null);
     if (existing) {
-      summary.skipped.push(entry.name);
-      continue;
+      if (existing.isSymbolicLink()) {
+        let linkedPath: string | null = null;
+        try {
+          linkedPath = await fs.readlink(target);
+        } catch (err) {
+          await fs.unlink(target);
+          try {
+            await fs.symlink(source, target);
+            summary.linked.push(entry.name);
+            continue;
+          } catch (linkErr) {
+            summary.failed.push({
+              name: entry.name,
+              error:
+                err instanceof Error && linkErr instanceof Error
+                  ? `${err.message}; then ${linkErr.message}`
+                  : err instanceof Error
+                    ? err.message
+                    : `Failed to recover broken symlink: ${String(err)}`,
+            });
+            continue;
+          }
+        }
+
+        const resolvedLinkedPath = path.isAbsolute(linkedPath)
+          ? linkedPath
+          : path.resolve(path.dirname(target), linkedPath);
+        const linkedTargetExists = await fs
+          .stat(resolvedLinkedPath)
+          .then(() => true)
+          .catch(() => false);
+
+        if (!linkedTargetExists) {
+          await fs.unlink(target);
+        } else {
+          summary.skipped.push(entry.name);
+          continue;
+        }
+      } else {
+        summary.skipped.push(entry.name);
+        continue;
+      }
     }
 
     try {
@@ -210,7 +248,7 @@ export function registerAgentCommands(program: Command): void {
 
           const installSummaries: SkillsInstallSummary[] = [];
           if (opts.installSkills !== false) {
-            const skillsDir = await resolvePaperclipSkillsDir();
+            const skillsDir = await resolvePaperclipSkillsDir(__moduleDir, [path.resolve(process.cwd(), "skills")]);
             if (!skillsDir) {
               throw new Error(
                 "Could not locate local Paperclip skills directory. Expected ./skills in the repo checkout.",
@@ -258,7 +296,7 @@ export function registerAgentCommands(program: Command): void {
           if (installSummaries.length > 0) {
             for (const summary of installSummaries) {
               console.log(
-                `${summary.tool}: linked=${summary.linked.length} skipped=${summary.skipped.length} failed=${summary.failed.length} target=${summary.target}`,
+                `${summary.tool}: linked=${summary.linked.length} removed=${summary.removed.length} skipped=${summary.skipped.length} failed=${summary.failed.length} target=${summary.target}`,
               );
               for (const failed of summary.failed) {
                 console.log(`  failed ${failed.name}: ${failed.error}`);

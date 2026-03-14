@@ -39,6 +39,7 @@ import {
   buildWorktreeEnvEntries,
   DEFAULT_WORKTREE_HOME,
   formatShellExports,
+  generateWorktreeColor,
   isWorktreeSeedMode,
   resolveSuggestedWorktreeName,
   resolveWorktreeSeedPlan,
@@ -55,6 +56,7 @@ type WorktreeInitOptions = {
   fromConfig?: string;
   fromDataDir?: string;
   fromInstance?: string;
+  sourceConfigPathOverride?: string;
   serverPort?: number;
   dbPort?: number;
   seed?: boolean;
@@ -83,6 +85,7 @@ type EmbeddedPostgresCtor = new (opts: {
   password: string;
   port: number;
   persistent: boolean;
+  initdbFlags?: string[];
   onLog?: (message: unknown) => void;
   onError?: (message: unknown) => void;
 }) => EmbeddedPostgresInstance;
@@ -127,6 +130,8 @@ function isCurrentSourceConfigPath(sourceConfigPath: string): boolean {
   return path.resolve(currentConfigPath) === path.resolve(sourceConfigPath);
 }
 
+const WORKTREE_NAME_PREFIX = "paperclip-";
+
 function resolveWorktreeMakeName(name: string): string {
   const value = nonEmpty(name);
   if (!value) {
@@ -137,7 +142,15 @@ function resolveWorktreeMakeName(name: string): string {
       "Worktree name must contain only letters, numbers, dots, underscores, or dashes.",
     );
   }
-  return value;
+  return value.startsWith(WORKTREE_NAME_PREFIX) ? value : `${WORKTREE_NAME_PREFIX}${value}`;
+}
+
+function resolveWorktreeHome(explicit?: string): string {
+  return explicit ?? process.env.PAPERCLIP_WORKTREES_DIR ?? DEFAULT_WORKTREE_HOME;
+}
+
+function resolveWorktreeStartPoint(explicit?: string): string | undefined {
+  return explicit ?? nonEmpty(process.env.PAPERCLIP_WORKTREE_START_POINT) ?? undefined;
 }
 
 export function resolveWorktreeMakeTargetPath(name: string): string {
@@ -414,8 +427,12 @@ async function rebindSeededProjectWorkspaces(input: {
   }
 }
 
-function resolveSourceConfigPath(opts: WorktreeInitOptions): string {
+export function resolveSourceConfigPath(opts: WorktreeInitOptions): string {
+  if (opts.sourceConfigPathOverride) return path.resolve(opts.sourceConfigPathOverride);
   if (opts.fromConfig) return path.resolve(opts.fromConfig);
+  if (!opts.fromDataDir && !opts.fromInstance) {
+    return resolveConfigPath();
+  }
   const sourceHome = path.resolve(expandHomePrefix(opts.fromDataDir ?? "~/.paperclip"));
   const sourceInstanceId = sanitizeWorktreeInstanceId(opts.fromInstance ?? "default");
   return path.resolve(sourceHome, "instances", sourceInstanceId, "config.json");
@@ -612,7 +629,7 @@ async function seedWorktreeDatabase(input: {
 
 async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
   const cwd = process.cwd();
-  const name = resolveSuggestedWorktreeName(
+  const worktreeName = resolveSuggestedWorktreeName(
     cwd,
     opts.name ?? detectGitBranchName(cwd) ?? undefined,
   );
@@ -620,12 +637,16 @@ async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
   if (!isWorktreeSeedMode(seedMode)) {
     throw new Error(`Unsupported seed mode "${seedMode}". Expected one of: minimal, full.`);
   }
-  const instanceId = sanitizeWorktreeInstanceId(opts.instance ?? name);
+  const instanceId = sanitizeWorktreeInstanceId(opts.instance ?? worktreeName);
   const paths = resolveWorktreeLocalPaths({
     cwd,
-    homeDir: opts.home ?? DEFAULT_WORKTREE_HOME,
+    homeDir: resolveWorktreeHome(opts.home),
     instanceId,
   });
+  const branding = {
+    name: worktreeName,
+    color: generateWorktreeColor(),
+  };
   const sourceConfigPath = resolveSourceConfigPath(opts);
   const sourceConfig = existsSync(sourceConfigPath) ? readConfig(sourceConfigPath) : null;
 
@@ -658,7 +679,7 @@ async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
     nonEmpty(process.env.PAPERCLIP_AGENT_JWT_SECRET);
   mergePaperclipEnvEntries(
     {
-      ...buildWorktreeEnvEntries(paths),
+      ...buildWorktreeEnvEntries(paths, branding),
       ...(existingAgentJwtSecret ? { PAPERCLIP_AGENT_JWT_SECRET: existingAgentJwtSecret } : {}),
     },
     paths.envPath,
@@ -699,6 +720,7 @@ async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
   p.log.message(pc.dim(`Repo env: ${paths.envPath}`));
   p.log.message(pc.dim(`Isolated home: ${paths.homeDir}`));
   p.log.message(pc.dim(`Instance: ${paths.instanceId}`));
+  p.log.message(pc.dim(`Worktree badge: ${branding.name} (${branding.color})`));
   p.log.message(pc.dim(`Server port: ${serverPort} | DB port: ${databasePort}`));
   if (copiedGitHooks?.copied) {
     p.log.message(
@@ -732,15 +754,17 @@ export async function worktreeMakeCommand(nameArg: string, opts: WorktreeMakeOpt
   p.intro(pc.bgCyan(pc.black(" paperclipai worktree:make ")));
 
   const name = resolveWorktreeMakeName(nameArg);
+  const startPoint = resolveWorktreeStartPoint(opts.startPoint);
   const sourceCwd = process.cwd();
+  const sourceConfigPath = resolveSourceConfigPath(opts);
   const targetPath = resolveWorktreeMakeTargetPath(name);
   if (existsSync(targetPath)) {
     throw new Error(`Target path already exists: ${targetPath}`);
   }
 
   mkdirSync(path.dirname(targetPath), { recursive: true });
-  if (opts.startPoint) {
-    const [remote] = opts.startPoint.split("/", 1);
+  if (startPoint) {
+    const [remote] = startPoint.split("/", 1);
     try {
       execFileSync("git", ["fetch", remote], {
         cwd: sourceCwd,
@@ -756,8 +780,8 @@ export async function worktreeMakeCommand(nameArg: string, opts: WorktreeMakeOpt
   const worktreeArgs = resolveGitWorktreeAddArgs({
     branchName: name,
     targetPath,
-    branchExists: !opts.startPoint && localBranchExists(sourceCwd, name),
-    startPoint: opts.startPoint,
+    branchExists: !startPoint && localBranchExists(sourceCwd, name),
+    startPoint,
   });
 
   const spinner = p.spinner();
@@ -792,12 +816,239 @@ export async function worktreeMakeCommand(nameArg: string, opts: WorktreeMakeOpt
     await runWorktreeInit({
       ...opts,
       name,
+      sourceConfigPathOverride: sourceConfigPath,
     });
   } catch (error) {
     throw error;
   } finally {
     process.chdir(originalCwd);
   }
+}
+
+type WorktreeCleanupOptions = {
+  instance?: string;
+  home?: string;
+  force?: boolean;
+};
+
+type GitWorktreeListEntry = {
+  worktree: string;
+  branch: string | null;
+  bare: boolean;
+  detached: boolean;
+};
+
+function parseGitWorktreeList(cwd: string): GitWorktreeListEntry[] {
+  const raw = execFileSync("git", ["worktree", "list", "--porcelain"], {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const entries: GitWorktreeListEntry[] = [];
+  let current: Partial<GitWorktreeListEntry> = {};
+  for (const line of raw.split("\n")) {
+    if (line.startsWith("worktree ")) {
+      current = { worktree: line.slice("worktree ".length) };
+    } else if (line.startsWith("branch ")) {
+      current.branch = line.slice("branch ".length);
+    } else if (line === "bare") {
+      current.bare = true;
+    } else if (line === "detached") {
+      current.detached = true;
+    } else if (line === "" && current.worktree) {
+      entries.push({
+        worktree: current.worktree,
+        branch: current.branch ?? null,
+        bare: current.bare ?? false,
+        detached: current.detached ?? false,
+      });
+      current = {};
+    }
+  }
+  if (current.worktree) {
+    entries.push({
+      worktree: current.worktree,
+      branch: current.branch ?? null,
+      bare: current.bare ?? false,
+      detached: current.detached ?? false,
+    });
+  }
+  return entries;
+}
+
+function branchHasUniqueCommits(cwd: string, branchName: string): boolean {
+  try {
+    const output = execFileSync(
+      "git",
+      ["log", "--oneline", branchName, "--not", "--remotes", "--exclude", `refs/heads/${branchName}`, "--branches"],
+      { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    ).trim();
+    return output.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function branchExistsOnAnyRemote(cwd: string, branchName: string): boolean {
+  try {
+    const output = execFileSync(
+      "git",
+      ["branch", "-r", "--list", `*/${branchName}`],
+      { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    ).trim();
+    return output.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function worktreePathHasUncommittedChanges(worktreePath: string): boolean {
+  try {
+    const output = execFileSync(
+      "git",
+      ["status", "--porcelain"],
+      { cwd: worktreePath, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    ).trim();
+    return output.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+export async function worktreeCleanupCommand(nameArg: string, opts: WorktreeCleanupOptions): Promise<void> {
+  printPaperclipCliBanner();
+  p.intro(pc.bgCyan(pc.black(" paperclipai worktree:cleanup ")));
+
+  const name = resolveWorktreeMakeName(nameArg);
+  const sourceCwd = process.cwd();
+  const targetPath = resolveWorktreeMakeTargetPath(name);
+  const instanceId = sanitizeWorktreeInstanceId(opts.instance ?? name);
+  const homeDir = path.resolve(expandHomePrefix(resolveWorktreeHome(opts.home)));
+  const instanceRoot = path.resolve(homeDir, "instances", instanceId);
+
+  // ── 1. Assess current state ──────────────────────────────────────────
+
+  const hasBranch = localBranchExists(sourceCwd, name);
+  const hasTargetDir = existsSync(targetPath);
+  const hasInstanceData = existsSync(instanceRoot);
+
+  const worktrees = parseGitWorktreeList(sourceCwd);
+  const linkedWorktree = worktrees.find(
+    (wt) => wt.branch === `refs/heads/${name}` || path.resolve(wt.worktree) === path.resolve(targetPath),
+  );
+
+  if (!hasBranch && !hasTargetDir && !hasInstanceData && !linkedWorktree) {
+    p.log.info("Nothing to clean up — no branch, worktree directory, or instance data found.");
+    p.outro(pc.green("Already clean."));
+    return;
+  }
+
+  // ── 2. Safety checks ────────────────────────────────────────────────
+
+  const problems: string[] = [];
+
+  if (hasBranch && branchHasUniqueCommits(sourceCwd, name)) {
+    const onRemote = branchExistsOnAnyRemote(sourceCwd, name);
+    if (onRemote) {
+      p.log.info(
+        `Branch "${name}" has unique local commits, but the branch also exists on a remote — safe to delete locally.`,
+      );
+    } else {
+      problems.push(
+        `Branch "${name}" has commits not found on any other branch or remote. ` +
+          `Deleting it will lose work. Push it first, or use --force.`,
+      );
+    }
+  }
+
+  if (hasTargetDir && worktreePathHasUncommittedChanges(targetPath)) {
+    problems.push(
+      `Worktree directory ${targetPath} has uncommitted changes. Commit or stash first, or use --force.`,
+    );
+  }
+
+  if (problems.length > 0 && !opts.force) {
+    for (const problem of problems) {
+      p.log.error(problem);
+    }
+    throw new Error("Safety checks failed. Resolve the issues above or re-run with --force.");
+  }
+  if (problems.length > 0 && opts.force) {
+    for (const problem of problems) {
+      p.log.warning(`Overridden by --force: ${problem}`);
+    }
+  }
+
+  // ── 3. Clean up (idempotent steps) ──────────────────────────────────
+
+  // 3a. Remove the git worktree registration
+  if (linkedWorktree) {
+    const worktreeDirExists = existsSync(linkedWorktree.worktree);
+    const spinner = p.spinner();
+    if (worktreeDirExists) {
+      spinner.start(`Removing git worktree at ${linkedWorktree.worktree}...`);
+      try {
+        const removeArgs = ["worktree", "remove", linkedWorktree.worktree];
+        if (opts.force) removeArgs.push("--force");
+        execFileSync("git", removeArgs, {
+          cwd: sourceCwd,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        spinner.stop(`Removed git worktree at ${linkedWorktree.worktree}.`);
+      } catch (error) {
+        spinner.stop(pc.yellow(`Could not remove worktree cleanly, will prune instead.`));
+        p.log.warning(extractExecSyncErrorMessage(error) ?? String(error));
+      }
+    } else {
+      spinner.start("Pruning stale worktree entry...");
+      execFileSync("git", ["worktree", "prune"], {
+        cwd: sourceCwd,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      spinner.stop("Pruned stale worktree entry.");
+    }
+  } else {
+    // Even without a linked worktree, prune to clean up any orphaned entries
+    execFileSync("git", ["worktree", "prune"], {
+      cwd: sourceCwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  }
+
+  // 3b. Remove the worktree directory if it still exists (e.g. partial creation)
+  if (existsSync(targetPath)) {
+    const spinner = p.spinner();
+    spinner.start(`Removing worktree directory ${targetPath}...`);
+    rmSync(targetPath, { recursive: true, force: true });
+    spinner.stop(`Removed worktree directory ${targetPath}.`);
+  }
+
+  // 3c. Delete the local branch (now safe — worktree is gone)
+  if (localBranchExists(sourceCwd, name)) {
+    const spinner = p.spinner();
+    spinner.start(`Deleting local branch "${name}"...`);
+    try {
+      const deleteFlag = opts.force ? "-D" : "-d";
+      execFileSync("git", ["branch", deleteFlag, name], {
+        cwd: sourceCwd,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      spinner.stop(`Deleted local branch "${name}".`);
+    } catch (error) {
+      spinner.stop(pc.yellow(`Could not delete branch "${name}".`));
+      p.log.warning(extractExecSyncErrorMessage(error) ?? String(error));
+    }
+  }
+
+  // 3d. Remove instance data
+  if (existsSync(instanceRoot)) {
+    const spinner = p.spinner();
+    spinner.start(`Removing instance data at ${instanceRoot}...`);
+    rmSync(instanceRoot, { recursive: true, force: true });
+    spinner.stop(`Removed instance data at ${instanceRoot}.`);
+  }
+
+  p.outro(pc.green("Cleanup complete."));
 }
 
 export async function worktreeEnvCommand(opts: WorktreeEnvOptions): Promise<void> {
@@ -826,10 +1077,10 @@ export function registerWorktreeCommands(program: Command): void {
   program
     .command("worktree:make")
     .description("Create ~/NAME as a git worktree, then initialize an isolated Paperclip instance inside it")
-    .argument("<name>", "Worktree directory and branch name (created at ~/NAME)")
-    .option("--start-point <ref>", "Remote ref to base the new branch on (e.g. origin/main)")
+    .argument("<name>", "Worktree name — auto-prefixed with paperclip- if needed (created at ~/paperclip-NAME)")
+    .option("--start-point <ref>", "Remote ref to base the new branch on (env: PAPERCLIP_WORKTREE_START_POINT)")
     .option("--instance <id>", "Explicit isolated instance id")
-    .option("--home <path>", `Home root for worktree instances (default: ${DEFAULT_WORKTREE_HOME})`)
+    .option("--home <path>", `Home root for worktree instances (env: PAPERCLIP_WORKTREES_DIR, default: ${DEFAULT_WORKTREE_HOME})`)
     .option("--from-config <path>", "Source config.json to seed from")
     .option("--from-data-dir <path>", "Source PAPERCLIP_HOME used when deriving the source config")
     .option("--from-instance <id>", "Source instance id when deriving the source config", "default")
@@ -845,7 +1096,7 @@ export function registerWorktreeCommands(program: Command): void {
     .description("Create repo-local config/env and an isolated instance for this worktree")
     .option("--name <name>", "Display name used to derive the instance id")
     .option("--instance <id>", "Explicit isolated instance id")
-    .option("--home <path>", `Home root for worktree instances (default: ${DEFAULT_WORKTREE_HOME})`)
+    .option("--home <path>", `Home root for worktree instances (env: PAPERCLIP_WORKTREES_DIR, default: ${DEFAULT_WORKTREE_HOME})`)
     .option("--from-config <path>", "Source config.json to seed from")
     .option("--from-data-dir <path>", "Source PAPERCLIP_HOME used when deriving the source config")
     .option("--from-instance <id>", "Source instance id when deriving the source config", "default")
@@ -862,4 +1113,13 @@ export function registerWorktreeCommands(program: Command): void {
     .option("-c, --config <path>", "Path to config file")
     .option("--json", "Print JSON instead of shell exports")
     .action(worktreeEnvCommand);
+
+  program
+    .command("worktree:cleanup")
+    .description("Safely remove a worktree, its branch, and its isolated instance data")
+    .argument("<name>", "Worktree name — auto-prefixed with paperclip- if needed")
+    .option("--instance <id>", "Explicit instance id (if different from the worktree name)")
+    .option("--home <path>", `Home root for worktree instances (env: PAPERCLIP_WORKTREES_DIR, default: ${DEFAULT_WORKTREE_HOME})`)
+    .option("--force", "Bypass safety checks (uncommitted changes, unique commits)", false)
+    .action(worktreeCleanupCommand);
 }

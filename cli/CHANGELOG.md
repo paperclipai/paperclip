@@ -1,5 +1,23 @@
 # paperclipai
 
+## 0.3.1
+
+### Patch Changes
+
+- Stable release preparation for 0.3.1
+- Updated dependencies
+  - @paperclipai/adapter-utils@0.3.1
+  - @paperclipai/adapter-claude-local@0.3.1
+  - @paperclipai/adapter-codex-local@0.3.1
+  - @paperclipai/adapter-cursor-local@0.3.1
+  - @paperclipai/adapter-gemini-local@0.3.1
+  - @paperclipai/adapter-openclaw-gateway@0.3.1
+  - @paperclipai/adapter-opencode-local@0.3.1
+  - @paperclipai/adapter-pi-local@0.3.1
+  - @paperclipai/db@0.3.1
+  - @paperclipai/shared@0.3.1
+  - @paperclipai/server@0.3.1
+
 ## 0.3.0
 
 ### Minor Changes

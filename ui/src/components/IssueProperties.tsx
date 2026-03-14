@@ -10,6 +10,7 @@ import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
+import { formatAssigneeUserLabel } from "../lib/assignees";
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
@@ -206,14 +207,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
   const assignee = issue.assigneeAgentId
     ? agents?.find((a) => a.id === issue.assigneeAgentId)
     : null;
-  const userLabel = (userId: string | null | undefined) =>
-    userId
-      ? userId === "local-board"
-        ? "Board"
-        : currentUserId && userId === currentUserId
-          ? "Me"
-          : userId.slice(0, 5)
-      : null;
+  const userLabel = (userId: string | null | undefined) => formatAssigneeUserLabel(userId, currentUserId);
   const assigneeUserLabel = userLabel(issue.assigneeUserId);
   const creatorUserLabel = userLabel(issue.createdByUserId);
 
@@ -349,7 +343,22 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
         >
           No assignee
         </button>
-        {issue.createdByUserId && (
+        {currentUserId && (
+          <button
+            className={cn(
+              "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+              issue.assigneeUserId === currentUserId && "bg-accent",
+            )}
+            onClick={() => {
+              onUpdate({ assigneeAgentId: null, assigneeUserId: currentUserId });
+              setAssigneeOpen(false);
+            }}
+          >
+            <User className="h-3 w-3 shrink-0 text-muted-foreground" />
+            Assign to me
+          </button>
+        )}
+        {issue.createdByUserId && issue.createdByUserId !== currentUserId && (
           <button
             className={cn(
               "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
@@ -361,7 +370,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
             }}
           >
             <User className="h-3 w-3 shrink-0 text-muted-foreground" />
-            {creatorUserLabel ? `Assign to ${creatorUserLabel === "Me" ? "me" : creatorUserLabel}` : "Assign to requester"}
+            {creatorUserLabel ? `Assign to ${creatorUserLabel}` : "Assign to requester"}
           </button>
         )}
         {sortedAgents

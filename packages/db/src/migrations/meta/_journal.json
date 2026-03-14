@@ -197,6 +197,20 @@
       "when": 1773150731736,
       "tag": "0027_tranquil_tenebrous",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1773432085646,
+      "tag": "0028_harsh_goliath",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1773417600000,
+      "tag": "0029_plugin_tables",
+      "breakpoints": true
     }
   ]
 }

@@ -21,6 +21,7 @@ import { heartbeatsApi } from "../api/heartbeats";
 import { queryKeys } from "../lib/queryKeys";
 import { useInboxBadge } from "../hooks/useInboxBadge";
 import { Button } from "@/components/ui/button";
+import { PluginSlotOutlet } from "@/plugins/slots";
 
 export function Sidebar() {
   const { openNewIssue } = useDialog();
@@ -37,6 +38,11 @@ export function Sidebar() {
   function openSearch() {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true }));
   }
+
+  const pluginContext = {
+    companyId: selectedCompanyId,
+    companyPrefix: selectedCompany?.issuePrefix ?? null,
+  };
 
   return (
     <aside className="w-60 h-full min-h-0 border-r border-border bg-background flex flex-col">
@@ -80,6 +86,13 @@ export function Sidebar() {
             badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
             alert={inboxBadge.failedRuns > 0}
           />
+          <PluginSlotOutlet
+            slotTypes={["sidebar"]}
+            context={pluginContext}
+            className="flex flex-col gap-0.5"
+            itemClassName="text-[13px] font-medium"
+            missingBehavior="placeholder"
+          />
         </div>
 
         <SidebarSection label="Work">
@@ -97,6 +110,14 @@ export function Sidebar() {
           <SidebarNavItem to="/activity" label="Activity" icon={History} />
           <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
         </SidebarSection>
+
+        <PluginSlotOutlet
+          slotTypes={["sidebarPanel"]}
+          context={pluginContext}
+          className="flex flex-col gap-3"
+          itemClassName="rounded-lg border border-border p-3"
+          missingBehavior="placeholder"
+        />
       </nav>
     </aside>
   );
