@@ -81,4 +81,64 @@ describe("RunTranscriptView", () => {
       text: "Working on the task.",
     });
   });
+
+  it("renders informational paperclip stderr as a neutral paperclip event", () => {
+    const entries: TranscriptEntry[] = [
+      {
+        kind: "stderr",
+        ts: "2026-03-12T00:00:00.000Z",
+        text: "[paperclip] Loaded agent instructions file: /workspace/agents/ceo/AGENTS.md",
+      },
+    ];
+
+    const blocks = normalizeTranscript(entries, false);
+
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({
+      type: "event",
+      label: "paperclip",
+      tone: "neutral",
+      text: "[paperclip] Loaded agent instructions file: /workspace/agents/ceo/AGENTS.md",
+    });
+  });
+
+  it("keeps actionable paperclip stderr visible as warnings", () => {
+    const entries: TranscriptEntry[] = [
+      {
+        kind: "stderr",
+        ts: "2026-03-12T00:00:00.000Z",
+        text: "[paperclip] Warning: could not read agent instructions file \"/workspace/agents/ceo/AGENTS.md\": ENOENT",
+      },
+    ];
+
+    const blocks = normalizeTranscript(entries, false);
+
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({
+      type: "event",
+      label: "paperclip",
+      tone: "warn",
+      text: "[paperclip] Warning: could not read agent instructions file \"/workspace/agents/ceo/AGENTS.md\": ENOENT",
+    });
+  });
+
+  it("keeps non-paperclip stderr as an error event", () => {
+    const entries: TranscriptEntry[] = [
+      {
+        kind: "stderr",
+        ts: "2026-03-12T00:00:00.000Z",
+        text: "ERROR mcp:transport:worker transport channel closed",
+      },
+    ];
+
+    const blocks = normalizeTranscript(entries, false);
+
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({
+      type: "event",
+      label: "stderr",
+      tone: "error",
+      text: "ERROR mcp:transport:worker transport channel closed",
+    });
+  });
 });

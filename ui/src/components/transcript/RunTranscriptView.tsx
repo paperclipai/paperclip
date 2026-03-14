@@ -276,9 +276,30 @@ function parseSystemActivity(text: string): { activityId?: string; name: string;
   };
 }
 
-function shouldHideNiceModeStderr(text: string): boolean {
+type NiceModeStderrHandling =
+  | { hidden: true }
+  | {
+      hidden: false;
+      label: string;
+      tone: Extract<TranscriptBlock, { type: "event" }>["tone"];
+    };
+
+function classifyNiceModeStderr(text: string): NiceModeStderrHandling {
   const normalized = compactWhitespace(text).toLowerCase();
-  return normalized.startsWith("[paperclip] skipping saved session resume");
+  if (normalized.startsWith("[paperclip] skipping saved session resume")) {
+    return { hidden: true };
+  }
+  if (!normalized.startsWith("[paperclip]")) {
+    return { hidden: false, label: "stderr", tone: "error" };
+  }
+  if (
+    normalized.includes("[paperclip] failed to ")
+    || normalized.includes("[paperclip] warning:")
+    || normalized.includes(" could not ")
+  ) {
+    return { hidden: false, label: "paperclip", tone: "warn" };
+  }
+  return { hidden: false, label: "paperclip", tone: "neutral" };
 }
 
 function groupCommandBlocks(blocks: TranscriptBlock[]): TranscriptBlock[] {
@@ -434,14 +455,15 @@ export function normalizeTranscript(entries: TranscriptEntry[], streaming: boole
     }
 
     if (entry.kind === "stderr") {
-      if (shouldHideNiceModeStderr(entry.text)) {
+      const handling = classifyNiceModeStderr(entry.text);
+      if (handling.hidden) {
         continue;
       }
       blocks.push({
         type: "event",
         ts: entry.ts,
-        label: "stderr",
-        tone: "error",
+        label: handling.label,
+        tone: handling.tone,
         text: entry.text,
       });
       continue;
