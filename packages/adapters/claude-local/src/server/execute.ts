@@ -17,6 +17,7 @@ import {
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
   ensurePathInEnv,
+  symlinkOrJunction,
   renderTemplate,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -56,7 +57,7 @@ async function buildSkillsDir(): Promise<string> {
   const entries = await fs.readdir(skillsDir, { withFileTypes: true });
   for (const entry of entries) {
     if (entry.isDirectory()) {
-      await fs.symlink(
+      await symlinkOrJunction(
         path.join(skillsDir, entry.name),
         path.join(target, entry.name),
       );
