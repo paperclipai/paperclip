@@ -11,10 +11,12 @@ import { dbBackupCommand } from "./commands/db-backup.js";
 import { registerContextCommands } from "./commands/client/context.js";
 import { registerCompanyCommands } from "./commands/client/company.js";
 import { registerIssueCommands } from "./commands/client/issue.js";
+import { registerProjectCommands } from "./commands/client/project.js";
 import { registerAgentCommands } from "./commands/client/agent.js";
 import { registerApprovalCommands } from "./commands/client/approval.js";
 import { registerActivityCommands } from "./commands/client/activity.js";
 import { registerDashboardCommands } from "./commands/client/dashboard.js";
+import { registerOpsCommands } from "./commands/client/ops.js";
 import { applyDataDirOverride, type DataDirOptionLike } from "./config/data-dir.js";
 import { loadPaperclipEnvFile } from "./config/env.js";
 import { registerWorktreeCommands } from "./commands/worktree.js";
@@ -130,11 +132,13 @@ heartbeat
 
 registerContextCommands(program);
 registerCompanyCommands(program);
+registerProjectCommands(program);
 registerIssueCommands(program);
 registerAgentCommands(program);
 registerApprovalCommands(program);
 registerActivityCommands(program);
 registerDashboardCommands(program);
+registerOpsCommands(program);
 registerWorktreeCommands(program);
 
 const auth = program.command("auth").description("Authentication and bootstrap utilities");

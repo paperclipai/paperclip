@@ -163,7 +163,6 @@ export function registerAgentCommands(program: Command): void {
     agent
       .command("list")
       .description("List agents for a company")
-      .requiredOption("-C, --company-id <id>", "Company ID")
       .action(async (opts: AgentListOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
@@ -196,7 +195,7 @@ export function registerAgentCommands(program: Command): void {
           handleCommandError(err);
         }
       }),
-    { includeCompany: false },
+    { includeCompany: true },
   );
 
   addCommonClientOptions(
@@ -222,7 +221,6 @@ export function registerAgentCommands(program: Command): void {
         "Create an agent API key, install local Paperclip skills for Codex/Claude, and print shell exports",
       )
       .argument("<agentRef>", "Agent ID or shortname/url-key")
-      .requiredOption("-C, --company-id <id>", "Company ID")
       .option("--key-name <name>", "API key label", "local-cli")
       .option(
         "--no-install-skills",
@@ -310,6 +308,6 @@ export function registerAgentCommands(program: Command): void {
           handleCommandError(err);
         }
       }),
-    { includeCompany: false },
+    { includeCompany: true },
   );
 }
