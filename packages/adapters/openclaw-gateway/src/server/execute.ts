@@ -599,12 +599,35 @@ class GatewayWsClient {
   private challengePromise: Promise<string>;
   private resolveChallenge!: (nonce: string) => void;
   private rejectChallenge!: (err: Error) => void;
+  private disconnectHandler: (() => void) | null = null;
+  private activeEventHandler: ((frame: GatewayEventFrame) => Promise<void> | void) | null = null;
 
   constructor(private readonly opts: GatewayClientOptions) {
     this.challengePromise = new Promise<string>((resolve, reject) => {
       this.resolveChallenge = resolve;
       this.rejectChallenge = reject;
     });
+  }
+
+  isOpen(): boolean {
+    return this.ws !== null && this.ws.readyState === WebSocket.OPEN;
+  }
+
+  /**
+   * Registers a callback invoked when the underlying WebSocket closes.
+   * Used by the connection pool to evict stale entries.
+   */
+  setDisconnectHandler(handler: () => void): void {
+    this.disconnectHandler = handler;
+  }
+
+  /**
+   * Temporarily overrides the event handler for the duration of a single
+   * execute() call so that pooled connections can route events to the
+   * correct per-run onEvent callback.
+   */
+  setActiveEventHandler(handler: ((frame: GatewayEventFrame) => Promise<void> | void) | null): void {
+    this.activeEventHandler = handler;
   }
 
   async connect(
@@ -627,6 +650,7 @@ class GatewayWsClient {
       const err = new Error(`gateway closed (${code}): ${reasonText}`);
       this.failPending(err);
       this.rejectChallenge(err);
+      this.disconnectHandler?.();
     });
 
     ws.on("error", (err) => {
@@ -741,7 +765,10 @@ class GatewayWsClient {
           return;
         }
       }
-      void Promise.resolve(this.opts.onEvent(parsed)).catch(() => {
+      // Route to the per-run handler if set, otherwise fall back to the
+      // constructor-provided handler (e.g. for non-pooled connections).
+      const handler = this.activeEventHandler ?? this.opts.onEvent;
+      void Promise.resolve(handler(parsed)).catch(() => {
         // Ignore event callback failures and keep stream active.
       });
       return;
@@ -777,6 +804,122 @@ class GatewayWsClient {
     if (code) err.gatewayCode = code;
     if (details) err.gatewayDetails = details;
     pending.reject(err);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// GatewayConnectionPool
+// ---------------------------------------------------------------------------
+// Maintains a process-level cache of authenticated WebSocket connections keyed
+// by (url, token).  Reusing an established connection avoids the TCP + TLS
+// handshake, the gateway challenge/connect round-trip, and optional device-
+// pairing overhead on every execute() call.
+//
+// Lifecycle:
+//   - A connection is created on first use and stored in the pool.
+//   - An idle timer resets on every acquire/release.  When the timer fires the
+//     connection is closed and evicted.
+//   - If the underlying WebSocket closes unexpectedly the entry is evicted
+//     immediately so the next caller gets a fresh connection.
+//   - Device-auth connections are NOT pooled because each connect() call
+//     produces a fresh ephemeral key-pair when no persistent key is configured.
+//     Callers must opt-in by passing disableDeviceAuth=true or by providing a
+//     stable devicePrivateKeyPem.
+
+const POOL_IDLE_TIMEOUT_MS = 60_000;
+
+type PooledConnection = {
+  client: GatewayWsClient;
+  idleTimer: ReturnType<typeof setTimeout>;
+  inUse: boolean;
+};
+
+function buildPoolKey(url: string, token: string | null): string {
+  return `${url}\0${token ?? ""}`;
+}
+
+class GatewayConnectionPool {
+  private readonly entries = new Map<string, PooledConnection>();
+
+  private static instance: GatewayConnectionPool | null = null;
+
+  static getInstance(): GatewayConnectionPool {
+    GatewayConnectionPool.instance ??= new GatewayConnectionPool();
+    return GatewayConnectionPool.instance;
+  }
+
+  /**
+   * Returns a pooled, already-connected client for the given key, or null if
+   * no healthy idle connection exists.
+   */
+  acquire(key: string): GatewayWsClient | null {
+    const entry = this.entries.get(key);
+    if (!entry) return null;
+    if (!entry.client.isOpen()) {
+      this.evict(key);
+      return null;
+    }
+    if (entry.inUse) {
+      // Connection is busy with another concurrent execute(); don't share it.
+      return null;
+    }
+    clearTimeout(entry.idleTimer);
+    entry.inUse = true;
+    return entry.client;
+  }
+
+  /**
+   * Stores a newly-connected client in the pool and starts its idle timer.
+   */
+  store(key: string, client: GatewayWsClient): void {
+    // Evict any stale entry for this key before storing.
+    this.evict(key);
+
+    const entry: PooledConnection = {
+      client,
+      inUse: true,
+      idleTimer: this.startIdleTimer(key),
+    };
+    this.entries.set(key, entry);
+
+    client.setDisconnectHandler(() => {
+      this.evict(key);
+    });
+  }
+
+  /**
+   * Called after a task completes to return the connection to the idle pool.
+   */
+  release(key: string): void {
+    const entry = this.entries.get(key);
+    if (!entry) return;
+    if (!entry.client.isOpen()) {
+      this.evict(key);
+      return;
+    }
+    entry.inUse = false;
+    entry.client.setActiveEventHandler(null);
+    clearTimeout(entry.idleTimer);
+    entry.idleTimer = this.startIdleTimer(key);
+  }
+
+  evict(key: string): void {
+    const entry = this.entries.get(key);
+    if (!entry) return;
+    clearTimeout(entry.idleTimer);
+    this.entries.delete(key);
+    // Best-effort close; ignore errors if already closed.
+    try {
+      entry.client.close();
+    } catch {
+      // Intentionally swallowed.
+    }
+  }
+
+  private startIdleTimer(key: string): ReturnType<typeof setTimeout> {
+    return setTimeout(() => {
+      this.evict(key);
+    }, POOL_IDLE_TIMEOUT_MS);
   }
 }
 
@@ -1120,12 +1263,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let autoPairAttempted = false;
   let latestResultPayload: unknown = null;
 
+  // A connection is eligible for pooling when device auth is disabled or a
+  // stable (configured) private key is present.  Ephemeral key-pairs change on
+  // every connect() call and therefore cannot be safely reused across runs.
+  const hasStableDeviceKey = Boolean(nonEmpty(ctx.config.devicePrivateKeyPem));
+  const poolingEnabled = disableDeviceAuth || hasStableDeviceKey;
+  const poolKey = poolingEnabled ? buildPoolKey(parsedUrl.toString(), authToken) : null;
+  const pool = poolKey ? GatewayConnectionPool.getInstance() : null;
+
   while (true) {
     const trackedRunIds = new Set<string>([ctx.runId]);
     const assistantChunks: string[] = [];
     let lifecycleError: string | null = null;
     let deviceIdentity: GatewayDeviceIdentity | null = null;
 
+    // Per-run event handler — captures run-specific state (trackedRunIds,
+    // assistantChunks, lifecycleError) without leaking across pooled reuses.
     const onEvent = async (frame: GatewayEventFrame) => {
       if (frame.event !== "agent") {
         if (frame.event === "shutdown") {
@@ -1174,78 +1327,96 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     };
 
-    const client = new GatewayWsClient({
+    // Try to acquire a pooled connection before creating a new one.
+    const pooledClient = pool && poolKey ? pool.acquire(poolKey) : null;
+    let isPooledConnection = false;
+
+    const client = pooledClient ?? new GatewayWsClient({
       url: parsedUrl.toString(),
       headers,
       onEvent,
       onLog: ctx.onLog,
     });
 
+    if (pooledClient) {
+      isPooledConnection = true;
+      // Route events for this run through the per-run handler.
+      client.setActiveEventHandler(onEvent);
+      await ctx.onLog("stdout", "[openclaw-gateway] reusing pooled connection\n");
+    }
+
     try {
-      deviceIdentity = disableDeviceAuth ? null : resolveDeviceIdentity(parseObject(ctx.config));
-      if (deviceIdentity) {
-        await ctx.onLog(
-          "stdout",
-          `[openclaw-gateway] device auth enabled keySource=${deviceIdentity.source} deviceId=${deviceIdentity.deviceId}\n`,
-        );
-      } else {
-        await ctx.onLog("stdout", "[openclaw-gateway] device auth disabled\n");
-      }
-
-      await ctx.onLog("stdout", `[openclaw-gateway] connecting to ${parsedUrl.toString()}\n`);
-
-      const hello = await client.connect((nonce) => {
-        const signedAtMs = Date.now();
-        const connectParams: Record<string, unknown> = {
-          minProtocol: PROTOCOL_VERSION,
-          maxProtocol: PROTOCOL_VERSION,
-          client: {
-            id: clientId,
-            version: clientVersion,
-            platform: process.platform,
-            ...(deviceFamily ? { deviceFamily } : {}),
-            mode: clientMode,
-          },
-          role,
-          scopes,
-          auth:
-            authToken || password || deviceToken
-              ? {
-                  ...(authToken ? { token: authToken } : {}),
-                  ...(deviceToken ? { deviceToken } : {}),
-                  ...(password ? { password } : {}),
-                }
-              : undefined,
-        };
-
+      if (!isPooledConnection) {
+        deviceIdentity = disableDeviceAuth ? null : resolveDeviceIdentity(parseObject(ctx.config));
         if (deviceIdentity) {
-          const payload = buildDeviceAuthPayloadV3({
-            deviceId: deviceIdentity.deviceId,
-            clientId,
-            clientMode,
+          await ctx.onLog(
+            "stdout",
+            `[openclaw-gateway] device auth enabled keySource=${deviceIdentity.source} deviceId=${deviceIdentity.deviceId}\n`,
+          );
+        } else {
+          await ctx.onLog("stdout", "[openclaw-gateway] device auth disabled\n");
+        }
+
+        await ctx.onLog("stdout", `[openclaw-gateway] connecting to ${parsedUrl.toString()}\n`);
+
+        const hello = await client.connect((nonce) => {
+          const signedAtMs = Date.now();
+          const connectParams: Record<string, unknown> = {
+            minProtocol: PROTOCOL_VERSION,
+            maxProtocol: PROTOCOL_VERSION,
+            client: {
+              id: clientId,
+              version: clientVersion,
+              platform: process.platform,
+              ...(deviceFamily ? { deviceFamily } : {}),
+              mode: clientMode,
+            },
             role,
             scopes,
-            signedAtMs,
-            token: authToken,
-            nonce,
-            platform: process.platform,
-            deviceFamily,
-          });
-          connectParams.device = {
-            id: deviceIdentity.deviceId,
-            publicKey: deviceIdentity.publicKeyRawBase64Url,
-            signature: signDevicePayload(deviceIdentity.privateKeyPem, payload),
-            signedAt: signedAtMs,
-            nonce,
+            auth:
+              authToken || password || deviceToken
+                ? {
+                    ...(authToken ? { token: authToken } : {}),
+                    ...(deviceToken ? { deviceToken } : {}),
+                    ...(password ? { password } : {}),
+                  }
+                : undefined,
           };
-        }
-        return connectParams;
-      }, connectTimeoutMs);
 
-      await ctx.onLog(
-        "stdout",
-        `[openclaw-gateway] connected protocol=${asNumber(asRecord(hello)?.protocol, PROTOCOL_VERSION)}\n`,
-      );
+          if (deviceIdentity) {
+            const payload = buildDeviceAuthPayloadV3({
+              deviceId: deviceIdentity.deviceId,
+              clientId,
+              clientMode,
+              role,
+              scopes,
+              signedAtMs,
+              token: authToken,
+              nonce,
+              platform: process.platform,
+              deviceFamily,
+            });
+            connectParams.device = {
+              id: deviceIdentity.deviceId,
+              publicKey: deviceIdentity.publicKeyRawBase64Url,
+              signature: signDevicePayload(deviceIdentity.privateKeyPem, payload),
+              signedAt: signedAtMs,
+              nonce,
+            };
+          }
+          return connectParams;
+        }, connectTimeoutMs);
+
+        await ctx.onLog(
+          "stdout",
+          `[openclaw-gateway] connected protocol=${asNumber(asRecord(hello)?.protocol, PROTOCOL_VERSION)}\n`,
+        );
+
+        // Store the freshly-connected client in the pool for future reuse.
+        if (pool && poolKey) {
+          pool.store(poolKey, client);
+        }
+      }
 
       const acceptedPayload = await client.request<Record<string, unknown>>("agent", agentParams, {
         timeoutMs: connectTimeoutMs,
@@ -1354,6 +1525,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[openclaw-gateway] run completed runId=${Array.from(trackedRunIds).join(",")} status=ok\n`,
       );
 
+      // Return the connection to the pool so the next run can reuse it.
+      if (pool && poolKey) {
+        pool.release(poolKey);
+      } else {
+        client.close();
+      }
+
       return {
         exitCode: 0,
         signal: null,
@@ -1371,6 +1549,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const lower = message.toLowerCase();
       const timedOut = lower.includes("timeout");
       const pairingRequired = lower.includes("pairing required");
+
+      // On any error, evict the connection from the pool — it may be in a bad
+      // state (e.g. mid-protocol, pairing required, or closed by the server).
+      if (pool && poolKey) {
+        pool.evict(poolKey);
+      } else {
+        client.close();
+      }
 
       if (
         pairingRequired &&
@@ -1426,8 +1612,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             : "openclaw_gateway_request_failed",
         resultJson: asRecord(latestResultPayload),
       };
-    } finally {
-      client.close();
     }
   }
 }
