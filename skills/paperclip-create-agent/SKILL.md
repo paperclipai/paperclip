@@ -42,7 +42,7 @@ curl -sS "$(printenv PAPERCLIP_API_URL)/llms/agent-configuration/claude_local.tx
 ### 3. Compare existing agent configurations
 
 ```sh
-curl -sS "$(printenv PAPERCLIP_API_URL)/api/companies/$PAPERCLIP_COMPANY_ID/agent-configurations" \
+curl -sS "$(printenv PAPERCLIP_API_URL)/api/companies/$(printenv PAPERCLIP_COMPANY_ID)/agent-configurations" \
   -H "Authorization: Bearer $(printenv PAPERCLIP_API_KEY)"
 ```
 
@@ -96,7 +96,7 @@ Before submitting, walk the draft-review checklist end-to-end and fix any item t
 ### 8. Submit hire request
 
 ```sh
-curl -sS -X POST "$(printenv PAPERCLIP_API_URL)/api/companies/$PAPERCLIP_COMPANY_ID/agent-hires" \
+curl -sS -X POST "$(printenv PAPERCLIP_API_URL)/api/companies/$(printenv PAPERCLIP_COMPANY_ID)/agent-hires" \
   -H "Authorization: Bearer $(printenv PAPERCLIP_API_KEY)" \
   -H "Content-Type: application/json" \
   -d '{
@@ -142,10 +142,10 @@ curl -sS -X POST "$(printenv PAPERCLIP_API_URL)/api/issues/<issue-id>/approvals"
 After approval is granted, run this follow-up loop:
 
 ```sh
-curl -sS "$(printenv PAPERCLIP_API_URL)/api/approvals/$PAPERCLIP_APPROVAL_ID" \
+curl -sS "$(printenv PAPERCLIP_API_URL)/api/approvals/$(printenv PAPERCLIP_APPROVAL_ID)" \
   -H "Authorization: Bearer $(printenv PAPERCLIP_API_KEY)"
 
-curl -sS "$(printenv PAPERCLIP_API_URL)/api/approvals/$PAPERCLIP_APPROVAL_ID/issues" \
+curl -sS "$(printenv PAPERCLIP_API_URL)/api/approvals/$(printenv PAPERCLIP_APPROVAL_ID)/issues" \
   -H "Authorization: Bearer $(printenv PAPERCLIP_API_KEY)"
 ```
 
