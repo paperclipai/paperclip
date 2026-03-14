@@ -654,6 +654,7 @@ export async function startServer(): Promise<StartedServer> {
         databaseBackupIntervalMinutes: config.databaseBackupIntervalMinutes,
         databaseBackupRetentionDays: config.databaseBackupRetentionDays,
         databaseBackupDir: config.databaseBackupDir,
+        relayUrl: config.relayUrl,
       });
 
       const boardClaimUrl = getBoardClaimWarningUrl(config.host, listenPort);
@@ -685,7 +686,7 @@ export async function startServer(): Promise<StartedServer> {
       localPort: listenPort,
       onReady: (instanceId, publicUrl) => {
         logger.info({ instanceId, publicUrl }, "Relay tunnel connected");
-        console.log(`\n  \x1b[36mRelay\x1b[0m           ${publicUrl}\n`);
+        console.log(`\n  \x1b[2mRelay           \x1b[0m ${publicUrl}\n`);
       },
     });
   }
