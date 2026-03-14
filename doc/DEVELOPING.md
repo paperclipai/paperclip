@@ -336,6 +336,16 @@ Default behavior:
 - `local_trusted`: enabled
 - `authenticated`: disabled
 
+## Default Agent Task Assignment Toggle
+
+By default, agent task assignment requires explicit `tasks:assign` grants (or legacy manager permissions).
+
+To allow agents with no explicit permission overrides (default permission set) to assign issues to other agents, set:
+
+```sh
+PAPERCLIP_ALLOW_DEFAULT_AGENT_TASK_ASSIGNMENT=true
+```
+
 ## CLI Client Operations
 
 Paperclip CLI now includes client-side control-plane commands in addition to setup commands.

@@ -65,6 +65,12 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function normalizePermissionsForPersistence(permissions: unknown, role: string) {
+  if (permissions === undefined || permissions === null) return {};
+  if (isPlainRecord(permissions) && Object.keys(permissions).length === 0) return {};
+  return normalizeAgentPermissions(permissions, role);
+}
+
 function jsonEqual(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
@@ -289,7 +295,7 @@ export function agentService(db: Db) {
     const normalizedPatch = { ...data } as Partial<typeof agents.$inferInsert>;
     if (data.permissions !== undefined) {
       const role = (data.role ?? existing.role) as string;
-      normalizedPatch.permissions = normalizeAgentPermissions(data.permissions, role);
+      normalizedPatch.permissions = normalizePermissionsForPersistence(data.permissions, role);
     }
 
     const shouldRecordRevision = Boolean(options?.recordRevision) && hasConfigPatchFields(normalizedPatch);
@@ -348,7 +354,7 @@ export function agentService(db: Db) {
       const uniqueName = deduplicateAgentName(data.name, existingAgents);
 
       const role = data.role ?? "general";
-      const normalizedPermissions = normalizeAgentPermissions(data.permissions, role);
+      const normalizedPermissions = normalizePermissionsForPersistence(data.permissions, role);
       const created = await db
         .insert(agents)
         .values({ ...data, name: uniqueName, companyId, role, permissions: normalizedPermissions })

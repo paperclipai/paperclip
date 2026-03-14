@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
-import type { Db } from "@paperclipai/db";
+import { agents as agentsTable, type Db } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
 import {
   addIssueCommentSchema,
   createIssueAttachmentMetadataSchema,
@@ -32,6 +33,36 @@ import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+
+export type AssignmentTargetType = "agent" | "user" | "unassigned";
+
+type AgentPermissionShape = {
+  role: string;
+  permissions: Record<string, unknown> | null | undefined;
+};
+
+function isDefaultAgentTaskAssignmentEnabled() {
+  return process.env.PAPERCLIP_ALLOW_DEFAULT_AGENT_TASK_ASSIGNMENT === "true";
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function hasDefaultAgentPermissionSet(agent: AgentPermissionShape) {
+  if (!isPlainRecord(agent.permissions)) return true;
+  return Object.keys(agent.permissions).length === 0;
+}
+
+export function canAssignTasksWithDefaultPermissionFlag(
+  agent: AgentPermissionShape,
+  assignmentTargetType: AssignmentTargetType,
+  flagEnabled = isDefaultAgentTaskAssignmentEnabled(),
+) {
+  if (!flagEnabled) return false;
+  if (assignmentTargetType !== "agent") return false;
+  return hasDefaultAgentPermissionSet(agent);
+}
 
 export function issueRoutes(db: Db, storage: StorageService) {
   const router = Router();
@@ -87,7 +118,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
   }
 
-  async function assertCanAssignTasks(req: Request, companyId: string) {
+  async function assertCanAssignTasks(req: Request, companyId: string, assignmentTargetType: AssignmentTargetType) {
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "board") {
       if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
@@ -99,8 +130,24 @@ export function issueRoutes(db: Db, storage: StorageService) {
       if (!req.actor.agentId) throw forbidden("Agent authentication required");
       const allowedByGrant = await access.hasPermission(companyId, "agent", req.actor.agentId, "tasks:assign");
       if (allowedByGrant) return;
-      const actorAgent = await agentsSvc.getById(req.actor.agentId);
+      const actorAgent = await db
+        .select({
+          id: agentsTable.id,
+          companyId: agentsTable.companyId,
+          role: agentsTable.role,
+          permissions: agentsTable.permissions,
+        })
+        .from(agentsTable)
+        .where(eq(agentsTable.id, req.actor.agentId))
+        .then((rows) => rows[0] ?? null);
       if (actorAgent && actorAgent.companyId === companyId && canCreateAgentsLegacy(actorAgent)) return;
+      if (
+        actorAgent &&
+        actorAgent.companyId === companyId &&
+        canAssignTasksWithDefaultPermissionFlag(actorAgent, assignmentTargetType)
+      ) {
+        return;
+      }
       throw forbidden("Missing permission: tasks:assign");
     }
     throw unauthorized();
@@ -642,7 +689,8 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
-      await assertCanAssignTasks(req, companyId);
+      const assignmentTargetType: AssignmentTargetType = req.body.assigneeAgentId ? "agent" : "user";
+      await assertCanAssignTasks(req, companyId, assignmentTargetType);
     }
 
     const actor = getActorInfo(req);
@@ -704,7 +752,16 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
     if (assigneeWillChange) {
       if (!isAgentReturningIssueToCreator) {
-        await assertCanAssignTasks(req, existing.companyId);
+        const nextAssigneeAgentId =
+          req.body.assigneeAgentId !== undefined ? req.body.assigneeAgentId : existing.assigneeAgentId;
+        const nextAssigneeUserId =
+          req.body.assigneeUserId !== undefined ? req.body.assigneeUserId : existing.assigneeUserId;
+        const assignmentTargetType: AssignmentTargetType = nextAssigneeAgentId
+          ? "agent"
+          : nextAssigneeUserId
+            ? "user"
+            : "unassigned";
+        await assertCanAssignTasks(req, existing.companyId, assignmentTargetType);
       }
     }
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
