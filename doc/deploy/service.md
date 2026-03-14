@@ -79,3 +79,13 @@ To check systemd status directly: `systemctl --user status paperclip.service`
 To view systemd journal logs: `journalctl --user -u paperclip.service`
 
 > **Note**: For systemd user services to run without an active login session, enable lingering: `loginctl enable-linger $USER`
+
+## Upgrading
+
+After upgrading Paperclip (e.g., `npm install -g paperclipai`), re-run the install command to update the service unit with the new server path:
+
+```
+paperclipai service install
+```
+
+The install command handles the existing service gracefully (bootout + re-bootstrap on macOS, disable + re-enable on Linux).

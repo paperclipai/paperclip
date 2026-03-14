@@ -136,7 +136,7 @@ After=network.target
 [Service]
 Type=simple
 ExecStart="${node}" "${server}"
-WorkingDirectory=${workDir}
+WorkingDirectory="${workDir}"
 Restart=always
 RestartSec=10
 StandardOutput=append:%h/.paperclip/logs/service.log
@@ -223,8 +223,16 @@ function serviceInstall(): void {
       execFileSync("launchctl", ["bootstrap", `gui/${uid}`, LAUNCHD_PLIST_PATH], {
         stdio: "pipe",
       });
-    } catch {
-      // Already bootstrapped is fine
+    } catch (err) {
+      const stderr = String((err as { stderr?: Buffer | string }).stderr ?? "");
+      const status = (err as { status?: number }).status;
+      // error code 37 = "service already registered" — safe to ignore on re-install
+      if (status === 37 || stderr.includes("already registered")) {
+        // already running — fine
+      } else {
+        p.log.error(`launchctl bootstrap failed: ${stderr || String(err)}`);
+        process.exit(1);
+      }
     }
     p.log.success("Service loaded via launchd");
   } else {
@@ -235,12 +243,23 @@ function serviceInstall(): void {
     writeFileSync(SYSTEMD_UNIT_PATH, unit, "utf8");
     p.log.success(`Wrote unit file to ${pc.dim(SYSTEMD_UNIT_PATH)}`);
 
-    execFileSync("systemctl", ["--user", "daemon-reload"], { stdio: "pipe" });
-    execFileSync("systemctl", ["--user", "enable", "--now", "paperclip.service"], { stdio: "pipe" });
+    try {
+      execFileSync("systemctl", ["--user", "daemon-reload"], { stdio: "pipe" });
+      execFileSync("systemctl", ["--user", "enable", "--now", "paperclip.service"], { stdio: "pipe" });
+    } catch (err) {
+      p.log.error(
+        `systemctl failed: ${String((err as { stderr?: Buffer | string }).stderr ?? (err as Error).message)}`,
+      );
+      process.exit(1);
+    }
     p.log.success("Service enabled and started via systemd");
   }
 
   p.outro(pc.green("Paperclip service installed and running."));
+  p.log.warn(
+    `Note: The service path is baked in at install time. After upgrading Paperclip, ` +
+    `run ${pc.bold("paperclipai service install")} again to update the service unit.`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -280,7 +299,12 @@ function serviceUninstall(): void {
     if (existsSync(SYSTEMD_UNIT_PATH)) {
       unlinkSync(SYSTEMD_UNIT_PATH);
     }
-    execFileSync("systemctl", ["--user", "daemon-reload"], { stdio: "pipe" });
+    try {
+      execFileSync("systemctl", ["--user", "daemon-reload"], { stdio: "pipe" });
+    } catch (err) {
+      p.log.warn(`daemon-reload failed: ${String((err as { stderr?: Buffer | string }).stderr ?? (err as Error).message)}`);
+      // Non-fatal — unit is already removed
+    }
     p.log.success("Systemd unit removed and daemon reloaded");
   }
 
@@ -343,14 +367,14 @@ function serviceRestart(): void {
   }
   try {
     if (platform === "darwin") {
-      execFileSync("launchctl", ["stop", LAUNCHD_LABEL], { stdio: "pipe" });
-      execFileSync("launchctl", ["start", LAUNCHD_LABEL], { stdio: "pipe" });
+      const uid = getUid();
+      execFileSync("launchctl", ["kickstart", "-k", `gui/${uid}/${LAUNCHD_LABEL}`], { stdio: "pipe" });
     } else {
       execFileSync("systemctl", ["--user", "restart", "paperclip.service"], { stdio: "pipe" });
     }
     p.log.success("Paperclip service restarted.");
-  } catch {
-    p.log.error("Failed to restart service. Is it installed? Run `paperclipai service install` first.");
+  } catch (err) {
+    p.log.error(`Failed to restart service: ${String((err as { stderr?: Buffer | string }).stderr ?? (err as Error).message)}`);
     process.exit(1);
   }
 }

@@ -118,6 +118,13 @@ describe("generateSystemdUnit", () => {
     const unit = generateSystemdUnit();
     expect(unit).not.toContain("dev-runner.mjs");
   });
+
+  it("quotes WorkingDirectory for paths with spaces", () => {
+    const unit = generateSystemdUnit();
+    const wdLine = unit.split("\n").find((l) => l.startsWith("WorkingDirectory="))!;
+    // Should be wrapped in double quotes
+    expect(wdLine).toMatch(/^WorkingDirectory="[^"]+"/);
+  });
 });
 
 // ---------------------------------------------------------------------------
