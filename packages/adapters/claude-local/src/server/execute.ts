@@ -309,7 +309,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effort = asString(config.effort, "");
   const chrome = asBoolean(config.chrome, false);
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
-  const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, false);
+  const dangerouslySkipPermissions = (() => {
+    if (typeof config.dangerouslySkipPermissions === "boolean") {
+      return config.dangerouslySkipPermissions;
+    }
+    // Heartbeat runs always use --print (non-interactive). Without --dangerously-skip-permissions,
+    // Claude will stall on permission prompts with no user to approve, causing the agent to loop
+    // and waste tokens. Auto-enable for headless execution. See: #447
+    onLog(
+      "stderr",
+      "[paperclip] dangerouslySkipPermissions not set; auto-enabling for headless execution. " +
+        "Set dangerouslySkipPermissions=true in adapter config to suppress this warning.\n",
+    ).catch(() => {});
+    return true;
+  })();
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const instructionsFileDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
   const commandNotes = instructionsFilePath

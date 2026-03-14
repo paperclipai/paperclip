@@ -174,10 +174,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     asString(config.reasoningEffort, ""),
   );
   const search = asBoolean(config.search, false);
-  const bypass = asBoolean(
-    config.dangerouslyBypassApprovalsAndSandbox,
-    asBoolean(config.dangerouslyBypassSandbox, false),
-  );
+  const bypass = (() => {
+    if (typeof config.dangerouslyBypassApprovalsAndSandbox === "boolean") {
+      return config.dangerouslyBypassApprovalsAndSandbox;
+    }
+    if (typeof config.dangerouslyBypassSandbox === "boolean") {
+      return config.dangerouslyBypassSandbox;
+    }
+    // Heartbeat runs are non-interactive. Without bypass, Codex will stall on
+    // approval prompts with no user to approve, causing the agent to loop
+    // and waste tokens. Auto-enable for headless execution. See: #447
+    onLog(
+      "stderr",
+      "[paperclip] dangerouslyBypassSandbox not set; auto-enabling for headless execution. " +
+        "Set dangerouslyBypassApprovalsAndSandbox=true in adapter config to suppress this warning.\n",
+    ).catch(() => {});
+    return true;
+  })();
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
