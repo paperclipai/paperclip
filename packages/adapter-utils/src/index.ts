@@ -28,3 +28,12 @@ export {
   redactHomePathUserSegmentsInValue,
   redactTranscriptEntryPaths,
 } from "./log-redaction.js";
+export type {
+  SandboxExecResult,
+  SandboxExecOptions,
+  SandboxInstanceStatus,
+  SandboxInstance,
+  SandboxCreateOptions,
+  SandboxTestResult,
+  SandboxProvider,
+} from "./sandbox-types.js";

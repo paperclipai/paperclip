@@ -51,6 +51,15 @@ import {
 import {
   agentConfigurationDoc as piAgentConfigurationDoc,
 } from "@paperclipai/adapter-pi-local";
+import {
+  execute as sandboxExecute,
+  testEnvironment as sandboxTestEnvironment,
+  sessionCodec as sandboxSessionCodec,
+} from "@paperclipai/adapter-sandbox/server";
+import {
+  agentConfigurationDoc as sandboxAgentConfigurationDoc,
+  models as sandboxModels,
+} from "@paperclipai/adapter-sandbox";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
 
@@ -127,6 +136,16 @@ const piLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: piAgentConfigurationDoc,
 };
 
+const sandboxAdapter: ServerAdapterModule = {
+  type: "sandbox",
+  execute: sandboxExecute,
+  testEnvironment: sandboxTestEnvironment,
+  sessionCodec: sandboxSessionCodec,
+  models: sandboxModels,
+  supportsLocalAgentJwt: true,
+  agentConfigurationDoc: sandboxAgentConfigurationDoc,
+};
+
 const adaptersByType = new Map<string, ServerAdapterModule>(
   [
     claudeLocalAdapter,
@@ -135,6 +154,7 @@ const adaptersByType = new Map<string, ServerAdapterModule>(
     piLocalAdapter,
     cursorLocalAdapter,
     geminiLocalAdapter,
+    sandboxAdapter,
     openclawGatewayAdapter,
     processAdapter,
     httpAdapter,

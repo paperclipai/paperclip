@@ -1,0 +1,580 @@
+import { afterEach, describe, expect, it } from "vitest";
+import { execute, setSandboxProviderFactoryForTests } from "./execute.js";
+
+describe("sandbox adapter execute", () => {
+  afterEach(() => {
+    setSandboxProviderFactoryForTests(null);
+  });
+
+  it("runs the inner codex agent, wraps stdout, and persists sandbox session params", async () => {
+    const stdoutEvents = [
+      JSON.stringify({ type: "thread.started", thread_id: "thread-123" }),
+      JSON.stringify({
+        type: "item.completed",
+        item: { type: "agent_message", text: "sandbox hello" },
+      }),
+      JSON.stringify({
+        type: "turn.completed",
+        usage: { input_tokens: 12, cached_input_tokens: 3, output_tokens: 4 },
+      }),
+    ].join("\n");
+
+    const execCalls: Array<{ command: string; stdin?: string }> = [];
+
+    setSandboxProviderFactoryForTests(() => ({
+      type: "cloudflare",
+      async create(opts) {
+        return {
+          id: opts.sandboxId,
+          async exec(command, execOpts = {}) {
+            execCalls.push({ command, stdin: execOpts.stdin });
+            await execOpts.onStdout?.(`${stdoutEvents}\n`);
+            return { exitCode: 0, signal: null, timedOut: false };
+          },
+          async writeFile() {},
+          async readFile() {
+            return "";
+          },
+          async status() {
+            return { status: "running", endpoint: null };
+          },
+          async destroy() {},
+        };
+      },
+      async reconnect(id) {
+        return {
+          id,
+          async exec() {
+            return { exitCode: 0, signal: null, timedOut: false };
+          },
+          async writeFile() {},
+          async readFile() {
+            return "";
+          },
+          async status() {
+            return { status: "running", endpoint: null };
+          },
+          async destroy() {},
+        };
+      },
+      async testConnection() {
+        return { ok: true };
+      },
+    }));
+
+    const logs: string[] = [];
+
+    const result = await execute({
+      runId: "run-1",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Sandbox Agent",
+        adapterType: "sandbox",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        providerType: "cloudflare",
+        sandboxAgentType: "codex_local",
+        keepAlive: true,
+        promptTemplate: "Do the thing",
+        providerConfig: {
+          baseUrl: "https://example.workers.dev",
+          namespace: "paperclip",
+        },
+      },
+      context: {},
+      onLog: async (_stream, chunk) => {
+        logs.push(chunk);
+      },
+      onMeta: async () => {},
+      authToken: "jwt-token",
+    });
+
+    expect(execCalls).toHaveLength(2);
+    expect(execCalls[0]?.command).toContain("mkdir -p");
+    expect(execCalls[0]?.command).toContain("/workspace");
+    expect(execCalls[1]?.stdin).toContain("Do the thing");
+    expect(result.summary).toBe("sandbox hello");
+    expect(result.usage).toEqual({
+      inputTokens: 12,
+      cachedInputTokens: 3,
+      outputTokens: 4,
+    });
+    expect(result.sessionParams).toEqual({
+      sandboxId: expect.any(String),
+      agentType: "codex_local",
+      cliSession: { sessionId: "thread-123" },
+    });
+    expect(logs.join("")).toContain('"type":"paperclip.sandbox.stdout"');
+    expect(logs.join("")).toContain('"agentType":"codex_local"');
+  });
+
+  it("runs sandbox bootstrap before invoking the inner agent", async () => {
+    const execCalls: string[] = [];
+
+    setSandboxProviderFactoryForTests(() => ({
+      type: "e2b",
+      async create(opts) {
+        return {
+          id: opts.sandboxId,
+          async exec(command, execOpts = {}) {
+            execCalls.push(command);
+            if (command === "sh -lc 'echo bootstrap-ready >/tmp/bootstrap.txt'") {
+              return { exitCode: 0, signal: null, timedOut: false };
+            }
+            await execOpts.onStdout?.(`${JSON.stringify({ type: "thread.started", thread_id: "thread-bootstrap" })}\n`);
+            await execOpts.onStdout?.(
+              `${JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "bootstrapped" } })}\n`,
+            );
+            return { exitCode: 0, signal: null, timedOut: false };
+          },
+          async writeFile() {},
+          async readFile() {
+            return "";
+          },
+          async status() {
+            return { status: "running", endpoint: null };
+          },
+          async destroy() {},
+        };
+      },
+      async reconnect(id) {
+        return {
+          id,
+          async exec() {
+            return { exitCode: 0, signal: null, timedOut: false };
+          },
+          async writeFile() {},
+          async readFile() {
+            return "";
+          },
+          async status() {
+            return { status: "running", endpoint: null };
+          },
+          async destroy() {},
+        };
+      },
+      async testConnection() {
+        return { ok: true };
+      },
+    }));
+
+    const result = await execute({
+      runId: "run-bootstrap",
+      agent: {
+        id: "agent-bootstrap",
+        companyId: "company-1",
+        name: "Sandbox Agent",
+        adapterType: "sandbox",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        providerType: "e2b",
+        sandboxAgentType: "codex_local",
+        keepAlive: false,
+        promptTemplate: "Do the thing",
+        bootstrapCommand: "sh -lc 'echo bootstrap-ready >/tmp/bootstrap.txt'",
+        providerConfig: {
+          template: "codex",
+        },
+      },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      authToken: "jwt-token",
+    });
+
+    expect(execCalls[0]).toBe('sh -lc \'mkdir -p \'"\'"\'/home/user/workspace\'"\'"\'\'');
+    expect(execCalls[1]).toBe("sh -lc 'echo bootstrap-ready >/tmp/bootstrap.txt'");
+    expect(execCalls).toHaveLength(3);
+    expect(result.summary).toBe("bootstrapped");
+  });
+
+  it("skips sandbox bootstrap when reconnecting to a warm keepAlive sandbox", async () => {
+    const execCalls: string[] = [];
+
+    setSandboxProviderFactoryForTests(() => ({
+      type: "e2b",
+      async create() {
+        throw new Error("create should not be called");
+      },
+      async reconnect(id) {
+        return {
+          id,
+          async exec(command, execOpts = {}) {
+            execCalls.push(command);
+            await execOpts.onStdout?.(`${JSON.stringify({ type: "thread.started", thread_id: "thread-warm" })}\n`);
+            await execOpts.onStdout?.(
+              `${JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "warm sandbox" } })}\n`,
+            );
+            return { exitCode: 0, signal: null, timedOut: false };
+          },
+          async writeFile() {},
+          async readFile() {
+            return "";
+          },
+          async status() {
+            return { status: "running", endpoint: null };
+          },
+          async destroy() {},
+        };
+      },
+      async testConnection() {
+        return { ok: true };
+      },
+    }));
+
+    const result = await execute({
+      runId: "run-reconnect",
+      agent: {
+        id: "agent-reconnect",
+        companyId: "company-1",
+        name: "Sandbox Agent",
+        adapterType: "sandbox",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: {
+          sandboxId: "sandbox-existing",
+          agentType: "codex_local",
+        },
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        providerType: "e2b",
+        sandboxAgentType: "codex_local",
+        keepAlive: true,
+        promptTemplate: "Do the thing",
+        bootstrapCommand: "sh -lc 'echo bootstrap-ready >/tmp/bootstrap.txt'",
+        providerConfig: {
+          template: "codex",
+        },
+      },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      authToken: "jwt-token",
+    });
+
+    expect(execCalls[0]).toBe('sh -lc \'mkdir -p \'"\'"\'/home/user/workspace\'"\'"\'\'');
+    expect(execCalls).toHaveLength(2);
+    expect(execCalls[1]).not.toBe("sh -lc 'echo bootstrap-ready >/tmp/bootstrap.txt'");
+    expect(result.summary).toBe("warm sandbox");
+  });
+
+  it("clones by fetch and checkout when workspace repoRef is a commit sha", async () => {
+    const execCalls: string[] = [];
+
+    setSandboxProviderFactoryForTests(() => ({
+      type: "cloudflare",
+      async create(opts) {
+        return {
+          id: opts.sandboxId,
+          async exec(command, execOpts = {}) {
+            execCalls.push(command);
+            if (typeof execOpts.stdin === "string" && execOpts.stdin.includes("Do the thing")) {
+              await execOpts.onStdout?.(`${JSON.stringify({ type: "thread.started", thread_id: "thread-sha" })}\n`);
+              await execOpts.onStdout?.(
+                `${JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "sha checkout" } })}\n`,
+              );
+            }
+            return { exitCode: 0, signal: null, timedOut: false };
+          },
+          async writeFile() {},
+          async readFile() {
+            return "";
+          },
+          async status() {
+            return { status: "running", endpoint: null };
+          },
+          async destroy() {},
+        };
+      },
+      async reconnect(id) {
+        return {
+          id,
+          async exec() {
+            return { exitCode: 0, signal: null, timedOut: false };
+          },
+          async writeFile() {},
+          async readFile() {
+            return "";
+          },
+          async status() {
+            return { status: "running", endpoint: null };
+          },
+          async destroy() {},
+        };
+      },
+      async testConnection() {
+        return { ok: true };
+      },
+    }));
+
+    const result = await execute({
+      runId: "run-sha",
+      agent: {
+        id: "agent-sha",
+        companyId: "company-1",
+        name: "Sandbox Agent",
+        adapterType: "sandbox",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        providerType: "cloudflare",
+        sandboxAgentType: "codex_local",
+        keepAlive: false,
+        promptTemplate: "Do the thing",
+        providerConfig: {
+          baseUrl: "https://example.workers.dev",
+          namespace: "paperclip",
+        },
+      },
+      context: {
+        paperclipWorkspace: {
+          repoUrl: "https://github.com/paperclipai/paperclip.git",
+          repoRef: "0123456789abcdef0123456789abcdef01234567",
+        },
+      },
+      onLog: async () => {},
+      onMeta: async () => {},
+      authToken: "jwt-token",
+    });
+
+    expect(execCalls[1]).toContain("git clone --depth 1");
+    expect(execCalls[1]).toContain("https://github.com/paperclipai/paperclip.git");
+    expect(execCalls[1]).toContain("git -C");
+    expect(execCalls[1]).toContain("fetch --depth 1 origin");
+    expect(execCalls[1]).toContain("0123456789abcdef0123456789abcdef01234567");
+    expect(execCalls[1]).toContain("checkout FETCH_HEAD");
+    expect(execCalls[1]).not.toContain("--branch 0123456789abcdef0123456789abcdef01234567");
+    expect(result.summary).toBe("sha checkout");
+  });
+
+  it("treats successful claude result events as success, not failure", async () => {
+    setSandboxProviderFactoryForTests(() => ({
+      type: "e2b",
+      async create(opts) {
+        return {
+          id: opts.sandboxId,
+          async exec(_command, execOpts = {}) {
+            await execOpts.onStdout?.(
+              [
+                JSON.stringify({
+                  type: "system",
+                  subtype: "init",
+                  session_id: "claude-session-1",
+                  model: "claude-sonnet-4-20250514",
+                }),
+                JSON.stringify({
+                  type: "assistant",
+                  session_id: "claude-session-1",
+                  message: {
+                    content: [
+                      { type: "text", text: "sandbox claude ok" },
+                    ],
+                  },
+                }),
+                JSON.stringify({
+                  type: "result",
+                  subtype: "success",
+                  session_id: "claude-session-1",
+                  result: "sandbox claude ok",
+                  usage: {
+                    input_tokens: 5,
+                    cache_read_input_tokens: 1,
+                    output_tokens: 2,
+                  },
+                  total_cost_usd: 0.25,
+                }),
+                "",
+              ].join("\n"),
+            );
+            return { exitCode: 0, signal: null, timedOut: false };
+          },
+          async writeFile() {},
+          async readFile() {
+            return "";
+          },
+          async status() {
+            return { status: "running", endpoint: null };
+          },
+          async destroy() {},
+        };
+      },
+      async reconnect(id) {
+        return {
+          id,
+          async exec() {
+            return { exitCode: 0, signal: null, timedOut: false };
+          },
+          async writeFile() {},
+          async readFile() {
+            return "";
+          },
+          async status() {
+            return { status: "running", endpoint: null };
+          },
+          async destroy() {},
+        };
+      },
+      async testConnection() {
+        return { ok: true };
+      },
+    }));
+
+    const result = await execute({
+      runId: "run-claude",
+      agent: {
+        id: "agent-claude",
+        companyId: "company-1",
+        name: "Sandbox Claude",
+        adapterType: "sandbox",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        providerType: "e2b",
+        sandboxAgentType: "claude_local",
+        keepAlive: false,
+        promptTemplate: "Do the thing",
+        providerConfig: {
+          template: "base",
+        },
+      },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      authToken: "jwt-token",
+    });
+
+    expect(result.errorMessage).toBeNull();
+    expect(result.summary).toBe("sandbox claude ok");
+    expect(result.costUsd).toBe(0.25);
+    expect(result.usage).toEqual({
+      inputTokens: 5,
+      cachedInputTokens: 1,
+      outputTokens: 2,
+    });
+  });
+
+  it("loads instructionsFilePath from the sandbox workspace instead of the host filesystem", async () => {
+    const readFileCalls: string[] = [];
+    const execCalls: Array<{ command: string; stdin?: string }> = [];
+
+    setSandboxProviderFactoryForTests(() => ({
+      type: "opensandbox",
+      async create(opts) {
+        return {
+          id: opts.sandboxId,
+          async exec(command, execOpts = {}) {
+            execCalls.push({ command, stdin: execOpts.stdin });
+            if (typeof execOpts.stdin === "string" && execOpts.stdin.includes("Do the thing")) {
+              await execOpts.onStdout?.(`${JSON.stringify({ type: "thread.started", thread_id: "thread-instructions" })}\n`);
+              await execOpts.onStdout?.(
+                `${JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "instructions loaded" } })}\n`,
+              );
+            }
+            return { exitCode: 0, signal: null, timedOut: false };
+          },
+          async writeFile() {},
+          async readFile(filePath) {
+            readFileCalls.push(filePath);
+            return "Follow /workspace/project/docs/README.md before acting.";
+          },
+          async status() {
+            return { status: "running", endpoint: null };
+          },
+          async destroy() {},
+        };
+      },
+      async reconnect(id) {
+        return {
+          id,
+          async exec() {
+            return { exitCode: 0, signal: null, timedOut: false };
+          },
+          async writeFile() {},
+          async readFile() {
+            return "";
+          },
+          async status() {
+            return { status: "running", endpoint: null };
+          },
+          async destroy() {},
+        };
+      },
+      async testConnection() {
+        return { ok: true };
+      },
+    }));
+
+    const meta: Array<{ commandNotes?: string[] }> = [];
+
+    const result = await execute({
+      runId: "run-instructions",
+      agent: {
+        id: "agent-instructions",
+        companyId: "company-1",
+        name: "Sandbox Agent",
+        adapterType: "sandbox",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        providerType: "opensandbox",
+        sandboxAgentType: "codex_local",
+        keepAlive: false,
+        cwd: "/workspace/project",
+        instructionsFilePath: "AGENTS.md",
+        promptTemplate: "Do the thing",
+        providerConfig: {
+          image: "ghcr.io/paperclipai/agent-sandbox:latest",
+        },
+      },
+      context: {},
+      onLog: async () => {},
+      onMeta: async (entry) => {
+        meta.push({ commandNotes: entry.commandNotes });
+      },
+      authToken: "jwt-token",
+    });
+
+    expect(readFileCalls).toEqual(["/workspace/project/AGENTS.md"]);
+    expect(execCalls[1]?.stdin).toContain("Follow /workspace/project/docs/README.md before acting.");
+    expect(execCalls[1]?.stdin).toContain("The above agent instructions were loaded from /workspace/project/AGENTS.md.");
+    expect(meta[0]?.commandNotes).toContain("Loaded agent instructions from sandbox path /workspace/project/AGENTS.md");
+    expect(result.summary).toBe("instructions loaded");
+  });
+});
