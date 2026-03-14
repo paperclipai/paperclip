@@ -13,6 +13,7 @@ The default mode. Optimized for single-operator local use.
 - **Authentication**: no login required
 - **Use case**: local development, solo experimentation
 - **Board identity**: auto-created local board user
+- **Relay tunnel**: blocked (server refuses to start)
 
 ```sh
 # Set during onboard
@@ -26,18 +27,19 @@ Login required. Supports two exposure policies.
 
 ### `authenticated` + `private`
 
-For private network access (Tailscale, VPN, LAN).
+For private network access (Tailscale, VPN, LAN) and relay tunnel.
 
 - **Authentication**: login required via Better Auth
 - **URL handling**: auto base URL mode (lower friction)
 - **Host trust**: private-host trust policy required
+- **Relay tunnel**: supported (see [Relay Tunnel](/deploy/relay-tunnel))
 
 ```sh
 pnpm paperclipai onboard
 # Choose "authenticated" -> "private"
 ```
 
-Allow custom Tailscale hostnames:
+Allow custom Tailscale or relay hostnames:
 
 ```sh
 pnpm paperclipai allowed-hostname my-machine
@@ -69,6 +71,13 @@ A signed-in user visits this URL to claim board ownership. This:
 - Promotes the current user to instance admin
 - Demotes the auto-created local board admin
 - Ensures active company membership for the claiming user
+
+## Remote Access
+
+Two options for accessing Paperclip from outside your local machine (both require `authenticated` mode):
+
+- **Tailscale**: binds to `0.0.0.0` on a private network. See [Tailscale Private Access](/deploy/tailscale-private-access).
+- **Relay tunnel**: connects to a relay server for a public subdomain URL (e.g. `https://d4lsc.relay.com`). No port forwarding required. See [Relay Tunnel](/deploy/relay-tunnel).
 
 ## Changing Modes
 

@@ -18,10 +18,12 @@ function parseOrigin(value: string | undefined) {
 
 function trustedOriginsForRequest(req: Request) {
   const origins = new Set(DEFAULT_DEV_ORIGINS.map((value) => value.toLowerCase()));
-  const host = req.header("host")?.trim();
-  if (host) {
-    origins.add(`http://${host}`.toLowerCase());
-    origins.add(`https://${host}`.toLowerCase());
+  for (const header of ["host", "x-forwarded-host"] as const) {
+    const value = req.header(header)?.trim();
+    if (value) {
+      origins.add(`http://${value}`.toLowerCase());
+      origins.add(`https://${value}`.toLowerCase());
+    }
   }
   return origins;
 }

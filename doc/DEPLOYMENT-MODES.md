@@ -32,12 +32,14 @@ This keeps one authenticated auth stack while still separating low-friction priv
 - loopback-only host binding
 - no human login flow
 - optimized for fastest local startup
+- relay tunnel is blocked (server refuses to start)
 
 ## `authenticated + private`
 
 - login required
 - low-friction URL handling (`auto` base URL mode)
 - private-host trust policy required
+- required for relay tunnel (see `doc/RELAY.md`)
 
 ## `authenticated + public`
 

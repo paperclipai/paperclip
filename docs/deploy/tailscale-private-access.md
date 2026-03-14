@@ -70,6 +70,10 @@ Expected result:
 {"status":"ok"}
 ```
 
+## Alternative: Relay Tunnel
+
+If you don't use Tailscale or need access from outside your private network, consider the [relay tunnel](/deploy/relay-tunnel) instead. It gives your instance a public subdomain URL (e.g. `https://d4lsc.relay.com`) with zero port forwarding. Both options require `authenticated` deployment mode.
+
 ## Troubleshooting
 
 - Login or redirect errors on a private hostname: add it with `paperclipai allowed-hostname`.

@@ -74,6 +74,7 @@
               "deploy/overview",
               "deploy/local-development",
               "deploy/tailscale-private-access",
+              "deploy/relay-tunnel",
               "deploy/docker",
               "deploy/deployment-modes",
               "deploy/database",

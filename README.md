@@ -197,7 +197,7 @@ This starts the API server at `http://localhost:3100`. An embedded PostgreSQL da
 **What does a typical setup look like?**
 Locally, a single Node.js process manages an embedded Postgres and local file storage. For production, point it at your own Postgres and deploy however you like. Configure projects, agents, and goals — the agents take care of the rest.
 
-If you're a solo-entreprenuer you can use Tailscale to access Paperclip on the go. Then later you can deploy to e.g. Vercel when you need it.
+If you're a solo-entreprenuer you can use the built-in relay or Tailscale to access Paperclip on the go. The relay gives your instance a public URL (e.g. `https://d4lsc.your-relay.com`) with zero port forwarding — just set `PAPERCLIP_RELAY_URL` and the server handles the rest. A community-run test relay is available at `paperclip-relay.com` (not affiliated with Paperclip AI — deploy your own for production). See [doc/RELAY.md](doc/RELAY.md) for details. Both relay and Tailscale require `authenticated` deployment mode.
 
 **Can I run multiple companies?**
 Yes. A single deployment can run an unlimited number of companies with complete data isolation.
