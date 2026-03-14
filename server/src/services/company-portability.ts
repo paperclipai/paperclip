@@ -967,15 +967,15 @@ export function companyPortabilityService(db: Db, opts?: CompanyPortabilityServi
     const existingKeyToIssue = new Map<string, { id: string; title: string }>();
     const existingIssueKeys = new Set<string>();
 
-    if (input.target.mode === "existing_company") {
-      const existingAgents = await agents.list(input.target.companyId);
+    if (input.target.mode === "existing_company" && targetCompanyId) {
+      const existingAgents = await agents.list(targetCompanyId);
       for (const existing of existingAgents) {
         const slug = normalizeAgentUrlKey(existing.name) ?? existing.id;
         if (!existingSlugToAgent.has(slug)) existingSlugToAgent.set(slug, existing);
         existingSlugs.add(slug);
       }
       if (include.goals || include.projects || include.issues) {
-        const existingGoals = await goalsSvc.list(input.target.companyId);
+        const existingGoals = await goalsSvc.list(targetCompanyId);
         for (const existing of existingGoals) {
           const key = entityKeyForText(existing.title, existing.id);
           if (!existingKeyToGoal.has(key)) existingKeyToGoal.set(key, existing);
@@ -983,7 +983,7 @@ export function companyPortabilityService(db: Db, opts?: CompanyPortabilityServi
         }
       }
       if (include.projects || include.issues) {
-        const existingProjects = await projectsSvc.list(input.target.companyId);
+        const existingProjects = await projectsSvc.list(targetCompanyId);
         for (const existing of existingProjects) {
           const key = entityKeyForText(existing.name, existing.id);
           if (!existingKeyToProject.has(key)) existingKeyToProject.set(key, existing);
@@ -991,7 +991,7 @@ export function companyPortabilityService(db: Db, opts?: CompanyPortabilityServi
         }
       }
       if (include.issues) {
-        const existingIssues = await issuesSvc.list(input.target.companyId);
+        const existingIssues = await issuesSvc.list(targetCompanyId);
         for (const existing of existingIssues) {
           const key = entityKeyForText(existing.title, existing.id);
           if (!existingKeyToIssue.has(key)) existingKeyToIssue.set(key, existing);
@@ -1337,17 +1337,23 @@ export function companyPortabilityService(db: Db, opts?: CompanyPortabilityServi
     for (const existing of existingAgents) {
       existingSlugToAgentId.set(normalizeAgentUrlKey(existing.name) ?? existing.id, existing.id);
     }
-    const existingGoals = await goalsSvc.list(targetCompany.id);
-    for (const existing of existingGoals) {
-      existingGoalKeyToId.set(entityKeyForText(existing.title, existing.id), existing.id);
+    if (include.goals || include.projects || include.issues) {
+      const existingGoals = await goalsSvc.list(targetCompany.id);
+      for (const existing of existingGoals) {
+        existingGoalKeyToId.set(entityKeyForText(existing.title, existing.id), existing.id);
+      }
     }
-    const existingProjects = await projectsSvc.list(targetCompany.id);
-    for (const existing of existingProjects) {
-      existingProjectKeyToId.set(entityKeyForText(existing.name, existing.id), existing.id);
+    if (include.projects || include.issues) {
+      const existingProjects = await projectsSvc.list(targetCompany.id);
+      for (const existing of existingProjects) {
+        existingProjectKeyToId.set(entityKeyForText(existing.name, existing.id), existing.id);
+      }
     }
-    const existingIssues = await issuesSvc.list(targetCompany.id);
-    for (const existing of existingIssues) {
-      existingIssueKeyToId.set(entityKeyForText(existing.title, existing.id), existing.id);
+    if (include.issues) {
+      const existingIssues = await issuesSvc.list(targetCompany.id);
+      for (const existing of existingIssues) {
+        existingIssueKeyToId.set(entityKeyForText(existing.title, existing.id), existing.id);
+      }
     }
 
     if (include.agents) {

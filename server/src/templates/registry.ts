@@ -165,10 +165,17 @@ async function readTemplateFiles(
   return files;
 }
 
+let catalogCache: CompanyTemplateCatalogEntry[] | null = null;
+let catalogCacheRoot: string | null = null;
+
 export async function listBuiltInTemplates(
   opts?: TemplateRegistryOptions,
 ): Promise<CompanyTemplateCatalogEntry[]> {
   const templatesRoot = await resolveTemplatesRoot(opts);
+  if (catalogCache && catalogCacheRoot === templatesRoot) {
+    return catalogCache;
+  }
+
   const entries = await fs.readdir(templatesRoot, { withFileTypes: true }).catch((err) => {
     if (isDirectoryError(err)) return [] as Array<import("node:fs").Dirent>;
     throw err;
@@ -188,18 +195,28 @@ export async function listBuiltInTemplates(
     }
   }
 
-  return templates.sort((left, right) => {
+  const sorted = templates.sort((left, right) => {
     if (left.recommended !== right.recommended) {
       return left.recommended ? -1 : 1;
     }
     return left.name.localeCompare(right.name);
   });
+
+  catalogCache = sorted;
+  catalogCacheRoot = templatesRoot;
+  return sorted;
 }
+
+const detailCache = new Map<string, CompanyTemplateDetail>();
 
 export async function getBuiltInTemplate(
   templateId: string,
   opts?: TemplateRegistryOptions,
 ): Promise<CompanyTemplateDetail> {
+  const cacheKey = `${opts?.templatesRoot ?? ""}:${templateId}`;
+  const cached = detailCache.get(cacheKey);
+  if (cached) return cached;
+
   const templatesRoot = await resolveTemplatesRoot(opts);
   const templateDir = resolveTemplateDir(templatesRoot, templateId);
 
@@ -207,11 +224,13 @@ export async function getBuiltInTemplate(
     const metadata = await readTemplateMetadata(templateDir);
     const manifest = await readTemplateManifest(templateDir);
     const setupMarkdown = await readOptionalTemplateFile(templateDir, "SETUP.md");
-    return {
+    const detail: CompanyTemplateDetail = {
       ...buildCatalogEntry(metadata, manifest),
       manifest,
       setupMarkdown,
     };
+    detailCache.set(cacheKey, detail);
+    return detail;
   } catch (err) {
     if (isDirectoryError(err)) {
       throw notFound(`Built-in template not found: ${templateId}`);
@@ -220,10 +239,16 @@ export async function getBuiltInTemplate(
   }
 }
 
+const bundleCache = new Map<string, BuiltInTemplateBundle>();
+
 export async function loadBuiltInTemplateBundle(
   templateId: string,
   opts?: TemplateRegistryOptions,
 ): Promise<BuiltInTemplateBundle> {
+  const cacheKey = `${opts?.templatesRoot ?? ""}:${templateId}`;
+  const cached = bundleCache.get(cacheKey);
+  if (cached) return cached;
+
   const templatesRoot = await resolveTemplatesRoot(opts);
   const templateDir = resolveTemplateDir(templatesRoot, templateId);
 
@@ -231,12 +256,14 @@ export async function loadBuiltInTemplateBundle(
     const metadata = await readTemplateMetadata(templateDir);
     const manifest = await readTemplateManifest(templateDir);
     const files = await readTemplateFiles(templateDir, manifest);
-    return {
+    const bundle: BuiltInTemplateBundle = {
       template: buildCatalogEntry(metadata, manifest),
       manifest,
       files,
       warnings: [],
     };
+    bundleCache.set(cacheKey, bundle);
+    return bundle;
   } catch (err) {
     if (isDirectoryError(err)) {
       throw notFound(`Built-in template not found: ${templateId}`);
