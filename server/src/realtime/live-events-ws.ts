@@ -79,6 +79,18 @@ function parseBearerToken(rawAuth: string | string[] | undefined) {
   return token.length > 0 ? token : null;
 }
 
+function parseSecWebSocketProtocolToken(header: string | string[] | undefined): string | null {
+  if (!header) return null;
+  const value = Array.isArray(header) ? header[0] : header;
+  if (!value) return null;
+  // Convention: "access_token, <token_value>"
+  const parts = value.split(",").map(s => s.trim());
+  if (parts.length >= 2 && parts[0] === "access_token") {
+    return parts[1] || null;
+  }
+  return null;
+}
+
 function headersFromIncomingMessage(req: IncomingMessage): Headers {
   const headers = new Headers();
   for (const [key, raw] of Object.entries(req.headers)) {
@@ -102,9 +114,9 @@ async function authorizeUpgrade(
     resolveSessionFromHeaders?: (headers: Headers) => Promise<BetterAuthSessionResult | null>;
   },
 ): Promise<UpgradeContext | null> {
-  const queryToken = url.searchParams.get("token")?.trim() ?? "";
   const authToken = parseBearerToken(req.headers.authorization);
-  const token = authToken ?? (queryToken.length > 0 ? queryToken : null);
+  const protocolToken = parseSecWebSocketProtocolToken(req.headers["sec-websocket-protocol"]);
+  const token = authToken ?? protocolToken;
 
   // Browser board context has no bearer token in local_trusted and authenticated modes.
   if (!token) {

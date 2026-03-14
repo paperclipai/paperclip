@@ -28,6 +28,7 @@ import {
   PERMISSION_KEYS
 } from "@paperclipai/shared";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import { validateUrlNotInternal } from "../utils/url-validation.js";
 import {
   forbidden,
   conflict,
@@ -1381,6 +1382,18 @@ async function probeInviteResolutionTarget(
   timeoutMs: number
 ): Promise<InviteResolutionProbe> {
   const startedAt = Date.now();
+  // SSRF protection: validate URL does not target internal services
+  try {
+    await validateUrlNotInternal(url.toString());
+  } catch (err) {
+    return {
+      status: "unreachable",
+      method: "HEAD",
+      durationMs: Date.now() - startedAt,
+      httpStatus: null,
+      message: err instanceof Error ? err.message : "URL validation failed",
+    };
+  }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {

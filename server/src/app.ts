@@ -41,6 +41,7 @@ export async function createApp(
     bindHost: string;
     authReady: boolean;
     companyDeletionEnabled: boolean;
+    trustedOrigins?: string[];
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
   },
@@ -92,7 +93,7 @@ export async function createApp(
 
   // Mount API routes
   const api = Router();
-  api.use(boardMutationGuard());
+  api.use(boardMutationGuard(opts.trustedOrigins));
   api.use(
     "/health",
     healthRoutes(db, {

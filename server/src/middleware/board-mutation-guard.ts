@@ -16,28 +16,21 @@ function parseOrigin(value: string | undefined) {
   }
 }
 
-function trustedOriginsForRequest(req: Request) {
-  const origins = new Set(DEFAULT_DEV_ORIGINS.map((value) => value.toLowerCase()));
-  const host = req.header("host")?.trim();
-  if (host) {
-    origins.add(`http://${host}`.toLowerCase());
-    origins.add(`https://${host}`.toLowerCase());
-  }
-  return origins;
-}
-
-function isTrustedBoardMutationRequest(req: Request) {
-  const allowedOrigins = trustedOriginsForRequest(req);
+function isTrustedBoardMutationRequest(req: Request, configuredOrigins: Set<string>) {
   const origin = parseOrigin(req.header("origin"));
-  if (origin && allowedOrigins.has(origin)) return true;
+  if (origin && configuredOrigins.has(origin)) return true;
 
   const refererOrigin = parseOrigin(req.header("referer"));
-  if (refererOrigin && allowedOrigins.has(refererOrigin)) return true;
+  if (refererOrigin && configuredOrigins.has(refererOrigin)) return true;
 
   return false;
 }
 
-export function boardMutationGuard(): RequestHandler {
+export function boardMutationGuard(trustedOrigins?: string[]): RequestHandler {
+  const allowedOrigins = new Set(
+    [...DEFAULT_DEV_ORIGINS, ...(trustedOrigins ?? [])].map(o => o.toLowerCase())
+  );
+
   return (req, res, next) => {
     if (SAFE_METHODS.has(req.method.toUpperCase())) {
       next();
@@ -57,7 +50,7 @@ export function boardMutationGuard(): RequestHandler {
       return;
     }
 
-    if (!isTrustedBoardMutationRequest(req)) {
+    if (!isTrustedBoardMutationRequest(req, allowedOrigins)) {
       res.status(403).json({ error: "Board mutation requires trusted browser origin" });
       return;
     }

@@ -76,7 +76,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
 
     const token = authHeader.slice("bearer ".length).trim();
     if (!token) {
-      next();
+      _res.status(401).json({ error: "Invalid or expired authentication token" });
       return;
     }
 
@@ -90,7 +90,8 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     if (!key) {
       const claims = verifyLocalAgentJwt(token);
       if (!claims) {
-        next();
+        // Token was provided but is invalid — fail closed
+        _res.status(401).json({ error: "Invalid or expired authentication token" });
         return;
       }
 
@@ -101,12 +102,12 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         .then((rows) => rows[0] ?? null);
 
       if (!agentRecord || agentRecord.companyId !== claims.company_id) {
-        next();
+        _res.status(401).json({ error: "Invalid agent credentials" });
         return;
       }
 
       if (agentRecord.status === "terminated" || agentRecord.status === "pending_approval") {
-        next();
+        _res.status(403).json({ error: "Agent is not active" });
         return;
       }
 
@@ -134,7 +135,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       .then((rows) => rows[0] ?? null);
 
     if (!agentRecord || agentRecord.status === "terminated" || agentRecord.status === "pending_approval") {
-      next();
+      _res.status(401).json({ error: "Invalid agent credentials" });
       return;
     }
 
