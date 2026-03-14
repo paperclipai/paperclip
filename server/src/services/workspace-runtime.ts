@@ -209,11 +209,20 @@ function resolveConfiguredPath(value: string, baseDir: string): string {
 }
 
 async function runGit(args: string[], cwd: string): Promise<string> {
+  // Inject safe.directory=* via one-shot env config so git doesn't reject
+  // cross-filesystem paths (e.g. WSL mounts accessed from Windows).
+  // This only affects the spawned subprocess — no global config is modified.
+  const gitEnv = { ...process.env } as Record<string, string>;
+  const existingCount = parseInt(gitEnv.GIT_CONFIG_COUNT ?? "0", 10) || 0;
+  gitEnv.GIT_CONFIG_COUNT = String(existingCount + 1);
+  gitEnv[`GIT_CONFIG_KEY_${existingCount}`] = "safe.directory";
+  gitEnv[`GIT_CONFIG_VALUE_${existingCount}`] = "*";
+
   const proc = await new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve, reject) => {
     const child = spawn("git", args, {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
-      env: process.env,
+      env: gitEnv,
     });
     let stdout = "";
     let stderr = "";
