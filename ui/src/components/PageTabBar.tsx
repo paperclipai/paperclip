@@ -11,9 +11,10 @@ interface PageTabBarProps {
   items: PageTabItem[];
   value?: string;
   onValueChange?: (value: string) => void;
+  align?: "center" | "start";
 }
 
-export function PageTabBar({ items, value, onValueChange }: PageTabBarProps) {
+export function PageTabBar({ items, value, onValueChange, align = "center" }: PageTabBarProps) {
   const { isMobile } = useSidebar();
 
   if (isMobile && value !== undefined && onValueChange) {
@@ -33,7 +34,7 @@ export function PageTabBar({ items, value, onValueChange }: PageTabBarProps) {
   }
 
   return (
-    <TabsList variant="line">
+    <TabsList variant="line" className={align === "start" ? "justify-start" : undefined}>
       {items.map((item) => (
         <TabsTrigger key={item.value} value={item.value}>
           {item.label}

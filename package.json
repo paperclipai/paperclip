@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "node scripts/dev-runner.mjs watch",
-    "dev:watch": "PAPERCLIP_MIGRATION_PROMPT=never node scripts/dev-runner.mjs watch",
+    "dev:watch": "node scripts/dev-runner.mjs watch",
     "dev:once": "node scripts/dev-runner.mjs dev",
     "dev:server": "pnpm --filter @paperclipai/server dev",
     "dev:ui": "pnpm --filter @paperclipai/ui dev",
@@ -18,17 +18,25 @@
     "db:backup": "./scripts/backup-db.sh",
     "paperclipai": "node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts",
     "build:npm": "./scripts/build-npm.sh",
+    "release:start": "./scripts/release-start.sh",
     "release": "./scripts/release.sh",
+    "release:preflight": "./scripts/release-preflight.sh",
+    "release:github": "./scripts/create-github-release.sh",
+    "release:rollback": "./scripts/rollback-latest.sh",
     "changeset": "changeset",
     "version-packages": "changeset version",
     "check:tokens": "node scripts/check-forbidden-tokens.mjs",
     "docs:dev": "cd docs && npx mintlify dev",
     "smoke:openclaw-join": "./scripts/smoke/openclaw-join.sh",
     "smoke:openclaw-docker-ui": "./scripts/smoke/openclaw-docker-ui.sh",
-    "smoke:openclaw-sse-standalone": "./scripts/smoke/openclaw-sse-standalone.sh"
+    "smoke:openclaw-sse-standalone": "./scripts/smoke/openclaw-sse-standalone.sh",
+    "test:e2e": "npx playwright test --config tests/e2e/playwright.config.ts",
+    "test:e2e:headed": "npx playwright test --config tests/e2e/playwright.config.ts --headed"
   },
   "devDependencies": {
     "@changesets/cli": "^2.30.0",
+    "cross-env": "^10.1.0",
+    "@playwright/test": "^1.58.2",
     "esbuild": "^0.27.3",
     "typescript": "^5.7.3",
     "vitest": "^3.0.5"

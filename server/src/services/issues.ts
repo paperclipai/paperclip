@@ -5,11 +5,13 @@ import {
   assets,
   companies,
   companyMemberships,
+  documents,
   goals,
   heartbeatRuns,
   issueAttachments,
   issueLabels,
   issueComments,
+  issueDocuments,
   issueReadStates,
   issues,
   labels,
@@ -18,8 +20,16 @@ import {
 } from "@paperclipai/db";
 import { extractProjectMentionIds } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import {
+  defaultIssueExecutionWorkspaceSettingsForProject,
+  parseProjectExecutionWorkspacePolicy,
+} from "./execution-workspace-policy.js";
+import { redactCurrentUserText } from "../log-redaction.js";
+import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
+import { getDefaultCompanyGoal } from "./goals.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
+const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 
 function assertTransition(from: string, to: string) {
   if (from === to) return;
@@ -53,6 +63,7 @@ export interface IssueFilters {
   touchedByUserId?: string;
   unreadForUserId?: string;
   projectId?: string;
+  parentId?: string;
   labelId?: string;
   q?: string;
 }
@@ -82,6 +93,13 @@ type IssueUserContextInput = {
   createdAt: Date | string;
   updatedAt: Date | string;
 };
+
+function redactIssueComment<T extends { body: string }>(comment: T): T {
+  return {
+    ...comment,
+    body: redactCurrentUserText(comment.body),
+  };
+}
 
 function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
   if (actorRunId) return checkoutRunId === actorRunId;
@@ -458,6 +476,7 @@ export function issueService(db: Db) {
         conditions.push(unreadForUserCondition(companyId, unreadForUserId));
       }
       if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
+      if (filters?.parentId) conditions.push(eq(issues.parentId, filters.parentId));
       if (filters?.labelId) {
         const labeledIssueIds = await db
           .select({ issueId: issueLabels.issueId })
@@ -635,6 +654,20 @@ export function issueService(db: Db) {
         throw unprocessable("in_progress issues require an assignee");
       }
       return db.transaction(async (tx) => {
+        const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
+        let executionWorkspaceSettings =
+          (issueData.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? null;
+        if (executionWorkspaceSettings == null && issueData.projectId) {
+          const project = await tx
+            .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+            .from(projects)
+            .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, companyId)))
+            .then((rows) => rows[0] ?? null);
+          executionWorkspaceSettings =
+            defaultIssueExecutionWorkspaceSettingsForProject(
+              parseProjectExecutionWorkspacePolicy(project?.executionWorkspacePolicy),
+            ) as Record<string, unknown> | null;
+        }
         const [company] = await tx
           .update(companies)
           .set({ issueCounter: sql`${companies.issueCounter} + 1` })
@@ -644,7 +677,18 @@ export function issueService(db: Db) {
         const issueNumber = company.issueCounter;
         const identifier = `${company.issuePrefix}-${issueNumber}`;
 
-        const values = { ...issueData, companyId, issueNumber, identifier } as typeof issues.$inferInsert;
+        const values = {
+          ...issueData,
+          goalId: resolveIssueGoalId({
+            projectId: issueData.projectId,
+            goalId: issueData.goalId,
+            defaultGoalId: defaultCompanyGoal?.id ?? null,
+          }),
+          ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
+          companyId,
+          issueNumber,
+          identifier,
+        } as typeof issues.$inferInsert;
         if (values.status === "in_progress" && !values.startedAt) {
           values.startedAt = new Date();
         }
@@ -719,6 +763,14 @@ export function issueService(db: Db) {
       }
 
       return db.transaction(async (tx) => {
+        const defaultCompanyGoal = await getDefaultCompanyGoal(tx, existing.companyId);
+        patch.goalId = resolveNextIssueGoalId({
+          currentProjectId: existing.projectId,
+          currentGoalId: existing.goalId,
+          projectId: issueData.projectId,
+          goalId: issueData.goalId,
+          defaultGoalId: defaultCompanyGoal?.id ?? null,
+        });
         const updated = await tx
           .update(issues)
           .set(patch)
@@ -740,6 +792,10 @@ export function issueService(db: Db) {
           .select({ assetId: issueAttachments.assetId })
           .from(issueAttachments)
           .where(eq(issueAttachments.issueId, id));
+        const issueDocumentIds = await tx
+          .select({ documentId: issueDocuments.documentId })
+          .from(issueDocuments)
+          .where(eq(issueDocuments.issueId, id));
 
         const removedIssue = await tx
           .delete(issues)
@@ -751,6 +807,12 @@ export function issueService(db: Db) {
           await tx
             .delete(assets)
             .where(inArray(assets.id, attachmentAssetIds.map((row) => row.assetId)));
+        }
+
+        if (removedIssue && issueDocumentIds.length > 0) {
+          await tx
+            .delete(documents)
+            .where(inArray(documents.id, issueDocumentIds.map((row) => row.documentId)));
         }
 
         if (!removedIssue) return null;
@@ -1011,19 +1073,96 @@ export function issueService(db: Db) {
         .returning()
         .then((rows) => rows[0] ?? null),
 
-    listComments: (issueId: string) =>
-      db
+    listComments: async (
+      issueId: string,
+      opts?: {
+        afterCommentId?: string | null;
+        order?: "asc" | "desc";
+        limit?: number | null;
+      },
+    ) => {
+      const order = opts?.order === "asc" ? "asc" : "desc";
+      const afterCommentId = opts?.afterCommentId?.trim() || null;
+      const limit =
+        opts?.limit && opts.limit > 0
+          ? Math.min(Math.floor(opts.limit), MAX_ISSUE_COMMENT_PAGE_LIMIT)
+          : null;
+
+      const conditions = [eq(issueComments.issueId, issueId)];
+      if (afterCommentId) {
+        const anchor = await db
+          .select({
+            id: issueComments.id,
+            createdAt: issueComments.createdAt,
+          })
+          .from(issueComments)
+          .where(and(eq(issueComments.issueId, issueId), eq(issueComments.id, afterCommentId)))
+          .then((rows) => rows[0] ?? null);
+
+        if (!anchor) return [];
+        conditions.push(
+          order === "asc"
+            ? sql<boolean>`(
+                ${issueComments.createdAt} > ${anchor.createdAt}
+                OR (${issueComments.createdAt} = ${anchor.createdAt} AND ${issueComments.id} > ${anchor.id})
+              )`
+            : sql<boolean>`(
+                ${issueComments.createdAt} < ${anchor.createdAt}
+                OR (${issueComments.createdAt} = ${anchor.createdAt} AND ${issueComments.id} < ${anchor.id})
+              )`,
+        );
+      }
+
+      const query = db
         .select()
         .from(issueComments)
-        .where(eq(issueComments.issueId, issueId))
-        .orderBy(desc(issueComments.createdAt)),
+        .where(and(...conditions))
+        .orderBy(
+          order === "asc" ? asc(issueComments.createdAt) : desc(issueComments.createdAt),
+          order === "asc" ? asc(issueComments.id) : desc(issueComments.id),
+        );
+
+      const comments = limit ? await query.limit(limit) : await query;
+      return comments.map(redactIssueComment);
+    },
+
+    getCommentCursor: async (issueId: string) => {
+      const [latest, countRow] = await Promise.all([
+        db
+          .select({
+            latestCommentId: issueComments.id,
+            latestCommentAt: issueComments.createdAt,
+          })
+          .from(issueComments)
+          .where(eq(issueComments.issueId, issueId))
+          .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
+          .limit(1)
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({
+            totalComments: sql<number>`count(*)::int`,
+          })
+          .from(issueComments)
+          .where(eq(issueComments.issueId, issueId))
+          .then((rows) => rows[0] ?? null),
+      ]);
+
+      return {
+        totalComments: Number(countRow?.totalComments ?? 0),
+        latestCommentId: latest?.latestCommentId ?? null,
+        latestCommentAt: latest?.latestCommentAt ?? null,
+      };
+    },
 
     getComment: (commentId: string) =>
       db
         .select()
         .from(issueComments)
         .where(eq(issueComments.id, commentId))
-        .then((rows) => rows[0] ?? null),
+        .then((rows) => {
+          const comment = rows[0] ?? null;
+          return comment ? redactIssueComment(comment) : null;
+        }),
 
     addComment: async (issueId: string, body: string, actor: { agentId?: string; userId?: string }) => {
       const issue = await db
@@ -1034,6 +1173,7 @@ export function issueService(db: Db) {
 
       if (!issue) throw notFound("Issue not found");
 
+      const redactedBody = redactCurrentUserText(body);
       const [comment] = await db
         .insert(issueComments)
         .values({
@@ -1041,7 +1181,7 @@ export function issueService(db: Db) {
           issueId,
           authorAgentId: actor.agentId ?? null,
           authorUserId: actor.userId ?? null,
-          body,
+          body: redactedBody,
         })
         .returning();
 
@@ -1051,7 +1191,7 @@ export function issueService(db: Db) {
         .set({ updatedAt: new Date() })
         .where(eq(issues.id, issueId));
 
-      return comment;
+      return redactIssueComment(comment);
     },
 
     createAttachment: async (input: {
@@ -1385,24 +1525,6 @@ export function issueService(db: Db) {
         project: a.projectId ? projectMap.get(a.projectId) ?? null : null,
         goal: a.goalId ? goalMap.get(a.goalId) ?? null : null,
       }));
-    },
-
-    staleCount: async (companyId: string, minutes = 60) => {
-      const cutoff = new Date(Date.now() - minutes * 60 * 1000);
-      const result = await db
-        .select({ count: sql<number>`count(*)` })
-        .from(issues)
-        .where(
-          and(
-            eq(issues.companyId, companyId),
-            eq(issues.status, "in_progress"),
-            isNull(issues.hiddenAt),
-            sql`${issues.startedAt} < ${cutoff.toISOString()}`,
-          ),
-        )
-        .then((rows) => rows[0]);
-
-      return Number(result?.count ?? 0);
     },
   };
 }

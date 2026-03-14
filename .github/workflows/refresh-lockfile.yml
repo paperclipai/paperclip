@@ -1,0 +1,81 @@
+name: Refresh Lockfile
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+concurrency:
+  group: refresh-lockfile-master
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Refresh pnpm lockfile
+        run: pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
+
+      - name: Fail on unexpected file changes
+        run: |
+          changed="$(git status --porcelain)"
+          if [ -z "$changed" ]; then
+            echo "Lockfile is already up to date."
+            exit 0
+          fi
+          if printf '%s\n' "$changed" | grep -Fvq ' pnpm-lock.yaml'; then
+            echo "Unexpected files changed during lockfile refresh:"
+            echo "$changed"
+            exit 1
+          fi
+
+      - name: Create or update pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git diff --quiet -- pnpm-lock.yaml; then
+            echo "Lockfile unchanged, nothing to do."
+            exit 0
+          fi
+
+          BRANCH="chore/refresh-lockfile"
+          git config user.name "lockfile-bot"
+          git config user.email "lockfile-bot@users.noreply.github.com"
+
+          git checkout -B "$BRANCH"
+          git add pnpm-lock.yaml
+          git commit -m "chore(lockfile): refresh pnpm-lock.yaml"
+          git push --force origin "$BRANCH"
+
+          # Create PR if one doesn't already exist
+          existing=$(gh pr list --head "$BRANCH" --json number --jq '.[0].number')
+          if [ -z "$existing" ]; then
+            gh pr create \
+              --head "$BRANCH" \
+              --title "chore(lockfile): refresh pnpm-lock.yaml" \
+              --body "Auto-generated lockfile refresh after dependencies changed on master. This PR only updates pnpm-lock.yaml."
+            echo "Created new PR."
+          else
+            echo "PR #$existing already exists, branch updated via force push."
+          fi

@@ -10,7 +10,7 @@ import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentIcon } from "../components/AgentIconPicker";
 import { Network } from "lucide-react";
-import type { Agent } from "@paperclipai/shared";
+import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
 
 // Layout constants
 const CARD_W = 200;
@@ -118,9 +118,10 @@ function collectEdges(nodes: LayoutNode[]): Array<{ parent: LayoutNode; child: L
 const adapterLabels: Record<string, string> = {
   claude_local: "Claude",
   codex_local: "Codex",
+  gemini_local: "Gemini",
   opencode_local: "OpenCode",
   cursor: "Cursor",
-  openclaw: "OpenClaw",
+  openclaw_gateway: "OpenClaw Gateway",
   process: "Process",
   http: "HTTP",
 };
@@ -421,11 +422,7 @@ export function OrgChart() {
   );
 }
 
-const roleLabels: Record<string, string> = {
-  ceo: "CEO", cto: "CTO", cmo: "CMO", cfo: "CFO",
-  engineer: "Engineer", designer: "Designer", pm: "PM",
-  qa: "QA", devops: "DevOps", researcher: "Researcher", general: "General",
-};
+const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 
 function roleLabel(role: string): string {
   return roleLabels[role] ?? role;

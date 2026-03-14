@@ -23,6 +23,7 @@ const logFile = path.join(logDir, "server.log");
 const sharedOpts = {
   translateTime: "HH:MM:ss",
   ignore: "pid,hostname",
+  singleLine: true,
 };
 
 export const logger = pino({
@@ -62,7 +63,7 @@ export const httpLogger = pinoHttp({
       const ctx = (res as any).__errorContext;
       if (ctx) {
         return {
-          err: ctx.error,
+          errorContext: ctx.error,
           reqBody: ctx.reqBody,
           reqParams: ctx.reqParams,
           reqQuery: ctx.reqQuery,

@@ -77,9 +77,7 @@ export function CompanySettings() {
 
   const inviteMutation = useMutation({
     mutationFn: () =>
-      accessApi.createCompanyInvite(selectedCompanyId!, {
-        allowedJoinTypes: "agent"
-      }),
+      accessApi.createOpenClawInvitePrompt(selectedCompanyId!),
     onSuccess: async (invite) => {
       setInviteError(null);
       const base = window.location.origin.replace(/\/+$/, "");
@@ -317,9 +315,9 @@ export function CompanySettings() {
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
           <div className="flex items-center gap-1.5">
             <span className="text-xs text-muted-foreground">
-              Generate an agent snippet for join flows.
+              Generate an OpenClaw agent invite snippet.
             </span>
-            <HintIcon text="Creates an agent-only invite (10m) and renders a copy-ready snippet." />
+            <HintIcon text="Creates a short-lived OpenClaw agent invite and renders a copy-ready prompt." />
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button
@@ -329,7 +327,7 @@ export function CompanySettings() {
             >
               {inviteMutation.isPending
                 ? "Generating..."
-                : "Generate agent snippet"}
+                : "Generate OpenClaw Invite Prompt"}
             </Button>
           </div>
           {inviteError && (
@@ -339,7 +337,7 @@ export function CompanySettings() {
             <div className="rounded-md border border-border bg-muted/30 p-2">
               <div className="flex items-center justify-between gap-2">
                 <div className="text-xs text-muted-foreground">
-                  Agent Snippet
+                  OpenClaw Invite Prompt
                 </div>
                 {snippetCopied && (
                   <span
@@ -461,7 +459,7 @@ Suggested command:
 Then verify with: curl -fsS <base-url>/api/health`;
 
   const resolutionLine = resolutionTestUrl
-    ? `\nYou MUST test callback reachability, call: ${resolutionTestUrl}?url=<urlencoded-webhook-url> (well using the hostname that worked above). Do not assume your 172.x is necessarily reachable from Paperclip. Test it. `
+    ? `\nYou MUST test Paperclip-to-gateway reachability, call: ${resolutionTestUrl}?url=<urlencoded-gateway-url> (using the hostname that worked above). Do not assume your 172.x is necessarily reachable from Paperclip. Test it. `
     : "";
 
   return `You're invited to join a Paperclip organization.
@@ -476,13 +474,20 @@ Verify the hostname works from your runtime with: GET <base-url>/api/health
 ${connectivityBlock}
 
 For your "agentName", just use your own agent name (OpenClaw or whatever your name is) and send it directly.
-You also need to send a webhook URL that Paperclip can access. Check your config and include that URL.${resolutionLine}
+You also need to send a gateway URL that Paperclip can access. Check your config and include that URL.${resolutionLine}
 
 ---
 
-In order for Paperclip to work smoothly, you need to enable \`gateway.http.endpoints.responses.enabled=true\` in your OpenClaw config.
+This onboarding flow is for OpenClaw Gateway.
+When you submit the join request, use:
+- \`adapterType: "openclaw_gateway"\`
+- \`agentDefaultsPayload.url\` as your \`ws://\` or \`wss://\` gateway URL
+- \`agentDefaultsPayload.headers["x-openclaw-token"]\` with your gateway token
+- (legacy accepted) \`agentDefaultsPayload.headers["x-openclaw-auth"]\`
+- Keep device auth enabled (recommended). If \`devicePrivateKeyPem\` is omitted, Paperclip will generate and persist one during join so pairing approvals remain stable.
+- Only use \`disableDeviceAuth=true\` for special environments where pairing cannot be completed.
 
-Please enable that setting and notify your user that we did so.
+Do NOT use \`/v1/responses\` or \`/hooks/*\` in this join flow.
 
 Before you do anything, please respond to your user that you understand the instructions and you're going to work on them. Then do the step above in another session called "paperclip-onboarding" and then tell your user when you're done. Update your user in intermediate steps along the way so they know what's going on.
 

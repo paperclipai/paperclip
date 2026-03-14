@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
-import type { Agent, AgentRuntimeState } from "@paperclipai/shared";
+import { AGENT_ROLE_LABELS, type Agent, type AgentRuntimeState } from "@paperclipai/shared";
 import { agentsApi } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -17,12 +17,15 @@ interface AgentPropertiesProps {
 const adapterLabels: Record<string, string> = {
   claude_local: "Claude (local)",
   codex_local: "Codex (local)",
+  gemini_local: "Gemini CLI (local)",
   opencode_local: "OpenCode (local)",
-  openclaw: "OpenClaw",
+  openclaw_gateway: "OpenClaw Gateway",
   cursor: "Cursor (local)",
   process: "Process",
   http: "HTTP",
 };
+
+const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 
 function PropertyRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -51,7 +54,7 @@ export function AgentProperties({ agent, runtimeState }: AgentPropertiesProps) {
           <StatusBadge status={agent.status} />
         </PropertyRow>
         <PropertyRow label="Role">
-          <span className="text-sm">{agent.role}</span>
+          <span className="text-sm">{roleLabels[agent.role] ?? agent.role}</span>
         </PropertyRow>
         {agent.title && (
           <PropertyRow label="Title">

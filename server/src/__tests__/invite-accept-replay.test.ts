@@ -1,63 +1,55 @@
 import { describe, expect, it } from "vitest";
 import {
   buildJoinDefaultsPayloadForAccept,
-  canReplayOpenClawInviteAccept,
+  canReplayOpenClawGatewayInviteAccept,
   mergeJoinDefaultsPayloadForReplay,
 } from "../routes/access.js";
 
-describe("canReplayOpenClawInviteAccept", () => {
-  it("allows replay only for openclaw agent joins in pending or approved state", () => {
+describe("canReplayOpenClawGatewayInviteAccept", () => {
+  it("allows replay only for openclaw_gateway agent joins in pending or approved state", () => {
     expect(
-      canReplayOpenClawInviteAccept({
+      canReplayOpenClawGatewayInviteAccept({
         requestType: "agent",
-        adapterType: "openclaw",
+        adapterType: "openclaw_gateway",
         existingJoinRequest: {
           requestType: "agent",
-          adapterType: "openclaw",
+          adapterType: "openclaw_gateway",
           status: "pending_approval",
         },
       }),
     ).toBe(true);
+
     expect(
-      canReplayOpenClawInviteAccept({
+      canReplayOpenClawGatewayInviteAccept({
         requestType: "agent",
-        adapterType: "openclaw",
+        adapterType: "openclaw_gateway",
         existingJoinRequest: {
           requestType: "agent",
-          adapterType: "openclaw",
+          adapterType: "openclaw_gateway",
           status: "approved",
         },
       }),
     ).toBe(true);
+
     expect(
-      canReplayOpenClawInviteAccept({
+      canReplayOpenClawGatewayInviteAccept({
         requestType: "agent",
-        adapterType: "openclaw",
+        adapterType: "openclaw_gateway",
         existingJoinRequest: {
           requestType: "agent",
-          adapterType: "openclaw",
+          adapterType: "openclaw_gateway",
           status: "rejected",
         },
       }),
     ).toBe(false);
+
     expect(
-      canReplayOpenClawInviteAccept({
+      canReplayOpenClawGatewayInviteAccept({
         requestType: "human",
-        adapterType: "openclaw",
+        adapterType: "openclaw_gateway",
         existingJoinRequest: {
           requestType: "agent",
-          adapterType: "openclaw",
-          status: "pending_approval",
-        },
-      }),
-    ).toBe(false);
-    expect(
-      canReplayOpenClawInviteAccept({
-        requestType: "agent",
-        adapterType: "process",
-        existingJoinRequest: {
-          requestType: "agent",
-          adapterType: "openclaw",
+          adapterType: "openclaw_gateway",
           status: "pending_approval",
         },
       }),
@@ -66,36 +58,34 @@ describe("canReplayOpenClawInviteAccept", () => {
 });
 
 describe("mergeJoinDefaultsPayloadForReplay", () => {
-  it("merges replay payloads and preserves existing fields while allowing auth/header overrides", () => {
+  it("merges replay payloads and allows gateway token override", () => {
     const merged = mergeJoinDefaultsPayloadForReplay(
       {
-        url: "https://old.example/v1/responses",
-        method: "POST",
+        url: "ws://old.example:18789",
         paperclipApiUrl: "http://host.docker.internal:3100",
         headers: {
-          "x-openclaw-auth": "old-token",
+          "x-openclaw-token": "old-token-1234567890",
           "x-custom": "keep-me",
         },
       },
       {
         paperclipApiUrl: "https://paperclip.example.com",
         headers: {
-          "x-openclaw-auth": "new-token",
+          "x-openclaw-token": "new-token-1234567890",
         },
       },
     );
 
     const normalized = buildJoinDefaultsPayloadForAccept({
-      adapterType: "openclaw",
+      adapterType: "openclaw_gateway",
       defaultsPayload: merged,
       inboundOpenClawAuthHeader: null,
     }) as Record<string, unknown>;
 
-    expect(normalized.url).toBe("https://old.example/v1/responses");
+    expect(normalized.url).toBe("ws://old.example:18789");
     expect(normalized.paperclipApiUrl).toBe("https://paperclip.example.com");
-    expect(normalized.webhookAuthHeader).toBe("Bearer new-token");
     expect(normalized.headers).toMatchObject({
-      "x-openclaw-auth": "new-token",
+      "x-openclaw-token": "new-token-1234567890",
       "x-custom": "keep-me",
     });
   });

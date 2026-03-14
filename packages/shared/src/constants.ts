@@ -26,9 +26,11 @@ export const AGENT_ADAPTER_TYPES = [
   "http",
   "claude_local",
   "codex_local",
+  "gemini_local",
   "opencode_local",
+  "pi_local",
   "cursor",
-  "openclaw",
+  "openclaw_gateway",
 ] as const;
 export type AgentAdapterType = (typeof AGENT_ADAPTER_TYPES)[number];
 
@@ -46,6 +48,20 @@ export const AGENT_ROLES = [
   "general",
 ] as const;
 export type AgentRole = (typeof AGENT_ROLES)[number];
+
+export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
+  ceo: "CEO",
+  cto: "CTO",
+  cmo: "CMO",
+  cfo: "CFO",
+  engineer: "Engineer",
+  designer: "Designer",
+  pm: "PM",
+  qa: "QA",
+  devops: "DevOps",
+  researcher: "Researcher",
+  general: "General",
+};
 
 export const AGENT_ICON_NAMES = [
   "bot",

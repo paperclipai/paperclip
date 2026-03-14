@@ -1,23 +1,26 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
-import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { issuesApi } from "../api/issues";
+import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
+import { formatAssigneeUserLabel } from "../lib/assignees";
 import { groupBy } from "../lib/groupBy";
 import { formatDate, cn } from "../lib/utils";
+import { timeAgo } from "../lib/timeAgo";
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { EmptyState } from "./EmptyState";
 import { Identity } from "./Identity";
+import { IssueRow } from "./IssueRow";
 import { PageSkeleton } from "./PageSkeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
-import { CircleDot, Plus, Filter, ArrowUpDown, Layers, Check, X, ChevronRight, List, Columns3, User, Search, ArrowDown } from "lucide-react";
+import { CircleDot, Plus, Filter, ArrowUpDown, Layers, Check, X, ChevronRight, List, Columns3, User, Search } from "lucide-react";
 import { KanbanBoard } from "./KanbanBoard";
 import type { Issue } from "@paperclipai/shared";
 
@@ -86,11 +89,20 @@ function toggleInArray(arr: string[], value: string): string[] {
   return arr.includes(value) ? arr.filter((v) => v !== value) : [...arr, value];
 }
 
-function applyFilters(issues: Issue[], state: IssueViewState): Issue[] {
+function applyFilters(issues: Issue[], state: IssueViewState, currentUserId?: string | null): Issue[] {
   let result = issues;
   if (state.statuses.length > 0) result = result.filter((i) => state.statuses.includes(i.status));
   if (state.priorities.length > 0) result = result.filter((i) => state.priorities.includes(i.priority));
-  if (state.assignees.length > 0) result = result.filter((i) => i.assigneeAgentId != null && state.assignees.includes(i.assigneeAgentId));
+  if (state.assignees.length > 0) {
+    result = result.filter((issue) => {
+      for (const assignee of state.assignees) {
+        if (assignee === "__unassigned" && !issue.assigneeAgentId && !issue.assigneeUserId) return true;
+        if (assignee === "__me" && currentUserId && issue.assigneeUserId === currentUserId) return true;
+        if (issue.assigneeAgentId === assignee) return true;
+      }
+      return false;
+    });
+  }
   if (state.labels.length > 0) result = result.filter((i) => (i.labelIds ?? []).some((id) => state.labels.includes(id)));
   return result;
 }
@@ -141,6 +153,7 @@ interface IssuesListProps {
   liveIssueIds?: Set<string>;
   projectId?: string;
   viewStateKey: string;
+  issueLinkState?: unknown;
   initialAssignees?: string[];
   initialSearch?: string;
   onSearchChange?: (search: string) => void;
@@ -155,6 +168,7 @@ export function IssuesList({
   liveIssueIds,
   projectId,
   viewStateKey,
+  issueLinkState,
   initialAssignees,
   initialSearch,
   onSearchChange,
@@ -162,6 +176,11 @@ export function IssuesList({
 }: IssuesListProps) {
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialog();
+  const { data: session } = useQuery({
+    queryKey: queryKeys.auth.session,
+    queryFn: () => authApi.getSession(),
+  });
+  const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
 
   // Scope the storage key per company so folding/view state is independent across companies.
   const scopedKey = selectedCompanyId ? `${viewStateKey}:${selectedCompanyId}` : viewStateKey;
@@ -221,9 +240,9 @@ export function IssuesList({
 
   const filtered = useMemo(() => {
     const sourceIssues = normalizedIssueSearch.length > 0 ? searchedIssues : issues;
-    const filteredByControls = applyFilters(sourceIssues, viewState);
+    const filteredByControls = applyFilters(sourceIssues, viewState, currentUserId);
     return sortIssues(filteredByControls, viewState);
-  }, [issues, searchedIssues, viewState, normalizedIssueSearch]);
+  }, [issues, searchedIssues, viewState, normalizedIssueSearch, currentUserId]);
 
   const { data: labels } = useQuery({
     queryKey: queryKeys.issues.labels(selectedCompanyId!),
@@ -232,24 +251,6 @@ export function IssuesList({
   });
 
   const activeFilterCount = countActiveFilters(viewState);
-
-  const [showScrollBottom, setShowScrollBottom] = useState(false);
-  useEffect(() => {
-    const el = document.getElementById("main-content");
-    if (!el) return;
-    const check = () => {
-      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-      setShowScrollBottom(distanceFromBottom > 300);
-    };
-    check();
-    el.addEventListener("scroll", check, { passive: true });
-    return () => el.removeEventListener("scroll", check);
-  }, [filtered.length]);
-
-  const scrollToBottom = useCallback(() => {
-    const el = document.getElementById("main-content");
-    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-  }, []);
 
   const groupedContent = useMemo(() => {
     if (viewState.groupBy === "none") {
@@ -268,13 +269,21 @@ export function IssuesList({
         .map((p) => ({ key: p, label: statusLabel(p), items: groups[p]! }));
     }
     // assignee
-    const groups = groupBy(filtered, (i) => i.assigneeAgentId ?? "__unassigned");
+    const groups = groupBy(
+      filtered,
+      (issue) => issue.assigneeAgentId ?? (issue.assigneeUserId ? `__user:${issue.assigneeUserId}` : "__unassigned"),
+    );
     return Object.keys(groups).map((key) => ({
       key,
-      label: key === "__unassigned" ? "Unassigned" : (agentName(key) ?? key.slice(0, 8)),
+      label:
+        key === "__unassigned"
+          ? "Unassigned"
+          : key.startsWith("__user:")
+            ? (formatAssigneeUserLabel(key.slice("__user:".length), currentUserId) ?? "User")
+            : (agentName(key) ?? key.slice(0, 8)),
       items: groups[key]!,
     }));
-  }, [filtered, viewState.groupBy, agents]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [filtered, viewState.groupBy, agents, agentName, currentUserId]);
 
   const newIssueDefaults = (groupKey?: string) => {
     const defaults: Record<string, string> = {};
@@ -282,13 +291,16 @@ export function IssuesList({
     if (groupKey) {
       if (viewState.groupBy === "status") defaults.status = groupKey;
       else if (viewState.groupBy === "priority") defaults.priority = groupKey;
-      else if (viewState.groupBy === "assignee" && groupKey !== "__unassigned") defaults.assigneeAgentId = groupKey;
+      else if (viewState.groupBy === "assignee" && groupKey !== "__unassigned") {
+        if (groupKey.startsWith("__user:")) defaults.assigneeUserId = groupKey.slice("__user:".length);
+        else defaults.assigneeAgentId = groupKey;
+      }
     }
     return defaults;
   };
 
-  const assignIssue = (issueId: string, assigneeAgentId: string | null) => {
-    onUpdateIssue(issueId, { assigneeAgentId, assigneeUserId: null });
+  const assignIssue = (issueId: string, assigneeAgentId: string | null, assigneeUserId: string | null = null) => {
+    onUpdateIssue(issueId, { assigneeAgentId, assigneeUserId });
     setAssigneePickerIssueId(null);
     setAssigneeSearch("");
   };
@@ -434,22 +446,37 @@ export function IssuesList({
                     </div>
 
                     {/* Assignee */}
-                    {agents && agents.length > 0 && (
-                      <div className="space-y-1">
-                        <span className="text-xs text-muted-foreground">Assignee</span>
-                        <div className="space-y-0.5 max-h-32 overflow-y-auto">
-                          {agents.map((agent) => (
-                            <label key={agent.id} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
-                              <Checkbox
-                                checked={viewState.assignees.includes(agent.id)}
-                                onCheckedChange={() => updateView({ assignees: toggleInArray(viewState.assignees, agent.id) })}
-                              />
-                              <span className="text-sm">{agent.name}</span>
-                            </label>
-                          ))}
-                        </div>
+                    <div className="space-y-1">
+                      <span className="text-xs text-muted-foreground">Assignee</span>
+                      <div className="space-y-0.5 max-h-32 overflow-y-auto">
+                        <label className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
+                          <Checkbox
+                            checked={viewState.assignees.includes("__unassigned")}
+                            onCheckedChange={() => updateView({ assignees: toggleInArray(viewState.assignees, "__unassigned") })}
+                          />
+                          <span className="text-sm">No assignee</span>
+                        </label>
+                        {currentUserId && (
+                          <label className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
+                            <Checkbox
+                              checked={viewState.assignees.includes("__me")}
+                              onCheckedChange={() => updateView({ assignees: toggleInArray(viewState.assignees, "__me") })}
+                            />
+                            <User className="h-3.5 w-3.5 text-muted-foreground" />
+                            <span className="text-sm">Me</span>
+                          </label>
+                        )}
+                        {(agents ?? []).map((agent) => (
+                          <label key={agent.id} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
+                            <Checkbox
+                              checked={viewState.assignees.includes(agent.id)}
+                              onCheckedChange={() => updateView({ assignees: toggleInArray(viewState.assignees, agent.id) })}
+                            />
+                            <span className="text-sm">{agent.name}</span>
+                          </label>
+                        ))}
                       </div>
-                    )}
+                    </div>
 
                     {labels && labels.length > 0 && (
                       <div className="space-y-1">
@@ -605,54 +632,82 @@ export function IssuesList({
             )}
             <CollapsibleContent>
               {group.items.map((issue) => (
-                <Link
+                <IssueRow
                   key={issue.id}
-                  to={`/issues/${issue.identifier ?? issue.id}`}
-                  className="flex items-center gap-2 py-2 pl-1 pr-3 text-sm border-b border-border last:border-b-0 cursor-pointer hover:bg-accent/50 transition-colors no-underline text-inherit"
-                >
-                  {/* Spacer matching caret width so status icon aligns with group title (hidden on mobile) */}
-                  <div className="w-3.5 shrink-0 hidden sm:block" />
-                  <div className="shrink-0" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-                    <StatusIcon
-                      status={issue.status}
-                      onChange={(s) => onUpdateIssue(issue.id, { status: s })}
-                    />
-                  </div>
-                  <span className="text-sm text-muted-foreground font-mono shrink-0">
-                    {issue.identifier ?? issue.id.slice(0, 8)}
-                  </span>
-                  <span className="truncate flex-1 min-w-0">{issue.title}</span>
-                  {(issue.labels ?? []).length > 0 && (
-                    <div className="hidden md:flex items-center gap-1 max-w-[240px] overflow-hidden">
-                      {(issue.labels ?? []).slice(0, 3).map((label) => (
-                        <span
-                          key={label.id}
-                          className="inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium"
-                          style={{
-                            borderColor: label.color,
-                            color: label.color,
-                            backgroundColor: `${label.color}1f`,
-                          }}
-                        >
-                          {label.name}
-                        </span>
-                      ))}
-                      {(issue.labels ?? []).length > 3 && (
-                        <span className="text-[10px] text-muted-foreground">+{(issue.labels ?? []).length - 3}</span>
-                      )}
-                    </div>
+                  issue={issue}
+                  issueLinkState={issueLinkState}
+                  desktopLeadingSpacer
+                  mobileLeading={(
+                    <span
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                      }}
+                    >
+                      <StatusIcon
+                        status={issue.status}
+                        onChange={(s) => onUpdateIssue(issue.id, { status: s })}
+                      />
+                    </span>
                   )}
-                  <div className="flex items-center gap-2 sm:gap-3 shrink-0 ml-auto">
-                    {liveIssueIds?.has(issue.id) && (
-                      <span className="inline-flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2 py-0.5 rounded-full bg-blue-500/10">
-                        <span className="relative flex h-2 w-2">
-                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-                          <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
-                        </span>
-                        <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400 hidden sm:inline">Live</span>
+                  desktopMetaLeading={(
+                    <>
+                      <span className="hidden sm:inline-flex">
+                        <PriorityIcon priority={issue.priority} />
                       </span>
-                    )}
-                    <div className="hidden sm:block">
+                      <span
+                        className="hidden shrink-0 sm:inline-flex"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                        }}
+                      >
+                        <StatusIcon
+                          status={issue.status}
+                          onChange={(s) => onUpdateIssue(issue.id, { status: s })}
+                        />
+                      </span>
+                      <span className="shrink-0 font-mono text-xs text-muted-foreground">
+                        {issue.identifier ?? issue.id.slice(0, 8)}
+                      </span>
+                      {liveIssueIds?.has(issue.id) && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-blue-500/10 px-1.5 py-0.5 sm:gap-1.5 sm:px-2">
+                          <span className="relative flex h-2 w-2">
+                            <span className="absolute inline-flex h-full w-full animate-pulse rounded-full bg-blue-400 opacity-75" />
+                            <span className="relative inline-flex h-2 w-2 rounded-full bg-blue-500" />
+                          </span>
+                          <span className="hidden text-[11px] font-medium text-blue-600 dark:text-blue-400 sm:inline">
+                            Live
+                          </span>
+                        </span>
+                      )}
+                    </>
+                  )}
+                  mobileMeta={timeAgo(issue.updatedAt)}
+                  desktopTrailing={(
+                    <>
+                      {(issue.labels ?? []).length > 0 && (
+                        <span className="hidden items-center gap-1 overflow-hidden md:flex md:max-w-[240px]">
+                          {(issue.labels ?? []).slice(0, 3).map((label) => (
+                            <span
+                              key={label.id}
+                              className="inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium"
+                              style={{
+                                borderColor: label.color,
+                                color: label.color,
+                                backgroundColor: `${label.color}1f`,
+                              }}
+                            >
+                              {label.name}
+                            </span>
+                          ))}
+                          {(issue.labels ?? []).length > 3 && (
+                            <span className="text-[10px] text-muted-foreground">
+                              +{(issue.labels ?? []).length - 3}
+                            </span>
+                          )}
+                        </span>
+                      )}
                       <Popover
                         open={assigneePickerIssueId === issue.id}
                         onOpenChange={(open) => {
@@ -662,7 +717,7 @@ export function IssuesList({
                       >
                         <PopoverTrigger asChild>
                           <button
-                            className="flex w-[180px] shrink-0 items-center rounded-md px-2 py-1 hover:bg-accent/50 transition-colors"
+                            className="flex w-[180px] shrink-0 items-center rounded-md px-2 py-1 transition-colors hover:bg-accent/50"
                             onClick={(e) => {
                               e.preventDefault();
                               e.stopPropagation();
@@ -670,6 +725,13 @@ export function IssuesList({
                           >
                             {issue.assigneeAgentId && agentName(issue.assigneeAgentId) ? (
                               <Identity name={agentName(issue.assigneeAgentId)!} size="sm" />
+                            ) : issue.assigneeUserId ? (
+                              <span className="inline-flex items-center gap-1.5 text-xs">
+                                <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-dashed border-muted-foreground/35 bg-muted/30">
+                                  <User className="h-3 w-3" />
+                                </span>
+                                {formatAssigneeUserLabel(issue.assigneeUserId, currentUserId) ?? "User"}
+                              </span>
                             ) : (
                               <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
                                 <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-dashed border-muted-foreground/35 bg-muted/30">
@@ -687,8 +749,8 @@ export function IssuesList({
                           onPointerDownOutside={() => setAssigneeSearch("")}
                         >
                           <input
-                            className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-                            placeholder="Search agents..."
+                            className="mb-1 w-full border-b border-border bg-transparent px-2 py-1.5 text-xs outline-none placeholder:text-muted-foreground/50"
+                            placeholder="Search assignees..."
                             value={assigneeSearch}
                             onChange={(e) => setAssigneeSearch(e.target.value)}
                             autoFocus
@@ -696,33 +758,51 @@ export function IssuesList({
                           <div className="max-h-48 overflow-y-auto overscroll-contain">
                             <button
                               className={cn(
-                                "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-                                !issue.assigneeAgentId && "bg-accent"
+                                "flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50",
+                                !issue.assigneeAgentId && !issue.assigneeUserId && "bg-accent",
                               )}
                               onClick={(e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
-                                assignIssue(issue.id, null);
+                                assignIssue(issue.id, null, null);
                               }}
                             >
                               No assignee
                             </button>
+                            {currentUserId && (
+                              <button
+                                className={cn(
+                                  "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent/50",
+                                  issue.assigneeUserId === currentUserId && "bg-accent",
+                                )}
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  assignIssue(issue.id, null, currentUserId);
+                                }}
+                              >
+                                <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                                <span>Me</span>
+                              </button>
+                            )}
                             {(agents ?? [])
                               .filter((agent) => {
                                 if (!assigneeSearch.trim()) return true;
-                                return agent.name.toLowerCase().includes(assigneeSearch.toLowerCase());
+                                return agent.name
+                                  .toLowerCase()
+                                  .includes(assigneeSearch.toLowerCase());
                               })
                               .map((agent) => (
                                 <button
                                   key={agent.id}
                                   className={cn(
-                                    "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-left",
-                                    issue.assigneeAgentId === agent.id && "bg-accent"
+                                    "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent/50",
+                                    issue.assigneeAgentId === agent.id && "bg-accent",
                                   )}
                                   onClick={(e) => {
                                     e.preventDefault();
                                     e.stopPropagation();
-                                    assignIssue(issue.id, agent.id);
+                                    assignIssue(issue.id, agent.id, null);
                                   }}
                                 >
                                   <Identity name={agent.name} size="sm" className="min-w-0" />
@@ -731,25 +811,14 @@ export function IssuesList({
                           </div>
                         </PopoverContent>
                       </Popover>
-                    </div>
-                    <span className="text-xs text-muted-foreground hidden sm:inline">
-                      {formatDate(issue.createdAt)}
-                    </span>
-                  </div>
-                </Link>
+                    </>
+                  )}
+                  trailingMeta={formatDate(issue.createdAt)}
+                />
               ))}
             </CollapsibleContent>
           </Collapsible>
         ))
-      )}
-      {showScrollBottom && (
-        <button
-          onClick={scrollToBottom}
-          className="fixed bottom-6 right-6 z-40 flex h-9 w-9 items-center justify-center rounded-full border border-border bg-background shadow-md hover:bg-accent transition-colors"
-          aria-label="Scroll to bottom"
-        >
-          <ArrowDown className="h-4 w-4" />
-        </button>
       )}
     </div>
   );

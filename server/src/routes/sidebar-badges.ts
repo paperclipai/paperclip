@@ -3,7 +3,6 @@ import type { Db } from "@paperclipai/db";
 import { and, eq, sql } from "drizzle-orm";
 import { joinRequests } from "@paperclipai/db";
 import { sidebarBadgeService } from "../services/sidebar-badges.js";
-import { issueService } from "../services/issues.js";
 import { accessService } from "../services/access.js";
 import { dashboardService } from "../services/dashboard.js";
 import { assertCompanyAccess } from "./authz.js";
@@ -11,7 +10,6 @@ import { assertCompanyAccess } from "./authz.js";
 export function sidebarBadgeRoutes(db: Db) {
   const router = Router();
   const svc = sidebarBadgeService(db);
-  const issueSvc = issueService(db);
   const access = accessService(db);
   const dashboard = dashboardService(db);
 
@@ -40,12 +38,11 @@ export function sidebarBadgeRoutes(db: Db) {
       joinRequests: joinRequestCount,
     });
     const summary = await dashboard.summary(companyId);
-    const staleIssueCount = await issueSvc.staleCount(companyId, 24 * 60);
     const hasFailedRuns = badges.failedRuns > 0;
     const alertsCount =
       (summary.agents.error > 0 && !hasFailedRuns ? 1 : 0) +
       (summary.costs.monthBudgetCents > 0 && summary.costs.monthUtilizationPercent >= 80 ? 1 : 0);
-    badges.inbox = badges.failedRuns + alertsCount + staleIssueCount + joinRequestCount;
+    badges.inbox = badges.failedRuns + alertsCount + joinRequestCount + badges.approvals;
 
     res.json(badges);
   });

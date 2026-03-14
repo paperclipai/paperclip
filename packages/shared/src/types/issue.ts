@@ -1,6 +1,7 @@
 import type { IssuePriority, IssueStatus } from "../constants.js";
 import type { Goal } from "./goal.js";
 import type { Project, ProjectWorkspace } from "./project.js";
+import type { IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
 
 export interface IssueAncestorProject {
   id: string;
@@ -49,6 +50,49 @@ export interface IssueAssigneeAdapterOverrides {
   useProjectWorkspace?: boolean;
 }
 
+export type DocumentFormat = "markdown";
+
+export interface IssueDocumentSummary {
+  id: string;
+  companyId: string;
+  issueId: string;
+  key: string;
+  title: string | null;
+  format: DocumentFormat;
+  latestRevisionId: string | null;
+  latestRevisionNumber: number;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  updatedByAgentId: string | null;
+  updatedByUserId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface IssueDocument extends IssueDocumentSummary {
+  body: string;
+}
+
+export interface DocumentRevision {
+  id: string;
+  companyId: string;
+  documentId: string;
+  issueId: string;
+  key: string;
+  revisionNumber: number;
+  body: string;
+  changeSummary: string | null;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  createdAt: Date;
+}
+
+export interface LegacyPlanDocument {
+  key: "plan";
+  body: string;
+  source: "issue_description";
+}
+
 export interface Issue {
   id: string;
   companyId: string;
@@ -73,12 +117,16 @@ export interface Issue {
   requestDepth: number;
   billingCode: string | null;
   assigneeAdapterOverrides: IssueAssigneeAdapterOverrides | null;
+  executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
   startedAt: Date | null;
   completedAt: Date | null;
   cancelledAt: Date | null;
   hiddenAt: Date | null;
   labelIds?: string[];
   labels?: IssueLabel[];
+  planDocument?: IssueDocument | null;
+  documentSummaries?: IssueDocumentSummary[];
+  legacyPlanDocument?: LegacyPlanDocument | null;
   project?: Project | null;
   goal?: Goal | null;
   mentionedProjects?: Project[];

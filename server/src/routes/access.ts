@@ -1,4 +1,9 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import {
+  createHash,
+  generateKeyPairSync,
+  randomBytes,
+  timingSafeEqual
+} from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +21,7 @@ import {
   acceptInviteSchema,
   claimJoinRequestApiKeySchema,
   createCompanyInviteSchema,
+  createOpenClawInvitePromptSchema,
   listJoinRequestsQuerySchema,
   updateMemberPermissionsSchema,
   updateUserCompanyAccessSchema,
@@ -91,7 +97,11 @@ function requestBaseUrl(req: Request) {
 
 function readSkillMarkdown(skillName: string): string | null {
   const normalized = skillName.trim().toLowerCase();
-  if (normalized !== "paperclip" && normalized !== "paperclip-create-agent")
+  if (
+    normalized !== "paperclip" &&
+    normalized !== "paperclip-create-agent" &&
+    normalized !== "para-memory-files"
+  )
     return null;
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
   const candidates = [
@@ -128,19 +138,6 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 function isLoopbackHost(hostname: string): boolean {
   const value = hostname.trim().toLowerCase();
   return value === "localhost" || value === "127.0.0.1" || value === "::1";
-}
-
-function isWakePath(pathname: string): boolean {
-  const value = pathname.trim().toLowerCase();
-  return value === "/hooks/wake" || value.endsWith("/hooks/wake");
-}
-
-function normalizeOpenClawTransport(value: unknown): "sse" | "webhook" | null {
-  if (typeof value !== "string") return "sse";
-  const normalized = value.trim().toLowerCase();
-  if (!normalized || normalized === "sse") return "sse";
-  if (normalized === "webhook") return "webhook";
-  return null;
 }
 
 function normalizeHostname(value: string | null | undefined): string | null {
@@ -305,24 +302,40 @@ function headerMapGetIgnoreCase(
   return typeof value === "string" ? value : null;
 }
 
-function toAuthorizationHeaderValue(rawToken: string): string {
-  const trimmed = rawToken.trim();
-  if (!trimmed) return trimmed;
-  return /^bearer\s+/i.test(trimmed) ? trimmed : `Bearer ${trimmed}`;
+function tokenFromAuthorizationHeader(rawHeader: string | null): string | null {
+  const trimmed = nonEmptyTrimmedString(rawHeader);
+  if (!trimmed) return null;
+  const bearerMatch = trimmed.match(/^bearer\s+(.+)$/i);
+  if (bearerMatch?.[1]) {
+    return nonEmptyTrimmedString(bearerMatch[1]);
+  }
+  return trimmed;
+}
+
+function parseBooleanLike(value: unknown): boolean | null {
+  if (typeof value === "boolean") return value;
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "true" || normalized === "1") return true;
+  if (normalized === "false" || normalized === "0") return false;
+  return null;
+}
+
+function generateEd25519PrivateKeyPem(): string {
+  const generated = generateKeyPairSync("ed25519");
+  return generated.privateKey
+    .export({ type: "pkcs8", format: "pem" })
+    .toString();
 }
 
 export function buildJoinDefaultsPayloadForAccept(input: {
   adapterType: string | null;
   defaultsPayload: unknown;
-  responsesWebhookUrl?: unknown;
-  responsesWebhookMethod?: unknown;
-  responsesWebhookHeaders?: unknown;
   paperclipApiUrl?: unknown;
-  webhookAuthHeader?: unknown;
   inboundOpenClawAuthHeader?: string | null;
   inboundOpenClawTokenHeader?: string | null;
 }): unknown {
-  if (input.adapterType !== "openclaw") {
+  if (input.adapterType !== "openclaw_gateway") {
     return input.defaultsPayload;
   }
 
@@ -330,40 +343,11 @@ export function buildJoinDefaultsPayloadForAccept(input: {
     ? { ...(input.defaultsPayload as Record<string, unknown>) }
     : ({} as Record<string, unknown>);
 
-  if (!nonEmptyTrimmedString(merged.url)) {
-    const legacyUrl = nonEmptyTrimmedString(input.responsesWebhookUrl);
-    if (legacyUrl) merged.url = legacyUrl;
-  }
-
-  if (!nonEmptyTrimmedString(merged.method)) {
-    const legacyMethod = nonEmptyTrimmedString(input.responsesWebhookMethod);
-    if (legacyMethod) merged.method = legacyMethod.toUpperCase();
-  }
-
   if (!nonEmptyTrimmedString(merged.paperclipApiUrl)) {
     const legacyPaperclipApiUrl = nonEmptyTrimmedString(input.paperclipApiUrl);
     if (legacyPaperclipApiUrl) merged.paperclipApiUrl = legacyPaperclipApiUrl;
   }
-
-  if (!nonEmptyTrimmedString(merged.webhookAuthHeader)) {
-    const providedWebhookAuthHeader = nonEmptyTrimmedString(
-      input.webhookAuthHeader
-    );
-    if (providedWebhookAuthHeader)
-      merged.webhookAuthHeader = providedWebhookAuthHeader;
-  }
-
   const mergedHeaders = normalizeHeaderMap(merged.headers) ?? {};
-  const compatibilityHeaders = normalizeHeaderMap(
-    input.responsesWebhookHeaders
-  );
-  if (compatibilityHeaders) {
-    for (const [key, value] of Object.entries(compatibilityHeaders)) {
-      if (!headerMapHasKeyIgnoreCase(mergedHeaders, key)) {
-        mergedHeaders[key] = value;
-      }
-    }
-  }
 
   const inboundOpenClawAuthHeader = nonEmptyTrimmedString(
     input.inboundOpenClawAuthHeader
@@ -390,23 +374,17 @@ export function buildJoinDefaultsPayloadForAccept(input: {
     delete merged.headers;
   }
 
-  const hasAuthorizationHeader = headerMapHasKeyIgnoreCase(
-    mergedHeaders,
-    "authorization"
-  );
-  const hasWebhookAuthHeader = Boolean(
-    nonEmptyTrimmedString(merged.webhookAuthHeader)
-  );
-  if (!hasAuthorizationHeader && !hasWebhookAuthHeader) {
-    const openClawAuthToken =
-      headerMapGetIgnoreCase(mergedHeaders, "x-openclaw-token") ??
-      headerMapGetIgnoreCase(
-      mergedHeaders,
-      "x-openclaw-auth"
+  const discoveredToken =
+    headerMapGetIgnoreCase(mergedHeaders, "x-openclaw-token") ??
+    headerMapGetIgnoreCase(mergedHeaders, "x-openclaw-auth") ??
+    tokenFromAuthorizationHeader(
+      headerMapGetIgnoreCase(mergedHeaders, "authorization")
     );
-    if (openClawAuthToken) {
-      merged.webhookAuthHeader = toAuthorizationHeaderValue(openClawAuthToken);
-    }
+  if (
+    discoveredToken &&
+    !headerMapHasKeyIgnoreCase(mergedHeaders, "x-openclaw-token")
+  ) {
+    mergedHeaders["x-openclaw-token"] = discoveredToken;
   }
 
   return Object.keys(merged).length > 0 ? merged : null;
@@ -452,7 +430,7 @@ export function mergeJoinDefaultsPayloadForReplay(
   return merged;
 }
 
-export function canReplayOpenClawInviteAccept(input: {
+export function canReplayOpenClawGatewayInviteAccept(input: {
   requestType: "human" | "agent";
   adapterType: string | null;
   existingJoinRequest: Pick<
@@ -460,7 +438,10 @@ export function canReplayOpenClawInviteAccept(input: {
     "requestType" | "adapterType" | "status"
   > | null;
 }): boolean {
-  if (input.requestType !== "agent" || input.adapterType !== "openclaw") {
+  if (
+    input.requestType !== "agent" ||
+    input.adapterType !== "openclaw_gateway"
+  ) {
     return false;
   }
   if (!input.existingJoinRequest) {
@@ -468,7 +449,7 @@ export function canReplayOpenClawInviteAccept(input: {
   }
   if (
     input.existingJoinRequest.requestType !== "agent" ||
-    input.existingJoinRequest.adapterType !== "openclaw"
+    input.existingJoinRequest.adapterType !== "openclaw_gateway"
   ) {
     return false;
   }
@@ -490,106 +471,44 @@ function summarizeSecretForLog(
   };
 }
 
-function summarizeOpenClawDefaultsForLog(defaultsPayload: unknown) {
+function summarizeOpenClawGatewayDefaultsForLog(defaultsPayload: unknown) {
   const defaults = isPlainObject(defaultsPayload)
     ? (defaultsPayload as Record<string, unknown>)
     : null;
   const headers = defaults ? normalizeHeaderMap(defaults.headers) : undefined;
-  const openClawAuthHeaderValue = headers
+  const gatewayTokenValue = headers
     ? headerMapGetIgnoreCase(headers, "x-openclaw-token") ??
-      headerMapGetIgnoreCase(headers, "x-openclaw-auth")
+      headerMapGetIgnoreCase(headers, "x-openclaw-auth") ??
+      tokenFromAuthorizationHeader(
+        headerMapGetIgnoreCase(headers, "authorization")
+      )
     : null;
-
   return {
     present: Boolean(defaults),
     keys: defaults ? Object.keys(defaults).sort() : [],
     url: defaults ? nonEmptyTrimmedString(defaults.url) : null,
-    method: defaults ? nonEmptyTrimmedString(defaults.method) : null,
     paperclipApiUrl: defaults
       ? nonEmptyTrimmedString(defaults.paperclipApiUrl)
       : null,
     headerKeys: headers ? Object.keys(headers).sort() : [],
-    webhookAuthHeader: defaults
-      ? summarizeSecretForLog(defaults.webhookAuthHeader)
+    sessionKeyStrategy: defaults
+      ? nonEmptyTrimmedString(defaults.sessionKeyStrategy)
       : null,
-    openClawAuthHeader: summarizeSecretForLog(openClawAuthHeaderValue)
+    disableDeviceAuth: defaults
+      ? parseBooleanLike(defaults.disableDeviceAuth)
+      : null,
+    waitTimeoutMs:
+      defaults && typeof defaults.waitTimeoutMs === "number"
+        ? defaults.waitTimeoutMs
+        : null,
+    devicePrivateKeyPem: defaults
+      ? summarizeSecretForLog(defaults.devicePrivateKeyPem)
+      : null,
+    gatewayToken: summarizeSecretForLog(gatewayTokenValue)
   };
 }
 
-function buildJoinConnectivityDiagnostics(input: {
-  deploymentMode: DeploymentMode;
-  deploymentExposure: DeploymentExposure;
-  bindHost: string;
-  allowedHostnames: string[];
-  callbackUrl: URL | null;
-}): JoinDiagnostic[] {
-  const diagnostics: JoinDiagnostic[] = [];
-  const bindHost = normalizeHostname(input.bindHost);
-  const callbackHost = input.callbackUrl
-    ? normalizeHostname(input.callbackUrl.hostname)
-    : null;
-  const allowSet = new Set(
-    input.allowedHostnames
-      .map((entry) => normalizeHostname(entry))
-      .filter((entry): entry is string => Boolean(entry))
-  );
-
-  diagnostics.push({
-    code: "openclaw_deployment_context",
-    level: "info",
-    message: `Deployment context: mode=${input.deploymentMode}, exposure=${input.deploymentExposure}.`
-  });
-
-  if (
-    input.deploymentMode === "authenticated" &&
-    input.deploymentExposure === "private"
-  ) {
-    if (!bindHost || isLoopbackHost(bindHost)) {
-      diagnostics.push({
-        code: "openclaw_private_bind_loopback",
-        level: "warn",
-        message:
-          "Paperclip is bound to loopback in authenticated/private mode.",
-        hint: "Bind to a reachable private hostname/IP for remote OpenClaw callbacks."
-      });
-    }
-    if (bindHost && !isLoopbackHost(bindHost) && !allowSet.has(bindHost)) {
-      diagnostics.push({
-        code: "openclaw_private_bind_not_allowed",
-        level: "warn",
-        message: `Paperclip bind host \"${bindHost}\" is not in allowed hostnames.`,
-        hint: `Run pnpm paperclipai allowed-hostname ${bindHost}`
-      });
-    }
-    if (callbackHost && !isLoopbackHost(callbackHost) && allowSet.size === 0) {
-      diagnostics.push({
-        code: "openclaw_private_allowed_hostnames_empty",
-        level: "warn",
-        message:
-          "No explicit allowed hostnames are configured for authenticated/private mode.",
-        hint: "Set one with pnpm paperclipai allowed-hostname <host> when OpenClaw runs off-host."
-      });
-    }
-  }
-
-  if (
-    input.deploymentMode === "authenticated" &&
-    input.deploymentExposure === "public" &&
-    input.callbackUrl &&
-    input.callbackUrl.protocol !== "https:"
-  ) {
-    diagnostics.push({
-      code: "openclaw_public_http_callback",
-      level: "warn",
-      message: "OpenClaw callback URL uses HTTP in authenticated/public mode.",
-      hint: "Prefer HTTPS for public deployments."
-    });
-  }
-
-  return diagnostics;
-}
-
-function normalizeAgentDefaultsForJoin(input: {
+export function normalizeAgentDefaultsForJoin(input: {
   adapterType: string | null;
   defaultsPayload: unknown;
   deploymentMode: DeploymentMode;
@@ -597,145 +516,213 @@ function normalizeAgentDefaultsForJoin(input: {
   bindHost: string;
   allowedHostnames: string[];
 }) {
+  const fatalErrors: string[] = [];
   const diagnostics: JoinDiagnostic[] = [];
-  if (input.adapterType !== "openclaw") {
+  if (input.adapterType !== "openclaw_gateway") {
     const normalized = isPlainObject(input.defaultsPayload)
       ? (input.defaultsPayload as Record<string, unknown>)
       : null;
-    return { normalized, diagnostics };
+    return { normalized, diagnostics, fatalErrors };
   }
 
   if (!isPlainObject(input.defaultsPayload)) {
     diagnostics.push({
-      code: "openclaw_callback_config_missing",
+      code: "openclaw_gateway_defaults_missing",
       level: "warn",
       message:
-        "No OpenClaw callback config was provided in agentDefaultsPayload.",
-      hint: "Include agentDefaultsPayload.url so Paperclip can invoke the OpenClaw endpoint immediately after approval."
+        "No OpenClaw gateway config was provided in agentDefaultsPayload.",
+      hint:
+        "Include agentDefaultsPayload.url and headers.x-openclaw-token for OpenClaw gateway joins."
     });
-    return { normalized: null as Record<string, unknown> | null, diagnostics };
+    fatalErrors.push(
+      "agentDefaultsPayload is required for adapterType=openclaw_gateway"
+    );
+    return {
+      normalized: null as Record<string, unknown> | null,
+      diagnostics,
+      fatalErrors
+    };
   }
 
   const defaults = input.defaultsPayload as Record<string, unknown>;
-  const streamTransportInput = defaults.streamTransport ?? defaults.transport;
-  const streamTransport = normalizeOpenClawTransport(streamTransportInput);
-  const normalized: Record<string, unknown> = { streamTransport: "sse" };
-  if (!streamTransport) {
-    diagnostics.push({
-      code: "openclaw_stream_transport_unsupported",
-      level: "warn",
-      message: `Unsupported streamTransport: ${String(streamTransportInput)}`,
-      hint: "Use streamTransport=sse or streamTransport=webhook."
-    });
-  } else {
-    normalized.streamTransport = streamTransport;
-  }
+  const normalized: Record<string, unknown> = {};
 
-  let callbackUrl: URL | null = null;
-  const rawUrl = typeof defaults.url === "string" ? defaults.url.trim() : "";
-  if (!rawUrl) {
+  let gatewayUrl: URL | null = null;
+  const rawGatewayUrl = nonEmptyTrimmedString(defaults.url);
+  if (!rawGatewayUrl) {
     diagnostics.push({
-      code: "openclaw_callback_url_missing",
+      code: "openclaw_gateway_url_missing",
       level: "warn",
-      message: "OpenClaw callback URL is missing.",
-      hint: "Set agentDefaultsPayload.url to your OpenClaw endpoint."
+      message: "OpenClaw gateway URL is missing.",
+      hint: "Set agentDefaultsPayload.url to ws:// or wss:// gateway URL."
     });
+    fatalErrors.push("agentDefaultsPayload.url is required");
   } else {
     try {
-      callbackUrl = new URL(rawUrl);
-      if (
-        callbackUrl.protocol !== "http:" &&
-        callbackUrl.protocol !== "https:"
-      ) {
+      gatewayUrl = new URL(rawGatewayUrl);
+      if (gatewayUrl.protocol !== "ws:" && gatewayUrl.protocol !== "wss:") {
         diagnostics.push({
-          code: "openclaw_callback_url_protocol",
+          code: "openclaw_gateway_url_protocol",
           level: "warn",
-          message: `Unsupported callback protocol: ${callbackUrl.protocol}`,
-          hint: "Use http:// or https://."
+          message: `OpenClaw gateway URL must use ws:// or wss:// (got ${gatewayUrl.protocol}).`
         });
+        fatalErrors.push(
+          "agentDefaultsPayload.url must use ws:// or wss:// for openclaw_gateway"
+        );
       } else {
-        normalized.url = callbackUrl.toString();
+        normalized.url = gatewayUrl.toString();
         diagnostics.push({
-          code: "openclaw_callback_url_configured",
+          code: "openclaw_gateway_url_configured",
           level: "info",
-          message: `Callback endpoint set to ${callbackUrl.toString()}`
-        });
-      }
-      if ((streamTransport ?? "sse") === "sse" && isWakePath(callbackUrl.pathname)) {
-        diagnostics.push({
-          code: "openclaw_callback_wake_path_incompatible",
-          level: "warn",
-          message:
-            "Configured callback path targets /hooks/wake, which is not stream-capable for SSE transport.",
-          hint: "Use an endpoint that returns text/event-stream for the full run duration."
-        });
-      }
-      if (isLoopbackHost(callbackUrl.hostname)) {
-        diagnostics.push({
-          code: "openclaw_callback_loopback",
-          level: "warn",
-          message: "OpenClaw callback endpoint uses loopback hostname.",
-          hint: "Use a reachable hostname/IP when OpenClaw runs on another machine."
+          message: `Gateway endpoint set to ${gatewayUrl.toString()}`
         });
       }
     } catch {
       diagnostics.push({
-        code: "openclaw_callback_url_invalid",
+        code: "openclaw_gateway_url_invalid",
         level: "warn",
-        message: `Invalid callback URL: ${rawUrl}`
+        message: `Invalid OpenClaw gateway URL: ${rawGatewayUrl}`
       });
+      fatalErrors.push("agentDefaultsPayload.url is not a valid URL");
     }
   }
 
-  const rawMethod =
-    typeof defaults.method === "string"
-      ? defaults.method.trim().toUpperCase()
-      : "";
-  normalized.method = rawMethod || "POST";
-
-  if (
-    typeof defaults.timeoutSec === "number" &&
-    Number.isFinite(defaults.timeoutSec)
-  ) {
-    normalized.timeoutSec = Math.max(
-      0,
-      Math.min(7200, Math.floor(defaults.timeoutSec))
-    );
+  const headers = normalizeHeaderMap(defaults.headers) ?? {};
+  const gatewayToken =
+    headerMapGetIgnoreCase(headers, "x-openclaw-token") ??
+    headerMapGetIgnoreCase(headers, "x-openclaw-auth") ??
+    tokenFromAuthorizationHeader(headerMapGetIgnoreCase(headers, "authorization"));
+  if (gatewayToken && !headerMapHasKeyIgnoreCase(headers, "x-openclaw-token")) {
+    headers["x-openclaw-token"] = gatewayToken;
+  }
+  if (Object.keys(headers).length > 0) {
+    normalized.headers = headers;
   }
 
-  const headers = normalizeHeaderMap(defaults.headers);
-  if (headers) normalized.headers = headers;
-
-  if (
-    typeof defaults.webhookAuthHeader === "string" &&
-    defaults.webhookAuthHeader.trim()
-  ) {
-    normalized.webhookAuthHeader = defaults.webhookAuthHeader.trim();
-  }
-
-  const openClawAuthHeader = headers
-    ? headerMapGetIgnoreCase(headers, "x-openclaw-token") ??
-      headerMapGetIgnoreCase(headers, "x-openclaw-auth")
-    : null;
-  if (openClawAuthHeader) {
+  if (!gatewayToken) {
     diagnostics.push({
-      code: "openclaw_auth_header_configured",
-      level: "info",
-      message:
-        "Gateway auth token received via headers.x-openclaw-token (or legacy x-openclaw-auth)."
-    });
-  } else {
-    diagnostics.push({
-      code: "openclaw_auth_header_missing",
+      code: "openclaw_gateway_auth_header_missing",
       level: "warn",
       message: "Gateway auth token is missing from agent defaults.",
       hint:
-        "Set agentDefaultsPayload.headers.x-openclaw-token (or legacy x-openclaw-auth) to the token your OpenClaw endpoint requires."
+        "Set agentDefaultsPayload.headers.x-openclaw-token (or legacy x-openclaw-auth)."
+    });
+    fatalErrors.push(
+      "agentDefaultsPayload.headers.x-openclaw-token (or x-openclaw-auth) is required"
+    );
+  } else if (gatewayToken.trim().length < 16) {
+    diagnostics.push({
+      code: "openclaw_gateway_auth_header_too_short",
+      level: "warn",
+      message: `Gateway auth token appears too short (${gatewayToken.trim().length} chars).`,
+      hint:
+        "Use the full gateway auth token from ~/.openclaw/openclaw.json (typically long random string)."
+    });
+    fatalErrors.push(
+      "agentDefaultsPayload.headers.x-openclaw-token is too short; expected a full gateway token"
+    );
+  } else {
+    diagnostics.push({
+      code: "openclaw_gateway_auth_header_configured",
+      level: "info",
+      message: "Gateway auth token configured."
     });
   }
 
   if (isPlainObject(defaults.payloadTemplate)) {
     normalized.payloadTemplate = defaults.payloadTemplate;
+  }
+
+  const parsedDisableDeviceAuth = parseBooleanLike(defaults.disableDeviceAuth);
+  const disableDeviceAuth = parsedDisableDeviceAuth === true;
+  if (parsedDisableDeviceAuth !== null) {
+    normalized.disableDeviceAuth = parsedDisableDeviceAuth;
+  }
+
+  const configuredDevicePrivateKeyPem = nonEmptyTrimmedString(
+    defaults.devicePrivateKeyPem
+  );
+  if (configuredDevicePrivateKeyPem) {
+    normalized.devicePrivateKeyPem = configuredDevicePrivateKeyPem;
+    diagnostics.push({
+      code: "openclaw_gateway_device_key_configured",
+      level: "info",
+      message:
+        "Gateway device key configured. Pairing approvals should persist for this agent."
+    });
+  } else if (!disableDeviceAuth) {
+    try {
+      normalized.devicePrivateKeyPem = generateEd25519PrivateKeyPem();
+      diagnostics.push({
+        code: "openclaw_gateway_device_key_generated",
+        level: "info",
+        message:
+          "Generated persistent gateway device key for this join. Pairing approvals should persist for this agent."
+      });
+    } catch (err) {
+      diagnostics.push({
+        code: "openclaw_gateway_device_key_generate_failed",
+        level: "warn",
+        message: `Failed to generate gateway device key: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+        hint:
+          "Set agentDefaultsPayload.devicePrivateKeyPem explicitly or set disableDeviceAuth=true."
+      });
+      fatalErrors.push(
+        "Failed to generate gateway device key. Set devicePrivateKeyPem or disableDeviceAuth=true."
+      );
+    }
+  }
+
+  const waitTimeoutMs =
+    typeof defaults.waitTimeoutMs === "number" &&
+    Number.isFinite(defaults.waitTimeoutMs)
+      ? Math.floor(defaults.waitTimeoutMs)
+      : typeof defaults.waitTimeoutMs === "string"
+      ? Number.parseInt(defaults.waitTimeoutMs.trim(), 10)
+      : NaN;
+  if (Number.isFinite(waitTimeoutMs) && waitTimeoutMs > 0) {
+    normalized.waitTimeoutMs = waitTimeoutMs;
+  }
+
+  const timeoutSec =
+    typeof defaults.timeoutSec === "number" && Number.isFinite(defaults.timeoutSec)
+      ? Math.floor(defaults.timeoutSec)
+      : typeof defaults.timeoutSec === "string"
+      ? Number.parseInt(defaults.timeoutSec.trim(), 10)
+      : NaN;
+  if (Number.isFinite(timeoutSec) && timeoutSec > 0) {
+    normalized.timeoutSec = timeoutSec;
+  }
+
+  const sessionKeyStrategy = nonEmptyTrimmedString(defaults.sessionKeyStrategy);
+  if (
+    sessionKeyStrategy === "fixed" ||
+    sessionKeyStrategy === "issue" ||
+    sessionKeyStrategy === "run"
+  ) {
+    normalized.sessionKeyStrategy = sessionKeyStrategy;
+  }
+
+  const sessionKey = nonEmptyTrimmedString(defaults.sessionKey);
+  if (sessionKey) {
+    normalized.sessionKey = sessionKey;
+  }
+
+  const role = nonEmptyTrimmedString(defaults.role);
+  if (role) {
+    normalized.role = role;
+  }
+
+  if (Array.isArray(defaults.scopes)) {
+    const scopes = defaults.scopes
+      .filter((entry): entry is string => typeof entry === "string")
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+    if (scopes.length > 0) {
+      normalized.scopes = scopes;
+    }
   }
 
   const rawPaperclipApiUrl =
@@ -750,47 +737,28 @@ function normalizeAgentDefaultsForJoin(input: {
         parsedPaperclipApiUrl.protocol !== "https:"
       ) {
         diagnostics.push({
-          code: "openclaw_paperclip_api_url_protocol",
+          code: "openclaw_gateway_paperclip_api_url_protocol",
           level: "warn",
           message: `paperclipApiUrl must use http:// or https:// (got ${parsedPaperclipApiUrl.protocol}).`
         });
       } else {
         normalized.paperclipApiUrl = parsedPaperclipApiUrl.toString();
         diagnostics.push({
-          code: "openclaw_paperclip_api_url_configured",
+          code: "openclaw_gateway_paperclip_api_url_configured",
           level: "info",
           message: `paperclipApiUrl set to ${parsedPaperclipApiUrl.toString()}`
         });
-        if (isLoopbackHost(parsedPaperclipApiUrl.hostname)) {
-          diagnostics.push({
-            code: "openclaw_paperclip_api_url_loopback",
-            level: "warn",
-            message:
-              "paperclipApiUrl uses loopback hostname. Remote OpenClaw workers cannot reach localhost on the Paperclip host.",
-            hint: "Use a reachable hostname/IP and keep it in allowed hostnames for authenticated/private deployments."
-          });
-        }
       }
     } catch {
       diagnostics.push({
-        code: "openclaw_paperclip_api_url_invalid",
+        code: "openclaw_gateway_paperclip_api_url_invalid",
         level: "warn",
         message: `Invalid paperclipApiUrl: ${rawPaperclipApiUrl}`
       });
     }
   }
 
-  diagnostics.push(
-    ...buildJoinConnectivityDiagnostics({
-      deploymentMode: input.deploymentMode,
-      deploymentExposure: input.deploymentExposure,
-      bindHost: input.bindHost,
-      allowedHostnames: input.allowedHostnames,
-      callbackUrl
-    })
-  );
-
-  return { normalized, diagnostics };
+  return { normalized, diagnostics, fatalErrors };
 }
 
 function toInviteSummaryResponse(
@@ -950,10 +918,6 @@ function buildInviteOnboardingManifest(
   const onboardingTextUrl = baseUrl
     ? `${baseUrl}${onboardingTextPath}`
     : onboardingTextPath;
-  const testResolutionPath = `/api/invites/${token}/test-resolution`;
-  const testResolutionUrl = baseUrl
-    ? `${baseUrl}${testResolutionPath}`
-    : testResolutionPath;
   const discoveryDiagnostics = buildOnboardingDiscoveryDiagnostics({
     apiBaseUrl: baseUrl,
     deploymentMode: opts.deploymentMode,
@@ -971,16 +935,16 @@ function buildInviteOnboardingManifest(
     invite: toInviteSummaryResponse(req, token, invite),
     onboarding: {
       instructions:
-        "Join as an OpenClaw agent, save your one-time claim secret, wait for board approval, then claim your API key. Save the claim response token to ~/.openclaw/workspace/paperclip-claimed-api-key.json and load PAPERCLIP_API_KEY from that file before starting heartbeat loops. You MUST include agentDefaultsPayload.headers.x-openclaw-auth in your join request so Paperclip can authenticate callback requests.",
+        "Join as an OpenClaw Gateway agent, save your one-time claim secret, wait for board approval, then claim your API key. Save the claim response token to ~/.openclaw/workspace/paperclip-claimed-api-key.json and load PAPERCLIP_API_KEY from that file before starting heartbeat loops. You MUST submit adapterType='openclaw_gateway', set agentDefaultsPayload.url to your ws:// or wss:// OpenClaw gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token (or legacy x-openclaw-auth).",
       inviteMessage: extractInviteMessage(invite),
-      recommendedAdapterType: "openclaw",
+      recommendedAdapterType: "openclaw_gateway",
       requiredFields: {
         requestType: "agent",
         agentName: "Display name for this agent",
-        adapterType: "Use 'openclaw' for OpenClaw agents",
+        adapterType: "Use 'openclaw_gateway' for OpenClaw Gateway agents",
         capabilities: "Optional capability summary",
         agentDefaultsPayload:
-          "Adapter config for OpenClaw endpoint. MUST include headers.x-openclaw-auth; include streamTransport ('sse' or 'webhook') plus url/method/paperclipApiUrl (and optional webhookAuthHeader/timeoutSec/payloadTemplate)."
+          "Adapter config for OpenClaw gateway. MUST include url (ws:// or wss://) and headers.x-openclaw-token (or legacy x-openclaw-auth). Optional fields: paperclipApiUrl, waitTimeoutMs, sessionKeyStrategy, sessionKey, role, scopes, disableDeviceAuth, devicePrivateKeyPem."
       },
       registrationEndpoint: {
         method: "POST",
@@ -1001,21 +965,12 @@ function buildInviteOnboardingManifest(
         bindHost: opts.bindHost,
         allowedHostnames: opts.allowedHostnames,
         connectionCandidates,
-        testResolutionEndpoint: {
-          method: "GET",
-          path: testResolutionPath,
-          url: testResolutionUrl,
-          query: {
-            url: "https://your-openclaw-agent.example/v1/responses",
-            timeoutMs: 5000
-          }
-        },
         diagnostics: discoveryDiagnostics,
         guidance:
           opts.deploymentMode === "authenticated" &&
           opts.deploymentExposure === "private"
             ? "If OpenClaw runs on another machine, ensure the Paperclip hostname is reachable and allowed via `pnpm paperclipai allowed-hostname <host>`."
-            : "Ensure OpenClaw can reach this Paperclip API base URL for callbacks and claims."
+            : "Ensure OpenClaw can reach this Paperclip API base URL for invite, claim, and skill bootstrap calls."
       },
       textInstructions: {
         path: onboardingTextPath,
@@ -1076,7 +1031,7 @@ export function buildInviteOnboardingTextDocument(
   };
 
   appendBlock(`
-    # Paperclip OpenClaw Onboarding
+    # Paperclip OpenClaw Gateway Onboarding
 
     This document is meant to be readable by both humans and agents.
 
@@ -1104,6 +1059,7 @@ export function buildInviteOnboardingTextDocument(
 
     TOKEN="$(node -p 'require(process.env.HOME+\"/.openclaw/openclaw.json\").gateway.auth.token')"
     test -n "$TOKEN" || (echo "Missing TOKEN" && exit 1)
+    test "\${#TOKEN}" -ge 16 || (echo "Gateway token unexpectedly short (\${#TOKEN})" && exit 1)
 
     3) IMPORTANT: Don't accidentally drop the token when generating JSON
     If you build JSON with Node, pass the token explicitly (argv), don't rely on an un-exported env var.
@@ -1116,15 +1072,16 @@ export function buildInviteOnboardingTextDocument(
       const body = {
         requestType: "agent",
         agentName: "OpenClaw",
-        adapterType: "openclaw",
+        adapterType: "openclaw_gateway",
         capabilities: "OpenClaw agent adapter",
         agentDefaultsPayload: {
-          url: "http://127.0.0.1:18789/v1/responses",
+          url: "ws://127.0.0.1:18789",
           paperclipApiUrl: "http://host.docker.internal:3100",
-          streamTransport: "sse",
-          method: "POST",
-          headers: { "x-openclaw-auth": token },
-          timeoutSec: 0
+          headers: { "x-openclaw-token": token },
+          waitTimeoutMs: 120000,
+          sessionKeyStrategy: "issue",
+          role: "operator",
+          scopes: ["operator.admin"]
         }
       };
       process.stdout.write(JSON.stringify(body));
@@ -1135,23 +1092,29 @@ export function buildInviteOnboardingTextDocument(
     onboarding.registrationEndpoint.url
   }
 
-    IMPORTANT: You MUST include agentDefaultsPayload.headers.x-openclaw-auth with your gateway token.
-    Without this token, Paperclip callback requests to your OpenClaw endpoint will fail with 401 Unauthorized.
-    Set "streamTransport" to "sse" for streaming /v1/responses endpoints, or "webhook" for wake-style callbacks.
+    IMPORTANT: You MUST include agentDefaultsPayload.headers.x-openclaw-token with your gateway token.
+    Legacy x-openclaw-auth is also accepted, but x-openclaw-token is preferred.
+    Use adapterType "openclaw_gateway" and a ws:// or wss:// gateway URL.
+    Pairing mode requirement:
+    - Keep device auth enabled (recommended). If devicePrivateKeyPem is omitted, Paperclip generates and persists one during join so pairing approvals are stable.
+    - You may set disableDeviceAuth=true only for special environments that cannot support pairing.
+    - First run may return "pairing required" once; approve the pending pairing request in OpenClaw, then retry.
+    Do NOT use /v1/responses or /hooks/* in this gateway join flow.
 
     Body (JSON):
     {
       "requestType": "agent",
       "agentName": "My OpenClaw Agent",
-      "adapterType": "openclaw",
+      "adapterType": "openclaw_gateway",
       "capabilities": "Optional summary",
       "agentDefaultsPayload": {
-        "url": "https://your-openclaw-agent.example/v1/responses",
+        "url": "wss://your-openclaw-gateway.example",
         "paperclipApiUrl": "https://paperclip-hostname-your-agent-can-reach:3100",
-        "streamTransport": "sse",
-        "method": "POST",
-        "headers": { "x-openclaw-auth": "replace-me" },
-        "timeoutSec": 0
+        "headers": { "x-openclaw-token": "replace-me" },
+        "waitTimeoutMs": 120000,
+        "sessionKeyStrategy": "issue",
+        "role": "operator",
+        "scopes": ["operator.admin"]
       }
     }
 
@@ -1159,11 +1122,6 @@ export function buildInviteOnboardingTextDocument(
     - request id
     - one-time claimSecret
     - claimApiKeyPath
-
-    Verify the response diagnostics include:
-    'openclaw_auth_header_configured'
-    and do not include:
-    'openclaw_auth_header_missing'
 
     ## Step 2: Wait for board approval
     The board approves the join request in Paperclip before key claim is allowed.
@@ -1218,17 +1176,6 @@ export function buildInviteOnboardingTextDocument(
     }
   `);
 
-  if (onboarding.connectivity?.testResolutionEndpoint?.url) {
-    appendBlock(`
-      ## Optional: test callback resolution from Paperclip
-      ${onboarding.connectivity.testResolutionEndpoint.method ?? "GET"} ${
-      onboarding.connectivity.testResolutionEndpoint.url
-    }?url=https%3A%2F%2Fyour-openclaw-agent.example%2Fv1%2Fresponses
-
-      This endpoint checks whether Paperclip can reach your OpenClaw endpoint and reports reachable, timeout, or unreachable.
-    `);
-  }
-
   const connectionCandidates = Array.isArray(
     onboarding.connectivity?.connectionCandidates
   )
@@ -1271,9 +1218,6 @@ export function buildInviteOnboardingTextDocument(
     ${onboarding.skill.path}
     ${manifest.invite.onboardingPath}
   `);
-  if (onboarding.connectivity?.testResolutionEndpoint?.path) {
-    lines.push(`${onboarding.connectivity.testResolutionEndpoint.path}`);
-  }
 
   return `${lines.join("\n")}\n`;
 }
@@ -1592,10 +1536,88 @@ export function accessRoutes(
     if (!allowed) throw forbidden("Permission denied");
   }
 
+  async function assertCanGenerateOpenClawInvitePrompt(
+    req: Request,
+    companyId: string
+  ) {
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type === "agent") {
+      if (!req.actor.agentId) throw forbidden("Agent authentication required");
+      const actorAgent = await agents.getById(req.actor.agentId);
+      if (!actorAgent || actorAgent.companyId !== companyId) {
+        throw forbidden("Agent key cannot access another company");
+      }
+      if (actorAgent.role !== "ceo") {
+        throw forbidden("Only CEO agents can generate OpenClaw invite prompts");
+      }
+      return;
+    }
+    if (req.actor.type !== "board") throw unauthorized();
+    if (isLocalImplicit(req)) return;
+    const allowed = await access.canUser(companyId, req.actor.userId, "users:invite");
+    if (!allowed) throw forbidden("Permission denied");
+  }
+
+  async function createCompanyInviteForCompany(input: {
+    req: Request;
+    companyId: string;
+    allowedJoinTypes: "human" | "agent" | "both";
+    defaultsPayload?: Record<string, unknown> | null;
+    agentMessage?: string | null;
+  }) {
+    const normalizedAgentMessage =
+      typeof input.agentMessage === "string"
+        ? input.agentMessage.trim() || null
+        : null;
+    const insertValues = {
+      companyId: input.companyId,
+      inviteType: "company_join" as const,
+      allowedJoinTypes: input.allowedJoinTypes,
+      defaultsPayload: mergeInviteDefaults(
+        input.defaultsPayload ?? null,
+        normalizedAgentMessage
+      ),
+      expiresAt: companyInviteExpiresAt(),
+      invitedByUserId: input.req.actor.userId ?? null
+    };
+
+    let token: string | null = null;
+    let created: typeof invites.$inferSelect | null = null;
+    for (let attempt = 0; attempt < INVITE_TOKEN_MAX_RETRIES; attempt += 1) {
+      const candidateToken = createInviteToken();
+      try {
+        const row = await db
+          .insert(invites)
+          .values({
+            ...insertValues,
+            tokenHash: hashToken(candidateToken)
+          })
+          .returning()
+          .then((rows) => rows[0]);
+        token = candidateToken;
+        created = row;
+        break;
+      } catch (error) {
+        if (!isInviteTokenHashCollisionError(error)) {
+          throw error;
+        }
+      }
+    }
+    if (!token || !created) {
+      throw conflict("Failed to generate a unique invite token. Please retry.");
+    }
+
+    return { token, created, normalizedAgentMessage };
+  }
+
   router.get("/skills/index", (_req, res) => {
     res.json({
       skills: [
         { name: "paperclip", path: "/api/skills/paperclip" },
+        {
+          name: "para-memory-files",
+          path: "/api/skills/para-memory-files"
+        },
         {
           name: "paperclip-create-agent",
           path: "/api/skills/paperclip-create-agent"
@@ -1617,49 +1639,14 @@ export function accessRoutes(
     async (req, res) => {
       const companyId = req.params.companyId as string;
       await assertCompanyPermission(req, companyId, "users:invite");
-      const normalizedAgentMessage =
-        typeof req.body.agentMessage === "string"
-          ? req.body.agentMessage.trim() || null
-          : null;
-      const insertValues = {
-        companyId,
-        inviteType: "company_join" as const,
-        allowedJoinTypes: req.body.allowedJoinTypes,
-        defaultsPayload: mergeInviteDefaults(
-          req.body.defaultsPayload ?? null,
-          normalizedAgentMessage
-        ),
-        expiresAt: companyInviteExpiresAt(),
-        invitedByUserId: req.actor.userId ?? null
-      };
-
-      let token: string | null = null;
-      let created: typeof invites.$inferSelect | null = null;
-      for (let attempt = 0; attempt < INVITE_TOKEN_MAX_RETRIES; attempt += 1) {
-        const candidateToken = createInviteToken();
-        try {
-          const row = await db
-            .insert(invites)
-            .values({
-              ...insertValues,
-              tokenHash: hashToken(candidateToken)
-            })
-            .returning()
-            .then((rows) => rows[0]);
-          token = candidateToken;
-          created = row;
-          break;
-        } catch (error) {
-          if (!isInviteTokenHashCollisionError(error)) {
-            throw error;
-          }
-        }
-      }
-      if (!token || !created) {
-        throw conflict(
-          "Failed to generate a unique invite token. Please retry."
-        );
-      }
+      const { token, created, normalizedAgentMessage } =
+        await createCompanyInviteForCompany({
+          req,
+          companyId,
+          allowedJoinTypes: req.body.allowedJoinTypes,
+          defaultsPayload: req.body.defaultsPayload ?? null,
+          agentMessage: req.body.agentMessage ?? null
+        });
 
       await logActivity(db, {
         companyId,
@@ -1669,6 +1656,51 @@ export function accessRoutes(
             ? req.actor.agentId ?? "unknown-agent"
             : req.actor.userId ?? "board",
         action: "invite.created",
+        entityType: "invite",
+        entityId: created.id,
+        details: {
+          inviteType: created.inviteType,
+          allowedJoinTypes: created.allowedJoinTypes,
+          expiresAt: created.expiresAt.toISOString(),
+          hasAgentMessage: Boolean(normalizedAgentMessage)
+        }
+      });
+
+      const inviteSummary = toInviteSummaryResponse(req, token, created);
+      res.status(201).json({
+        ...created,
+        token,
+        inviteUrl: `/invite/${token}`,
+        onboardingTextPath: inviteSummary.onboardingTextPath,
+        onboardingTextUrl: inviteSummary.onboardingTextUrl,
+        inviteMessage: inviteSummary.inviteMessage
+      });
+    }
+  );
+
+  router.post(
+    "/companies/:companyId/openclaw/invite-prompt",
+    validate(createOpenClawInvitePromptSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      await assertCanGenerateOpenClawInvitePrompt(req, companyId);
+      const { token, created, normalizedAgentMessage } =
+        await createCompanyInviteForCompany({
+          req,
+          companyId,
+          allowedJoinTypes: "agent",
+          defaultsPayload: null,
+          agentMessage: req.body.agentMessage ?? null
+        });
+
+      await logActivity(db, {
+        companyId,
+        actorType: req.actor.type === "agent" ? "agent" : "user",
+        actorId:
+          req.actor.type === "agent"
+            ? req.actor.agentId ?? "unknown-agent"
+            : req.actor.userId ?? "board",
+        action: "invite.openclaw_prompt_created",
         entityType: "invite",
         entityId: created.id,
         details: {
@@ -1876,7 +1908,7 @@ export function accessRoutes(
       const adapterType = req.body.adapterType ?? null;
       if (
         inviteAlreadyAccepted &&
-        !canReplayOpenClawInviteAccept({
+        !canReplayOpenClawGatewayInviteAccept({
           requestType,
           adapterType,
           existingJoinRequest: existingJoinRequestForInvite
@@ -1898,59 +1930,22 @@ export function accessRoutes(
           )
         : req.body.agentDefaultsPayload ?? null;
 
-      const openClawDefaultsPayload =
+      const gatewayDefaultsPayload =
         requestType === "agent"
           ? buildJoinDefaultsPayloadForAccept({
               adapterType,
               defaultsPayload: replayMergedDefaults,
-              responsesWebhookUrl: req.body.responsesWebhookUrl ?? null,
-              responsesWebhookMethod: req.body.responsesWebhookMethod ?? null,
-              responsesWebhookHeaders: req.body.responsesWebhookHeaders ?? null,
               paperclipApiUrl: req.body.paperclipApiUrl ?? null,
-              webhookAuthHeader: req.body.webhookAuthHeader ?? null,
               inboundOpenClawAuthHeader: req.header("x-openclaw-auth") ?? null,
               inboundOpenClawTokenHeader: req.header("x-openclaw-token") ?? null
             })
           : null;
 
-      if (requestType === "agent" && adapterType === "openclaw") {
-        logger.info(
-          {
-            inviteId: invite.id,
-            requestType,
-            adapterType,
-            bodyKeys: isPlainObject(req.body)
-              ? Object.keys(req.body).sort()
-              : [],
-            responsesWebhookUrl: nonEmptyTrimmedString(
-              req.body.responsesWebhookUrl
-            ),
-            paperclipApiUrl: nonEmptyTrimmedString(req.body.paperclipApiUrl),
-            webhookAuthHeader: summarizeSecretForLog(
-              req.body.webhookAuthHeader
-            ),
-            inboundOpenClawAuthHeader: summarizeSecretForLog(
-              req.header("x-openclaw-auth") ?? null
-            ),
-            inboundOpenClawTokenHeader: summarizeSecretForLog(
-              req.header("x-openclaw-token") ?? null
-            ),
-            rawAgentDefaults: summarizeOpenClawDefaultsForLog(
-              req.body.agentDefaultsPayload ?? null
-            ),
-            mergedAgentDefaults: summarizeOpenClawDefaultsForLog(
-              openClawDefaultsPayload
-            )
-          },
-          "invite accept received OpenClaw join payload"
-        );
-      }
-
       const joinDefaults =
         requestType === "agent"
           ? normalizeAgentDefaultsForJoin({
               adapterType,
-              defaultsPayload: openClawDefaultsPayload,
+              defaultsPayload: gatewayDefaultsPayload,
               deploymentMode: opts.deploymentMode,
               deploymentExposure: opts.deploymentExposure,
               bindHost: opts.bindHost,
@@ -1958,10 +1953,15 @@ export function accessRoutes(
             })
           : {
               normalized: null as Record<string, unknown> | null,
-              diagnostics: [] as JoinDiagnostic[]
+              diagnostics: [] as JoinDiagnostic[],
+              fatalErrors: [] as string[]
             };
 
-      if (requestType === "agent" && adapterType === "openclaw") {
+      if (requestType === "agent" && joinDefaults.fatalErrors.length > 0) {
+        throw badRequest(joinDefaults.fatalErrors.join("; "));
+      }
+
+      if (requestType === "agent" && adapterType === "openclaw_gateway") {
         logger.info(
           {
             inviteId: invite.id,
@@ -1969,11 +1969,11 @@ export function accessRoutes(
               code: diag.code,
               level: diag.level
             })),
-            normalizedAgentDefaults: summarizeOpenClawDefaultsForLog(
+            normalizedAgentDefaults: summarizeOpenClawGatewayDefaultsForLog(
               joinDefaults.normalized
             )
           },
-          "invite accept normalized OpenClaw defaults"
+          "invite accept normalized OpenClaw gateway defaults"
         );
       }
 
@@ -2062,7 +2062,7 @@ export function accessRoutes(
       if (
         inviteAlreadyAccepted &&
         requestType === "agent" &&
-        adapterType === "openclaw" &&
+        adapterType === "openclaw_gateway" &&
         created.status === "approved" &&
         created.createdAgentId
       ) {
@@ -2098,11 +2098,11 @@ export function accessRoutes(
         });
       }
 
-      if (requestType === "agent" && adapterType === "openclaw") {
-        const expectedDefaults = summarizeOpenClawDefaultsForLog(
+      if (requestType === "agent" && adapterType === "openclaw_gateway") {
+        const expectedDefaults = summarizeOpenClawGatewayDefaultsForLog(
           joinDefaults.normalized
         );
-        const persistedDefaults = summarizeOpenClawDefaultsForLog(
+        const persistedDefaults = summarizeOpenClawGatewayDefaultsForLog(
           created.agentDefaultsPayload
         );
         const missingPersistedFields: string[] = [];
@@ -2115,19 +2115,14 @@ export function accessRoutes(
         ) {
           missingPersistedFields.push("paperclipApiUrl");
         }
-        if (
-          expectedDefaults.webhookAuthHeader &&
-          !persistedDefaults.webhookAuthHeader
-        ) {
-          missingPersistedFields.push("webhookAuthHeader");
+        if (expectedDefaults.gatewayToken && !persistedDefaults.gatewayToken) {
+          missingPersistedFields.push("headers.x-openclaw-token");
         }
         if (
-          expectedDefaults.openClawAuthHeader &&
-          !persistedDefaults.openClawAuthHeader
+          expectedDefaults.devicePrivateKeyPem &&
+          !persistedDefaults.devicePrivateKeyPem
         ) {
-          missingPersistedFields.push(
-            "headers.x-openclaw-token|headers.x-openclaw-auth"
-          );
+          missingPersistedFields.push("devicePrivateKeyPem");
         }
         if (
           expectedDefaults.headerKeys.length > 0 &&
@@ -2150,7 +2145,7 @@ export function accessRoutes(
               hint: diag.hint ?? null
             }))
           },
-          "invite accept persisted OpenClaw join request"
+          "invite accept persisted OpenClaw gateway join request"
         );
 
         if (missingPersistedFields.length > 0) {
@@ -2160,7 +2155,7 @@ export function accessRoutes(
               joinRequestId: created.id,
               missingPersistedFields
             },
-            "invite accept detected missing persisted OpenClaw defaults"
+            "invite accept detected missing persisted OpenClaw gateway defaults"
           );
         }
       }

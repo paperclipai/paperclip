@@ -20,7 +20,7 @@ The `claude_local` adapter runs Anthropic's Claude Code CLI locally. It supports
 | `env` | object | No | Environment variables (supports secret refs) |
 | `timeoutSec` | number | No | Process timeout (0 = no timeout) |
 | `graceSec` | number | No | Grace period before force-kill |
-| `maxTurnsPerRun` | number | No | Max agentic turns per heartbeat |
+| `maxTurnsPerRun` | number | No | Max agentic turns per heartbeat (defaults to `300`) |
 | `dangerouslySkipPermissions` | boolean | No | Skip permission prompts (dev only) |
 
 ## Prompt Templates
@@ -46,6 +46,14 @@ If resume fails with an unknown session error, the adapter automatically retries
 ## Skills Injection
 
 The adapter creates a temporary directory with symlinks to Paperclip skills and passes it via `--add-dir`. This makes skills discoverable without polluting the agent's working directory.
+
+For manual local CLI usage outside heartbeat runs (for example running as `claudecoder` directly), use:
+
+```sh
+pnpm paperclipai agent local-cli claudecoder --company-id <company-id>
+```
+
+This installs Paperclip skills in `~/.claude/skills`, creates an agent API key, and prints shell exports to run as that agent.
 
 ## Environment Test
 

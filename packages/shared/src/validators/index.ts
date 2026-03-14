@@ -49,27 +49,36 @@ export {
   updateProjectSchema,
   createProjectWorkspaceSchema,
   updateProjectWorkspaceSchema,
+  projectExecutionWorkspacePolicySchema,
   type CreateProject,
   type UpdateProject,
   type CreateProjectWorkspace,
   type UpdateProjectWorkspace,
+  type ProjectExecutionWorkspacePolicy,
 } from "./project.js";
 
 export {
   createIssueSchema,
   createIssueLabelSchema,
   updateIssueSchema,
+  issueExecutionWorkspaceSettingsSchema,
   checkoutIssueSchema,
   addIssueCommentSchema,
   linkIssueApprovalSchema,
   createIssueAttachmentMetadataSchema,
+  issueDocumentFormatSchema,
+  issueDocumentKeySchema,
+  upsertIssueDocumentSchema,
   type CreateIssue,
   type CreateIssueLabel,
   type UpdateIssue,
+  type IssueExecutionWorkspaceSettings,
   type CheckoutIssue,
   type AddIssueComment,
   type LinkIssueApproval,
   type CreateIssueAttachmentMetadata,
+  type IssueDocumentFormat,
+  type UpsertIssueDocument,
 } from "./issue.js";
 
 export {
@@ -119,12 +128,14 @@ export {
 
 export {
   createCompanyInviteSchema,
+  createOpenClawInvitePromptSchema,
   acceptInviteSchema,
   listJoinRequestsQuerySchema,
   claimJoinRequestApiKeySchema,
   updateMemberPermissionsSchema,
   updateUserCompanyAccessSchema,
   type CreateCompanyInvite,
+  type CreateOpenClawInvitePrompt,
   type AcceptInvite,
   type ListJoinRequestsQuery,
   type ClaimJoinRequestApiKey,

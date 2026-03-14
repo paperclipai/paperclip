@@ -2,7 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent } from "re
 import { Link, useLocation } from "react-router-dom";
 import type { IssueComment, Agent } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
-import { Paperclip } from "lucide-react";
+import { Check, Copy, Paperclip } from "lucide-react";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { MarkdownBody } from "./MarkdownBody";
@@ -92,6 +92,25 @@ function parseReassignment(target: string): CommentReassignment | null {
   return null;
 }
 
+function CopyMarkdownButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      className="text-muted-foreground hover:text-foreground transition-colors"
+      title="Copy as markdown"
+      onClick={() => {
+        navigator.clipboard.writeText(text).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 2000);
+        });
+      }}
+    >
+      {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+    </button>
+  );
+}
+
 type TimelineItem =
   | { kind: "comment"; id: string; createdAtMs: number; comment: CommentWithRunMeta }
   | { kind: "run"; id: string; createdAtMs: number; run: LinkedRunItem };
@@ -160,12 +179,15 @@ const TimelineList = memo(function TimelineList({
               ) : (
                 <Identity name="You" size="sm" />
               )}
-              <a
-                href={`#comment-${comment.id}`}
-                className="text-xs text-muted-foreground hover:text-foreground hover:underline transition-colors"
-              >
-                {formatDateTime(comment.createdAt)}
-              </a>
+              <span className="flex items-center gap-1.5">
+                <a
+                  href={`#comment-${comment.id}`}
+                  className="text-xs text-muted-foreground hover:text-foreground hover:underline transition-colors"
+                >
+                  {formatDateTime(comment.createdAt)}
+                </a>
+                <CopyMarkdownButton text={comment.body} />
+              </span>
             </div>
             <MarkdownBody className="text-sm">{comment.body}</MarkdownBody>
             {comment.runId && (
