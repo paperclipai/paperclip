@@ -1,6 +1,9 @@
 import type { ProjectStatus } from "../constants.js";
 import type { ProjectExecutionWorkspacePolicy, WorkspaceRuntimeService } from "./workspace-runtime.js";
 
+export type ProjectWorkspaceSourceType = "local_path" | "git_repo" | "remote_managed" | "non_git_path";
+export type ProjectWorkspaceVisibility = "default" | "advanced";
+
 export interface ProjectGoalRef {
   id: string;
   title: string;
@@ -11,9 +14,17 @@ export interface ProjectWorkspace {
   companyId: string;
   projectId: string;
   name: string;
+  sourceType: ProjectWorkspaceSourceType;
   cwd: string | null;
   repoUrl: string | null;
   repoRef: string | null;
+  defaultRef: string | null;
+  visibility: ProjectWorkspaceVisibility;
+  setupCommand: string | null;
+  cleanupCommand: string | null;
+  remoteProvider: string | null;
+  remoteWorkspaceRef: string | null;
+  sharedWorkspaceKey: string | null;
   metadata: Record<string, unknown> | null;
   isPrimary: boolean;
   runtimeServices?: WorkspaceRuntimeService[];

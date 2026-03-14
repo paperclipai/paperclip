@@ -33,6 +33,7 @@ import {
   releaseRuntimeServicesForRun,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
+import { executionWorkspaceService } from "./execution-workspaces.js";
 import {
   buildExecutionWorkspaceAdapterConfig,
   parseIssueExecutionWorkspaceSettings,
@@ -165,6 +166,20 @@ export type ResolvedWorkspaceForRun = {
   }>;
   warnings: string[];
 };
+
+type ProjectWorkspaceCandidate = {
+  id: string;
+};
+
+export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWorkspaceCandidate>(
+  rows: T[],
+  preferredWorkspaceId: string | null | undefined,
+): T[] {
+  if (!preferredWorkspaceId) return rows;
+  const preferredIndex = rows.findIndex((row) => row.id === preferredWorkspaceId);
+  if (preferredIndex <= 0) return rows;
+  return [rows[preferredIndex]!, ...rows.slice(0, preferredIndex), ...rows.slice(preferredIndex + 1)];
+}
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
@@ -556,6 +571,7 @@ export function heartbeatService(db: Db) {
   const runLogStore = getRunLogStore();
   const secretsSvc = secretService(db);
   const issuesSvc = issueService(db);
+  const executionWorkspacesSvc = executionWorkspaceService(db);
   const activeRunExecutions = new Set<string>();
 
   async function getAgent(agentId: string) {
@@ -806,18 +822,25 @@ export function heartbeatService(db: Db) {
   ): Promise<ResolvedWorkspaceForRun> {
     const issueId = readNonEmptyString(context.issueId);
     const contextProjectId = readNonEmptyString(context.projectId);
-    const issueProjectId = issueId
+    const contextProjectWorkspaceId = readNonEmptyString(context.projectWorkspaceId);
+    const issueProjectRef = issueId
       ? await db
-          .select({ projectId: issues.projectId })
+          .select({
+            projectId: issues.projectId,
+            projectWorkspaceId: issues.projectWorkspaceId,
+          })
           .from(issues)
           .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
-          .then((rows) => rows[0]?.projectId ?? null)
+          .then((rows) => rows[0] ?? null)
       : null;
+    const issueProjectId = issueProjectRef?.projectId ?? null;
+    const preferredProjectWorkspaceId =
+      issueProjectRef?.projectWorkspaceId ?? contextProjectWorkspaceId ?? null;
     const resolvedProjectId = issueProjectId ?? contextProjectId;
     const useProjectWorkspace = opts?.useProjectWorkspace !== false;
     const workspaceProjectId = useProjectWorkspace ? resolvedProjectId : null;
 
-    const projectWorkspaceRows = workspaceProjectId
+    const unorderedProjectWorkspaceRows = workspaceProjectId
       ? await db
           .select()
           .from(projectWorkspaces)
@@ -829,6 +852,10 @@ export function heartbeatService(db: Db) {
           )
           .orderBy(asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id))
       : [];
+    const projectWorkspaceRows = prioritizeProjectWorkspaceCandidatesForRun(
+      unorderedProjectWorkspaceRows,
+      preferredProjectWorkspaceId,
+    );
 
     const workspaceHints = projectWorkspaceRows.map((workspace) => ({
       workspaceId: workspace.id,
@@ -838,11 +865,22 @@ export function heartbeatService(db: Db) {
     }));
 
     if (projectWorkspaceRows.length > 0) {
+      const preferredWorkspace = preferredProjectWorkspaceId
+        ? projectWorkspaceRows.find((workspace) => workspace.id === preferredProjectWorkspaceId) ?? null
+        : null;
       const missingProjectCwds: string[] = [];
       let hasConfiguredProjectCwd = false;
+      let preferredWorkspaceWarning: string | null = null;
+      if (preferredProjectWorkspaceId && !preferredWorkspace) {
+        preferredWorkspaceWarning =
+          `Selected project workspace "${preferredProjectWorkspaceId}" is not available on this project.`;
+      }
       for (const workspace of projectWorkspaceRows) {
         const projectCwd = readNonEmptyString(workspace.cwd);
         if (!projectCwd || projectCwd === REPO_ONLY_CWD_SENTINEL) {
+          if (preferredWorkspace?.id === workspace.id) {
+            preferredWorkspaceWarning = `Selected project workspace "${workspace.name}" has no local cwd configured.`;
+          }
           continue;
         }
         hasConfiguredProjectCwd = true;
@@ -859,8 +897,12 @@ export function heartbeatService(db: Db) {
             repoUrl: workspace.repoUrl,
             repoRef: workspace.repoRef,
             workspaceHints,
-            warnings: [],
+            warnings: preferredWorkspaceWarning ? [preferredWorkspaceWarning] : [],
           };
+        }
+        if (preferredWorkspace?.id === workspace.id) {
+          preferredWorkspaceWarning =
+            `Selected project workspace path "${projectCwd}" is not available yet.`;
         }
         missingProjectCwds.push(projectCwd);
       }
@@ -868,6 +910,9 @@ export function heartbeatService(db: Db) {
       const fallbackCwd = resolveDefaultAgentWorkspaceDir(agent.id);
       await fs.mkdir(fallbackCwd, { recursive: true });
       const warnings: string[] = [];
+      if (preferredWorkspaceWarning) {
+        warnings.push(preferredWorkspaceWarning);
+      }
       if (missingProjectCwds.length > 0) {
         const firstMissing = missingProjectCwds[0];
         const extraMissingCount = Math.max(0, missingProjectCwds.length - 1);
@@ -1402,6 +1447,9 @@ export function heartbeatService(db: Db) {
       ? await db
           .select({
             projectId: issues.projectId,
+            projectWorkspaceId: issues.projectWorkspaceId,
+            executionWorkspaceId: issues.executionWorkspaceId,
+            executionWorkspacePreference: issues.executionWorkspacePreference,
             assigneeAgentId: issues.assigneeAgentId,
             assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
             executionWorkspaceSettings: issues.executionWorkspaceSettings,
@@ -1469,6 +1517,10 @@ export function heartbeatService(db: Db) {
             id: issues.id,
             identifier: issues.identifier,
             title: issues.title,
+            projectId: issues.projectId,
+            projectWorkspaceId: issues.projectWorkspaceId,
+            executionWorkspaceId: issues.executionWorkspaceId,
+            executionWorkspacePreference: issues.executionWorkspacePreference,
           })
           .from(issues)
           .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
@@ -1491,6 +1543,67 @@ export function heartbeatService(db: Db) {
         companyId: agent.companyId,
       },
     });
+    const existingExecutionWorkspace =
+      issueRef?.executionWorkspaceId ? await executionWorkspacesSvc.getById(issueRef.executionWorkspaceId) : null;
+    const resolvedProjectId = executionWorkspace.projectId ?? issueRef?.projectId ?? executionProjectId ?? null;
+    const resolvedProjectWorkspaceId = issueRef?.projectWorkspaceId ?? resolvedWorkspace.workspaceId ?? null;
+    const shouldReuseExisting =
+      issueRef?.executionWorkspacePreference === "reuse_existing" &&
+      existingExecutionWorkspace &&
+      existingExecutionWorkspace.status !== "archived";
+    const persistedExecutionWorkspace = shouldReuseExisting && existingExecutionWorkspace
+      ? await executionWorkspacesSvc.update(existingExecutionWorkspace.id, {
+          cwd: executionWorkspace.cwd,
+          repoUrl: executionWorkspace.repoUrl,
+          baseRef: executionWorkspace.repoRef,
+          branchName: executionWorkspace.branchName,
+          providerType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "local_fs",
+          providerRef: executionWorkspace.worktreePath,
+          status: "active",
+          lastUsedAt: new Date(),
+          metadata: {
+            ...(existingExecutionWorkspace.metadata ?? {}),
+            source: executionWorkspace.source,
+            createdByRuntime: executionWorkspace.created,
+          },
+        })
+      : resolvedProjectId
+        ? await executionWorkspacesSvc.create({
+            companyId: agent.companyId,
+            projectId: resolvedProjectId,
+            projectWorkspaceId: resolvedProjectWorkspaceId,
+            sourceIssueId: issueRef?.id ?? null,
+            mode:
+              executionWorkspaceMode === "isolated_workspace"
+                ? "isolated_workspace"
+                : executionWorkspaceMode === "operator_branch"
+                  ? "operator_branch"
+                  : executionWorkspaceMode === "agent_default"
+                    ? "adapter_managed"
+                    : "shared_workspace",
+            strategyType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "project_primary",
+            name: executionWorkspace.branchName ?? issueRef?.identifier ?? `workspace-${agent.id.slice(0, 8)}`,
+            status: "active",
+            cwd: executionWorkspace.cwd,
+            repoUrl: executionWorkspace.repoUrl,
+            baseRef: executionWorkspace.repoRef,
+            branchName: executionWorkspace.branchName,
+            providerType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "local_fs",
+            providerRef: executionWorkspace.worktreePath,
+            lastUsedAt: new Date(),
+            openedAt: new Date(),
+            metadata: {
+              source: executionWorkspace.source,
+              createdByRuntime: executionWorkspace.created,
+            },
+          })
+        : null;
+    if (issueId && persistedExecutionWorkspace && issueRef?.executionWorkspaceId !== persistedExecutionWorkspace.id) {
+      await issuesSvc.update(issueId, {
+        executionWorkspaceId: persistedExecutionWorkspace.id,
+        ...(resolvedProjectWorkspaceId ? { projectWorkspaceId: resolvedProjectWorkspaceId } : {}),
+      });
+    }
     const runtimeSessionResolution = resolveRuntimeSessionParamsForWorkspace({
       agentId: agent.id,
       previousSessionParams,
@@ -1694,6 +1807,7 @@ export function heartbeatService(db: Db) {
         },
         issue: issueRef,
         workspace: executionWorkspace,
+        executionWorkspaceId: persistedExecutionWorkspace?.id ?? issueRef?.executionWorkspaceId ?? null,
         config: resolvedConfig,
         adapterEnv,
         onLog,

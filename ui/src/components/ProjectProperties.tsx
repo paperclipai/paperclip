@@ -17,6 +17,7 @@ import { AlertCircle, Check, ExternalLink, Github, Loader2, Plus, Trash2, X } fr
 import { ChoosePathButton } from "./PathInstructionsModal";
 import { DraftInput } from "./agent-config-primitives";
 import { InlineEditor } from "./InlineEditor";
+import { useExperimentalWorkspacesEnabled } from "../lib/experimentalSettings";
 
 const PROJECT_STATUSES = [
   { value: "backlog", label: "Backlog" },
@@ -25,9 +26,6 @@ const PROJECT_STATUSES = [
   { value: "completed", label: "Completed" },
   { value: "cancelled", label: "Cancelled" },
 ];
-
-// TODO(issue-worktree-support): re-enable this UI once the workflow is ready to ship.
-const SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI = false;
 
 interface ProjectPropertiesProps {
   project: Project;
@@ -154,6 +152,7 @@ function ProjectStatusPicker({ status, onChange }: { status: string; onChange: (
 
 export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSaveState }: ProjectPropertiesProps) {
   const { selectedCompanyId } = useCompany();
+  const { enabled: showExperimentalWorkspaceUi } = useExperimentalWorkspacesEnabled();
   const queryClient = useQueryClient();
   const [goalOpen, setGoalOpen] = useState(false);
   const [executionWorkspaceAdvancedOpen, setExecutionWorkspaceAdvancedOpen] = useState(false);
@@ -195,7 +194,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
   const executionWorkspacePolicy = project.executionWorkspacePolicy ?? null;
   const executionWorkspacesEnabled = executionWorkspacePolicy?.enabled === true;
   const executionWorkspaceDefaultMode =
-    executionWorkspacePolicy?.defaultMode === "isolated" ? "isolated" : "project_primary";
+    executionWorkspacePolicy?.defaultMode === "isolated_workspace" ? "isolated_workspace" : "shared_workspace";
   const executionWorkspaceStrategy = executionWorkspacePolicy?.workspaceStrategy ?? {
     type: "git_worktree",
     baseRef: "",
@@ -710,7 +709,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
           )}
         </div>
 
-        {SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI && (
+          {showExperimentalWorkspaceUi && (
           <>
         <Separator className="my-4" />
 
@@ -785,21 +784,21 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                   <button
                     className={cn(
                       "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-                      executionWorkspaceDefaultMode === "isolated" ? "bg-green-600" : "bg-muted",
+                      executionWorkspaceDefaultMode === "isolated_workspace" ? "bg-green-600" : "bg-muted",
                     )}
                     type="button"
                     onClick={() =>
                       commitField(
                         "execution_workspace_default_mode",
                         updateExecutionWorkspacePolicy({
-                          defaultMode: executionWorkspaceDefaultMode === "isolated" ? "project_primary" : "isolated",
+                          defaultMode: executionWorkspaceDefaultMode === "isolated_workspace" ? "shared_workspace" : "isolated_workspace",
                         })!,
                       )}
                   >
                     <span
                       className={cn(
                         "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-                        executionWorkspaceDefaultMode === "isolated" ? "translate-x-4.5" : "translate-x-0.5",
+                        executionWorkspaceDefaultMode === "isolated_workspace" ? "translate-x-4.5" : "translate-x-0.5",
                       )}
                     />
                   </button>

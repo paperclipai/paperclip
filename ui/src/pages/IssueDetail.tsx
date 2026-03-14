@@ -11,6 +11,7 @@ import { useCompany } from "../context/CompanyContext";
 import { usePanel } from "../context/PanelContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
+import { useExperimentalWorkspacesEnabled } from "../lib/experimentalSettings";
 import { readIssueDetailBreadcrumb } from "../lib/issueDetailBreadcrumb";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatTokens } from "../lib/utils";
@@ -39,15 +40,21 @@ import {
   ChevronDown,
   ChevronRight,
   EyeOff,
+  ExternalLink,
+  FileText,
+  GitBranch,
+  GitPullRequest,
   Hexagon,
   ListTree,
   MessageSquare,
   MoreHorizontal,
+  Package,
   Paperclip,
+  Rocket,
   SlidersHorizontal,
   Trash2,
 } from "lucide-react";
-import type { ActivityEvent } from "@paperclipai/shared";
+import type { ActivityEvent, IssueWorkProduct } from "@paperclipai/shared";
 import type { Agent, IssueAttachment } from "@paperclipai/shared";
 
 type CommentReassignment = {
@@ -177,6 +184,24 @@ function formatAction(action: string, details?: Record<string, unknown> | null):
   return ACTION_LABELS[action] ?? action.replace(/[._]/g, " ");
 }
 
+function workProductIcon(product: IssueWorkProduct) {
+  switch (product.type) {
+    case "pull_request":
+      return <GitPullRequest className="h-3.5 w-3.5" />;
+    case "branch":
+    case "commit":
+      return <GitBranch className="h-3.5 w-3.5" />;
+    case "artifact":
+      return <Package className="h-3.5 w-3.5" />;
+    case "document":
+      return <FileText className="h-3.5 w-3.5" />;
+    case "runtime_service":
+      return <Rocket className="h-3.5 w-3.5" />;
+    default:
+      return <ExternalLink className="h-3.5 w-3.5" />;
+  }
+}
+
 function ActorIdentity({ evt, agentMap }: { evt: ActivityEvent; agentMap: Map<string, Agent> }) {
   const id = evt.actorId;
   if (evt.actorType === "agent") {
@@ -191,6 +216,7 @@ function ActorIdentity({ evt, agentMap }: { evt: ActivityEvent; agentMap: Map<st
 export function IssueDetail() {
   const { issueId } = useParams<{ issueId: string }>();
   const { selectedCompanyId } = useCompany();
+  const { enabled: experimentalWorkspacesEnabled } = useExperimentalWorkspacesEnabled();
   const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -204,6 +230,13 @@ export function IssueDetail() {
     cost: false,
   });
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [newWorkProductType, setNewWorkProductType] = useState<IssueWorkProduct["type"]>("preview_url");
+  const [newWorkProductProvider, setNewWorkProductProvider] = useState("paperclip");
+  const [newWorkProductTitle, setNewWorkProductTitle] = useState("");
+  const [newWorkProductUrl, setNewWorkProductUrl] = useState("");
+  const [newWorkProductStatus, setNewWorkProductStatus] = useState<IssueWorkProduct["status"]>("active");
+  const [newWorkProductReviewState, setNewWorkProductReviewState] = useState<IssueWorkProduct["reviewState"]>("none");
+  const [newWorkProductSummary, setNewWorkProductSummary] = useState("");
   const [attachmentDragActive, setAttachmentDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const lastMarkedReadIssueIdRef = useRef<string | null>(null);
@@ -448,6 +481,7 @@ export function IssueDetail() {
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.documents(issueId!) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(issueId!) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(issueId!) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.workProducts(issueId!) });
     if (selectedCompanyId) {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
@@ -556,6 +590,42 @@ export function IssueDetail() {
     },
   });
 
+  const createWorkProduct = useMutation({
+    mutationFn: () =>
+      issuesApi.createWorkProduct(issueId!, {
+        type: newWorkProductType,
+        provider: newWorkProductProvider,
+        title: newWorkProductTitle.trim(),
+        url: newWorkProductUrl.trim() || null,
+        status: newWorkProductStatus,
+        reviewState: newWorkProductReviewState,
+        summary: newWorkProductSummary.trim() || null,
+        projectId: issue?.projectId ?? null,
+        executionWorkspaceId: issue?.currentExecutionWorkspace?.id ?? issue?.executionWorkspaceId ?? null,
+      }),
+    onSuccess: () => {
+      setNewWorkProductTitle("");
+      setNewWorkProductUrl("");
+      setNewWorkProductSummary("");
+      setNewWorkProductType("preview_url");
+      setNewWorkProductProvider("paperclip");
+      setNewWorkProductStatus("active");
+      setNewWorkProductReviewState("none");
+      invalidateIssue();
+    },
+  });
+
+  const updateWorkProduct = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
+      issuesApi.updateWorkProduct(id, data),
+    onSuccess: () => invalidateIssue(),
+  });
+
+  const deleteWorkProduct = useMutation({
+    mutationFn: (id: string) => issuesApi.deleteWorkProduct(id),
+    onSuccess: () => invalidateIssue(),
+  });
+
   useEffect(() => {
     const titleLabel = issue?.title ?? issueId ?? "Issue";
     setBreadcrumbs([
@@ -593,6 +663,11 @@ export function IssueDetail() {
 
   // Ancestors are returned oldest-first from the server (root at end, immediate parent at start)
   const ancestors = issue.ancestors ?? [];
+  const workProducts = issue.workProducts ?? [];
+  const showOutputsTab =
+    experimentalWorkspacesEnabled ||
+    Boolean(issue.currentExecutionWorkspace) ||
+    workProducts.length > 0;
 
   const handleFilePicked = async (evt: ChangeEvent<HTMLInputElement>) => {
     const files = evt.target.files;
@@ -941,6 +1016,12 @@ export function IssueDetail() {
             <MessageSquare className="h-3.5 w-3.5" />
             Comments
           </TabsTrigger>
+          {showOutputsTab && (
+            <TabsTrigger value="outputs" className="gap-1.5">
+              <Rocket className="h-3.5 w-3.5" />
+              Outputs
+            </TabsTrigger>
+          )}
           <TabsTrigger value="subissues" className="gap-1.5">
             <ListTree className="h-3.5 w-3.5" />
             Sub-issues
@@ -986,6 +1067,199 @@ export function IssueDetail() {
             liveRunSlot={<LiveRunWidget issueId={issueId!} companyId={issue.companyId} />}
           />
         </TabsContent>
+
+        {showOutputsTab && (
+          <TabsContent value="outputs" className="space-y-4">
+            {issue.currentExecutionWorkspace && (
+              <div className="rounded-lg border border-border p-3 space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <div className="text-sm font-medium">Execution workspace</div>
+                    <div className="text-xs text-muted-foreground">
+                      {issue.currentExecutionWorkspace.status} · {issue.currentExecutionWorkspace.mode}
+                    </div>
+                  </div>
+                  <Link
+                    to={`/execution-workspaces/${issue.currentExecutionWorkspace.id}`}
+                    className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                  >
+                    Open
+                    <ExternalLink className="h-3 w-3" />
+                  </Link>
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  {issue.currentExecutionWorkspace.branchName ?? issue.currentExecutionWorkspace.cwd ?? "No workspace path recorded."}
+                </div>
+              </div>
+            )}
+
+            <div className="rounded-lg border border-border p-3 space-y-3">
+              <div className="text-sm font-medium">Work product</div>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <select
+                  className="rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
+                  value={newWorkProductType}
+                  onChange={(e) => setNewWorkProductType(e.target.value as IssueWorkProduct["type"])}
+                >
+                  <option value="preview_url">Preview URL</option>
+                  <option value="runtime_service">Runtime service</option>
+                  <option value="pull_request">Pull request</option>
+                  <option value="branch">Branch</option>
+                  <option value="commit">Commit</option>
+                  <option value="artifact">Artifact</option>
+                  <option value="document">Document</option>
+                </select>
+                <input
+                  className="rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
+                  value={newWorkProductProvider}
+                  onChange={(e) => setNewWorkProductProvider(e.target.value)}
+                  placeholder="Provider"
+                />
+                <input
+                  className="rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none sm:col-span-2"
+                  value={newWorkProductTitle}
+                  onChange={(e) => setNewWorkProductTitle(e.target.value)}
+                  placeholder="Title"
+                />
+                <input
+                  className="rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none sm:col-span-2"
+                  value={newWorkProductUrl}
+                  onChange={(e) => setNewWorkProductUrl(e.target.value)}
+                  placeholder="URL"
+                />
+                <select
+                  className="rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
+                  value={newWorkProductStatus}
+                  onChange={(e) => setNewWorkProductStatus(e.target.value as IssueWorkProduct["status"])}
+                >
+                  <option value="draft">Draft</option>
+                  <option value="active">Active</option>
+                  <option value="ready_for_review">Ready for review</option>
+                  <option value="approved">Approved</option>
+                  <option value="changes_requested">Changes requested</option>
+                  <option value="merged">Merged</option>
+                  <option value="closed">Closed</option>
+                  <option value="failed">Failed</option>
+                  <option value="archived">Archived</option>
+                </select>
+                <select
+                  className="rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
+                  value={newWorkProductReviewState}
+                  onChange={(e) => setNewWorkProductReviewState(e.target.value as IssueWorkProduct["reviewState"])}
+                >
+                  <option value="none">No review state</option>
+                  <option value="needs_board_review">Needs board review</option>
+                  <option value="approved">Approved</option>
+                  <option value="changes_requested">Changes requested</option>
+                </select>
+                <textarea
+                  className="rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none sm:col-span-2 min-h-20"
+                  value={newWorkProductSummary}
+                  onChange={(e) => setNewWorkProductSummary(e.target.value)}
+                  placeholder="Summary"
+                />
+              </div>
+              <div className="flex justify-end">
+                <Button
+                  size="sm"
+                  disabled={!newWorkProductTitle.trim() || createWorkProduct.isPending}
+                  onClick={() => createWorkProduct.mutate()}
+                >
+                  {createWorkProduct.isPending ? "Adding..." : "Add output"}
+                </Button>
+              </div>
+            </div>
+
+            {workProducts.length === 0 ? (
+              <p className="text-xs text-muted-foreground">No work product yet.</p>
+            ) : (
+              <div className="space-y-2">
+                {workProducts.map((product) => (
+                  <div key={product.id} className="rounded-lg border border-border p-3 space-y-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 text-sm font-medium">
+                          {workProductIcon(product)}
+                          <span className="truncate">{product.title}</span>
+                          {product.isPrimary && (
+                            <span className="rounded-full border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                              Primary
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {product.type.replace(/_/g, " ")} · {product.provider}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="text-muted-foreground hover:text-destructive"
+                        onClick={() => {
+                          if (!window.confirm(`Delete "${product.title}"?`)) return;
+                          deleteWorkProduct.mutate(product.id);
+                        }}
+                        disabled={deleteWorkProduct.isPending}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                    {product.url && (
+                      <a
+                        href={product.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground hover:underline"
+                      >
+                        {product.url}
+                        <ExternalLink className="h-3 w-3" />
+                      </a>
+                    )}
+                    {product.summary && (
+                      <div className="text-xs text-muted-foreground">{product.summary}</div>
+                    )}
+                    <div className="grid gap-2 sm:grid-cols-3">
+                      <select
+                        className="rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
+                        value={product.status}
+                        onChange={(e) =>
+                          updateWorkProduct.mutate({ id: product.id, data: { status: e.target.value } })}
+                      >
+                        <option value="draft">Draft</option>
+                        <option value="active">Active</option>
+                        <option value="ready_for_review">Ready for review</option>
+                        <option value="approved">Approved</option>
+                        <option value="changes_requested">Changes requested</option>
+                        <option value="merged">Merged</option>
+                        <option value="closed">Closed</option>
+                        <option value="failed">Failed</option>
+                        <option value="archived">Archived</option>
+                      </select>
+                      <select
+                        className="rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
+                        value={product.reviewState}
+                        onChange={(e) =>
+                          updateWorkProduct.mutate({ id: product.id, data: { reviewState: e.target.value } })}
+                      >
+                        <option value="none">No review state</option>
+                        <option value="needs_board_review">Needs board review</option>
+                        <option value="approved">Approved</option>
+                        <option value="changes_requested">Changes requested</option>
+                      </select>
+                      <Button
+                        variant={product.isPrimary ? "secondary" : "outline"}
+                        size="sm"
+                        onClick={() => updateWorkProduct.mutate({ id: product.id, data: { isPrimary: true } })}
+                        disabled={product.isPrimary || updateWorkProduct.isPending}
+                      >
+                        {product.isPrimary ? "Primary" : "Make primary"}
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </TabsContent>
+        )}
 
         <TabsContent value="subissues">
           {childIssues.length === 0 ? (

@@ -4,6 +4,7 @@ import type { Issue } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
+import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
@@ -16,13 +17,43 @@ import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
 import { formatDate, cn, projectUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
+import { useExperimentalWorkspacesEnabled } from "../lib/experimentalSettings";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { User, Hexagon, ArrowUpRight, Tag, Plus, Trash2 } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 
-// TODO(issue-worktree-support): re-enable this UI once the workflow is ready to ship.
-const SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI = false;
+const EXECUTION_WORKSPACE_OPTIONS = [
+  { value: "shared_workspace", label: "Project default" },
+  { value: "isolated_workspace", label: "New isolated workspace" },
+  { value: "reuse_existing", label: "Reuse existing workspace" },
+  { value: "operator_branch", label: "Operator branch" },
+  { value: "agent_default", label: "Agent default" },
+] as const;
+
+function defaultProjectWorkspaceIdForProject(project: {
+  workspaces?: Array<{ id: string; isPrimary: boolean }>;
+  executionWorkspacePolicy?: { defaultProjectWorkspaceId?: string | null } | null;
+} | null | undefined) {
+  if (!project) return null;
+  return project.executionWorkspacePolicy?.defaultProjectWorkspaceId
+    ?? project.workspaces?.find((workspace) => workspace.isPrimary)?.id
+    ?? project.workspaces?.[0]?.id
+    ?? null;
+}
+
+function defaultExecutionWorkspaceModeForProject(project: { executionWorkspacePolicy?: { enabled?: boolean; defaultMode?: string | null } | null } | null | undefined) {
+  const defaultMode = project?.executionWorkspacePolicy?.enabled ? project.executionWorkspacePolicy.defaultMode : null;
+  if (defaultMode === "isolated_workspace" || defaultMode === "operator_branch") return defaultMode;
+  if (defaultMode === "adapter_default") return "agent_default";
+  return "shared_workspace";
+}
+
+function issueModeForExistingWorkspace(mode: string | null | undefined) {
+  if (mode === "isolated_workspace" || mode === "operator_branch" || mode === "shared_workspace") return mode;
+  if (mode === "adapter_managed" || mode === "cloud_sandbox") return "agent_default";
+  return "shared_workspace";
+}
 
 interface IssuePropertiesProps {
   issue: Issue;
@@ -103,6 +134,7 @@ function PropertyPicker({
 
 export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProps) {
   const { selectedCompanyId } = useCompany();
+  const { enabled: showExperimentalWorkspaceUi } = useExperimentalWorkspacesEnabled();
   const queryClient = useQueryClient();
   const companyId = issue.companyId ?? selectedCompanyId;
   const [assigneeOpen, setAssigneeOpen] = useState(false);
@@ -183,15 +215,32 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
   const currentProject = issue.projectId
     ? orderedProjects.find((project) => project.id === issue.projectId) ?? null
     : null;
-  const currentProjectExecutionWorkspacePolicy = SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI
+  const currentProjectExecutionWorkspacePolicy = showExperimentalWorkspaceUi
     ? currentProject?.executionWorkspacePolicy ?? null
     : null;
   const currentProjectSupportsExecutionWorkspace = Boolean(currentProjectExecutionWorkspacePolicy?.enabled);
-  const usesIsolatedExecutionWorkspace = issue.executionWorkspaceSettings?.mode === "isolated"
-    ? true
-    : issue.executionWorkspaceSettings?.mode === "project_primary"
-      ? false
-      : currentProjectExecutionWorkspacePolicy?.defaultMode === "isolated";
+  const currentProjectWorkspaces = currentProject?.workspaces ?? [];
+  const currentExecutionWorkspaceSelection =
+    issue.executionWorkspacePreference
+    ?? issue.executionWorkspaceSettings?.mode
+    ?? defaultExecutionWorkspaceModeForProject(currentProject);
+  const { data: reusableExecutionWorkspaces } = useQuery({
+    queryKey: queryKeys.executionWorkspaces.list(companyId!, {
+      projectId: issue.projectId ?? undefined,
+      projectWorkspaceId: issue.projectWorkspaceId ?? undefined,
+      reuseEligible: true,
+    }),
+    queryFn: () =>
+      executionWorkspacesApi.list(companyId!, {
+        projectId: issue.projectId ?? undefined,
+        projectWorkspaceId: issue.projectWorkspaceId ?? undefined,
+        reuseEligible: true,
+      }),
+    enabled: Boolean(companyId) && showExperimentalWorkspaceUi && Boolean(issue.projectId),
+  });
+  const selectedReusableExecutionWorkspace = (reusableExecutionWorkspaces ?? []).find(
+    (workspace) => workspace.id === issue.executionWorkspaceId,
+  );
   const projectLink = (id: string | null) => {
     if (!id) return null;
     const project = projects?.find((p) => p.id === id) ?? null;
@@ -427,7 +476,13 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
             !issue.projectId && "bg-accent"
           )}
           onClick={() => {
-            onUpdate({ projectId: null, executionWorkspaceSettings: null });
+            onUpdate({
+              projectId: null,
+              projectWorkspaceId: null,
+              executionWorkspaceId: null,
+              executionWorkspacePreference: null,
+              executionWorkspaceSettings: null,
+            });
             setProjectOpen(false);
           }}
         >
@@ -447,10 +502,14 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
               p.id === issue.projectId && "bg-accent"
             )}
             onClick={() => {
+              const defaultMode = defaultExecutionWorkspaceModeForProject(p);
               onUpdate({
                 projectId: p.id,
-                executionWorkspaceSettings: SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI && p.executionWorkspacePolicy?.enabled
-                  ? { mode: p.executionWorkspacePolicy.defaultMode === "isolated" ? "isolated" : "project_primary" }
+                projectWorkspaceId: showExperimentalWorkspaceUi ? defaultProjectWorkspaceIdForProject(p) : null,
+                executionWorkspaceId: null,
+                executionWorkspacePreference: showExperimentalWorkspaceUi ? defaultMode : null,
+                executionWorkspaceSettings: showExperimentalWorkspaceUi && p.executionWorkspacePolicy?.enabled
+                  ? { mode: defaultMode }
                   : null,
               });
               setProjectOpen(false);
@@ -539,38 +598,94 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
           {projectContent}
         </PropertyPicker>
 
-        {currentProjectSupportsExecutionWorkspace && (
+        {showExperimentalWorkspaceUi && currentProjectWorkspaces.length > 0 && (
+          <PropertyRow label="Codebase">
+            <select
+              className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
+              value={issue.projectWorkspaceId ?? ""}
+              onChange={(e) =>
+                onUpdate({
+                  projectWorkspaceId: e.target.value || null,
+                  executionWorkspaceId: null,
+                })}
+            >
+              {currentProjectWorkspaces.map((workspace) => (
+                <option key={workspace.id} value={workspace.id}>
+                  {workspace.name}
+                  {workspace.isPrimary ? " (default)" : ""}
+                </option>
+              ))}
+            </select>
+          </PropertyRow>
+        )}
+
+        {showExperimentalWorkspaceUi && currentProjectSupportsExecutionWorkspace && (
           <PropertyRow label="Workspace">
-            <div className="flex items-center justify-between gap-3 rounded-md border border-border px-2 py-1.5 w-full">
-              <div className="min-w-0">
-                <div className="text-sm">
-                  {usesIsolatedExecutionWorkspace ? "Isolated issue checkout" : "Project primary checkout"}
-                </div>
-                <div className="text-[11px] text-muted-foreground">
-                  Toggle whether this issue runs in its own execution workspace.
-                </div>
-              </div>
-              <button
-                className={cn(
-                  "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-                  usesIsolatedExecutionWorkspace ? "bg-green-600" : "bg-muted",
-                )}
-                type="button"
-                onClick={() =>
+            <div className="w-full space-y-2">
+              <select
+                className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
+                value={currentExecutionWorkspaceSelection}
+                onChange={(e) => {
+                  const nextMode = e.target.value;
                   onUpdate({
+                    executionWorkspacePreference: nextMode,
+                    executionWorkspaceId: nextMode === "reuse_existing" ? issue.executionWorkspaceId : null,
                     executionWorkspaceSettings: {
-                      mode: usesIsolatedExecutionWorkspace ? "project_primary" : "isolated",
+                      mode:
+                        nextMode === "reuse_existing"
+                          ? issueModeForExistingWorkspace(selectedReusableExecutionWorkspace?.mode)
+                          : nextMode,
                     },
-                  })
-                }
+                  });
+                }}
               >
-                <span
-                  className={cn(
-                    "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-                    usesIsolatedExecutionWorkspace ? "translate-x-4.5" : "translate-x-0.5",
-                  )}
-                />
-              </button>
+                {EXECUTION_WORKSPACE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+
+              {currentExecutionWorkspaceSelection === "reuse_existing" && (
+                <select
+                  className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
+                  value={issue.executionWorkspaceId ?? ""}
+                  onChange={(e) => {
+                    const nextExecutionWorkspaceId = e.target.value || null;
+                    const nextExecutionWorkspace = (reusableExecutionWorkspaces ?? []).find(
+                      (workspace) => workspace.id === nextExecutionWorkspaceId,
+                    );
+                    onUpdate({
+                      executionWorkspacePreference: "reuse_existing",
+                      executionWorkspaceId: nextExecutionWorkspaceId,
+                      executionWorkspaceSettings: {
+                        mode: issueModeForExistingWorkspace(nextExecutionWorkspace?.mode),
+                      },
+                    });
+                  }}
+                >
+                  <option value="">Choose an existing workspace</option>
+                  {(reusableExecutionWorkspaces ?? []).map((workspace) => (
+                    <option key={workspace.id} value={workspace.id}>
+                      {workspace.name} · {workspace.status} · {workspace.branchName ?? workspace.cwd ?? workspace.id.slice(0, 8)}
+                    </option>
+                  ))}
+                </select>
+              )}
+
+              {issue.currentExecutionWorkspace && (
+                <div className="text-[11px] text-muted-foreground">
+                  Current:{" "}
+                  <Link
+                    to={`/execution-workspaces/${issue.currentExecutionWorkspace.id}`}
+                    className="hover:text-foreground hover:underline"
+                  >
+                    {issue.currentExecutionWorkspace.name}
+                  </Link>
+                  {" · "}
+                  {issue.currentExecutionWorkspace.status}
+                </div>
+              )}
             </div>
           </PropertyRow>
         )}

@@ -20,9 +20,17 @@ type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 type CreateWorkspaceInput = {
   name?: string | null;
+  sourceType?: string | null;
   cwd?: string | null;
   repoUrl?: string | null;
   repoRef?: string | null;
+  defaultRef?: string | null;
+  visibility?: string | null;
+  setupCommand?: string | null;
+  cleanupCommand?: string | null;
+  remoteProvider?: string | null;
+  remoteWorkspaceRef?: string | null;
+  sharedWorkspaceKey?: string | null;
   metadata?: Record<string, unknown> | null;
   isPrimary?: boolean;
 };
@@ -91,6 +99,7 @@ function toRuntimeService(row: WorkspaceRuntimeServiceRow): WorkspaceRuntimeServ
     companyId: row.companyId,
     projectId: row.projectId ?? null,
     projectWorkspaceId: row.projectWorkspaceId ?? null,
+    executionWorkspaceId: row.executionWorkspaceId ?? null,
     issueId: row.issueId ?? null,
     scopeType: row.scopeType as WorkspaceRuntimeService["scopeType"],
     scopeId: row.scopeId ?? null,
@@ -125,9 +134,17 @@ function toWorkspace(
     companyId: row.companyId,
     projectId: row.projectId,
     name: row.name,
+    sourceType: row.sourceType as ProjectWorkspace["sourceType"],
     cwd: row.cwd,
     repoUrl: row.repoUrl ?? null,
     repoRef: row.repoRef ?? null,
+    defaultRef: row.defaultRef ?? row.repoRef ?? null,
+    visibility: row.visibility as ProjectWorkspace["visibility"],
+    setupCommand: row.setupCommand ?? null,
+    cleanupCommand: row.cleanupCommand ?? null,
+    remoteProvider: row.remoteProvider ?? null,
+    remoteWorkspaceRef: row.remoteWorkspaceRef ?? null,
+    sharedWorkspaceKey: row.sharedWorkspaceKey ?? null,
     metadata: (row.metadata as Record<string, unknown> | null) ?? null,
     isPrimary: row.isPrimary,
     runtimeServices,
@@ -491,7 +508,13 @@ export function projectService(db: Db) {
 
       const cwd = normalizeWorkspaceCwd(data.cwd);
       const repoUrl = readNonEmptyString(data.repoUrl);
-      if (!cwd && !repoUrl) return null;
+      const sourceType = readNonEmptyString(data.sourceType) ?? (repoUrl ? "git_repo" : cwd ? "local_path" : "remote_managed");
+      const remoteWorkspaceRef = readNonEmptyString(data.remoteWorkspaceRef);
+      if (sourceType === "remote_managed") {
+        if (!remoteWorkspaceRef && !repoUrl) return null;
+      } else if (!cwd && !repoUrl) {
+        return null;
+      }
       const name = deriveWorkspaceName({
         name: data.name,
         cwd,
@@ -525,9 +548,17 @@ export function projectService(db: Db) {
             companyId: project.companyId,
             projectId,
             name,
+            sourceType,
             cwd: cwd ?? null,
             repoUrl: repoUrl ?? null,
             repoRef: readNonEmptyString(data.repoRef),
+            defaultRef: readNonEmptyString(data.defaultRef) ?? readNonEmptyString(data.repoRef),
+            visibility: readNonEmptyString(data.visibility) ?? "default",
+            setupCommand: readNonEmptyString(data.setupCommand),
+            cleanupCommand: readNonEmptyString(data.cleanupCommand),
+            remoteProvider: readNonEmptyString(data.remoteProvider),
+            remoteWorkspaceRef,
+            sharedWorkspaceKey: readNonEmptyString(data.sharedWorkspaceKey),
             metadata: (data.metadata as Record<string, unknown> | null | undefined) ?? null,
             isPrimary: shouldBePrimary,
           })
@@ -564,7 +595,19 @@ export function projectService(db: Db) {
         data.repoUrl !== undefined
           ? readNonEmptyString(data.repoUrl)
           : readNonEmptyString(existing.repoUrl);
-      if (!nextCwd && !nextRepoUrl) return null;
+      const nextSourceType =
+        data.sourceType !== undefined
+          ? readNonEmptyString(data.sourceType)
+          : readNonEmptyString(existing.sourceType);
+      const nextRemoteWorkspaceRef =
+        data.remoteWorkspaceRef !== undefined
+          ? readNonEmptyString(data.remoteWorkspaceRef)
+          : readNonEmptyString(existing.remoteWorkspaceRef);
+      if (nextSourceType === "remote_managed") {
+        if (!nextRemoteWorkspaceRef && !nextRepoUrl) return null;
+      } else if (!nextCwd && !nextRepoUrl) {
+        return null;
+      }
 
       const patch: Partial<typeof projectWorkspaces.$inferInsert> = {
         updatedAt: new Date(),
@@ -576,6 +619,16 @@ export function projectService(db: Db) {
       if (data.cwd !== undefined) patch.cwd = nextCwd ?? null;
       if (data.repoUrl !== undefined) patch.repoUrl = nextRepoUrl ?? null;
       if (data.repoRef !== undefined) patch.repoRef = readNonEmptyString(data.repoRef);
+      if (data.sourceType !== undefined && nextSourceType) patch.sourceType = nextSourceType;
+      if (data.defaultRef !== undefined) patch.defaultRef = readNonEmptyString(data.defaultRef);
+      if (data.visibility !== undefined && readNonEmptyString(data.visibility)) {
+        patch.visibility = readNonEmptyString(data.visibility)!;
+      }
+      if (data.setupCommand !== undefined) patch.setupCommand = readNonEmptyString(data.setupCommand);
+      if (data.cleanupCommand !== undefined) patch.cleanupCommand = readNonEmptyString(data.cleanupCommand);
+      if (data.remoteProvider !== undefined) patch.remoteProvider = readNonEmptyString(data.remoteProvider);
+      if (data.remoteWorkspaceRef !== undefined) patch.remoteWorkspaceRef = nextRemoteWorkspaceRef;
+      if (data.sharedWorkspaceKey !== undefined) patch.sharedWorkspaceKey = readNonEmptyString(data.sharedWorkspaceKey);
       if (data.metadata !== undefined) patch.metadata = data.metadata;
 
       const updated = await db.transaction(async (tx) => {

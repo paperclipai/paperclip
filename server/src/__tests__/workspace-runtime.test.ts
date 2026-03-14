@@ -5,10 +5,12 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  cleanupExecutionWorkspaceArtifacts,
   ensureRuntimeServicesForRun,
   normalizeAdapterManagedRuntimeServices,
   realizeExecutionWorkspace,
   releaseRuntimeServicesForRun,
+  stopRuntimeServicesForExecutionWorkspace,
   type RealizedExecutionWorkspace,
 } from "../services/workspace-runtime.ts";
 
@@ -55,6 +57,10 @@ afterEach(async () => {
       leasedRunIds.delete(runId);
     }),
   );
+  delete process.env.PAPERCLIP_CONFIG;
+  delete process.env.PAPERCLIP_HOME;
+  delete process.env.PAPERCLIP_INSTANCE_ID;
+  delete process.env.DATABASE_URL;
 });
 
 describe("realizeExecutionWorkspace", () => {
@@ -211,6 +217,68 @@ describe("realizeExecutionWorkspace", () => {
 
     await expect(fs.readFile(path.join(reused.cwd, ".paperclip-provision-created"), "utf8")).resolves.toBe("false\n");
   });
+
+  it("removes a created git worktree and branch during cleanup", async () => {
+    const repoRoot = await createTempRepo();
+
+    const workspace = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-449",
+        title: "Cleanup workspace",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    const cleanup = await cleanupExecutionWorkspaceArtifacts({
+      workspace: {
+        id: "execution-workspace-1",
+        cwd: workspace.cwd,
+        providerType: "git_worktree",
+        providerRef: workspace.worktreePath,
+        branchName: workspace.branchName,
+        repoUrl: workspace.repoUrl,
+        baseRef: workspace.repoRef,
+        projectId: workspace.projectId,
+        projectWorkspaceId: workspace.workspaceId,
+        sourceIssueId: "issue-1",
+        metadata: {
+          createdByRuntime: true,
+        },
+      },
+      projectWorkspace: {
+        cwd: repoRoot,
+        cleanupCommand: null,
+      },
+    });
+
+    expect(cleanup.cleaned).toBe(true);
+    expect(cleanup.warnings).toEqual([]);
+    await expect(fs.stat(workspace.cwd)).rejects.toThrow();
+    await expect(
+      execFileAsync("git", ["branch", "--list", workspace.branchName!], { cwd: repoRoot }),
+    ).resolves.toMatchObject({
+      stdout: "",
+    });
+  });
 });
 
 describe("ensureRuntimeServicesForRun", () => {
@@ -312,6 +380,140 @@ describe("ensureRuntimeServicesForRun", () => {
     expect(third[0]?.reused).toBe(false);
     expect(third[0]?.id).not.toBe(first[0]?.id);
   });
+
+  it("does not leak parent Paperclip instance env into runtime service commands", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-env-"));
+    const workspace = buildWorkspace(workspaceRoot);
+    const envCapturePath = path.join(workspaceRoot, "captured-env.json");
+    const serviceCommand = [
+      "node -e",
+      JSON.stringify(
+        [
+          "const fs = require('node:fs');",
+          `fs.writeFileSync(${JSON.stringify(envCapturePath)}, JSON.stringify({`,
+          "paperclipConfig: process.env.PAPERCLIP_CONFIG ?? null,",
+          "paperclipHome: process.env.PAPERCLIP_HOME ?? null,",
+          "paperclipInstanceId: process.env.PAPERCLIP_INSTANCE_ID ?? null,",
+          "databaseUrl: process.env.DATABASE_URL ?? null,",
+          "customEnv: process.env.RUNTIME_CUSTOM_ENV ?? null,",
+          "port: process.env.PORT ?? null,",
+          "}));",
+          "require('node:http').createServer((req, res) => res.end('ok')).listen(Number(process.env.PORT), '127.0.0.1');",
+        ].join(" "),
+      ),
+    ].join(" ");
+
+    process.env.PAPERCLIP_CONFIG = "/tmp/base-paperclip-config.json";
+    process.env.PAPERCLIP_HOME = "/tmp/base-paperclip-home";
+    process.env.PAPERCLIP_INSTANCE_ID = "base-instance";
+    process.env.DATABASE_URL = "postgres://shared-db.example.com/paperclip";
+
+    const runId = "run-env";
+    leasedRunIds.add(runId);
+
+    const services = await ensureRuntimeServicesForRun({
+      runId,
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+      issue: null,
+      workspace,
+      executionWorkspaceId: "execution-workspace-1",
+      config: {
+        workspaceRuntime: {
+          services: [
+            {
+              name: "web",
+              command: serviceCommand,
+              port: { type: "auto" },
+              readiness: {
+                type: "http",
+                urlTemplate: "http://127.0.0.1:{{port}}",
+                timeoutSec: 10,
+                intervalMs: 100,
+              },
+              lifecycle: "shared",
+              reuseScope: "execution_workspace",
+              stopPolicy: {
+                type: "on_run_finish",
+              },
+            },
+          ],
+        },
+      },
+      adapterEnv: {
+        RUNTIME_CUSTOM_ENV: "from-adapter",
+      },
+    });
+
+    expect(services).toHaveLength(1);
+    const captured = JSON.parse(await fs.readFile(envCapturePath, "utf8")) as Record<string, string | null>;
+    expect(captured.paperclipConfig).toBeNull();
+    expect(captured.paperclipHome).toBeNull();
+    expect(captured.paperclipInstanceId).toBeNull();
+    expect(captured.databaseUrl).toBeNull();
+    expect(captured.customEnv).toBe("from-adapter");
+    expect(captured.port).toMatch(/^\d+$/);
+    expect(services[0]?.executionWorkspaceId).toBe("execution-workspace-1");
+    expect(services[0]?.scopeType).toBe("execution_workspace");
+    expect(services[0]?.scopeId).toBe("execution-workspace-1");
+  });
+
+  it("stops execution workspace runtime services by executionWorkspaceId", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-stop-"));
+    const workspace = buildWorkspace(workspaceRoot);
+    const runId = "run-stop";
+    leasedRunIds.add(runId);
+
+    const services = await ensureRuntimeServicesForRun({
+      runId,
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+      issue: null,
+      workspace,
+      executionWorkspaceId: "execution-workspace-stop",
+      config: {
+        workspaceRuntime: {
+          services: [
+            {
+              name: "web",
+              command:
+                "node -e \"require('node:http').createServer((req,res)=>res.end('ok')).listen(Number(process.env.PORT), '127.0.0.1')\"",
+              port: { type: "auto" },
+              readiness: {
+                type: "http",
+                urlTemplate: "http://127.0.0.1:{{port}}",
+                timeoutSec: 10,
+                intervalMs: 100,
+              },
+              lifecycle: "shared",
+              reuseScope: "execution_workspace",
+              stopPolicy: {
+                type: "manual",
+              },
+            },
+          ],
+        },
+      },
+      adapterEnv: {},
+    });
+
+    expect(services[0]?.url).toBeTruthy();
+    await stopRuntimeServicesForExecutionWorkspace({
+      executionWorkspaceId: "execution-workspace-stop",
+      workspaceCwd: workspace.cwd,
+    });
+    await releaseRuntimeServicesForRun(runId);
+    leasedRunIds.delete(runId);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    await expect(fetch(services[0]!.url!)).rejects.toThrow();
+  });
 });
 
 describe("normalizeAdapterManagedRuntimeServices", () => {
@@ -374,6 +576,7 @@ describe("normalizeAdapterManagedRuntimeServices", () => {
       companyId: "company-1",
       projectId: "project-1",
       projectWorkspaceId: "workspace-1",
+      executionWorkspaceId: null,
       issueId: "issue-1",
       serviceName: "preview",
       provider: "adapter_managed",
@@ -382,5 +585,34 @@ describe("normalizeAdapterManagedRuntimeServices", () => {
       startedByRunId: "run-1",
     });
     expect(first[0]?.id).toBe(second[0]?.id);
+  });
+
+  it("prefers execution workspace ids over cwd for execution-scoped adapter services", () => {
+    const workspace = buildWorkspace("/tmp/project");
+
+    const refs = normalizeAdapterManagedRuntimeServices({
+      adapterType: "openclaw_gateway",
+      runId: "run-1",
+      agent: {
+        id: "agent-1",
+        name: "Gateway Agent",
+        companyId: "company-1",
+      },
+      issue: null,
+      workspace,
+      executionWorkspaceId: "execution-workspace-1",
+      reports: [
+        {
+          serviceName: "preview",
+          scopeType: "execution_workspace",
+        },
+      ],
+    });
+
+    expect(refs[0]).toMatchObject({
+      scopeType: "execution_workspace",
+      scopeId: "execution-workspace-1",
+      executionWorkspaceId: "execution-workspace-1",
+    });
   });
 });

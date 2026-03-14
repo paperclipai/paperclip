@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
+  prioritizeProjectWorkspaceCandidatesForRun,
   resolveRuntimeSessionParamsForWorkspace,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
@@ -149,5 +150,41 @@ describe("shouldResetTaskSessionForWake", () => {
         wakeTriggerDetail: "callback",
       }),
     ).toBe(false);
+  });
+});
+
+describe("prioritizeProjectWorkspaceCandidatesForRun", () => {
+  it("moves the explicitly selected workspace to the front", () => {
+    const rows = [
+      { id: "workspace-1", cwd: "/tmp/one" },
+      { id: "workspace-2", cwd: "/tmp/two" },
+      { id: "workspace-3", cwd: "/tmp/three" },
+    ];
+
+    expect(
+      prioritizeProjectWorkspaceCandidatesForRun(rows, "workspace-2").map((row) => row.id),
+    ).toEqual(["workspace-2", "workspace-1", "workspace-3"]);
+  });
+
+  it("keeps the original order when no preferred workspace is selected", () => {
+    const rows = [
+      { id: "workspace-1" },
+      { id: "workspace-2" },
+    ];
+
+    expect(
+      prioritizeProjectWorkspaceCandidatesForRun(rows, null).map((row) => row.id),
+    ).toEqual(["workspace-1", "workspace-2"]);
+  });
+
+  it("keeps the original order when the selected workspace is missing", () => {
+    const rows = [
+      { id: "workspace-1" },
+      { id: "workspace-2" },
+    ];
+
+    expect(
+      prioritizeProjectWorkspaceCandidatesForRun(rows, "workspace-9").map((row) => row.id),
+    ).toEqual(["workspace-1", "workspace-2"]);
   });
 });

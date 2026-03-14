@@ -12,13 +12,24 @@ export type {
 export type { AssetImage } from "./asset.js";
 export type { Project, ProjectGoalRef, ProjectWorkspace } from "./project.js";
 export type {
+  ExecutionWorkspace,
   WorkspaceRuntimeService,
   ExecutionWorkspaceStrategyType,
   ExecutionWorkspaceMode,
+  ExecutionWorkspaceProviderType,
+  ExecutionWorkspaceStatus,
   ExecutionWorkspaceStrategy,
   ProjectExecutionWorkspacePolicy,
+  ProjectExecutionWorkspaceDefaultMode,
   IssueExecutionWorkspaceSettings,
 } from "./workspace-runtime.js";
+export type {
+  IssueWorkProduct,
+  IssueWorkProductType,
+  IssueWorkProductProvider,
+  IssueWorkProductStatus,
+  IssueWorkProductReviewState,
+} from "./work-product.js";
 export type {
   Issue,
   IssueAssigneeAdapterOverrides,

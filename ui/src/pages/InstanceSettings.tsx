@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { queryKeys } from "../lib/queryKeys";
 import { formatDateTime, relativeTime } from "../lib/utils";
+import { useExperimentalWorkspacesEnabled } from "../lib/experimentalSettings";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
@@ -30,6 +31,7 @@ export function InstanceSettings() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
+  const { enabled: workspacesEnabled, setEnabled: setWorkspacesEnabled } = useExperimentalWorkspacesEnabled();
 
   useEffect(() => {
     setBreadcrumbs([
@@ -110,6 +112,34 @@ export function InstanceSettings() {
 
   return (
     <div className="max-w-5xl space-y-6">
+      <div className="space-y-3 rounded-lg border border-border bg-card p-4">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <Settings className="h-4 w-4 text-muted-foreground" />
+            <h2 className="text-sm font-semibold">Experimental</h2>
+          </div>
+          <p className="text-sm text-muted-foreground">
+            UI-only feature flags for in-progress product surfaces.
+          </p>
+        </div>
+        <div className="flex items-center justify-between rounded-md border border-border px-3 py-2">
+          <div className="space-y-0.5">
+            <div className="text-sm font-medium">Workspaces</div>
+            <div className="text-xs text-muted-foreground">
+              Show workspace, execution workspace, and work product controls in project and issue UI.
+            </div>
+          </div>
+          <Button
+            type="button"
+            variant={workspacesEnabled ? "default" : "outline"}
+            size="sm"
+            onClick={() => setWorkspacesEnabled(!workspacesEnabled)}
+          >
+            {workspacesEnabled ? "Enabled" : "Disabled"}
+          </Button>
+        </div>
+      </div>
+
       <div className="space-y-2">
         <div className="flex items-center gap-2">
           <Settings className="h-5 w-5 text-muted-foreground" />

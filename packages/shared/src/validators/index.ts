@@ -82,6 +82,22 @@ export {
 } from "./issue.js";
 
 export {
+  createIssueWorkProductSchema,
+  updateIssueWorkProductSchema,
+  issueWorkProductTypeSchema,
+  issueWorkProductStatusSchema,
+  issueWorkProductReviewStateSchema,
+  type CreateIssueWorkProduct,
+  type UpdateIssueWorkProduct,
+} from "./work-product.js";
+
+export {
+  updateExecutionWorkspaceSchema,
+  executionWorkspaceStatusSchema,
+  type UpdateExecutionWorkspace,
+} from "./execution-workspace.js";
+
+export {
   createGoalSchema,
   updateGoalSchema,
   type CreateGoal,

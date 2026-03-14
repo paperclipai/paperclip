@@ -35,6 +35,7 @@
   "dependencies": {
     "@paperclipai/shared": "workspace:*",
     "drizzle-orm": "^0.38.4",
+    "embedded-postgres": "^18.1.0-beta.16",
     "postgres": "^3.4.5"
   },
   "devDependencies": {
