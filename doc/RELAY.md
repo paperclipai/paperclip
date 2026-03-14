@@ -19,6 +19,8 @@ Any browser/device                     Paperclip server (behind NAT)
 
 Each instance gets its own subdomain (e.g. `d4lsc.relay.example.com`). The relay is a generic transport layer — it forwards HTTP requests and WebSocket frames without inspecting payloads. All authentication is handled by Paperclip's existing auth layer.
 
+The tunnel uses a binary multiplexing protocol for WebSocket data — text frames carry JSON control messages, binary frames carry raw WebSocket payloads with a 37-byte stream header. The bridge never inspects message content.
+
 ## 2. What Gets Tunneled
 
 - Static web UI assets (HTML/JS/CSS) — full Paperclip dashboard in any browser
@@ -50,7 +52,7 @@ The server stays bound to `127.0.0.1`. The relay client runs inside the same pro
 
 > **Test relay available**: `paperclip-relay.com` is a community-run relay for testing purposes. It is not affiliated with or operated by Paperclip AI. For production use, deploy your own relay server.
 
-The relay is a Cloudflare Worker with a Durable Object. See section 8 for the full source.
+The relay is a Cloudflare Worker with a Durable Object. See section 9 for the full source.
 
 ```sh
 npm create cloudflare@latest paperclip-relay -- --type worker
@@ -101,13 +103,32 @@ Subdomains avoid this entirely: `abc12.relay.example.com/assets/main.js` stays w
 
 The relay sees traffic in plaintext at the proxy layer. This is the same trust model as any reverse proxy (Cloudflare, nginx, Caddy). Paperclip's own auth layer protects the API.
 
-## 7. Limitations
+## 7. Tunnel Protocol
+
+The tunnel WebSocket between the Paperclip server and the relay carries two frame types:
+
+| Tunnel frame type | Content | Used for |
+|---|---|---|
+| **Text** | JSON | Control messages (`tunnel-ready`, `ws-open`, `ws-close`, `http-request`, `http-response`) |
+| **Binary** | 37-byte header + raw payload | WebSocket data (heartbeats, events, any client/server messages) |
+
+Binary data frame format:
+
+```
+Byte 0:       Flags (bit 0 = isBinary: 0 = original was text, 1 = original was binary)
+Bytes 1–36:   Stream ID (UUID as 36 ASCII chars)
+Bytes 37+:    Raw payload (untouched original WebSocket message bytes)
+```
+
+This design means the bridge never inspects, parses, or serializes WebSocket message content. Both text and binary WebSocket frames from clients are supported transparently. The `flags` byte preserves the original frame type end-to-end.
+
+## 8. Limitations
 
 - **Latency**: adds 20-100ms per request (Cloudflare edge round-trip)
 - **Tunnel single point**: if the server disconnects (sleep, restart), the relay returns 502 until reconnect
 - **No end-to-end encryption**: the relay sees plaintext (same as any reverse proxy)
 
-## 8. Relay Server Source
+## 9. Relay Server Source
 
 The relay server is a Cloudflare Worker with a Durable Object. The Durable Object holds the persistent tunnel WebSocket from the Paperclip server and forwards requests through it.
 
@@ -115,10 +136,11 @@ Key implementation details:
 
 - **Subdomain routing**: Each instance gets a subdomain (`<id>.relay.example.com`). The Worker extracts the instance ID from the `Host` header and routes to the corresponding Durable Object. Admin endpoints (`/register`, `/tunnel`, `/health`) live on the root domain.
 - **Configurable domain**: The relay domain is set via `RELAY_DOMAIN` in `wrangler.toml` — not hardcoded. Anyone can deploy their own relay on any domain.
-- **Hibernation recovery**: Durable Objects hibernate when idle, losing in-memory state. WebSockets are restored in the constructor via `getWebSockets()` using tags (`"__tunnel__"` for the tunnel, wsId for clients).
+- **Hibernation recovery**: Durable Objects hibernate when idle, losing in-memory state. WebSockets are restored in the constructor via `getWebSockets()` using tags (`"__tunnel__"` for the tunnel, wsId for clients). Duplicate tunnel WebSockets (from server restarts before old tunnel closes) are detected and cleaned up.
+- **Binary multiplexing**: WebSocket data frames are sent as binary tunnel frames (37-byte header + raw payload). JSON is only used for control messages. The DO never inspects WebSocket message content.
 - **Multi-value headers**: `set-cookie` headers cannot be comma-joined (cookie values contain commas in date strings). These are sent as JSON arrays with a companion `x-relay-multi-<header>` flag.
 
-### 8.1 `wrangler.toml`
+### 9.1 `wrangler.toml`
 
 ```toml
 name = "paperclip-relay"
@@ -144,7 +166,7 @@ tag = "v1"
 new_classes = ["TunnelDO"]
 ```
 
-### 8.2 `package.json`
+### 9.2 `package.json`
 
 ```json
 {
@@ -162,7 +184,7 @@ new_classes = ["TunnelDO"]
 }
 ```
 
-### 8.3 `tsconfig.json`
+### 9.3 `tsconfig.json`
 
 ```json
 {
@@ -179,7 +201,7 @@ new_classes = ["TunnelDO"]
 }
 ```
 
-### 8.4 `src/index.ts`
+### 9.4 `src/index.ts`
 
 ```typescript
 export { TunnelDO } from "./tunnel";
@@ -278,9 +300,17 @@ function generateId(length: number): string {
 }
 ```
 
-### 8.5 `src/tunnel.ts`
+### 9.5 `src/tunnel.ts`
 
 ```typescript
+/**
+ * Binary data frame format on the tunnel WebSocket:
+ *   Byte 0:       Flags (bit 0 = isBinary: 0 = text, 1 = binary)
+ *   Bytes 1–36:   Stream ID (UUID as 36 ASCII chars)
+ *   Bytes 37+:    Raw payload (untouched)
+ */
+const DATA_FRAME_HEADER_SIZE = 37;
+
 interface PendingRequest {
   resolve: (response: Response) => void;
   timeout: ReturnType<typeof setTimeout>;
@@ -297,15 +327,24 @@ export class TunnelDO {
   constructor(state: DurableObjectState) {
     this.state = state;
 
-    // Restore WebSockets after hibernation. Durable Objects may hibernate
-    // when idle, losing all in-memory state. The tunnel WS is tagged
+    // Restore WebSockets after hibernation. The tunnel WS is tagged
     // "__tunnel__"; client WSes are tagged with their wsId.
-    for (const ws of this.state.getWebSockets()) {
+    // If multiple tunnel WSes exist (e.g., server restarted before old
+    // tunnel closed), keep only the last one and close duplicates.
+    const allWs = this.state.getWebSockets();
+    const tunnelCandidates: WebSocket[] = [];
+    for (const ws of allWs) {
       const tags = this.state.getTags(ws);
       if (tags.includes("__tunnel__")) {
-        this.tunnelWs = ws;
+        tunnelCandidates.push(ws);
       } else if (tags.length > 0) {
         this.clientWebSockets.set(tags[0], ws);
+      }
+    }
+    if (tunnelCandidates.length > 0) {
+      this.tunnelWs = tunnelCandidates[tunnelCandidates.length - 1];
+      for (let i = 0; i < tunnelCandidates.length - 1; i++) {
+        try { tunnelCandidates[i].close(1000, "duplicate tunnel"); } catch {}
       }
     }
   }
@@ -366,10 +405,17 @@ export class TunnelDO {
   // -- Tunnel connection -----------------------------------------------------
 
   private handleTunnelConnect(): Response {
+    // Close any existing tunnel WebSocket(s) before accepting the new one.
+    for (const ws of this.state.getWebSockets()) {
+      const tags = this.state.getTags(ws);
+      if (tags.includes("__tunnel__")) {
+        try { ws.close(1000, "replaced by new tunnel"); } catch {}
+      }
+    }
+
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
 
-    // Tag with "__tunnel__" so we can restore this WebSocket after hibernation
     this.state.acceptWebSocket(server, ["__tunnel__"]);
     this.tunnelWs = server;
 
@@ -462,22 +508,27 @@ export class TunnelDO {
   // -- WebSocket event handlers ----------------------------------------------
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
-    const data = typeof message === "string"
-      ? message
-      : new TextDecoder().decode(message);
-
     if (ws === this.tunnelWs) {
-      this.handleTunnelMessage(data);
+      this.handleTunnelMessage(message);
       return;
     }
 
+    // Message from a client WebSocket → encode as binary data frame → send through tunnel
     for (const [wsId, clientWs] of this.clientWebSockets) {
       if (clientWs === ws) {
-        this.tunnelWs?.send(JSON.stringify({
-          type: "ws-message",
-          id: wsId,
-          data,
-        }));
+        if (this.tunnelWs && this.tunnelWs.readyState === WebSocket.OPEN) {
+          const isBinary = message instanceof ArrayBuffer;
+          const payload = isBinary
+            ? new Uint8Array(message)
+            : new TextEncoder().encode(message as string);
+
+          const frame = new Uint8Array(DATA_FRAME_HEADER_SIZE + payload.length);
+          frame[0] = isBinary ? 0x01 : 0x00;
+          frame.set(new TextEncoder().encode(wsId), 1);
+          frame.set(payload, DATA_FRAME_HEADER_SIZE);
+
+          this.tunnelWs.send(frame.buffer);
+        }
         return;
       }
     }
@@ -515,10 +566,31 @@ export class TunnelDO {
 
   // -- Private helpers -------------------------------------------------------
 
-  private handleTunnelMessage(data: string): void {
+  private handleTunnelMessage(message: string | ArrayBuffer): void {
+    // Binary frame = raw WS data with stream ID header
+    if (message instanceof ArrayBuffer) {
+      const frame = new Uint8Array(message);
+      if (frame.length < DATA_FRAME_HEADER_SIZE) return;
+
+      const isBinary = (frame[0]! & 0x01) !== 0;
+      const streamId = new TextDecoder().decode(frame.subarray(1, DATA_FRAME_HEADER_SIZE));
+      const payload = frame.subarray(DATA_FRAME_HEADER_SIZE);
+
+      const clientWs = this.clientWebSockets.get(streamId);
+      if (clientWs && clientWs.readyState === WebSocket.OPEN) {
+        if (isBinary) {
+          clientWs.send(payload.buffer);
+        } else {
+          clientWs.send(new TextDecoder().decode(payload));
+        }
+      }
+      return;
+    }
+
+    // Text frame = JSON control/HTTP message
     let msg: any;
     try {
-      msg = JSON.parse(data);
+      msg = JSON.parse(message);
     } catch {
       return;
     }
@@ -549,8 +621,6 @@ export class TunnelDO {
         status: msg.status,
         headers,
       }));
-    } else if (msg.type === "ws-message") {
-      this.clientWebSockets.get(msg.id)?.send(msg.data);
     } else if (msg.type === "ws-close" || msg.type === "ws-error") {
       const clientWs = this.clientWebSockets.get(msg.id);
       if (clientWs) {
@@ -580,6 +650,6 @@ function base64ToArrayBuffer(b64: string): ArrayBuffer {
 }
 ```
 
-## 9. Relationship to Other Docs
+## 10. Relationship to Other Docs
 
 - deployment modes: `doc/DEPLOYMENT-MODES.md` — `authenticated` mode is required for relay
