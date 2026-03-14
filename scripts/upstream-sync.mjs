@@ -32,7 +32,7 @@
  */
 
 import { execSync } from "node:child_process";
-import { existsSync, appendFileSync, writeFileSync } from "node:fs";
+import { existsSync, appendFileSync, writeFileSync, copyFileSync } from "node:fs";
 import { join } from "node:path";
 
 const CWD = process.cwd();
@@ -42,13 +42,23 @@ const CREATE_PR = process.argv.includes("--pr");
 const SCAN_ONLY = process.argv.includes("--scan-only");
 
 // Agent event log — saved as CI artifact
+// Write to /tmp first, copy to CWD at end (avoid dirtying the working tree before git status check)
+const AGENT_LOG_TMP = join("/tmp", `agent-events-${Date.now()}.log`);
 const AGENT_LOG_PATH = join(CWD, "agent-events.log");
-writeFileSync(AGENT_LOG_PATH, `=== upstream-sync agent log — ${new Date().toISOString()} ===\n`);
+writeFileSync(AGENT_LOG_TMP, `=== upstream-sync agent log — ${new Date().toISOString()} ===\n`);
 
 function logEvent(phase, event) {
   const ts = new Date().toISOString();
   const line = `[${ts}] [${phase}] ${JSON.stringify(event)}\n`;
-  appendFileSync(AGENT_LOG_PATH, line);
+  appendFileSync(AGENT_LOG_TMP, line);
+}
+
+function flushLog() {
+  try {
+    copyFileSync(AGENT_LOG_TMP, AGENT_LOG_PATH);
+  } catch {
+    // best-effort
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -72,6 +82,7 @@ function log(msg) {
 }
 
 function die(msg) {
+  flushLog();
   console.error(`[upstream-sync] FATAL: ${msg}`);
   process.exit(1);
 }
@@ -589,10 +600,14 @@ async function main() {
     pushOrPr();
   }
 
+  // Copy agent log to CWD for artifact upload
+  flushLog();
+
   log("Done.");
 }
 
 main().catch((err) => {
+  flushLog();
   console.error(err);
   process.exit(1);
 });
