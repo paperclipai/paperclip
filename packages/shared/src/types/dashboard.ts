@@ -20,5 +20,4 @@ export interface DashboardSummary {
     monthOutputTokens: number;
   };
   pendingApprovals: number;
-  staleTasks: number;
 }

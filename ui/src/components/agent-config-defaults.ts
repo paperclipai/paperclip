@@ -8,7 +8,7 @@ export const defaultCreateValues: CreateConfigValues = {
   model: "",
   thinkingEffort: "",
   chrome: false,
-  dangerouslySkipPermissions: false,
+  dangerouslySkipPermissions: true,
   search: false,
   dangerouslyBypassSandbox: false,
   command: "",
@@ -24,7 +24,7 @@ export const defaultCreateValues: CreateConfigValues = {
   workspaceBranchTemplate: "",
   worktreeParentDir: "",
   runtimeServicesJson: "",
-  maxTurnsPerRun: 80,
+  maxTurnsPerRun: 300,
   heartbeatEnabled: false,
   intervalSec: 300,
 };

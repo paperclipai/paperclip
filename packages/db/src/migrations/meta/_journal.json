@@ -201,8 +201,22 @@
     {
       "idx": 28,
       "version": "7",
+      "when": 1773432085646,
+      "tag": "0028_harsh_goliath",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1773417600000,
+      "tag": "0029_plugin_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
       "when": 1773312960000,
-      "tag": "0028_cost_events_run_id",
+      "tag": "0030_cost_events_run_id",
       "breakpoints": true
     }
   ]

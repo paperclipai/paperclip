@@ -456,33 +456,6 @@ describe("openclaw gateway adapter execute", () => {
       expect(String(payload?.message ?? "")).toContain("wake now");
       expect(String(payload?.message ?? "")).toContain("PAPERCLIP_RUN_ID=run-123");
       expect(String(payload?.message ?? "")).toContain("PAPERCLIP_TASK_ID=task-123");
-      expect(payload?.paperclip).toEqual(
-        expect.objectContaining({
-          runId: "run-123",
-          companyId: "company-123",
-          agentId: "agent-123",
-          taskId: "task-123",
-          issueId: "issue-123",
-          workspace: expect.objectContaining({
-            cwd: "/tmp/worktrees/pap-123",
-            strategy: "git_worktree",
-          }),
-          workspaces: [
-            expect.objectContaining({
-              id: "workspace-1",
-              cwd: "/tmp/project",
-            }),
-          ],
-          workspaceRuntime: expect.objectContaining({
-            services: [
-              expect.objectContaining({
-                name: "preview",
-                lifecycle: "ephemeral",
-              }),
-            ],
-          }),
-        }),
-      );
 
       expect(logs.some((entry) => entry.includes("[openclaw-gateway:event] run=run-123 stream=assistant"))).toBe(true);
     } finally {

@@ -196,6 +196,36 @@ npm_version_exists() {
   [ "$resolved" = "$version" ]
 }
 
+npm_package_version_exists() {
+  local package_name="$1"
+  local version="$2"
+  local resolved
+
+  resolved="$(npm view "${package_name}@${version}" version 2>/dev/null || true)"
+  [ "$resolved" = "$version" ]
+}
+
+wait_for_npm_package_version() {
+  local package_name="$1"
+  local version="$2"
+  local attempts="${3:-12}"
+  local delay_seconds="${4:-5}"
+  local attempt=1
+
+  while [ "$attempt" -le "$attempts" ]; do
+    if npm_package_version_exists "$package_name" "$version"; then
+      return 0
+    fi
+
+    if [ "$attempt" -lt "$attempts" ]; then
+      sleep "$delay_seconds"
+    fi
+    attempt=$((attempt + 1))
+  done
+
+  return 1
+}
+
 require_clean_worktree() {
   if [ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]; then
     release_fail "working tree is not clean. Commit, stash, or remove changes before releasing."

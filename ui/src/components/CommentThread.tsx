@@ -10,6 +10,7 @@ import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./Ma
 import { StatusBadge } from "./StatusBadge";
 import { AgentIcon } from "./AgentIconPicker";
 import { formatDateTime } from "../lib/utils";
+import { PluginSlotOutlet } from "@/plugins/slots";
 
 interface CommentWithRunMeta extends IssueComment {
   runId?: string | null;
@@ -32,6 +33,8 @@ interface CommentReassignment {
 interface CommentThreadProps {
   comments: CommentWithRunMeta[];
   linkedRuns?: LinkedRunItem[];
+  companyId?: string | null;
+  projectId?: string | null;
   onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment) => Promise<void>;
   issueStatus?: string;
   agentMap?: Map<string, Agent>;
@@ -118,10 +121,14 @@ type TimelineItem =
 const TimelineList = memo(function TimelineList({
   timeline,
   agentMap,
+  companyId,
+  projectId,
   highlightCommentId,
 }: {
   timeline: TimelineItem[];
   agentMap?: Map<string, Agent>;
+  companyId?: string | null;
+  projectId?: string | null;
   highlightCommentId?: string | null;
 }) {
   if (timeline.length === 0) {
@@ -180,6 +187,22 @@ const TimelineList = memo(function TimelineList({
                 <Identity name="You" size="sm" />
               )}
               <span className="flex items-center gap-1.5">
+                {companyId ? (
+                  <PluginSlotOutlet
+                    slotTypes={["commentContextMenuItem"]}
+                    entityType="comment"
+                    context={{
+                      companyId,
+                      projectId: projectId ?? null,
+                      entityId: comment.id,
+                      entityType: "comment",
+                      parentEntityId: comment.issueId,
+                    }}
+                    className="flex flex-wrap items-center gap-1.5"
+                    itemClassName="inline-flex"
+                    missingBehavior="placeholder"
+                  />
+                ) : null}
                 <a
                   href={`#comment-${comment.id}`}
                   className="text-xs text-muted-foreground hover:text-foreground hover:underline transition-colors"
@@ -190,6 +213,24 @@ const TimelineList = memo(function TimelineList({
               </span>
             </div>
             <MarkdownBody className="text-sm">{comment.body}</MarkdownBody>
+            {companyId ? (
+              <div className="mt-2 space-y-2">
+                <PluginSlotOutlet
+                  slotTypes={["commentAnnotation"]}
+                  entityType="comment"
+                  context={{
+                    companyId,
+                    projectId: projectId ?? null,
+                    entityId: comment.id,
+                    entityType: "comment",
+                    parentEntityId: comment.issueId,
+                  }}
+                  className="space-y-2"
+                  itemClassName="rounded-md"
+                  missingBehavior="placeholder"
+                />
+              </div>
+            ) : null}
             {comment.runId && (
               <div className="mt-2 pt-2 border-t border-border/60">
                 {comment.runAgentId ? (
@@ -216,6 +257,8 @@ const TimelineList = memo(function TimelineList({
 export function CommentThread({
   comments,
   linkedRuns = [],
+  companyId,
+  projectId,
   onAdd,
   issueStatus,
   agentMap,
@@ -351,7 +394,13 @@ export function CommentThread({
     <div className="space-y-4">
       <h3 className="text-sm font-semibold">Comments &amp; Runs ({timeline.length})</h3>
 
-      <TimelineList timeline={timeline} agentMap={agentMap} highlightCommentId={highlightCommentId} />
+      <TimelineList
+        timeline={timeline}
+        agentMap={agentMap}
+        companyId={companyId}
+        projectId={projectId}
+        highlightCommentId={highlightCommentId}
+      />
 
       {liveRunSlot}
 

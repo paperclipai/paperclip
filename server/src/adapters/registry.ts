@@ -18,6 +18,12 @@ import {
 } from "@paperclipai/adapter-cursor-local/server";
 import { agentConfigurationDoc as cursorAgentConfigurationDoc, models as cursorModels } from "@paperclipai/adapter-cursor-local";
 import {
+  execute as geminiExecute,
+  testEnvironment as geminiTestEnvironment,
+  sessionCodec as geminiSessionCodec,
+} from "@paperclipai/adapter-gemini-local/server";
+import { agentConfigurationDoc as geminiAgentConfigurationDoc, models as geminiModels } from "@paperclipai/adapter-gemini-local";
+import {
   execute as openCodeExecute,
   testEnvironment as openCodeTestEnvironment,
   sessionCodec as openCodeSessionCodec,
@@ -80,6 +86,16 @@ const cursorLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: cursorAgentConfigurationDoc,
 };
 
+const geminiLocalAdapter: ServerAdapterModule = {
+  type: "gemini_local",
+  execute: geminiExecute,
+  testEnvironment: geminiTestEnvironment,
+  sessionCodec: geminiSessionCodec,
+  models: geminiModels,
+  supportsLocalAgentJwt: true,
+  agentConfigurationDoc: geminiAgentConfigurationDoc,
+};
+
 const openclawGatewayAdapter: ServerAdapterModule = {
   type: "openclaw_gateway",
   execute: openclawGatewayExecute,
@@ -118,6 +134,7 @@ const adaptersByType = new Map<string, ServerAdapterModule>(
     openCodeLocalAdapter,
     piLocalAdapter,
     cursorLocalAdapter,
+    geminiLocalAdapter,
     openclawGatewayAdapter,
     processAdapter,
     httpAdapter,

@@ -58,7 +58,7 @@ From the release worktree:
 
 ```bash
 VERSION=X.Y.Z
-claude --print --output-format stream-json --verbose --dangerously-skip-permissions --model claude-opus-4-6 "Use the release-changelog skill to draft or update releases/v${VERSION}.md for Paperclip. Read doc/RELEASING.md and skills/release-changelog/SKILL.md, then generate the stable changelog for v${VERSION} from commits since the last stable tag. Do not create a canary changelog."
+claude --print --output-format stream-json --verbose --dangerously-skip-permissions --model claude-opus-4-6 "Use the release-changelog skill to draft or update releases/v${VERSION}.md for Paperclip. Read doc/RELEASING.md and .agents/skills/release-changelog/SKILL.md, then generate the stable changelog for v${VERSION} from commits since the last stable tag. Do not create a canary changelog."
 ```
 
 ### 3. Verify and publish a canary
@@ -418,5 +418,5 @@ If the release already exists, the script updates it.
 ## Related Docs
 
 - [doc/PUBLISHING.md](PUBLISHING.md) — low-level npm build and packaging internals
-- [skills/release/SKILL.md](../skills/release/SKILL.md) — agent release coordination workflow
-- [skills/release-changelog/SKILL.md](../skills/release-changelog/SKILL.md) — stable changelog drafting workflow
+- [.agents/skills/release/SKILL.md](../.agents/skills/release/SKILL.md) — maintainer release coordination workflow
+- [.agents/skills/release-changelog/SKILL.md](../.agents/skills/release-changelog/SKILL.md) — stable changelog drafting workflow

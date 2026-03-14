@@ -23,6 +23,7 @@ import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
 const adapterLabels: Record<string, string> = {
   claude_local: "Claude",
   codex_local: "Codex",
+  gemini_local: "Gemini",
   opencode_local: "OpenCode",
   cursor: "Cursor",
   openclaw_gateway: "OpenClaw Gateway",
@@ -398,7 +399,7 @@ function LiveRunIndicator({
       onClick={(e) => e.stopPropagation()}
     >
       <span className="relative flex h-2 w-2">
-        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+        <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
         <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
       </span>
       <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">

@@ -20,6 +20,7 @@ import { RecentActivityWidget } from "../components/RecentActivityWidget";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
 import type { Agent } from "@paperclipai/shared";
+import { PluginSlotOutlet } from "@/plugins/slots";
 
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -168,7 +169,7 @@ export function Dashboard() {
               to="/approvals"
               description={
                 <span>
-                  {data.staleTasks} stale tasks
+                  Awaiting board review
                 </span>
               }
             />
@@ -188,6 +189,15 @@ export function Dashboard() {
               <SuccessRateChart runs={runs ?? []} />
             </ChartCard>
           </div>
+
+          <PluginSlotOutlet
+            slotTypes={["dashboardWidget"]}
+            context={{ companyId: selectedCompanyId }}
+            className="grid gap-4 md:grid-cols-2"
+            itemClassName="rounded-lg border bg-card p-4 shadow-sm"
+          />
+
+
         </>
       )}
     </div>

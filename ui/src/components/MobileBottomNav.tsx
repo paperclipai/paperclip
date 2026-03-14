@@ -1,6 +1,5 @@
 import { useMemo } from "react";
 import { NavLink, useLocation } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
 import {
   House,
   CircleDot,
@@ -8,11 +7,10 @@ import {
   Users,
   Inbox,
 } from "lucide-react";
-import { sidebarBadgesApi } from "../api/sidebarBadges";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
-import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
+import { useInboxBadge } from "../hooks/useInboxBadge";
 
 interface MobileBottomNavProps {
   visible: boolean;
@@ -39,12 +37,7 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
   const location = useLocation();
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialog();
-
-  const { data: sidebarBadges } = useQuery({
-    queryKey: queryKeys.sidebarBadges(selectedCompanyId!),
-    queryFn: () => sidebarBadgesApi.get(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-  });
+  const inboxBadge = useInboxBadge(selectedCompanyId);
 
   const items = useMemo<MobileNavItem[]>(
     () => [
@@ -57,10 +50,10 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
         to: "/inbox",
         label: "Inbox",
         icon: Inbox,
-        badge: sidebarBadges?.inbox,
+        badge: inboxBadge.inbox,
       },
     ],
-    [openNewIssue, sidebarBadges?.inbox],
+    [openNewIssue, inboxBadge.inbox],
   );
 
   return (

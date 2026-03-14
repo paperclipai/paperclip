@@ -1,4 +1,6 @@
+import * as React from "react";
 import { StrictMode } from "react";
+import * as ReactDOM from "react-dom";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "@/lib/router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -12,8 +14,12 @@ import { DialogProvider } from "./context/DialogContext";
 import { ToastProvider } from "./context/ToastContext";
 import { ThemeProvider } from "./context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { initPluginBridge } from "./plugins/bridge-init";
+import { PluginLauncherProvider } from "./plugins/launchers";
 import "@mdxeditor/editor/style.css";
 import "./index.css";
+
+initPluginBridge(React, ReactDOM);
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
@@ -42,9 +48,11 @@ createRoot(document.getElementById("root")!).render(
                   <BreadcrumbProvider>
                     <SidebarProvider>
                       <PanelProvider>
-                        <DialogProvider>
-                          <App />
-                        </DialogProvider>
+                        <PluginLauncherProvider>
+                          <DialogProvider>
+                            <App />
+                          </DialogProvider>
+                        </PluginLauncherProvider>
                       </PanelProvider>
                     </SidebarProvider>
                   </BreadcrumbProvider>

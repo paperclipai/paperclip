@@ -1,0 +1,116 @@
+{
+  "name": "@paperclipai/plugin-sdk",
+  "version": "1.0.0",
+  "description": "Stable public API for Paperclip plugins — worker-side context and UI bridge hooks",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./protocol": {
+      "types": "./dist/protocol.d.ts",
+      "import": "./dist/protocol.js"
+    },
+    "./types": {
+      "types": "./dist/types.d.ts",
+      "import": "./dist/types.js"
+    },
+    "./ui": {
+      "types": "./dist/ui/index.d.ts",
+      "import": "./dist/ui/index.js"
+    },
+    "./ui/hooks": {
+      "types": "./dist/ui/hooks.d.ts",
+      "import": "./dist/ui/hooks.js"
+    },
+    "./ui/types": {
+      "types": "./dist/ui/types.d.ts",
+      "import": "./dist/ui/types.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.js"
+    },
+    "./bundlers": {
+      "types": "./dist/bundlers.d.ts",
+      "import": "./dist/bundlers.js"
+    },
+    "./dev-server": {
+      "types": "./dist/dev-server.d.ts",
+      "import": "./dist/dev-server.js"
+    }
+  },
+  "bin": {
+    "paperclip-plugin-dev-server": "./dist/dev-cli.js"
+  },
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      },
+      "./protocol": {
+        "types": "./dist/protocol.d.ts",
+        "import": "./dist/protocol.js"
+      },
+      "./types": {
+        "types": "./dist/types.d.ts",
+        "import": "./dist/types.js"
+      },
+      "./ui": {
+        "types": "./dist/ui/index.d.ts",
+        "import": "./dist/ui/index.js"
+      },
+      "./ui/hooks": {
+        "types": "./dist/ui/hooks.d.ts",
+        "import": "./dist/ui/hooks.js"
+      },
+      "./ui/types": {
+        "types": "./dist/ui/types.d.ts",
+        "import": "./dist/ui/types.js"
+      },
+      "./testing": {
+        "types": "./dist/testing.d.ts",
+        "import": "./dist/testing.js"
+      },
+      "./bundlers": {
+        "types": "./dist/bundlers.d.ts",
+        "import": "./dist/bundlers.js"
+      },
+      "./dev-server": {
+        "types": "./dist/dev-server.d.ts",
+        "import": "./dist/dev-server.js"
+      }
+    },
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "pnpm --filter @paperclipai/shared build && tsc",
+    "clean": "rm -rf dist",
+    "typecheck": "pnpm --filter @paperclipai/shared build && tsc --noEmit",
+    "dev:server": "tsx src/dev-cli.ts"
+  },
+  "dependencies": {
+    "@paperclipai/shared": "workspace:*",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "@types/react": "^19.0.8",
+    "typescript": "^5.7.3"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  }
+}

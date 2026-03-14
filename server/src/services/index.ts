@@ -1,6 +1,7 @@
 export { companyService } from "./companies.js";
 export { agentService, deduplicateAgentName } from "./agents.js";
 export { assetService } from "./assets.js";
+export { documentService, extractLegacyPlanBody } from "./documents.js";
 export { projectService } from "./projects.js";
 export { issueService, type IssueFilters } from "./issues.js";
 export { issueApprovalService } from "./issue-approvals.js";

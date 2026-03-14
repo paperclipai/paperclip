@@ -248,8 +248,6 @@ See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
 
 We welcome contributions. See the [contributing guide](CONTRIBUTING.md) for details.
 
-<!-- TODO: add CONTRIBUTING.md -->
-
 <br/>
 
 ## Community

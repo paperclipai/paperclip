@@ -50,6 +50,7 @@ function parseToolUse(parsed: Record<string, unknown>, ts: string): TranscriptEn
     kind: "tool_call",
     ts,
     name: toolName,
+    toolUseId: asString(part.callID) || asString(part.id) || undefined,
     input,
   };
 

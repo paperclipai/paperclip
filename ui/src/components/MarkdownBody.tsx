@@ -117,7 +117,7 @@ export function MarkdownBody({ children, className }: MarkdownBodyProps) {
   return (
     <div
       className={cn(
-        "prose prose-sm max-w-none prose-p:my-2 prose-p:leading-[1.4] prose-ul:my-1.5 prose-ol:my-1.5 prose-li:my-0.5 prose-li:leading-[1.4] prose-pre:my-2 prose-pre:whitespace-pre-wrap prose-pre:break-words prose-headings:my-2 prose-headings:text-sm prose-blockquote:leading-[1.4] prose-table:my-2 prose-th:px-3 prose-th:py-1.5 prose-td:px-3 prose-td:py-1.5 prose-code:break-all [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:list-item",
+        "paperclip-markdown prose prose-sm max-w-none break-words overflow-hidden prose-pre:whitespace-pre-wrap prose-pre:break-words prose-code:break-all",
         theme === "dark" && "prose-invert",
         className,
       )}

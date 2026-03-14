@@ -1,6 +1,46 @@
-import { eq } from "drizzle-orm";
+import { and, asc, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { goals } from "@paperclipai/db";
+
+type GoalReader = Pick<Db, "select">;
+
+export async function getDefaultCompanyGoal(db: GoalReader, companyId: string) {
+  const activeRootGoal = await db
+    .select()
+    .from(goals)
+    .where(
+      and(
+        eq(goals.companyId, companyId),
+        eq(goals.level, "company"),
+        eq(goals.status, "active"),
+        isNull(goals.parentId),
+      ),
+    )
+    .orderBy(asc(goals.createdAt))
+    .then((rows) => rows[0] ?? null);
+  if (activeRootGoal) return activeRootGoal;
+
+  const anyRootGoal = await db
+    .select()
+    .from(goals)
+    .where(
+      and(
+        eq(goals.companyId, companyId),
+        eq(goals.level, "company"),
+        isNull(goals.parentId),
+      ),
+    )
+    .orderBy(asc(goals.createdAt))
+    .then((rows) => rows[0] ?? null);
+  if (anyRootGoal) return anyRootGoal;
+
+  return db
+    .select()
+    .from(goals)
+    .where(and(eq(goals.companyId, companyId), eq(goals.level, "company")))
+    .orderBy(asc(goals.createdAt))
+    .then((rows) => rows[0] ?? null);
+}
 
 export function goalService(db: Db) {
   return {
@@ -12,6 +52,8 @@ export function goalService(db: Db) {
         .from(goals)
         .where(eq(goals.id, id))
         .then((rows) => rows[0] ?? null),
+
+    getDefaultCompanyGoal: (companyId: string) => getDefaultCompanyGoal(db, companyId),
 
     create: (companyId: string, data: Omit<typeof goals.$inferInsert, "companyId">) =>
       db

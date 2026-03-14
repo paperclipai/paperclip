@@ -26,6 +26,9 @@ export async function addAllowedHostname(host: string, opts: { config?: string }
     p.log.info(`Hostname ${pc.cyan(normalized)} is already allowed.`);
   } else {
     p.log.success(`Added allowed hostname: ${pc.cyan(normalized)}`);
+    p.log.message(
+      pc.dim("Restart the Paperclip server for this change to take effect."),
+    );
   }
 
   if (!(config.server.deploymentMode === "authenticated" && config.server.exposure === "private")) {

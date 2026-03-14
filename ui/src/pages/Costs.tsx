@@ -144,7 +144,7 @@ export function Costs() {
                   </p>
                 )}
               </div>
-              <p className="text-2xl font-bold">
+              <p className="text-2xl font-bold tabular-nums">
                 {formatCents(data.summary.spendCents)}{" "}
                 <span className="text-base font-normal text-muted-foreground">
                   {data.summary.budgetCents > 0
@@ -192,7 +192,7 @@ export function Costs() {
                             <StatusBadge status="terminated" />
                           )}
                         </div>
-                        <div className="text-right shrink-0 ml-2">
+                        <div className="text-right shrink-0 ml-2 tabular-nums">
                           <span className="font-medium block">{formatCents(row.costCents)}</span>
                           <span className="text-xs text-muted-foreground block">
                             in {formatTokens(row.inputTokens)} / out {formatTokens(row.outputTokens)} tok
@@ -229,7 +229,7 @@ export function Costs() {
                         <span className="truncate">
                           {row.projectName ?? row.projectId ?? "Unattributed"}
                         </span>
-                        <span className="font-medium">{formatCents(row.costCents)}</span>
+                        <span className="font-medium tabular-nums">{formatCents(row.costCents)}</span>
                       </div>
                     ))}
                   </div>

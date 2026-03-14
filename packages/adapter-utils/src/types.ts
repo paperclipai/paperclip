@@ -75,6 +75,14 @@ export interface AdapterExecutionResult {
   runtimeServices?: AdapterRuntimeServiceReport[];
   summary?: string | null;
   clearSession?: boolean;
+  question?: {
+    prompt: string;
+    choices: Array<{
+      key: string;
+      label: string;
+      description?: string;
+    }>;
+  } | null;
 }
 
 export interface AdapterSessionCodec {
@@ -91,6 +99,7 @@ export interface AdapterInvocationMeta {
   commandNotes?: string[];
   env?: Record<string, string>;
   prompt?: string;
+  promptMetrics?: Record<string, number>;
   context?: Record<string, unknown>;
 }
 
@@ -189,7 +198,7 @@ export type TranscriptEntry =
   | { kind: "assistant"; ts: string; text: string; delta?: boolean }
   | { kind: "thinking"; ts: string; text: string; delta?: boolean }
   | { kind: "user"; ts: string; text: string }
-  | { kind: "tool_call"; ts: string; name: string; input: unknown }
+  | { kind: "tool_call"; ts: string; name: string; input: unknown; toolUseId?: string }
   | { kind: "tool_result"; ts: string; toolUseId: string; content: string; isError: boolean }
   | { kind: "init"; ts: string; model: string; sessionId: string }
   | { kind: "result"; ts: string; text: string; inputTokens: number; outputTokens: number; cachedTokens: number; costUsd: number; subtype: string; isError: boolean; errors: string[] }
