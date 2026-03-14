@@ -224,6 +224,182 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
   );
 }
 
+/* ---- KPI Summary ---- */
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return "<1s";
+  const totalSec = Math.round(ms / 1000);
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  if (min === 0) return `${sec}s`;
+  return sec > 0 ? `${min}m ${sec}s` : `${min}m`;
+}
+
+function formatCompactTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
+function usageTokens(run: HeartbeatRun): number {
+  const u = (run.usageJson ?? null) as Record<string, unknown> | null;
+  if (!u) return 0;
+  const pick = (...keys: string[]) => {
+    for (const k of keys) {
+      const v = u[k];
+      if (typeof v === "number" && Number.isFinite(v)) return v;
+    }
+    return 0;
+  };
+  return (
+    pick("inputTokens", "input_tokens") +
+    pick("outputTokens", "output_tokens") +
+    pick("cacheReadInputTokens", "cache_read_input_tokens") +
+    pick("cacheCreationInputTokens", "cache_creation_input_tokens")
+  );
+}
+
+export function KpiSummaryCards({ runs }: { runs: HeartbeatRun[] }) {
+  const days = new Set(getLast14Days());
+  const recent = runs.filter((r) => days.has(new Date(r.createdAt).toISOString().slice(0, 10)));
+
+  const completed = recent.filter((r) => r.status === "succeeded" || r.status === "failed" || r.status === "timed_out");
+  const succeeded = completed.filter((r) => r.status === "succeeded").length;
+  const errors = completed.filter((r) => r.status === "failed" || r.status === "timed_out").length;
+  const successRate = completed.length > 0 ? Math.round((succeeded / completed.length) * 100) : null;
+
+  const durations = completed
+    .filter((r) => r.startedAt && r.finishedAt)
+    .map((r) => new Date(r.finishedAt!).getTime() - new Date(r.startedAt!).getTime())
+    .filter((d) => d > 0);
+  const avgDuration = durations.length > 0 ? durations.reduce((a, b) => a + b, 0) / durations.length : null;
+
+  const cards: { label: string; value: string; sub?: string }[] = [
+    { label: "Success Rate", value: successRate !== null ? `${successRate}%` : "-", sub: completed.length > 0 ? `${succeeded}/${completed.length} runs` : undefined },
+    { label: "Total Runs", value: String(recent.length), sub: "last 14 days" },
+    { label: "Avg Duration", value: avgDuration !== null ? formatDuration(avgDuration) : "-", sub: durations.length > 0 ? `${durations.length} timed runs` : undefined },
+    { label: "Errors", value: String(errors), sub: errors > 0 ? "failed or timed out" : "none" },
+  ];
+
+  return (
+    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      {cards.map((c) => (
+        <div key={c.label} className="border border-border rounded-lg p-4">
+          <span className="text-xs text-muted-foreground block">{c.label}</span>
+          <span className="text-lg font-semibold">{c.value}</span>
+          {c.sub && <span className="text-[10px] text-muted-foreground/60 block">{c.sub}</span>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ---- Run Duration Chart ---- */
+
+export function RunDurationChart({ runs }: { runs: HeartbeatRun[] }) {
+  const days = getLast14Days();
+  const grouped = new Map<string, { totalMs: number; count: number }>();
+  for (const day of days) grouped.set(day, { totalMs: 0, count: 0 });
+
+  for (const run of runs) {
+    if (!run.startedAt || !run.finishedAt) continue;
+    if (run.status !== "succeeded" && run.status !== "failed" && run.status !== "timed_out") continue;
+    const ms = new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime();
+    if (ms <= 0) continue;
+    const day = new Date(run.createdAt).toISOString().slice(0, 10);
+    const entry = grouped.get(day);
+    if (!entry) continue;
+    entry.totalMs += ms;
+    entry.count++;
+  }
+
+  const avgs = days.map((day) => {
+    const e = grouped.get(day)!;
+    return e.count > 0 ? e.totalMs / e.count : 0;
+  });
+  const maxAvg = Math.max(...avgs, 1);
+  const hasData = avgs.some((v) => v > 0);
+
+  if (!hasData) return <p className="text-xs text-muted-foreground">No timed runs yet</p>;
+
+  return (
+    <div>
+      <div className="flex items-end gap-[3px] h-20">
+        {days.map((day, i) => {
+          const avg = avgs[i];
+          const entry = grouped.get(day)!;
+          const heightPct = (avg / maxAvg) * 100;
+          const avgMin = avg / 60_000;
+          const color = avg === 0 ? undefined : avgMin < 5 ? "#10b981" : avgMin < 15 ? "#eab308" : "#ef4444";
+          return (
+            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${avg > 0 ? formatDuration(avg) : "no runs"} (${entry.count} runs)`}>
+              {avg > 0 ? (
+                <div style={{ height: `${heightPct}%`, minHeight: 2, backgroundColor: color }} />
+              ) : (
+                <div className="bg-muted/30 rounded-sm" style={{ height: 2 }} />
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <DateLabels days={days} />
+      <ChartLegend items={[{ color: "#10b981", label: "<5m" }, { color: "#eab308", label: "5-15m" }, { color: "#ef4444", label: ">15m" }]} />
+    </div>
+  );
+}
+
+/* ---- Token Efficiency Chart ---- */
+
+export function TokenEfficiencyChart({ runs }: { runs: HeartbeatRun[] }) {
+  const days = getLast14Days();
+  const grouped = new Map<string, { totalTokens: number; count: number }>();
+  for (const day of days) grouped.set(day, { totalTokens: 0, count: 0 });
+
+  for (const run of runs) {
+    if (run.status !== "succeeded" && run.status !== "failed" && run.status !== "timed_out") continue;
+    const tokens = usageTokens(run);
+    if (tokens <= 0) continue;
+    const day = new Date(run.createdAt).toISOString().slice(0, 10);
+    const entry = grouped.get(day);
+    if (!entry) continue;
+    entry.totalTokens += tokens;
+    entry.count++;
+  }
+
+  const avgs = days.map((day) => {
+    const e = grouped.get(day)!;
+    return e.count > 0 ? e.totalTokens / e.count : 0;
+  });
+  const maxAvg = Math.max(...avgs, 1);
+  const hasData = avgs.some((v) => v > 0);
+
+  if (!hasData) return <p className="text-xs text-muted-foreground">No token data yet</p>;
+
+  return (
+    <div>
+      <div className="flex items-end gap-[3px] h-20">
+        {days.map((day, i) => {
+          const avg = avgs[i];
+          const entry = grouped.get(day)!;
+          const heightPct = (avg / maxAvg) * 100;
+          return (
+            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${avg > 0 ? formatCompactTokens(Math.round(avg)) : "no data"}/run (${entry.count} runs)`}>
+              {avg > 0 ? (
+                <div className="bg-cyan-500" style={{ height: `${heightPct}%`, minHeight: 2 }} />
+              ) : (
+                <div className="bg-muted/30 rounded-sm" style={{ height: 2 }} />
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <DateLabels days={days} />
+    </div>
+  );
+}
+
+/* ---- Success Rate Chart ---- */
+
 export function SuccessRateChart({ runs }: { runs: HeartbeatRun[] }) {
   const days = getLast14Days();
   const grouped = new Map<string, { succeeded: number; total: number }>();

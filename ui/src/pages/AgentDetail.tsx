@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { agentsApi, type AgentKey, type ClaudeLoginResult } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { ApiError } from "../api/client";
-import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
+import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart, KpiSummaryCards, RunDurationChart, TokenEfficiencyChart } from "../components/ActivityCharts";
 import { activityApi } from "../api/activity";
 import { issuesApi } from "../api/issues";
 import { usePanel } from "../context/PanelContext";
@@ -783,19 +783,28 @@ function AgentOverview({
       {/* Latest Run */}
       <LatestRunCard runs={runs} agentId={agentRouteId} />
 
+      {/* KPI Summary */}
+      <KpiSummaryCards runs={runs} />
+
       {/* Charts */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
         <ChartCard title="Run Activity" subtitle="Last 14 days">
           <RunActivityChart runs={runs} />
+        </ChartCard>
+        <ChartCard title="Success Rate" subtitle="Last 14 days">
+          <SuccessRateChart runs={runs} />
+        </ChartCard>
+        <ChartCard title="Run Duration" subtitle="Last 14 days">
+          <RunDurationChart runs={runs} />
+        </ChartCard>
+        <ChartCard title="Token Efficiency" subtitle="Avg tokens/run">
+          <TokenEfficiencyChart runs={runs} />
         </ChartCard>
         <ChartCard title="Issues by Priority" subtitle="Last 14 days">
           <PriorityChart issues={assignedIssues} />
         </ChartCard>
         <ChartCard title="Issues by Status" subtitle="Last 14 days">
           <IssueStatusChart issues={assignedIssues} />
-        </ChartCard>
-        <ChartCard title="Success Rate" subtitle="Last 14 days">
-          <SuccessRateChart runs={runs} />
         </ChartCard>
       </div>
 
