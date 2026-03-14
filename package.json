@@ -9,6 +9,7 @@
     "dev:server": "pnpm --filter @paperclipai/server dev",
     "dev:ui": "pnpm --filter @paperclipai/ui dev",
     "build": "pnpm -r build",
+    "lint": "biome check",
     "typecheck": "pnpm -r typecheck",
     "test": "vitest",
     "test:run": "vitest run",
@@ -34,15 +35,16 @@
     "test:e2e:headed": "npx playwright test --config tests/e2e/playwright.config.ts --headed"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.4.6",
     "@changesets/cli": "^2.30.0",
-    "cross-env": "^10.1.0",
     "@playwright/test": "^1.58.2",
+    "cross-env": "^10.1.0",
     "esbuild": "^0.27.3",
     "typescript": "^5.7.3",
     "vitest": "^3.0.5"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "packageManager": "pnpm@9.15.4"
 }

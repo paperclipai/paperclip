@@ -26,17 +26,87 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
 
       - name: Typecheck
         run: pnpm -r typecheck
+
+      - name: Check forbidden tokens
+        run: pnpm check:tokens
 
       - name: Run tests
         run: pnpm test:run
 
       - name: Build
         run: pnpm build
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PAPERCLIP_E2E_SKIP_LLM: "true"
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Detect source file changes
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            src:
+              - 'server/**'
+              - 'ui/**'
+              - 'cli/**'
+              - 'packages/**'
+              - 'tests/e2e/**'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+
+      - name: Setup pnpm
+        if: steps.changes.outputs.src == 'true'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        if: steps.changes.outputs.src == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        if: steps.changes.outputs.src == 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        if: steps.changes.outputs.src == 'true'
+        run: pnpm build
+
+      - name: Install Playwright browsers
+        if: steps.changes.outputs.src == 'true'
+        run: npx playwright install --with-deps chromium
+
+      - name: Run e2e tests
+        if: steps.changes.outputs.src == 'true'
+        run: pnpm test:e2e
+
+      - name: Upload Playwright report
+        if: always() && steps.changes.outputs.src == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-pr-${{ github.event.pull_request.number }}
+          path: |
+            tests/e2e/playwright-report/
+            tests/e2e/test-results/
+          retention-days: 7

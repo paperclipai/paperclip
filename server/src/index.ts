@@ -230,6 +230,7 @@ export async function startServer(): Promise<StartedServer> {
     }
   }
   
+  // biome-ignore lint/suspicious/noImplicitAnyLet: assigned in conditional branches below
   let db;
   let embeddedPostgres: EmbeddedPostgresInstance | null = null;
   let embeddedPostgresStartedByThisProcess = false;

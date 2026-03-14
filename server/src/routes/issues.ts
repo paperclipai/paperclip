@@ -713,6 +713,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (hiddenAtRaw !== undefined) {
       updateFields.hiddenAt = hiddenAtRaw ? new Date(hiddenAtRaw) : null;
     }
+    // biome-ignore lint/suspicious/noImplicitAnyLet: assigned in try block below
     let issue;
     try {
       issue = await svc.update(id, updateFields);
