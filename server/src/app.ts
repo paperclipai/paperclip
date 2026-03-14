@@ -10,6 +10,7 @@ import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
 import { healthRoutes } from "./routes/health.js";
+import { assertCompanyAccess } from "./routes/authz.js";
 import { companyRoutes } from "./routes/companies.js";
 import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
@@ -26,6 +27,7 @@ import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { applyUiBranding } from "./ui-branding.js";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
+import { companyService, projectService } from "./services/index.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 
@@ -125,6 +127,76 @@ export async function createApp(
   app.use("/api", api);
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "API route not found" });
+  });
+
+  const companiesSvc = companyService(db);
+  const projectsSvc = projectService(db);
+
+  app.get(/^\/([A-Za-z0-9_-]+)\/projects\/([^/]+)\/files\/(.+)$/, async (req, res, next) => {
+    try {
+      const match = req.path.match(/^\/([A-Za-z0-9_-]+)\/projects\/([^/]+)\/files\/(.+)$/);
+      if (!match) {
+        res.status(404).end();
+        return;
+      }
+      const [, companyPrefixRaw, projectRefRaw, relativePathRaw] = match;
+      const companyPrefix = companyPrefixRaw.trim().toUpperCase();
+      const projectRef = decodeURIComponent(projectRefRaw);
+      const relativePath = decodeURIComponent(relativePathRaw);
+
+      const company = await companiesSvc.getByIssuePrefix(companyPrefix);
+      if (!company) {
+        res.status(404).json({ error: "Company not found" });
+        return;
+      }
+      assertCompanyAccess(req, company.id);
+
+      const resolved = await projectsSvc.resolveByReference(company.id, projectRef);
+      if (resolved.ambiguous) {
+        res.status(409).json({ error: "Project reference is ambiguous" });
+        return;
+      }
+      const project = resolved.project ? await projectsSvc.getById(resolved.project.id) : null;
+      if (!project) {
+        res.status(404).json({ error: "Project not found" });
+        return;
+      }
+
+      const primaryWorkspace = project.primaryWorkspace ?? project.workspaces.find((workspace) => workspace.isPrimary) ?? null;
+      if (!primaryWorkspace?.cwd) {
+        res.status(404).json({ error: "Project workspace not found" });
+        return;
+      }
+
+      const workspaceRoot = path.resolve(primaryWorkspace.cwd);
+      const candidatePath = path.resolve(workspaceRoot, relativePath);
+      const relativeFromRoot = path.relative(workspaceRoot, candidatePath);
+      if (
+        relativeFromRoot.startsWith("..")
+        || path.isAbsolute(relativeFromRoot)
+        || relativePath.includes("\0")
+      ) {
+        res.status(403).json({ error: "Path escapes project workspace" });
+        return;
+      }
+
+      const stat = await fs.promises.stat(candidatePath).catch(() => null);
+      if (!stat || !stat.isFile()) {
+        res.status(404).json({ error: "File not found" });
+        return;
+      }
+
+      res.type(path.extname(candidatePath) || "text/plain");
+      res.setHeader("Content-Length", String(stat.size));
+      res.setHeader("Cache-Control", "private, max-age=30");
+      res.setHeader(
+        "Content-Disposition",
+        `inline; filename="${path.basename(candidatePath).replaceAll("\"", "")}"`,
+      );
+      fs.createReadStream(candidatePath).on("error", next).pipe(res);
+    } catch (err) {
+      next(err);
+    }
   });
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));

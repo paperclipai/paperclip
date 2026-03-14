@@ -79,6 +79,13 @@ export function companyService(db: Db) {
         .where(eq(companies.id, id))
         .then((rows) => rows[0] ?? null),
 
+    getByIssuePrefix: (issuePrefix: string) =>
+      db
+        .select()
+        .from(companies)
+        .where(eq(companies.issuePrefix, issuePrefix))
+        .then((rows) => rows[0] ?? null),
+
     create: async (data: typeof companies.$inferInsert) => createCompanyWithUniquePrefix(data),
 
     update: (id: string, data: Partial<typeof companies.$inferInsert>) =>
