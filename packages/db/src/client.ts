@@ -652,12 +652,19 @@ export async function applyPendingMigrations(url: string): Promise<void> {
   // Reconcile first: mark already-applied migrations in the journal before
   // Drizzle tries to re-run them (which would crash on "relation already exists").
   // This handles hash mismatches from CRLF/LF differences on Windows.
-  const preRepair = await reconcilePendingMigrationHistory(url);
-  if (preRepair.repairedMigrations.length > 0) {
-    const repairedState = await inspectMigrations(url);
-    if (repairedState.status === "upToDate") return;
+  // Only needed for the "pending-migrations" reason (not fresh installs or no-journal paths).
+  if (initialState.status === "needsMigrations" && initialState.reason === "pending-migrations") {
+    const preRepair = await reconcilePendingMigrationHistory(url);
+    if (preRepair.repairedMigrations.length > 0) {
+      const repairedState = await inspectMigrations(url);
+      if (repairedState.status === "upToDate") return;
+    }
   }
 
+  // Note: migratePg reads files directly from disk, so on existing CRLF checkouts
+  // it may store CRLF-based hashes. The post-migratePg reconciliation then adds
+  // LF-based rows, producing duplicate entries — functionally harmless, and the
+  // .gitattributes eol=lf rule prevents this on new checkouts.
   const sql = createUtilitySql(url);
 
   try {
