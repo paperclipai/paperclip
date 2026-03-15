@@ -1178,7 +1178,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       const commentAuthorIsExecutingAgent =
         actor.actorType === "agent" && actor.actorId === currentIssue.assigneeAgentId;
       if (!commentAuthorIsExecutingAgent) {
-        const authorName = actor.actorType === "user" ? "board" : (actor.agentId ?? "agent");
+        const authorName = actor.actorType === "user" ? "board" : (actor.actorId ?? "agent");
         try {
           heartbeat.injectComment(currentIssue.executionRunId, req.body.body, authorName);
         } catch (err) {

@@ -455,7 +455,7 @@ export async function runChildProcess(
           cwd: opts.cwd,
           env: mergedEnv,
           shell: false,
-          stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
+          stdio: [(opts.stdin != null || opts.keepStdinOpen) ? "pipe" : "ignore", "pipe", "pipe"],
         }) as ChildProcessWithEvents;
 
         if (opts.stdin != null && child.stdin) {
