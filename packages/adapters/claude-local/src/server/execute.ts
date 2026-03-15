@@ -33,6 +33,9 @@ const PAPERCLIP_SKILLS_CANDIDATES = [
   path.resolve(__moduleDir, "../../skills"),         // published: <pkg>/dist/server/ -> <pkg>/skills/
   path.resolve(__moduleDir, "../../../../../skills"), // dev: src/server/ -> repo root/skills/
 ];
+const AGENT_HOME_RUNS_DIRNAME = ".paperclip-runs";
+const AGENT_HOME_RUN_RETENTION_DAYS = 30;
+const AGENT_HOME_RUN_RETENTION_MS = AGENT_HOME_RUN_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 
 async function resolvePaperclipSkillsDir(): Promise<string | null> {
   for (const candidate of PAPERCLIP_SKILLS_CANDIDATES) {
@@ -42,27 +45,36 @@ async function resolvePaperclipSkillsDir(): Promise<string | null> {
   return null;
 }
 
-/**
- * Create a tmpdir with `.claude/skills/` containing symlinks to skills from
- * the repo's `skills/` directory, so `--add-dir` makes Claude Code discover
- * them as proper registered skills.
- */
-async function buildSkillsDir(): Promise<string> {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skills-"));
-  const target = path.join(tmp, ".claude", "skills");
-  await fs.mkdir(target, { recursive: true });
+async function resolvePaperclipSkillFile(name: string): Promise<string | null> {
   const skillsDir = await resolvePaperclipSkillsDir();
-  if (!skillsDir) return tmp;
-  const entries = await fs.readdir(skillsDir, { withFileTypes: true });
-  for (const entry of entries) {
-    if (entry.isDirectory()) {
-      await fs.symlink(
-        path.join(skillsDir, entry.name),
-        path.join(target, entry.name),
-      );
-    }
-  }
-  return tmp;
+  if (!skillsDir) return null;
+  const candidate = path.join(skillsDir, name, "SKILL.md");
+  const isFile = await fs.stat(candidate).then((s) => s.isFile()).catch(() => false);
+  return isFile ? candidate : null;
+}
+
+async function buildRuntimeDir(): Promise<string> {
+  return fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-"));
+}
+
+async function pruneStaleAgentHomeRunDirs(agentHomeCwd: string, activeRunId: string): Promise<number> {
+  const runsDir = path.join(agentHomeCwd, AGENT_HOME_RUNS_DIRNAME);
+  const cutoffMs = Date.now() - AGENT_HOME_RUN_RETENTION_MS;
+  const entries = await fs.readdir(runsDir, { withFileTypes: true }).catch(() => []);
+  let prunedCount = 0;
+
+  await Promise.all(entries.map(async (entry) => {
+    if (!entry.isDirectory() || entry.name === activeRunId) return;
+
+    const candidate = path.join(runsDir, entry.name);
+    const stat = await fs.stat(candidate).catch(() => null);
+    if (!stat || stat.mtimeMs >= cutoffMs) return;
+
+    await fs.rm(candidate, { recursive: true, force: true });
+    prunedCount += 1;
+  }));
+
+  return prunedCount;
 }
 
 interface ClaudeExecutionInput {
@@ -76,6 +88,7 @@ interface ClaudeExecutionInput {
 interface ClaudeRuntimeConfig {
   command: string;
   cwd: string;
+  workspaceSource: string | null;
   workspaceId: string | null;
   workspaceRepoUrl: string | null;
   workspaceRepoRef: string | null;
@@ -255,6 +268,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   return {
     command,
     cwd,
+    workspaceSource: workspaceSource || null,
     workspaceId,
     workspaceRepoUrl,
     workspaceRepoRef,
@@ -263,6 +277,11 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     graceSec,
     extraArgs,
   };
+}
+
+function isPathInside(parent: string, candidate: string): boolean {
+  const relative = path.relative(parent, candidate);
+  return relative.length > 0 && !relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative);
 }
 
 export async function runClaudeLogin(input: {
@@ -332,6 +351,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const {
     command,
     cwd,
+    workspaceSource,
     workspaceId,
     workspaceRepoUrl,
     workspaceRepoRef,
@@ -341,31 +361,70 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     extraArgs,
   } = runtimeConfig;
   const billingType = resolveClaudeBillingType(env);
-  const skillsDir = await buildSkillsDir();
+  const runtimeDir = await buildRuntimeDir();
 
   // When instructionsFilePath is configured, create a combined temp file that
-  // includes both the file content and the path directive, so we only need
-  // --append-system-prompt-file (Claude CLI forbids using both flags together).
-  let effectiveInstructionsFilePath = instructionsFilePath;
+  // includes the Paperclip heartbeat skill plus any agent instructions, so we
+  // only need one --append-system-prompt-file.
+  let effectiveInstructionsFilePath = "";
+  const appendedPromptSections: string[] = [];
+  const paperclipSkillPath = await resolvePaperclipSkillFile("paperclip");
+  if (paperclipSkillPath) {
+    appendedPromptSections.push(await fs.readFile(paperclipSkillPath, "utf-8"));
+  }
   if (instructionsFilePath) {
     const instructionsContent = await fs.readFile(instructionsFilePath, "utf-8");
     const pathDirective = `\nThe above agent instructions were loaded from ${instructionsFilePath}. Resolve any relative file references from ${instructionsFileDir}.`;
-    const combinedPath = path.join(skillsDir, "agent-instructions.md");
-    await fs.writeFile(combinedPath, instructionsContent + pathDirective, "utf-8");
+    appendedPromptSections.push(instructionsContent + pathDirective);
+  }
+  if (appendedPromptSections.length > 0) {
+    const combinedPath = path.join(runtimeDir, "agent-instructions.md");
+    await fs.writeFile(combinedPath, appendedPromptSections.join("\n\n"), "utf-8");
     effectiveInstructionsFilePath = combinedPath;
   }
 
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
   const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
+  const canResumeAgentHomeRun =
+    workspaceSource === "agent_home" &&
+    runtimeSessionCwd.length > 0 &&
+    isPathInside(path.resolve(cwd), path.resolve(runtimeSessionCwd));
   const canResumeSession =
     runtimeSessionId.length > 0 &&
-    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
+    (runtimeSessionCwd.length === 0 ||
+      path.resolve(runtimeSessionCwd) === path.resolve(cwd) ||
+      canResumeAgentHomeRun);
   const sessionId = canResumeSession ? runtimeSessionId : null;
+  let effectiveCwd = cwd;
+  if (sessionId && runtimeSessionCwd.length > 0) {
+    effectiveCwd = runtimeSessionCwd;
+  } else if (workspaceSource === "agent_home" && !sessionId) {
+    effectiveCwd = path.join(cwd, AGENT_HOME_RUNS_DIRNAME, runId);
+    await ensureAbsoluteDirectory(effectiveCwd, { createIfMissing: true });
+    try {
+      const prunedCount = await pruneStaleAgentHomeRunDirs(cwd, runId);
+      if (prunedCount > 0) {
+        await onLog(
+          "stderr",
+          `[paperclip] Pruned ${prunedCount} stale agent-home run director${prunedCount === 1 ? "y" : "ies"} older than ${AGENT_HOME_RUN_RETENTION_DAYS}d.\n`,
+        );
+      }
+    } catch (error) {
+      await onLog(
+        "stderr",
+        `[paperclip] Failed to prune stale agent-home run directories: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    }
+    await onLog(
+      "stderr",
+      `[paperclip] Using isolated agent-home run directory "${effectiveCwd}" to avoid Claude cwd session carry-over.\n`,
+    );
+  }
   if (runtimeSessionId && !canResumeSession) {
     await onLog(
       "stderr",
-      `[paperclip] Claude session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
+      `[paperclip] Claude session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${effectiveCwd}".\n`,
     );
   }
   const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
@@ -397,7 +456,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   const buildClaudeArgs = (resumeSessionId: string | null) => {
-    const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
+    const args = ["--print", "--output-format", "stream-json", "--verbose"];
     if (resumeSessionId) args.push("--resume", resumeSessionId);
     if (dangerouslySkipPermissions) args.push("--dangerously-skip-permissions");
     if (chrome) args.push("--chrome");
@@ -407,8 +466,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (effectiveInstructionsFilePath) {
       args.push("--append-system-prompt-file", effectiveInstructionsFilePath);
     }
-    args.push("--add-dir", skillsDir);
     if (extraArgs.length > 0) args.push(...extraArgs);
+    args.push("--", prompt);
     return args;
   };
 
@@ -434,7 +493,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       await onMeta({
         adapterType: "claude_local",
         command,
-        cwd,
+        cwd: effectiveCwd,
         commandArgs: args,
         commandNotes,
         env: redactEnvForLogs(env),
@@ -445,9 +504,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
 
     const proc = await runChildProcess(runId, command, args, {
-      cwd,
+      cwd: effectiveCwd,
       env,
-      stdin: prompt,
       timeoutSec,
       graceSec,
       onLog,
@@ -524,7 +582,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const resolvedSessionParams = resolvedSessionId
       ? ({
         sessionId: resolvedSessionId,
-        cwd,
+        cwd: effectiveCwd,
         ...(workspaceId ? { workspaceId } : {}),
         ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
         ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
@@ -575,6 +633,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
   } finally {
-    fs.rm(skillsDir, { recursive: true, force: true }).catch(() => {});
+    fs.rm(runtimeDir, { recursive: true, force: true }).catch(() => {});
   }
 }
