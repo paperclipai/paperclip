@@ -822,6 +822,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 numberHint={help.intervalSec}
                 showNumber={eff("heartbeat", "enabled", heartbeat.enabled !== false)}
               />
+              <ToggleField
+                label="Skip timer when no assigned open task"
+                hint={help.skipTimerWhenNoAssignedOpenIssue}
+                checked={eff(
+                  "heartbeat",
+                  "skipTimerWhenNoAssignedOpenIssue",
+                  heartbeat.skipTimerWhenNoAssignedOpenIssue === true,
+                )}
+                onChange={(v) => mark("heartbeat", "skipTimerWhenNoAssignedOpenIssue", v)}
+              />
             </div>
             <CollapsibleSection
               title="Advanced Run Policy"
@@ -864,16 +874,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   className={inputClass}
                 />
               </Field>
-              <ToggleField
-                label="Skip timer when no assigned open task"
-                hint={help.skipTimerWhenNoAssignedOpenIssue}
-                checked={eff(
-                  "heartbeat",
-                  "skipTimerWhenNoAssignedOpenIssue",
-                  heartbeat.skipTimerWhenNoAssignedOpenIssue === true,
-                )}
-                onChange={(v) => mark("heartbeat", "skipTimerWhenNoAssignedOpenIssue", v)}
-              />
             </div>
           </CollapsibleSection>
           </div>
