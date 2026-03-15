@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { Agent, Issue, LiveEvent } from "@paperclipai/shared";
 import type { RunForIssue } from "../api/activity";
@@ -719,6 +719,16 @@ export const __liveUpdatesTestUtils = {
   shouldSuppressAgentStatusToastForVisibleIssue,
 };
 
+interface LiveUpdatesContextValue {
+  isConnected: boolean;
+}
+
+const LiveUpdatesContext = createContext<LiveUpdatesContextValue>({ isConnected: false });
+
+export function useLiveUpdates() {
+  return useContext(LiveUpdatesContext);
+}
+
 export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
@@ -735,6 +745,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const socketAuthKey = session?.session?.id ?? currentUserId ?? "signed_out";
   const liveCompanyId = resolveLiveCompanyId(selectedCompanyId, selectedCompany?.id ?? null);
   const canConnectSocket = sessionStatus === "success" && session !== null && liveCompanyId !== null;
+  const [isConnected, setIsConnected] = useState(false);
   const currentActorRef = useRef<{ userId: string | null; agentId: string | null }>({
     userId: currentUserId,
     agentId: null,
@@ -792,6 +803,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
           gateRef.current.suppressUntil = Date.now() + RECONNECT_SUPPRESS_MS;
         }
         reconnectAttempt = 0;
+        setIsConnected(true);
       };
 
       nextSocket.onmessage = (message) => {
@@ -817,6 +829,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       nextSocket.onclose = () => {
         if (socket !== nextSocket) return;
         socket = null;
+        setIsConnected(false);
         if (closed) return;
         scheduleReconnect();
       };
@@ -834,8 +847,15 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       const activeSocket = socket;
       socket = null;
       closeSocketQuietly(activeSocket, "provider_unmount");
+      setIsConnected(false);
     };
   }, [queryClient, liveCompanyId, pushToast, canConnectSocket, socketAuthKey]);
 
-  return <>{children}</>;
+  const contextValue = useMemo(() => ({ isConnected }), [isConnected]);
+
+  return (
+    <LiveUpdatesContext.Provider value={contextValue}>
+      {children}
+    </LiveUpdatesContext.Provider>
+  );
 }
