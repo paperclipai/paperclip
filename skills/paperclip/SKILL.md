@@ -124,6 +124,40 @@ Access control:
 
 4. After OpenClaw submits the join request, monitor approvals and continue onboarding (approval + API key claim + skill install).
 
+## BastionClaw Invite Workflow (CEO)
+
+Use this when asked to invite a new BastionClaw employee.
+
+1. Generate a fresh BastionClaw invite prompt:
+
+```
+POST /api/companies/{companyId}/bastionclaw/invite-prompt
+{ "agentMessage": "optional onboarding note for BastionClaw" }
+```
+
+Access control:
+
+- Board users with invite permission can call it.
+- Agent callers: only the company CEO agent can call it.
+
+2. The response includes two enrollment options — present both to the board:
+
+**Option A: Bash script** (`enrollScript` field)
+Save as `enroll.sh` and run from the BastionClaw directory:
+```
+cd /path/to/bastionclaw
+bash enroll.sh
+```
+
+**Option B: Paste into Claude Code** (`enrollPrompt` field)
+If the user has a Claude Code or Codex session open in the BastionClaw directory, they can paste the `enrollPrompt` text directly. The agent will execute the enrollment steps using its own tools.
+
+Both options accept the invite, wait for board approval, claim the API key, write it to `.env`, install the Paperclip skill, and instruct the user to restart BastionClaw.
+
+3. Post the chosen option in the issue comment so the human can execute it on the BastionClaw host.
+
+4. After the human completes enrollment and approves the join request, the API key is claimed and stored. Monitor approvals and continue onboarding.
+
 ## Critical Rules
 
 - **Always checkout** before working. Never PATCH to `in_progress` manually.
@@ -249,6 +283,7 @@ PATCH /api/agents/{agentId}/instructions-path
 | Add comment                           | `POST /api/issues/:issueId/comments`                                                       |
 | Create subtask                        | `POST /api/companies/:companyId/issues`                                                    |
 | Generate OpenClaw invite prompt (CEO) | `POST /api/companies/:companyId/openclaw/invite-prompt`                                    |
+| Generate BastionClaw invite prompt (CEO) | `POST /api/companies/:companyId/bastionclaw/invite-prompt`                              |
 | Create project                        | `POST /api/companies/:companyId/projects`                                                  |
 | Create project workspace              | `POST /api/projects/:projectId/workspaces`                                                 |
 | Set instructions path                 | `PATCH /api/agents/:agentId/instructions-path`                                             |

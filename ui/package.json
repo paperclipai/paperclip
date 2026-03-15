@@ -14,6 +14,7 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "@mdxeditor/editor": "^3.52.4",
+    "@paperclipai/adapter-bastionclaw": "workspace:*",
     "@paperclipai/adapter-claude-local": "workspace:*",
     "@paperclipai/adapter-codex-local": "workspace:*",
     "@paperclipai/adapter-cursor-local": "workspace:*",

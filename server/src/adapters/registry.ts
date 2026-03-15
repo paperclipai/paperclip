@@ -51,6 +51,14 @@ import {
 import {
   agentConfigurationDoc as piAgentConfigurationDoc,
 } from "@paperclipai/adapter-pi-local";
+import {
+  execute as bastionclawExecute,
+  testEnvironment as bastionclawTestEnvironment,
+} from "@paperclipai/adapter-bastionclaw/server";
+import {
+  agentConfigurationDoc as bastionclawAgentConfigurationDoc,
+  models as bastionclawModels,
+} from "@paperclipai/adapter-bastionclaw";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
 
@@ -127,6 +135,15 @@ const piLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: piAgentConfigurationDoc,
 };
 
+const bastionclawAdapter: ServerAdapterModule = {
+  type: "bastionclaw_gateway",
+  execute: bastionclawExecute,
+  testEnvironment: bastionclawTestEnvironment,
+  models: bastionclawModels,
+  supportsLocalAgentJwt: false,
+  agentConfigurationDoc: bastionclawAgentConfigurationDoc,
+};
+
 const adaptersByType = new Map<string, ServerAdapterModule>(
   [
     claudeLocalAdapter,
@@ -136,6 +153,7 @@ const adaptersByType = new Map<string, ServerAdapterModule>(
     cursorLocalAdapter,
     geminiLocalAdapter,
     openclawGatewayAdapter,
+    bastionclawAdapter,
     processAdapter,
     httpAdapter,
   ].map((a) => [a.type, a]),

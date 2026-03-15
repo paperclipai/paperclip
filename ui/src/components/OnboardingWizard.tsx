@@ -50,6 +50,7 @@ import {
   Loader2,
   FolderOpen,
   ChevronDown,
+  Shield,
   X
 } from "lucide-react";
 
@@ -63,7 +64,8 @@ type AdapterType =
   | "cursor"
   | "process"
   | "http"
-  | "openclaw_gateway";
+  | "openclaw_gateway"
+  | "bastionclaw_gateway";
 
 const DEFAULT_TASK_DESCRIPTION = `Setup yourself as the CEO. Use the ceo persona found here: 
 
@@ -787,6 +789,14 @@ export function OnboardingWizard() {
                             desc: "Invoke OpenClaw via gateway protocol",
                             comingSoon: true,
                             disabledLabel: "Configure OpenClaw within the App"
+                          },
+                          {
+                            value: "bastionclaw_gateway" as const,
+                            label: "BastionClaw Gateway",
+                            icon: Shield,
+                            desc: "Invoke BastionClaw via filesystem IPC",
+                            comingSoon: true,
+                            disabledLabel: "Install via OpenClaw within the App"
                           }
                         ].map((opt) => (
                           <button
@@ -1107,19 +1117,24 @@ export function OnboardingWizard() {
                   )}
 
                   {(adapterType === "http" ||
-                    adapterType === "openclaw_gateway") && (
+                    adapterType === "openclaw_gateway" ||
+                    adapterType === "bastionclaw_gateway") && (
                     <div>
                       <label className="text-xs text-muted-foreground mb-1 block">
                         {adapterType === "openclaw_gateway"
                           ? "Gateway URL"
-                          : "Webhook URL"}
+                          : adapterType === "bastionclaw_gateway"
+                            ? "BastionClaw root"
+                            : "Webhook URL"}
                       </label>
                       <input
                         className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
                         placeholder={
                           adapterType === "openclaw_gateway"
                             ? "ws://127.0.0.1:18789"
-                            : "https://..."
+                            : adapterType === "bastionclaw_gateway"
+                              ? "/Users/you/bastionclaw"
+                              : "https://..."
                         }
                         value={url}
                         onChange={(e) => setUrl(e.target.value)}

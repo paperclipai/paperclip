@@ -16,6 +16,7 @@ import {
   Code,
   Gem,
   MousePointer2,
+  Shield,
   Sparkles,
   Terminal,
 } from "lucide-react";
@@ -29,7 +30,8 @@ type AdvancedAdapterType =
   | "opencode_local"
   | "pi_local"
   | "cursor"
-  | "openclaw_gateway";
+  | "openclaw_gateway"
+  | "bastionclaw_gateway";
 
 const ADVANCED_ADAPTER_OPTIONS: Array<{
   value: AdvancedAdapterType;
@@ -81,6 +83,12 @@ const ADVANCED_ADAPTER_OPTIONS: Array<{
     label: "OpenClaw Gateway",
     icon: Bot,
     desc: "Invoke OpenClaw via gateway protocol",
+  },
+  {
+    value: "bastionclaw_gateway",
+    label: "BastionClaw Gateway",
+    icon: Shield,
+    desc: "Invoke BastionClaw via filesystem IPC",
   },
 ];
 
