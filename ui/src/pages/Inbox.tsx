@@ -46,11 +46,13 @@ import type { HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
 import {
   ACTIONABLE_APPROVAL_STATUSES,
   getLatestFailedRunsByAgent,
+  getUnreadMentions,
   getRecentTouchedIssues,
   type InboxTab,
   saveLastInboxTab,
 } from "../lib/inbox";
 import { useDismissedInboxItems } from "../hooks/useInboxBadge";
+import { cn } from "../lib/utils";
 
 type InboxJoinRequest = JoinRequest & { claimSecret?: string };
 
@@ -353,6 +355,11 @@ export function Inbox() {
     () => touchedIssues.filter((issue) => issue.isUnreadForMe),
     [touchedIssues],
   );
+  const unreadMentions = useMemo(() => getUnreadMentions(mentionsRaw), [mentionsRaw]);
+  const unreadMentionIssueIds = useMemo(
+    () => Array.from(new Set(unreadMentions.map((mention) => mention.issueId))),
+    [unreadMentions],
+  );
 
   const agentById = useMemo(() => {
     const map = new Map<string, string>();
@@ -481,6 +488,7 @@ export function Inbox() {
     if (!selectedCompanyId) return;
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.mentions(selectedCompanyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
   };
 
@@ -549,6 +557,7 @@ export function Inbox() {
   const hasJoinRequests = joinRequests.length > 0 || approvedRequests.size > 0;
   const hasTouchedIssues = touchedIssues.length > 0;
   const hasMentions = mentionsRaw.length > 0;
+  const hasUnreadMentions = unreadMentions.length > 0;
 
   const showJoinRequestsCategory =
     allCategoryFilter === "everything" || allCategoryFilter === "join_requests";
@@ -576,7 +585,11 @@ export function Inbox() {
     tab === "all" ? showFailedRunsCategory && hasRunFailures : tab === "unread" && hasRunFailures;
   const showAlertsSection = tab === "all" ? showAlertsCategory && hasAlerts : tab === "unread" && hasAlerts;
   const showMentionsSection =
-    tab === "all" ? showMentionsCategory && hasMentions : hasMentions;
+    tab === "all"
+      ? showMentionsCategory && hasMentions
+      : tab === "unread"
+        ? hasUnreadMentions
+        : hasMentions;
 
   const visibleSections = [
     showFailedRunsSection ? "failed_runs" : null,
@@ -597,10 +610,14 @@ export function Inbox() {
     !isMentionsLoading;
 
   const showSeparatorBefore = (key: SectionKey) => visibleSections.indexOf(key) > 0;
-  const unreadIssueIds = unreadTouchedIssues
-    .filter((issue) => !fadingOutIssues.has(issue.id))
-    .map((issue) => issue.id);
+  const unreadIssueIds = Array.from(new Set([
+    ...unreadTouchedIssues
+      .filter((issue) => !fadingOutIssues.has(issue.id))
+      .map((issue) => issue.id),
+    ...unreadMentionIssueIds.filter((issueId) => !fadingOutIssues.has(issueId)),
+  ]));
   const canMarkAllRead = unreadIssueIds.length > 0;
+  const mentionsToRender = tab === "unread" ? unreadMentions : mentionsRaw;
 
   return (
     <div className="space-y-6">
@@ -700,12 +717,15 @@ export function Inbox() {
               Mentions
             </h3>
             <div className="divide-y divide-border border border-border">
-              {mentionsRaw.map((mention: MentionEntry) => (
+              {mentionsToRender.map((mention: MentionEntry) => (
                 <Link
                   key={`${mention.issueId}-${mention.mentionedAt}`}
                   to={`/issues/${mention.identifier ?? mention.issueId}`}
                   state={issueLinkState}
-                  className="flex min-w-0 cursor-pointer items-start gap-2 px-3 py-3 no-underline text-inherit transition-colors hover:bg-accent/50 sm:items-center sm:gap-3 sm:px-4"
+                  className={cn(
+                    "flex min-w-0 cursor-pointer items-start gap-2 px-3 py-3 no-underline text-inherit transition-colors hover:bg-accent/50 sm:items-center sm:gap-3 sm:px-4",
+                    mention.isUnread && "font-medium bg-accent/30",
+                  )}
                 >
                   <span className="inline-flex shrink-0 self-center"><StatusIcon status={mention.status} /></span>
                   <span className="inline-flex shrink-0 self-center"><PriorityIcon priority={mention.priority} /></span>

@@ -105,6 +105,10 @@ export function getUnreadTouchedIssues(issues: Issue[]): Issue[] {
   return issues.filter((issue) => issue.isUnreadForMe);
 }
 
+export function getUnreadMentions<T extends { isUnread: boolean }>(mentions: T[]): T[] {
+  return mentions.filter((mention) => mention.isUnread);
+}
+
 export function computeInboxBadgeData({
   approvals,
   joinRequests,

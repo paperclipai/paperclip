@@ -507,29 +507,73 @@ function handleLiveEvent(
 }
 
 export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
-  const { selectedCompanyId } = useCompany();
+  const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const gateRef = useRef<ToastGate>({ cooldownHits: new Map(), suppressUntil: 0 });
-  const { data: session } = useQuery({
+  const { data: session, status: sessionStatus } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
     retry: false,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  const socketAuthKey = session?.session?.id ?? currentUserId ?? "signed_out";
+  const liveCompanyId = selectedCompany?.id === selectedCompanyId ? selectedCompanyId : null;
+  const canConnectSocket = sessionStatus === "success" && session !== null && liveCompanyId !== null;
+  const currentActorRef = useRef<{ userId: string | null; agentId: string | null }>({
+    userId: currentUserId,
+    agentId: null,
+  });
 
   useEffect(() => {
-    if (!selectedCompanyId) return;
+    currentActorRef.current = {
+      userId: currentUserId,
+      agentId: null,
+    };
+  }, [currentUserId]);
+
+  useEffect(() => {
+    if (!canConnectSocket || !liveCompanyId) return;
 
     let closed = false;
     let reconnectAttempt = 0;
     let reconnectTimer: number | null = null;
     let socket: WebSocket | null = null;
+    const noop = () => undefined;
 
     const clearReconnect = () => {
       if (reconnectTimer !== null) {
         window.clearTimeout(reconnectTimer);
         reconnectTimer = null;
+      }
+    };
+
+    const closeSocketQuietly = (target: WebSocket | null, reason: string) => {
+      if (!target) return;
+
+      if (target.readyState === WebSocket.CONNECTING) {
+        // Let the handshake complete and then close. Calling close() while the
+        // socket is still CONNECTING is what triggers the noisy browser error.
+        target.onopen = () => {
+          target.onopen = null;
+          target.onmessage = null;
+          target.onerror = null;
+          target.onclose = null;
+          target.close(1000, reason);
+        };
+        target.onmessage = null;
+        target.onerror = noop;
+        target.onclose = null;
+        return;
+      }
+
+      target.onopen = null;
+      target.onmessage = null;
+      target.onerror = null;
+      target.onclose = null;
+
+      if (target.readyState === WebSocket.OPEN) {
+        target.close(1000, reason);
       }
     };
 
@@ -546,36 +590,44 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     const connect = () => {
       if (closed) return;
       const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-      const url = `${protocol}://${window.location.host}/api/companies/${encodeURIComponent(selectedCompanyId)}/events/ws`;
-      socket = new WebSocket(url);
+      const url = `${protocol}://${window.location.host}/api/companies/${encodeURIComponent(liveCompanyId)}/events/ws`;
+      const nextSocket = new WebSocket(url);
+      socket = nextSocket;
 
-      socket.onopen = () => {
+      nextSocket.onopen = () => {
+        if (closed || socket !== nextSocket) {
+          closeSocketQuietly(nextSocket, "stale_connection");
+          return;
+        }
         if (reconnectAttempt > 0) {
           gateRef.current.suppressUntil = Date.now() + RECONNECT_SUPPRESS_MS;
         }
         reconnectAttempt = 0;
       };
 
-      socket.onmessage = (message) => {
+      nextSocket.onmessage = (message) => {
         const raw = typeof message.data === "string" ? message.data : "";
         if (!raw) return;
 
         try {
           const parsed = JSON.parse(raw) as LiveEvent;
-          handleLiveEvent(queryClient, selectedCompanyId, parsed, pushToast, gateRef.current, {
-            userId: currentUserId,
-            agentId: null,
+          handleLiveEvent(queryClient, liveCompanyId, parsed, pushToast, gateRef.current, {
+            userId: currentActorRef.current.userId,
+            agentId: currentActorRef.current.agentId,
           });
         } catch {
           // Ignore non-JSON payloads.
         }
       };
 
-      socket.onerror = () => {
-        socket?.close();
+      nextSocket.onerror = () => {
+        // Wait for onclose to drive the reconnect. Self-closing here is what
+        // produces the "closed before connection established" browser noise.
       };
 
-      socket.onclose = () => {
+      nextSocket.onclose = () => {
+        if (socket !== nextSocket) return;
+        socket = null;
         if (closed) return;
         scheduleReconnect();
       };
@@ -590,15 +642,11 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       closed = true;
       window.clearTimeout(connectTimer);
       clearReconnect();
-      if (socket) {
-        socket.onopen = null;
-        socket.onmessage = null;
-        socket.onerror = null;
-        socket.onclose = null;
-        socket.close(1000, "provider_unmount");
-      }
+      const activeSocket = socket;
+      socket = null;
+      closeSocketQuietly(activeSocket, "provider_unmount");
     };
-  }, [queryClient, selectedCompanyId, pushToast, currentUserId]);
+  }, [queryClient, liveCompanyId, pushToast, canConnectSocket, socketAuthKey]);
 
   return <>{children}</>;
 }

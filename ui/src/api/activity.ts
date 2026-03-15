@@ -1,5 +1,7 @@
-import type { ActivityEvent } from "@paperclipai/shared";
+import type { ActivityEvent, MentionEntry } from "@paperclipai/shared";
 import { api } from "./client";
+
+export type { MentionEntry } from "@paperclipai/shared";
 
 export interface RunForIssue {
   runId: string;
@@ -19,16 +21,6 @@ export interface IssueForRun {
   title: string;
   status: string;
   priority: string;
-}
-
-export interface MentionEntry {
-  issueId: string;
-  identifier: string | null;
-  title: string;
-  status: string;
-  priority: string;
-  mentionedAt: string;
-  commentId: string | null;
 }
 
 export const activityApi = {

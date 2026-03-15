@@ -27,6 +27,7 @@ const mockIssueService = vi.hoisted(() => ({
   getAttachment: vi.fn(),
   createAttachmentMetadata: vi.fn(),
   removeAttachment: vi.fn(),
+  processMentionNotifications: vi.fn(),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -125,6 +126,7 @@ describe("issueRoutes", () => {
     mockLogActivity.mockResolvedValue(undefined);
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.findMentionedProjectIds.mockResolvedValue([]);
+    mockIssueService.processMentionNotifications.mockResolvedValue(undefined);
     mockHeartbeatService.wakeup.mockResolvedValue({ id: "wake-1" });
   });
 
@@ -173,6 +175,70 @@ describe("issueRoutes", () => {
         .post("/api/companies/company-1/issues")
         .send({ title: "New", type: "task" });
       expect(res.status).toBe(201);
+    });
+
+    it("processes create-time description mentions and dispatches resulting wakeups", async () => {
+      mockIssueService.create.mockResolvedValue({
+        id: "i2",
+        companyId: "company-1",
+        title: "New",
+        identifier: "PAP-2",
+        description: "Please sync with @Genie DevRel.",
+        status: "todo",
+        assigneeAgentId: null,
+      });
+      mockIssueService.processMentionNotifications.mockImplementation(async (args: { wakeups: Map<string, unknown> }) => {
+        const { wakeups } = args;
+        wakeups.set("agent-mentioned", {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_comment_mentioned",
+          payload: { issueId: "i2" },
+          requestedByActorType: "user",
+          requestedByActorId: "user-1",
+          contextSnapshot: {
+            issueId: "i2",
+            taskId: "i2",
+            wakeReason: "issue_comment_mentioned",
+            source: "issue.create.mention",
+          },
+        });
+      });
+
+      const res = await request(createApp())
+        .post("/api/companies/company-1/issues")
+        .send({ title: "New", description: "Please sync with @Genie DevRel.", type: "task" });
+
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(res.status).toBe(201);
+      expect(mockIssueService.processMentionNotifications).toHaveBeenCalledTimes(1);
+
+      const call = mockIssueService.processMentionNotifications.mock.calls[0]?.[0];
+      expect(call).toMatchObject({
+        companyId: "company-1",
+        issueId: "i2",
+        issueTitle: "New",
+        issueIdentifier: "PAP-2",
+        body: "Please sync with @Genie DevRel.",
+        actor: {
+          actorType: "user",
+          actorId: "user-1",
+          agentId: null,
+          runId: null,
+        },
+        contextSource: "issue.create.mention",
+      });
+      expect(call.commentId).toBeUndefined();
+      expect(call.wakeups).toBeInstanceOf(Map);
+
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        "agent-mentioned",
+        expect.objectContaining({
+          reason: "issue_comment_mentioned",
+          payload: { issueId: "i2" },
+        }),
+      );
     });
   });
 

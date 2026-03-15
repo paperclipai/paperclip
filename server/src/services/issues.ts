@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  activityLog,
   agents,
   assets,
   authUsers,
@@ -676,6 +677,52 @@ export function issueService(db: Db) {
           lastExternalCommentAt: statsByIssueId.get(row.id)?.lastExternalCommentAt ?? null,
         }),
       }));
+    },
+
+    listMentions: async (companyId: string, userId: string) => {
+      return db
+        .select({
+          issueId: issues.id,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+          priority: issues.priority,
+          mentionedAt: activityLog.createdAt,
+          commentId: sql<string | null>`${activityLog.details} ->> 'commentId'`,
+          isUnread: sql<boolean>`
+            CASE
+              WHEN ${issueReadStates.lastReadAt} IS NULL THEN true
+              WHEN ${issueReadStates.lastReadAt} < ${activityLog.createdAt} THEN true
+              ELSE false
+            END
+          `,
+        })
+        .from(activityLog)
+        .innerJoin(
+          issues,
+          and(
+            eq(activityLog.entityType, sql`'issue'`),
+            eq(activityLog.entityId, sql<string>`${issues.id}::text`),
+            eq(issues.companyId, companyId),
+          ),
+        )
+        .leftJoin(
+          issueReadStates,
+          and(
+            eq(issueReadStates.companyId, companyId),
+            eq(issueReadStates.issueId, issues.id),
+            eq(issueReadStates.userId, userId),
+          ),
+        )
+        .where(
+          and(
+            eq(activityLog.companyId, companyId),
+            eq(activityLog.action, "issue.user_mentioned"),
+            sql`${activityLog.details} ->> 'userId' = ${userId}`,
+          ),
+        )
+        .orderBy(desc(activityLog.createdAt))
+        .limit(100);
     },
 
     countUnreadTouchedByUser: async (companyId: string, userId: string, status?: string) => {
@@ -1464,12 +1511,13 @@ export function issueService(db: Db) {
       issueId: string;
       issueTitle: string;
       issueIdentifier?: string | null;
-      commentId: string;
+      commentId?: string | null;
       body: string;
       baseUrl: string;
       actor: { actorType: "user" | "agent" | "system"; actorId: string; agentId?: string | null; runId?: string | null };
       emailService?: EmailService;
       wakeups: Map<string, unknown>;
+      contextSource?: string;
     }) => {
       let mentions = { agentIds: [] as string[], userIds: [] as string[] };
       try {
@@ -1478,30 +1526,35 @@ export function issueService(db: Db) {
         logger.warn({ err, issueId: opts.issueId }, "failed to resolve @-mentions");
       }
 
+      const mentionWakeReason = "issue_comment_mentioned";
+      const mentionContextSource = opts.contextSource ?? (opts.commentId ? "comment.mention" : "issue.mention");
+
       for (const mentionedId of mentions.agentIds) {
         if (opts.wakeups.has(mentionedId)) continue;
         if (opts.actor.actorType === "agent" && opts.actor.actorId === mentionedId) continue;
         opts.wakeups.set(mentionedId, {
           source: "automation",
           triggerDetail: "system",
-          reason: "issue_comment_mentioned",
-          payload: { issueId: opts.issueId, commentId: opts.commentId },
+          reason: mentionWakeReason,
+          payload: {
+            issueId: opts.issueId,
+            ...(opts.commentId ? { commentId: opts.commentId } : {}),
+          },
           requestedByActorType: opts.actor.actorType,
           requestedByActorId: opts.actor.actorId,
           contextSnapshot: {
             issueId: opts.issueId,
             taskId: opts.issueId,
-            commentId: opts.commentId,
-            wakeCommentId: opts.commentId,
-            wakeReason: "issue_comment_mentioned",
-            source: "comment.mention",
+            ...(opts.commentId ? { commentId: opts.commentId, wakeCommentId: opts.commentId } : {}),
+            wakeReason: mentionWakeReason,
+            source: mentionContextSource,
           },
         });
       }
 
       for (const mentionedUserId of mentions.userIds) {
         if (opts.actor.actorType === "user" && opts.actor.actorId === mentionedUserId) continue;
-        logActivity(db, {
+        await logActivity(db, {
           companyId: opts.companyId,
           actorType: opts.actor.actorType,
           actorId: opts.actor.actorId,
@@ -1510,8 +1563,14 @@ export function issueService(db: Db) {
           action: "issue.user_mentioned",
           entityType: "issue",
           entityId: opts.issueId,
-          details: { userId: mentionedUserId, issueId: opts.issueId, commentId: opts.commentId },
-        }).catch((err) => logger.warn({ err, issueId: opts.issueId }, "failed to log user mention activity"));
+          details: {
+            userId: mentionedUserId,
+            issueId: opts.issueId,
+            ...(opts.commentId ? { commentId: opts.commentId } : {}),
+          },
+        }).catch((err) => {
+          logger.warn({ err, issueId: opts.issueId }, "failed to log user mention activity");
+        });
 
         const emailSvc = opts.emailService;
         if (emailSvc?.isConfigured()) {

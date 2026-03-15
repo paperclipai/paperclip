@@ -11,6 +11,7 @@ import { queryKeys } from "../lib/queryKeys";
 import {
   computeInboxBadgeData,
   getRecentTouchedIssues,
+  getUnreadMentions,
   loadDismissedInboxItems,
   saveDismissedInboxItems,
   getUnreadTouchedIssues,
@@ -109,7 +110,7 @@ export function useInboxBadge(companyId: string | null | undefined) {
         heartbeatRuns,
         unreadIssues,
         dismissed,
-        mentionCount: mentionsData.length,
+        mentionCount: getUnreadMentions(mentionsData).length,
       }),
     [approvals, joinRequests, dashboard, heartbeatRuns, unreadIssues, dismissed, mentionsData],
   );

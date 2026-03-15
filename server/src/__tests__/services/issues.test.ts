@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest";
 import { getTestDb, cleanDb, type TestDb } from "../helpers/test-db.js";
 import { issueService } from "../../services/issues.js";
-import { companies, agents, authUsers, companyMemberships, heartbeatRuns } from "@paperclipai/db";
+import { companies, agents, authUsers, companyMemberships, heartbeatRuns, activityLog } from "@paperclipai/db";
 import { randomUUID } from "node:crypto";
+import type { EmailService } from "../../services/email.js";
 
 describe("issueService", () => {
   let testDb: TestDb;
@@ -287,6 +288,263 @@ describe("issueService", () => {
       expect(mentions.agentIds).toContain(fullNameAgent.id);
       expect(mentions.agentIds).not.toContain(shortNameAgent.id);
       expect(mentions.userIds).toEqual([userId]);
+    });
+  });
+
+  describe("processMentionNotifications", () => {
+    async function createMentionTargets() {
+      const [shortNameAgent] = await testDb.db
+        .insert(agents)
+        .values({
+          companyId,
+          name: "Genie",
+          role: "general",
+          adapterType: "process",
+          budgetMonthlyCents: 0,
+          spentMonthlyCents: 0,
+          status: "idle",
+        })
+        .returning();
+
+      const [fullNameAgent] = await testDb.db
+        .insert(agents)
+        .values({
+          companyId,
+          name: "Genie DevRel",
+          role: "general",
+          adapterType: "process",
+          budgetMonthlyCents: 0,
+          spentMonthlyCents: 0,
+          status: "idle",
+        })
+        .returning();
+
+      const userId = `user-${randomUUID()}`;
+      const now = new Date();
+      await testDb.db.insert(authUsers).values({
+        id: userId,
+        name: "Genie Bot",
+        email: "genie.bot@example.com",
+        emailVerified: true,
+        createdAt: now,
+        updatedAt: now,
+      });
+      await testDb.db.insert(companyMemberships).values({
+        companyId,
+        principalType: "user",
+        principalId: userId,
+        status: "active",
+        membershipRole: "contributor",
+      });
+
+      return { shortNameAgent, fullNameAgent, userId };
+    }
+
+    function createMentionEmailService(
+      sentMentions: Array<{ to: string; opts: { issueTitle: string; issueUrl: string; snippet: string } }>,
+    ): EmailService {
+      return {
+        isConfigured: () => true,
+        sendInviteEmail: async (_to, _opts) => {},
+        sendApprovalEmail: async (_to, _opts) => {},
+        sendAssignmentEmail: async (_to, _opts) => {},
+        sendMentionEmail: async (to, opts) => {
+          sentMentions.push({
+            to,
+            opts: {
+              issueTitle: opts.issueTitle,
+              issueUrl: opts.issueUrl,
+              snippet: opts.snippet,
+            },
+          });
+        },
+        sendPasswordResetEmail: async (_to, _opts) => {},
+      };
+    }
+
+    it("logs user mention activity, sends mention email, and queues agent wakeups for create-time descriptions", async () => {
+      const { shortNameAgent, fullNameAgent, userId } = await createMentionTargets();
+      const issue = await svc().create(companyId, {
+        title: "Mentioned issue",
+        status: "todo",
+        description: "Please sync with @Genie DevRel and @Genie Bot today.",
+      });
+      const wakeups = new Map<string, unknown>();
+      const sentMentions: Array<{ to: string; opts: { issueTitle: string; issueUrl: string; snippet: string } }> = [];
+
+      await svc().processMentionNotifications({
+        companyId,
+        issueId: issue.id,
+        issueTitle: issue.title,
+        issueIdentifier: issue.identifier,
+        body: issue.description ?? "",
+        baseUrl: "http://paperclip.test",
+        actor: {
+          actorType: "user",
+          actorId: `user-${randomUUID()}`,
+        },
+        emailService: createMentionEmailService(sentMentions),
+        wakeups,
+        contextSource: "issue.create.mention",
+      });
+
+      const mentionActivity = (await testDb.db.select().from(activityLog))
+        .filter((row) => row.action === "issue.user_mentioned");
+
+      expect(mentionActivity).toHaveLength(1);
+      expect(mentionActivity[0]).toMatchObject({
+        companyId,
+        action: "issue.user_mentioned",
+        entityType: "issue",
+        entityId: issue.id,
+      });
+      expect(mentionActivity[0]?.details).toEqual({
+        userId,
+        issueId: issue.id,
+      });
+
+      expect(wakeups.get(fullNameAgent.id)).toMatchObject({
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_comment_mentioned",
+        payload: { issueId: issue.id },
+        requestedByActorType: "user",
+        contextSnapshot: {
+          issueId: issue.id,
+          taskId: issue.id,
+          wakeReason: "issue_comment_mentioned",
+          source: "issue.create.mention",
+        },
+      });
+      expect(wakeups.has(shortNameAgent.id)).toBe(false);
+
+      expect(sentMentions).toEqual([
+        {
+          to: "genie.bot@example.com",
+          opts: {
+            issueTitle: issue.title,
+            issueUrl: `http://paperclip.test/issues/${issue.identifier}`,
+            snippet: "Please sync with @Genie DevRel and @Genie Bot today.",
+          },
+        },
+      ]);
+    });
+
+    it("preserves comment mention payloads when commentId is provided", async () => {
+      const { fullNameAgent, userId } = await createMentionTargets();
+      const issue = await svc().create(companyId, {
+        title: "Mentioned issue",
+        status: "todo",
+      });
+      const wakeups = new Map<string, unknown>();
+
+      await svc().processMentionNotifications({
+        companyId,
+        issueId: issue.id,
+        issueTitle: issue.title,
+        issueIdentifier: issue.identifier,
+        commentId: "comment-1",
+        body: "Please sync with @Genie DevRel and @Genie Bot today.",
+        baseUrl: "http://paperclip.test",
+        actor: {
+          actorType: "user",
+          actorId: `user-${randomUUID()}`,
+        },
+        wakeups,
+      });
+
+      const mentionActivity = (await testDb.db.select().from(activityLog))
+        .filter((row) => row.action === "issue.user_mentioned");
+
+      expect(mentionActivity).toHaveLength(1);
+      expect(mentionActivity[0]?.details).toEqual({
+        userId,
+        issueId: issue.id,
+        commentId: "comment-1",
+      });
+
+      expect(wakeups.get(fullNameAgent.id)).toMatchObject({
+        reason: "issue_comment_mentioned",
+        payload: {
+          issueId: issue.id,
+          commentId: "comment-1",
+        },
+        contextSnapshot: {
+          issueId: issue.id,
+          taskId: issue.id,
+          commentId: "comment-1",
+          wakeCommentId: "comment-1",
+          wakeReason: "issue_comment_mentioned",
+          source: "comment.mention",
+        },
+      });
+    });
+
+    it("derives unread mention state from issue read state and mention timing", async () => {
+      const { userId } = await createMentionTargets();
+      const issue = await svc().create(companyId, {
+        title: "Mentioned issue",
+        status: "todo",
+      });
+
+      await svc().processMentionNotifications({
+        companyId,
+        issueId: issue.id,
+        issueTitle: issue.title,
+        issueIdentifier: issue.identifier,
+        commentId: "comment-1",
+        body: "Please sync with @Genie Bot today.",
+        baseUrl: "http://paperclip.test",
+        actor: {
+          actorType: "user",
+          actorId: `user-${randomUUID()}`,
+        },
+        wakeups: new Map<string, unknown>(),
+      });
+
+      const mentionsBeforeRead = await svc().listMentions(companyId, userId);
+      const firstMention = mentionsBeforeRead.find((mention) => mention.commentId === "comment-1");
+
+      expect(firstMention).toMatchObject({
+        issueId: issue.id,
+        commentId: "comment-1",
+        isUnread: true,
+      });
+
+      // Mark read at current wall-clock time (well after the first mention)
+      // then wait briefly so the second mention gets a strictly later DB timestamp.
+      await svc().markRead(companyId, issue.id, userId, new Date());
+      await new Promise((r) => setTimeout(r, 50));
+
+      await svc().processMentionNotifications({
+        companyId,
+        issueId: issue.id,
+        issueTitle: issue.title,
+        issueIdentifier: issue.identifier,
+        commentId: "comment-2",
+        body: "Second ping for @Genie Bot.",
+        baseUrl: "http://paperclip.test",
+        actor: {
+          actorType: "user",
+          actorId: `user-${randomUUID()}`,
+        },
+        wakeups: new Map<string, unknown>(),
+      });
+
+      const mentionsAfterRead = await svc().listMentions(companyId, userId);
+      const readMention = mentionsAfterRead.find((mention) => mention.commentId === "comment-1");
+      const unreadMention = mentionsAfterRead.find((mention) => mention.commentId === "comment-2");
+
+      expect(readMention).toMatchObject({
+        issueId: issue.id,
+        commentId: "comment-1",
+        isUnread: false,
+      });
+      expect(unreadMention).toMatchObject({
+        issueId: issue.id,
+        commentId: "comment-2",
+        isUnread: true,
+      });
     });
   });
 });

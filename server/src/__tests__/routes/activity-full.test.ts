@@ -15,6 +15,7 @@ const mockActivityService = vi.hoisted(() => ({
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   getByIdentifier: vi.fn(),
+  listMentions: vi.fn(),
 }));
 
 vi.mock("../../services/activity.js", () => ({
@@ -130,6 +131,46 @@ describe("activityRoutes", () => {
       mockActivityService.issuesForRun.mockResolvedValue([{ id: "issue-1" }]);
       const res = await request(createApp()).get("/api/heartbeat-runs/run-1/issues");
       expect(res.status).toBe(200);
+    });
+  });
+
+  describe("GET /companies/:companyId/mentions", () => {
+    it("lists mentions with unread state for the current user", async () => {
+      mockIssueService.listMentions.mockResolvedValue([
+        {
+          issueId: "issue-1",
+          identifier: "PAP-1",
+          title: "Mentioned issue",
+          status: "todo",
+          priority: "medium",
+          mentionedAt: new Date("2026-03-15T15:00:00.000Z"),
+          commentId: "comment-1",
+          isUnread: true,
+        },
+      ]);
+
+      const res = await request(createApp()).get("/api/companies/company-1/mentions?userId=me");
+
+      expect(res.status).toBe(200);
+      expect(mockIssueService.listMentions).toHaveBeenCalledWith("company-1", "user-1");
+      expect(res.body).toEqual([
+        expect.objectContaining({
+          issueId: "issue-1",
+          identifier: "PAP-1",
+          title: "Mentioned issue",
+          commentId: "comment-1",
+          isUnread: true,
+        }),
+      ]);
+    });
+
+    it("rejects userId=me without board auth", async () => {
+      const res = await request(
+        createApp({ type: "agent", agentId: "agent-1", companyId: "company-1" }),
+      ).get("/api/companies/company-1/mentions?userId=me");
+
+      expect(res.status).toBe(403);
+      expect(mockIssueService.listMentions).not.toHaveBeenCalled();
     });
   });
 });

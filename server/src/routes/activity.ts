@@ -1,8 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
-import { and, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, issues } from "@paperclipai/db";
 import { validate } from "../middleware/validate.js";
 import { activityService } from "../services/activity.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
@@ -104,34 +102,7 @@ export function activityRoutes(db: Db) {
       return;
     }
 
-    const mentionActivities = await db
-      .select({
-        issueId: issues.id,
-        identifier: issues.identifier,
-        title: issues.title,
-        status: issues.status,
-        priority: issues.priority,
-        mentionedAt: activityLog.createdAt,
-        commentId: sql<string>`${activityLog.details} ->> 'commentId'`,
-      })
-      .from(activityLog)
-      .innerJoin(
-        issues,
-        and(
-          eq(activityLog.entityType, sql`'issue'`),
-          eq(activityLog.entityId, sql<string>`${issues.id}::text`),
-        ),
-      )
-      .where(
-        and(
-          eq(activityLog.companyId, companyId),
-          eq(activityLog.action, "issue.user_mentioned"),
-          sql`${activityLog.details} ->> 'userId' = ${userId}`,
-        ),
-      )
-      .orderBy(desc(activityLog.createdAt))
-      .limit(100);
-
+    const mentionActivities = await issueSvc.listMentions(companyId, userId);
     res.json(mentionActivities);
   });
 

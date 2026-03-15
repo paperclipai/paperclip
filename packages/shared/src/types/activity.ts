@@ -1,3 +1,5 @@
+import type { IssuePriority, IssueStatus } from "../constants.js";
+
 export interface ActivityEvent {
   id: string;
   companyId: string;
@@ -10,4 +12,15 @@ export interface ActivityEvent {
   runId: string | null;
   details: Record<string, unknown> | null;
   createdAt: Date;
+}
+
+export interface MentionEntry {
+  issueId: string;
+  identifier: string | null;
+  title: string;
+  status: IssueStatus;
+  priority: IssuePriority;
+  mentionedAt: string;
+  commentId: string | null;
+  isUnread: boolean;
 }
