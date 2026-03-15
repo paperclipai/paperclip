@@ -1,4 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
+
+function getDefaultShell(): string {
+  return process.platform === "win32" ? "sh" : "/bin/sh";
+}
 import fs from "node:fs/promises";
 import net from "node:net";
 import { createHash, randomUUID } from "node:crypto";
@@ -273,7 +277,7 @@ async function runWorkspaceCommand(input: {
   env: NodeJS.ProcessEnv;
   label: string;
 }) {
-  const shell = process.env.SHELL?.trim() || "/bin/sh";
+  const shell = process.env.SHELL?.trim() || getDefaultShell();
   const proc = await new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve, reject) => {
     const child = spawn(shell, ["-c", input.command], {
       cwd: input.cwd,
@@ -693,7 +697,7 @@ async function startLocalRuntimeService(input: {
     const portEnvKey = asString(portConfig.envKey, "PORT");
     env[portEnvKey] = String(port);
   }
-  const shell = process.env.SHELL?.trim() || "/bin/sh";
+  const shell = process.env.SHELL?.trim() || getDefaultShell();
   const child = spawn(shell, ["-lc", command], {
     cwd: serviceCwd,
     env,
