@@ -14,6 +14,7 @@ import {
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
   ensurePathInEnv,
+  symlinkOrJunction,
   renderTemplate,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -69,7 +70,7 @@ async function ensureOpenCodeSkillsInjected(onLog: AdapterExecutionContext["onLo
     if (existing) continue;
 
     try {
-      await fs.symlink(source, target);
+      await symlinkOrJunction(source, target);
       await onLog(
         "stderr",
         `[paperclip] Injected OpenCode skill "${entry.name}" into ${skillsHome}\n`,
