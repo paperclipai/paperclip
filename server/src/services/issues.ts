@@ -447,7 +447,12 @@ export function issueService(db: Db) {
 
     const agentRows = await db.select({ id: agents.id, name: agents.name })
       .from(agents).where(eq(agents.companyId, companyId));
-    const agentIds = agentRows.filter(a => tokens.has(a.name.toLowerCase())).map(a => a.id);
+    const agentIds = agentRows.filter(a => {
+      const nameLower = a.name.toLowerCase();
+      if (tokens.has(nameLower)) return true;
+      const nameParts = nameLower.split(/\s+/);
+      return nameParts.some(part => tokens.has(part));
+    }).map(a => a.id);
 
     const userRows = await db
       .select({ id: authUsers.id, name: authUsers.name })
@@ -459,7 +464,13 @@ export function issueService(db: Db) {
           eq(companyMemberships.principalType, "user"),
         ),
       );
-    const userIds = userRows.filter(u => tokens.has(u.name.toLowerCase())).map(u => u.id);
+    const userIds = userRows.filter(u => {
+      if (!u.name) return false;
+      const nameLower = u.name.toLowerCase();
+      if (tokens.has(nameLower)) return true;
+      const nameParts = nameLower.split(/\s+/);
+      return nameParts.some(part => tokens.has(part));
+    }).map(u => u.id);
 
     return { agentIds, userIds };
   }
