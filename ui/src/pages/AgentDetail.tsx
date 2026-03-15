@@ -12,6 +12,7 @@ import { useSidebar } from "../context/SidebarContext";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useToast } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { AgentConfigForm } from "../components/AgentConfigForm";
 import { PageTabBar } from "../components/PageTabBar";
@@ -1044,6 +1045,7 @@ function ConfigurationTab({
   updatePermissions: { mutate: (canCreate: boolean) => void; isPending: boolean };
 }) {
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
   const [awaitingRefreshAfterSave, setAwaitingRefreshAfterSave] = useState(false);
   const lastAgentRef = useRef(agent);
 
@@ -1066,8 +1068,19 @@ function ConfigurationTab({
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.configRevisions(agent.id) });
     },
-    onError: () => {
+    onError: (error: unknown) => {
       setAwaitingRefreshAfterSave(false);
+      // Show user-friendly error message
+      let errorMessage = "Failed to save configuration";
+      if (error instanceof ApiError) {
+        const body = error.body as { error?: string } | undefined;
+        if (body?.error) {
+          errorMessage = body.error;
+        }
+      } else if (error instanceof Error) {
+        errorMessage = error.message;
+      }
+      pushToast({ title: "Save failed", body: errorMessage, tone: "error" });
     },
   });
 
