@@ -15,6 +15,7 @@ import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
 import { goalRoutes } from "./routes/goals.js";
+import { agentMemoryRoutes } from "./routes/agent-memories.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { secretRoutes } from "./routes/secrets.js";
 import { costRoutes } from "./routes/costs.js";
@@ -132,6 +133,7 @@ export async function createApp(
   api.use(projectRoutes(db));
   api.use(issueRoutes(db, opts.storageService));
   api.use(goalRoutes(db));
+  api.use(agentMemoryRoutes(db));
   api.use(approvalRoutes(db));
   api.use(secretRoutes(db));
   api.use(costRoutes(db));

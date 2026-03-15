@@ -7,6 +7,7 @@ export { issueService, type IssueFilters } from "./issues.js";
 export { issueApprovalService } from "./issue-approvals.js";
 export { goalService } from "./goals.js";
 export { activityService, type ActivityFilters } from "./activity.js";
+export { agentMemoryService } from "./agent-memories.js";
 export { approvalService } from "./approvals.js";
 export { secretService } from "./secrets.js";
 export { costService } from "./costs.js";
