@@ -226,6 +226,8 @@ export async function createApp(
     ];
     const uiDist = candidates.find((p) => fs.existsSync(path.join(p, "index.html")));
     if (uiDist) {
+      // Read the file once so fallback routing does not depend on sendFile
+      // semantics for install paths that may contain dotfile segments such as ".npm".
       const indexHtml = applyUiBranding(fs.readFileSync(path.join(uiDist, "index.html"), "utf-8"));
       app.use(express.static(uiDist));
       app.get(/.*/, (_req, res) => {
