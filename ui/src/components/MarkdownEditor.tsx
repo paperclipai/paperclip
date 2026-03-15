@@ -28,6 +28,7 @@ import {
   type RealmPlugin,
 } from "@mdxeditor/editor";
 import { buildProjectMentionHref, parseProjectMentionHref } from "@paperclipai/shared";
+import { detectMention, type MentionState } from "./markdownMentionUtils";
 import { cn } from "../lib/utils";
 
 /* ---- Mention types ---- */
@@ -63,15 +64,6 @@ export interface MarkdownEditorRef {
 
 /* ---- Mention detection helpers ---- */
 
-interface MentionState {
-  query: string;
-  top: number;
-  left: number;
-  textNode: Text;
-  atPos: number;
-  endPos: number;
-}
-
 const CODE_BLOCK_LANGUAGES: Record<string, string> = {
   txt: "Text",
   md: "Markdown",
@@ -99,52 +91,6 @@ const FALLBACK_CODE_BLOCK_DESCRIPTOR: CodeBlockEditorDescriptor = {
   match: () => true,
   Editor: CodeMirrorEditor,
 };
-
-function detectMention(container: HTMLElement): MentionState | null {
-  const sel = window.getSelection();
-  if (!sel || sel.rangeCount === 0 || !sel.isCollapsed) return null;
-
-  const range = sel.getRangeAt(0);
-  const textNode = range.startContainer;
-  if (textNode.nodeType !== Node.TEXT_NODE) return null;
-  if (!container.contains(textNode)) return null;
-
-  const text = textNode.textContent ?? "";
-  const offset = range.startOffset;
-
-  // Walk backwards from cursor to find @
-  let atPos = -1;
-  for (let i = offset - 1; i >= 0; i--) {
-    const ch = text[i];
-    if (ch === "@") {
-      if (i === 0 || /\s/.test(text[i - 1])) {
-        atPos = i;
-      }
-      break;
-    }
-    if (/\s/.test(ch)) break;
-  }
-
-  if (atPos === -1) return null;
-
-  const query = text.slice(atPos + 1, offset);
-
-  // Get position relative to container
-  const tempRange = document.createRange();
-  tempRange.setStart(textNode, atPos);
-  tempRange.setEnd(textNode, atPos + 1);
-  const rect = tempRange.getBoundingClientRect();
-  const containerRect = container.getBoundingClientRect();
-
-  return {
-    query,
-    top: rect.bottom - containerRect.top,
-    left: rect.left - containerRect.left,
-    textNode: textNode as Text,
-    atPos,
-    endPos: offset,
-  };
-}
 
 function mentionMarkdown(option: MentionOption): string {
   if (option.kind === "project" && option.projectId) {
@@ -397,10 +343,20 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       // lands after the inserted text. Lexical picks up the change through
       // its normal input-event handling.
       const sel = window.getSelection();
-      if (sel && state.textNode.isConnected) {
+      if (
+        sel
+        && state.textNode
+        && state.atPos !== null
+        && state.endPos !== null
+        && state.textNode.isConnected
+      ) {
+        const textNode = state.textNode;
+        const atPos = state.atPos;
+        const endPos = state.endPos;
+
         const range = document.createRange();
-        range.setStart(state.textNode, state.atPos);
-        range.setEnd(state.textNode, state.endPos);
+        range.setStart(textNode, atPos);
+        range.setEnd(textNode, endPos);
         sel.removeAllRanges();
         sel.addRange(range);
         document.execCommand("insertText", false, replacement);
@@ -408,16 +364,16 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         // After Lexical reconciles the DOM, the cursor position set by
         // execCommand may be lost. Explicitly reposition it after the
         // inserted mention text.
-        const cursorTarget = state.atPos + replacement.length;
+        const cursorTarget = atPos + replacement.length;
         requestAnimationFrame(() => {
           const newSel = window.getSelection();
           if (!newSel) return;
           // Try the original text node first (it may still be valid)
-          if (state.textNode.isConnected) {
-            const len = state.textNode.textContent?.length ?? 0;
+          if (textNode.isConnected) {
+            const len = textNode.textContent?.length ?? 0;
             if (cursorTarget <= len) {
               const r = document.createRange();
-              r.setStart(state.textNode, cursorTarget);
+              r.setStart(textNode, cursorTarget);
               r.collapse(true);
               newSel.removeAllRanges();
               newSel.addRange(r);
