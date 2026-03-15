@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import type { BillingType } from "@paperclipai/shared";
 import {
   agents,
   agentRuntimeState,
@@ -22,6 +23,7 @@ import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
+import { budgetService } from "./budgets.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import { summarizeHeartbeatRunResultJson } from "./heartbeat-run-summary.js";
@@ -168,6 +170,67 @@ export type ResolvedWorkspaceForRun = {
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function normalizeLedgerBillingType(value: unknown): BillingType {
+  const raw = readNonEmptyString(value);
+  switch (raw) {
+    case "api":
+    case "metered_api":
+      return "metered_api";
+    case "subscription":
+    case "subscription_included":
+      return "subscription_included";
+    case "subscription_overage":
+      return "subscription_overage";
+    case "credits":
+      return "credits";
+    case "fixed":
+      return "fixed";
+    default:
+      return "unknown";
+  }
+}
+
+function resolveLedgerBiller(result: AdapterExecutionResult): string {
+  return readNonEmptyString(result.biller) ?? readNonEmptyString(result.provider) ?? "unknown";
+}
+
+function normalizeBilledCostCents(costUsd: number | null | undefined, billingType: BillingType): number {
+  if (billingType === "subscription_included") return 0;
+  if (typeof costUsd !== "number" || !Number.isFinite(costUsd)) return 0;
+  return Math.max(0, Math.round(costUsd * 100));
+}
+
+async function resolveLedgerScopeForRun(
+  db: Db,
+  companyId: string,
+  run: typeof heartbeatRuns.$inferSelect,
+) {
+  const context = parseObject(run.contextSnapshot);
+  const contextIssueId = readNonEmptyString(context.issueId);
+  const contextProjectId = readNonEmptyString(context.projectId);
+
+  if (!contextIssueId) {
+    return {
+      issueId: null,
+      projectId: contextProjectId,
+    };
+  }
+
+  const issue = await db
+    .select({
+      id: issues.id,
+      projectId: issues.projectId,
+    })
+    .from(issues)
+    .where(and(eq(issues.id, contextIssueId), eq(issues.companyId, companyId)))
+    .then((rows) => rows[0] ?? null);
+
+  return {
+    issueId: issue?.id ?? null,
+    projectId: issue?.projectId ?? contextProjectId,
+  };
 }
 
 function normalizeUsageTotals(usage: UsageSummary | null | undefined): UsageTotals | null {
@@ -554,6 +617,7 @@ function resolveNextSessionState(input: {
 
 export function heartbeatService(db: Db) {
   const runLogStore = getRunLogStore();
+  const budgets = budgetService(db);
   const secretsSvc = secretService(db);
   const issuesSvc = issueService(db);
   const activeRunExecutions = new Set<string>();
@@ -1294,8 +1358,12 @@ export function heartbeatService(db: Db) {
     const inputTokens = usage?.inputTokens ?? 0;
     const outputTokens = usage?.outputTokens ?? 0;
     const cachedInputTokens = usage?.cachedInputTokens ?? 0;
-    const additionalCostCents = Math.max(0, Math.round((result.costUsd ?? 0) * 100));
+    const billingType = normalizeLedgerBillingType(result.billingType);
+    const additionalCostCents = normalizeBilledCostCents(result.costUsd, billingType);
     const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
+    const provider = result.provider ?? "unknown";
+    const biller = resolveLedgerBiller(result);
+    const ledgerScope = await resolveLedgerScopeForRun(db, agent.companyId, run);
 
     await db
       .update(agentRuntimeState)
@@ -1316,10 +1384,16 @@ export function heartbeatService(db: Db) {
     if (additionalCostCents > 0 || hasTokenUsage) {
       const costs = costService(db);
       await costs.createEvent(agent.companyId, {
+        heartbeatRunId: run.id,
         agentId: agent.id,
-        provider: result.provider ?? "unknown",
+        issueId: ledgerScope.issueId,
+        projectId: ledgerScope.projectId,
+        provider,
+        biller,
+        billingType,
         model: result.model ?? "unknown",
         inputTokens,
+        cachedInputTokens,
         outputTokens,
         costCents: additionalCostCents,
         occurredAt: new Date(),
@@ -1875,8 +1949,11 @@ export function heartbeatService(db: Db) {
               freshSession: runtimeForAdapter.sessionId == null && runtimeForAdapter.sessionDisplayId == null,
               sessionRotated: sessionCompaction.rotate,
               sessionRotationReason: sessionCompaction.reason,
+              provider: readNonEmptyString(adapterResult.provider) ?? "unknown",
+              biller: resolveLedgerBiller(adapterResult),
+              model: readNonEmptyString(adapterResult.model) ?? "unknown",
               ...(adapterResult.costUsd != null ? { costUsd: adapterResult.costUsd } : {}),
-              ...(adapterResult.billingType ? { billingType: adapterResult.billingType } : {}),
+              billingType: normalizeLedgerBillingType(adapterResult.billingType),
             } as Record<string, unknown>)
           : null;
 
@@ -2226,6 +2303,43 @@ export function heartbeatService(db: Db) {
     const agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
 
+    const writeSkippedRequest = async (skipReason: string) => {
+      await db.insert(agentWakeupRequests).values({
+        companyId: agent.companyId,
+        agentId,
+        source,
+        triggerDetail,
+        reason: skipReason,
+        payload,
+        status: "skipped",
+        requestedByActorType: opts.requestedByActorType ?? null,
+        requestedByActorId: opts.requestedByActorId ?? null,
+        idempotencyKey: opts.idempotencyKey ?? null,
+        finishedAt: new Date(),
+      });
+    };
+
+    let projectId = readNonEmptyString(enrichedContextSnapshot.projectId);
+    if (!projectId && issueId) {
+      projectId = await db
+        .select({ projectId: issues.projectId })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
+        .then((rows) => rows[0]?.projectId ?? null);
+    }
+
+    const budgetBlock = await budgets.getInvocationBlock(agent.companyId, agentId, {
+      issueId,
+      projectId,
+    });
+    if (budgetBlock) {
+      await writeSkippedRequest("budget.blocked");
+      throw conflict(budgetBlock.reason, {
+        scopeType: budgetBlock.scopeType,
+        scopeId: budgetBlock.scopeId,
+      });
+    }
+
     if (
       agent.status === "paused" ||
       agent.status === "terminated" ||
@@ -2235,21 +2349,6 @@ export function heartbeatService(db: Db) {
     }
 
     const policy = parseHeartbeatPolicy(agent);
-    const writeSkippedRequest = async (reason: string) => {
-      await db.insert(agentWakeupRequests).values({
-        companyId: agent.companyId,
-        agentId,
-        source,
-        triggerDetail,
-        reason,
-        payload,
-        status: "skipped",
-        requestedByActorType: opts.requestedByActorType ?? null,
-        requestedByActorId: opts.requestedByActorId ?? null,
-        idempotencyKey: opts.idempotencyKey ?? null,
-        finishedAt: new Date(),
-      });
-    };
 
     if (source === "timer" && !policy.enabled) {
       await writeSkippedRequest("heartbeat.disabled");

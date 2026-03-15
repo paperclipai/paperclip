@@ -1,5 +1,6 @@
 import type {
   AgentAdapterType,
+  PauseReason,
   AgentRole,
   AgentStatus,
 } from "../constants.js";
@@ -24,6 +25,8 @@ export interface Agent {
   runtimeConfig: Record<string, unknown>;
   budgetMonthlyCents: number;
   spentMonthlyCents: number;
+  pauseReason: PauseReason | null;
+  pausedAt: Date | null;
   permissions: AgentPermissions;
   lastHeartbeatAt: Date | null;
   metadata: Record<string, unknown> | null;

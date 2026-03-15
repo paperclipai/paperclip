@@ -30,7 +30,15 @@ export interface UsageSummary {
   cachedInputTokens?: number;
 }
 
-export type AdapterBillingType = "api" | "subscription" | "unknown";
+export type AdapterBillingType =
+  | "api"
+  | "subscription"
+  | "metered_api"
+  | "subscription_included"
+  | "subscription_overage"
+  | "credits"
+  | "fixed"
+  | "unknown";
 
 export interface AdapterRuntimeServiceReport {
   id?: string | null;
@@ -68,6 +76,7 @@ export interface AdapterExecutionResult {
   sessionParams?: Record<string, unknown> | null;
   sessionDisplayId?: string | null;
   provider?: string | null;
+  biller?: string | null;
   model?: string | null;
   billingType?: AdapterBillingType | null;
   costUsd?: number | null;
@@ -171,6 +180,37 @@ export interface HireApprovedHookResult {
   detail?: Record<string, unknown>;
 }
 
+// ---------------------------------------------------------------------------
+// Quota window types — used by adapters that can report provider quota/rate-limit state
+// ---------------------------------------------------------------------------
+
+/** a single rate-limit or usage window returned by a provider quota API */
+export interface QuotaWindow {
+  /** human label, e.g. "5h", "7d", "Sonnet 7d", "Credits" */
+  label: string;
+  /** percent of the window already consumed (0-100), null when not reported */
+  usedPercent: number | null;
+  /** iso timestamp when this window resets, null when not reported */
+  resetsAt: string | null;
+  /** free-form value label for credit-style windows, e.g. "$4.20 remaining" */
+  valueLabel: string | null;
+  /** optional supporting text, e.g. reset details or provider-specific notes */
+  detail?: string | null;
+}
+
+/** result for one provider from getQuotaWindows() */
+export interface ProviderQuotaResult {
+  /** provider slug, e.g. "anthropic", "openai" */
+  provider: string;
+  /** source label when the provider reports where the quota data came from */
+  source?: string | null;
+  /** true when the fetch succeeded and windows is populated */
+  ok: boolean;
+  /** error message when ok is false */
+  error?: string;
+  windows: QuotaWindow[];
+}
+
 export interface ServerAdapterModule {
   type: string;
   execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult>;
@@ -188,6 +228,12 @@ export interface ServerAdapterModule {
     payload: HireApprovedPayload,
     adapterConfig: Record<string, unknown>,
   ) => Promise<HireApprovedHookResult>;
+  /**
+   * Optional: fetch live provider quota/rate-limit windows for this adapter.
+   * Returns a ProviderQuotaResult so the server can aggregate across adapters
+   * without knowing provider-specific credential paths or API shapes.
+   */
+  getQuotaWindows?: () => Promise<ProviderQuotaResult>;
 }
 
 // ---------------------------------------------------------------------------

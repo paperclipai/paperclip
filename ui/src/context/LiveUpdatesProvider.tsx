@@ -413,6 +413,10 @@ function invalidateActivityQueries(
 
   if (entityType === "cost_event") {
     queryClient.invalidateQueries({ queryKey: queryKeys.costs(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.usageByProvider(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.usageWindowSpend(companyId) });
+    // usageQuotaWindows is intentionally excluded: quota windows come from external provider
+    // apis on a 5-minute poll and do not change in response to cost events logged by agents
     return;
   }
 

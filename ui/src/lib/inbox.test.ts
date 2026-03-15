@@ -164,6 +164,12 @@ const dashboard: DashboardSummary = {
     monthUtilizationPercent: 90,
   },
   pendingApprovals: 1,
+  budgets: {
+    activeIncidents: 0,
+    pendingApprovals: 0,
+    pausedAgents: 0,
+    pausedProjects: 0,
+  },
 };
 
 describe("inbox helpers", () => {

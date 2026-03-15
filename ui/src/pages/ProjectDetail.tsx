@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, useLocation, Navigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { PROJECT_COLORS, isUuidLike } from "@paperclipai/shared";
+import { PROJECT_COLORS, isUuidLike, type BudgetPolicySummary } from "@paperclipai/shared";
+import { budgetsApi } from "../api/budgets";
 import { projectsApi } from "../api/projects";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
@@ -14,6 +15,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { ProjectProperties, type ProjectConfigFieldKey, type ProjectFieldSaveState } from "../components/ProjectProperties";
 import { InlineEditor } from "../components/InlineEditor";
 import { StatusBadge } from "../components/StatusBadge";
+import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
 import { IssuesList } from "../components/IssuesList";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
@@ -281,6 +283,14 @@ export function ProjectDetail() {
     },
   });
 
+  const { data: budgetOverview } = useQuery({
+    queryKey: queryKeys.budgets.overview(resolvedCompanyId ?? "__none__"),
+    queryFn: () => budgetsApi.overview(resolvedCompanyId!),
+    enabled: !!resolvedCompanyId,
+    refetchInterval: 30_000,
+    staleTime: 5_000,
+  });
+
   useEffect(() => {
     setBreadcrumbs([
       { label: "Projects", href: "/projects" },
@@ -361,6 +371,53 @@ export function ProjectDetail() {
       throw error;
     }
   }, [invalidateProject, lookupCompanyId, projectLookupRef, resolvedCompanyId, scheduleFieldReset, setFieldState]);
+
+  const projectBudgetSummary = useMemo(() => {
+    const matched = budgetOverview?.policies.find(
+      (policy) => policy.scopeType === "project" && policy.scopeId === (project?.id ?? routeProjectRef),
+    );
+    if (matched) return matched;
+    return {
+      policyId: "",
+      companyId: resolvedCompanyId ?? "",
+      scopeType: "project",
+      scopeId: project?.id ?? routeProjectRef,
+      scopeName: project?.name ?? "Project",
+      metric: "billed_cents",
+      windowKind: "lifetime",
+      amount: 0,
+      observedAmount: 0,
+      remainingAmount: 0,
+      utilizationPercent: 0,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: true,
+      isActive: false,
+      status: "ok",
+      paused: Boolean(project?.pausedAt),
+      pauseReason: project?.pauseReason ?? null,
+      windowStart: new Date(),
+      windowEnd: new Date(),
+    } satisfies BudgetPolicySummary;
+  }, [budgetOverview?.policies, project, resolvedCompanyId, routeProjectRef]);
+
+  const budgetMutation = useMutation({
+    mutationFn: (amount: number) =>
+      budgetsApi.upsertPolicy(resolvedCompanyId!, {
+        scopeType: "project",
+        scopeId: project?.id ?? routeProjectRef,
+        amount,
+        windowKind: "lifetime",
+      }),
+    onSuccess: () => {
+      if (!resolvedCompanyId) return;
+      queryClient.invalidateQueries({ queryKey: queryKeys.budgets.overview(resolvedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(routeProjectRef) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(projectLookupRef) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(resolvedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(resolvedCompanyId) });
+    },
+  });
 
   if (pluginTabFromSearch && !pluginDetailSlotsLoading && !activePluginTab) {
     return <Navigate to={`/projects/${canonicalProjectRef}/issues`} replace />;
@@ -453,6 +510,15 @@ export function ProjectDetail() {
           onValueChange={(value) => handleTabChange(value as ProjectTab)}
         />
       </Tabs>
+
+      {resolvedCompanyId ? (
+        <BudgetPolicyCard
+          summary={projectBudgetSummary}
+          compact
+          isSaving={budgetMutation.isPending}
+          onSave={(amount) => budgetMutation.mutate(amount)}
+        />
+      ) : null}
 
       {activeTab === "overview" && (
         <OverviewContent

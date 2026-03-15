@@ -17,6 +17,8 @@ export type {
   HireApprovedPayload,
   HireApprovedHookResult,
   ServerAdapterModule,
+  QuotaWindow,
+  ProviderQuotaResult,
   TranscriptEntry,
   StdoutLineParser,
   CLIAdapterModule,
@@ -28,3 +30,4 @@ export {
   redactHomePathUserSegmentsInValue,
   redactTranscriptEntryPaths,
 } from "./log-redaction.js";
+export { inferOpenAiCompatibleBiller } from "./billing.js";

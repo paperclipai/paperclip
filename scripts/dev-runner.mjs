@@ -46,6 +46,30 @@ if (tailscaleAuth) {
 
 const pnpmBin = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 
+function toError(error, context = "Dev runner command failed") {
+  if (error instanceof Error) return error;
+  if (error === undefined) return new Error(context);
+  if (typeof error === "string") return new Error(`${context}: ${error}`);
+
+  try {
+    return new Error(`${context}: ${JSON.stringify(error)}`);
+  } catch {
+    return new Error(`${context}: ${String(error)}`);
+  }
+}
+
+process.on("uncaughtException", (error) => {
+  const err = toError(error, "Uncaught exception in dev runner");
+  process.stderr.write(`${err.stack ?? err.message}\n`);
+  process.exit(1);
+});
+
+process.on("unhandledRejection", (reason) => {
+  const err = toError(reason, "Unhandled promise rejection in dev runner");
+  process.stderr.write(`${err.stack ?? err.message}\n`);
+  process.exit(1);
+});
+
 function formatPendingMigrationSummary(migrations) {
   if (migrations.length === 0) return "none";
   return migrations.length > 3
@@ -96,7 +120,11 @@ async function maybePreflightMigrations() {
     { env },
   );
   if (status.code !== 0) {
-    process.stderr.write(status.stderr || status.stdout);
+    process.stderr.write(
+      status.stderr ||
+        status.stdout ||
+        `[paperclip] Command failed with code ${status.code}: pnpm --filter @paperclipai/db exec tsx src/migration-status.ts --json\n`,
+    );
     process.exit(status.code);
   }
 
@@ -104,8 +132,12 @@ async function maybePreflightMigrations() {
   try {
     payload = JSON.parse(status.stdout.trim());
   } catch (error) {
-    process.stderr.write(status.stderr || status.stdout);
-    throw error;
+    process.stderr.write(
+      status.stderr ||
+        status.stdout ||
+        "[paperclip] migration-status returned invalid JSON payload\n",
+    );
+    throw toError(error, "Unable to parse migration-status JSON output");
   }
 
   if (payload.status !== "needsMigrations" || payload.pendingMigrations.length === 0) {

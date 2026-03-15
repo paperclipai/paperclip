@@ -43,6 +43,9 @@ export const queryKeys = {
     list: (companyId: string) => ["goals", companyId] as const,
     detail: (id: string) => ["goals", "detail", id] as const,
   },
+  budgets: {
+    overview: (companyId: string) => ["budgets", "overview", companyId] as const,
+  },
   approvals: {
     list: (companyId: string, status?: string) =>
       ["approvals", companyId, status] as const,
@@ -71,6 +74,22 @@ export const queryKeys = {
   activity: (companyId: string) => ["activity", companyId] as const,
   costs: (companyId: string, from?: string, to?: string) =>
     ["costs", companyId, from, to] as const,
+  usageByProvider: (companyId: string, from?: string, to?: string) =>
+    ["usage-by-provider", companyId, from, to] as const,
+  usageByBiller: (companyId: string, from?: string, to?: string) =>
+    ["usage-by-biller", companyId, from, to] as const,
+  financeSummary: (companyId: string, from?: string, to?: string) =>
+    ["finance-summary", companyId, from, to] as const,
+  financeByBiller: (companyId: string, from?: string, to?: string) =>
+    ["finance-by-biller", companyId, from, to] as const,
+  financeByKind: (companyId: string, from?: string, to?: string) =>
+    ["finance-by-kind", companyId, from, to] as const,
+  financeEvents: (companyId: string, from?: string, to?: string, limit: number = 100) =>
+    ["finance-events", companyId, from, to, limit] as const,
+  usageWindowSpend: (companyId: string) =>
+    ["usage-window-spend", companyId] as const,
+  usageQuotaWindows: (companyId: string) =>
+    ["usage-quota-windows", companyId] as const,
   heartbeats: (companyId: string, agentId?: string) =>
     ["heartbeats", companyId, agentId] as const,
   runDetail: (runId: string) => ["heartbeat-run", runId] as const,

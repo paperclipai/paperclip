@@ -211,6 +211,20 @@
       "when": 1773417600000,
       "tag": "0029_plugin_tables",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1773511922713,
+      "tag": "0030_zippy_magma",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1773542934499,
+      "tag": "0031_pretty_doctor_octopus",
+      "breakpoints": true
     }
   ]
 }

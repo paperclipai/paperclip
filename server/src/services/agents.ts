@@ -360,14 +360,19 @@ export function agentService(db: Db) {
 
     update: updateAgent,
 
-    pause: async (id: string) => {
+    pause: async (id: string, reason: "manual" | "budget" | "system" = "manual") => {
       const existing = await getById(id);
       if (!existing) return null;
       if (existing.status === "terminated") throw conflict("Cannot pause terminated agent");
 
       const updated = await db
         .update(agents)
-        .set({ status: "paused", updatedAt: new Date() })
+        .set({
+          status: "paused",
+          pauseReason: reason,
+          pausedAt: new Date(),
+          updatedAt: new Date(),
+        })
         .where(eq(agents.id, id))
         .returning()
         .then((rows) => rows[0] ?? null);
@@ -384,7 +389,12 @@ export function agentService(db: Db) {
 
       const updated = await db
         .update(agents)
-        .set({ status: "idle", updatedAt: new Date() })
+        .set({
+          status: "idle",
+          pauseReason: null,
+          pausedAt: null,
+          updatedAt: new Date(),
+        })
         .where(eq(agents.id, id))
         .returning()
         .then((rows) => rows[0] ?? null);
@@ -397,7 +407,12 @@ export function agentService(db: Db) {
 
       await db
         .update(agents)
-        .set({ status: "terminated", updatedAt: new Date() })
+        .set({
+          status: "terminated",
+          pauseReason: null,
+          pausedAt: null,
+          updatedAt: new Date(),
+        })
         .where(eq(agents.id, id));
 
       await db

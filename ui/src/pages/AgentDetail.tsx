@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, Link, Navigate, useBeforeUnload } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { agentsApi, type AgentKey, type ClaudeLoginResult } from "../api/agents";
+import { budgetsApi } from "../api/budgets";
 import { heartbeatsApi } from "../api/heartbeats";
 import { ApiError } from "../api/client";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
@@ -24,8 +25,9 @@ import { CopyText } from "../components/CopyText";
 import { EntityRow } from "../components/EntityRow";
 import { Identity } from "../components/Identity";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
 import { ScrollToBottom } from "../components/ScrollToBottom";
-import { formatCents, formatDate, relativeTime, formatTokens } from "../lib/utils";
+import { formatCents, formatDate, relativeTime, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Tabs } from "@/components/ui/tabs";
@@ -58,7 +60,15 @@ import {
 import { Input } from "@/components/ui/input";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
 import { RunTranscriptView, type TranscriptMode } from "../components/transcript/RunTranscriptView";
-import { isUuidLike, type Agent, type HeartbeatRun, type HeartbeatRunEvent, type AgentRuntimeState, type LiveEvent } from "@paperclipai/shared";
+import {
+  isUuidLike,
+  type Agent,
+  type BudgetPolicySummary,
+  type HeartbeatRun,
+  type HeartbeatRunEvent,
+  type AgentRuntimeState,
+  type LiveEvent,
+} from "@paperclipai/shared";
 import { redactHomePathUserSegments, redactHomePathUserSegmentsInValue } from "@paperclipai/adapter-utils";
 import { agentRouteRef } from "../lib/utils";
 
@@ -204,8 +214,7 @@ function runMetrics(run: HeartbeatRun) {
     "cache_read_input_tokens",
   );
   const cost =
-    usageNumber(usage, "costUsd", "cost_usd", "total_cost_usd") ||
-    usageNumber(result, "total_cost_usd", "cost_usd", "costUsd");
+    visibleRunCostUsd(usage, result);
   return {
     input,
     output,
@@ -294,11 +303,50 @@ export function AgentDetail() {
     enabled: !!resolvedCompanyId,
   });
 
+  const { data: budgetOverview } = useQuery({
+    queryKey: queryKeys.budgets.overview(resolvedCompanyId ?? "__none__"),
+    queryFn: () => budgetsApi.overview(resolvedCompanyId!),
+    enabled: !!resolvedCompanyId,
+    refetchInterval: 30_000,
+    staleTime: 5_000,
+  });
+
   const assignedIssues = (allIssues ?? [])
     .filter((i) => i.assigneeAgentId === agent?.id)
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
   const reportsToAgent = (allAgents ?? []).find((a) => a.id === agent?.reportsTo);
   const directReports = (allAgents ?? []).filter((a) => a.reportsTo === agent?.id && a.status !== "terminated");
+  const agentBudgetSummary = useMemo(() => {
+    const matched = budgetOverview?.policies.find(
+      (policy) => policy.scopeType === "agent" && policy.scopeId === (agent?.id ?? routeAgentRef),
+    );
+    if (matched) return matched;
+    const budgetMonthlyCents = agent?.budgetMonthlyCents ?? 0;
+    const spentMonthlyCents = agent?.spentMonthlyCents ?? 0;
+    return {
+      policyId: "",
+      companyId: resolvedCompanyId ?? "",
+      scopeType: "agent",
+      scopeId: agent?.id ?? routeAgentRef,
+      scopeName: agent?.name ?? "Agent",
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      amount: budgetMonthlyCents,
+      observedAmount: spentMonthlyCents,
+      remainingAmount: Math.max(0, budgetMonthlyCents - spentMonthlyCents),
+      utilizationPercent:
+        budgetMonthlyCents > 0 ? Number(((spentMonthlyCents / budgetMonthlyCents) * 100).toFixed(2)) : 0,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: true,
+      isActive: budgetMonthlyCents > 0,
+      status: budgetMonthlyCents > 0 && spentMonthlyCents >= budgetMonthlyCents ? "hard_stop" : "ok",
+      paused: agent?.status === "paused",
+      pauseReason: agent?.pauseReason ?? null,
+      windowStart: new Date(),
+      windowEnd: new Date(),
+    } satisfies BudgetPolicySummary;
+  }, [agent, budgetOverview?.policies, resolvedCompanyId, routeAgentRef]);
   const mobileLiveRun = useMemo(
     () => (heartbeats ?? []).find((r) => r.status === "running" || r.status === "queued") ?? null,
     [heartbeats],
@@ -357,6 +405,24 @@ export function AgentDetail() {
     },
     onError: (err) => {
       setActionError(err instanceof Error ? err.message : "Action failed");
+    },
+  });
+
+  const budgetMutation = useMutation({
+    mutationFn: (amount: number) =>
+      budgetsApi.upsertPolicy(resolvedCompanyId!, {
+        scopeType: "agent",
+        scopeId: agent?.id ?? routeAgentRef,
+        amount,
+        windowKind: "calendar_month_utc",
+      }),
+    onSuccess: () => {
+      if (!resolvedCompanyId) return;
+      queryClient.invalidateQueries({ queryKey: queryKeys.budgets.overview(resolvedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(routeAgentRef) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentLookupRef) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(resolvedCompanyId) });
     },
   });
 
@@ -578,6 +644,15 @@ export function AgentDetail() {
           />
         </Tabs>
       )}
+
+      {!urlRunId && resolvedCompanyId ? (
+        <BudgetPolicyCard
+          summary={agentBudgetSummary}
+          isSaving={budgetMutation.isPending}
+          compact
+          onSave={(amount) => budgetMutation.mutate(amount)}
+        />
+      ) : null}
 
       {actionError && <p className="text-sm text-destructive">{actionError}</p>}
       {isPendingApproval && (
@@ -849,8 +924,8 @@ function CostsSection({
 }) {
   const runsWithCost = runs
     .filter((r) => {
-      const u = r.usageJson as Record<string, unknown> | null;
-      return u && (u.cost_usd || u.total_cost_usd || u.input_tokens);
+      const metrics = runMetrics(r);
+      return metrics.cost > 0 || metrics.input > 0 || metrics.output > 0 || metrics.cached > 0;
     })
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
@@ -892,16 +967,16 @@ function CostsSection({
             </thead>
             <tbody>
               {runsWithCost.slice(0, 10).map((run) => {
-                const u = run.usageJson as Record<string, unknown>;
+                const metrics = runMetrics(run);
                 return (
                   <tr key={run.id} className="border-b border-border last:border-b-0">
                     <td className="px-3 py-2">{formatDate(run.createdAt)}</td>
                     <td className="px-3 py-2 font-mono">{run.id.slice(0, 8)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{formatTokens(Number(u.input_tokens ?? 0))}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{formatTokens(Number(u.output_tokens ?? 0))}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{formatTokens(metrics.input)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{formatTokens(metrics.output)}</td>
                     <td className="px-3 py-2 text-right tabular-nums">
-                      {(u.cost_usd || u.total_cost_usd)
-                        ? `$${Number(u.cost_usd ?? u.total_cost_usd ?? 0).toFixed(4)}`
+                      {metrics.cost > 0
+                        ? `$${metrics.cost.toFixed(4)}`
                         : "-"
                       }
                     </td>
