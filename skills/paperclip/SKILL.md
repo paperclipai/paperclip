@@ -278,6 +278,7 @@ Authorized managers can install company skills independently of hiring, then ass
 If you are asked to install a skill for the company or an agent you MUST read:
 `skills/paperclip/references/company-skills.md`
 
+
 ## BastionClaw Invite Workflow (CEO)
 
 Use this when asked to invite a new BastionClaw employee.
