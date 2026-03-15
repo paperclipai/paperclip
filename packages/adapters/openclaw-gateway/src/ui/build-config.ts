@@ -14,6 +14,7 @@ function parsePositiveInteger(value: string, fallback: number): number {
 
 export function buildOpenClawGatewayConfig(v: CreateConfigValues): Record<string, unknown> {
   const ac: Record<string, unknown> = {};
+  const url = v.url.trim();
   const gatewayToken = v.openClawGatewayToken.trim();
   const sessionKeyStrategy =
     v.openClawSessionKeyStrategy === "fixed" ||
@@ -23,7 +24,8 @@ export function buildOpenClawGatewayConfig(v: CreateConfigValues): Record<string
       : "issue";
   const scopes = parseScopes(v.openClawScopes);
 
-  if (v.url) ac.url = v.url;
+  // Normalize pasted URLs so surrounding whitespace does not produce an invalid gateway config.
+  if (url) ac.url = url;
   if (gatewayToken) {
     // The create form stores the token separately so we can render it cleanly and
     // still serialize the server-required header shape on submit.

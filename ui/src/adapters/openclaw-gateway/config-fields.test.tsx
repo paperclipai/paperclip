@@ -59,6 +59,24 @@ describe("buildOpenClawGatewayConfig", () => {
     });
   });
 
+  it("trims pasted gateway urls and omits whitespace-only values", () => {
+    const normalizedConfig = buildOpenClawGatewayConfig({
+      ...defaultCreateValues,
+      adapterType: "openclaw_gateway",
+      url: "  ws://127.0.0.1:18789  ",
+    });
+    const blankConfig = buildOpenClawGatewayConfig({
+      ...defaultCreateValues,
+      adapterType: "openclaw_gateway",
+      url: "   ",
+    });
+
+    expect(normalizedConfig).toMatchObject({
+      url: "ws://127.0.0.1:18789",
+    });
+    expect(blankConfig).not.toHaveProperty("url");
+  });
+
   it("preserves fixed-session overrides from the create form", () => {
     const config = buildOpenClawGatewayConfig({
       ...defaultCreateValues,
