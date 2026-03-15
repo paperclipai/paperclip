@@ -1,8 +1,13 @@
+import type { CSSProperties } from "react";
 import { useState, useMemo } from "react";
 import {
   usePluginData,
   usePluginAction,
   usePluginToast,
+} from "@paperclipai/plugin-sdk/ui";
+import type {
+  PluginPageProps,
+  PluginSidebarProps,
 } from "@paperclipai/plugin-sdk/ui";
 import { DATA_KEYS, ACTION_KEYS } from "../constants.js";
 
@@ -13,11 +18,6 @@ interface DirectoryEntry {
   author: string;
   category: string;
   source?: string;
-}
-
-interface SlotContext {
-  companyId?: string;
-  [key: string]: unknown;
 }
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -126,9 +126,9 @@ const styles = {
     opacity: 0.5,
     fontSize: "14px",
   },
-};
+} satisfies Record<string, CSSProperties>;
 
-function badge(color: string): React.CSSProperties {
+function categoryBadge(color: string): CSSProperties {
   return {
     fontSize: "11px",
     padding: "2px 8px",
@@ -156,7 +156,9 @@ function PluginCard({
     <div style={styles.card}>
       <div style={styles.cardHeader}>
         <h3 style={styles.pluginName}>{entry.name}</h3>
-        {entry.category && <span style={badge(color)}>{entry.category}</span>}
+        {entry.category && (
+          <span style={categoryBadge(color)}>{entry.category}</span>
+        )}
       </div>
       <p style={styles.description}>{entry.description}</p>
       <div style={styles.cardFooter}>
@@ -187,15 +189,15 @@ function PluginCard({
   );
 }
 
-export function PluginDirectoryPage({ context }: { context: SlotContext }) {
-  const directoryQuery = usePluginData(DATA_KEYS.directory);
+export function PluginDirectoryPage({ context }: PluginPageProps) {
+  const directoryQuery = usePluginData<DirectoryEntry[]>(DATA_KEYS.directory);
   const installAction = usePluginAction(ACTION_KEYS.install);
   const toast = usePluginToast();
   const [search, setSearch] = useState("");
   const [installingPkg, setInstallingPkg] = useState<string | null>(null);
   const [justInstalled, setJustInstalled] = useState<string[]>([]);
 
-  const entries = (directoryQuery.data ?? []) as DirectoryEntry[];
+  const entries = directoryQuery.data ?? [];
 
   const filtered = useMemo(() => {
     if (!search.trim()) return entries;
@@ -212,18 +214,18 @@ export function PluginDirectoryPage({ context }: { context: SlotContext }) {
   async function handleInstall(packageName: string) {
     setInstallingPkg(packageName);
     try {
-      await installAction.mutateAsync({ packageName });
+      await installAction({ packageName });
       setJustInstalled((prev) => [...prev, packageName]);
-      toast.success(`Installed ${packageName}`);
+      toast({ title: `Installed ${packageName}`, tone: "success" });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      toast.error(`Install failed: ${msg}`);
+      toast({ title: "Install failed", body: msg, tone: "error" });
     } finally {
       setInstallingPkg(null);
     }
   }
 
-  if (directoryQuery.isLoading) {
+  if (directoryQuery.loading) {
     return (
       <div style={styles.container}>
         <p>Loading directory...</p>
@@ -234,10 +236,7 @@ export function PluginDirectoryPage({ context }: { context: SlotContext }) {
   if (directoryQuery.error) {
     return (
       <div style={styles.container}>
-        <p>
-          Failed to load directory:{" "}
-          {(directoryQuery.error as Error).message}
-        </p>
+        <p>Failed to load directory: {directoryQuery.error.message}</p>
       </div>
     );
   }
@@ -278,10 +277,6 @@ export function PluginDirectoryPage({ context }: { context: SlotContext }) {
   );
 }
 
-export function PluginDirectorySidebarLink({
-  context,
-}: {
-  context: SlotContext;
-}) {
+export function PluginDirectorySidebarLink({ context }: PluginSidebarProps) {
   return <span>Plugin Directory</span>;
 }
