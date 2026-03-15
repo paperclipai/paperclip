@@ -59,6 +59,7 @@ async function buildSkillsDir(): Promise<string> {
       await fs.symlink(
         path.join(skillsDir, entry.name),
         path.join(target, entry.name),
+        process.platform === "win32" ? "junction" : undefined,
       );
     }
   }
