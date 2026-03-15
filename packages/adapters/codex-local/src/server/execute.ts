@@ -23,6 +23,129 @@ import {
 import { parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
 import { pathExists, prepareWorktreeCodexHome, resolveCodexHomeDir } from "./codex-home.js";
 
+// ---------------------------------------------------------------------------
+// Cost API integration — optional external quota-based cost tracking
+// ---------------------------------------------------------------------------
+
+type CostApiAttributionMode = "strict_dedicated_key" | "best_effort_shared_key";
+
+interface CostApiConfig {
+  url: string;
+  key: string;
+  /** Dot-path to the cumulative cost number in the quota response JSON. */
+  field: string;
+  /** Fetch timeout in ms (default: 5000). */
+  timeoutMs: number;
+  /**
+   * `strict_dedicated_key` (default): one dedicated proxy API key per agent.
+   *   Suitable for budget enforcement.
+   * `best_effort_shared_key`: approximate telemetry; not authoritative for enforcement.
+   */
+  attributionMode: CostApiAttributionMode;
+}
+
+function parseCostApiConfig(raw: unknown): CostApiConfig | null {
+  if (raw === null || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  const url = typeof obj.url === "string" ? obj.url.trim() : "";
+  const key = typeof obj.key === "string" ? obj.key.trim() : "";
+  const field = typeof obj.field === "string" ? obj.field.trim() : "";
+  if (!url || !key || !field) return null;
+  const timeoutMs = typeof obj.timeoutMs === "number" && obj.timeoutMs > 0 ? obj.timeoutMs : 5000;
+  const rawMode = typeof obj.attributionMode === "string" ? obj.attributionMode : "";
+  const attributionMode: CostApiAttributionMode =
+    rawMode === "best_effort_shared_key" ? "best_effort_shared_key" : "strict_dedicated_key";
+  return { url, key, field, timeoutMs, attributionMode };
+}
+
+/**
+ * Resolves a dot-separated key path into a JSON object.
+ * Returns the numeric value at the path, or null if missing or non-numeric.
+ */
+export function resolveDotPath(obj: unknown, dotPath: string): number | null {
+  const parts = dotPath.split(".");
+  let cursor: unknown = obj;
+  for (const part of parts) {
+    if (cursor === null || typeof cursor !== "object") return null;
+    cursor = (cursor as Record<string, unknown>)[part];
+  }
+  return typeof cursor === "number" ? cursor : null;
+}
+
+/**
+ * Fetches a cumulative cost value from a quota API endpoint.
+ * Returns the numeric value at `costApi.field`, or null on any error.
+ * Fail-open: errors are logged as warnings and never propagate.
+ */
+export async function fetchQuotaCost(
+  costApi: CostApiConfig,
+  onWarn: (msg: string) => Promise<void>,
+): Promise<number | null> {
+  let response: Response;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), costApi.timeoutMs);
+    try {
+      response = await fetch(costApi.url, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${costApi.key}` },
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const isTimeout = msg.toLowerCase().includes("abort") || msg.toLowerCase().includes("signal");
+    await onWarn(
+      `[paperclip] costApi quota fetch ${isTimeout ? "timed out" : "failed"}: ${msg}\n`,
+    );
+    return null;
+  }
+
+  if (!response.ok) {
+    await onWarn(`[paperclip] costApi quota fetch returned HTTP ${response.status}; skipping cost tracking.\n`);
+    return null;
+  }
+
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    await onWarn(`[paperclip] costApi quota response is not valid JSON; skipping cost tracking.\n`);
+    return null;
+  }
+
+  const value = resolveDotPath(body, costApi.field);
+  if (value === null) {
+    await onWarn(
+      `[paperclip] costApi field "${costApi.field}" did not resolve to a number; skipping cost tracking.\n`,
+    );
+    return null;
+  }
+
+  return value;
+}
+
+/**
+ * Computes the run cost from two cumulative quota snapshots.
+ * Returns null if either snapshot is missing or delta is non-positive.
+ */
+function computeCostDelta(
+  before: number | null,
+  after: number | null,
+  onWarnSync: (msg: string) => void,
+): number | null {
+  if (before === null || after === null) return null;
+  const delta = after - before;
+  if (delta < 0) {
+    onWarnSync("[paperclip] costApi: quota window reset detected (negative delta); skipping cost for this run.\n");
+    return null;
+  }
+  if (delta === 0) return null;
+  return delta;
+}
+
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const CODEX_ROLLOUT_NOISE_RE =
   /^\d{4}-\d{2}-\d{2}T[^\s]+\s+ERROR\s+codex_core::rollout::list:\s+state db missing rollout path for thread\s+[a-z0-9-]+$/i;
@@ -316,6 +439,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     env.PAPERCLIP_API_KEY = authToken;
   }
   const billingType = resolveCodexBillingType(env);
+  const costApi = parseCostApiConfig(parseObject(config.costApi));
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   await ensureCommandResolvable(command, cwd, runtimeEnv);
 
@@ -466,6 +590,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const toResult = (
     attempt: { proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string }; rawStderr: string; parsed: ReturnType<typeof parseCodexJsonl> },
+    costUsd: number | null,
     clearSessionOnMissingSession = false,
   ): AdapterExecutionResult => {
     if (attempt.proc.timedOut) {
@@ -474,6 +599,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         signal: attempt.proc.signal,
         timedOut: true,
         errorMessage: `Timed out after ${timeoutSec}s`,
+        costUsd: costUsd ?? null,
         clearSession: clearSessionOnMissingSession,
       };
     }
@@ -510,7 +636,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       provider: "openai",
       model,
       billingType,
-      costUsd: null,
+      costUsd: costUsd ?? null,
       resultJson: {
         stdout: attempt.proc.stdout,
         stderr: attempt.proc.stderr,
@@ -519,6 +645,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       clearSession: Boolean(clearSessionOnMissingSession && !resolvedSessionId),
     };
   };
+
+  // One before/after snapshot pair for the full execute() invocation (covers retries).
+  const onWarn = (msg: string) => onLog("stderr", msg);
+  const beforeCost = costApi ? await fetchQuotaCost(costApi, onWarn) : null;
 
   const initial = await runAttempt(sessionId);
   if (
@@ -532,8 +662,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       `[paperclip] Codex resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
     );
     const retry = await runAttempt(null);
-    return toResult(retry, true);
+    const afterCost = costApi ? await fetchQuotaCost(costApi, onWarn) : null;
+    const costUsd = computeCostDelta(beforeCost, afterCost, (msg) => { void onLog("stderr", msg); });
+    return toResult(retry, costUsd, true);
   }
 
-  return toResult(initial);
+  const afterCost = costApi ? await fetchQuotaCost(costApi, onWarn) : null;
+  const costUsd = computeCostDelta(beforeCost, afterCost, (msg) => { void onLog("stderr", msg); });
+  return toResult(initial, costUsd);
 }

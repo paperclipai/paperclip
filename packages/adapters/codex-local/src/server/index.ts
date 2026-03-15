@@ -1,4 +1,4 @@
-export { execute, ensureCodexSkillsInjected } from "./execute.js";
+export { execute, ensureCodexSkillsInjected, resolveDotPath, fetchQuotaCost } from "./execute.js";
 export { testEnvironment } from "./test.js";
 export { parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
 import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
