@@ -25,7 +25,7 @@ Core fields:
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to stdin prompt at runtime
 - model (string, optional): Codex model id
 - modelReasoningEffort (string, optional): reasoning effort override (minimal|low|medium|high) passed via -c model_reasoning_effort=...
-- promptTemplate (string, optional): run prompt template
+- promptTemplate (string, optional): extra run prompt instructions; default heartbeat context is preserved automatically, or use {{defaultPrompt}} to position it explicitly
 - search (boolean, optional): run codex with --search
 - dangerouslyBypassApprovalsAndSandbox (boolean, optional): run with bypass flag
 - command (string, optional): defaults to "codex"

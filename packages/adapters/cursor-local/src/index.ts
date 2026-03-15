@@ -63,7 +63,7 @@ Don't use when:
 Core fields:
 - cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to the run prompt
-- promptTemplate (string, optional): run prompt template
+- promptTemplate (string, optional): extra run prompt instructions; default heartbeat context is preserved automatically, or use {{defaultPrompt}} to position it explicitly
 - model (string, optional): Cursor model id (for example auto or gpt-5.3-codex)
 - mode (string, optional): Cursor execution mode passed as --mode (plan|ask). Leave unset for normal autonomous runs.
 - command (string, optional): defaults to "agent"
