@@ -7,8 +7,16 @@ import { and, eq, inArray } from "drizzle-orm";
 
 const execFileAsync = promisify(execFile);
 import type { Db } from "@paperclipai/db";
-import { skills, agentSkillAssignments, agents } from "@paperclipai/db";
-import type { ResolvedSkill, SkillTier, SkillSourceType } from "@paperclipai/shared";
+import { skills, agentSkillAssignments, agents, approvals } from "@paperclipai/db";
+import {
+  learnedSkillApprovalPayloadSchema,
+  learnedSkillCandidateMetadataSchema,
+  type LearnedSkillApprovalPayload,
+  type LearnedSkillCandidateMetadata,
+  type ResolvedSkill,
+  type SkillTier,
+  type SkillSourceType,
+} from "@paperclipai/shared";
 import { readSkillFrontmatter } from "./skill-seeding.js";
 
 type SkillRow = typeof skills.$inferSelect;
@@ -20,6 +28,49 @@ interface DiscoveredLocalSkill {
 }
 
 const AGENT_SKILLS_SUBDIRS = [".agents/skills", ".claude/skills"];
+const LEARNED_SKILL_AUTHORING_NAME = "paperclip-create-skill";
+
+function normalizeSlug(value: string) {
+  const slug = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug.length > 0 ? slug : "learned-skill";
+}
+
+function normalizeLearnedCandidateMetadata(
+  metadata: Record<string, unknown> | null | undefined,
+): LearnedSkillCandidateMetadata | null {
+  if (!metadata || typeof metadata !== "object") return null;
+  const candidateRaw = (metadata as Record<string, unknown>).learnedCandidate;
+  const parsed = learnedSkillCandidateMetadataSchema.safeParse(candidateRaw);
+  return parsed.success ? parsed.data : null;
+}
+
+function parseLearnedSkillApprovalPayload(payload: unknown): LearnedSkillApprovalPayload | null {
+  const parsed = learnedSkillApprovalPayloadSchema.safeParse(payload);
+  return parsed.success ? parsed.data : null;
+}
+
+function validateLearnedSkillProvenance(payload: unknown): {
+  ok: boolean;
+  reason: string | null;
+  parsed: LearnedSkillApprovalPayload | null;
+} {
+  const parsed = parseLearnedSkillApprovalPayload(payload);
+  if (!parsed) {
+    return { ok: false, reason: "Invalid learned-skill payload shape", parsed: null };
+  }
+  if (parsed.provenance.authoringSkill !== LEARNED_SKILL_AUTHORING_NAME) {
+    return {
+      ok: false,
+      reason: `Learned skill provenance must use ${LEARNED_SKILL_AUTHORING_NAME}`,
+      parsed: null,
+    };
+  }
+  return { ok: true, reason: null, parsed };
+}
 
 async function discoverLocalAgentSkills(agentCwd: string): Promise<DiscoveredLocalSkill[]> {
   const results: DiscoveredLocalSkill[] = [];
@@ -162,12 +213,17 @@ export function skillService(db: Db) {
       .select()
       .from(skills)
       .where(and(eq(skills.tier, "agent"), eq(skills.agentId, agentId)));
+    const visibleAgentDbSkills = agentDbSkills.filter((row) => {
+      const candidate = normalizeLearnedCandidateMetadata(row.metadata ?? null);
+      if (!candidate) return true;
+      return candidate.state === "approved";
+    });
 
     const dbSkillNames = new Set([
       ...coreBuiltIn.map((s) => s.name),
       ...assignedOptionalBuiltIn.map((s) => s.name),
       ...companyAssigned.map((s) => s.name),
-      ...agentDbSkills.map((s) => s.name),
+      ...visibleAgentDbSkills.map((s) => s.name),
     ]);
 
     let localSkills: SkillRow[] = [];
@@ -179,7 +235,13 @@ export function skillService(db: Db) {
         .map((s) => localSkillToRow(s, companyId, agentId));
     }
 
-    return [...coreBuiltIn, ...assignedOptionalBuiltIn, ...companyAssigned, ...agentDbSkills, ...localSkills];
+    return [
+      ...coreBuiltIn,
+      ...assignedOptionalBuiltIn,
+      ...companyAssigned,
+      ...visibleAgentDbSkills,
+      ...localSkills,
+    ];
   }
 
   async function assignToAgent(agentId: string, skillId: string, companyId: string): Promise<void> {
@@ -333,6 +395,209 @@ export function skillService(db: Db) {
     return { installed, stdout, stderr };
   }
 
+  async function createLearnedCandidate(input: {
+    companyId: string;
+    agentId: string;
+    skillName: string;
+    summary: string;
+    draftSkillContent: string;
+    confidence: number | null;
+    sourceRunId: string;
+    sourceChatSessionId: string | null;
+    sourceChatMessageId: string | null;
+    provenance: {
+      authoringSkill: "paperclip-create-skill";
+      authoringMethod?: string | null;
+      evidence?: string | null;
+    };
+    requestedByAgentId?: string | null;
+  }) {
+    const normalizedName = normalizeSlug(input.skillName);
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const installRoot = path.join(
+      process.env.PAPERCLIP_DATA_DIR || path.join(os.homedir(), ".paperclip", "instances", "default"),
+      "skills",
+      "learned-candidates",
+      input.companyId,
+      `${normalizedName}-${timestamp}`,
+    );
+    await fs.mkdir(installRoot, { recursive: true });
+    const installedPath = installRoot;
+    await fs.writeFile(
+      path.join(installRoot, "SKILL.md"),
+      input.draftSkillContent.endsWith("\n") ? input.draftSkillContent : `${input.draftSkillContent}\n`,
+      "utf8",
+    );
+
+    const requestedAt = new Date();
+    const initialCandidate: LearnedSkillCandidateMetadata = {
+      state: "pending_board",
+      summary: input.summary,
+      confidence: input.confidence,
+      sourceRunId: input.sourceRunId,
+      sourceChatSessionId: input.sourceChatSessionId,
+      sourceChatMessageId: input.sourceChatMessageId,
+      approvalId: null,
+      provenance: input.provenance,
+      draftSkillContent: input.draftSkillContent,
+      requestedAt: requestedAt.toISOString(),
+      reviewedAt: null,
+      reviewedByUserId: null,
+    };
+
+    let uniqueName = `${normalizedName}-${input.sourceRunId.slice(0, 8)}`;
+    const existingByName = await getByName(input.companyId, uniqueName);
+    if (existingByName) {
+      uniqueName = `${uniqueName}-${Math.random().toString(36).slice(2, 8)}`;
+    }
+    const createdSkill = await create(input.companyId, {
+      name: uniqueName,
+      description: input.summary,
+      tier: "agent",
+      agentId: input.agentId,
+      defaultEnabled: false,
+      sourceType: "local",
+      sourceUrl: null,
+      installedPath,
+      metadata: {
+        learnedCandidate: initialCandidate,
+      },
+    });
+
+    const approvalPayload: LearnedSkillApprovalPayload = {
+      skillId: createdSkill.id,
+      skillName: uniqueName,
+      tier: "agent",
+      agentId: input.agentId,
+      summary: input.summary,
+      confidence: input.confidence,
+      sourceRunId: input.sourceRunId,
+      sourceChatSessionId: input.sourceChatSessionId,
+      sourceChatMessageId: input.sourceChatMessageId,
+      provenance: input.provenance,
+      draftSkillContent: input.draftSkillContent,
+    };
+
+    const validation = validateLearnedSkillProvenance(approvalPayload);
+    if (!validation.ok || !validation.parsed) {
+      throw new Error(validation.reason ?? "Invalid learned-skill provenance");
+    }
+
+    const [approval] = await db
+      .insert(approvals)
+      .values({
+        companyId: input.companyId,
+        type: "learned_skill",
+        status: "pending",
+        requestedByAgentId: input.requestedByAgentId ?? input.agentId,
+        requestedByUserId: null,
+        payload: validation.parsed as unknown as Record<string, unknown>,
+        decisionNote: null,
+        decidedByUserId: null,
+        decidedAt: null,
+      })
+      .returning();
+
+    if (!approval) {
+      throw new Error("Failed to create learned-skill approval");
+    }
+
+    const mergedMetadata: Record<string, unknown> = {
+      ...(createdSkill.metadata ?? {}),
+      learnedCandidate: {
+        ...initialCandidate,
+        approvalId: approval.id,
+      },
+    };
+
+    const [updatedSkill] = await db
+      .update(skills)
+      .set({
+        metadata: mergedMetadata,
+        updatedAt: new Date(),
+      })
+      .where(eq(skills.id, createdSkill.id))
+      .returning();
+
+    return {
+      skill: updatedSkill ?? createdSkill,
+      approval,
+    };
+  }
+
+  async function applyLearnedApprovalResolution(input: {
+    approval: typeof approvals.$inferSelect;
+    targetStatus: "approved" | "rejected" | "revision_requested" | "resubmitted";
+    decidedByUserId?: string | null;
+    reviewedAt?: Date;
+  }) {
+    if (input.approval.type !== "learned_skill") return null;
+    const validation = validateLearnedSkillProvenance(input.approval.payload);
+    if (!validation.ok || !validation.parsed) {
+      throw new Error(validation.reason ?? "Invalid learned-skill provenance");
+    }
+
+    const payload = validation.parsed;
+    const row = await getById(payload.skillId);
+    if (!row) return null;
+    if (row.companyId !== input.approval.companyId) {
+      throw new Error("Learned-skill approval does not match skill company");
+    }
+
+    const existingCandidate = normalizeLearnedCandidateMetadata(row.metadata ?? null);
+    const current = existingCandidate ?? {
+      state: "pending_board",
+      summary: payload.summary,
+      confidence: payload.confidence,
+      sourceRunId: payload.sourceRunId,
+      sourceChatSessionId: payload.sourceChatSessionId,
+      sourceChatMessageId: payload.sourceChatMessageId,
+      approvalId: input.approval.id,
+      provenance: payload.provenance,
+      draftSkillContent: payload.draftSkillContent,
+      requestedAt: new Date().toISOString(),
+      reviewedAt: null,
+      reviewedByUserId: null,
+    };
+
+    const nextState =
+      input.targetStatus === "approved"
+        ? "approved"
+        : input.targetStatus === "rejected"
+          ? "rejected"
+          : input.targetStatus === "revision_requested"
+            ? "revision_requested"
+            : "pending_board";
+
+    const nextCandidate: LearnedSkillCandidateMetadata = {
+      ...current,
+      state: nextState,
+      approvalId: input.approval.id,
+      reviewedAt:
+        input.targetStatus === "resubmitted"
+          ? null
+          : (input.reviewedAt ?? new Date()).toISOString(),
+      reviewedByUserId:
+        input.targetStatus === "resubmitted" ? null : (input.decidedByUserId ?? null),
+    };
+
+    const nextMetadata: Record<string, unknown> = {
+      ...(row.metadata ?? {}),
+      learnedCandidate: nextCandidate,
+    };
+
+    const [updated] = await db
+      .update(skills)
+      .set({
+        metadata: nextMetadata,
+        defaultEnabled: nextState === "approved" ? true : row.defaultEnabled,
+        updatedAt: new Date(),
+      })
+      .where(eq(skills.id, row.id))
+      .returning();
+    return updated ?? row;
+  }
+
   return {
     list,
     getById,
@@ -346,5 +611,8 @@ export function skillService(db: Db) {
     resolveForExecution,
     seedBuiltInSkills,
     installViaCommand,
+    createLearnedCandidate,
+    applyLearnedApprovalResolution,
+    validateLearnedSkillProvenance,
   };
 }

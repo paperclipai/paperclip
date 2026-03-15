@@ -28,6 +28,9 @@ const mockIssueApprovalService = vi.hoisted(() => ({
 const mockSecretService = vi.hoisted(() => ({
   normalizeHireApprovalPayloadForPersistence: vi.fn(),
 }));
+const mockSkillService = vi.hoisted(() => ({
+  validateLearnedSkillProvenance: vi.fn(),
+}));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
@@ -37,6 +40,7 @@ vi.mock("../services/index.js", () => ({
   issueApprovalService: () => mockIssueApprovalService,
   logActivity: mockLogActivity,
   secretService: () => mockSecretService,
+  skillService: () => mockSkillService,
 }));
 
 function createApp() {
@@ -63,6 +67,11 @@ describe("approval routes idempotent retries", () => {
     mockHeartbeatService.wakeup.mockResolvedValue({ id: "wake-1" });
     mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([{ id: "issue-1" }]);
     mockLogActivity.mockResolvedValue(undefined);
+    mockSkillService.validateLearnedSkillProvenance.mockReturnValue({
+      ok: true,
+      reason: null,
+      parsed: {},
+    });
   });
 
   it("does not emit duplicate approval side effects when approve is already resolved", async () => {
@@ -106,5 +115,23 @@ describe("approval routes idempotent retries", () => {
 
     expect(res.status).toBe(200);
     expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("rejects learned-skill create requests without valid provenance", async () => {
+    mockSkillService.validateLearnedSkillProvenance.mockReturnValue({
+      ok: false,
+      reason: "Learned skill provenance must use paperclip-create-skill",
+      parsed: null,
+    });
+
+    const res = await request(createApp())
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "learned_skill",
+        payload: { skillName: "bad" },
+      });
+
+    expect(res.status).toBe(422);
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
   });
 });

@@ -180,6 +180,27 @@ export function NewAgent() {
           cooldownSec: 10,
           maxConcurrentRuns: 1,
         },
+        ...(configValues.taskCronEnabled && configValues.taskCronExpression.trim()
+          ? {
+            taskCronDefaults: {
+              enabled: true,
+              name:
+                configValues.taskCronName.trim() ||
+                `${name.trim() || "Agent"} recurring task`,
+              expression: configValues.taskCronExpression.trim(),
+              timezone: configValues.taskCronTimezone.trim() || "UTC",
+              issueMode: configValues.taskCronIssueMode,
+              issueTemplate: {
+                ...(configValues.taskCronIssueTitle.trim()
+                  ? { title: configValues.taskCronIssueTitle.trim() }
+                  : {}),
+                ...(configValues.taskCronIssueDescription.trim()
+                  ? { description: configValues.taskCronIssueDescription.trim() }
+                  : {}),
+              },
+            },
+          }
+          : {}),
       },
       budgetMonthlyCents: 0,
     });

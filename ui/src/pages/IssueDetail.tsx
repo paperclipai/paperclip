@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { Link, useLocation, useNavigate, useParams } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
+import { taskCronsApi } from "../api/taskCrons";
 import { activityApi } from "../api/activity";
 import { heartbeatsApi } from "../api/heartbeats";
 import { agentsApi } from "../api/agents";
@@ -35,12 +36,14 @@ import {
   Activity as ActivityIcon,
   ChevronDown,
   ChevronRight,
+  Clock3,
   EyeOff,
   Hexagon,
   ListTree,
   MessageSquare,
   MoreHorizontal,
   Paperclip,
+  Plus,
   SlidersHorizontal,
   Trash2,
 } from "lucide-react";
@@ -158,7 +161,13 @@ export function IssueDetail() {
   const [secondaryOpen, setSecondaryOpen] = useState({
     approvals: false,
     cost: false,
+    recurring: false,
   });
+  const [recurringName, setRecurringName] = useState("");
+  const [recurringExpression, setRecurringExpression] = useState("0 9 * * 1-5");
+  const [recurringTimezone, setRecurringTimezone] = useState("UTC");
+  const [recurringIssueMode, setRecurringIssueMode] = useState<"create_new" | "reuse_existing" | "reopen_existing">("reopen_existing");
+  const [recurringError, setRecurringError] = useState<string | null>(null);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const lastMarkedReadIssueIdRef = useRef<string | null>(null);
@@ -197,6 +206,12 @@ export function IssueDetail() {
   const { data: attachments } = useQuery({
     queryKey: queryKeys.issues.attachments(issueId!),
     queryFn: () => issuesApi.listAttachments(issueId!),
+    enabled: !!issueId,
+  });
+
+  const { data: recurringSchedules } = useQuery({
+    queryKey: queryKeys.taskCrons.byIssue(issueId!),
+    queryFn: () => taskCronsApi.listIssueSchedules(issueId!, selectedCompanyId ?? undefined),
     enabled: !!issueId,
   });
 
@@ -471,6 +486,56 @@ export function IssueDetail() {
     },
   });
 
+  const createRecurring = useMutation({
+    mutationFn: () =>
+      taskCronsApi.createIssueSchedule(
+        issueId!,
+        {
+          name: recurringName.trim() || `${issue?.identifier ?? issue?.id ?? issueId} recurring task`,
+          expression: recurringExpression.trim(),
+          timezone: recurringTimezone.trim() || "UTC",
+          issueMode: recurringIssueMode,
+        },
+        selectedCompanyId ?? undefined,
+      ),
+    onSuccess: () => {
+      setRecurringError(null);
+      queryClient.invalidateQueries({ queryKey: queryKeys.taskCrons.byIssue(issueId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.taskCrons.byAgent(issue?.assigneeAgentId ?? "") });
+    },
+    onError: (err) => {
+      setRecurringError(err instanceof Error ? err.message : "Failed to create recurring schedule");
+    },
+  });
+
+  const updateRecurring = useMutation({
+    mutationFn: (input: { scheduleId: string; enabled: boolean }) =>
+      taskCronsApi.updateSchedule(
+        input.scheduleId,
+        { enabled: input.enabled },
+        selectedCompanyId ?? undefined,
+      ),
+    onSuccess: () => {
+      setRecurringError(null);
+      queryClient.invalidateQueries({ queryKey: queryKeys.taskCrons.byIssue(issueId!) });
+    },
+    onError: (err) => {
+      setRecurringError(err instanceof Error ? err.message : "Failed to update recurring schedule");
+    },
+  });
+
+  const deleteRecurring = useMutation({
+    mutationFn: (scheduleId: string) =>
+      taskCronsApi.deleteSchedule(scheduleId, selectedCompanyId ?? undefined),
+    onSuccess: () => {
+      setRecurringError(null);
+      queryClient.invalidateQueries({ queryKey: queryKeys.taskCrons.byIssue(issueId!) });
+    },
+    onError: (err) => {
+      setRecurringError(err instanceof Error ? err.message : "Failed to delete recurring schedule");
+    },
+  });
+
   useEffect(() => {
     const titleLabel = issue?.title ?? issueId ?? "Issue";
     setBreadcrumbs([
@@ -492,6 +557,12 @@ export function IssueDetail() {
     lastMarkedReadIssueIdRef.current = issue.id;
     markIssueRead.mutate(issue.id);
   }, [issue?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!issue) return;
+    if (recurringName.trim().length > 0) return;
+    setRecurringName(`${issue.identifier ?? issue.id} recurring task`);
+  }, [issue, recurringName]);
 
   useEffect(() => {
     if (issue) {
@@ -921,6 +992,137 @@ export function IssueDetail() {
           </CollapsibleContent>
         </Collapsible>
       )}
+
+      <Collapsible
+        open={secondaryOpen.recurring}
+        onOpenChange={(open) => setSecondaryOpen((prev) => ({ ...prev, recurring: open }))}
+        className="rounded-lg border border-border"
+      >
+        <CollapsibleTrigger className="flex w-full items-center justify-between px-3 py-2 text-left">
+          <span className="text-sm font-medium text-muted-foreground">
+            Recurring Schedule ({recurringSchedules?.length ?? 0})
+          </span>
+          <ChevronDown
+            className={cn("h-4 w-4 text-muted-foreground transition-transform", secondaryOpen.recurring && "rotate-180")}
+          />
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className="border-t border-border p-3 space-y-3">
+            {!issue.assigneeAgentId ? (
+              <p className="text-xs text-muted-foreground">
+                Assign this issue to an agent before making it recurring.
+              </p>
+            ) : (
+              <>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <label className="text-xs text-muted-foreground">Schedule name</label>
+                    <input
+                      className="w-full rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+                      value={recurringName}
+                      onChange={(e) => setRecurringName(e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs text-muted-foreground">Timezone</label>
+                    <input
+                      className="w-full rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+                      value={recurringTimezone}
+                      onChange={(e) => setRecurringTimezone(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <label className="text-xs text-muted-foreground">Cron expression</label>
+                    <input
+                      className="w-full rounded-md border border-border bg-transparent px-2 py-1 text-xs font-mono"
+                      value={recurringExpression}
+                      onChange={(e) => setRecurringExpression(e.target.value)}
+                      placeholder="0 9 * * 1-5"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs text-muted-foreground">Issue behavior</label>
+                    <select
+                      className="w-full rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+                      value={recurringIssueMode}
+                      onChange={(e) =>
+                        setRecurringIssueMode(e.target.value as "create_new" | "reuse_existing" | "reopen_existing")
+                      }
+                    >
+                      <option value="reopen_existing">Reopen this issue when done</option>
+                      <option value="reuse_existing">Reuse this issue</option>
+                      <option value="create_new">Create a new issue each run</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    onClick={() => createRecurring.mutate()}
+                    disabled={createRecurring.isPending || recurringExpression.trim().length === 0}
+                  >
+                    <Plus className="h-3.5 w-3.5 mr-1.5" />
+                    {createRecurring.isPending ? "Creating..." : "Add recurring schedule"}
+                  </Button>
+                  {recurringError && (
+                    <span className="text-xs text-destructive">{recurringError}</span>
+                  )}
+                </div>
+              </>
+            )}
+
+            {recurringSchedules && recurringSchedules.length > 0 ? (
+              <div className="space-y-2">
+                {recurringSchedules.map((schedule) => (
+                  <div key={schedule.id} className="rounded border border-border p-2">
+                    <div className="flex items-center gap-2">
+                      <Clock3 className="h-3.5 w-3.5 text-muted-foreground" />
+                      <span className="text-xs font-medium">{schedule.name}</span>
+                      <span className="text-[10px] text-muted-foreground font-mono">
+                        {schedule.expression} ({schedule.timezone})
+                      </span>
+                      <span className="ml-auto">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-6 px-2 text-[10px]"
+                          onClick={() =>
+                            updateRecurring.mutate({
+                              scheduleId: schedule.id,
+                              enabled: !schedule.enabled,
+                            })
+                          }
+                          disabled={updateRecurring.isPending}
+                        >
+                          {schedule.enabled ? "Disable" : "Enable"}
+                        </Button>
+                      </span>
+                      <Button
+                        variant="ghost"
+                        size="icon-xs"
+                        className="text-destructive"
+                        onClick={() => deleteRecurring.mutate(schedule.id)}
+                        disabled={deleteRecurring.isPending}
+                        title="Delete schedule"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                    <div className="mt-1 text-[10px] text-muted-foreground">
+                      {schedule.enabled ? "Active" : "Disabled"} · next{" "}
+                      {schedule.nextTriggerAt ? relativeTime(schedule.nextTriggerAt) : "not scheduled"}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">No recurring schedules configured.</p>
+            )}
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
 
       {/* Mobile properties drawer */}
       <Sheet open={mobilePropsOpen} onOpenChange={setMobilePropsOpen}>

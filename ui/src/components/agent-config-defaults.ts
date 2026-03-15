@@ -27,4 +27,11 @@ export const defaultCreateValues: CreateConfigValues = {
   maxTurnsPerRun: 80,
   heartbeatEnabled: false,
   intervalSec: 300,
+  taskCronEnabled: false,
+  taskCronName: "",
+  taskCronExpression: "",
+  taskCronTimezone: "UTC",
+  taskCronIssueMode: "create_new",
+  taskCronIssueTitle: "",
+  taskCronIssueDescription: "",
 };

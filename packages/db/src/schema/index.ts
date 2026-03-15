@@ -37,3 +37,7 @@ export { companySecrets } from "./company_secrets.js";
 export { companySecretVersions } from "./company_secret_versions.js";
 export { skills } from "./skills.js";
 export { agentSkillAssignments } from "./agent_skill_assignments.js";
+export { webhookEndpoints } from "./webhook_endpoints.js";
+export { eventRoutingRules } from "./event_routing_rules.js";
+export { webhookEvents } from "./webhook_events.js";
+export { cronSchedules } from "./cron_schedules.js";

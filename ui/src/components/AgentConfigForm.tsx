@@ -257,7 +257,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       patch.runtimeConfig = { ...existingRc, heartbeat: { ...existingHb, ...overlay.heartbeat } };
     }
     if (Object.keys(overlay.runtime).length > 0) {
-      Object.assign(patch, overlay.runtime);
+      const existingRc = (agent.runtimeConfig ?? {}) as Record<string, unknown>;
+      const currentRuntimePatch = (patch.runtimeConfig ?? {}) as Record<string, unknown>;
+      patch.runtimeConfig = { ...existingRc, ...currentRuntimePatch, ...overlay.runtime };
     }
 
     props.onSave(patch);
@@ -284,6 +286,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const config = !isCreate ? ((props.agent.adapterConfig ?? {}) as Record<string, unknown>) : {};
   const runtimeConfig = !isCreate ? ((props.agent.runtimeConfig ?? {}) as Record<string, unknown>) : {};
   const heartbeat = !isCreate ? ((runtimeConfig.heartbeat ?? {}) as Record<string, unknown>) : {};
+  const runtimeTaskCronDefaults = !isCreate
+    ? ((runtimeConfig.taskCronDefaults ?? {}) as Record<string, unknown>)
+    : {};
 
   const adapterType = isCreate
     ? props.values.adapterType
@@ -294,6 +299,37 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     adapterType === "opencode_local" ||
     adapterType === "cursor";
   const uiAdapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
+
+  const editTaskCronDefaults = eff(
+    "runtime",
+    "taskCronDefaults",
+    runtimeTaskCronDefaults,
+  ) as Record<string, unknown>;
+  const editTaskCronIssueTemplate =
+    (typeof editTaskCronDefaults.issueTemplate === "object" &&
+      editTaskCronDefaults.issueTemplate !== null &&
+      !Array.isArray(editTaskCronDefaults.issueTemplate)
+      ? (editTaskCronDefaults.issueTemplate as Record<string, unknown>)
+      : {});
+  const setEditTaskCronField = useCallback(
+    (field: string, value: unknown) => {
+      const nextDefaults = {
+        ...editTaskCronDefaults,
+        [field]: value,
+      };
+      mark("runtime", "taskCronDefaults", nextDefaults);
+    },
+    [editTaskCronDefaults, mark],
+  );
+  const setEditTaskCronIssueTemplateField = useCallback(
+    (field: string, value: unknown) => {
+      setEditTaskCronField("issueTemplate", {
+        ...editTaskCronIssueTemplate,
+        [field]: value,
+      });
+    },
+    [editTaskCronIssueTemplate, setEditTaskCronField],
+  );
 
   // Fetch adapter models for the effective adapter type
   const {
@@ -798,6 +834,69 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               numberHint={help.intervalSec}
               showNumber={val!.heartbeatEnabled}
             />
+            <div className="border-t border-border pt-3 space-y-3">
+              <ToggleField
+                label="Task cron schedule"
+                hint={help.taskCron}
+                checked={val!.taskCronEnabled}
+                onChange={(v) => set!({ taskCronEnabled: v })}
+              />
+              {val!.taskCronEnabled && (
+                <div className="space-y-3">
+                  <Field label="Schedule name" hint={help.taskCron}>
+                    <DraftInput
+                      value={val!.taskCronName}
+                      onCommit={(v) => set!({ taskCronName: v })}
+                      immediate
+                      className={inputClass}
+                    />
+                  </Field>
+                  <Field label="Cron expression" hint={help.taskCronExpression}>
+                    <DraftInput
+                      value={val!.taskCronExpression}
+                      onCommit={(v) => set!({ taskCronExpression: v })}
+                      immediate
+                      className={inputClass}
+                    />
+                  </Field>
+                  <Field label="Timezone" hint={help.taskCronTimezone}>
+                    <DraftInput
+                      value={val!.taskCronTimezone}
+                      onCommit={(v) => set!({ taskCronTimezone: v })}
+                      immediate
+                      className={inputClass}
+                    />
+                  </Field>
+                  <Field label="Issue behavior" hint={help.taskCronIssueMode}>
+                    <select
+                      value={val!.taskCronIssueMode}
+                      onChange={(e) => set!({ taskCronIssueMode: e.target.value as CreateConfigValues["taskCronIssueMode"] })}
+                      className={inputClass}
+                    >
+                      <option value="create_new">Create a new issue each run</option>
+                      <option value="reuse_existing">Reuse one issue</option>
+                      <option value="reopen_existing">Reopen existing issue when done</option>
+                    </select>
+                  </Field>
+                  <Field label="Issue title template" hint={help.taskCron}>
+                    <DraftInput
+                      value={val!.taskCronIssueTitle}
+                      onCommit={(v) => set!({ taskCronIssueTitle: v })}
+                      immediate
+                      className={inputClass}
+                    />
+                  </Field>
+                  <Field label="Issue description template" hint={help.taskCron}>
+                    <DraftInput
+                      value={val!.taskCronIssueDescription}
+                      onCommit={(v) => set!({ taskCronIssueDescription: v })}
+                      immediate
+                      className={inputClass}
+                    />
+                  </Field>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       ) : (
@@ -820,6 +919,71 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 numberHint={help.intervalSec}
                 showNumber={eff("heartbeat", "enabled", heartbeat.enabled !== false)}
               />
+              <div className="border-t border-border pt-3 space-y-3">
+                <ToggleField
+                  label="Task cron defaults"
+                  hint={help.taskCron}
+                  checked={Boolean(editTaskCronDefaults.enabled)}
+                  onChange={(v) => setEditTaskCronField("enabled", v)}
+                />
+                {Boolean(editTaskCronDefaults.enabled) && (
+                  <div className="space-y-3">
+                    <Field label="Schedule name" hint={help.taskCron}>
+                      <DraftInput
+                        value={String(editTaskCronDefaults.name ?? "")}
+                        onCommit={(v) => setEditTaskCronField("name", v)}
+                        immediate
+                        className={inputClass}
+                      />
+                    </Field>
+                    <Field label="Cron expression" hint={help.taskCronExpression}>
+                      <DraftInput
+                        value={String(editTaskCronDefaults.expression ?? "")}
+                        onCommit={(v) => setEditTaskCronField("expression", v)}
+                        immediate
+                        className={inputClass}
+                      />
+                    </Field>
+                    <Field label="Timezone" hint={help.taskCronTimezone}>
+                      <DraftInput
+                        value={String(editTaskCronDefaults.timezone ?? "UTC")}
+                        onCommit={(v) => setEditTaskCronField("timezone", v)}
+                        immediate
+                        className={inputClass}
+                      />
+                    </Field>
+                    <Field label="Issue behavior" hint={help.taskCronIssueMode}>
+                      <select
+                        value={String(editTaskCronDefaults.issueMode ?? "create_new")}
+                        onChange={(e) =>
+                          setEditTaskCronField("issueMode", e.target.value as CreateConfigValues["taskCronIssueMode"])
+                        }
+                        className={inputClass}
+                      >
+                        <option value="create_new">Create a new issue each run</option>
+                        <option value="reuse_existing">Reuse one issue</option>
+                        <option value="reopen_existing">Reopen existing issue when done</option>
+                      </select>
+                    </Field>
+                    <Field label="Issue title template" hint={help.taskCron}>
+                      <DraftInput
+                        value={String(editTaskCronIssueTemplate.title ?? "")}
+                        onCommit={(v) => setEditTaskCronIssueTemplateField("title", v)}
+                        immediate
+                        className={inputClass}
+                      />
+                    </Field>
+                    <Field label="Issue description template" hint={help.taskCron}>
+                      <DraftInput
+                        value={String(editTaskCronIssueTemplate.description ?? "")}
+                        onCommit={(v) => setEditTaskCronIssueTemplateField("description", v)}
+                        immediate
+                        className={inputClass}
+                      />
+                    </Field>
+                  </div>
+                )}
+              </div>
             </div>
             <CollapsibleSection
               title="Advanced Run Policy"

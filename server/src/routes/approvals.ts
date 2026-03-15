@@ -15,6 +15,7 @@ import {
   issueApprovalService,
   logActivity,
   secretService,
+  skillService,
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { redactEventPayload } from "../redaction.js";
@@ -32,6 +33,7 @@ export function approvalRoutes(db: Db) {
   const heartbeat = heartbeatService(db);
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
+  const skillsSvc = skillService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
 
   router.get("/companies/:companyId/approvals", async (req, res) => {
@@ -70,6 +72,14 @@ export function approvalRoutes(db: Db) {
             { strictMode: strictSecretsMode },
           )
         : approvalInput.payload;
+    if (approvalInput.type === "learned_skill") {
+      const validation = skillsSvc.validateLearnedSkillProvenance(normalizedPayload);
+      if (!validation.ok || !validation.parsed) {
+        res.status(422).json({ error: validation.reason ?? "Invalid learned skill provenance" });
+        return;
+      }
+      approvalInput.payload = validation.parsed;
+    }
 
     const actor = getActorInfo(req);
     const approval = await svc.create(companyId, {
@@ -286,6 +296,14 @@ export function approvalRoutes(db: Db) {
           )
         : req.body.payload
       : undefined;
+    if (existing.type === "learned_skill" && normalizedPayload) {
+      const validation = skillsSvc.validateLearnedSkillProvenance(normalizedPayload);
+      if (!validation.ok || !validation.parsed) {
+        res.status(422).json({ error: validation.reason ?? "Invalid learned skill provenance" });
+        return;
+      }
+      req.body.payload = validation.parsed;
+    }
     const approval = await svc.resubmit(id, normalizedPayload);
     const actor = getActorInfo(req);
     await logActivity(db, {

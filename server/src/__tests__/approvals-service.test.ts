@@ -8,6 +8,10 @@ const mockAgentService = vi.hoisted(() => ({
 }));
 
 const mockNotifyHireApproved = vi.hoisted(() => vi.fn());
+const mockSkillService = vi.hoisted(() => ({
+  validateLearnedSkillProvenance: vi.fn(() => ({ ok: true, reason: null, parsed: {} })),
+  applyLearnedApprovalResolution: vi.fn(),
+}));
 
 vi.mock("../services/agents.js", () => ({
   agentService: vi.fn(() => mockAgentService),
@@ -15,6 +19,10 @@ vi.mock("../services/agents.js", () => ({
 
 vi.mock("../services/hire-hook.js", () => ({
   notifyHireApproved: mockNotifyHireApproved,
+}));
+
+vi.mock("../services/skills.js", () => ({
+  skillService: vi.fn(() => mockSkillService),
 }));
 
 type ApprovalRecord = {
@@ -26,11 +34,11 @@ type ApprovalRecord = {
   requestedByAgentId: string | null;
 };
 
-function createApproval(status: string): ApprovalRecord {
+function createApproval(status: string, type = "hire_agent"): ApprovalRecord {
   return {
     id: "approval-1",
     companyId: "company-1",
-    type: "hire_agent",
+    type,
     status,
     payload: { agentId: "agent-1" },
     requestedByAgentId: "requester-1",
@@ -62,6 +70,12 @@ describe("approvalService resolution idempotency", () => {
     mockAgentService.create.mockResolvedValue({ id: "agent-1" });
     mockAgentService.terminate.mockResolvedValue(undefined);
     mockNotifyHireApproved.mockResolvedValue(undefined);
+    mockSkillService.validateLearnedSkillProvenance.mockReturnValue({
+      ok: true,
+      reason: null,
+      parsed: { skillId: "skill-1" },
+    });
+    mockSkillService.applyLearnedApprovalResolution.mockResolvedValue(undefined);
   });
 
   it("treats repeated approve retries as no-ops after another worker resolves the approval", async () => {
@@ -103,5 +117,21 @@ describe("approvalService resolution idempotency", () => {
     expect(result.applied).toBe(true);
     expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith("agent-1");
     expect(mockNotifyHireApproved).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects learned-skill approval when provenance is invalid", async () => {
+    mockSkillService.validateLearnedSkillProvenance.mockReturnValue({
+      ok: false,
+      reason: "Learned skill provenance must use paperclip-create-skill",
+      parsed: null,
+    });
+    const dbStub = createDbStub(
+      [[createApproval("pending", "learned_skill")], [createApproval("approved", "learned_skill")]],
+      [],
+    );
+    const svc = approvalService(dbStub.db as any);
+    await expect(svc.approve("approval-1", "board", "ship it")).rejects.toThrow(
+      /provenance/i,
+    );
   });
 });

@@ -27,8 +27,12 @@ import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { skillRoutes } from "./routes/skills.js";
 import { chatRoutes } from "./routes/chat.js";
+import { webhookRoutes } from "./routes/webhooks.js";
+import { taskCronRoutes } from "./routes/task-crons.js";
 import { applyUiBranding } from "./ui-branding.js";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
+import { eventRoutingService } from "./services/event-routing.js";
+import { configureInternalEventRouter } from "./services/live-events.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 
@@ -49,8 +53,15 @@ export async function createApp(
   },
 ) {
   const app = express();
+  const eventRouter = eventRoutingService(db);
 
-  app.use(express.json());
+  app.use(
+    express.json({
+      verify: (req, _res, buf) => {
+        (req as express.Request).rawBody = Buffer.from(buf);
+      },
+    }),
+  );
   app.use(httpLogger);
   const privateHostnameGateEnabled =
     opts.deploymentMode === "authenticated" && opts.deploymentExposure === "private";
@@ -120,6 +131,8 @@ export async function createApp(
   api.use(inboxDismissalRoutes(db));
   api.use(skillRoutes(db));
   api.use(chatRoutes(db));
+  api.use(webhookRoutes(db));
+  api.use(taskCronRoutes(db));
   api.use(
     accessRoutes(db, {
       deploymentMode: opts.deploymentMode,
@@ -184,6 +197,15 @@ export async function createApp(
   }
 
   app.use(errorHandler);
+
+  configureInternalEventRouter(async (event) => {
+    const normalizedType = `paperclip.${event.type}`;
+    await eventRouter.processInternalEvent({
+      companyId: event.companyId,
+      eventType: normalizedType,
+      payload: event.payload ?? {},
+    });
+  });
 
   return app;
 }

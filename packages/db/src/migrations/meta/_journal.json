@@ -232,6 +232,20 @@
       "when": 1773525401412,
       "tag": "0032_young_mac_gargan",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1773571674634,
+      "tag": "0033_stale_zaladane",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1773574560247,
+      "tag": "0034_stiff_callisto",
+      "breakpoints": true
     }
   ]
 }

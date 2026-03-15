@@ -3,6 +3,7 @@ export {};
 declare global {
   namespace Express {
     interface Request {
+      rawBody?: Buffer;
       actor: {
         type: "board" | "agent" | "none";
         userId?: string;

@@ -4,9 +4,11 @@ import { approvalComments, approvals } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { agentService } from "./agents.js";
 import { notifyHireApproved } from "./hire-hook.js";
+import { skillService } from "./skills.js";
 
 export function approvalService(db: Db) {
   const agentsSvc = agentService(db);
+  const skillsSvc = skillService(db);
   const canResolveStatuses = new Set(["pending", "revision_requested"]);
   const resolvableStatuses = Array.from(canResolveStatuses);
   type ApprovalRecord = typeof approvals.$inferSelect;
@@ -29,6 +31,12 @@ export function approvalService(db: Db) {
     decisionNote: string | null | undefined,
   ): Promise<ResolutionResult> {
     const existing = await getExistingApproval(id);
+    if (existing.type === "learned_skill" && targetStatus === "approved") {
+      const validation = skillsSvc.validateLearnedSkillProvenance(existing.payload);
+      if (!validation.ok) {
+        throw unprocessable(validation.reason ?? "Learned skill approval is missing valid provenance");
+      }
+    }
     if (!canResolveStatuses.has(existing.status)) {
       if (existing.status === targetStatus) {
         return { approval: existing, applied: false };
@@ -138,6 +146,14 @@ export function approvalService(db: Db) {
           }).catch(() => {});
         }
       }
+      if (applied && updated.type === "learned_skill") {
+        await skillsSvc.applyLearnedApprovalResolution({
+          approval: updated,
+          targetStatus: "approved",
+          decidedByUserId,
+          reviewedAt: now,
+        });
+      }
 
       return { approval: updated, applied };
     },
@@ -157,6 +173,14 @@ export function approvalService(db: Db) {
           await agentsSvc.terminate(payloadAgentId);
         }
       }
+      if (applied && updated.type === "learned_skill") {
+        await skillsSvc.applyLearnedApprovalResolution({
+          approval: updated,
+          targetStatus: "rejected",
+          decidedByUserId,
+          reviewedAt: new Date(),
+        });
+      }
 
       return { approval: updated, applied };
     },
@@ -168,7 +192,7 @@ export function approvalService(db: Db) {
       }
 
       const now = new Date();
-      return db
+      const updated = await db
         .update(approvals)
         .set({
           status: "revision_requested",
@@ -180,6 +204,15 @@ export function approvalService(db: Db) {
         .where(eq(approvals.id, id))
         .returning()
         .then((rows) => rows[0]);
+      if (updated?.type === "learned_skill") {
+        await skillsSvc.applyLearnedApprovalResolution({
+          approval: updated,
+          targetStatus: "revision_requested",
+          decidedByUserId,
+          reviewedAt: now,
+        });
+      }
+      return updated;
     },
 
     resubmit: async (id: string, payload?: Record<string, unknown>) => {
@@ -189,11 +222,18 @@ export function approvalService(db: Db) {
       }
 
       const now = new Date();
-      return db
+      const nextPayload = payload ?? existing.payload;
+      if (existing.type === "learned_skill") {
+        const validation = skillsSvc.validateLearnedSkillProvenance(nextPayload);
+        if (!validation.ok) {
+          throw unprocessable(validation.reason ?? "Learned skill resubmit is missing valid provenance");
+        }
+      }
+      const updated = await db
         .update(approvals)
         .set({
           status: "pending",
-          payload: payload ?? existing.payload,
+          payload: nextPayload,
           decisionNote: null,
           decidedByUserId: null,
           decidedAt: null,
@@ -202,6 +242,13 @@ export function approvalService(db: Db) {
         .where(eq(approvals.id, id))
         .returning()
         .then((rows) => rows[0]);
+      if (updated?.type === "learned_skill") {
+        await skillsSvc.applyLearnedApprovalResolution({
+          approval: updated,
+          targetStatus: "resubmitted",
+        });
+      }
+      return updated;
     },
 
     listComments: async (approvalId: string) => {

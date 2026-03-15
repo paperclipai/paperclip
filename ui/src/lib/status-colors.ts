@@ -59,6 +59,10 @@ export const statusBadge: Record<string, string> = {
   error: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
   terminated: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
   pending: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/50 dark:text-yellow-300",
+  received: "bg-muted text-muted-foreground",
+  matched: "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300",
+  dispatched: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
+  ignored: "bg-muted text-muted-foreground",
 
   // Approval statuses
   pending_approval: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",

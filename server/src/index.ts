@@ -25,7 +25,12 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
-import { heartbeatService, reconcilePersistedRuntimeServicesOnStartup, seedBuiltInSkillsForAllCompanies } from "./services/index.js";
+import {
+  heartbeatService,
+  reconcilePersistedRuntimeServicesOnStartup,
+  seedBuiltInSkillsForAllCompanies,
+  taskCronService,
+} from "./services/index.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
@@ -521,6 +526,7 @@ export async function startServer(): Promise<StartedServer> {
   
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any);
+    const taskCron = taskCronService(db as any);
   
     // Reap orphaned runs at startup (no threshold -- runningProcesses is empty)
     void heartbeat.reapOrphanedRuns().catch((err) => {
@@ -537,6 +543,17 @@ export async function startServer(): Promise<StartedServer> {
         })
         .catch((err) => {
           logger.error({ err }, "heartbeat timer tick failed");
+        });
+
+      void taskCron
+        .tickDueSchedules(new Date())
+        .then((result) => {
+          if (result.dispatched > 0 || result.failed > 0) {
+            logger.info({ ...result }, "task cron tick processed schedules");
+          }
+        })
+        .catch((err) => {
+          logger.error({ err }, "task cron tick failed");
         });
   
       // Periodically reap orphaned runs (5-min staleness threshold)

@@ -16,6 +16,8 @@ type WakePayload = {
   taskId: string | null;
   issueId: string | null;
   wakeReason: string | null;
+  eventType: string | null;
+  eventPayload: Record<string, unknown> | null;
   wakeCommentId: string | null;
   chatMessageId: string | null;
   chatSessionId: string | null;
@@ -292,6 +294,8 @@ function buildWakePayload(ctx: AdapterExecutionContext): WakePayload {
     taskId: nonEmpty(context.taskId) ?? nonEmpty(context.issueId),
     issueId: nonEmpty(context.issueId),
     wakeReason: nonEmpty(context.wakeReason),
+    eventType: nonEmpty(context.eventType),
+    eventPayload: asRecord(context.eventPayload),
     wakeCommentId: nonEmpty(context.wakeCommentId) ?? nonEmpty(context.commentId),
     chatMessageId: nonEmpty(context.chatMessageId),
     chatSessionId: nonEmpty(context.chatSessionId),
@@ -329,6 +333,8 @@ function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: Wak
   }
   if (wakePayload.taskId) paperclipEnv.PAPERCLIP_TASK_ID = wakePayload.taskId;
   if (wakePayload.wakeReason) paperclipEnv.PAPERCLIP_WAKE_REASON = wakePayload.wakeReason;
+  if (wakePayload.eventType) paperclipEnv.PAPERCLIP_EVENT_TYPE = wakePayload.eventType;
+  if (wakePayload.eventPayload) paperclipEnv.PAPERCLIP_EVENT_PAYLOAD = JSON.stringify(wakePayload.eventPayload);
   if (wakePayload.wakeCommentId) paperclipEnv.PAPERCLIP_WAKE_COMMENT_ID = wakePayload.wakeCommentId;
   if (wakePayload.chatMessageId) {
     paperclipEnv.PAPERCLIP_CHAT_MESSAGE_ID = wakePayload.chatMessageId;
@@ -354,6 +360,8 @@ function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string
     "PAPERCLIP_API_URL",
     "PAPERCLIP_TASK_ID",
     "PAPERCLIP_WAKE_REASON",
+    "PAPERCLIP_EVENT_TYPE",
+    "PAPERCLIP_EVENT_PAYLOAD",
     "PAPERCLIP_WAKE_COMMENT_ID",
     "PAPERCLIP_CHAT_MESSAGE_ID",
     "PAPERCLIP_CHAT_SESSION_ID",

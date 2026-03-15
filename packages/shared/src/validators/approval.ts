@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { APPROVAL_TYPES } from "../constants.js";
+import { learnedSkillProvenanceSchema } from "./skill.js";
 
 export const createApprovalSchema = z.object({
   type: z.enum(APPROVAL_TYPES),
@@ -35,3 +36,19 @@ export const addApprovalCommentSchema = z.object({
 });
 
 export type AddApprovalComment = z.infer<typeof addApprovalCommentSchema>;
+
+export const learnedSkillApprovalPayloadSchema = z.object({
+  skillId: z.string().uuid(),
+  skillName: z.string().trim().min(1).max(200),
+  tier: z.enum(["agent", "company"]),
+  agentId: z.string().uuid().nullable(),
+  summary: z.string().trim().min(1).max(2_000),
+  confidence: z.number().min(0).max(1).nullable(),
+  sourceRunId: z.string().uuid(),
+  sourceChatSessionId: z.string().uuid().nullable(),
+  sourceChatMessageId: z.string().uuid().nullable(),
+  provenance: learnedSkillProvenanceSchema,
+  draftSkillContent: z.string().trim().min(1),
+});
+
+export type LearnedSkillApprovalPayload = z.infer<typeof learnedSkillApprovalPayloadSchema>;

@@ -26,6 +26,7 @@ import {
   issueService,
   logActivity,
   secretService,
+  taskCronService,
 } from "../services/index.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -56,6 +57,7 @@ export function agentRoutes(db: Db) {
   const heartbeat = heartbeatService(db);
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
+  const taskCron = taskCronService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
 
   function canCreateAgents(agent: { role: string; permissions: Record<string, unknown> | null | undefined }) {
@@ -203,6 +205,74 @@ export function agentRoutes(db: Db) {
   function generateEd25519PrivateKeyPem(): string {
     const { privateKey } = generateKeyPairSync("ed25519");
     return privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+  }
+
+  async function maybeCreateTaskCronFromRuntimeConfig(input: {
+    agent: { id: string; companyId: string; name: string };
+    runtimeConfig: unknown;
+  }) {
+    const runtimeConfig = asRecord(input.runtimeConfig);
+    const defaults = asRecord(runtimeConfig?.taskCronDefaults);
+    if (!defaults) return null;
+    const expression = asNonEmptyString(defaults.expression);
+    if (!expression) return null;
+    const issueMode = asNonEmptyString(defaults.issueMode);
+    const enabled = parseBooleanLike(defaults.enabled);
+    return taskCron.createSchedule(input.agent.companyId, {
+      agentId: input.agent.id,
+      name: asNonEmptyString(defaults.name) ?? `${input.agent.name} recurring task`,
+      expression,
+      timezone: asNonEmptyString(defaults.timezone) ?? "UTC",
+      enabled: enabled ?? true,
+      issueMode:
+        issueMode === "reuse_existing" || issueMode === "reopen_existing"
+          ? issueMode
+          : "create_new",
+      issueTemplate: asRecord(defaults.issueTemplate),
+      payload: asRecord(defaults.payload),
+    });
+  }
+
+  async function syncTaskCronDefaultsForAgent(input: {
+    agent: { id: string; companyId: string; name: string };
+    runtimeConfigPatch: unknown;
+  }) {
+    const runtimePatch = asRecord(input.runtimeConfigPatch);
+    if (!runtimePatch || !Object.prototype.hasOwnProperty.call(runtimePatch, "taskCronDefaults")) return null;
+    const defaults = asRecord(runtimePatch.taskCronDefaults);
+    const existingSchedules = await taskCron.listForAgent(input.agent.companyId, input.agent.id);
+    const primaryExisting = existingSchedules[0] ?? null;
+    const expression = asNonEmptyString(defaults?.expression);
+    const enabled = parseBooleanLike(defaults?.enabled);
+    const issueMode = asNonEmptyString(defaults?.issueMode);
+
+    if (!defaults || !expression || enabled === false) {
+      if (primaryExisting) {
+        return taskCron.updateSchedule(primaryExisting.id, { enabled: false });
+      }
+      return null;
+    }
+
+    const payload = {
+      name: asNonEmptyString(defaults.name) ?? `${input.agent.name} recurring task`,
+      expression,
+      timezone: asNonEmptyString(defaults.timezone) ?? "UTC",
+      enabled: true,
+      issueMode:
+        issueMode === "reuse_existing" || issueMode === "reopen_existing"
+          ? issueMode
+          : "create_new",
+      issueTemplate: asRecord(defaults.issueTemplate),
+      payload: asRecord(defaults.payload),
+    } as const;
+
+    if (primaryExisting) {
+      return taskCron.updateSchedule(primaryExisting.id, payload);
+    }
+    return taskCron.createSchedule(input.agent.companyId, {
+      agentId: input.agent.id,
+      ...payload,
+    });
   }
 
   function ensureGatewayDeviceKey(
@@ -676,6 +746,13 @@ export function agentRoutes(db: Db) {
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
     });
+    const taskCronSchedule =
+      requiresApproval
+        ? null
+        : await maybeCreateTaskCronFromRuntimeConfig({
+          agent,
+          runtimeConfig: normalizedHireInput.runtimeConfig,
+        });
 
     let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
     const actor = getActorInfo(req);
@@ -751,6 +828,7 @@ export function agentRoutes(db: Db) {
         requiresApproval,
         approvalId: approval?.id ?? null,
         issueIds: sourceIssueIds,
+        taskCronScheduleId: taskCronSchedule?.id ?? null,
       },
     });
 
@@ -801,6 +879,10 @@ export function agentRoutes(db: Db) {
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
     });
+    const taskCronSchedule = await maybeCreateTaskCronFromRuntimeConfig({
+      agent,
+      runtimeConfig: req.body.runtimeConfig,
+    });
 
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -812,7 +894,7 @@ export function agentRoutes(db: Db) {
       action: "agent.created",
       entityType: "agent",
       entityId: agent.id,
-      details: { name: agent.name, role: agent.role },
+      details: { name: agent.name, role: agent.role, taskCronScheduleId: taskCronSchedule?.id ?? null },
     });
 
     res.status(201).json(agent);
@@ -1009,6 +1091,10 @@ export function agentRoutes(db: Db) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
+    await syncTaskCronDefaultsForAgent({
+      agent,
+      runtimeConfigPatch: patchData.runtimeConfig,
+    });
 
     await logActivity(db, {
       companyId: agent.companyId,

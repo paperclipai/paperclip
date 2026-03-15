@@ -123,6 +123,7 @@ import { FilterBar, type FilterValue } from "@/components/FilterBar";
 import { InlineEditor } from "@/components/InlineEditor";
 import { PageSkeleton } from "@/components/PageSkeleton";
 import { Identity } from "@/components/Identity";
+import { ApprovalPayloadRenderer } from "@/components/ApprovalPayload";
 
 /* ------------------------------------------------------------------ */
 /*  Section wrapper                                                    */
@@ -1139,6 +1140,36 @@ export function DesignGuide() {
       </Section>
 
       {/* ============================================================ */}
+      {/*  AUTOMATION ROUTING PATTERN                                   */}
+      {/* ============================================================ */}
+      <Section title="Automation Routing Pattern">
+        <SubSection title="Endpoint row + rule + event status">
+          <div className="space-y-3 max-w-2xl">
+            <div className="border border-border rounded-md divide-y divide-border">
+              <EntityRow
+                title="GitHub Main"
+                subtitle="/api/webhooks/github-main/receive"
+                trailing={<Badge variant="outline" className="capitalize">github</Badge>}
+              />
+              <EntityRow
+                title="PR opened -> reviewer"
+                subtitle="pull_request.opened -> wake_agent"
+                trailing={<span className="text-xs text-muted-foreground">P100</span>}
+              />
+              <EntityRow
+                title="github.pull_request.opened"
+                subtitle="Jan 15, 2025 12:03 PM"
+                trailing={<StatusBadge status="dispatched" />}
+              />
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Use `EntityRow` for endpoints/rules/events, `Badge` for provider labels, and `StatusBadge` for event states.
+            </p>
+          </div>
+        </SubSection>
+      </Section>
+
+      {/* ============================================================ */}
       {/*  GROUPED LIST (Issues pattern)                                */}
       {/* ============================================================ */}
       <Section title="Grouped List (Issues pattern)">
@@ -1191,6 +1222,59 @@ export function DesignGuide() {
             <Textarea placeholder="Leave a comment..." rows={3} />
             <Button size="sm">Comment</Button>
           </div>
+        </div>
+      </Section>
+
+      {/* ============================================================ */}
+      {/*  APPROVAL PAYLOADS                                            */}
+      {/* ============================================================ */}
+      <Section title="Approval Payloads">
+        <div className="grid gap-4 md:grid-cols-3">
+          <SubSection title="Hire agent">
+            <div className="rounded-md border border-border p-3">
+              <ApprovalPayloadRenderer
+                type="hire_agent"
+                payload={{
+                  name: "QA Bot",
+                  role: "qa",
+                  title: "Quality Engineer",
+                  capabilities: "Owns test plans and release validation.",
+                  adapterType: "codex_local",
+                }}
+              />
+            </div>
+          </SubSection>
+          <SubSection title="CEO strategy">
+            <div className="rounded-md border border-border p-3">
+              <ApprovalPayloadRenderer
+                type="approve_ceo_strategy"
+                payload={{
+                  title: "Q2 velocity strategy",
+                  plan: "Focus on cycle-time reduction and test reliability before expanding scope.",
+                }}
+              />
+            </div>
+          </SubSection>
+          <SubSection title="Learned skill">
+            <div className="rounded-md border border-border p-3">
+              <ApprovalPayloadRenderer
+                type="learned_skill"
+                payload={{
+                  skillName: "chat-triage-quick-context",
+                  tier: "agent",
+                  agentId: "0f7c9118-0ca4-4698-860a-d6e00f3f6501",
+                  confidence: 0.86,
+                  sourceRunId: "db43fd75-b770-4f93-a00a-4e3650f9758a",
+                  sourceChatSessionId: "fd2142ca-44af-4140-945d-11ae1207c5eb",
+                  sourceChatMessageId: "fcba16c4-6f0f-421f-a7db-7868df6702e7",
+                  summary:
+                    "Adds a concise triage checklist for chat requests before invoking long workflows.",
+                  provenance: { authoringSkill: "paperclip-create-skill" },
+                  draftSkillContent: "# Chat Triage\n\n## Instructions\n- Confirm intent\n- Identify blockers",
+                }}
+              />
+            </div>
+          </SubSection>
         </div>
       </Section>
 

@@ -89,11 +89,13 @@ export {
   requestApprovalRevisionSchema,
   resubmitApprovalSchema,
   addApprovalCommentSchema,
+  learnedSkillApprovalPayloadSchema,
   type CreateApproval,
   type ResolveApproval,
   type RequestApprovalRevision,
   type ResubmitApproval,
   type AddApprovalComment,
+  type LearnedSkillApprovalPayload,
 } from "./approval.js";
 
 export {
@@ -142,8 +144,14 @@ export {
 export {
   createSkillSchema,
   installSkillSchema,
+  learnedSkillCandidateStateSchema,
+  learnedSkillProvenanceSchema,
+  learnedSkillCandidateMetadataSchema,
   type CreateSkill,
   type InstallSkill,
+  type LearnedSkillCandidateState,
+  type LearnedSkillProvenance,
+  type LearnedSkillCandidateMetadata,
 } from "./skill.js";
 
 export {
@@ -162,3 +170,28 @@ export {
   type UpdateMemberPermissions,
   type UpdateUserCompanyAccess,
 } from "./access.js";
+
+export {
+  webhookEndpointProviderSchema,
+  webhookEndpointStatusSchema,
+  eventRoutingSourceSchema,
+  createWebhookEndpointSchema,
+  updateWebhookEndpointSchema,
+  createEventRoutingRuleSchema,
+  updateEventRoutingRuleSchema,
+  webhookReceiveQuerySchema,
+  type CreateWebhookEndpoint,
+  type UpdateWebhookEndpoint,
+  type CreateEventRoutingRule,
+  type UpdateEventRoutingRule,
+} from "./webhook.js";
+
+export {
+  taskCronIssueModeSchema,
+  createTaskCronScheduleSchema,
+  updateTaskCronScheduleSchema,
+  attachTaskCronIssueSchema,
+  type CreateTaskCronSchedule,
+  type UpdateTaskCronSchedule,
+  type AttachTaskCronIssue,
+} from "./task-cron.js";

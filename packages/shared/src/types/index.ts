@@ -30,7 +30,7 @@ export type {
   IssueLabel,
 } from "./issue.js";
 export type { Goal } from "./goal.js";
-export type { Approval, ApprovalComment } from "./approval.js";
+export type { Approval, ApprovalComment, LearnedSkillApprovalPayload } from "./approval.js";
 export type {
   ChatSession,
   ChatMessage,
@@ -72,6 +72,9 @@ export type {
   Skill,
   SkillTier,
   SkillSourceType,
+  LearnedSkillCandidateState,
+  LearnedSkillProvenance,
+  LearnedSkillCandidateMetadata,
   AgentSkillAssignment,
   ResolvedSkill,
 } from "./skill.js";
@@ -93,3 +96,13 @@ export type {
   CompanyPortabilityImportResult,
   CompanyPortabilityExportRequest,
 } from "./company-portability.js";
+export type {
+  WebhookEndpoint,
+  WebhookEndpointProvider,
+  WebhookEndpointStatus,
+  EventRoutingRule,
+  EventRoutingSource,
+  WebhookEvent,
+  WebhookEventStatus,
+} from "./webhook.js";
+export type { TaskCronSchedule, TaskCronIssueMode } from "./task-cron.js";

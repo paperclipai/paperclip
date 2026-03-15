@@ -1,18 +1,10 @@
-import { CheckCircle2, XCircle, Clock } from "lucide-react";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { Identity } from "./Identity";
+import { StatusIcon } from "./StatusIcon";
 import { typeLabel, typeIcon, defaultTypeIcon, ApprovalPayloadRenderer } from "./ApprovalPayload";
 import { timeAgo } from "../lib/timeAgo";
 import type { Approval, Agent } from "@paperclipai/shared";
-
-function statusIcon(status: string) {
-  if (status === "approved") return <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />;
-  if (status === "rejected") return <XCircle className="h-3.5 w-3.5 text-red-600 dark:text-red-400" />;
-  if (status === "revision_requested") return <Clock className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />;
-  if (status === "pending") return <Clock className="h-3.5 w-3.5 text-yellow-600 dark:text-yellow-400" />;
-  return null;
-}
 
 export function ApprovalCard({
   approval,
@@ -50,7 +42,7 @@ export function ApprovalCard({
           </div>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
-          {statusIcon(approval.status)}
+          <StatusIcon status={approval.status} />
           <span className="text-xs text-muted-foreground capitalize">{approval.status}</span>
           <span className="text-xs text-muted-foreground">· {timeAgo(approval.createdAt)}</span>
         </div>

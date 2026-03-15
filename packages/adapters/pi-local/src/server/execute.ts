@@ -157,6 +157,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     typeof context.wakeReason === "string" && context.wakeReason.trim().length > 0
       ? context.wakeReason.trim()
       : null;
+  const wakeEventType =
+    typeof context.eventType === "string" && context.eventType.trim().length > 0
+      ? context.eventType.trim()
+      : null;
+  const wakeEventPayload =
+    typeof context.eventPayload === "object" && context.eventPayload !== null && !Array.isArray(context.eventPayload)
+      ? (context.eventPayload as Record<string, unknown>)
+      : null;
   const wakeCommentId =
     (typeof context.wakeCommentId === "string" && context.wakeCommentId.trim().length > 0 && context.wakeCommentId.trim()) ||
     (typeof context.commentId === "string" && context.commentId.trim().length > 0 && context.commentId.trim()) ||
@@ -184,6 +192,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (wakeTaskId) injectedEnv.PAPERCLIP_TASK_ID = wakeTaskId;
   if (wakeReason) injectedEnv.PAPERCLIP_WAKE_REASON = wakeReason;
   if (wakeCommentId) injectedEnv.PAPERCLIP_WAKE_COMMENT_ID = wakeCommentId;
+  if (wakeEventType) injectedEnv.PAPERCLIP_EVENT_TYPE = wakeEventType;
+  if (wakeEventPayload) injectedEnv.PAPERCLIP_EVENT_PAYLOAD = JSON.stringify(wakeEventPayload);
   if (chatMessageId) injectedEnv.PAPERCLIP_CHAT_MESSAGE_ID = chatMessageId;
   if (chatSessionId) injectedEnv.PAPERCLIP_CHAT_SESSION_ID = chatSessionId;
   if (approvalId) injectedEnv.PAPERCLIP_APPROVAL_ID = approvalId;

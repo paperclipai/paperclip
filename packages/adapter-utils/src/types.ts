@@ -247,4 +247,11 @@ export interface CreateConfigValues {
   maxTurnsPerRun: number;
   heartbeatEnabled: boolean;
   intervalSec: number;
+  taskCronEnabled: boolean;
+  taskCronName: string;
+  taskCronExpression: string;
+  taskCronTimezone: string;
+  taskCronIssueMode: "create_new" | "reuse_existing" | "reopen_existing";
+  taskCronIssueTitle: string;
+  taskCronIssueDescription: string;
 }

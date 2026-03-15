@@ -423,6 +423,66 @@ function normalizeAgentNameKey(value: string | null | undefined) {
   return normalized.length > 0 ? normalized : null;
 }
 
+type LearnedCandidateSuggestion = {
+  skillName: string;
+  summary: string;
+  draftSkillContent: string;
+  confidence: number | null;
+  provenance: {
+    authoringSkill: "paperclip-create-skill";
+    authoringMethod?: string | null;
+    evidence?: string | null;
+  };
+};
+
+function parseLearnedCandidateSuggestion(resultJson: Record<string, unknown> | null): LearnedCandidateSuggestion | null {
+  const root = parseObject(resultJson);
+  const candidate = parseObject(
+    root.learnedSkillCandidate ??
+      root.learned_skill_candidate ??
+      root.skillCandidate ??
+      root.skill_candidate,
+  );
+  if (Object.keys(candidate).length === 0) return null;
+
+  const skillName = readNonEmptyString(candidate.skillName) ?? readNonEmptyString(candidate.name);
+  const summary = readNonEmptyString(candidate.summary);
+  const draftSkillContent =
+    readNonEmptyString(candidate.draftSkillContent) ??
+    readNonEmptyString(candidate.skillContent) ??
+    readNonEmptyString(candidate.content);
+  const provenanceRaw = parseObject(candidate.provenance);
+  const authoringSkill =
+    readNonEmptyString(provenanceRaw.authoringSkill) ?? readNonEmptyString(candidate.authoringSkill);
+  if (
+    !skillName ||
+    !summary ||
+    !draftSkillContent ||
+    authoringSkill !== "paperclip-create-skill"
+  ) {
+    return null;
+  }
+  const confidenceRaw = candidate.confidence;
+  const confidence =
+    typeof confidenceRaw === "number" && Number.isFinite(confidenceRaw)
+      ? Math.max(0, Math.min(1, confidenceRaw))
+      : null;
+
+  return {
+    skillName,
+    summary,
+    draftSkillContent,
+    confidence,
+    provenance: {
+      authoringSkill: "paperclip-create-skill",
+      authoringMethod:
+        readNonEmptyString(provenanceRaw.authoringMethod) ??
+        readNonEmptyString(candidate.authoringMethod),
+      evidence: readNonEmptyString(provenanceRaw.evidence) ?? readNonEmptyString(candidate.evidence),
+    },
+  };
+}
+
 const defaultSessionCodec: AdapterSessionCodec = {
   deserialize(raw: unknown) {
     const asObj = parseObject(raw);
@@ -1789,6 +1849,46 @@ export function heartbeatService(db: Db) {
       }
 
       if (finalizedRun) {
+        if (outcome === "succeeded") {
+          const suggestion = parseLearnedCandidateSuggestion(
+            parseObject(adapterResult.resultJson as Record<string, unknown> | null),
+          );
+          if (suggestion) {
+            try {
+              const chatContext = parseObject(context.paperclipChat);
+              const sourceChatSessionId = readNonEmptyString(chatContext.sessionId);
+              const sourceChatMessageId = readNonEmptyString(chatContext.messageId);
+              const learnedSkill = await skillsSvc.createLearnedCandidate({
+                companyId: agent.companyId,
+                agentId: agent.id,
+                requestedByAgentId: agent.id,
+                skillName: suggestion.skillName,
+                summary: suggestion.summary,
+                draftSkillContent: suggestion.draftSkillContent,
+                confidence: suggestion.confidence,
+                sourceRunId: finalizedRun.id,
+                sourceChatSessionId,
+                sourceChatMessageId,
+                provenance: suggestion.provenance,
+              });
+              await appendRunEvent(finalizedRun, seq++, {
+                eventType: "learned_skill.candidate_created",
+                stream: "system",
+                level: "info",
+                message: `learned-skill candidate queued for approval (${learnedSkill.skill.name})`,
+                payload: {
+                  skillId: learnedSkill.skill.id,
+                  approvalId: learnedSkill.approval.id,
+                },
+              });
+            } catch (candidateErr) {
+              logger.warn(
+                { err: candidateErr, runId: finalizedRun.id, agentId: agent.id },
+                "failed to create learned-skill candidate from successful run",
+              );
+            }
+          }
+        }
         await updateRuntimeState(agent, finalizedRun, adapterResult, {
           legacySessionId: nextSessionState.legacySessionId,
         });

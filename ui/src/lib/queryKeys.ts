@@ -79,6 +79,19 @@ export const queryKeys = {
     forAgent: (agentId: string) => ["skills", "agent", agentId] as const,
     assignmentsForAgent: (agentId: string) => ["skills", "assignments", agentId] as const,
   },
+  webhooks: {
+    endpoints: (companyId: string) => ["webhooks", companyId, "endpoints"] as const,
+    rules: (endpointId: string) => ["webhooks", endpointId, "rules"] as const,
+    companyRules: (companyId: string) => ["webhooks", companyId, "company-rules"] as const,
+    endpointEvents: (endpointId: string) => ["webhooks", endpointId, "events"] as const,
+    companyEvents: (companyId: string, endpointId?: string) =>
+      ["webhooks", companyId, "events", endpointId ?? "__all__"] as const,
+  },
+  taskCrons: {
+    company: (companyId: string) => ["task-crons", companyId, "company"] as const,
+    byAgent: (agentId: string) => ["task-crons", "agent", agentId] as const,
+    byIssue: (issueId: string) => ["task-crons", "issue", issueId] as const,
+  },
   inboxDismissals: (companyId: string) => ["inbox-dismissals", companyId] as const,
   org: (companyId: string) => ["org", companyId] as const,
 };

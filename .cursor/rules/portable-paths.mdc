@@ -1,0 +1,28 @@
+---
+description: Use $AGENT_HOME for portable paths in agent configuration files
+globs: agents/**/AGENTS.md, agents/**/HEARTBEAT.md, agents/**/*.json
+alwaysApply: false
+---
+
+# Portable Agent Paths
+
+Never hardcode absolute paths (e.g. `/Users/alpha/Documents/...`) in agent configuration files. Use `$AGENT_HOME` and relative references instead so the project works for any user on any machine.
+
+## Rules
+
+- `$AGENT_HOME` refers to the agent's home directory (e.g. `agents/corey/`). It is injected as an environment variable at runtime.
+- `$AGENT_HOME/workspace` is the agent's working directory.
+- For company-wide resources, use paths relative to `$AGENT_HOME/../..` or define a `$COMPANY_ROOT` convention.
+- For cross-agent references (e.g. gog-cli docs), use `$AGENT_HOME/../gog-cli.md` not an absolute path.
+
+## Examples
+
+```markdown
+❌ BAD — breaks for other users:
+- Product context: `/Users/alpha/Documents/community-wolf-paperclip/company/product/context.md`
+- See `/Users/alpha/Documents/community-wolf-paperclip/agents/gog-cli.md`
+
+✅ GOOD — portable:
+- Product context: `$AGENT_HOME/../../company/product/context.md`
+- See `$AGENT_HOME/../gog-cli.md`
+```
