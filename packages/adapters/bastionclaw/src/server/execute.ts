@@ -4,7 +4,7 @@ import type {
 } from "@paperclipai/adapter-utils";
 import { asNumber, asString, parseObject } from "@paperclipai/adapter-utils/server-utils";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 function sqliteQuery(dbPath: string, sql: string): string {

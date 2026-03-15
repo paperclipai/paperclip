@@ -2381,6 +2381,28 @@ export function accessRoutes(
     if (!allowed) throw forbidden("Permission denied");
   }
 
+  async function assertCanGenerateBastionclawInvitePrompt(
+    req: Request,
+    companyId: string
+  ) {
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type === "agent") {
+      if (!req.actor.agentId) throw forbidden("Agent authentication required");
+      const actorAgent = await agents.getById(req.actor.agentId);
+      if (!actorAgent || actorAgent.companyId !== companyId) {
+        throw forbidden("Agent key cannot access another company");
+      }
+      if (actorAgent.role !== "ceo") {
+        throw forbidden("Only CEO agents can generate BastionClaw invite prompts");
+      }
+      return;
+    }
+    if (req.actor.type !== "board") throw unauthorized();
+    if (isLocalImplicit(req)) return;
+    const allowed = await access.canUser(companyId, req.actor.userId, "users:invite");
+    if (!allowed) throw forbidden("Permission denied");
+  }
+
   async function createCompanyInviteForCompany(input: {
     req: Request;
     companyId: string;
@@ -2668,7 +2690,7 @@ export function accessRoutes(
     validate(createOpenClawInvitePromptSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      await assertCanGenerateOpenClawInvitePrompt(req, companyId);
+      await assertCanGenerateBastionclawInvitePrompt(req, companyId);
       const { token, created, normalizedAgentMessage } =
         await createCompanyInviteForCompany({
           req,
@@ -2754,11 +2776,11 @@ export function accessRoutes(
         ``,
         `# Write to .env`,
         `grep -q "^PAPERCLIP_API_KEY=" .env 2>/dev/null && \\`,
-        `  sed -i '' "s|^PAPERCLIP_API_KEY=.*|PAPERCLIP_API_KEY=$API_KEY|" .env || \\`,
+        `  sed -i.bak "s|^PAPERCLIP_API_KEY=.*|PAPERCLIP_API_KEY=$API_KEY|" .env && rm -f .env.bak || \\`,
         `  echo "PAPERCLIP_API_KEY=$API_KEY" >> .env`,
         ``,
         `grep -q "^PAPERCLIP_API_URL=" .env 2>/dev/null && \\`,
-        `  sed -i '' "s|^PAPERCLIP_API_URL=.*|PAPERCLIP_API_URL=$API_BASE|" .env || \\`,
+        `  sed -i.bak "s|^PAPERCLIP_API_URL=.*|PAPERCLIP_API_URL=$API_BASE|" .env && rm -f .env.bak || \\`,
         `  echo "PAPERCLIP_API_URL=$API_BASE" >> .env`,
         ``,
         `echo "Step 4: Installing Paperclip skill..."`,
@@ -2766,13 +2788,13 @@ export function accessRoutes(
         `curl -sf "$API_BASE/api/skills/paperclip" -o container/skills/paperclip/SKILL.md`,
         ``,
         `# Adapt skill for BastionClaw: replace curl with MCP proxy tool`,
-        `sed -i '' 's/curl -sS "$PAPERCLIP_API_URL/paperclip_api method=GET path=/g' container/skills/paperclip/SKILL.md`,
-        `sed -i '' 's/curl -sS -X POST "$PAPERCLIP_API_URL/paperclip_api method=POST path=/g' container/skills/paperclip/SKILL.md`,
-        `sed -i '' 's/curl -sS -X PATCH "$PAPERCLIP_API_URL/paperclip_api method=PATCH path=/g' container/skills/paperclip/SKILL.md`,
-        `sed -i '' 's/curl -sS -X PUT "$PAPERCLIP_API_URL/paperclip_api method=PUT path=/g' container/skills/paperclip/SKILL.md`,
-        `sed -i '' 's/ *-H "Authorization: Bearer \\$PAPERCLIP_API_KEY"//g' container/skills/paperclip/SKILL.md`,
-        `sed -i '' 's/ *-H "X-Paperclip-Run-Id: \\$PAPERCLIP_RUN_ID"//g' container/skills/paperclip/SKILL.md`,
-        `sed -i '' '0,/## Authentication/{s/## Authentication/## Authentication\\n\\nBastionClaw agents: use the mcp__bastionclaw__paperclip_api tool for ALL API calls. Do NOT use curl or direct HTTP — the Paperclip API is only reachable through the MCP proxy. Auth headers are injected automatically.\\n/}' container/skills/paperclip/SKILL.md`,
+        `sed -i.bak 's/curl -sS "$PAPERCLIP_API_URL/paperclip_api method=GET path=/g' container/skills/paperclip/SKILL.md && rm -f container/skills/paperclip/SKILL.md.bak`,
+        `sed -i.bak 's/curl -sS -X POST "$PAPERCLIP_API_URL/paperclip_api method=POST path=/g' container/skills/paperclip/SKILL.md && rm -f container/skills/paperclip/SKILL.md.bak`,
+        `sed -i.bak 's/curl -sS -X PATCH "$PAPERCLIP_API_URL/paperclip_api method=PATCH path=/g' container/skills/paperclip/SKILL.md && rm -f container/skills/paperclip/SKILL.md.bak`,
+        `sed -i.bak 's/curl -sS -X PUT "$PAPERCLIP_API_URL/paperclip_api method=PUT path=/g' container/skills/paperclip/SKILL.md && rm -f container/skills/paperclip/SKILL.md.bak`,
+        `sed -i.bak 's/ *-H "Authorization: Bearer \\$PAPERCLIP_API_KEY"//g' container/skills/paperclip/SKILL.md && rm -f container/skills/paperclip/SKILL.md.bak`,
+        `sed -i.bak 's/ *-H "X-Paperclip-Run-Id: \\$PAPERCLIP_RUN_ID"//g' container/skills/paperclip/SKILL.md && rm -f container/skills/paperclip/SKILL.md.bak`,
+        `sed -i.bak '0,/## Authentication/{s/## Authentication/## Authentication\\n\\nBastionClaw agents: use the mcp__bastionclaw__paperclip_api tool for ALL API calls. Do NOT use curl or direct HTTP — the Paperclip API is only reachable through the MCP proxy. Auth headers are injected automatically.\\n/}' container/skills/paperclip/SKILL.md && rm -f container/skills/paperclip/SKILL.md.bak`,
         ``,
         `echo ""`,
         `echo "Enrolled. PAPERCLIP_API_KEY and PAPERCLIP_API_URL written to .env"`,
