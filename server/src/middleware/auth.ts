@@ -14,11 +14,18 @@ function hashToken(token: string) {
 
 interface ActorMiddlewareOptions {
   deploymentMode: DeploymentMode;
+  managedSecret?: string;
   resolveSession?: (req: Request) => Promise<BetterAuthSessionResult | null>;
 }
 
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   return async (req, _res, next) => {
+    // Managed-mode: trust instance identity from management proxy
+    const instanceIdHeader = req.header("x-paperclip-instance-id");
+    if (instanceIdHeader && opts.managedSecret && req.header("x-paperclip-management-secret") === opts.managedSecret) {
+      (req as unknown as Record<string, unknown>).managedInstanceId = instanceIdHeader;
+    }
+
     req.actor =
       opts.deploymentMode === "local_trusted"
         ? { type: "board", userId: "local-board", isInstanceAdmin: true, source: "local_implicit" }

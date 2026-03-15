@@ -58,6 +58,7 @@ export async function createApp(
     bindHost: string;
     authReady: boolean;
     companyDeletionEnabled: boolean;
+    managedSecret?: string;
     instanceId?: string;
     hostVersion?: string;
     localPluginDir?: string;
@@ -89,6 +90,7 @@ export async function createApp(
   app.use(
     actorMiddleware(db, {
       deploymentMode: opts.deploymentMode,
+      managedSecret: opts.managedSecret,
       resolveSession: opts.resolveSession,
     }),
   );
@@ -124,6 +126,7 @@ export async function createApp(
       deploymentExposure: opts.deploymentExposure,
       authReady: opts.authReady,
       companyDeletionEnabled: opts.companyDeletionEnabled,
+      managedSecret: opts.managedSecret,
     }),
   );
   api.use("/companies", companyRoutes(db));
