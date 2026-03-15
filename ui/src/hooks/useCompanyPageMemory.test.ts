@@ -39,6 +39,16 @@ describe("getRememberedPathOwnerCompanyId", () => {
       }),
     ).toBe("pap");
   });
+
+  it("treats unprefixed skills routes as board routes instead of company prefixes", () => {
+    expect(
+      getRememberedPathOwnerCompanyId({
+        companies,
+        pathname: "/skills/skill-123/files/SKILL.md",
+        fallbackCompanyId: "pap",
+      }),
+    ).toBe("pap");
+  });
 });
 
 describe("sanitizeRememberedPathForCompany", () => {
@@ -67,5 +77,14 @@ describe("sanitizeRememberedPathForCompany", () => {
         companyPrefix: "PAP",
       }),
     ).toBe("/dashboard");
+  });
+
+  it("keeps remembered skills paths intact for the target company", () => {
+    expect(
+      sanitizeRememberedPathForCompany({
+        path: "/skills/skill-123/files/SKILL.md",
+        companyPrefix: "PAP",
+      }),
+    ).toBe("/skills/skill-123/files/SKILL.md");
   });
 });

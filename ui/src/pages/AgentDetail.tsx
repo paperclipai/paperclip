@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, Link, Navigate, useBeforeUnload } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { agentsApi, type AgentKey, type ClaudeLoginResult } from "../api/agents";
+import { companySkillsApi } from "../api/companySkills";
 import { heartbeatsApi } from "../api/heartbeats";
 import { ApiError } from "../api/client";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
@@ -124,6 +125,12 @@ const sourceLabels: Record<string, string> = {
 const LIVE_SCROLL_BOTTOM_TOLERANCE_PX = 32;
 type ScrollContainer = Window | HTMLElement;
 
+function arraysEqual(a: string[], b: string[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  return a.every((value, index) => value === b[index]);
+}
+
 function isWindowContainer(container: ScrollContainer): container is Window {
   return container === window;
 }
@@ -175,10 +182,11 @@ function scrollToContainerBottom(container: ScrollContainer, behavior: ScrollBeh
   container.scrollTo({ top: container.scrollHeight, behavior });
 }
 
-type AgentDetailView = "dashboard" | "configuration" | "runs";
+type AgentDetailView = "dashboard" | "configuration" | "skills" | "runs";
 
 function parseAgentDetailView(value: string | null): AgentDetailView {
   if (value === "configure" || value === "configuration") return "configuration";
+  if (value === "skills") return "skills";
   if (value === "runs") return value;
   return "dashboard";
 }
@@ -315,6 +323,8 @@ export function AgentDetail() {
     const canonicalTab =
       activeView === "configuration"
         ? "configuration"
+        : activeView === "skills"
+          ? "skills"
         : activeView === "runs"
           ? "runs"
           : "dashboard";
@@ -414,6 +424,8 @@ export function AgentDetail() {
         crumbs.push({ label: `Run ${urlRunId.slice(0, 8)}` });
       } else if (activeView === "configuration") {
         crumbs.push({ label: "Configuration" });
+      } else if (activeView === "skills") {
+        crumbs.push({ label: "Skills" });
       } else if (activeView === "runs") {
         crumbs.push({ label: "Runs" });
       } else {
@@ -571,6 +583,7 @@ export function AgentDetail() {
             items={[
               { value: "dashboard", label: "Dashboard" },
               { value: "configuration", label: "Configuration" },
+              { value: "skills", label: "Skills" },
               { value: "runs", label: "Runs" },
             ]}
             value={activeView}
@@ -664,6 +677,13 @@ export function AgentDetail() {
           onCancelActionChange={setCancelConfigAction}
           onSavingChange={setConfigSaving}
           updatePermissions={updatePermissions}
+        />
+      )}
+
+      {activeView === "skills" && (
+        <AgentSkillsTab
+          agent={agent}
+          companyId={resolvedCompanyId ?? undefined}
         />
       )}
 
@@ -1077,7 +1097,6 @@ function ConfigurationTab({
     }
     lastAgentRef.current = agent;
   }, [agent, awaitingRefreshAfterSave]);
-
   const isConfigSaving = updateAgent.isPending || awaitingRefreshAfterSave;
 
   useEffect(() => {
@@ -1118,6 +1137,211 @@ function ConfigurationTab({
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function AgentSkillsTab({
+  agent,
+  companyId,
+}: {
+  agent: Agent;
+  companyId?: string;
+}) {
+  const queryClient = useQueryClient();
+  const [skillDraft, setSkillDraft] = useState<string[]>([]);
+  const [lastSavedSkills, setLastSavedSkills] = useState<string[]>([]);
+  const lastSavedSkillsRef = useRef<string[]>([]);
+
+  const { data: skillSnapshot, isLoading } = useQuery({
+    queryKey: queryKeys.agents.skills(agent.id),
+    queryFn: () => agentsApi.skills(agent.id, companyId),
+    enabled: Boolean(companyId),
+  });
+
+  const { data: companySkills } = useQuery({
+    queryKey: queryKeys.companySkills.list(companyId ?? ""),
+    queryFn: () => companySkillsApi.list(companyId!),
+    enabled: Boolean(companyId),
+  });
+
+  const syncSkills = useMutation({
+    mutationFn: (desiredSkills: string[]) => agentsApi.syncSkills(agent.id, desiredSkills, companyId),
+    onSuccess: async (snapshot) => {
+      queryClient.setQueryData(queryKeys.agents.skills(agent.id), snapshot);
+      lastSavedSkillsRef.current = snapshot.desiredSkills;
+      setLastSavedSkills(snapshot.desiredSkills);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) }),
+      ]);
+    },
+  });
+
+  useEffect(() => {
+    if (!skillSnapshot) return;
+    setSkillDraft((current) =>
+      arraysEqual(current, lastSavedSkillsRef.current) ? skillSnapshot.desiredSkills : current,
+    );
+    lastSavedSkillsRef.current = skillSnapshot.desiredSkills;
+    setLastSavedSkills(skillSnapshot.desiredSkills);
+  }, [skillSnapshot]);
+
+  useEffect(() => {
+    if (!skillSnapshot) return;
+    if (syncSkills.isPending) return;
+    if (arraysEqual(skillDraft, lastSavedSkillsRef.current)) return;
+
+    const timeout = window.setTimeout(() => {
+      if (!arraysEqual(skillDraft, lastSavedSkillsRef.current)) {
+        syncSkills.mutate(skillDraft);
+      }
+    }, 250);
+
+    return () => window.clearTimeout(timeout);
+  }, [skillDraft, skillSnapshot, syncSkills.isPending, syncSkills.mutate]);
+
+  const companySkillBySlug = useMemo(
+    () => new Map((companySkills ?? []).map((skill) => [skill.slug, skill])),
+    [companySkills],
+  );
+  const adapterEntryByName = useMemo(
+    () => new Map((skillSnapshot?.entries ?? []).map((entry) => [entry.name, entry])),
+    [skillSnapshot],
+  );
+  const desiredOnlyMissingSkills = useMemo(
+    () => skillDraft.filter((slug) => !companySkillBySlug.has(slug)),
+    [companySkillBySlug, skillDraft],
+  );
+  const skillApplicationLabel = useMemo(() => {
+    switch (skillSnapshot?.mode) {
+      case "persistent":
+        return "Kept in the workspace";
+      case "ephemeral":
+        return "Applied when the agent runs";
+      case "unsupported":
+        return "Tracked only";
+      default:
+        return "Unknown";
+    }
+  }, [skillSnapshot?.mode]);
+  const hasUnsavedChanges = !arraysEqual(skillDraft, lastSavedSkills);
+  const saveStatusLabel = syncSkills.isPending
+    ? "Saving changes..."
+    : hasUnsavedChanges
+      ? "Saving soon..."
+      : "Changes save automatically";
+
+  return (
+    <div className="max-w-4xl space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <Link
+          to="/skills"
+          className="text-sm font-medium text-foreground underline-offset-4 no-underline transition-colors hover:text-foreground/70 hover:underline"
+        >
+          View company library
+        </Link>
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          {syncSkills.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+          <span>{saveStatusLabel}</span>
+        </div>
+      </div>
+
+      {skillSnapshot?.warnings.length ? (
+        <div className="space-y-1 rounded-xl border border-amber-300/60 bg-amber-50/60 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-950/20 dark:text-amber-200">
+          {skillSnapshot.warnings.map((warning) => (
+            <div key={warning}>{warning}</div>
+          ))}
+        </div>
+      ) : null}
+
+      {isLoading ? (
+        <PageSkeleton variant="list" />
+      ) : (
+        <>
+          <section className="border-y border-border">
+            {(companySkills ?? []).length === 0 ? (
+              <div className="px-3 py-6 text-sm text-muted-foreground">
+                Import skills into the company library first, then attach them here.
+              </div>
+            ) : (
+              (companySkills ?? []).map((skill) => {
+                const checked = skillDraft.includes(skill.slug);
+                const adapterEntry = adapterEntryByName.get(skill.slug);
+                return (
+                  <label
+                    key={skill.id}
+                    className="flex items-start gap-3 border-b border-border px-3 py-3 text-sm last:border-b-0 hover:bg-accent/20"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(event) => {
+                        const next = event.target.checked
+                          ? Array.from(new Set([...skillDraft, skill.slug]))
+                          : skillDraft.filter((value) => value !== skill.slug);
+                        setSkillDraft(next);
+                      }}
+                      className="mt-0.5"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="truncate font-medium">{skill.name}</span>
+                        <Link
+                          to={`/skills/${skill.id}`}
+                          className="shrink-0 text-xs text-muted-foreground no-underline hover:text-foreground"
+                        >
+                          View
+                        </Link>
+                      </div>
+                      {skill.description && (
+                        <MarkdownBody className="mt-1 text-xs text-muted-foreground prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
+                          {skill.description}
+                        </MarkdownBody>
+                      )}
+                      {adapterEntry?.detail && (
+                        <p className="mt-1 text-xs text-muted-foreground">{adapterEntry.detail}</p>
+                      )}
+                    </div>
+                  </label>
+                );
+              })
+            )}
+          </section>
+
+          {desiredOnlyMissingSkills.length > 0 && (
+            <div className="rounded-xl border border-amber-300/60 bg-amber-50/60 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-950/20 dark:text-amber-200">
+              <div className="font-medium">Requested skills missing from the company library</div>
+              <div className="mt-1 text-xs">
+                {desiredOnlyMissingSkills.join(", ")}
+              </div>
+            </div>
+          )}
+
+          <section className="border-t border-border pt-4">
+            <div className="grid gap-2 text-sm sm:grid-cols-2">
+              <div className="flex items-center justify-between gap-3 border-b border-border/60 py-2">
+                <span className="text-muted-foreground">Adapter</span>
+                <span className="font-medium">{adapterLabels[agent.adapterType] ?? agent.adapterType}</span>
+              </div>
+              <div className="flex items-center justify-between gap-3 border-b border-border/60 py-2">
+                <span className="text-muted-foreground">Skills applied</span>
+                <span>{skillApplicationLabel}</span>
+              </div>
+              <div className="flex items-center justify-between gap-3 border-b border-border/60 py-2">
+                <span className="text-muted-foreground">Selected skills</span>
+                <span>{skillDraft.length}</span>
+              </div>
+            </div>
+
+            {syncSkills.isError && (
+              <p className="mt-3 text-xs text-destructive">
+                {syncSkills.error instanceof Error ? syncSkills.error.message : "Failed to update skills"}
+              </p>
+            )}
+          </section>
+        </>
+      )}
     </div>
   );
 }

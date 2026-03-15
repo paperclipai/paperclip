@@ -15,6 +15,7 @@ import {
   ensurePaperclipSkillSymlink,
   ensurePathInEnv,
   listPaperclipSkillEntries,
+  readPaperclipSkillSyncPreference,
   removeMaintainerOnlySkillSymlinks,
   renderTemplate,
   joinPromptSections,
@@ -168,7 +169,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
-  await ensureCursorSkillsInjected(onLog);
+  const cursorSkillEntries = await listPaperclipSkillEntries(__moduleDir);
+  const cursorPreference = readPaperclipSkillSyncPreference(config);
+  const desiredCursorSkillNames = cursorPreference.explicit
+    ? cursorPreference.desiredSkills
+    : cursorSkillEntries.map((entry) => entry.name);
+  await ensureCursorSkillsInjected(onLog, {
+    skillsEntries: cursorSkillEntries.filter((entry) => desiredCursorSkillNames.includes(entry.name)),
+  });
 
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =

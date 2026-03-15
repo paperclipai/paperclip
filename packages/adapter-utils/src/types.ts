@@ -138,6 +138,42 @@ export interface AdapterEnvironmentTestResult {
   testedAt: string;
 }
 
+export type AdapterSkillSyncMode = "unsupported" | "persistent" | "ephemeral";
+
+export type AdapterSkillState =
+  | "available"
+  | "configured"
+  | "installed"
+  | "missing"
+  | "stale"
+  | "external";
+
+export interface AdapterSkillEntry {
+  name: string;
+  desired: boolean;
+  managed: boolean;
+  state: AdapterSkillState;
+  sourcePath?: string | null;
+  targetPath?: string | null;
+  detail?: string | null;
+}
+
+export interface AdapterSkillSnapshot {
+  adapterType: string;
+  supported: boolean;
+  mode: AdapterSkillSyncMode;
+  desiredSkills: string[];
+  entries: AdapterSkillEntry[];
+  warnings: string[];
+}
+
+export interface AdapterSkillContext {
+  agentId: string;
+  companyId: string;
+  adapterType: string;
+  config: Record<string, unknown>;
+}
+
 export interface AdapterEnvironmentTestContext {
   companyId: string;
   adapterType: string;
@@ -175,6 +211,8 @@ export interface ServerAdapterModule {
   type: string;
   execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult>;
   testEnvironment(ctx: AdapterEnvironmentTestContext): Promise<AdapterEnvironmentTestResult>;
+  listSkills?: (ctx: AdapterSkillContext) => Promise<AdapterSkillSnapshot>;
+  syncSkills?: (ctx: AdapterSkillContext, desiredSkills: string[]) => Promise<AdapterSkillSnapshot>;
   sessionCodec?: AdapterSessionCodec;
   supportsLocalAgentJwt?: boolean;
   models?: AdapterModel[];

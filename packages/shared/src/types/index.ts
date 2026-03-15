@@ -1,5 +1,29 @@
 export type { Company } from "./company.js";
 export type {
+  CompanySkillSourceType,
+  CompanySkillTrustLevel,
+  CompanySkillCompatibility,
+  CompanySkillSourceBadge,
+  CompanySkillFileInventoryEntry,
+  CompanySkill,
+  CompanySkillListItem,
+  CompanySkillUsageAgent,
+  CompanySkillDetail,
+  CompanySkillUpdateStatus,
+  CompanySkillImportRequest,
+  CompanySkillImportResult,
+  CompanySkillCreateRequest,
+  CompanySkillFileDetail,
+  CompanySkillFileUpdateRequest,
+} from "./company-skill.js";
+export type {
+  AgentSkillSyncMode,
+  AgentSkillState,
+  AgentSkillEntry,
+  AgentSkillSnapshot,
+  AgentSkillSyncRequest,
+} from "./adapter-skills.js";
+export type {
   Agent,
   AgentPermissions,
   AgentKeyCreated,
@@ -68,9 +92,12 @@ export type {
 } from "./access.js";
 export type {
   CompanyPortabilityInclude,
-  CompanyPortabilitySecretRequirement,
+  CompanyPortabilityEnvInput,
   CompanyPortabilityCompanyManifestEntry,
   CompanyPortabilityAgentManifestEntry,
+  CompanyPortabilitySkillManifestEntry,
+  CompanyPortabilityProjectManifestEntry,
+  CompanyPortabilityIssueManifestEntry,
   CompanyPortabilityManifest,
   CompanyPortabilityExportResult,
   CompanyPortabilitySource,
@@ -79,6 +106,8 @@ export type {
   CompanyPortabilityCollisionStrategy,
   CompanyPortabilityPreviewRequest,
   CompanyPortabilityPreviewAgentPlan,
+  CompanyPortabilityPreviewProjectPlan,
+  CompanyPortabilityPreviewIssuePlan,
   CompanyPortabilityPreviewResult,
   CompanyPortabilityImportRequest,
   CompanyPortabilityImportResult,

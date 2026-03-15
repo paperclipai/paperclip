@@ -16,6 +16,7 @@ import {
   ensurePaperclipSkillSymlink,
   ensurePathInEnv,
   listPaperclipSkillEntries,
+  readPaperclipSkillSyncPreference,
   removeMaintainerOnlySkillSymlinks,
   renderTemplate,
   runChildProcess,
@@ -50,8 +51,13 @@ function parseModelId(model: string | null): string | null {
   return trimmed.slice(trimmed.indexOf("/") + 1).trim() || null;
 }
 
-async function ensurePiSkillsInjected(onLog: AdapterExecutionContext["onLog"]) {
-  const skillsEntries = await listPaperclipSkillEntries(__moduleDir);
+async function ensurePiSkillsInjected(
+  onLog: AdapterExecutionContext["onLog"],
+  desiredSkillNames?: string[],
+) {
+  const allSkillsEntries = await listPaperclipSkillEntries(__moduleDir);
+  const desiredSet = new Set(desiredSkillNames ?? allSkillsEntries.map((entry) => entry.name));
+  const skillsEntries = allSkillsEntries.filter((entry) => desiredSet.has(entry.name));
   if (skillsEntries.length === 0) return;
 
   const piSkillsHome = path.join(os.homedir(), ".pi", "agent", "skills");
@@ -133,7 +139,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   await ensureSessionsDir();
   
   // Inject skills
-  await ensurePiSkillsInjected(onLog);
+  const piSkillEntries = await listPaperclipSkillEntries(__moduleDir);
+  const piPreference = readPaperclipSkillSyncPreference(config);
+  const desiredPiSkillNames = piPreference.explicit
+    ? piPreference.desiredSkills
+    : piSkillEntries.map((entry) => entry.name);
+  await ensurePiSkillsInjected(onLog, desiredPiSkillNames);
 
   // Build environment
   const envConfig = parseObject(config.env);

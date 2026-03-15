@@ -22,6 +22,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
 import { pathExists, prepareWorktreeCodexHome, resolveCodexHomeDir } from "./codex-home.js";
+import { resolveCodexDesiredSkillNames } from "./skills.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const CODEX_ROLLOUT_NOISE_RE =
@@ -92,6 +93,7 @@ async function isLikelyPaperclipRuntimeSkillSource(candidate: string, skillName:
 type EnsureCodexSkillsInjectedOptions = {
   skillsHome?: string;
   skillsEntries?: Awaited<ReturnType<typeof listPaperclipSkillEntries>>;
+  desiredSkillNames?: string[];
   linkSkill?: (source: string, target: string) => Promise<void>;
 };
 
@@ -99,7 +101,11 @@ export async function ensureCodexSkillsInjected(
   onLog: AdapterExecutionContext["onLog"],
   options: EnsureCodexSkillsInjectedOptions = {},
 ) {
-  const skillsEntries = options.skillsEntries ?? await listPaperclipSkillEntries(__moduleDir);
+  const allSkillsEntries = options.skillsEntries ?? await listPaperclipSkillEntries(__moduleDir);
+  const desiredSkillNames =
+    options.desiredSkillNames ?? allSkillsEntries.map((entry) => entry.name);
+  const desiredSet = new Set(desiredSkillNames);
+  const skillsEntries = allSkillsEntries.filter((entry) => desiredSet.has(entry.name));
   if (skillsEntries.length === 0) return;
 
   const skillsHome = options.skillsHome ?? path.join(resolveCodexHomeDir(process.env), "skills");
@@ -214,13 +220,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0
       ? path.resolve(envConfig.CODEX_HOME.trim())
       : null;
+  const desiredSkillNames = resolveCodexDesiredSkillNames(
+    config,
+    (await listPaperclipSkillEntries(__moduleDir)).map((entry) => entry.name),
+  );
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   const preparedWorktreeCodexHome =
     configuredCodexHome ? null : await prepareWorktreeCodexHome(process.env, onLog);
   const effectiveCodexHome = configuredCodexHome ?? preparedWorktreeCodexHome;
   await ensureCodexSkillsInjected(
     onLog,
-    effectiveCodexHome ? { skillsHome: path.join(effectiveCodexHome, "skills") } : {},
+    effectiveCodexHome
+      ? {
+          skillsHome: path.join(effectiveCodexHome, "skills"),
+          desiredSkillNames,
+        }
+      : { desiredSkillNames },
   );
   const hasExplicitApiKey =
     typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;

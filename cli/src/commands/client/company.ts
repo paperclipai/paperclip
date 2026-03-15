@@ -1,11 +1,11 @@
 import { Command } from "commander";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import * as p from "@clack/prompts";
 import type {
   Company,
   CompanyPortabilityExportResult,
   CompanyPortabilityInclude,
-  CompanyPortabilityManifest,
   CompanyPortabilityPreviewResult,
   CompanyPortabilityImportResult,
 } from "@paperclipai/shared";
@@ -33,6 +33,10 @@ interface CompanyDeleteOptions extends BaseClientOptions {
 interface CompanyExportOptions extends BaseClientOptions {
   out?: string;
   include?: string;
+  projects?: string;
+  issues?: string;
+  projectIssues?: string;
+  expandReferencedSkills?: boolean;
 }
 
 interface CompanyImportOptions extends BaseClientOptions {
@@ -55,14 +59,16 @@ function normalizeSelector(input: string): string {
 }
 
 function parseInclude(input: string | undefined): CompanyPortabilityInclude {
-  if (!input || !input.trim()) return { company: true, agents: true };
+  if (!input || !input.trim()) return { company: true, agents: true, projects: false, issues: false };
   const values = input.split(",").map((part) => part.trim().toLowerCase()).filter(Boolean);
   const include = {
     company: values.includes("company"),
     agents: values.includes("agents"),
+    projects: values.includes("projects"),
+    issues: values.includes("issues"),
   };
-  if (!include.company && !include.agents) {
-    throw new Error("Invalid --include value. Use one or both of: company,agents");
+  if (!include.company && !include.agents && !include.projects && !include.issues) {
+    throw new Error("Invalid --include value. Use one or more of: company,agents,projects,issues");
   }
   return include;
 }
@@ -76,6 +82,11 @@ function parseAgents(input: string | undefined): "all" | string[] {
   return Array.from(new Set(values));
 }
 
+function parseCsvValues(input: string | undefined): string[] {
+  if (!input || !input.trim()) return [];
+  return Array.from(new Set(input.split(",").map((part) => part.trim()).filter(Boolean)));
+}
+
 function isHttpUrl(input: string): boolean {
   return /^https?:\/\//i.test(input.trim());
 }
@@ -84,42 +95,72 @@ function isGithubUrl(input: string): boolean {
   return /^https?:\/\/github\.com\//i.test(input.trim());
 }
 
+async function collectPackageFiles(root: string, current: string, files: Record<string, string>): Promise<void> {
+  const entries = await readdir(current, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.name.startsWith(".git")) continue;
+    const absolutePath = path.join(current, entry.name);
+    if (entry.isDirectory()) {
+      await collectPackageFiles(root, absolutePath, files);
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    const isMarkdown = entry.name.endsWith(".md");
+    const isPaperclipYaml = entry.name === ".paperclip.yaml" || entry.name === ".paperclip.yml";
+    if (!isMarkdown && !isPaperclipYaml) continue;
+    const relativePath = path.relative(root, absolutePath).replace(/\\/g, "/");
+    files[relativePath] = await readFile(absolutePath, "utf8");
+  }
+}
+
 async function resolveInlineSourceFromPath(inputPath: string): Promise<{
-  manifest: CompanyPortabilityManifest;
+  rootPath: string;
   files: Record<string, string>;
 }> {
   const resolved = path.resolve(inputPath);
   const resolvedStat = await stat(resolved);
-  const manifestPath = resolvedStat.isDirectory()
-    ? path.join(resolved, "paperclip.manifest.json")
-    : resolved;
-  const manifestBaseDir = path.dirname(manifestPath);
-  const manifestRaw = await readFile(manifestPath, "utf8");
-  const manifest = JSON.parse(manifestRaw) as CompanyPortabilityManifest;
+  const rootDir = resolvedStat.isDirectory() ? resolved : path.dirname(resolved);
   const files: Record<string, string> = {};
-
-  if (manifest.company?.path) {
-    const companyPath = manifest.company.path.replace(/\\/g, "/");
-    files[companyPath] = await readFile(path.join(manifestBaseDir, companyPath), "utf8");
-  }
-  for (const agent of manifest.agents ?? []) {
-    const agentPath = agent.path.replace(/\\/g, "/");
-    files[agentPath] = await readFile(path.join(manifestBaseDir, agentPath), "utf8");
-  }
-
-  return { manifest, files };
+  await collectPackageFiles(rootDir, rootDir, files);
+  return {
+    rootPath: path.basename(rootDir),
+    files,
+  };
 }
 
 async function writeExportToFolder(outDir: string, exported: CompanyPortabilityExportResult): Promise<void> {
   const root = path.resolve(outDir);
   await mkdir(root, { recursive: true });
-  const manifestPath = path.join(root, "paperclip.manifest.json");
-  await writeFile(manifestPath, JSON.stringify(exported.manifest, null, 2), "utf8");
   for (const [relativePath, content] of Object.entries(exported.files)) {
     const normalized = relativePath.replace(/\\/g, "/");
     const filePath = path.join(root, normalized);
     await mkdir(path.dirname(filePath), { recursive: true });
     await writeFile(filePath, content, "utf8");
+  }
+}
+
+async function confirmOverwriteExportDirectory(outDir: string): Promise<void> {
+  const root = path.resolve(outDir);
+  const stats = await stat(root).catch(() => null);
+  if (!stats) return;
+  if (!stats.isDirectory()) {
+    throw new Error(`Export output path ${root} exists and is not a directory.`);
+  }
+
+  const entries = await readdir(root);
+  if (entries.length === 0) return;
+
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error(`Export output directory ${root} already contains files. Re-run interactively or choose an empty directory.`);
+  }
+
+  const confirmed = await p.confirm({
+    message: `Overwrite existing files in ${root}?`,
+    initialValue: false,
+  });
+
+  if (p.isCancel(confirmed) || !confirmed) {
+    throw new Error("Export cancelled.");
   }
 }
 
@@ -257,27 +298,40 @@ export function registerCompanyCommands(program: Command): void {
   addCommonClientOptions(
     company
       .command("export")
-      .description("Export a company into portable manifest + markdown files")
+      .description("Export a company into a portable markdown package")
       .argument("<companyId>", "Company ID")
       .requiredOption("--out <path>", "Output directory")
-      .option("--include <values>", "Comma-separated include set: company,agents", "company,agents")
+      .option("--include <values>", "Comma-separated include set: company,agents,projects,issues", "company,agents")
+      .option("--projects <values>", "Comma-separated project shortnames/ids to export")
+      .option("--issues <values>", "Comma-separated issue identifiers/ids to export")
+      .option("--project-issues <values>", "Comma-separated project shortnames/ids whose issues should be exported")
+      .option("--expand-referenced-skills", "Vendor skill contents instead of exporting upstream references", false)
       .action(async (companyId: string, opts: CompanyExportOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
           const include = parseInclude(opts.include);
           const exported = await ctx.api.post<CompanyPortabilityExportResult>(
             `/api/companies/${companyId}/export`,
-            { include },
+            {
+              include,
+              projects: parseCsvValues(opts.projects),
+              issues: parseCsvValues(opts.issues),
+              projectIssues: parseCsvValues(opts.projectIssues),
+              expandReferencedSkills: Boolean(opts.expandReferencedSkills),
+            },
           );
           if (!exported) {
             throw new Error("Export request returned no data");
           }
+          await confirmOverwriteExportDirectory(opts.out!);
           await writeExportToFolder(opts.out!, exported);
           printOutput(
             {
               ok: true,
               out: path.resolve(opts.out!),
-              filesWritten: Object.keys(exported.files).length + 1,
+              rootPath: exported.rootPath,
+              filesWritten: Object.keys(exported.files).length,
+              paperclipExtensionPath: exported.paperclipExtensionPath,
               warningCount: exported.warnings.length,
             },
             { json: ctx.json },
@@ -296,9 +350,9 @@ export function registerCompanyCommands(program: Command): void {
   addCommonClientOptions(
     company
       .command("import")
-      .description("Import a portable company package from local path, URL, or GitHub")
+      .description("Import a portable markdown company package from local path, URL, or GitHub")
       .requiredOption("--from <pathOrUrl>", "Source path or URL")
-      .option("--include <values>", "Comma-separated include set: company,agents", "company,agents")
+      .option("--include <values>", "Comma-separated include set: company,agents,projects,issues", "company,agents")
       .option("--target <mode>", "Target mode: new | existing")
       .option("-C, --company-id <id>", "Existing target company ID")
       .option("--new-company-name <name>", "Name override for --target new")
@@ -343,7 +397,7 @@ export function registerCompanyCommands(program: Command): void {
           }
 
           let sourcePayload:
-            | { type: "inline"; manifest: CompanyPortabilityManifest; files: Record<string, string> }
+            | { type: "inline"; rootPath?: string | null; files: Record<string, string> }
             | { type: "url"; url: string }
             | { type: "github"; url: string };
 
@@ -355,7 +409,7 @@ export function registerCompanyCommands(program: Command): void {
             const inline = await resolveInlineSourceFromPath(from);
             sourcePayload = {
               type: "inline",
-              manifest: inline.manifest,
+              rootPath: inline.rootPath,
               files: inline.files,
             };
           }

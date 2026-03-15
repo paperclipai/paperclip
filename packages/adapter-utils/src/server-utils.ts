@@ -330,6 +330,49 @@ export async function readPaperclipSkillMarkdown(
   }
 }
 
+export function readPaperclipSkillSyncPreference(config: Record<string, unknown>): {
+  explicit: boolean;
+  desiredSkills: string[];
+} {
+  const raw = config.paperclipSkillSync;
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return { explicit: false, desiredSkills: [] };
+  }
+  const syncConfig = raw as Record<string, unknown>;
+  const desiredValues = syncConfig.desiredSkills;
+  const desired = Array.isArray(desiredValues)
+    ? desiredValues
+        .filter((value): value is string => typeof value === "string")
+        .map((value) => value.trim())
+        .filter(Boolean)
+    : [];
+  return {
+    explicit: Object.prototype.hasOwnProperty.call(raw, "desiredSkills"),
+    desiredSkills: Array.from(new Set(desired)),
+  };
+}
+
+export function writePaperclipSkillSyncPreference(
+  config: Record<string, unknown>,
+  desiredSkills: string[],
+): Record<string, unknown> {
+  const next = { ...config };
+  const raw = next.paperclipSkillSync;
+  const current =
+    typeof raw === "object" && raw !== null && !Array.isArray(raw)
+      ? { ...(raw as Record<string, unknown>) }
+      : {};
+  current.desiredSkills = Array.from(
+    new Set(
+      desiredSkills
+        .map((value) => value.trim())
+        .filter(Boolean),
+    ),
+  );
+  next.paperclipSkillSync = current;
+  return next;
+}
+
 export async function ensurePaperclipSkillSymlink(
   source: string,
   target: string,

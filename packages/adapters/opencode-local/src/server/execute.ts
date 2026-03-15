@@ -16,6 +16,7 @@ import {
   ensurePathInEnv,
   renderTemplate,
   runChildProcess,
+  readPaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
 import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
@@ -54,15 +55,20 @@ async function resolvePaperclipSkillsDir(): Promise<string | null> {
   return null;
 }
 
-async function ensureOpenCodeSkillsInjected(onLog: AdapterExecutionContext["onLog"]) {
+async function ensureOpenCodeSkillsInjected(
+  onLog: AdapterExecutionContext["onLog"],
+  desiredSkillNames?: string[],
+) {
   const skillsDir = await resolvePaperclipSkillsDir();
   if (!skillsDir) return;
 
   const skillsHome = claudeSkillsHome();
   await fs.mkdir(skillsHome, { recursive: true });
   const entries = await fs.readdir(skillsDir, { withFileTypes: true });
+  const desiredSet = new Set(desiredSkillNames ?? entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name));
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
+    if (!desiredSet.has(entry.name)) continue;
     const source = path.join(skillsDir, entry.name);
     const target = path.join(skillsHome, entry.name);
     const existing = await fs.lstat(target).catch(() => null);
@@ -111,7 +117,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
-  await ensureOpenCodeSkillsInjected(onLog);
+  const openCodePreference = readPaperclipSkillSyncPreference(config);
+  await ensureOpenCodeSkillsInjected(
+    onLog,
+    openCodePreference.explicit ? openCodePreference.desiredSkills : undefined,
+  );
 
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
