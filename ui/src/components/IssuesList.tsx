@@ -48,7 +48,7 @@ export type IssueViewState = {
 };
 
 const defaultViewState: IssueViewState = {
-  statuses: [],
+  statuses: ["todo", "in_progress", "in_review", "blocked", "backlog"],
   priorities: [],
   assignees: [],
   labels: [],
@@ -131,7 +131,12 @@ function sortIssues(issues: Issue[], state: IssueViewState): Issue[] {
 
 function countActiveFilters(state: IssueViewState): number {
   let count = 0;
-  if (state.statuses.length > 0) count++;
+  const defaultStatuses = new Set(defaultViewState.statuses);
+  const currentStatuses = new Set(state.statuses);
+  const statusesMatchDefault =
+    defaultStatuses.size === currentStatuses.size &&
+    [...defaultStatuses].every((s) => currentStatuses.has(s));
+  if (!statusesMatchDefault) count++;
   if (state.priorities.length > 0) count++;
   if (state.assignees.length > 0) count++;
   if (state.labels.length > 0) count++;
@@ -362,7 +367,7 @@ export function IssuesList({
                     className="h-3 w-3 ml-1 hidden sm:block"
                     onClick={(e) => {
                       e.stopPropagation();
-                      updateView({ statuses: [], priorities: [], assignees: [], labels: [] });
+                      updateView({ statuses: defaultViewState.statuses, priorities: [], assignees: [], labels: [] });
                     }}
                   />
                 )}
@@ -375,7 +380,7 @@ export function IssuesList({
                   {activeFilterCount > 0 && (
                     <button
                       className="text-xs text-muted-foreground hover:text-foreground"
-                      onClick={() => updateView({ statuses: [], priorities: [], assignees: [], labels: [] })}
+                      onClick={() => updateView({ statuses: defaultViewState.statuses, priorities: [], assignees: [], labels: [] })}
                     >
                       Clear
                     </button>
@@ -721,6 +726,7 @@ export function IssuesList({
                             onClick={(e) => {
                               e.preventDefault();
                               e.stopPropagation();
+                              setAssigneePickerIssueId(assigneePickerIssueId === issue.id ? null : issue.id);
                             }}
                           >
                             {issue.assigneeAgentId && agentName(issue.assigneeAgentId) ? (
