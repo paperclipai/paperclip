@@ -87,9 +87,9 @@ export function useInboxBadge(companyId: string | null | undefined) {
     [touchedIssues],
   );
 
-  const { data: heartbeatRuns = [] } = useQuery({
-    queryKey: queryKeys.heartbeats(companyId!),
-    queryFn: () => heartbeatsApi.list(companyId!),
+  const { data: latestFailedRuns = [] } = useQuery({
+    queryKey: [...queryKeys.heartbeats(companyId!), "latest-failed"],
+    queryFn: () => heartbeatsApi.latestFailed(companyId!),
     enabled: !!companyId,
   });
 
@@ -99,10 +99,10 @@ export function useInboxBadge(companyId: string | null | undefined) {
         approvals,
         joinRequests,
         dashboard,
-        heartbeatRuns,
+        latestFailedRuns,
         unreadIssues,
         dismissed,
       }),
-    [approvals, joinRequests, dashboard, heartbeatRuns, unreadIssues, dismissed],
+    [approvals, joinRequests, dashboard, latestFailedRuns, unreadIssues, dismissed],
   );
 }
