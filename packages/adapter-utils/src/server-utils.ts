@@ -204,6 +204,11 @@ function quoteForCmd(arg: string) {
   return /[\s"&<>|^()]/.test(escaped) ? `"${escaped}"` : escaped;
 }
 
+function hasNonEmptyEnvValue(env: NodeJS.ProcessEnv, key: string): boolean {
+  const value = env[key];
+  return typeof value === "string" && value.trim().length > 0;
+}
+
 async function resolveSpawnTarget(
   command: string,
   args: string[],
@@ -229,10 +234,40 @@ async function resolveSpawnTarget(
   return { command: executable, args };
 }
 
-export function ensurePathInEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export function ensurePathInEnv(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): NodeJS.ProcessEnv {
   if (typeof env.PATH === "string" && env.PATH.length > 0) return env;
   if (typeof env.Path === "string" && env.Path.length > 0) return env;
-  return { ...env, PATH: defaultPathForPlatform() };
+
+  // Derive a deterministic default PATH based on the requested platform,
+  // falling back to common conventional values when the current process
+  // environment does not provide one.
+  const defaultPath =
+    platform === "win32"
+      ? (process.env.Path ??
+         process.env.PATH ??
+         "C:\\Windows\\System32;C:\\Windows")
+      : (process.env.PATH ??
+         "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
+
+  return { ...env, PATH: defaultPath };
+}
+
+export function buildChildProcessEnv(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): NodeJS.ProcessEnv {
+  const next = ensurePathInEnv({ ...env }, platform);
+  if (platform !== "win32") return next;
+  if (!hasNonEmptyEnvValue(next, "PYTHONUTF8")) {
+    next.PYTHONUTF8 = "1";
+  }
+  if (!hasNonEmptyEnvValue(next, "PYTHONIOENCODING")) {
+    next.PYTHONIOENCODING = "utf-8";
+  }
+  return next;
 }
 
 export async function ensureAbsoluteDirectory(
@@ -446,7 +481,7 @@ export async function runChildProcess(
       delete rawMerged[key];
     }
 
-    const mergedEnv = ensurePathInEnv(rawMerged);
+    const mergedEnv = buildChildProcessEnv(rawMerged);
     void resolveSpawnTarget(command, args, opts.cwd, mergedEnv)
       .then((target) => {
         const child = spawn(target.command, target.args, {
