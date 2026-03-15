@@ -1,0 +1,388 @@
+import {
+  definePlugin,
+  runWorker,
+  type PaperclipPlugin,
+  type PluginContext,
+  type PluginEvent,
+  type PluginWebhookInput,
+} from "@paperclipai/plugin-sdk";
+import type { Issue } from "@paperclipai/shared";
+import { GH_CLOSED_STATUSES, GH_EVENTS, WEBHOOK_KEYS } from "./constants.js";
+import { verifyGitHubSignature } from "./verify.js";
+import { isDuplicateDelivery, markOutboundEcho } from "./echo.js";
+import { getIssueMapping, setIssueMapping, getPrMapping, setPrMapping } from "./mapping.js";
+import { createGitHubIssue, updateGitHubIssue, createGitHubComment } from "./github-api.js";
+
+type GitHubConfig = {
+  webhookSecret: string;
+  githubTokenRef?: string;
+  owner: string;
+  repo: string;
+  defaultProjectId?: string;
+  triggerAgentIds?: string[];
+  watchedRepos?: string[];
+};
+
+let currentContext: PluginContext | null = null;
+
+async function getConfig(ctx: PluginContext): Promise<GitHubConfig> {
+  return await ctx.config.get() as GitHubConfig;
+}
+
+function readString(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function readNumber(value: unknown): number | null {
+  return typeof value === "number" ? value : null;
+}
+
+// ---------------------------------------------------------------------------
+// Inbound: GitHub → Paperclip
+// ---------------------------------------------------------------------------
+
+async function handleIssuesEvent(
+  ctx: PluginContext,
+  config: GitHubConfig,
+  payload: Record<string, unknown>,
+  deliveryId: string,
+): Promise<void> {
+  const action = readString(payload.action);
+  const ghIssue = payload.issue as Record<string, unknown> | undefined;
+  if (!ghIssue) return;
+
+  const ghNumber = readNumber(ghIssue.number);
+  if (ghNumber === null) return;
+
+  const repository = payload.repository as Record<string, unknown> | undefined;
+  const owner = readString((repository?.owner as Record<string, unknown> | undefined)?.login ?? config.owner);
+  const repo = readString(repository?.name ?? config.repo);
+
+  if (await isDuplicateDelivery(ctx, deliveryId)) return;
+
+  const companies = await ctx.companies.list({ limit: 1, offset: 0 });
+  const companyId = companies[0]?.id;
+  if (!companyId) return;
+
+  if (action === "opened") {
+    const issue = await ctx.issues.create({
+      companyId,
+      projectId: config.defaultProjectId,
+      title: readString(ghIssue.title),
+      description: readString(ghIssue.body),
+    });
+    await setIssueMapping(ctx, owner, repo, ghNumber, issue.id);
+    return;
+  }
+
+  const mapping = await getIssueMapping(ctx, owner, repo, ghNumber);
+  if (!mapping) return;
+
+  if (GH_CLOSED_STATUSES.has(action)) {
+    await ctx.issues.update(mapping.paperclipIssueId, { status: "done" as Issue["status"] }, companyId);
+    return;
+  }
+
+  if (action === "edited") {
+    const patch: Partial<Pick<Issue, "title" | "description">> = {};
+    if (ghIssue.title !== undefined) patch.title = readString(ghIssue.title);
+    if (ghIssue.body !== undefined) patch.description = readString(ghIssue.body);
+    await ctx.issues.update(mapping.paperclipIssueId, patch, companyId);
+  }
+}
+
+async function handleIssueCommentEvent(
+  ctx: PluginContext,
+  config: GitHubConfig,
+  payload: Record<string, unknown>,
+  deliveryId: string,
+): Promise<void> {
+  const action = readString(payload.action);
+  if (action !== "created") return;
+
+  const ghIssue = payload.issue as Record<string, unknown> | undefined;
+  if (!ghIssue) return;
+
+  const ghNumber = readNumber(ghIssue.number);
+  if (ghNumber === null) return;
+
+  const repository = payload.repository as Record<string, unknown> | undefined;
+  const owner = readString((repository?.owner as Record<string, unknown> | undefined)?.login ?? config.owner);
+  const repo = readString(repository?.name ?? config.repo);
+
+  const comment = payload.comment as Record<string, unknown> | undefined;
+  const body = readString(comment?.body);
+  if (!body) return;
+
+  if (await isDuplicateDelivery(ctx, deliveryId)) return;
+
+  const mapping = await getIssueMapping(ctx, owner, repo, ghNumber);
+  if (!mapping) return;
+
+  const companies = await ctx.companies.list({ limit: 1, offset: 0 });
+  const companyId = companies[0]?.id;
+  if (!companyId) return;
+
+  await ctx.issues.createComment(mapping.paperclipIssueId, body, companyId);
+}
+
+async function handlePullRequestEvent(
+  ctx: PluginContext,
+  config: GitHubConfig,
+  payload: Record<string, unknown>,
+  deliveryId: string,
+): Promise<void> {
+  const action = readString(payload.action);
+  const pr = payload.pull_request as Record<string, unknown> | undefined;
+  if (!pr) return;
+
+  const prNumber = readNumber(pr.number);
+  if (prNumber === null) return;
+
+  const repository = payload.repository as Record<string, unknown> | undefined;
+  const owner = readString((repository?.owner as Record<string, unknown> | undefined)?.login ?? config.owner);
+  const repo = readString(repository?.name ?? config.repo);
+
+  if (await isDuplicateDelivery(ctx, deliveryId)) return;
+
+  const companies = await ctx.companies.list({ limit: 1, offset: 0 });
+  const companyId = companies[0]?.id;
+  if (!companyId) return;
+
+  if (action === "opened") {
+    const issue = await ctx.issues.create({
+      companyId,
+      projectId: config.defaultProjectId,
+      title: readString(pr.title),
+      description: readString(pr.body),
+    });
+    await setPrMapping(ctx, owner, repo, prNumber, issue.id);
+    return;
+  }
+
+  const mapping = await getPrMapping(ctx, owner, repo, prNumber);
+  if (!mapping) return;
+
+  // closed with merged = done; closed without merged = also done (rejected/abandoned)
+  if (action === "closed") {
+    await ctx.issues.update(mapping.paperclipIssueId, { status: "done" as Issue["status"] }, companyId);
+  }
+}
+
+async function handlePullRequestReviewEvent(
+  ctx: PluginContext,
+  config: GitHubConfig,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  const repository = payload.repository as Record<string, unknown> | undefined;
+  const repoFullName = readString(repository?.full_name);
+  const pr = payload.pull_request as Record<string, unknown> | undefined;
+  const prTitle = readString(pr?.title);
+
+  const agentIds = config.triggerAgentIds ?? [];
+  if (agentIds.length === 0) return;
+
+  const companies = await ctx.companies.list({ limit: 1, offset: 0 });
+  const companyId = companies[0]?.id;
+  if (!companyId) return;
+
+  for (const agentId of agentIds) {
+    await ctx.agents.invoke(agentId, companyId, {
+      prompt: `GitHub pull_request_review: ${repoFullName} — ${prTitle}`,
+      reason: "github:pull_request_review",
+    });
+  }
+}
+
+async function handlePushEvent(
+  ctx: PluginContext,
+  config: GitHubConfig,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  const repository = payload.repository as Record<string, unknown> | undefined;
+  const repoFullName = readString(repository?.full_name);
+  const ref = readString(payload.ref);
+
+  const agentIds = config.triggerAgentIds ?? [];
+  if (agentIds.length === 0) return;
+
+  const companies = await ctx.companies.list({ limit: 1, offset: 0 });
+  const companyId = companies[0]?.id;
+  if (!companyId) return;
+
+  for (const agentId of agentIds) {
+    await ctx.agents.invoke(agentId, companyId, {
+      prompt: `GitHub push: ${repoFullName} — ${ref}`,
+      reason: "github:push",
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Outbound: Paperclip → GitHub
+// ---------------------------------------------------------------------------
+
+async function registerOutboundHandlers(ctx: PluginContext): Promise<void> {
+  ctx.events.on("issue.created", async (event: PluginEvent) => {
+    const config = await getConfig(ctx);
+    if (!config.githubTokenRef) return;
+
+    const payload = event.payload as Record<string, unknown>;
+    const issueId = typeof payload.issueId === "string" ? payload.issueId : null;
+    if (!issueId) return;
+
+    // Suppress echoes from inbound GitHub events
+    if (await isDuplicateDelivery(ctx, issueId)) return;
+
+    const issue = await ctx.issues.get(issueId, event.companyId);
+    if (!issue) return;
+
+    const token = await ctx.secrets.resolve(config.githubTokenRef);
+
+    await markOutboundEcho(ctx, issueId);
+    const ghIssue = await createGitHubIssue(ctx, token, config.owner, config.repo, {
+      title: issue.title,
+      body: issue.description ?? undefined,
+    });
+
+    // Store reverse mapping so updates can find the GH issue number
+    await setIssueMapping(ctx, config.owner, config.repo, ghIssue.number, issueId);
+  });
+
+  ctx.events.on("issue.updated", async (event: PluginEvent) => {
+    const config = await getConfig(ctx);
+    if (!config.githubTokenRef) return;
+
+    const payload = event.payload as Record<string, unknown>;
+    const issueId = typeof payload.issueId === "string" ? payload.issueId : null;
+    if (!issueId) return;
+
+    if (await isDuplicateDelivery(ctx, issueId)) return;
+
+    const issue = await ctx.issues.get(issueId, event.companyId);
+    if (!issue) return;
+
+    // Find the GH issue number by scanning state — we need a reverse lookup.
+    // We stored mapping as github:issue:{owner}/{repo}:{ghNumber} → { paperclipIssueId }
+    // but we don't have a reverse index. For now, skip outbound updates without a known GH number.
+    // Full reverse index can be added as a follow-up.
+    const token = await ctx.secrets.resolve(config.githubTokenRef);
+    const patch: { title?: string; body?: string; state?: "open" | "closed" } = {
+      title: issue.title,
+      body: issue.description ?? undefined,
+    };
+    if (issue.status === "done") patch.state = "closed";
+
+    await markOutboundEcho(ctx, issueId);
+    // We don't know the GH number here without a reverse index; log and skip.
+    ctx.logger.info("issue.updated outbound: reverse GH number lookup not yet implemented — skipping sync", { issueId });
+    void token; void patch; // suppress unused-variable warnings until reverse index is implemented
+  });
+
+  ctx.events.on("issue.comment.created", async (event: PluginEvent) => {
+    const config = await getConfig(ctx);
+    if (!config.githubTokenRef) return;
+
+    const payload = event.payload as Record<string, unknown>;
+    const commentId = typeof payload.commentId === "string" ? payload.commentId : null;
+    const issueId = typeof payload.issueId === "string" ? payload.issueId : null;
+    const body = typeof payload.body === "string" ? payload.body : null;
+    if (!commentId || !issueId || !body) return;
+
+    if (await isDuplicateDelivery(ctx, commentId)) return;
+
+    const token = await ctx.secrets.resolve(config.githubTokenRef);
+    ctx.logger.info("issue.comment.created outbound: reverse GH number lookup not yet implemented — skipping sync", { issueId });
+    void token; // suppress unused-variable warning until reverse index is implemented
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Plugin definition
+// ---------------------------------------------------------------------------
+
+const plugin: PaperclipPlugin = definePlugin({
+  async setup(ctx) {
+    currentContext = ctx;
+    await registerOutboundHandlers(ctx);
+  },
+
+  async onHealth() {
+    return { status: "ok", message: "GitHub connector ready" };
+  },
+
+  async onValidateConfig(config) {
+    const typed = config as Partial<GitHubConfig>;
+    const errors: string[] = [];
+
+    if (!typed.webhookSecret || typed.webhookSecret.trim().length === 0) {
+      errors.push("webhookSecret is required");
+    }
+    if (!typed.owner || typed.owner.trim().length === 0) {
+      errors.push("owner is required");
+    }
+    if (!typed.repo || typed.repo.trim().length === 0) {
+      errors.push("repo is required");
+    }
+
+    return { ok: errors.length === 0, errors, warnings: [] };
+  },
+
+  async onWebhook(input: PluginWebhookInput) {
+    if (input.endpointKey !== WEBHOOK_KEYS.github) {
+      throw new Error(`Unsupported webhook endpoint "${input.endpointKey}"`);
+    }
+
+    const ctx = currentContext;
+    if (!ctx) throw new Error("Plugin context not initialised");
+
+    const config = await getConfig(ctx);
+
+    // Verify HMAC-SHA256 signature before any processing
+    const signature = readString(input.headers?.["x-hub-signature-256"]);
+    if (!verifyGitHubSignature(input.rawBody, config.webhookSecret, signature)) {
+      // Do not log the payload on invalid signature
+      ctx.logger.warn("GitHub webhook: signature verification failed — delivery rejected");
+      return;
+    }
+
+    const event = readString(input.headers?.["x-github-event"]);
+    const deliveryId = readString(input.headers?.["x-github-delivery"] ?? input.requestId);
+    const payload = input.parsedBody as Record<string, unknown> ?? {};
+
+    // Repository filter: if watchedRepos is configured, only process matching repos
+    const watchedRepos = config.watchedRepos ?? [];
+    if (watchedRepos.length > 0) {
+      const repository = payload.repository as Record<string, unknown> | undefined;
+      const fullName = readString(repository?.full_name);
+      if (!watchedRepos.includes(fullName)) return;
+    }
+
+    switch (event) {
+      case GH_EVENTS.issues:
+        await handleIssuesEvent(ctx, config, payload, deliveryId);
+        break;
+      case GH_EVENTS.issueComment:
+        await handleIssueCommentEvent(ctx, config, payload, deliveryId);
+        break;
+      case GH_EVENTS.pullRequest:
+        await handlePullRequestEvent(ctx, config, payload, deliveryId);
+        break;
+      case GH_EVENTS.pullRequestReview:
+        await handlePullRequestReviewEvent(ctx, config, payload);
+        break;
+      case GH_EVENTS.push:
+        await handlePushEvent(ctx, config, payload);
+        break;
+      default:
+        ctx.logger.info(`GitHub connector: ignoring unhandled event "${event}"`);
+    }
+  },
+
+  async onShutdown() {
+    currentContext = null;
+  },
+});
+
+export default plugin;
+runWorker(plugin, import.meta.url);
