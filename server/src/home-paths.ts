@@ -61,6 +61,18 @@ export function resolveDefaultAgentWorkspaceDir(agentId: string): string {
   return path.resolve(resolvePaperclipInstanceRoot(), "workspaces", trimmed);
 }
 
+export function resolveManagedProjectWorkspaceDir(projectId: string, workspaceId: string): string {
+  const trimmedProject = projectId.trim();
+  const trimmedWorkspace = workspaceId.trim();
+  if (!PATH_SEGMENT_RE.test(trimmedProject)) {
+    throw new Error(`Invalid project id for workspace path '${projectId}'.`);
+  }
+  if (!PATH_SEGMENT_RE.test(trimmedWorkspace)) {
+    throw new Error(`Invalid workspace id for workspace path '${workspaceId}'.`);
+  }
+  return path.resolve(resolvePaperclipInstanceRoot(), "project-workspaces", trimmedProject, trimmedWorkspace);
+}
+
 export function resolveHomeAwarePath(value: string): string {
   return path.resolve(expandHomePrefix(value));
 }

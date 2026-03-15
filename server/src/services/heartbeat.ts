@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
@@ -23,7 +24,7 @@ import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
 import { secretService } from "./secrets.js";
-import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
+import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import { summarizeHeartbeatRunResultJson } from "./heartbeat-run-summary.js";
 import {
   buildWorkspaceReadyComment,
@@ -47,6 +48,42 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
+
+function runGitCommand(args: string[], cwd?: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile("git", args, { cwd, timeout: 120_000 }, (err, stdout, stderr) => {
+      if (err) {
+        reject(new Error(stderr?.trim() || stdout?.trim() || err.message));
+        return;
+      }
+      resolve(stdout.trim());
+    });
+  });
+}
+
+async function provisionManagedCheckout(
+  managedDir: string,
+  repoUrl: string,
+  repoRef: string | null,
+): Promise<void> {
+  const gitDirExists = await fs
+    .stat(path.join(managedDir, ".git"))
+    .then(() => true)
+    .catch(() => false);
+  if (gitDirExists) {
+    await runGitCommand(["fetch", "--depth=1", "origin", repoRef || "HEAD"], managedDir);
+    await runGitCommand(["reset", "--hard", "FETCH_HEAD"], managedDir);
+    return;
+  }
+  await fs.mkdir(managedDir, { recursive: true });
+  const cloneArgs = ["clone", "--depth=1"];
+  if (repoRef) {
+    cloneArgs.push("--branch", repoRef);
+  }
+  cloneArgs.push(repoUrl, managedDir);
+  await runGitCommand(cloneArgs);
+}
+
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
   "codex_local",
@@ -843,6 +880,35 @@ export function heartbeatService(db: Db) {
       for (const workspace of projectWorkspaceRows) {
         const projectCwd = readNonEmptyString(workspace.cwd);
         if (!projectCwd || projectCwd === REPO_ONLY_CWD_SENTINEL) {
+          // Attempt managed checkout for repo-only workspaces
+          const workspaceRepoUrl = readNonEmptyString(workspace.repoUrl);
+          if (workspaceRepoUrl) {
+            const managedDir = resolveManagedProjectWorkspaceDir(
+              workspaceProjectId!,
+              workspace.id,
+            );
+            try {
+              await provisionManagedCheckout(
+                managedDir,
+                workspaceRepoUrl,
+                readNonEmptyString(workspace.repoRef),
+              );
+              return {
+                cwd: managedDir,
+                source: "project_primary" as const,
+                projectId: resolvedProjectId,
+                workspaceId: workspace.id,
+                repoUrl: workspace.repoUrl,
+                repoRef: workspace.repoRef,
+                workspaceHints,
+                warnings: [],
+              };
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              logger.warn({ workspaceId: workspace.id, repoUrl: workspaceRepoUrl, error: msg }, "Failed to provision managed checkout for repo-only workspace");
+              missingProjectCwds.push(`managed:${managedDir}`);
+            }
+          }
           continue;
         }
         hasConfiguredProjectCwd = true;
