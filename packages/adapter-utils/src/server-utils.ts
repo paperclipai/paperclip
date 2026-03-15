@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { constants as fsConstants, promises as fs } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 export interface RunProcessResult {
@@ -121,6 +122,86 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
   const apiUrl = process.env.PAPERCLIP_API_URL ?? `http://${runtimeHost}:${runtimePort}`;
   vars.PAPERCLIP_API_URL = apiUrl;
   return vars;
+}
+
+// ---------------------------------------------------------------------------
+// Local-agent filesystem env contract
+// ---------------------------------------------------------------------------
+
+export interface LocalAgentFilesystemOptions {
+  /** Agent UUID — used for workspace and temp dir derivation. */
+  agentId: string;
+  /**
+   * Optional tool-specific home env var name and directory name.
+   * E.g. { envVar: "CODEX_HOME", dirName: ".codex" }
+   */
+  toolHome?: { envVar: string; dirName: string };
+}
+
+/**
+ * Resolve `PAPERCLIP_HOME` from the environment, falling back to `~/.paperclip`.
+ */
+function resolvePaperclipHome(): string {
+  const envHome = process.env.PAPERCLIP_HOME?.trim();
+  if (envHome) {
+    if (envHome === "~") return os.homedir();
+    if (envHome.startsWith("~/")) return path.resolve(os.homedir(), envHome.slice(2));
+    return path.resolve(envHome);
+  }
+  return path.resolve(os.homedir(), ".paperclip");
+}
+
+/**
+ * Resolve the Paperclip instance ID from the environment, defaulting to "default".
+ */
+function resolvePaperclipInstanceId(): string {
+  const raw = process.env.PAPERCLIP_INSTANCE_ID?.trim() || "default";
+  if (!/^[a-zA-Z0-9_-]+$/.test(raw)) {
+    throw new Error(`Invalid PAPERCLIP_INSTANCE_ID '${raw}'.`);
+  }
+  return raw;
+}
+
+/**
+ * Apply the local-agent filesystem environment contract to an env dict.
+ *
+ * Sets:
+ * - `HOME` → `$PAPERCLIP_HOME/instances/<id>/workspaces/<agentId>`
+ * - `AGENT_HOME` → same as HOME
+ * - `TMPDIR`, `TMP`, `TEMP` → `$PAPERCLIP_HOME/instances/<id>/tmp/<agentId>`
+ * - Tool-specific home (e.g. `CODEX_HOME`) → `$HOME/.codex` (under the agent HOME)
+ *
+ * Values are only set when not already present in the env, so explicit
+ * `adapterConfig.env` overrides are respected.
+ */
+export function applyLocalAgentFilesystemEnv(
+  env: Record<string, string>,
+  opts: LocalAgentFilesystemOptions,
+): Record<string, string> {
+  const paperclipHome = resolvePaperclipHome();
+  const instanceId = resolvePaperclipInstanceId();
+  const instanceRoot = path.join(paperclipHome, "instances", instanceId);
+
+  // HOME / AGENT_HOME
+  const agentHome = path.join(instanceRoot, "workspaces", opts.agentId);
+  if (!env.HOME) env.HOME = agentHome;
+  if (!env.AGENT_HOME) env.AGENT_HOME = agentHome;
+
+  // Tool-specific home (e.g. CODEX_HOME → $HOME/.codex)
+  if (opts.toolHome) {
+    const { envVar, dirName } = opts.toolHome;
+    if (!env[envVar]) {
+      env[envVar] = path.join(env.HOME, dirName);
+    }
+  }
+
+  // Temp dirs
+  const tmpRoot = path.join(instanceRoot, "tmp", opts.agentId);
+  if (!env.TMPDIR) env.TMPDIR = tmpRoot;
+  if (!env.TMP) env.TMP = tmpRoot;
+  if (!env.TEMP) env.TEMP = tmpRoot;
+
+  return env;
 }
 
 export function defaultPathForPlatform() {
