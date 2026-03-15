@@ -25,6 +25,9 @@ export const companiesApi = {
       >
     >,
   ) => api.patch<Company>(`/companies/${companyId}`, data),
+  pause: (companyId: string, force = false) =>
+    api.post<Company>(`/companies/${companyId}/pause${force ? "?force=true" : ""}`, {}),
+  resume: (companyId: string) => api.post<Company>(`/companies/${companyId}/resume`, {}),
   archive: (companyId: string) => api.post<Company>(`/companies/${companyId}/archive`, {}),
   remove: (companyId: string) => api.delete<{ ok: true }>(`/companies/${companyId}`),
   exportBundle: (companyId: string, data: { include?: { company?: boolean; agents?: boolean } }) =>

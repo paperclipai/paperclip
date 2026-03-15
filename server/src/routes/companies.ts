@@ -146,6 +146,48 @@ export function companyRoutes(db: Db) {
     res.json(company);
   });
 
+  router.post("/:companyId/pause", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const force = req.query.force === "true";
+    const company = await svc.pause(companyId, force);
+    if (!company) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
+    await logActivity(db, {
+      companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: company.status === "paused" ? "company.paused" : "company.pausing",
+      entityType: "company",
+      entityId: companyId,
+      details: { force, status: company.status },
+    });
+    res.json(company);
+  });
+
+  router.post("/:companyId/resume", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const company = await svc.resume(companyId);
+    if (!company) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
+    await logActivity(db, {
+      companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "company.resumed",
+      entityType: "company",
+      entityId: companyId,
+    });
+    res.json(company);
+  });
+
   router.post("/:companyId/archive", async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;

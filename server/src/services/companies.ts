@@ -1,4 +1,4 @@
-import { eq, count } from "drizzle-orm";
+import { eq, and, count, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   companies,
@@ -93,6 +93,55 @@ export function companyService(db: Db) {
       db
         .update(companies)
         .set({ status: "archived", updatedAt: new Date() })
+        .where(eq(companies.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null),
+
+    countActiveRuns: async (companyId: string) => {
+      const [{ value }] = await db
+        .select({ value: sql<number>`count(*)` })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.status, ["queued", "running"])));
+      return Number(value ?? 0);
+    },
+
+    pause: async (id: string, force = false) => {
+      const company = await db
+        .select()
+        .from(companies)
+        .where(eq(companies.id, id))
+        .then((rows) => rows[0] ?? null);
+      if (!company) return null;
+
+      if (force) {
+        return db
+          .update(companies)
+          .set({ status: "paused", updatedAt: new Date() })
+          .where(eq(companies.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+      }
+
+      // Check for active runs
+      const [{ value }] = await db
+        .select({ value: sql<number>`count(*)` })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, id), inArray(heartbeatRuns.status, ["queued", "running"])));
+      const activeRuns = Number(value ?? 0);
+
+      const nextStatus = activeRuns > 0 ? "pausing" : "paused";
+      return db
+        .update(companies)
+        .set({ status: nextStatus, updatedAt: new Date() })
+        .where(eq(companies.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+    },
+
+    resume: (id: string) =>
+      db
+        .update(companies)
+        .set({ status: "active", updatedAt: new Date() })
         .where(eq(companies.id, id))
         .returning()
         .then((rows) => rows[0] ?? null),

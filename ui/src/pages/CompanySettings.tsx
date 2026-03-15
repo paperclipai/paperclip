@@ -6,7 +6,7 @@ import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { Settings, Check } from "lucide-react";
+import { Settings, Check, Pause, Play, Loader2 } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
@@ -134,6 +134,21 @@ export function CompanySettings() {
     setSnippetCopied(false);
     setSnippetCopyDelightId(0);
   }, [selectedCompanyId]);
+  const pauseMutation = useMutation({
+    mutationFn: ({ force }: { force?: boolean } = {}) =>
+      companiesApi.pause(selectedCompanyId!, force),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+    },
+  });
+
+  const resumeMutation = useMutation({
+    mutationFn: () => companiesApi.resume(selectedCompanyId!),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+    },
+  });
+
   const archiveMutation = useMutation({
     mutationFn: ({
       companyId,
@@ -375,6 +390,82 @@ export function CompanySettings() {
                 </div>
               </div>
             </div>
+          )}
+        </div>
+      </div>
+
+      {/* Pause / Resume */}
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Operations
+        </div>
+        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+          <p className="text-sm text-muted-foreground">
+            {selectedCompany.status === "pausing"
+              ? "Company is draining — waiting for active runs to finish before fully pausing."
+              : selectedCompany.status === "paused"
+                ? "Company is paused. No new heartbeats will be scheduled. Resume to re-enable."
+                : "Pause this company to stop scheduling new heartbeats. Active runs will finish before the company is fully paused."}
+          </p>
+
+          {selectedCompany.status === "pausing" && (
+            <div className="flex items-center gap-2 rounded-md bg-yellow-500/10 px-3 py-2 text-sm text-yellow-700 dark:text-yellow-300">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              Draining — waiting for active runs to complete
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-center gap-2">
+            {selectedCompany.status === "active" ? (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  const confirmed = window.confirm(
+                    `Pause company "${selectedCompany.name}"? Active runs will finish before the company is fully paused.`
+                  );
+                  if (confirmed) pauseMutation.mutate({});
+                }}
+                disabled={pauseMutation.isPending}
+              >
+                <Pause className="h-3.5 w-3.5 mr-1" />
+                {pauseMutation.isPending ? "Pausing..." : "Pause company"}
+              </Button>
+            ) : selectedCompany.status === "pausing" || selectedCompany.status === "paused" ? (
+              <>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => resumeMutation.mutate()}
+                  disabled={resumeMutation.isPending}
+                >
+                  <Play className="h-3.5 w-3.5 mr-1" />
+                  {resumeMutation.isPending ? "Resuming..." : "Resume company"}
+                </Button>
+                {selectedCompany.status === "pausing" && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      const confirmed = window.confirm(
+                        "Force pause immediately? This will NOT cancel running processes, but will mark the company as paused right away."
+                      );
+                      if (confirmed) pauseMutation.mutate({ force: true });
+                    }}
+                    disabled={pauseMutation.isPending}
+                  >
+                    {pauseMutation.isPending ? "..." : "Force pause now"}
+                  </Button>
+                )}
+              </>
+            ) : null}
+          </div>
+          {(pauseMutation.isError || resumeMutation.isError) && (
+            <span className="text-xs text-destructive">
+              {(pauseMutation.error ?? resumeMutation.error) instanceof Error
+                ? ((pauseMutation.error ?? resumeMutation.error) as Error).message
+                : "Action failed"}
+            </span>
           )}
         </div>
       </div>
