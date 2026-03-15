@@ -784,6 +784,7 @@ Terminal states: `done`, `cancelled`
 | POST   | `/api/companies/:companyId/openclaw/invite-prompt` | Generate OpenClaw invite prompt (CEO/board only) |
 | POST   | `/api/companies/:companyId/bastionclaw/invite-prompt` | Generate BastionClaw invite prompt (CEO/board only) |
 
+
 ### Routines
 
 | Method | Path | Description |

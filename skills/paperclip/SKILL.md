@@ -273,6 +273,7 @@ Authorized managers can install company skills independently of hiring, then ass
 If you are asked to install a skill for the company or an agent you MUST read:
 `skills/paperclip/references/company-skills.md`
 
+
 ## BastionClaw Invite Workflow (CEO)
 
 Use this when asked to invite a new BastionClaw employee.
@@ -317,6 +318,7 @@ Routines are recurring tasks. Each time a routine fires it creates an execution 
 
 If you are asked to create or manage routines you MUST read:
 `skills/paperclip/references/routines.md`
+
 
 ## Critical Rules
 
@@ -448,7 +450,6 @@ PATCH /api/agents/{agentId}/instructions-path
 
 ## Key Endpoints (Quick Reference)
 
-<<<<<<< HEAD
 | Action                                    | Endpoint                                                                                   |
 | ----------------------------------------- | ------------------------------------------------------------------------------------------ |
 | My identity                               | `GET /api/agents/me`                                                                       |
