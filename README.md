@@ -190,6 +190,10 @@ This starts the API server at `http://localhost:3100`. An embedded PostgreSQL da
 
 > **Requirements:** Node.js 20+, pnpm 9.15+
 
+**Or deploy on Railway:** One-click deploy with Postgres, persistent storage, and a browser-based setup flow. Access Paperclip from anywhere.
+
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/paperclip) 
+
 <br/>
 
 ## FAQ
