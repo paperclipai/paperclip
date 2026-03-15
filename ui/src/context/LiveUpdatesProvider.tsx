@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { Agent, Issue, LiveEvent } from "@paperclipai/shared";
 import { authApi } from "../api/auth";
@@ -9,13 +9,10 @@ import { queryKeys } from "../lib/queryKeys";
 
 interface LiveUpdatesContextValue {
   isConnected: boolean;
-  /** Suppress WS-driven invalidations briefly after a local mutation fires. */
-  suppressInvalidations: () => void;
 }
 
 const LiveUpdatesContext = createContext<LiveUpdatesContextValue>({
   isConnected: false,
-  suppressInvalidations: () => {},
 });
 
 export function useLiveUpdates() {
@@ -521,15 +518,12 @@ function handleLiveEvent(
   }
 }
 
-const MUTATION_SUPPRESS_MS = 500;
-
 export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const gateRef = useRef<ToastGate>({ cooldownHits: new Map(), suppressUntil: 0 });
   const [wsConnected, setWsConnected] = useState(false);
-  const invalidationSuppressUntilRef = useRef(0);
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -537,9 +531,6 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
 
-  const suppressInvalidations = useRef(() => {
-    invalidationSuppressUntilRef.current = Date.now() + MUTATION_SUPPRESS_MS;
-  }).current;
 
   useEffect(() => {
     if (!selectedCompanyId) return;
@@ -584,9 +575,6 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
         const raw = typeof message.data === "string" ? message.data : "";
         if (!raw) return;
 
-        // Skip WS-driven invalidations while a local mutation is in flight
-        if (Date.now() < invalidationSuppressUntilRef.current) return;
-
         try {
           const parsed = JSON.parse(raw) as LiveEvent;
           handleLiveEvent(queryClient, selectedCompanyId, parsed, pushToast, gateRef.current, {
@@ -625,11 +613,13 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     };
   }, [queryClient, selectedCompanyId, pushToast, currentUserId]);
 
-  const contextValue = useRef<LiveUpdatesContextValue>({ isConnected: false, suppressInvalidations });
-  contextValue.current.isConnected = wsConnected;
+  const contextValue = useMemo<LiveUpdatesContextValue>(
+    () => ({ isConnected: wsConnected }),
+    [wsConnected],
+  );
 
   return (
-    <LiveUpdatesContext.Provider value={contextValue.current}>
+    <LiveUpdatesContext.Provider value={contextValue}>
       {children}
     </LiveUpdatesContext.Provider>
   );
