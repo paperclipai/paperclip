@@ -1,8 +1,9 @@
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, notInArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { projects, projectGoals, goals, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import {
   PROJECT_COLORS,
+  PROJECT_STATUSES,
   deriveProjectUrlKey,
   isUuidLike,
   normalizeProjectUrlKey,
@@ -17,6 +18,8 @@ import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-poli
 type ProjectRow = typeof projects.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
+
+const TERMINAL_PROJECT_STATUSES: (typeof PROJECT_STATUSES)[number][] = ["cancelled", "completed"];
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 type CreateWorkspaceInput = {
   name?: string | null;
@@ -373,7 +376,10 @@ export function projectService(db: Db) {
       const existingProjects = await db
         .select({ id: projects.id, name: projects.name })
         .from(projects)
-        .where(eq(projects.companyId, companyId));
+        .where(and(
+          eq(projects.companyId, companyId),
+          notInArray(projects.status, TERMINAL_PROJECT_STATUSES)
+        ));
       projectData.name = resolveProjectNameForUniqueShortname(projectData.name, existingProjects);
 
       // Also write goalId to the legacy column (first goal or null)
@@ -414,7 +420,10 @@ export function projectService(db: Db) {
           const existingProjects = await db
             .select({ id: projects.id, name: projects.name })
             .from(projects)
-            .where(eq(projects.companyId, existingProject.companyId));
+            .where(and(
+              eq(projects.companyId, existingProject.companyId),
+              notInArray(projects.status, TERMINAL_PROJECT_STATUSES)
+            ));
           projectData.name = resolveProjectNameForUniqueShortname(projectData.name, existingProjects, {
             excludeProjectId: id,
           });
