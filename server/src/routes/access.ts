@@ -611,6 +611,60 @@ export function normalizeAgentDefaultsForJoin(input: {
 }) {
   const fatalErrors: string[] = [];
   const diagnostics: JoinDiagnostic[] = [];
+  if (input.adapterType === "bastionclaw_gateway") {
+    if (!isPlainObject(input.defaultsPayload)) {
+      diagnostics.push({
+        code: "bastionclaw_gateway_defaults_missing",
+        level: "warn",
+        message: "No BastionClaw config was provided in agentDefaultsPayload.",
+        hint: "Include agentDefaultsPayload.bastionclaw_root for BastionClaw gateway joins.",
+      });
+      fatalErrors.push("agentDefaultsPayload is required for adapterType=bastionclaw_gateway");
+      return { normalized: null as Record<string, unknown> | null, diagnostics, fatalErrors };
+    }
+
+    const defaults = input.defaultsPayload as Record<string, unknown>;
+    const normalized: Record<string, unknown> = {};
+
+    const bastionclawRoot = nonEmptyTrimmedString(defaults.bastionclaw_root);
+    if (!bastionclawRoot) {
+      diagnostics.push({
+        code: "bastionclaw_gateway_root_missing",
+        level: "warn",
+        message: "BastionClaw root path is missing.",
+        hint: "Set agentDefaultsPayload.bastionclaw_root to the BastionClaw installation path.",
+      });
+      fatalErrors.push("agentDefaultsPayload.bastionclaw_root is required");
+    } else if (!bastionclawRoot.startsWith("/")) {
+      diagnostics.push({
+        code: "bastionclaw_gateway_root_not_absolute",
+        level: "warn",
+        message: `BastionClaw root must be an absolute path (got ${bastionclawRoot}).`,
+      });
+      fatalErrors.push("agentDefaultsPayload.bastionclaw_root must be an absolute path");
+    } else {
+      normalized.bastionclaw_root = bastionclawRoot;
+      diagnostics.push({
+        code: "bastionclaw_gateway_root_configured",
+        level: "info",
+        message: `BastionClaw root set to ${bastionclawRoot}`,
+      });
+    }
+
+    const timeoutSec = typeof defaults.timeout_sec === "number" && Number.isFinite(defaults.timeout_sec)
+      ? Math.floor(defaults.timeout_sec) : NaN;
+    if (Number.isFinite(timeoutSec) && timeoutSec > 0) normalized.timeout_sec = timeoutSec;
+
+    const pollSec = typeof defaults.poll_interval_sec === "number" && Number.isFinite(defaults.poll_interval_sec)
+      ? Math.floor(defaults.poll_interval_sec) : NaN;
+    if (Number.isFinite(pollSec) && pollSec > 0) normalized.poll_interval_sec = pollSec;
+
+    const targetJid = nonEmptyTrimmedString(defaults.target_jid);
+    if (targetJid) normalized.target_jid = targetJid;
+
+    return { normalized, diagnostics, fatalErrors };
+  }
+
   if (input.adapterType !== "openclaw_gateway") {
     const normalized = isPlainObject(input.defaultsPayload)
       ? (input.defaultsPayload as Record<string, unknown>)
@@ -2033,6 +2087,212 @@ export function accessRoutes(
         onboardingTextPath: inviteSummary.onboardingTextPath,
         onboardingTextUrl: inviteSummary.onboardingTextUrl,
         inviteMessage: inviteSummary.inviteMessage
+      });
+    }
+  );
+
+  router.post(
+    "/companies/:companyId/bastionclaw/invite-prompt",
+    validate(createOpenClawInvitePromptSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      await assertCanGenerateOpenClawInvitePrompt(req, companyId);
+      const { token, created, normalizedAgentMessage } =
+        await createCompanyInviteForCompany({
+          req,
+          companyId,
+          allowedJoinTypes: "agent",
+          defaultsPayload: null,
+          agentMessage: req.body.agentMessage ?? null
+        });
+
+      await logActivity(db, {
+        companyId,
+        actorType: req.actor.type === "agent" ? "agent" : "user",
+        actorId:
+          req.actor.type === "agent"
+            ? req.actor.agentId ?? "unknown-agent"
+            : req.actor.userId ?? "board",
+        action: "invite.bastionclaw_prompt_created",
+        entityType: "invite",
+        entityId: created.id,
+        details: {
+          inviteType: created.inviteType,
+          allowedJoinTypes: created.allowedJoinTypes,
+          expiresAt: created.expiresAt.toISOString(),
+          hasAgentMessage: Boolean(normalizedAgentMessage)
+        }
+      });
+
+      const inviteSummary = toInviteSummaryResponse(req, token, created);
+      const baseUrl = requestBaseUrl(req);
+      const acceptUrl = `${baseUrl}/api/invites/${token}/accept`;
+      const claimUrl = `${baseUrl}/api/join-requests`;
+
+      const skillUrl = `${baseUrl}/api/skills/paperclip`;
+
+      const enrollScript = [
+        `#!/bin/bash`,
+        `# BastionClaw Paperclip Enrollment`,
+        `# Run this from your BastionClaw directory`,
+        `set -euo pipefail`,
+        ``,
+        `API_BASE="${baseUrl}"`,
+        `BASTIONCLAW_ROOT="$(pwd)"`,
+        ``,
+        `echo "Step 1: Accepting invite..."`,
+        `RESPONSE=$(curl -sf -X POST "${acceptUrl}" \\`,
+        `  -H "Content-Type: application/json" \\`,
+        `  -d '{`,
+        `    "requestType": "agent",`,
+        `    "agentName": "BastionClaw Worker",`,
+        `    "adapterType": "bastionclaw_gateway",`,
+        `    "capabilities": "BastionClaw sandboxed container agent",`,
+        `    "agentDefaultsPayload": {`,
+        `      "bastionclaw_root": "'"$BASTIONCLAW_ROOT"'"`,
+        `    }`,
+        `  }')`,
+        ``,
+        `REQUEST_ID=$(echo "$RESPONSE" | jq -r '.id')`,
+        `CLAIM_SECRET=$(echo "$RESPONSE" | jq -r '.claimSecret')`,
+        ``,
+        `if [ -z "$REQUEST_ID" ] || [ "$REQUEST_ID" = "null" ]; then`,
+        `  echo "Error: Failed to accept invite"`,
+        `  echo "$RESPONSE"`,
+        `  exit 1`,
+        `fi`,
+        ``,
+        `echo "Join request created: $REQUEST_ID"`,
+        `echo ""`,
+        `echo "Step 2: Approve the join request in the Paperclip UI, then press Enter."`,
+        `read -r`,
+        ``,
+        `echo "Step 3: Claiming API key..."`,
+        `CLAIM_RESPONSE=$(curl -sf -X POST "${baseUrl}/api/join-requests/$REQUEST_ID/claim-api-key" \\`,
+        `  -H "Content-Type: application/json" \\`,
+        `  -d '{"claimSecret": "'"$CLAIM_SECRET"'"}')`,
+        ``,
+        `API_KEY=$(echo "$CLAIM_RESPONSE" | jq -r '.token')`,
+        ``,
+        `if [ -z "$API_KEY" ] || [ "$API_KEY" = "null" ]; then`,
+        `  echo "Error: Failed to claim API key (was the join request approved?)"`,
+        `  echo "$CLAIM_RESPONSE"`,
+        `  exit 1`,
+        `fi`,
+        ``,
+        `# Write to .env`,
+        `grep -q "^PAPERCLIP_API_KEY=" .env 2>/dev/null && \\`,
+        `  sed -i '' "s|^PAPERCLIP_API_KEY=.*|PAPERCLIP_API_KEY=$API_KEY|" .env || \\`,
+        `  echo "PAPERCLIP_API_KEY=$API_KEY" >> .env`,
+        ``,
+        `grep -q "^PAPERCLIP_API_URL=" .env 2>/dev/null && \\`,
+        `  sed -i '' "s|^PAPERCLIP_API_URL=.*|PAPERCLIP_API_URL=$API_BASE|" .env || \\`,
+        `  echo "PAPERCLIP_API_URL=$API_BASE" >> .env`,
+        ``,
+        `echo "Step 4: Installing Paperclip skill..."`,
+        `mkdir -p container/skills/paperclip`,
+        `curl -sf "$API_BASE/api/skills/paperclip" -o container/skills/paperclip/SKILL.md`,
+        ``,
+        `# Adapt skill for BastionClaw: replace curl with MCP proxy tool`,
+        `sed -i '' 's/curl -sS "$PAPERCLIP_API_URL/paperclip_api method=GET path=/g' container/skills/paperclip/SKILL.md`,
+        `sed -i '' 's/curl -sS -X POST "$PAPERCLIP_API_URL/paperclip_api method=POST path=/g' container/skills/paperclip/SKILL.md`,
+        `sed -i '' 's/curl -sS -X PATCH "$PAPERCLIP_API_URL/paperclip_api method=PATCH path=/g' container/skills/paperclip/SKILL.md`,
+        `sed -i '' 's/curl -sS -X PUT "$PAPERCLIP_API_URL/paperclip_api method=PUT path=/g' container/skills/paperclip/SKILL.md`,
+        `sed -i '' 's/ *-H "Authorization: Bearer \\$PAPERCLIP_API_KEY"//g' container/skills/paperclip/SKILL.md`,
+        `sed -i '' 's/ *-H "X-Paperclip-Run-Id: \\$PAPERCLIP_RUN_ID"//g' container/skills/paperclip/SKILL.md`,
+        `sed -i '' '0,/## Authentication/{s/## Authentication/## Authentication\\n\\nBastionClaw agents: use the mcp__bastionclaw__paperclip_api tool for ALL API calls. Do NOT use curl or direct HTTP — the Paperclip API is only reachable through the MCP proxy. Auth headers are injected automatically.\\n/}' container/skills/paperclip/SKILL.md`,
+        ``,
+        `echo ""`,
+        `echo "Enrolled. PAPERCLIP_API_KEY and PAPERCLIP_API_URL written to .env"`,
+        `echo "Paperclip skill installed and adapted for BastionClaw MCP proxy."`,
+        `echo "Restart BastionClaw: ./scripts/restart.sh"`,
+      ].join("\n");
+
+      const enrollPrompt = [
+        `# BastionClaw Paperclip Enrollment`,
+        ``,
+        `This document is meant to be readable by both humans and agents.`,
+        `Run these steps from the BastionClaw directory.`,
+        ``,
+        `## Step 1: Accept the invite`,
+        ``,
+        `POST ${acceptUrl}`,
+        `Body (JSON):`,
+        `{`,
+        `  "requestType": "agent",`,
+        `  "agentName": "BastionClaw Worker",`,
+        `  "adapterType": "bastionclaw_gateway",`,
+        `  "capabilities": "BastionClaw sandboxed container agent",`,
+        `  "agentDefaultsPayload": {`,
+        `    "bastionclaw_root": "<absolute path to BastionClaw directory>"`,
+        `  }`,
+        `}`,
+        ``,
+        `Save the response fields:`,
+        `- id (the join request ID)`,
+        `- claimSecret (one-time secret for claiming the API key)`,
+        ``,
+        `## Step 2: Wait for board approval`,
+        ``,
+        `The board must approve the join request in the Paperclip UI before the key can be claimed.`,
+        `Tell the user to approve it, then continue.`,
+        ``,
+        `## Step 3: Claim the API key`,
+        ``,
+        `POST ${baseUrl}/api/join-requests/{requestId}/claim-api-key`,
+        `Body (JSON):`,
+        `{`,
+        `  "claimSecret": "<claimSecret from step 1>"`,
+        `}`,
+        ``,
+        `Save the returned token.`,
+        ``,
+        `## Step 4: Write credentials to .env`,
+        ``,
+        `Update the .env file in the BastionClaw directory:`,
+        `- Set PAPERCLIP_API_KEY to the token from step 3`,
+        `- Set PAPERCLIP_API_URL to ${baseUrl}`,
+        ``,
+        `If PAPERCLIP_API_KEY= already exists in .env, replace its value. Otherwise append it.`,
+        `Same for PAPERCLIP_API_URL.`,
+        ``,
+        `## Step 5: Install Paperclip skill`,
+        ``,
+        `GET ${skillUrl}`,
+        `Save the response to container/skills/paperclip/SKILL.md`,
+        `Create the directory if it does not exist.`,
+        ``,
+        `Then modify the saved SKILL.md:`,
+        `- Replace all curl-based API call examples with mcp__bastionclaw__paperclip_api tool calls.`,
+        `- For example, replace:`,
+        `  curl -sS "$PAPERCLIP_API_URL/api/agents/me" -H "Authorization: Bearer $PAPERCLIP_API_KEY"`,
+        `  with:`,
+        `  paperclip_api method=GET path=/api/agents/me`,
+        `- Replace all curl -X POST with: paperclip_api method=POST path=... body=...`,
+        `- Replace all curl -X PATCH with: paperclip_api method=PATCH path=... body=...`,
+        `- Remove all -H "Authorization: Bearer $PAPERCLIP_API_KEY" references (auth is automatic).`,
+        `- Remove all -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" references (injected automatically).`,
+        `- Add a note at the top of the Authentication section: "BastionClaw agents: use the mcp__bastionclaw__paperclip_api tool for ALL API calls. Do NOT use curl or direct HTTP — the Paperclip API is only reachable through the MCP proxy. Auth headers are injected automatically."`,
+        ``,
+        `## Step 6: Restart BastionClaw`,
+        ``,
+        `Run: ./scripts/restart.sh`,
+        ``,
+        `## Important`,
+        `- Claim secrets expire after 7 days and are single-use.`,
+        `- Claim fails before board approval.`,
+        `- Do not log or expose the API key or claim secret.`,
+      ].join("\n");
+
+      res.status(201).json({
+        ...created,
+        token,
+        inviteUrl: `/invite/${token}`,
+        onboardingTextPath: inviteSummary.onboardingTextPath,
+        onboardingTextUrl: inviteSummary.onboardingTextUrl,
+        inviteMessage: inviteSummary.inviteMessage,
+        enrollScript,
+        enrollPrompt,
       });
     }
   );

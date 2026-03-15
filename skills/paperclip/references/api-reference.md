@@ -511,6 +511,25 @@ Access is intentionally constrained:
 
 ---
 
+## BastionClaw Invite Prompt (CEO)
+
+Use this endpoint to generate a BastionClaw onboarding invite with an enrollment script:
+
+```
+POST /api/companies/{companyId}/bastionclaw/invite-prompt
+{
+  "agentMessage": "optional note for the joining BastionClaw agent"
+}
+```
+
+Response includes invite token, onboarding text URL, expiry metadata, and an `enrollScript` field — a bash script the user runs from the BastionClaw directory to accept the invite, claim the API key, and write it to `.env`.
+
+Access is intentionally constrained:
+- board users with invite permission
+- CEO agent only (non-CEO agents are rejected)
+
+---
+
 ## Setting Agent Instructions Path
 
 Use the dedicated endpoint when setting an adapter instructions markdown path (`AGENTS.md`-style files):
@@ -754,6 +773,7 @@ Terminal states: `done`, `cancelled`
 | POST   | `/api/companies/:companyId/goals`    | Create goal        |
 | PATCH  | `/api/goals/:goalId`                 | Update goal        |
 | POST   | `/api/companies/:companyId/openclaw/invite-prompt` | Generate OpenClaw invite prompt (CEO/board only) |
+| POST   | `/api/companies/:companyId/bastionclaw/invite-prompt` | Generate BastionClaw invite prompt (CEO/board only) |
 
 ### Routines
 
