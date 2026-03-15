@@ -291,8 +291,18 @@ def record_run(
         conn.close()
 
 
+_ALLOWED_RUN_FIELDS = frozenset({
+    "status", "error_message", "duration_seconds",
+    "prompt_tokens", "completion_tokens", "token_cost",
+    "findings_new", "findings_updated",
+})
+
+
 def update_run(run_id: int, **kwargs):
     """Update a research run's fields."""
+    invalid = set(kwargs) - _ALLOWED_RUN_FIELDS
+    if invalid:
+        raise ValueError(f"Unknown run fields: {invalid}")
     conn = _connect()
     try:
         sets = ", ".join(f"{k} = ?" for k in kwargs)
@@ -423,8 +433,17 @@ def search_findings(query: str, limit: int = 20) -> List[Dict[str, Any]]:
         conn.close()
 
 
+_ALLOWED_FINDING_FIELDS = frozenset({
+    "dismissed", "engagement_score", "sighting_count",
+    "last_seen_at", "summary", "category",
+})
+
+
 def update_finding(finding_id: int, **kwargs):
     """Update a finding's fields."""
+    invalid = set(kwargs) - _ALLOWED_FINDING_FIELDS
+    if invalid:
+        raise ValueError(f"Unknown finding fields: {invalid}")
     conn = _connect()
     try:
         sets = ", ".join(f"{k} = ?" for k in kwargs)

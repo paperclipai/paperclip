@@ -104,13 +104,18 @@ def load_cache_with_age(cache_key: str, ttl_hours: int = DEFAULT_TTL_HOURS) -> t
 
 
 def save_cache(cache_key: str, data: dict):
-    """Save data to cache."""
+    """Save data to cache atomically via write-rename."""
     ensure_cache_dir()
     cache_path = get_cache_path(cache_key)
 
     try:
-        with open(cache_path, 'w') as f:
-            json.dump(data, f)
+        import tempfile
+        with tempfile.NamedTemporaryFile(
+            mode='w', dir=CACHE_DIR, suffix='.tmp', delete=False
+        ) as tmp:
+            json.dump(data, tmp)
+            tmp_path = Path(tmp.name)
+        tmp_path.replace(cache_path)
     except OSError:
         pass  # Silently fail on cache write errors
 
