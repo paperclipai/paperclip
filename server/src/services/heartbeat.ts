@@ -2431,6 +2431,7 @@ export function heartbeatService(db: Db) {
       let checked = 0;
       let enqueued = 0;
       let skipped = 0;
+      let idleSkipped = 0;
 
       for (const agent of allAgents) {
         if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
@@ -2438,6 +2439,10 @@ export function heartbeatService(db: Db) {
         if (!policy.enabled || policy.intervalSec <= 0) continue;
 
         checked += 1;
+
+        const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
+        const elapsedMs = now.getTime() - baseline;
+        if (elapsedMs < policy.intervalSec * 1000) continue;
 
         // When skipWhenIdle is enabled, skip timer wakeup if agent has no actionable
         // assigned issues — avoids wasting tokens on empty heartbeat runs.
@@ -2452,14 +2457,10 @@ export function heartbeatService(db: Db) {
               ),
             );
           if (Number(assignedCount) === 0) {
-            skipped += 1;
+            idleSkipped += 1;
             continue;
           }
         }
-
-        const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
-        const elapsedMs = now.getTime() - baseline;
-        if (elapsedMs < policy.intervalSec * 1000) continue;
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
@@ -2477,7 +2478,7 @@ export function heartbeatService(db: Db) {
         else skipped += 1;
       }
 
-      return { checked, enqueued, skipped };
+      return { checked, enqueued, skipped, idleSkipped };
     },
 
     cancelRun: async (runId: string) => {
