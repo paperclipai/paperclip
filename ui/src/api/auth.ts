@@ -71,4 +71,15 @@ export const authApi = {
   signOut: async () => {
     await authPost("/sign-out", {});
   },
+
+  requestPasswordReset: async (email: string) => {
+    await authPost("/request-password-reset", {
+      email,
+      redirectTo: `${window.location.origin}/reset-password`,
+    });
+  },
+
+  resetPassword: async (token: string, newPassword: string) => {
+    await authPost("/reset-password", { token, newPassword });
+  },
 };

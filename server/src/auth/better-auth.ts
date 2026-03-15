@@ -65,6 +65,19 @@ export function deriveAuthTrustedOrigins(config: Config): string[] {
   return Array.from(trustedOrigins);
 }
 
+export function buildResetPasswordLogLines(user: { email: string }, url: string): string[] {
+  const cyan = "\x1b[36m";
+  const bold = "\x1b[1m";
+  const reset = "\x1b[0m";
+  return [
+    `\n${bold}${cyan}  PASSWORD RESET REQUESTED  ${reset}`,
+    `${cyan}User: ${user.email}${reset}`,
+    `${cyan}Open this URL to set a new password (expires in 1 hour):${reset}`,
+    `${cyan}${url}${reset}`,
+    `${cyan}If connecting over Tailscale or a custom hostname, replace the host in the URL above.${reset}\n`,
+  ];
+}
+
 export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?: string[]): BetterAuthInstance {
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
   const secret = process.env.BETTER_AUTH_SECRET ?? process.env.PAPERCLIP_AGENT_JWT_SECRET ?? "paperclip-dev-secret";
@@ -90,6 +103,9 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?
       enabled: true,
       requireEmailVerification: false,
       disableSignUp: config.authDisableSignUp,
+      sendResetPassword: async ({ user, url }: { user: { email: string }; url: string }) => {
+        console.log(buildResetPasswordLogLines(user, url).join("\n"));
+      },
     },
     ...(isHttpOnly ? { advanced: { useSecureCookies: false } } : {}),
   };
