@@ -1233,6 +1233,12 @@ export function heartbeatService(db: Db) {
     for (const run of activeRuns) {
       if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
 
+      // Queued runs have no process yet -- only reap them on startup
+      // (staleThresholdMs === 0) where we know nothing will ever pick
+      // them up.  During periodic sweeps, skip them so they survive
+      // while waiting for their turn.
+      if (run.status === "queued" && staleThresholdMs > 0) continue;
+
       // Apply staleness threshold to avoid false positives
       if (staleThresholdMs > 0) {
         const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
