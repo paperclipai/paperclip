@@ -1,147 +1,421 @@
-import { useEffect, useRef, useState, useMemo, useCallback } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  Background,
+  Controls,
+  Handle,
+  MarkerType,
+  MiniMap,
+  Position,
+  ReactFlow,
+  useEdgesState,
+  useNodesState,
+  type Edge,
+  type Node,
+  type NodeProps,
+  type NodeTypes,
+} from "@xyflow/react";
+import "@xyflow/react/dist/style.css";
 import { useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
+import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
+import {
+  AlertTriangle,
+  Building2,
+  Coffee,
+  DoorOpen,
+  Search,
+  Sparkles,
+  TerminalSquare,
+  type LucideIcon,
+} from "lucide-react";
 import { agentsApi, type OrgNode } from "../api/agents";
+import { EmptyState } from "../components/EmptyState";
+import { PageSkeleton } from "../components/PageSkeleton";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { agentUrl } from "../lib/utils";
-import { EmptyState } from "../components/EmptyState";
-import { PageSkeleton } from "../components/PageSkeleton";
-import { AgentIcon } from "../components/AgentIconPicker";
-import { Network } from "lucide-react";
-import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
 
-// Layout constants
-const CARD_W = 200;
-const CARD_H = 100;
-const GAP_X = 32;
-const GAP_Y = 80;
-const PADDING = 60;
+const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 
-// ── Tree layout types ───────────────────────────────────────────────────
+const statusColors: Record<string, string> = {
+  running: "#22d3ee",
+  active: "#4ade80",
+  paused: "#fbbf24",
+  idle: "#f97316",
+  pending_approval: "#fb7185",
+  error: "#ef4444",
+  terminated: "#94a3b8",
+};
 
-interface LayoutNode {
+const ROOM_PADDING_X = 18;
+const ROOM_PADDING_Y = 18;
+const ROOM_HEADER_HEIGHT = 62;
+const CARD_WIDTH = 188;
+const CARD_HEIGHT = 110;
+const CARD_GAP_X = 14;
+const CARD_GAP_Y = 14;
+const ROOM_MIN_WIDTH = 360;
+const ROOM_MIN_HEIGHT = 248;
+const OFFICE_COLUMNS = 2;
+const OFFICE_ROOM_GAP_X = 56;
+const OFFICE_ROOM_GAP_Y = 48;
+
+interface OfficeZone {
+  id: string;
+  title: string;
+  subtitle: string;
+  accent: string;
+  statuses: string[];
+  icon: LucideIcon;
+}
+
+interface OfficeZoneSummary extends OfficeZone {
+  agents: Agent[];
+}
+
+interface FlatAgent {
   id: string;
   name: string;
   role: string;
   status: string;
-  x: number;
-  y: number;
-  children: LayoutNode[];
+  depth: number;
+  parentId: string | null;
+  teamSize: number;
 }
 
-// ── Layout algorithm ────────────────────────────────────────────────────
-
-/** Compute the width each subtree needs. */
-function subtreeWidth(node: OrgNode): number {
-  if (node.reports.length === 0) return CARD_W;
-  const childrenW = node.reports.reduce((sum, c) => sum + subtreeWidth(c), 0);
-  const gaps = (node.reports.length - 1) * GAP_X;
-  return Math.max(CARD_W, childrenW + gaps);
+interface RoomData extends Record<string, unknown> {
+  title: string;
+  subtitle: string;
+  accentColor: string;
+  count: number;
 }
 
-/** Recursively assign x,y positions. */
-function layoutTree(node: OrgNode, x: number, y: number): LayoutNode {
-  const totalW = subtreeWidth(node);
-  const layoutChildren: LayoutNode[] = [];
+interface AgentData extends Record<string, unknown> {
+  name: string;
+  initial: string;
+  title: string;
+  role: string;
+  status: string;
+  statusColor: string;
+  teamSize: number;
+  roomTitle: string;
+}
 
-  if (node.reports.length > 0) {
-    const childrenW = node.reports.reduce((sum, c) => sum + subtreeWidth(c), 0);
-    const gaps = (node.reports.length - 1) * GAP_X;
-    let cx = x + (totalW - childrenW - gaps) / 2;
+type OrgFlowNode = Node<RoomData, "room"> | Node<AgentData, "agent">;
+type OrgFlowEdge = Edge;
 
-    for (const child of node.reports) {
-      const cw = subtreeWidth(child);
-      layoutChildren.push(layoutTree(child, cx, y + CARD_H + GAP_Y));
-      cx += cw + GAP_X;
-    }
+const officeZones: OfficeZone[] = [
+  {
+    id: "workspace",
+    title: "Workspace",
+    subtitle: "Shipping and active execution",
+    accent: "#38bdf8",
+    statuses: ["running", "active"],
+    icon: TerminalSquare,
+  },
+  {
+    id: "breakroom",
+    title: "Breakroom",
+    subtitle: "Idle or paused agents",
+    accent: "#f97316",
+    statuses: ["idle", "paused"],
+    icon: Coffee,
+  },
+  {
+    id: "bug-corner",
+    title: "Bug Corner",
+    subtitle: "Needs immediate support",
+    accent: "#ef4444",
+    statuses: ["error"],
+    icon: AlertTriangle,
+  },
+  {
+    id: "control-desk",
+    title: "Control Desk",
+    subtitle: "Approval or lifecycle state",
+    accent: "#a78bfa",
+    statuses: ["pending_approval", "terminated"],
+    icon: Building2,
+  },
+];
+
+const zoneByStatus = officeZones.reduce<Record<string, string>>((acc, zone) => {
+  for (const status of zone.statuses) {
+    acc[status] = zone.id;
   }
+  return acc;
+}, {});
 
-  return {
-    id: node.id,
-    name: node.name,
-    role: node.role,
-    status: node.status,
-    x: x + (totalW - CARD_W) / 2,
-    y,
-    children: layoutChildren,
+function roleLabel(role: string): string {
+  return roleLabels[role] ?? role;
+}
+
+function isAgentNode(node: OrgFlowNode): node is Node<AgentData, "agent"> {
+  return node.type === "agent";
+}
+
+function flattenOrgTree(roots: OrgNode[]): FlatAgent[] {
+  const flattened: FlatAgent[] = [];
+
+  const visit = (node: OrgNode, depth: number, parentId: string | null): number => {
+    const entry: FlatAgent = {
+      id: node.id,
+      name: node.name,
+      role: node.role,
+      status: node.status,
+      depth,
+      parentId,
+      teamSize: 1,
+    };
+    flattened.push(entry);
+
+    let subtreeSize = 1;
+    for (const report of node.reports) {
+      subtreeSize += visit(report, depth + 1, node.id);
+    }
+
+    entry.teamSize = subtreeSize;
+    return subtreeSize;
   };
-}
 
-/** Layout all root nodes side by side. */
-function layoutForest(roots: OrgNode[]): LayoutNode[] {
-  if (roots.length === 0) return [];
-
-  const totalW = roots.reduce((sum, r) => sum + subtreeWidth(r), 0);
-  const gaps = (roots.length - 1) * GAP_X;
-  let x = PADDING;
-  const y = PADDING;
-
-  const result: LayoutNode[] = [];
   for (const root of roots) {
-    const w = subtreeWidth(root);
-    result.push(layoutTree(root, x, y));
-    x += w + GAP_X;
+    visit(root, 0, null);
   }
 
-  // Compute bounds and return
-  return result;
+  return flattened;
 }
 
-/** Flatten layout tree to list of nodes. */
-function flattenLayout(nodes: LayoutNode[]): LayoutNode[] {
-  const result: LayoutNode[] = [];
-  function walk(n: LayoutNode) {
-    result.push(n);
-    n.children.forEach(walk);
+function buildRoomLayout(orgTree: OrgNode[], agentMap: Map<string, Agent>) {
+  const flattened = flattenOrgTree(orgTree);
+  const zoneAgents = new Map<string, FlatAgent[]>(officeZones.map((zone) => [zone.id, []]));
+
+  for (const agent of flattened) {
+    const zoneId = zoneByStatus[agent.status] ?? "control-desk";
+    const bucket = zoneAgents.get(zoneId);
+    if (bucket) bucket.push(agent);
   }
-  nodes.forEach(walk);
-  return result;
-}
 
-/** Collect all parent→child edges. */
-function collectEdges(nodes: LayoutNode[]): Array<{ parent: LayoutNode; child: LayoutNode }> {
-  const edges: Array<{ parent: LayoutNode; child: LayoutNode }> = [];
-  function walk(n: LayoutNode) {
-    for (const c of n.children) {
-      edges.push({ parent: n, child: c });
-      walk(c);
-    }
+  const roomDrafts = officeZones.map((zone, index) => {
+    const agentsInZone = [...(zoneAgents.get(zone.id) ?? [])].sort((a, b) => {
+      if (a.depth !== b.depth) return a.depth - b.depth;
+      return a.name.localeCompare(b.name);
+    });
+    const columns = agentsInZone.length >= 7 ? 3 : agentsInZone.length >= 3 ? 2 : 1;
+    const rows = Math.max(1, Math.ceil(agentsInZone.length / columns));
+    const width = Math.max(
+      ROOM_MIN_WIDTH,
+      ROOM_PADDING_X * 2 + columns * CARD_WIDTH + (columns - 1) * CARD_GAP_X,
+    );
+    const height = Math.max(
+      ROOM_MIN_HEIGHT,
+      ROOM_HEADER_HEIGHT + ROOM_PADDING_Y * 2 + rows * CARD_HEIGHT + (rows - 1) * CARD_GAP_Y,
+    );
+
+    return {
+      zone,
+      agents: agentsInZone,
+      columns,
+      rows,
+      width,
+      height,
+      col: index % OFFICE_COLUMNS,
+      row: Math.floor(index / OFFICE_COLUMNS),
+    };
+  });
+
+  const rowCount = Math.ceil(roomDrafts.length / OFFICE_COLUMNS);
+  const colWidths = Array.from({ length: OFFICE_COLUMNS }, (_, col) =>
+    roomDrafts
+      .filter((draft) => draft.col === col)
+      .reduce((max, draft) => Math.max(max, draft.width), ROOM_MIN_WIDTH),
+  );
+  const rowHeights = Array.from({ length: rowCount }, (_, row) =>
+    roomDrafts
+      .filter((draft) => draft.row === row)
+      .reduce((max, draft) => Math.max(max, draft.height), ROOM_MIN_HEIGHT),
+  );
+
+  const colOffsets = colWidths.map((_, index) =>
+    colWidths.slice(0, index).reduce((sum, width) => sum + width + OFFICE_ROOM_GAP_X, 0),
+  );
+  const rowOffsets = rowHeights.map((_, index) =>
+    rowHeights.slice(0, index).reduce((sum, height) => sum + height + OFFICE_ROOM_GAP_Y, 0),
+  );
+
+  const nodes: OrgFlowNode[] = [];
+  const edges: OrgFlowEdge[] = [];
+
+  for (const draft of roomDrafts) {
+    const roomId = `room-${draft.zone.id}`;
+    const roomX = colOffsets[draft.col] ?? 0;
+    const roomY = rowOffsets[draft.row] ?? 0;
+
+    nodes.push({
+      id: roomId,
+      type: "room",
+      position: { x: roomX, y: roomY },
+      draggable: false,
+      selectable: false,
+      data: {
+        title: draft.zone.title,
+        subtitle: draft.zone.subtitle,
+        count: draft.agents.length,
+        accentColor: draft.zone.accent,
+      },
+      style: {
+        width: draft.width,
+        height: draft.height,
+        border: "none",
+        background: "transparent",
+      },
+      zIndex: 0,
+    });
+
+    draft.agents.forEach((agent, index) => {
+      const col = index % draft.columns;
+      const row = Math.floor(index / draft.columns);
+      const agentDetail = agentMap.get(agent.id);
+      const statusColor = statusColors[agent.status] ?? "#94a3b8";
+
+      nodes.push({
+        id: agent.id,
+        type: "agent",
+        parentId: roomId,
+        extent: "parent",
+        position: {
+          x: ROOM_PADDING_X + col * (CARD_WIDTH + CARD_GAP_X),
+          y: ROOM_HEADER_HEIGHT + ROOM_PADDING_Y + row * (CARD_HEIGHT + CARD_GAP_Y),
+        },
+        draggable: false,
+        data: {
+          name: agent.name,
+          initial: agent.name.trim().charAt(0).toUpperCase() || "?",
+          title: agentDetail?.title ?? roleLabel(agent.role),
+          role: roleLabel(agent.role),
+          status: agent.status,
+          statusColor,
+          teamSize: agent.teamSize,
+          roomTitle: draft.zone.title,
+        },
+        style: {
+          width: CARD_WIDTH,
+          height: CARD_HEIGHT,
+          border: "none",
+          background: "transparent",
+        },
+        zIndex: 5,
+      });
+
+      if (agent.parentId) {
+        const isAnimated = agent.status === "running" || agent.status === "active";
+        edges.push({
+          id: `edge-${agent.parentId}-${agent.id}`,
+          source: agent.parentId,
+          target: agent.id,
+          type: "step",
+          animated: isAnimated,
+          style: {
+            stroke: isAnimated ? "#7dd3fc" : "#5b7b95",
+            strokeWidth: 2.2,
+          },
+          markerEnd: {
+            type: MarkerType.ArrowClosed,
+            color: isAnimated ? "#7dd3fc" : "#5b7b95",
+          },
+        });
+      }
+    });
   }
-  nodes.forEach(walk);
-  return edges;
+
+  return { nodes, edges };
 }
 
-// ── Status dot colors (raw hex for SVG) ─────────────────────────────────
+function RoomNodeCard({ data }: NodeProps<Node<RoomData, "room">>) {
+  return (
+    <div className="relative h-full w-full overflow-hidden rounded-md border-2 border-[#2f4f68] bg-[#0c1d2d] shadow-[0_16px_36px_rgba(2,6,23,0.5)]">
+      <div
+        className="pointer-events-none absolute inset-0 opacity-35"
+        style={{
+          background:
+            "linear-gradient(0deg, rgba(12,29,45,0.35), rgba(12,29,45,0.35)), repeating-linear-gradient(0deg, transparent 0 16px, rgba(29,78,116,0.16) 16px 17px), repeating-linear-gradient(90deg, transparent 0 16px, rgba(29,78,116,0.14) 16px 17px)",
+        }}
+      />
+      <div
+        className="pointer-events-none absolute inset-x-0 top-0 h-1"
+        style={{ backgroundColor: data.accentColor }}
+      />
+      <div className="relative flex items-start justify-between px-4 pt-4">
+        <div>
+          <p className="text-[10px] uppercase tracking-[0.24em] text-slate-300/80">{data.subtitle}</p>
+          <h3 className="mt-1 font-mono text-sm font-semibold text-slate-100">{data.title}</h3>
+        </div>
+        <div className="rounded-sm border border-slate-400/40 bg-slate-950/75 px-2 py-1 font-mono text-[11px] text-slate-200">
+          {data.count} agents
+        </div>
+      </div>
+    </div>
+  );
+}
 
-const adapterLabels: Record<string, string> = {
-  claude_local: "Claude",
-  codex_local: "Codex",
-  gemini_local: "Gemini",
-  opencode_local: "OpenCode",
-  cursor: "Cursor",
-  openclaw_gateway: "OpenClaw Gateway",
-  process: "Process",
-  http: "HTTP",
+function AgentNodeCard({ data, selected }: NodeProps<Node<AgentData, "agent">>) {
+  return (
+    <div
+      className="relative h-full w-full rounded-[6px] border-2 p-3 text-slate-100 shadow-[0_10px_24px_rgba(2,6,23,0.4)] transition-transform"
+      style={{
+        borderColor: selected ? data.statusColor : "#32526d",
+        background:
+          "linear-gradient(180deg, rgba(12,29,45,0.92), rgba(10,24,36,0.95)), repeating-linear-gradient(0deg, transparent 0 7px, rgba(148,163,184,0.06) 7px 8px)",
+        transform: selected ? "translateY(-2px)" : "translateY(0)",
+      }}
+    >
+      <Handle
+        type="target"
+        position={Position.Left}
+        className="!h-2 !w-2 !rounded-none !border-0 !bg-slate-100"
+        style={{ left: -6 }}
+      />
+      <Handle
+        type="source"
+        position={Position.Right}
+        className="!h-2 !w-2 !rounded-none !border-0 !bg-slate-100"
+        style={{ right: -6 }}
+      />
+
+      <div className="flex items-center gap-2">
+        <span className="inline-flex h-5 w-5 items-center justify-center rounded-sm border border-slate-300/45 bg-slate-900/80 font-mono text-[10px] font-semibold text-slate-100">
+          {data.initial}
+        </span>
+        <span className="truncate text-[10px] uppercase tracking-[0.2em] text-slate-300/85">{data.roomTitle}</span>
+      </div>
+
+      <p className="mt-2 truncate font-mono text-sm font-semibold">{data.name}</p>
+      <p className="truncate text-xs text-slate-300">{data.title}</p>
+
+      <div className="mt-3 flex items-center justify-between text-[11px] text-slate-300">
+        <span className="truncate">{data.role}</span>
+        <span className="inline-flex items-center gap-1">
+          <span
+            className="inline-block h-2.5 w-2.5 rounded-full"
+            style={{ backgroundColor: data.statusColor }}
+          />
+          {data.status}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+const nodeTypes: NodeTypes = {
+  room: RoomNodeCard,
+  agent: AgentNodeCard,
 };
-
-const statusDotColor: Record<string, string> = {
-  running: "#22d3ee",
-  active: "#4ade80",
-  paused: "#facc15",
-  idle: "#facc15",
-  error: "#f87171",
-  terminated: "#a3a3a3",
-};
-const defaultDotColor = "#a3a3a3";
-
-// ── Main component ──────────────────────────────────────────────────────
 
 export function OrgChart() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
 
   const { data: orgTree, isLoading } = useQuery({
     queryKey: queryKeys.org(selectedCompanyId!),
@@ -155,107 +429,92 @@ export function OrgChart() {
     enabled: !!selectedCompanyId,
   });
 
-  const agentMap = useMemo(() => {
-    const m = new Map<string, Agent>();
-    for (const a of agents ?? []) m.set(a.id, a);
-    return m;
-  }, [agents]);
-
   useEffect(() => {
     setBreadcrumbs([{ label: "Org Chart" }]);
   }, [setBreadcrumbs]);
 
-  // Layout computation
-  const layout = useMemo(() => layoutForest(orgTree ?? []), [orgTree]);
-  const allNodes = useMemo(() => flattenLayout(layout), [layout]);
-  const edges = useMemo(() => collectEdges(layout), [layout]);
-
-  // Compute SVG bounds
-  const bounds = useMemo(() => {
-    if (allNodes.length === 0) return { width: 800, height: 600 };
-    let maxX = 0, maxY = 0;
-    for (const n of allNodes) {
-      maxX = Math.max(maxX, n.x + CARD_W);
-      maxY = Math.max(maxY, n.y + CARD_H);
+  const agentMap = useMemo(() => {
+    const map = new Map<string, Agent>();
+    for (const agent of agents ?? []) {
+      map.set(agent.id, agent);
     }
-    return { width: maxX + PADDING, height: maxY + PADDING };
-  }, [allNodes]);
+    return map;
+  }, [agents]);
 
-  // Pan & zoom state
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [zoom, setZoom] = useState(1);
-  const [dragging, setDragging] = useState(false);
-  const dragStart = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
+  const flow = useMemo(() => buildRoomLayout(orgTree ?? [], agentMap), [orgTree, agentMap]);
 
-  // Center the chart on first load
-  const hasInitialized = useRef(false);
+  const [nodes, setNodes, onNodesChange] = useNodesState<OrgFlowNode>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<OrgFlowEdge>([]);
+
   useEffect(() => {
-    if (hasInitialized.current || allNodes.length === 0 || !containerRef.current) return;
-    hasInitialized.current = true;
+    setNodes(flow.nodes);
+    setEdges(flow.edges);
+  }, [flow, setNodes, setEdges]);
 
-    const container = containerRef.current;
-    const containerW = container.clientWidth;
-    const containerH = container.clientHeight;
+  useEffect(() => {
+    if (!selectedAgentId) return;
+    const stillExists = nodes.some((node) => node.id === selectedAgentId && node.type === "agent");
+    if (!stillExists) {
+      setSelectedAgentId(null);
+    }
+  }, [nodes, selectedAgentId]);
 
-    // Fit chart to container
-    const scaleX = (containerW - 40) / bounds.width;
-    const scaleY = (containerH - 40) / bounds.height;
-    const fitZoom = Math.min(scaleX, scaleY, 1);
+  const selectedAgentNode = useMemo(() => {
+    if (!selectedAgentId) return null;
+    const match = nodes.find((node) => node.id === selectedAgentId);
+    return match && isAgentNode(match) ? match : null;
+  }, [nodes, selectedAgentId]);
 
-    const chartW = bounds.width * fitZoom;
-    const chartH = bounds.height * fitZoom;
+  const selectedAgent = useMemo(
+    () => (selectedAgentId ? agentMap.get(selectedAgentId) ?? null : null),
+    [agentMap, selectedAgentId],
+  );
 
-    setZoom(fitZoom);
-    setPan({
-      x: (containerW - chartW) / 2,
-      y: (containerH - chartH) / 2,
+  const zoneSummaries = useMemo<OfficeZoneSummary[]>(() => {
+    const zoneMap = new Map(
+      officeZones.map((zone) => [
+        zone.id,
+        {
+          ...zone,
+          agents: [] as Agent[],
+        },
+      ]),
+    );
+
+    for (const agent of agents ?? []) {
+      const zoneId = zoneByStatus[agent.status] ?? "control-desk";
+      const zone = zoneMap.get(zoneId);
+      if (zone) {
+        zone.agents.push(agent);
+      }
+    }
+
+    return officeZones.map((zone) => {
+      const summary = zoneMap.get(zone.id);
+      return summary
+        ? {
+            ...summary,
+            agents: [...summary.agents].sort((a, b) => a.name.localeCompare(b.name)),
+          }
+        : { ...zone, agents: [] };
     });
-  }, [allNodes, bounds]);
+  }, [agents]);
 
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    if (e.button !== 0) return;
-    // Don't drag if clicking a card
-    const target = e.target as HTMLElement;
-    if (target.closest("[data-org-card]")) return;
-    setDragging(true);
-    dragStart.current = { x: e.clientX, y: e.clientY, panX: pan.x, panY: pan.y };
-  }, [pan]);
+  const openAgent = useCallback(
+    (agentId: string) => {
+      const agent = agentMap.get(agentId);
+      navigate(agent ? agentUrl(agent) : `/agents/${agentId}`);
+    },
+    [agentMap, navigate],
+  );
 
-  const handleMouseMove = useCallback((e: React.MouseEvent) => {
-    if (!dragging) return;
-    const dx = e.clientX - dragStart.current.x;
-    const dy = e.clientY - dragStart.current.y;
-    setPan({ x: dragStart.current.panX + dx, y: dragStart.current.panY + dy });
-  }, [dragging]);
-
-  const handleMouseUp = useCallback(() => {
-    setDragging(false);
-  }, []);
-
-  const handleWheel = useCallback((e: React.WheelEvent) => {
-    e.preventDefault();
-    const container = containerRef.current;
-    if (!container) return;
-
-    const rect = container.getBoundingClientRect();
-    const mouseX = e.clientX - rect.left;
-    const mouseY = e.clientY - rect.top;
-
-    const factor = e.deltaY < 0 ? 1.1 : 0.9;
-    const newZoom = Math.min(Math.max(zoom * factor, 0.2), 2);
-
-    // Zoom toward mouse position
-    const scale = newZoom / zoom;
-    setPan({
-      x: mouseX - scale * (mouseX - pan.x),
-      y: mouseY - scale * (mouseY - pan.y),
-    });
-    setZoom(newZoom);
-  }, [zoom, pan]);
+  const activeCount = useMemo(
+    () => (agents ?? []).filter((agent) => agent.status === "running" || agent.status === "active").length,
+    [agents],
+  );
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Network} message="Select a company to view the org chart." />;
+    return <EmptyState icon={DoorOpen} message="Select a company to open the Star Office org page." />;
   }
 
   if (isLoading) {
@@ -263,167 +522,166 @@ export function OrgChart() {
   }
 
   if (orgTree && orgTree.length === 0) {
-    return <EmptyState icon={Network} message="No organizational hierarchy defined." />;
+    return <EmptyState icon={DoorOpen} message="No organizational hierarchy defined." />;
   }
 
   return (
-    <div
-      ref={containerRef}
-      className="w-full h-[calc(100vh-4rem)] overflow-hidden relative bg-muted/20 border border-border rounded-lg"
-      style={{ cursor: dragging ? "grabbing" : "grab" }}
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
-      onMouseLeave={handleMouseUp}
-      onWheel={handleWheel}
-    >
-      {/* Zoom controls */}
-      <div className="absolute top-3 right-3 z-10 flex flex-col gap-1">
-        <button
-          className="w-7 h-7 flex items-center justify-center bg-background border border-border rounded text-sm hover:bg-accent transition-colors"
-          onClick={() => {
-            const newZoom = Math.min(zoom * 1.2, 2);
-            const container = containerRef.current;
-            if (container) {
-              const cx = container.clientWidth / 2;
-              const cy = container.clientHeight / 2;
-              const scale = newZoom / zoom;
-              setPan({ x: cx - scale * (cx - pan.x), y: cy - scale * (cy - pan.y) });
-            }
-            setZoom(newZoom);
-          }}
-          aria-label="Zoom in"
-        >
-          +
-        </button>
-        <button
-          className="w-7 h-7 flex items-center justify-center bg-background border border-border rounded text-sm hover:bg-accent transition-colors"
-          onClick={() => {
-            const newZoom = Math.max(zoom * 0.8, 0.2);
-            const container = containerRef.current;
-            if (container) {
-              const cx = container.clientWidth / 2;
-              const cy = container.clientHeight / 2;
-              const scale = newZoom / zoom;
-              setPan({ x: cx - scale * (cx - pan.x), y: cy - scale * (cy - pan.y) });
-            }
-            setZoom(newZoom);
-          }}
-          aria-label="Zoom out"
-        >
-          &minus;
-        </button>
-        <button
-          className="w-7 h-7 flex items-center justify-center bg-background border border-border rounded text-[10px] hover:bg-accent transition-colors"
-          onClick={() => {
-            if (!containerRef.current) return;
-            const cW = containerRef.current.clientWidth;
-            const cH = containerRef.current.clientHeight;
-            const scaleX = (cW - 40) / bounds.width;
-            const scaleY = (cH - 40) / bounds.height;
-            const fitZoom = Math.min(scaleX, scaleY, 1);
-            const chartW = bounds.width * fitZoom;
-            const chartH = bounds.height * fitZoom;
-            setZoom(fitZoom);
-            setPan({ x: (cW - chartW) / 2, y: (cH - chartH) / 2 });
-          }}
-          title="Fit to screen"
-          aria-label="Fit chart to screen"
-        >
-          Fit
-        </button>
-      </div>
+    <div className="grid gap-3 xl:h-[calc(100vh-4rem)] xl:grid-cols-[minmax(0,1fr)_20rem]">
+      <section className="relative h-[60vh] min-h-[430px] overflow-hidden rounded-xl border border-[#2a455d] bg-[#040d16] xl:h-full">
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_12%_12%,rgba(56,189,248,0.22),transparent_32%),radial-gradient(circle_at_85%_86%,rgba(249,115,22,0.20),transparent_30%)]" />
+        <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(0deg,transparent_0_23px,rgba(40,70,95,0.27)_23px_24px),linear-gradient(90deg,transparent_0_23px,rgba(40,70,95,0.25)_23px_24px)] [background-size:24px_24px]" />
 
-      {/* SVG layer for edges */}
-      <svg
-        className="absolute inset-0 pointer-events-none"
-        style={{
-          width: "100%",
-          height: "100%",
-        }}
-      >
-        <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}>
-          {edges.map(({ parent, child }) => {
-            const x1 = parent.x + CARD_W / 2;
-            const y1 = parent.y + CARD_H;
-            const x2 = child.x + CARD_W / 2;
-            const y2 = child.y;
-            const midY = (y1 + y2) / 2;
+        <div className="pointer-events-none absolute left-3 top-3 z-10 rounded-md border border-slate-300/20 bg-slate-950/65 px-3 py-2 text-xs text-slate-200 backdrop-blur">
+          <p className="flex items-center gap-1.5 font-mono tracking-wide">
+            <Sparkles className="h-3.5 w-3.5 text-sky-300" />
+            Star Office Org
+          </p>
+          <p className="mt-0.5 text-[11px] text-slate-300/80">Status-inspired room map for your hierarchy</p>
+        </div>
 
+        <ReactFlow<OrgFlowNode, OrgFlowEdge>
+          nodes={nodes}
+          edges={edges}
+          onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
+          nodeTypes={nodeTypes}
+          fitView
+          fitViewOptions={{ padding: 0.18, includeHiddenNodes: false }}
+          minZoom={0.36}
+          maxZoom={1.75}
+          nodesConnectable={false}
+          nodesDraggable={false}
+          elementsSelectable
+          panOnDrag
+          zoomOnScroll
+          className="[&_.react-flow__attribution]:hidden"
+          onPaneClick={() => setSelectedAgentId(null)}
+          onNodeClick={(_, node) => {
+            if (node.type === "agent") {
+              setSelectedAgentId(node.id);
+            }
+          }}
+          onNodeDoubleClick={(_, node) => {
+            if (node.type === "agent") {
+              openAgent(node.id);
+            }
+          }}
+        >
+          <Background color="#1f3d56" gap={24} size={1} />
+          <MiniMap
+            pannable
+            zoomable
+            nodeBorderRadius={4}
+            nodeColor={(node) => (node.type === "room" ? "#11324d" : "#071c2d")}
+            maskColor="rgba(3,10,17,0.72)"
+            className="!rounded-md !border !border-slate-300/25 !bg-slate-950/80"
+          />
+          <Controls showInteractive={false} className="!border-slate-300/25 !bg-slate-950/80" />
+        </ReactFlow>
+      </section>
+
+      <aside className="flex min-h-[320px] flex-col overflow-hidden rounded-xl border border-[#2a455d] bg-[#07111c] text-slate-100 xl:h-full">
+        <div className="border-b border-[#2a455d] px-4 py-3">
+          <p className="font-mono text-xs uppercase tracking-[0.22em] text-slate-300/80">Office Pulse</p>
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            <div className="rounded-md border border-slate-300/20 bg-[#0d1c2b] px-3 py-2">
+              <p className="text-[11px] text-slate-300/75">Active now</p>
+              <p className="mt-1 font-mono text-lg font-semibold">{activeCount}</p>
+            </div>
+            <div className="rounded-md border border-slate-300/20 bg-[#0d1c2b] px-3 py-2">
+              <p className="text-[11px] text-slate-300/75">Total agents</p>
+              <p className="mt-1 font-mono text-lg font-semibold">{agents?.length ?? 0}</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex-1 space-y-3 overflow-y-auto p-3">
+          {zoneSummaries.map((zone) => {
+            const Icon = zone.icon;
             return (
-              <path
-                key={`${parent.id}-${child.id}`}
-                d={`M ${x1} ${y1} L ${x1} ${midY} L ${x2} ${midY} L ${x2} ${y2}`}
-                fill="none"
-                stroke="var(--border)"
-                strokeWidth={1.5}
-              />
-            );
-          })}
-        </g>
-      </svg>
-
-      {/* Card layer */}
-      <div
-        className="absolute inset-0"
-        style={{
-          transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-          transformOrigin: "0 0",
-        }}
-      >
-        {allNodes.map((node) => {
-          const agent = agentMap.get(node.id);
-          const dotColor = statusDotColor[node.status] ?? defaultDotColor;
-
-          return (
-            <div
-              key={node.id}
-              data-org-card
-              className="absolute bg-card border border-border rounded-lg shadow-sm hover:shadow-md hover:border-foreground/20 transition-[box-shadow,border-color] duration-150 cursor-pointer select-none"
-              style={{
-                left: node.x,
-                top: node.y,
-                width: CARD_W,
-                minHeight: CARD_H,
-              }}
-              onClick={() => navigate(agent ? agentUrl(agent) : `/agents/${node.id}`)}
-            >
-              <div className="flex items-center px-4 py-3 gap-3">
-                {/* Agent icon + status dot */}
-                <div className="relative shrink-0">
-                  <div className="w-9 h-9 rounded-full bg-muted flex items-center justify-center">
-                    <AgentIcon icon={agent?.icon} className="h-4.5 w-4.5 text-foreground/70" />
+              <div key={zone.id} className="rounded-md border border-slate-300/20 bg-[#0c1b2a] p-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-sm"
+                      style={{ backgroundColor: `${zone.accent}26`, color: zone.accent }}
+                    >
+                      <Icon className="h-3.5 w-3.5" />
+                    </span>
+                    <div>
+                      <p className="font-mono text-sm font-semibold">{zone.title}</p>
+                      <p className="text-[11px] text-slate-300/75">{zone.subtitle}</p>
+                    </div>
                   </div>
-                  <span
-                    className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-card"
-                    style={{ backgroundColor: dotColor }}
-                  />
+                  <span className="rounded-sm border border-slate-300/25 px-1.5 py-0.5 font-mono text-xs">
+                    {zone.agents.length}
+                  </span>
                 </div>
-                {/* Name + role + adapter type */}
-                <div className="flex flex-col items-start min-w-0 flex-1">
-                  <span className="text-sm font-semibold text-foreground leading-tight">
-                    {node.name}
-                  </span>
-                  <span className="text-[11px] text-muted-foreground leading-tight mt-0.5">
-                    {agent?.title ?? roleLabel(node.role)}
-                  </span>
-                  {agent && (
-                    <span className="text-[10px] text-muted-foreground/60 font-mono leading-tight mt-1">
-                      {adapterLabels[agent.adapterType] ?? agent.adapterType}
+
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {zone.agents.length === 0 && (
+                    <span className="rounded-sm border border-slate-300/20 bg-slate-900/50 px-2 py-0.5 text-[11px] text-slate-400">
+                      no agents
+                    </span>
+                  )}
+                  {zone.agents.slice(0, 6).map((agent) => (
+                    <button
+                      key={agent.id}
+                      type="button"
+                      className="rounded-sm border border-slate-300/25 bg-[#13283b] px-2 py-0.5 text-[11px] text-slate-100 transition-colors hover:bg-[#1a344c]"
+                      onClick={() => {
+                        setSelectedAgentId(agent.id);
+                        openAgent(agent.id);
+                      }}
+                    >
+                      {agent.name}
+                    </button>
+                  ))}
+                  {zone.agents.length > 6 && (
+                    <span className="rounded-sm border border-slate-300/20 bg-slate-900/50 px-2 py-0.5 text-[11px] text-slate-300">
+                      +{zone.agents.length - 6} more
                     </span>
                   )}
                 </div>
               </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+
+          <div className="rounded-md border border-slate-300/20 bg-[#0c1b2a] p-3">
+            <p className="font-mono text-xs uppercase tracking-[0.2em] text-slate-300/80">Selected Agent</p>
+            {selectedAgentNode ? (
+              <>
+                <p className="mt-2 font-mono text-base font-semibold text-slate-100">{selectedAgentNode.data.name}</p>
+                <p className="text-xs text-slate-300">{selectedAgentNode.data.title}</p>
+                <div className="mt-3 space-y-1 text-[11px] text-slate-300">
+                  <p className="flex items-center gap-2">
+                    <span
+                      className="inline-block h-2.5 w-2.5 rounded-full"
+                      style={{ backgroundColor: selectedAgentNode.data.statusColor }}
+                    />
+                    Status: {selectedAgentNode.data.status}
+                  </p>
+                  <p>Room: {selectedAgentNode.data.roomTitle}</p>
+                  <p>Team size: {selectedAgentNode.data.teamSize}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => openAgent(selectedAgentNode.id)}
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-sm border border-slate-300/25 px-2.5 py-1 text-xs text-slate-100 transition-colors hover:bg-slate-100/10"
+                >
+                  <Search className="h-3.5 w-3.5" />
+                  Open agent profile
+                </button>
+                {!selectedAgent && (
+                  <p className="mt-2 text-[11px] text-slate-400">Profile metadata unavailable. Opening raw agent page.</p>
+                )}
+              </>
+            ) : (
+              <p className="mt-2 text-xs text-slate-400">Click an agent card in the map to inspect details.</p>
+            )}
+          </div>
+        </div>
+      </aside>
     </div>
   );
-}
-
-const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
-
-function roleLabel(role: string): string {
-  return roleLabels[role] ?? role;
 }
