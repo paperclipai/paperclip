@@ -794,8 +794,15 @@ export function CommentOpenFiles({ context }: PluginCommentContextMenuItemProps)
         setOpen(false);
       }
     }
+    function handleKeyDown(e: globalThis.KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
     document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
   }, [open]);
 
   if (mode === "annotation" || mode === "none") return null;
@@ -805,24 +812,11 @@ export function CommentOpenFiles({ context }: PluginCommentContextMenuItemProps)
   const projectId = context.projectId;
 
   return (
-    <div ref={containerRef} style={{ position: "relative", display: "inline-block" }}>
+    <div ref={containerRef} className="relative inline-block">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          gap: "0.25rem",
-          padding: "0.125rem 0.5rem",
-          fontSize: "0.75rem",
-          lineHeight: "1rem",
-          borderRadius: "0.375rem",
-          border: "1px solid var(--border, #e2e8f0)",
-          background: open ? "var(--accent, #f1f5f9)" : "transparent",
-          color: "var(--muted-foreground, #64748b)",
-          cursor: "pointer",
-          transition: "background 0.15s, color 0.15s",
-        }}
+        className={`inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded-md border border-border text-muted-foreground cursor-pointer transition-colors ${open ? "bg-accent" : "bg-transparent hover:bg-accent/60"}`}
         title={`${data.links.length} file${data.links.length === 1 ? "" : "s"} referenced`}
       >
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -830,34 +824,14 @@ export function CommentOpenFiles({ context }: PluginCommentContextMenuItemProps)
           <polyline points="14 2 14 8 20 8"/>
         </svg>
         Files ({data.links.length})
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ marginLeft: "0.1rem", transition: "transform 0.15s", transform: open ? "rotate(180deg)" : "rotate(0deg)" }}>
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={`ml-0.5 transition-transform ${open ? "rotate-180" : "rotate-0"}`}>
           <polyline points="6 9 12 15 18 9"/>
         </svg>
       </button>
 
       {open && (
-        <div style={{
-          position: "absolute",
-          top: "calc(100% + 4px)",
-          right: 0,
-          zIndex: 50,
-          minWidth: "12rem",
-          maxWidth: "22rem",
-          background: "var(--popover, #fff)",
-          border: "1px solid var(--border, #e2e8f0)",
-          borderRadius: "0.5rem",
-          boxShadow: "0 4px 16px rgba(0,0,0,0.12)",
-          padding: "0.25rem",
-          overflow: "hidden",
-        }}>
-          <div style={{
-            padding: "0.25rem 0.5rem 0.375rem",
-            fontSize: "0.625rem",
-            fontWeight: 600,
-            letterSpacing: "0.08em",
-            textTransform: "uppercase",
-            color: "var(--muted-foreground, #64748b)",
-          }}>
+        <div className="absolute top-[calc(100%+4px)] right-0 z-50 min-w-48 max-w-[22rem] bg-popover border border-border rounded-lg shadow-md p-1 overflow-hidden">
+          <div className="px-2 pt-1 pb-1.5 text-[0.625rem] font-semibold tracking-widest uppercase text-muted-foreground">
             Referenced files
           </div>
           {data.links.map((link) => {
@@ -869,27 +843,15 @@ export function CommentOpenFiles({ context }: PluginCommentContextMenuItemProps)
                 href={href}
                 onClick={(e) => { navigateToFileBrowser(href, e); setOpen(false); }}
                 title={link}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "0.5rem",
-                  padding: "0.375rem 0.5rem",
-                  borderRadius: "0.375rem",
-                  fontSize: "0.75rem",
-                  color: "var(--foreground, #0f172a)",
-                  textDecoration: "none",
-                  transition: "background 0.1s",
-                }}
-                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--accent, #f1f5f9)"; }}
-                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+                className="flex items-center gap-2 px-2 py-1.5 rounded-md text-xs text-foreground no-underline transition-colors hover:bg-accent"
               >
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, color: "var(--muted-foreground, #64748b)" }} aria-hidden="true">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-muted-foreground" aria-hidden="true">
                   <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
                   <polyline points="14 2 14 8 20 8"/>
                 </svg>
-                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "ui-monospace, monospace" }}>{fileName}</span>
+                <span className="overflow-hidden text-ellipsis whitespace-nowrap font-mono">{fileName}</span>
                 {fileName !== link && (
-                  <span style={{ marginLeft: "auto", fontSize: "0.625rem", color: "var(--muted-foreground, #64748b)", flexShrink: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "8rem" }}>
+                  <span className="ml-auto text-[0.625rem] text-muted-foreground shrink-0 overflow-hidden text-ellipsis whitespace-nowrap max-w-[8rem]">
                     {link}
                   </span>
                 )}
