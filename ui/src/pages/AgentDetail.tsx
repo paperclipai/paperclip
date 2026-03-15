@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, Link, Navigate, useBeforeUnload } from "@/lib/router";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from "@tanstack/react-query";
 import { agentsApi, type AgentKey, type ClaudeLoginResult } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { ApiError } from "../api/client";
@@ -276,9 +276,24 @@ export function AgentDetail() {
     enabled: Boolean(resolvedAgentId),
   });
 
-  const { data: heartbeats } = useQuery({
+  const {
+    data: heartbeatsData,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage
+  } = useInfiniteQuery({
     queryKey: queryKeys.heartbeats(resolvedCompanyId!, agent?.id ?? undefined),
-    queryFn: () => heartbeatsApi.list(resolvedCompanyId!, agent?.id ?? undefined),
+    queryFn: ({ pageParam = 0 }) => heartbeatsApi.list(resolvedCompanyId!, agent?.id ?? undefined, 50, pageParam),
+    getNextPageParam: (lastPage, allPages) => lastPage.length === 50 ? allPages.length * 50 : undefined,
+    enabled: !!resolvedCompanyId && !!agent?.id,
+    initialPageParam: 0,
+  });
+
+  const heartbeats = heartbeatsData?.pages.flat();
+
+  const { data: runStats } = useQuery({
+    queryKey: [...queryKeys.heartbeats(resolvedCompanyId!, agent?.id ?? undefined), "stats"],
+    queryFn: () => heartbeatsApi.stats(resolvedCompanyId!, agent?.id ?? undefined),
     enabled: !!resolvedCompanyId && !!agent?.id,
   });
 
@@ -643,16 +658,17 @@ export function AgentDetail() {
       )}
 
       {/* View content */}
-      {activeView === "dashboard" && (
-        <AgentOverview
-          agent={agent}
-          runs={heartbeats ?? []}
-          assignedIssues={assignedIssues}
-          runtimeState={runtimeState}
-          agentId={agent.id}
-          agentRouteId={canonicalAgentRef}
-        />
-      )}
+        {activeView === "dashboard" && (
+          <AgentOverview
+            agent={agent}
+            runs={heartbeats ?? []}
+            runStats={runStats ?? []}
+            assignedIssues={assignedIssues}
+            runtimeState={runtimeState}
+            agentId={agent.id}
+            agentRouteId={canonicalAgentRef}
+          />
+        )}
 
       {activeView === "configuration" && (
         <AgentConfigurePage
@@ -675,6 +691,9 @@ export function AgentDetail() {
           agentRouteId={canonicalAgentRef}
           selectedRunId={urlRunId ?? null}
           adapterType={agent.adapterType}
+          hasNextPage={hasNextPage}
+          fetchNextPage={fetchNextPage}
+          isFetchingNextPage={isFetchingNextPage}
         />
       )}
     </div>
@@ -766,6 +785,7 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
 function AgentOverview({
   agent,
   runs,
+  runStats,
   assignedIssues,
   runtimeState,
   agentId,
@@ -773,6 +793,7 @@ function AgentOverview({
 }: {
   agent: Agent;
   runs: HeartbeatRun[];
+  runStats: import("../api/heartbeats").HeartbeatRunStats[];
   assignedIssues: { id: string; title: string; status: string; priority: string; identifier?: string | null; createdAt: Date }[];
   runtimeState?: AgentRuntimeState;
   agentId: string;
@@ -786,7 +807,7 @@ function AgentOverview({
       {/* Charts */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <ChartCard title="Run Activity" subtitle="Last 14 days">
-          <RunActivityChart runs={runs} />
+          <RunActivityChart stats={runStats} />
         </ChartCard>
         <ChartCard title="Issues by Priority" subtitle="Last 14 days">
           <PriorityChart issues={assignedIssues} />
@@ -795,7 +816,7 @@ function AgentOverview({
           <IssueStatusChart issues={assignedIssues} />
         </ChartCard>
         <ChartCard title="Success Rate" subtitle="Last 14 days">
-          <SuccessRateChart runs={runs} />
+          <SuccessRateChart stats={runStats} />
         </ChartCard>
       </div>
 
@@ -1180,6 +1201,9 @@ function RunsTab({
   agentRouteId,
   selectedRunId,
   adapterType,
+  hasNextPage,
+  fetchNextPage,
+  isFetchingNextPage,
 }: {
   runs: HeartbeatRun[];
   companyId: string;
@@ -1187,8 +1211,39 @@ function RunsTab({
   agentRouteId: string;
   selectedRunId: string | null;
   adapterType: string;
+  hasNextPage?: boolean;
+  fetchNextPage?: () => void;
+  isFetchingNextPage?: boolean;
 }) {
   const { isMobile } = useSidebar();
+  const observerTarget = useRef<HTMLDivElement>(null);
+  const fetchingNextPageRef = useRef(Boolean(isFetchingNextPage));
+
+  useEffect(() => {
+    fetchingNextPageRef.current = Boolean(isFetchingNextPage);
+  }, [isFetchingNextPage]);
+
+  useEffect(() => {
+    if (!observerTarget.current || !hasNextPage || !fetchNextPage) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting && !fetchingNextPageRef.current) {
+          fetchNextPage();
+        }
+      },
+      { threshold: 0.1, rootMargin: "100px" }
+    );
+
+    const currentTarget = observerTarget.current;
+    observer.observe(currentTarget);
+    
+    return () => {
+      if (currentTarget) {
+        observer.unobserve(currentTarget);
+      }
+    };
+  }, [hasNextPage, fetchNextPage]);
 
   if (runs.length === 0) {
     return <p className="text-sm text-muted-foreground">No runs yet.</p>;
@@ -1220,10 +1275,15 @@ function RunsTab({
       );
     }
     return (
-      <div className="border border-border rounded-lg overflow-x-hidden">
+      <div className="border border-border rounded-lg overflow-x-hidden flex flex-col">
         {sorted.map((run) => (
           <RunListItem key={run.id} run={run} isSelected={false} agentId={agentRouteId} />
         ))}
+        {hasNextPage && fetchNextPage && (
+          <div ref={observerTarget} className="p-4 flex items-center justify-center border-t border-border bg-muted/30 min-h-[50px]">
+            {isFetchingNextPage && <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />}
+          </div>
+        )}
       </div>
     );
   }
@@ -1233,13 +1293,20 @@ function RunsTab({
     <div className="flex gap-0">
       {/* Left: run list — border stretches full height, content sticks */}
       <div className={cn(
-        "shrink-0 border border-border rounded-lg",
+        "shrink-0 border border-border rounded-lg flex flex-col",
         selectedRun ? "w-72" : "w-full",
       )}>
-        <div className="sticky top-4 overflow-y-auto" style={{ maxHeight: "calc(100vh - 2rem)" }}>
-        {sorted.map((run) => (
-          <RunListItem key={run.id} run={run} isSelected={run.id === effectiveRunId} agentId={agentRouteId} />
-        ))}
+        <div className="sticky top-4 flex flex-col" style={{ maxHeight: "calc(100vh - 2rem)" }}>
+          <div className="overflow-y-auto flex-1">
+            {sorted.map((run) => (
+              <RunListItem key={run.id} run={run} isSelected={run.id === effectiveRunId} agentId={agentRouteId} />
+            ))}
+            {hasNextPage && fetchNextPage && (
+              <div ref={observerTarget} className="p-4 flex items-center justify-center border-t border-border bg-muted/30 min-h-[50px]">
+                {isFetchingNextPage && <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 

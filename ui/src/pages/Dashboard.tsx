@@ -24,7 +24,6 @@ import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
 import type { Agent, Issue } from "@paperclipai/shared";
-import { PluginSlotOutlet } from "@/plugins/slots";
 
 function getRecentIssues(issues: Issue[]): Issue[] {
   return [...issues]
@@ -74,9 +73,9 @@ export function Dashboard() {
     enabled: !!selectedCompanyId,
   });
 
-  const { data: runs } = useQuery({
-    queryKey: queryKeys.heartbeats(selectedCompanyId!),
-    queryFn: () => heartbeatsApi.list(selectedCompanyId!),
+  const { data: runStats } = useQuery({
+    queryKey: [...queryKeys.heartbeats(selectedCompanyId!), "stats"],
+    queryFn: () => heartbeatsApi.stats(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
 
@@ -264,7 +263,7 @@ export function Dashboard() {
 
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <ChartCard title="Run Activity" subtitle="Last 14 days">
-              <RunActivityChart runs={runs ?? []} />
+              <RunActivityChart stats={runStats ?? []} />
             </ChartCard>
             <ChartCard title="Issues by Priority" subtitle="Last 14 days">
               <PriorityChart issues={issues ?? []} />
@@ -273,16 +272,9 @@ export function Dashboard() {
               <IssueStatusChart issues={issues ?? []} />
             </ChartCard>
             <ChartCard title="Success Rate" subtitle="Last 14 days">
-              <SuccessRateChart runs={runs ?? []} />
+              <SuccessRateChart stats={runStats ?? []} />
             </ChartCard>
           </div>
-
-          <PluginSlotOutlet
-            slotTypes={["dashboardWidget"]}
-            context={{ companyId: selectedCompanyId }}
-            className="grid gap-4 md:grid-cols-2"
-            itemClassName="rounded-lg border bg-card p-4 shadow-sm"
-          />
 
           <div className="grid md:grid-cols-2 gap-4">
             {/* Recent Activity */}
