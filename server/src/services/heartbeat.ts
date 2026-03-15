@@ -17,7 +17,7 @@ import { conflict, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
-import { getServerAdapter, runningProcesses } from "../adapters/index.js";
+import { getServerAdapter, runningProcesses, writeToRunningProcess } from "../adapters/index.js";
 import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec, UsageSummary } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
@@ -2916,6 +2916,18 @@ export function heartbeatService(db: Db) {
         .orderBy(desc(heartbeatRuns.startedAt))
         .limit(1);
       return run ?? null;
+    },
+
+    injectComment: (runId: string, commentBody: string, commentAuthor: string): boolean => {
+      const message = `[Paperclip – live comment from ${commentAuthor}]: ${commentBody}`;
+      const payload = JSON.stringify({ type: "user", message: { role: "user", content: message } }) + "\n";
+      const ok = writeToRunningProcess(runId, payload);
+      if (ok) {
+        logger.info({ runId, commentAuthor }, "Injected live comment into running agent");
+      } else {
+        logger.debug({ runId, commentAuthor }, "Could not inject comment (process not running or stdin closed)");
+      }
+      return ok;
     },
   };
 }

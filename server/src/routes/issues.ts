@@ -1173,6 +1173,20 @@ export function issueRoutes(db: Db, storage: StorageService) {
       },
     });
 
+    // Attempt live injection into a running agent's stdin (fire-and-forget).
+    if (!interruptRequested && currentIssue.executionRunId) {
+      const commentAuthorIsExecutingAgent =
+        actor.actorType === "agent" && actor.actorId === currentIssue.assigneeAgentId;
+      if (!commentAuthorIsExecutingAgent) {
+        const authorName = actor.actorType === "user" ? "board" : (actor.agentId ?? "agent");
+        try {
+          heartbeat.injectComment(currentIssue.executionRunId, req.body.body, authorName);
+        } catch (err) {
+          logger.debug({ err, issueId: currentIssue.id }, "live comment injection failed (non-fatal)");
+        }
+      }
+    }
+
     // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
     void (async () => {
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();

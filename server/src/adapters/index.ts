@@ -14,4 +14,4 @@ export type {
   AdapterAgent,
   AdapterRuntime,
 } from "@paperclipai/adapter-utils";
-export { runningProcesses } from "./utils.js";
+export { runningProcesses, writeToRunningProcess } from "./utils.js";

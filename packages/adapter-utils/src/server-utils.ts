@@ -13,6 +13,7 @@ export interface RunProcessResult {
 interface RunningProcess {
   child: ChildProcess;
   graceSec: number;
+  stdin: NodeJS.WritableStream | null;
 }
 
 interface SpawnTarget {
@@ -424,6 +425,7 @@ export async function runChildProcess(
     onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
     onLogError?: (err: unknown, runId: string, message: string) => void;
     stdin?: string;
+    keepStdinOpen?: boolean;
   },
 ): Promise<RunProcessResult> {
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
@@ -458,10 +460,12 @@ export async function runChildProcess(
 
         if (opts.stdin != null && child.stdin) {
           child.stdin.write(opts.stdin);
-          child.stdin.end();
+          if (!opts.keepStdinOpen) {
+            child.stdin.end();
+          }
         }
 
-        runningProcesses.set(runId, { child, graceSec: opts.graceSec });
+        runningProcesses.set(runId, { child, graceSec: opts.graceSec, stdin: child.stdin ?? null });
 
         let timedOut = false;
         let stdout = "";
@@ -525,4 +529,17 @@ export async function runChildProcess(
       })
       .catch(reject);
   });
+}
+
+export function writeToRunningProcess(runId: string, message: string): boolean {
+  const entry = runningProcesses.get(runId);
+  if (!entry || !entry.stdin || !entry.stdin.writable) {
+    return false;
+  }
+  try {
+    entry.stdin.write(message);
+    return true;
+  } catch {
+    return false;
+  }
 }

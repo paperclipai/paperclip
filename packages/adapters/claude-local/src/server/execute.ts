@@ -397,7 +397,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   const buildClaudeArgs = (resumeSessionId: string | null) => {
-    const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
+    const args = ["--print", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose"];
     if (resumeSessionId) args.push("--resume", resumeSessionId);
     if (dangerouslySkipPermissions) args.push("--dangerously-skip-permissions");
     if (chrome) args.push("--chrome");
@@ -444,10 +444,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
     }
 
+    const stdinPayload = JSON.stringify({ type: "user", message: { role: "user", content: prompt } }) + "\n";
     const proc = await runChildProcess(runId, command, args, {
       cwd,
       env,
-      stdin: prompt,
+      stdin: stdinPayload,
+      keepStdinOpen: true,
       timeoutSec,
       graceSec,
       onLog,

@@ -5,6 +5,7 @@ import { logger } from "../middleware/logger.js";
 export {
   type RunProcessResult,
   runningProcesses,
+  writeToRunningProcess,
   MAX_CAPTURE_BYTES,
   MAX_EXCERPT_BYTES,
   parseObject,
