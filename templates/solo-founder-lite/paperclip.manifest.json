@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-03-08T00:00:00.000Z",
+  "source": null,
+  "includes": {
+    "company": true,
+    "agents": true,
+    "goals": false,
+    "projects": false,
+    "issues": false
+  },
+  "company": {
+    "path": "COMPANY.md",
+    "name": "Solo Founder Lite",
+    "description": "A compact company designed for a single operator supervising a tiny autonomous team.",
+    "brandColor": null,
+    "requireBoardApprovalForNewAgents": true
+  },
+  "agents": [
+    {
+      "slug": "ceo",
+      "name": "CEO",
+      "path": "agents/ceo/AGENTS.md",
+      "role": "ceo",
+      "title": "Founder and Chief Executive Officer",
+      "icon": "crown",
+      "capabilities": "Sets direction, prioritizes work, and decides when to delegate or ask for approval.",
+      "reportsToSlug": null,
+      "adapterType": "codex_local",
+      "adapterConfig": {
+        "model": "gpt-5.3-codex",
+        "search": true
+      },
+      "runtimeConfig": {
+        "heartbeat": {
+          "enabled": true,
+          "intervalSec": 3600,
+          "wakeOnAssignment": true,
+          "wakeOnOnDemand": true,
+          "wakeOnAutomation": true,
+          "maxConcurrentRuns": 1
+        }
+      },
+      "permissions": {
+        "canCreateAgents": true
+      },
+      "budgetMonthlyCents": 0,
+      "metadata": null
+    },
+    {
+      "slug": "operator",
+      "name": "Operator",
+      "path": "agents/operator/AGENTS.md",
+      "role": "general",
+      "title": "General Operator",
+      "icon": "terminal",
+      "capabilities": "Executes operational tasks, keeps issues moving, and escalates blockers to the CEO.",
+      "reportsToSlug": "ceo",
+      "adapterType": "codex_local",
+      "adapterConfig": {
+        "model": "gpt-5.3-codex"
+      },
+      "runtimeConfig": {
+        "heartbeat": {
+          "enabled": true,
+          "intervalSec": 3600,
+          "wakeOnAssignment": true,
+          "wakeOnOnDemand": true,
+          "wakeOnAutomation": true,
+          "maxConcurrentRuns": 1
+        }
+      },
+      "permissions": {},
+      "budgetMonthlyCents": 0,
+      "metadata": null
+    }
+  ],
+  "goals": [],
+  "projects": [],
+  "issues": [],
+  "requiredSecrets": []
+}

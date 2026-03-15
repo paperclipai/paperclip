@@ -1,13 +1,17 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
+import type {
+  AdapterEnvironmentTestResult,
+  CompanyPortabilitySecretRequirement,
+} from "@paperclipai/shared";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { companiesApi } from "../api/companies";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
 import { issuesApi } from "../api/issues";
+import { templatesApi } from "../api/templates";
 import { queryKeys } from "../lib/queryKeys";
 import { Dialog, DialogPortal } from "@/components/ui/dialog";
 import {
@@ -34,6 +38,7 @@ import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { ChoosePathButton } from "./PathInstructionsModal";
 import { HintIcon } from "./agent-config-primitives";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
+import { MarkdownBody } from "./MarkdownBody";
 import {
   Building2,
   Bot,
@@ -54,6 +59,7 @@ import {
 } from "lucide-react";
 
 type Step = 1 | 2 | 3 | 4;
+type CompanySetupMode = "blank" | "template";
 type AdapterType =
   | "claude_local"
   | "codex_local"
@@ -73,6 +79,14 @@ Ensure you have a folder agents/ceo and then download this AGENTS.md, and siblin
 
 After that, hire yourself a Founding Engineer agent and then plan the roadmap and tasks for your new company.`;
 
+interface ImportedTemplateSummary {
+  templateName: string;
+  agentCount: number;
+  warnings: string[];
+  requiredSecrets: CompanyPortabilitySecretRequirement[];
+  setupMarkdown: string | null;
+}
+
 export function OnboardingWizard() {
   const { onboardingOpen, onboardingOptions, closeOnboarding } = useDialog();
   const { selectedCompanyId, companies, setSelectedCompanyId } = useCompany();
@@ -89,6 +103,11 @@ export function OnboardingWizard() {
   const [modelSearch, setModelSearch] = useState("");
 
   // Step 1
+  const [companySetupMode, setCompanySetupMode] =
+    useState<CompanySetupMode>("blank");
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(
+    null
+  );
   const [companyName, setCompanyName] = useState("");
   const [companyGoal, setCompanyGoal] = useState("");
 
@@ -133,6 +152,8 @@ export function OnboardingWizard() {
   >(null);
   const [createdAgentId, setCreatedAgentId] = useState<string | null>(null);
   const [createdIssueRef, setCreatedIssueRef] = useState<string | null>(null);
+  const [importedTemplateSummary, setImportedTemplateSummary] =
+    useState<ImportedTemplateSummary | null>(null);
 
   // Sync step and company when onboarding opens with options.
   // Keep this independent from company-list refreshes so Step 1 completion
@@ -140,13 +161,25 @@ export function OnboardingWizard() {
   useEffect(() => {
     if (!onboardingOpen) return;
     const cId = onboardingOptions.companyId ?? null;
+    const setupMode = onboardingOptions.setupMode ?? "blank";
     setStep(onboardingOptions.initialStep ?? 1);
     setCreatedCompanyId(cId);
     setCreatedCompanyPrefix(null);
+    setCompanySetupMode(setupMode);
+    setSelectedTemplateId(
+      setupMode === "template" ? onboardingOptions.templateId ?? null : null
+    );
+    setCompanyName("");
+    setCompanyGoal("");
+    setCreatedAgentId(null);
+    setCreatedIssueRef(null);
+    setImportedTemplateSummary(null);
   }, [
     onboardingOpen,
     onboardingOptions.companyId,
-    onboardingOptions.initialStep
+    onboardingOptions.initialStep,
+    onboardingOptions.setupMode,
+    onboardingOptions.templateId,
   ]);
 
   // Backfill issue prefix for an existing company once companies are loaded.
@@ -156,10 +189,59 @@ export function OnboardingWizard() {
     if (company) setCreatedCompanyPrefix(company.issuePrefix);
   }, [onboardingOpen, createdCompanyId, createdCompanyPrefix, companies]);
 
+  useEffect(() => {
+    if (!onboardingOpen || !createdCompanyId || companyName) return;
+    const company = companies.find((c) => c.id === createdCompanyId);
+    if (company) setCompanyName(company.name);
+  }, [onboardingOpen, createdCompanyId, companyName, companies]);
+
   // Resize textarea when step 3 is shown or description changes
   useEffect(() => {
     if (step === 3) autoResizeTextarea();
   }, [step, taskDescription, autoResizeTextarea]);
+
+  const {
+    data: templateCatalog,
+    error: templateCatalogError,
+    isLoading: templateCatalogLoading,
+  } = useQuery({
+    queryKey: queryKeys.templates.list,
+    queryFn: () => templatesApi.list(),
+    enabled: onboardingOpen && step === 1,
+  });
+
+  useEffect(() => {
+    if (companySetupMode !== "template" || selectedTemplateId) return;
+    const defaultTemplate =
+      templateCatalog?.find((template) => template.recommended) ??
+      templateCatalog?.[0];
+    if (defaultTemplate) {
+      setSelectedTemplateId(defaultTemplate.id);
+    }
+  }, [companySetupMode, selectedTemplateId, templateCatalog]);
+
+  const selectedTemplate = useMemo(
+    () =>
+      templateCatalog?.find((template) => template.id === selectedTemplateId) ??
+      null,
+    [templateCatalog, selectedTemplateId]
+  );
+
+  const {
+    data: selectedTemplateDetail,
+    error: selectedTemplateDetailError,
+    isLoading: selectedTemplateDetailLoading,
+  } = useQuery({
+    queryKey: selectedTemplateId
+      ? queryKeys.templates.detail(selectedTemplateId)
+      : ["templates", "none"],
+    queryFn: () => templatesApi.get(selectedTemplateId!),
+    enabled:
+      onboardingOpen &&
+      step === 1 &&
+      companySetupMode === "template" &&
+      Boolean(selectedTemplateId),
+  });
 
   const {
     data: adapterModels,
@@ -247,6 +329,8 @@ export function OnboardingWizard() {
     setStep(1);
     setLoading(false);
     setError(null);
+    setCompanySetupMode("blank");
+    setSelectedTemplateId(null);
     setCompanyName("");
     setCompanyGoal("");
     setAgentName("CEO");
@@ -267,6 +351,7 @@ export function OnboardingWizard() {
     setCreatedCompanyPrefix(null);
     setCreatedAgentId(null);
     setCreatedIssueRef(null);
+    setImportedTemplateSummary(null);
   }
 
   function handleClose() {
@@ -345,6 +430,65 @@ export function OnboardingWizard() {
     setLoading(true);
     setError(null);
     try {
+      if (companySetupMode === "template") {
+        if (!selectedTemplateId) {
+          throw new Error("Select a built-in template to continue.");
+        }
+
+        const payload = {
+          source: {
+            type: "builtin" as const,
+            templateId: selectedTemplateId,
+          },
+          include: {
+            company: true,
+            agents: true,
+            goals: true,
+            projects: true,
+            issues: true,
+          },
+          target: {
+            mode: "new_company" as const,
+            newCompanyName: companyName.trim() || null,
+          },
+          agents: "all" as const,
+          collisionStrategy: "rename" as const,
+        };
+        const templateDetail =
+          selectedTemplateDetail ??
+          (await templatesApi.get(selectedTemplateId));
+
+        const preview = await companiesApi.importPreview(payload);
+        if (preview.errors.length > 0) {
+          throw new Error(preview.errors.join(" "));
+        }
+
+        const imported = await companiesApi.importBundle(payload);
+        const company = await companiesApi.get(imported.company.id);
+
+        setCreatedCompanyId(company.id);
+        setCreatedCompanyPrefix(company.issuePrefix);
+        setCompanyName(company.name);
+        setCreatedAgentId(null);
+        setCreatedIssueRef(null);
+        setImportedTemplateSummary({
+          templateName: selectedTemplate?.name ?? selectedTemplateId,
+          agentCount: imported.agents.filter((agent) => agent.action !== "skipped").length,
+          warnings: Array.from(
+            new Set([...preview.warnings, ...imported.warnings])
+          ),
+          requiredSecrets: preview.requiredSecrets,
+          setupMarkdown: templateDetail.setupMarkdown,
+        });
+        setSelectedCompanyId(company.id);
+        queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.agents.list(company.id),
+        });
+        setStep(4);
+        return;
+      }
+
       const company = await companiesApi.create({ name: companyName.trim() });
       setCreatedCompanyId(company.id);
       setCreatedCompanyPrefix(company.issuePrefix);
@@ -368,7 +512,13 @@ export function OnboardingWizard() {
 
       setStep(2);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create company");
+      setError(
+        err instanceof Error
+          ? err.message
+          : companySetupMode === "template"
+            ? "Failed to import company template"
+            : "Failed to create company"
+      );
     } finally {
       setLoading(false);
     }
@@ -539,7 +689,13 @@ export function OnboardingWizard() {
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
-      if (step === 1 && companyName.trim()) handleStep1Next();
+      if (
+        step === 1 &&
+        ((companySetupMode === "blank" && companyName.trim()) ||
+          (companySetupMode === "template" && selectedTemplateId))
+      ) {
+        handleStep1Next();
+      }
       else if (step === 2 && agentName.trim()) handleStep2Next();
       else if (step === 3 && taskTitle.trim()) handleStep3Next();
       else if (step === 4) handleLaunch();
@@ -619,43 +775,269 @@ export function OnboardingWizard() {
                       </p>
                     </div>
                   </div>
-                  <div className="mt-3 group">
-                    <label
-                      className={cn(
-                        "text-xs mb-1 block transition-colors",
-                        companyName.trim()
-                          ? "text-foreground"
-                          : "text-muted-foreground group-focus-within:text-foreground"
-                      )}
-                    >
-                      Company name
+                  <div>
+                    <label className="text-xs text-muted-foreground mb-2 block">
+                      Starting point
                     </label>
-                    <input
-                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                      placeholder="Acme Corp"
-                      value={companyName}
-                      onChange={(e) => setCompanyName(e.target.value)}
-                      autoFocus
-                    />
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        className={cn(
+                          "rounded-md border p-3 text-left transition-colors",
+                          companySetupMode === "blank"
+                            ? "border-foreground bg-accent"
+                            : "border-border hover:bg-accent/50"
+                        )}
+                        onClick={() => setCompanySetupMode("blank")}
+                      >
+                        <div className="flex items-center gap-2 mb-1.5">
+                          <Building2 className="h-4 w-4" />
+                          <span className="text-sm font-medium">
+                            Blank company
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-muted-foreground">
+                          Start from scratch and create the first CEO manually.
+                        </p>
+                      </button>
+                      <button
+                        className={cn(
+                          "rounded-md border p-3 text-left transition-colors",
+                          companySetupMode === "template"
+                            ? "border-foreground bg-accent"
+                            : "border-border hover:bg-accent/50"
+                        )}
+                        onClick={() => setCompanySetupMode("template")}
+                      >
+                        <div className="flex items-center gap-2 mb-1.5">
+                          <Sparkles className="h-4 w-4" />
+                          <span className="text-sm font-medium">
+                            Built-in template
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-muted-foreground">
+                          Import a preconfigured company with agents already in
+                          place.
+                        </p>
+                      </button>
+                    </div>
                   </div>
-                  <div className="group">
-                    <label
-                      className={cn(
-                        "text-xs mb-1 block transition-colors",
-                        companyGoal.trim()
-                          ? "text-foreground"
-                          : "text-muted-foreground group-focus-within:text-foreground"
+
+                  {companySetupMode === "blank" ? (
+                    <>
+                      <div>
+                        <label className="text-xs text-muted-foreground mb-1 block">
+                          Company name
+                        </label>
+                        <input
+                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                          placeholder="Acme Corp"
+                          value={companyName}
+                          onChange={(e) => setCompanyName(e.target.value)}
+                          autoFocus
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-muted-foreground mb-1 block">
+                          Mission / goal (optional)
+                        </label>
+                        <textarea
+                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[60px]"
+                          placeholder="What is this company trying to achieve?"
+                          value={companyGoal}
+                          onChange={(e) => setCompanyGoal(e.target.value)}
+                        />
+                      </div>
+                    </>
+                  ) : (
+                    <div className="space-y-4">
+                      <div>
+                        <label className="text-xs text-muted-foreground mb-2 block">
+                          Choose a template
+                        </label>
+                        <div className="space-y-2 max-h-[280px] overflow-y-auto pr-1">
+                          {templateCatalogLoading && (
+                            <div className="rounded-md border border-border px-3 py-2 text-sm text-muted-foreground">
+                              Loading templates...
+                            </div>
+                          )}
+                          {templateCatalogError && (
+                            <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                              {templateCatalogError instanceof Error
+                                ? templateCatalogError.message
+                                : "Failed to load built-in templates."}
+                            </div>
+                          )}
+                          {(templateCatalog ?? []).map((template) => (
+                            <button
+                              key={template.id}
+                              className={cn(
+                                "w-full rounded-md border p-3 text-left transition-colors",
+                                selectedTemplateId === template.id
+                                  ? "border-foreground bg-accent"
+                                  : "border-border hover:bg-accent/50"
+                              )}
+                              onClick={() => setSelectedTemplateId(template.id)}
+                            >
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-2">
+                                    <p className="text-sm font-medium">
+                                      {template.name}
+                                    </p>
+                                    {template.recommended && (
+                                      <span className="rounded-full bg-green-500 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-white">
+                                        Recommended
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="mt-1 text-[11px] text-muted-foreground">
+                                    {template.description}
+                                  </p>
+                                </div>
+                                <span className="shrink-0 text-[11px] text-muted-foreground">
+                                  {template.agentCount} agents
+                                </span>
+                              </div>
+                              {(template.tags.length > 0 ||
+                                template.category ||
+                                template.riskProfile) && (
+                                <div className="mt-2 flex flex-wrap gap-1.5">
+                                  {template.category && (
+                                    <span className="rounded-full border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                                      {template.category}
+                                    </span>
+                                  )}
+                                  {template.maturity && (
+                                    <span className="rounded-full border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                                      {template.maturity}
+                                    </span>
+                                  )}
+                                  {template.riskProfile && (
+                                    <span className="rounded-full border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                                      {template.riskProfile}
+                                    </span>
+                                  )}
+                                  {template.tags.map((tag) => (
+                                    <span
+                                      key={tag}
+                                      className="rounded-full border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                                    >
+                                      {tag}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                            </button>
+                          ))}
+                          {!templateCatalogLoading &&
+                            !templateCatalogError &&
+                            (templateCatalog?.length ?? 0) === 0 && (
+                              <div className="rounded-md border border-border px-3 py-2 text-sm text-muted-foreground">
+                                No built-in templates are available yet.
+                              </div>
+                            )}
+                        </div>
+                      </div>
+
+                      {selectedTemplateDetail && (
+                        <div className="rounded-md border border-border p-3 space-y-2">
+                          <div className="flex items-center justify-between gap-3">
+                            <p className="text-sm font-medium">
+                              {selectedTemplateDetail.name}
+                            </p>
+                            <span className="text-[11px] text-muted-foreground">
+                              {selectedTemplateDetail.manifest.agents.length}{" "}
+                              agents
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-muted-foreground">
+                            Default company:{" "}
+                            {selectedTemplateDetail.companyName ??
+                              "Template-defined company"}
+                          </p>
+                          {selectedTemplateDetail.riskProfile && (
+                            <p className="text-[11px] text-muted-foreground">
+                              Risk profile: {selectedTemplateDetail.riskProfile}
+                            </p>
+                          )}
+                          {selectedTemplateDetail.recommendedFor.length > 0 && (
+                            <p className="text-[11px] text-muted-foreground">
+                              Recommended for:{" "}
+                              {selectedTemplateDetail.recommendedFor.join(", ")}
+                            </p>
+                          )}
+                          {selectedTemplateDetail.useCases.length > 0 && (
+                            <p className="text-[11px] text-muted-foreground">
+                              Best for: {selectedTemplateDetail.useCases.join(", ")}
+                            </p>
+                          )}
+                          <div className="flex flex-wrap gap-1.5">
+                            {selectedTemplateDetail.manifest.agents.map(
+                              (agent) => (
+                                <span
+                                  key={agent.slug}
+                                  className="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground"
+                                >
+                                  {agent.name}
+                                </span>
+                              )
+                            )}
+                          </div>
+                          {selectedTemplateDetail.manifest.requiredSecrets
+                            .length > 0 && (
+                            <p className="text-[11px] text-muted-foreground">
+                              Requires{" "}
+                              {
+                                selectedTemplateDetail.manifest.requiredSecrets
+                                  .length
+                              }{" "}
+                              secret
+                              {selectedTemplateDetail.manifest.requiredSecrets
+                                .length === 1
+                                ? ""
+                                : "s"}
+                              .
+                            </p>
+                          )}
+                          {selectedTemplateDetail.setupMarkdown && (
+                            <p className="text-[11px] text-muted-foreground">
+                              Includes a setup guide after import.
+                            </p>
+                          )}
+                        </div>
                       )}
-                    >
-                      Mission / goal (optional)
-                    </label>
-                    <textarea
-                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[60px]"
-                      placeholder="What is this company trying to achieve?"
-                      value={companyGoal}
-                      onChange={(e) => setCompanyGoal(e.target.value)}
-                    />
-                  </div>
+
+                      {selectedTemplateDetailLoading && selectedTemplateId && (
+                        <div className="rounded-md border border-border px-3 py-2 text-sm text-muted-foreground">
+                          Loading template details...
+                        </div>
+                      )}
+
+                      {selectedTemplateDetailError && (
+                        <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                          {selectedTemplateDetailError instanceof Error
+                            ? selectedTemplateDetailError.message
+                            : "Failed to load template details."}
+                        </div>
+                      )}
+
+                      <div>
+                        <label className="text-xs text-muted-foreground mb-1 block">
+                          Company name override (optional)
+                        </label>
+                        <input
+                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                          placeholder={
+                            selectedTemplate?.companyName ??
+                            "Use template default name"
+                          }
+                          value={companyName}
+                          onChange={(e) => setCompanyName(e.target.value)}
+                          autoFocus
+                        />
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1177,10 +1559,15 @@ export function OnboardingWizard() {
                       <Rocket className="h-5 w-5 text-muted-foreground" />
                     </div>
                     <div>
-                      <h3 className="font-medium">Ready to launch</h3>
+                      <h3 className="font-medium">
+                        {importedTemplateSummary
+                          ? "Template imported"
+                          : "Ready to launch"}
+                      </h3>
                       <p className="text-xs text-muted-foreground">
-                        Everything is set up. Launching now will create the
-                        starter task, wake the agent, and open the issue.
+                        {importedTemplateSummary
+                          ? "The company template is in place. Open the dashboard to inspect the imported org and continue setup."
+                          : "Everything is set up. Your assigned task already woke the agent, so you can jump straight to the issue."}
                       </p>
                     </div>
                   </div>
@@ -1195,29 +1582,115 @@ export function OnboardingWizard() {
                       </div>
                       <Check className="h-4 w-4 text-green-500 shrink-0" />
                     </div>
-                    <div className="flex items-center gap-3 px-3 py-2.5">
-                      <Bot className="h-4 w-4 text-muted-foreground shrink-0" />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium truncate">
-                          {agentName}
-                        </p>
-                        <p className="text-xs text-muted-foreground">
-                          {getUIAdapter(adapterType).label}
-                        </p>
-                      </div>
-                      <Check className="h-4 w-4 text-green-500 shrink-0" />
-                    </div>
-                    <div className="flex items-center gap-3 px-3 py-2.5">
-                      <ListTodo className="h-4 w-4 text-muted-foreground shrink-0" />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium truncate">
-                          {taskTitle}
-                        </p>
-                        <p className="text-xs text-muted-foreground">Task</p>
-                      </div>
-                      <Check className="h-4 w-4 text-green-500 shrink-0" />
-                    </div>
+                    {importedTemplateSummary ? (
+                      <>
+                        <div className="flex items-center gap-3 px-3 py-2.5">
+                          <Sparkles className="h-4 w-4 text-muted-foreground shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium truncate">
+                              {importedTemplateSummary.templateName}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              Built-in template
+                            </p>
+                          </div>
+                          <Check className="h-4 w-4 text-green-500 shrink-0" />
+                        </div>
+                        <div className="flex items-center gap-3 px-3 py-2.5">
+                          <Bot className="h-4 w-4 text-muted-foreground shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium truncate">
+                              {importedTemplateSummary.agentCount} imported agent
+                              {importedTemplateSummary.agentCount === 1
+                                ? ""
+                                : "s"}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              Org chart and prompts imported
+                            </p>
+                          </div>
+                          <Check className="h-4 w-4 text-green-500 shrink-0" />
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="flex items-center gap-3 px-3 py-2.5">
+                          <Bot className="h-4 w-4 text-muted-foreground shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium truncate">
+                              {agentName}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              {getUIAdapter(adapterType).label}
+                            </p>
+                          </div>
+                          <Check className="h-4 w-4 text-green-500 shrink-0" />
+                        </div>
+                        <div className="flex items-center gap-3 px-3 py-2.5">
+                          <ListTodo className="h-4 w-4 text-muted-foreground shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium truncate">
+                              {taskTitle}
+                            </p>
+                            <p className="text-xs text-muted-foreground">Task</p>
+                          </div>
+                          <Check className="h-4 w-4 text-green-500 shrink-0" />
+                        </div>
+                      </>
+                    )}
                   </div>
+
+                  {importedTemplateSummary &&
+                    (importedTemplateSummary.warnings.length > 0 ||
+                      importedTemplateSummary.requiredSecrets.length > 0 ||
+                      importedTemplateSummary.setupMarkdown) && (
+                      <div className="space-y-2 rounded-md border border-border p-3">
+                        {importedTemplateSummary.warnings.length > 0 && (
+                          <div className="space-y-1">
+                            <p className="text-xs font-medium">Warnings</p>
+                            {importedTemplateSummary.warnings.map((warning) => (
+                              <p
+                                key={warning}
+                                className="text-[11px] text-muted-foreground"
+                              >
+                                {warning}
+                              </p>
+                            ))}
+                          </div>
+                        )}
+                        {importedTemplateSummary.requiredSecrets.length > 0 && (
+                          <div className="space-y-1">
+                            <p className="text-xs font-medium">
+                              Required secrets
+                            </p>
+                            {importedTemplateSummary.requiredSecrets.map(
+                              (secret) => (
+                                <p
+                                  key={`${secret.agentSlug ?? "company"}:${secret.key}`}
+                                  className="text-[11px] text-muted-foreground"
+                                >
+                                  {secret.key}
+                                  {secret.agentSlug
+                                    ? ` for ${secret.agentSlug}`
+                                    : ""}
+                                  {secret.providerHint
+                                    ? ` (${secret.providerHint})`
+                                    : ""}
+                                </p>
+                              )
+                            )}
+                          </div>
+                        )}
+                        {importedTemplateSummary.setupMarkdown && (
+                          <div className="space-y-1">
+                            <p className="text-xs font-medium">Setup guide</p>
+                            <MarkdownBody className="text-[11px] text-muted-foreground prose-p:my-1 prose-headings:my-1">
+                              {importedTemplateSummary.setupMarkdown}
+                            </MarkdownBody>
+                          </div>
+                        )}
+                      </div>
+                    )}
                 </div>
               )}
 
@@ -1231,7 +1704,9 @@ export function OnboardingWizard() {
               {/* Footer navigation */}
               <div className="flex items-center justify-between mt-8">
                 <div>
-                  {step > 1 && step > (onboardingOptions.initialStep ?? 1) && (
+                  {step > 1 &&
+                    step > (onboardingOptions.initialStep ?? 1) &&
+                    !importedTemplateSummary && (
                     <Button
                       variant="ghost"
                       size="sm"
@@ -1247,7 +1722,12 @@ export function OnboardingWizard() {
                   {step === 1 && (
                     <Button
                       size="sm"
-                      disabled={!companyName.trim() || loading}
+                      disabled={
+                        loading ||
+                        (companySetupMode === "blank"
+                          ? !companyName.trim()
+                          : !selectedTemplateId)
+                      }
                       onClick={handleStep1Next}
                     >
                       {loading ? (
@@ -1255,7 +1735,11 @@ export function OnboardingWizard() {
                       ) : (
                         <ArrowRight className="h-3.5 w-3.5 mr-1" />
                       )}
-                      {loading ? "Creating..." : "Next"}
+                      {loading
+                        ? companySetupMode === "template"
+                          ? "Importing..."
+                          : "Creating..."
+                        : "Next"}
                     </Button>
                   )}
                   {step === 2 && (
@@ -1295,7 +1779,11 @@ export function OnboardingWizard() {
                       ) : (
                         <ArrowRight className="h-3.5 w-3.5 mr-1" />
                       )}
-                      {loading ? "Creating..." : "Create & Open Issue"}
+                      {loading
+                        ? "Opening..."
+                        : importedTemplateSummary
+                          ? "Open Dashboard"
+                          : "Open Issue"}
                     </Button>
                   )}
                 </div>

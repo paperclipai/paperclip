@@ -1,0 +1,309 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-03-12T00:00:00.000Z",
+  "source": null,
+  "includes": {
+    "company": true,
+    "agents": true,
+    "goals": true,
+    "projects": true,
+    "issues": true
+  },
+  "company": {
+    "path": "COMPANY.md",
+    "name": "Safe Autonomous Organization",
+    "description": "A governance-first autonomous company template optimized for bounded execution, explicit escalation, and auditable decision making.",
+    "brandColor": "#14532d",
+    "requireBoardApprovalForNewAgents": true
+  },
+  "agents": [
+    {
+      "slug": "ceo",
+      "name": "CEO",
+      "path": "agents/ceo/AGENTS.md",
+      "role": "ceo",
+      "title": "Chief Executive Officer",
+      "icon": "crown",
+      "capabilities": "Sets strategy, mediates cross-functional tradeoffs, and requests board approval for high-impact decisions.",
+      "reportsToSlug": null,
+      "adapterType": "codex_local",
+      "adapterConfig": {
+        "model": "gpt-5.3-codex",
+        "modelReasoningEffort": "high",
+        "search": true,
+        "dangerouslyBypassApprovalsAndSandbox": false
+      },
+      "runtimeConfig": {
+        "heartbeat": {
+          "enabled": true,
+          "intervalSec": 3600,
+          "wakeOnAssignment": true,
+          "wakeOnOnDemand": true,
+          "wakeOnAutomation": true,
+          "maxConcurrentRuns": 1
+        }
+      },
+      "permissions": {
+        "canCreateAgents": true
+      },
+      "budgetMonthlyCents": 15000,
+      "metadata": null
+    },
+    {
+      "slug": "safety-lead",
+      "name": "Safety Lead",
+      "path": "agents/safety-lead/AGENTS.md",
+      "role": "safety",
+      "title": "Safety and Control Lead",
+      "icon": "shield",
+      "capabilities": "Defines control policies, reviews risky work, and can halt unsafe or weakly justified execution.",
+      "reportsToSlug": "ceo",
+      "adapterType": "codex_local",
+      "adapterConfig": {
+        "model": "gpt-5.3-codex",
+        "modelReasoningEffort": "high",
+        "search": true,
+        "dangerouslyBypassApprovalsAndSandbox": false
+      },
+      "runtimeConfig": {
+        "heartbeat": {
+          "enabled": true,
+          "intervalSec": 1800,
+          "wakeOnAssignment": true,
+          "wakeOnOnDemand": true,
+          "wakeOnAutomation": true,
+          "maxConcurrentRuns": 1
+        }
+      },
+      "permissions": {},
+      "budgetMonthlyCents": 12000,
+      "metadata": null
+    },
+    {
+      "slug": "operations-lead",
+      "name": "Operations Lead",
+      "path": "agents/operations-lead/AGENTS.md",
+      "role": "operations",
+      "title": "Operations Lead",
+      "icon": "workflow",
+      "capabilities": "Turns approved strategy into execution plans, manages queues, and keeps operational cadence tight.",
+      "reportsToSlug": "ceo",
+      "adapterType": "codex_local",
+      "adapterConfig": {
+        "model": "gpt-5.3-codex",
+        "modelReasoningEffort": "medium",
+        "dangerouslyBypassApprovalsAndSandbox": false
+      },
+      "runtimeConfig": {
+        "heartbeat": {
+          "enabled": true,
+          "intervalSec": 3600,
+          "wakeOnAssignment": true,
+          "wakeOnOnDemand": true,
+          "wakeOnAutomation": true,
+          "maxConcurrentRuns": 1
+        }
+      },
+      "permissions": {},
+      "budgetMonthlyCents": 8000,
+      "metadata": null
+    },
+    {
+      "slug": "research-lead",
+      "name": "Research Lead",
+      "path": "agents/research-lead/AGENTS.md",
+      "role": "researcher",
+      "title": "Research and Evaluation Lead",
+      "icon": "search",
+      "capabilities": "Collects evidence, evaluates options, and challenges assumptions before irreversible execution.",
+      "reportsToSlug": "ceo",
+      "adapterType": "codex_local",
+      "adapterConfig": {
+        "model": "gpt-5.3-codex",
+        "modelReasoningEffort": "high",
+        "search": true,
+        "dangerouslyBypassApprovalsAndSandbox": false
+      },
+      "runtimeConfig": {
+        "heartbeat": {
+          "enabled": true,
+          "intervalSec": 3600,
+          "wakeOnAssignment": true,
+          "wakeOnOnDemand": true,
+          "wakeOnAutomation": true,
+          "maxConcurrentRuns": 1
+        }
+      },
+      "permissions": {},
+      "budgetMonthlyCents": 15000,
+      "metadata": null
+    },
+    {
+      "slug": "finance-risk-lead",
+      "name": "Finance and Risk Lead",
+      "path": "agents/finance-risk-lead/AGENTS.md",
+      "role": "finance",
+      "title": "Finance and Risk Lead",
+      "icon": "scale",
+      "capabilities": "Tracks spending, reviews budget exposure, and flags operational or policy risk before commitments are made.",
+      "reportsToSlug": "ceo",
+      "adapterType": "codex_local",
+      "adapterConfig": {
+        "model": "gpt-5.3-codex",
+        "modelReasoningEffort": "medium",
+        "search": true,
+        "dangerouslyBypassApprovalsAndSandbox": false
+      },
+      "runtimeConfig": {
+        "heartbeat": {
+          "enabled": true,
+          "intervalSec": 3600,
+          "wakeOnAssignment": true,
+          "wakeOnOnDemand": true,
+          "wakeOnAutomation": true,
+          "maxConcurrentRuns": 1
+        }
+      },
+      "permissions": {},
+      "budgetMonthlyCents": 8000,
+      "metadata": null
+    },
+    {
+      "slug": "operator",
+      "name": "Operator",
+      "path": "agents/operator/AGENTS.md",
+      "role": "general",
+      "title": "Execution Operator",
+      "icon": "terminal",
+      "capabilities": "Executes bounded tasks, records outcomes, and escalates blockers or policy conflicts immediately.",
+      "reportsToSlug": "operations-lead",
+      "adapterType": "codex_local",
+      "adapterConfig": {
+        "model": "gpt-5.3-codex",
+        "modelReasoningEffort": "low",
+        "dangerouslyBypassApprovalsAndSandbox": false
+      },
+      "runtimeConfig": {
+        "heartbeat": {
+          "enabled": true,
+          "intervalSec": 3600,
+          "wakeOnAssignment": true,
+          "wakeOnOnDemand": true,
+          "wakeOnAutomation": true,
+          "maxConcurrentRuns": 1
+        }
+      },
+      "permissions": {},
+      "budgetMonthlyCents": 5000,
+      "metadata": null
+    }
+  ],
+  "goals": [
+    {
+      "key": "operating-boundary",
+      "title": "Establish operating boundary and decision rights",
+      "description": "Define what the organization may do autonomously, what requires escalation, and what is out of bounds.",
+      "level": "company",
+      "status": "active",
+      "parentKey": null,
+      "ownerAgentSlug": "ceo"
+    },
+    {
+      "key": "controls-framework",
+      "title": "Publish initial safety and control checklist",
+      "description": "Turn governance principles into concrete checks the org can apply before execution.",
+      "level": "team",
+      "status": "planned",
+      "parentKey": "operating-boundary",
+      "ownerAgentSlug": "safety-lead"
+    },
+    {
+      "key": "bounded-operating-plan",
+      "title": "Build the first bounded operating plan",
+      "description": "Translate the approved constraints into a staged operating cadence with explicit review points.",
+      "level": "team",
+      "status": "planned",
+      "parentKey": "operating-boundary",
+      "ownerAgentSlug": "operations-lead"
+    }
+  ],
+  "projects": [
+    {
+      "key": "initial-control-framework",
+      "name": "Initial Control Framework",
+      "description": "The first project to codify decision gates, review rules, and escalation triggers.",
+      "status": "planned",
+      "goalKeys": ["controls-framework"],
+      "leadAgentSlug": "safety-lead",
+      "targetDate": null,
+      "color": "#14532d",
+      "workspaces": []
+    },
+    {
+      "key": "bounded-operating-plan",
+      "name": "Bounded Operating Plan",
+      "description": "A staged plan for how the organization should move from research to execution under explicit controls.",
+      "status": "planned",
+      "goalKeys": ["bounded-operating-plan"],
+      "leadAgentSlug": "operations-lead",
+      "targetDate": null,
+      "color": "#0f766e",
+      "workspaces": []
+    }
+  ],
+  "issues": [
+    {
+      "key": "research-open-questions",
+      "title": "Draft the initial operating boundary and open questions",
+      "description": "Research the main unknowns, assumptions, and decision points the organization should resolve before autonomous execution expands.",
+      "status": "todo",
+      "priority": "high",
+      "projectKey": null,
+      "goalKey": "operating-boundary",
+      "parentKey": null,
+      "assigneeAgentSlug": "research-lead",
+      "requestDepth": 0,
+      "billingCode": null
+    },
+    {
+      "key": "safety-control-checklist",
+      "title": "Produce the first-pass safety control checklist",
+      "description": "Define concrete review checks for risky actions, unclear authority, broad automation, and irreversible changes.",
+      "status": "todo",
+      "priority": "high",
+      "projectKey": "initial-control-framework",
+      "goalKey": "controls-framework",
+      "parentKey": null,
+      "assigneeAgentSlug": "safety-lead",
+      "requestDepth": 0,
+      "billingCode": null
+    },
+    {
+      "key": "budget-risk-thresholds",
+      "title": "Define initial budget and risk review thresholds",
+      "description": "Set initial thresholds for when work must escalate for financial or operational risk review.",
+      "status": "todo",
+      "priority": "medium",
+      "projectKey": "bounded-operating-plan",
+      "goalKey": "bounded-operating-plan",
+      "parentKey": null,
+      "assigneeAgentSlug": "finance-risk-lead",
+      "requestDepth": 0,
+      "billingCode": null
+    },
+    {
+      "key": "staged-operating-cadence",
+      "title": "Turn approved controls into a staged operating cadence",
+      "description": "Build a first operating plan that sequences research, review, approval, and execution without collapsing them together.",
+      "status": "todo",
+      "priority": "high",
+      "projectKey": "bounded-operating-plan",
+      "goalKey": "bounded-operating-plan",
+      "parentKey": null,
+      "assigneeAgentSlug": "operations-lead",
+      "requestDepth": 0,
+      "billingCode": null
+    }
+  ],
+  "requiredSecrets": []
+}

@@ -26,6 +26,7 @@ import {
   CircleDot,
   DollarSign,
   Calendar,
+  Sparkles,
 } from "lucide-react";
 
 export function Companies() {
@@ -89,8 +90,16 @@ export function Companies() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-end">
-        <Button size="sm" onClick={() => openOnboarding()}>
+      <div className="flex items-center justify-end gap-2">
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => openOnboarding({ setupMode: "template" })}
+        >
+          <Sparkles className="h-3.5 w-3.5 mr-1.5" />
+          Use Template
+        </Button>
+        <Button size="sm" onClick={() => openOnboarding({ setupMode: "blank" })}>
           <Plus className="h-3.5 w-3.5 mr-1.5" />
           New Company
         </Button>

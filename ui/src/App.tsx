@@ -231,7 +231,7 @@ function CompanyRootRedirect() {
 
   // Keep the first-run onboarding mounted until it completes.
   if (onboardingOpen) {
-    return <NoCompaniesStartPage autoOpen={false} />;
+    return <NoCompaniesStartPage />;
   }
 
   const targetCompany = selectedCompany ?? companies[0] ?? null;
@@ -263,26 +263,26 @@ function UnprefixedBoardRedirect() {
   );
 }
 
-function NoCompaniesStartPage({ autoOpen = true }: { autoOpen?: boolean }) {
+function NoCompaniesStartPage() {
   const { openOnboarding } = useDialog();
-  const opened = useRef(false);
-
-  useEffect(() => {
-    if (!autoOpen) return;
-    if (opened.current) return;
-    opened.current = true;
-    openOnboarding();
-  }, [autoOpen, openOnboarding]);
 
   return (
     <div className="mx-auto max-w-xl py-10">
       <div className="rounded-lg border border-border bg-card p-6">
         <h1 className="text-xl font-semibold">Create your first company</h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          Get started by creating a company.
+          Start with a blank company or use a built-in template.
         </p>
-        <div className="mt-4">
-          <Button onClick={() => openOnboarding()}>New Company</Button>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <Button onClick={() => openOnboarding({ setupMode: "blank" })}>
+            Blank Company
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => openOnboarding({ setupMode: "template" })}
+          >
+            Use Template
+          </Button>
         </div>
       </div>
     </div>
