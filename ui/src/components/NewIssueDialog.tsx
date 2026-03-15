@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { issuesApi } from "../api/issues";
+import { taskCronsApi } from "../api/taskCrons";
 import { projectsApi } from "../api/projects";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
@@ -33,6 +34,7 @@ import {
   AlertTriangle,
   Tag,
   Calendar,
+  Clock3,
   Paperclip,
   Loader2,
 } from "lucide-react";
@@ -69,6 +71,11 @@ interface IssueDraft {
   assigneeThinkingEffort: string;
   assigneeChrome: boolean;
   useIsolatedExecutionWorkspace: boolean;
+  recurringEnabled: boolean;
+  recurringName: string;
+  recurringExpression: string;
+  recurringTimezone: string;
+  recurringIssueMode: "create_new" | "reuse_existing" | "reopen_existing";
 }
 
 const ISSUE_OVERRIDE_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "opencode_local"]);
@@ -180,7 +187,13 @@ export function NewIssueDialog() {
   const [assigneeThinkingEffort, setAssigneeThinkingEffort] = useState("");
   const [assigneeChrome, setAssigneeChrome] = useState(false);
   const [useIsolatedExecutionWorkspace, setUseIsolatedExecutionWorkspace] = useState(false);
+  const [recurringEnabled, setRecurringEnabled] = useState(false);
+  const [recurringName, setRecurringName] = useState("");
+  const [recurringExpression, setRecurringExpression] = useState("0 9 * * 1-5");
+  const [recurringTimezone, setRecurringTimezone] = useState("UTC");
+  const [recurringIssueMode, setRecurringIssueMode] = useState<"create_new" | "reuse_existing" | "reopen_existing">("reopen_existing");
   const [expanded, setExpanded] = useState(false);
+  const [clientError, setClientError] = useState<string | null>(null);
   const [dialogCompanyId, setDialogCompanyId] = useState<string | null>(null);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const executionWorkspaceDefaultProjectId = useRef<string | null>(null);
@@ -258,10 +271,40 @@ export function NewIssueDialog() {
   });
 
   const createIssue = useMutation({
-    mutationFn: ({ companyId, ...data }: { companyId: string } & Record<string, unknown>) =>
-      issuesApi.create(companyId, data),
+    mutationFn: async ({
+      companyId,
+      recurring,
+      ...data
+    }: {
+      companyId: string;
+      recurring?: {
+        enabled: boolean;
+        name: string;
+        expression: string;
+        timezone: string;
+        issueMode: "create_new" | "reuse_existing" | "reopen_existing";
+      };
+    } & Record<string, unknown>) => {
+      const issue = await issuesApi.create(companyId, data);
+      if (recurring?.enabled) {
+        await taskCronsApi.createIssueSchedule(
+          issue.id,
+          {
+            name: recurring.name,
+            expression: recurring.expression,
+            timezone: recurring.timezone,
+            issueMode: recurring.issueMode,
+          },
+          companyId,
+        );
+      }
+      return issue;
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(effectiveCompanyId!) });
+      if (effectiveCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.taskCrons.company(effectiveCompanyId) });
+      }
       if (draftTimer.current) clearTimeout(draftTimer.current);
       clearDraft();
       reset();
@@ -301,6 +344,11 @@ export function NewIssueDialog() {
       assigneeThinkingEffort,
       assigneeChrome,
       useIsolatedExecutionWorkspace,
+      recurringEnabled,
+      recurringName,
+      recurringExpression,
+      recurringTimezone,
+      recurringIssueMode,
     });
   }, [
     title,
@@ -313,6 +361,11 @@ export function NewIssueDialog() {
     assigneeThinkingEffort,
     assigneeChrome,
     useIsolatedExecutionWorkspace,
+    recurringEnabled,
+    recurringName,
+    recurringExpression,
+    recurringTimezone,
+    recurringIssueMode,
     newIssueOpen,
     scheduleSave,
   ]);
@@ -335,6 +388,11 @@ export function NewIssueDialog() {
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
       setUseIsolatedExecutionWorkspace(false);
+      setRecurringEnabled(false);
+      setRecurringName("");
+      setRecurringExpression("0 9 * * 1-5");
+      setRecurringTimezone("UTC");
+      setRecurringIssueMode("reopen_existing");
     } else if (draft && draft.title.trim()) {
       setTitle(draft.title);
       setDescription(draft.description);
@@ -346,6 +404,11 @@ export function NewIssueDialog() {
       setAssigneeThinkingEffort(draft.assigneeThinkingEffort ?? "");
       setAssigneeChrome(draft.assigneeChrome ?? false);
       setUseIsolatedExecutionWorkspace(draft.useIsolatedExecutionWorkspace ?? false);
+      setRecurringEnabled(draft.recurringEnabled ?? false);
+      setRecurringName(draft.recurringName ?? "");
+      setRecurringExpression(draft.recurringExpression ?? "0 9 * * 1-5");
+      setRecurringTimezone(draft.recurringTimezone ?? "UTC");
+      setRecurringIssueMode(draft.recurringIssueMode ?? "reopen_existing");
     } else {
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
@@ -355,7 +418,13 @@ export function NewIssueDialog() {
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
       setUseIsolatedExecutionWorkspace(false);
+      setRecurringEnabled(false);
+      setRecurringName("");
+      setRecurringExpression("0 9 * * 1-5");
+      setRecurringTimezone("UTC");
+      setRecurringIssueMode("reopen_existing");
     }
+    setClientError(null);
   }, [newIssueOpen, newIssueDefaults]);
 
   useEffect(() => {
@@ -397,9 +466,15 @@ export function NewIssueDialog() {
     setAssigneeThinkingEffort("");
     setAssigneeChrome(false);
     setUseIsolatedExecutionWorkspace(false);
+    setRecurringEnabled(false);
+    setRecurringName("");
+    setRecurringExpression("0 9 * * 1-5");
+    setRecurringTimezone("UTC");
+    setRecurringIssueMode("reopen_existing");
     setExpanded(false);
     setDialogCompanyId(null);
     setCompanyOpen(false);
+    setClientError(null);
     executionWorkspaceDefaultProjectId.current = null;
   }
 
@@ -422,6 +497,11 @@ export function NewIssueDialog() {
 
   function handleSubmit() {
     if (!effectiveCompanyId || !title.trim() || createIssue.isPending) return;
+    if (recurringEnabled && !assigneeId) {
+      setClientError("Recurring schedules require an assignee.");
+      return;
+    }
+    setClientError(null);
     const assigneeAdapterOverrides = buildAssigneeAdapterOverrides({
       adapterType: assigneeAdapterType,
       modelOverride: assigneeModelOverride,
@@ -447,6 +527,15 @@ export function NewIssueDialog() {
       ...(projectId ? { projectId } : {}),
       ...(assigneeAdapterOverrides ? { assigneeAdapterOverrides } : {}),
       ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
+      recurring: recurringEnabled
+        ? {
+          enabled: true,
+          name: recurringName.trim() || `${title.trim()} recurring`,
+          expression: recurringExpression.trim(),
+          timezone: recurringTimezone.trim() || "UTC",
+          issueMode: recurringIssueMode,
+        }
+        : undefined,
     });
   }
 
@@ -888,6 +977,71 @@ export function NewIssueDialog() {
           </div>
         )}
 
+        {/* Recurring schedule */}
+        <div className="px-4 pb-2 shrink-0">
+          <button
+            className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+            onClick={() => setRecurringEnabled((open) => !open)}
+            type="button"
+          >
+            {recurringEnabled ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+            <Clock3 className="h-3 w-3" />
+            Recurring task
+          </button>
+          {recurringEnabled && (
+            <div className="mt-2 rounded-md border border-border p-3 bg-muted/20 space-y-3">
+              <div className="space-y-1.5">
+                <div className="text-xs text-muted-foreground">Name</div>
+                <input
+                  className="w-full rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+                  value={recurringName}
+                  onChange={(e) => setRecurringName(e.target.value)}
+                  placeholder="Weekly status report"
+                />
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <div className="text-xs text-muted-foreground">Cron expression</div>
+                  <input
+                    className="w-full rounded-md border border-border bg-transparent px-2 py-1 text-xs font-mono"
+                    value={recurringExpression}
+                    onChange={(e) => setRecurringExpression(e.target.value)}
+                    placeholder="0 9 * * 1-5"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <div className="text-xs text-muted-foreground">Timezone</div>
+                  <input
+                    className="w-full rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+                    value={recurringTimezone}
+                    onChange={(e) => setRecurringTimezone(e.target.value)}
+                    placeholder="UTC"
+                  />
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <div className="text-xs text-muted-foreground">Issue behavior</div>
+                <select
+                  className="w-full rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+                  value={recurringIssueMode}
+                  onChange={(e) =>
+                    setRecurringIssueMode(e.target.value as "create_new" | "reuse_existing" | "reopen_existing")
+                  }
+                >
+                  <option value="reopen_existing">Reopen this issue when done</option>
+                  <option value="reuse_existing">Reuse this issue</option>
+                  <option value="create_new">Create a new issue each run</option>
+                </select>
+              </div>
+              {!assigneeId && (
+                <div className="text-[11px] text-amber-500">
+                  Select an assignee to enable recurring scheduling.
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
         {/* Description */}
         <div className={cn("px-4 pb-2 overflow-y-auto min-h-0 border-t border-border/60 pt-3", expanded ? "flex-1" : "")}>
           <MarkdownEditor
@@ -1027,6 +1181,8 @@ export function NewIssueDialog() {
                   <Loader2 className="h-3 w-3 animate-spin" />
                   Creating issue...
                 </span>
+              ) : clientError ? (
+                <span className="text-xs text-destructive">{clientError}</span>
               ) : createIssue.isError ? (
                 <span className="text-xs text-destructive">{createIssueErrorMessage}</span>
               ) : canDiscardDraft ? (
