@@ -4,6 +4,7 @@ import type { TranscriptEntry, StdoutLineParser } from "./types";
 export type RunLogChunk = { ts: string; stream: "stdout" | "stderr" | "system"; chunk: string };
 
 export function appendTranscriptEntry(entries: TranscriptEntry[], entry: TranscriptEntry) {
+  if (entry.kind === "init" && entries.some((e) => e.kind === "init")) return;
   if ((entry.kind === "thinking" || entry.kind === "assistant") && entry.delta) {
     const last = entries[entries.length - 1];
     if (last && last.kind === entry.kind && last.delta) {

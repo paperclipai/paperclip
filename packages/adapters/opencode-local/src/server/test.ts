@@ -59,7 +59,7 @@ export async function testEnvironment(
   const cwd = asString(config.cwd, process.cwd());
 
   try {
-    await ensureAbsoluteDirectory(cwd, { createIfMissing: false });
+    await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
     checks.push({
       code: "opencode_cwd_valid",
       level: "info",

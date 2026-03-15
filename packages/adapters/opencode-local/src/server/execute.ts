@@ -42,8 +42,15 @@ function parseModelProvider(model: string | null): string | null {
   return trimmed.slice(0, trimmed.indexOf("/")).trim() || null;
 }
 
-function claudeSkillsHome(): string {
-  return path.join(os.homedir(), ".claude", "skills");
+function resolveOpenCodeBillingType(env: Record<string, string>): "api" | "subscription" {
+  const hasKey = (key: string) => typeof env[key] === "string" && env[key].trim().length > 0;
+  return hasKey("OPENAI_API_KEY") || hasKey("ANTHROPIC_API_KEY") ? "api" : "subscription";
+}
+
+function openCodeSkillsHome(): string {
+  const fromEnv = process.env.OPENCODE_HOME?.trim();
+  const base = fromEnv && fromEnv.length > 0 ? fromEnv : path.join(os.homedir(), ".opencode");
+  return path.join(base, "skills");
 }
 
 async function resolvePaperclipSkillsDir(): Promise<string | null> {
@@ -58,7 +65,7 @@ async function ensureOpenCodeSkillsInjected(onLog: AdapterExecutionContext["onLo
   const skillsDir = await resolvePaperclipSkillsDir();
   if (!skillsDir) return;
 
-  const skillsHome = claudeSkillsHome();
+  const skillsHome = openCodeSkillsHome();
   await fs.mkdir(skillsHome, { recursive: true });
   const entries = await fs.readdir(skillsDir, { withFileTypes: true });
   for (const entry of entries) {
@@ -97,15 +104,29 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
   const workspaceSource = asString(workspaceContext.source, "");
+  const workspaceStrategy = asString(workspaceContext.strategy, "");
   const workspaceId = asString(workspaceContext.workspaceId, "");
   const workspaceRepoUrl = asString(workspaceContext.repoUrl, "");
   const workspaceRepoRef = asString(workspaceContext.repoRef, "");
+  const workspaceBranch = asString(workspaceContext.branchName, "");
+  const workspaceWorktreePath = asString(workspaceContext.worktreePath, "");
   const agentHome = asString(workspaceContext.agentHome, "");
   const workspaceHints = Array.isArray(context.paperclipWorkspaces)
     ? context.paperclipWorkspaces.filter(
         (value): value is Record<string, unknown> => typeof value === "object" && value !== null,
       )
     : [];
+  const runtimeServiceIntents = Array.isArray(context.paperclipRuntimeServiceIntents)
+    ? context.paperclipRuntimeServiceIntents.filter(
+        (value): value is Record<string, unknown> => typeof value === "object" && value !== null,
+      )
+    : [];
+  const runtimeServices = Array.isArray(context.paperclipRuntimeServices)
+    ? context.paperclipRuntimeServices.filter(
+        (value): value is Record<string, unknown> => typeof value === "object" && value !== null,
+      )
+    : [];
+  const runtimePrimaryUrl = asString(context.paperclipRuntimePrimaryUrl, "");
   const configuredCwd = asString(config.cwd, "");
   const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
@@ -152,8 +173,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (workspaceId) env.PAPERCLIP_WORKSPACE_ID = workspaceId;
   if (workspaceRepoUrl) env.PAPERCLIP_WORKSPACE_REPO_URL = workspaceRepoUrl;
   if (workspaceRepoRef) env.PAPERCLIP_WORKSPACE_REPO_REF = workspaceRepoRef;
+  if (workspaceStrategy) env.PAPERCLIP_WORKSPACE_STRATEGY = workspaceStrategy;
+  if (workspaceBranch) env.PAPERCLIP_WORKSPACE_BRANCH = workspaceBranch;
+  if (workspaceWorktreePath) env.PAPERCLIP_WORKSPACE_WORKTREE_PATH = workspaceWorktreePath;
   if (agentHome) env.AGENT_HOME = agentHome;
   if (workspaceHints.length > 0) env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(workspaceHints);
+  if (runtimeServiceIntents.length > 0) env.PAPERCLIP_RUNTIME_SERVICE_INTENTS_JSON = JSON.stringify(runtimeServiceIntents);
+  if (runtimeServices.length > 0) env.PAPERCLIP_RUNTIME_SERVICES_JSON = JSON.stringify(runtimeServices);
+  if (runtimePrimaryUrl) env.PAPERCLIP_RUNTIME_PRIMARY_URL = runtimePrimaryUrl;
 
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
@@ -320,13 +347,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         signal: attempt.proc.signal,
         timedOut: true,
         errorMessage: `Timed out after ${timeoutSec}s`,
+        errorCode: "timeout",
         clearSession: clearSessionOnMissingSession,
       };
     }
 
     const resolvedSessionId =
-      attempt.parsed.sessionId ??
-      (clearSessionOnMissingSession ? null : runtimeSessionId ?? runtime.sessionId ?? null);
+      attempt.parsed.sessionId ||
+      (clearSessionOnMissingSession ? null : runtimeSessionId || runtime.sessionId || null);
     const resolvedSessionParams = resolvedSessionId
       ? ({
           sessionId: resolvedSessionId,
@@ -339,19 +367,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
     const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
-    const rawExitCode = attempt.proc.exitCode;
-    const synthesizedExitCode = parsedError && (rawExitCode ?? 0) === 0 ? 1 : rawExitCode;
+    const exitCode = attempt.proc.exitCode;
     const fallbackErrorMessage =
       parsedError ||
       stderrLine ||
-      `OpenCode exited with code ${synthesizedExitCode ?? -1}`;
+      `OpenCode exited with code ${exitCode ?? -1}`;
     const modelId = model || null;
 
     return {
-      exitCode: synthesizedExitCode,
+      exitCode,
       signal: attempt.proc.signal,
       timedOut: false,
-      errorMessage: (synthesizedExitCode ?? 0) === 0 ? null : fallbackErrorMessage,
+      errorMessage: (exitCode ?? 0) === 0 ? null : fallbackErrorMessage,
       usage: {
         inputTokens: attempt.parsed.usage.inputTokens,
         outputTokens: attempt.parsed.usage.outputTokens,
@@ -362,11 +389,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       sessionDisplayId: resolvedSessionId,
       provider: parseModelProvider(modelId),
       model: modelId,
-      billingType: "unknown",
+      billingType: resolveOpenCodeBillingType(runtimeEnv),
       costUsd: attempt.parsed.costUsd,
       resultJson: {
         stdout: attempt.proc.stdout,
         stderr: attempt.proc.stderr,
+        ...(parsedError ? { parsedErrorMessage: parsedError } : {}),
       },
       summary: attempt.parsed.summary,
       clearSession: Boolean(clearSessionOnMissingSession && !attempt.parsed.sessionId),
@@ -375,7 +403,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const initial = await runAttempt(sessionId);
   const initialFailed =
-    !initial.proc.timedOut && ((initial.proc.exitCode ?? 0) !== 0 || Boolean(initial.parsed.errorMessage));
+    !initial.proc.timedOut && (initial.proc.exitCode ?? 0) !== 0;
   if (
     sessionId &&
     initialFailed &&

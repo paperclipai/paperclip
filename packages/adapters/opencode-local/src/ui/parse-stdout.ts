@@ -112,11 +112,13 @@ export function parseOpenCodeStdoutLine(line: string, ts: string): TranscriptEnt
 
   if (type === "step_start") {
     const sessionId = asString(parsed.sessionID);
+    const model = asString(parsed.model, "opencode");
     return [
       {
-        kind: "system",
+        kind: "init",
         ts,
-        text: `step started${sessionId ? ` (${sessionId})` : ""}`,
+        model,
+        sessionId,
       },
     ];
   }
