@@ -14,6 +14,13 @@ function createUtilitySql(url: string) {
   return postgres(url, { max: 1, onnotice: () => {} });
 }
 
+function isSkippableDuplicateMigrationError(error: unknown): error is { code?: string } {
+  const code = typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code ?? "")
+    : "";
+  return code === "42P07" || code === "42701" || code === "42710";
+}
+
 function isSafeIdentifier(value: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
 }
@@ -246,7 +253,25 @@ async function applyPendingMigrationsManually(
 
       await runInTransaction(sql, async () => {
         for (const statement of splitMigrationStatements(migrationContent)) {
-          await sql.unsafe(statement);
+          await sql.unsafe("SAVEPOINT paperclip_migration_step");
+          try {
+            await sql.unsafe(statement);
+            await sql.unsafe("RELEASE SAVEPOINT paperclip_migration_step");
+          } catch (error) {
+            try {
+              await sql.unsafe("ROLLBACK TO SAVEPOINT paperclip_migration_step");
+              await sql.unsafe("RELEASE SAVEPOINT paperclip_migration_step");
+            } catch {
+              // Ignore savepoint cleanup failures and surface the original error below if needed.
+            }
+
+            if (isSkippableDuplicateMigrationError(error)) {
+              const alreadyApplied = await migrationStatementAlreadyApplied(sql, statement);
+              if (alreadyApplied) continue;
+            }
+
+            throw error;
+          }
         }
 
         await recordMigrationHistoryEntry(
@@ -362,7 +387,10 @@ async function migrationStatementAlreadyApplied(
   sql: ReturnType<typeof postgres>,
   statement: string,
 ): Promise<boolean> {
-  const normalized = statement.replace(/\s+/g, " ").trim();
+  const normalized = statement
+    .replace(/^\s*--.*$/gm, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 
   const createTableMatch = normalized.match(/^CREATE TABLE(?: IF NOT EXISTS)? "([^"]+)"/i);
   if (createTableMatch) {
@@ -374,6 +402,20 @@ async function migrationStatementAlreadyApplied(
   );
   if (addColumnMatch) {
     return columnExists(sql, addColumnMatch[1], addColumnMatch[2]);
+  }
+
+  const dropColumnMatch = normalized.match(
+    /^ALTER TABLE "([^"]+)" DROP COLUMN(?: IF EXISTS)? "([^"]+)"/i,
+  );
+  if (dropColumnMatch) {
+    return !(await columnExists(sql, dropColumnMatch[1], dropColumnMatch[2]));
+  }
+
+  const alterColumnMatch = normalized.match(
+    /^ALTER TABLE "([^"]+)" ALTER COLUMN "([^"]+)" (?:SET DEFAULT|DROP DEFAULT|SET NOT NULL|DROP NOT NULL)/i,
+  );
+  if (alterColumnMatch) {
+    return columnExists(sql, alterColumnMatch[1], alterColumnMatch[2]);
   }
 
   const createIndexMatch = normalized.match(/^CREATE (?:UNIQUE )?INDEX(?: IF NOT EXISTS)? "([^"]+)"/i);
@@ -643,14 +685,27 @@ export async function inspectMigrations(url: string): Promise<MigrationState> {
 }
 
 export async function applyPendingMigrations(url: string): Promise<void> {
-  const initialState = await inspectMigrations(url);
+  let initialState = await inspectMigrations(url);
   if (initialState.status === "upToDate") return;
 
+  if (initialState.reason === "pending-migrations") {
+    const repair = await reconcilePendingMigrationHistory(url);
+    if (repair.repairedMigrations.length > 0) {
+      initialState = await inspectMigrations(url);
+      if (initialState.status === "upToDate") return;
+    }
+  }
+
   const sql = createUtilitySql(url);
+  let migratorError: unknown = null;
 
   try {
     const db = drizzlePg(sql);
-    await migratePg(db, { migrationsFolder: MIGRATIONS_FOLDER });
+    try {
+      await migratePg(db, { migrationsFolder: MIGRATIONS_FOLDER });
+    } catch (error) {
+      migratorError = error;
+    }
   } finally {
     await sql.end();
   }
@@ -675,6 +730,10 @@ export async function applyPendingMigrations(url: string): Promise<void> {
     throw new Error(
       `Failed to apply pending migrations: ${finalState.pendingMigrations.join(", ")}`,
     );
+  }
+
+  if (migratorError && finalState.status === "upToDate") {
+    return;
   }
 }
 

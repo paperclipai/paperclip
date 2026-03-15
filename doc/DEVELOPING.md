@@ -39,6 +39,8 @@ This starts:
 
 `pnpm dev` runs the server in watch mode and restarts on changes from workspace packages (including adapter packages). Use `pnpm dev:once` to run without file watching.
 
+`pnpm --filter @paperclipai/server dev:watch` also auto-applies pending migrations in local dev so the watch server does not come up against a partially migrated embedded database.
+
 Tailscale/private-auth dev mode:
 
 ```sh
