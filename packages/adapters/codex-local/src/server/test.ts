@@ -15,15 +15,12 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import path from "node:path";
 import { parseCodexJsonl } from "./parse.js";
+import { resolveOpenaiKeySource } from "./execute.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
   if (checks.some((check) => check.level === "warn")) return "warn";
   return "pass";
-}
-
-function isNonEmpty(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
 }
 
 function firstNonEmptyLine(text: string): string {
@@ -97,15 +94,13 @@ export async function testEnvironment(
     });
   }
 
-  const configOpenAiKey = env.OPENAI_API_KEY;
-  const hostOpenAiKey = process.env.OPENAI_API_KEY;
-  if (isNonEmpty(configOpenAiKey) || isNonEmpty(hostOpenAiKey)) {
-    const source = isNonEmpty(configOpenAiKey) ? "adapter config env" : "server environment";
+  const openaiKeySource = resolveOpenaiKeySource(env, process.env);
+  if (openaiKeySource !== "missing") {
     checks.push({
       code: "codex_openai_api_key_present",
       level: "info",
       message: "OPENAI_API_KEY is set for Codex authentication.",
-      detail: `Detected in ${source}.`,
+      detail: `Detected in ${openaiKeySource === "adapter_config" ? "adapter config env" : "server environment"}.`,
     });
   } else {
     checks.push({
