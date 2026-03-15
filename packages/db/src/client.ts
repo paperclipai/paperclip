@@ -10,8 +10,30 @@ const MIGRATIONS_FOLDER = fileURLToPath(new URL("./migrations", import.meta.url)
 const DRIZZLE_MIGRATIONS_TABLE = "__drizzle_migrations";
 const MIGRATIONS_JOURNAL_JSON = fileURLToPath(new URL("./migrations/meta/_journal.json", import.meta.url));
 
+function createSql(url: string, extra?: postgres.Options<{}>) {
+  if (process.env.PAPERCLIP_DB_IAM_AUTH !== "true") return postgres(url, extra);
+
+  const parsed = new URL(url);
+  // Lazy-import to avoid requiring @aws-sdk/rds-signer when IAM is off
+  const { Signer } = require("@aws-sdk/rds-signer") as typeof import("@aws-sdk/rds-signer");
+  const signer = new Signer({
+    hostname: parsed.hostname,
+    port: Number(parsed.port) || 5432,
+    username: parsed.username,
+  });
+  return postgres({
+    ...extra,
+    host: parsed.hostname,
+    port: Number(parsed.port) || 5432,
+    database: parsed.pathname.slice(1),
+    username: parsed.username,
+    password: () => signer.getAuthToken(),
+    ssl: "require",
+  });
+}
+
 function createUtilitySql(url: string) {
-  return postgres(url, { max: 1, onnotice: () => {} });
+  return createSql(url, { max: 1, onnotice: () => {} });
 }
 
 function isSafeIdentifier(value: string): boolean {
@@ -46,7 +68,7 @@ export type MigrationState =
     };
 
 export function createDb(url: string) {
-  const sql = postgres(url);
+  const sql = createSql(url);
   return drizzlePg(sql, { schema });
 }
 

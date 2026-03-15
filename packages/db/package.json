@@ -33,6 +33,7 @@
     "seed": "tsx src/seed.ts"
   },
   "dependencies": {
+    "@aws-sdk/rds-signer": "^3.1009.0",
     "@paperclipai/shared": "workspace:*",
     "drizzle-orm": "^0.38.4",
     "postgres": "^3.4.5"
