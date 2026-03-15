@@ -92,8 +92,11 @@ const WAKEUP_DEBOUNCE_MS = 3000;
 interface DebouncedWakeupEntry {
   timer: ReturnType<typeof setTimeout>;
   contexts: Array<{ issueId: string; wakeReason: string | null; payload: Record<string, unknown> | null }>;
+  // First-write-wins: opts (including actor info) are captured from the first
+  // enqueueWakeup call in the debounce window. Subsequent callers' attribution
+  // is aggregated into contexts but the top-level actor fields reflect the
+  // original trigger.
   opts: WakeupOptions;
-  flushFn: (agentId: string) => Promise<void>;
 }
 
 const wakeupDebounceMap = new Map<string, DebouncedWakeupEntry>();
@@ -369,6 +372,8 @@ interface WakeupOptions {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  /** Internal flag — skip debounce logic (used by flushDebouncedWakeups to avoid re-entering the debounce path). */
+  _skipDebounce?: boolean;
 }
 
 type UsageTotals = {
@@ -3831,6 +3836,7 @@ export function heartbeatService(db: Db) {
         contextSnapshot: batchedContextSnapshot,
         reason: `batch_assignment (${issueIds.length} issues)`,
         payload: { ...(entry.opts.payload ?? {}), issueId: primaryIssueId, issueIds },
+        _skipDebounce: true,
       });
     } catch (err) {
       logger.error({ err, agentId, issueIds }, "Failed to flush debounced wakeups");
@@ -3866,7 +3872,7 @@ export function heartbeatService(db: Db) {
       triggerDetail !== "manual" &&
       issueId;
 
-    if (shouldDebounce) {
+    if (shouldDebounce && !opts._skipDebounce) {
       const existing = wakeupDebounceMap.get(agentId);
       if (existing) {
         existing.contexts.push({
@@ -3882,7 +3888,6 @@ export function heartbeatService(db: Db) {
         timer: setTimeout(() => flushDebouncedWakeups(agentId), WAKEUP_DEBOUNCE_MS),
         contexts: [{ issueId: issueId!, wakeReason: reason, payload: payload ?? {} }],
         opts,
-        flushFn: flushDebouncedWakeups,
       };
       wakeupDebounceMap.set(agentId, entry);
       return null;
