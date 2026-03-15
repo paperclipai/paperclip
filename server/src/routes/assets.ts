@@ -5,7 +5,7 @@ import { createAssetImageMetadataSchema } from "@paperclipai/shared";
 import type { StorageService } from "../storage/types.js";
 import { assetService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
-import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
+import { isAllowedContentType, MAX_ATTACHMENT_BYTES, resolveContentType } from "../attachment-types.js";
 
 export function assetRoutes(db: Db, storage: StorageService) {
   const router = Router();
@@ -48,7 +48,8 @@ export function assetRoutes(db: Db, storage: StorageService) {
       return;
     }
 
-    const contentType = (file.mimetype || "").toLowerCase();
+    // Resolve content type - infer from filename if browser reports octet-stream
+    const contentType = resolveContentType(file.mimetype, file.originalname);
     if (!isAllowedContentType(contentType)) {
       res.status(422).json({ error: `Unsupported file type: ${contentType || "unknown"}` });
       return;

@@ -72,3 +72,50 @@ export function isAllowedContentType(contentType: string): boolean {
 
 export const MAX_ATTACHMENT_BYTES =
   Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
+
+/**
+ * Map of file extensions to MIME types for inferring content type
+ * when the browser reports application/octet-stream.
+ */
+const EXTENSION_TO_MIME: Record<string, string> = {
+  ".md": "text/markdown",
+  ".markdown": "text/markdown",
+  ".txt": "text/plain",
+  ".json": "application/json",
+  ".csv": "text/csv",
+  ".html": "text/html",
+  ".htm": "text/html",
+  ".pdf": "application/pdf",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+};
+
+/**
+ * Infer the content type from a filename's extension.
+ * Returns undefined if no mapping exists.
+ */
+export function inferContentTypeFromFilename(filename: string | null | undefined): string | undefined {
+  if (!filename) return undefined;
+  const ext = filename.toLowerCase().match(/\.[a-z0-9]+$/)?.[0];
+  return ext ? EXTENSION_TO_MIME[ext] : undefined;
+}
+
+/**
+ * Resolve the effective content type for an upload.
+ * If the reported mimetype is generic (octet-stream), try to infer from filename.
+ */
+export function resolveContentType(
+  reportedMimetype: string | undefined,
+  filename: string | null | undefined
+): string {
+  const mime = (reportedMimetype || "").toLowerCase();
+  // If browser reports octet-stream or empty, try to infer from filename
+  if (!mime || mime === "application/octet-stream") {
+    const inferred = inferContentTypeFromFilename(filename);
+    if (inferred) return inferred;
+  }
+  return mime || "application/octet-stream";
+}
