@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { Agent, Issue, LiveEvent } from "@paperclipai/shared";
 import { authApi } from "../api/auth";
@@ -6,6 +6,21 @@ import { useCompany } from "./CompanyContext";
 import type { ToastInput } from "./ToastContext";
 import { useToast } from "./ToastContext";
 import { queryKeys } from "../lib/queryKeys";
+
+interface LiveUpdatesContextValue {
+  isConnected: boolean;
+  /** Suppress WS-driven invalidations briefly after a local mutation fires. */
+  suppressInvalidations: () => void;
+}
+
+const LiveUpdatesContext = createContext<LiveUpdatesContextValue>({
+  isConnected: false,
+  suppressInvalidations: () => {},
+});
+
+export function useLiveUpdates() {
+  return useContext(LiveUpdatesContext);
+}
 
 const TOAST_COOLDOWN_WINDOW_MS = 10_000;
 const TOAST_COOLDOWN_MAX = 3;
@@ -506,17 +521,25 @@ function handleLiveEvent(
   }
 }
 
+const MUTATION_SUPPRESS_MS = 500;
+
 export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const gateRef = useRef<ToastGate>({ cooldownHits: new Map(), suppressUntil: 0 });
+  const [wsConnected, setWsConnected] = useState(false);
+  const invalidationSuppressUntilRef = useRef(0);
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
     retry: false,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+
+  const suppressInvalidations = useRef(() => {
+    invalidationSuppressUntilRef.current = Date.now() + MUTATION_SUPPRESS_MS;
+  }).current;
 
   useEffect(() => {
     if (!selectedCompanyId) return;
@@ -554,11 +577,15 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
           gateRef.current.suppressUntil = Date.now() + RECONNECT_SUPPRESS_MS;
         }
         reconnectAttempt = 0;
+        setWsConnected(true);
       };
 
       socket.onmessage = (message) => {
         const raw = typeof message.data === "string" ? message.data : "";
         if (!raw) return;
+
+        // Skip WS-driven invalidations while a local mutation is in flight
+        if (Date.now() < invalidationSuppressUntilRef.current) return;
 
         try {
           const parsed = JSON.parse(raw) as LiveEvent;
@@ -576,6 +603,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       };
 
       socket.onclose = () => {
+        setWsConnected(false);
         if (closed) return;
         scheduleReconnect();
       };
@@ -585,6 +613,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
 
     return () => {
       closed = true;
+      setWsConnected(false);
       clearReconnect();
       if (socket) {
         socket.onopen = null;
@@ -596,5 +625,12 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     };
   }, [queryClient, selectedCompanyId, pushToast, currentUserId]);
 
-  return <>{children}</>;
+  const contextValue = useRef<LiveUpdatesContextValue>({ isConnected: false, suppressInvalidations });
+  contextValue.current.isConnected = wsConnected;
+
+  return (
+    <LiveUpdatesContext.Provider value={contextValue.current}>
+      {children}
+    </LiveUpdatesContext.Provider>
+  );
 }
