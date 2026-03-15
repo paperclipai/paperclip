@@ -250,3 +250,34 @@ export const PERMISSION_KEYS = [
   "company:delete",
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
+
+/** Platform org role to Paperclip permission keys granted. Used by hosted_proxy mode. */
+export const ROLE_PERMISSIONS: Record<string, readonly PermissionKey[]> = {
+  owner: [
+    "agents:create",
+    "agents:update",
+    "agents:delete",
+    "users:invite",
+    "users:manage_permissions",
+    "tasks:assign",
+    "tasks:assign_scope",
+    "joins:approve",
+    "costs:view",
+    "company:delete",
+  ],
+  admin: [
+    "agents:create",
+    "agents:update",
+    "agents:delete",
+    "users:invite",
+    "users:manage_permissions",
+    "tasks:assign",
+    "tasks:assign_scope",
+    "joins:approve",
+    "costs:view",
+  ],
+  member: [
+    "tasks:assign",
+    "joins:approve",
+  ],
+} as const;
