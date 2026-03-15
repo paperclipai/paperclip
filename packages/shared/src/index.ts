@@ -31,6 +31,7 @@ export {
   JOIN_REQUEST_TYPES,
   JOIN_REQUEST_STATUSES,
   PERMISSION_KEYS,
+  ROLE_PERMISSIONS,
   type CompanyStatus,
   type DeploymentMode,
   type DeploymentExposure,

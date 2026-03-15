@@ -15,6 +15,7 @@ import {
   type AgentSpec,
   type CreatedAgent,
 } from "@wopr-network/provision-server";
+import { ROLE_PERMISSIONS } from "@paperclipai/shared";
 import { companyService, agentService, accessService, logActivity } from "../services/index.js";
 
 /** Default model for hosted agents routed through the metered gateway. */
@@ -56,33 +57,11 @@ async function ensureGatewayProviderConfig(gatewayUrl: string): Promise<void> {
   await fs.writeFile(configPath, JSON.stringify(config, null, 2) + "\n");
 }
 
-/** Role → permission grants for member management. */
-const ROLE_PERMISSIONS: Record<string, Array<{ permissionKey: string }>> = {
-  owner: [
-    { permissionKey: "agents:create" },
-    { permissionKey: "agents:update" },
-    { permissionKey: "agents:delete" },
-    { permissionKey: "costs:view" },
-    { permissionKey: "company:delete" },
-    { permissionKey: "users:invite" },
-    { permissionKey: "users:manage_permissions" },
-    { permissionKey: "tasks:assign" },
-    { permissionKey: "joins:approve" },
-  ],
-  admin: [
-    { permissionKey: "agents:create" },
-    { permissionKey: "agents:update" },
-    { permissionKey: "agents:delete" },
-    { permissionKey: "costs:view" },
-    { permissionKey: "users:invite" },
-    { permissionKey: "users:manage_permissions" },
-    { permissionKey: "tasks:assign" },
-    { permissionKey: "joins:approve" },
-  ],
-  member: [
-    { permissionKey: "tasks:assign" },
-  ],
-};
+/** Convert the shared ROLE_PERMISSIONS (flat string[]) to the grant shape access service expects. */
+function grantsForRole(role: string): Array<{ permissionKey: string }> {
+  const keys = ROLE_PERMISSIONS[role] ?? ROLE_PERMISSIONS.member ?? [];
+  return keys.map((permissionKey) => ({ permissionKey }));
+}
 
 /**
  * Paperclip adapter for the generic provision-server protocol.
@@ -341,7 +320,7 @@ function createMemberRouter(db: Db): Router {
         await access.promoteInstanceAdmin(user.id);
       }
 
-      const grants = ROLE_PERMISSIONS[role] ?? ROLE_PERMISSIONS.member;
+      const grants = grantsForRole(role);
       await access.setPrincipalGrants(companyId, "user", user.id, grants as any, null);
 
       res.json({ ok: true });
@@ -386,7 +365,7 @@ function createMemberRouter(db: Db): Router {
         await access.demoteInstanceAdmin(userId);
       }
 
-      const grants = ROLE_PERMISSIONS[role] ?? ROLE_PERMISSIONS.member;
+      const grants = grantsForRole(role);
       await access.setPrincipalGrants(companyId, "user", userId, grants as any, null);
 
       res.json({ ok: true });

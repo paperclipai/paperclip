@@ -38,6 +38,16 @@ export function CompanySwitcher() {
   });
   const isHosted = healthQuery.data?.hostedMode === true;
 
+  // In hosted mode with a single company, the switcher is unnecessary — platform manages the org.
+  if (isHosted && sidebarCompanies.length <= 1) {
+    return selectedCompany ? (
+      <div className="flex items-center gap-2 px-2 py-1.5">
+        <span className={`h-2 w-2 rounded-full shrink-0 ${statusDotColor(selectedCompany.status)}`} />
+        <span className="text-sm font-medium truncate">{selectedCompany.name}</span>
+      </div>
+    ) : null;
+  }
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
