@@ -1,3 +1,4 @@
+name: paperclip
 services:
   paperclip:
     build:
@@ -13,6 +14,6 @@ services:
       PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
-      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set — run make up or create a .env file}"
     volumes:
       - "${PAPERCLIP_DATA_DIR:-./data/docker-paperclip}:/paperclip"

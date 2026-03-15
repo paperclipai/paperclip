@@ -1,15 +1,12 @@
 COMPOSE_FILE     := docker-compose.quickstart.yml
 CONTAINER        := paperclip-paperclip-1
 DATA_DIR         := $(or $(PAPERCLIP_DATA_DIR),./data/docker-paperclip)
-BETTER_AUTH_SECRET ?= $(shell openssl rand -base64 32)
 CLI              := node --import ./server/node_modules/tsx/dist/loader.mjs cli/src/index.ts
-
-export BETTER_AUTH_SECRET
 
 .PHONY: up down build logs restart clean onboard bootstrap-ceo exec claude codex
 
 ## up: Build (if needed) and start all services
-up:
+up: .env
 	docker compose -f $(COMPOSE_FILE) up --build -d
 
 ## down: Stop and remove containers
@@ -54,3 +51,7 @@ clean: down
 ## help: Show available targets
 help:
 	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/## //' | column -t -s ':'
+
+.env:
+	@echo "BETTER_AUTH_SECRET=$$(openssl rand -base64 32)" > .env
+	@echo "Generated .env with BETTER_AUTH_SECRET"
