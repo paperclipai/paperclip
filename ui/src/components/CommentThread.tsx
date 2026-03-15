@@ -134,7 +134,10 @@ const TimelineList = memo(function TimelineList({
         if (item.kind === "run") {
           const run = item.run;
           return (
-            <div key={`run:${run.runId}`} className="border border-border bg-accent/20 p-3 overflow-hidden min-w-0 rounded-sm">
+            <div
+              key={`run:${run.runId}`}
+              className="paperclip-work-card paperclip-work-row overflow-hidden rounded-[calc(var(--radius)+0.25rem)] p-3"
+            >
               <div className="flex items-center justify-between mb-2">
                 <Link to={`/agents/${run.agentId}`} className="hover:underline">
                   <Identity
@@ -150,7 +153,7 @@ const TimelineList = memo(function TimelineList({
                 <span className="text-muted-foreground">Run</span>
                 <Link
                   to={`/agents/${run.agentId}/runs/${run.runId}`}
-                  className="inline-flex items-center rounded-md border border-border bg-accent/40 px-2 py-1 font-mono text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors"
+                  className="paperclip-chip inline-flex items-center rounded-md px-2 py-1 font-mono text-muted-foreground transition-colors hover:text-foreground"
                 >
                   {run.runId.slice(0, 8)}
                 </Link>
@@ -166,7 +169,7 @@ const TimelineList = memo(function TimelineList({
           <div
             key={comment.id}
             id={`comment-${comment.id}`}
-            className={`border p-3 overflow-hidden min-w-0 rounded-sm transition-colors duration-1000 ${isHighlighted ? "border-primary/50 bg-primary/5" : "border-border"}`}
+            className={`paperclip-work-card overflow-hidden rounded-[calc(var(--radius)+0.25rem)] p-3 transition-colors duration-1000 ${isHighlighted ? "border-primary/40 bg-[color:color-mix(in_oklab,var(--primary)_10%,transparent)]" : ""}`}
           >
             <div className="flex items-center justify-between mb-1">
               {comment.authorAgentId ? (
@@ -191,16 +194,16 @@ const TimelineList = memo(function TimelineList({
             </div>
             <MarkdownBody className="text-sm">{comment.body}</MarkdownBody>
             {comment.runId && (
-              <div className="mt-2 pt-2 border-t border-border/60">
+              <div className="mt-2 border-t border-border/60 pt-2">
                 {comment.runAgentId ? (
                   <Link
                     to={`/agents/${comment.runAgentId}/runs/${comment.runId}`}
-                    className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-[10px] font-mono text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
+                    className="paperclip-chip inline-flex items-center rounded-md px-2 py-1 text-[10px] font-mono text-muted-foreground transition-colors hover:text-foreground"
                   >
                     run {comment.runId.slice(0, 8)}
                   </Link>
                 ) : (
-                  <span className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-[10px] font-mono text-muted-foreground">
+                  <span className="paperclip-chip inline-flex items-center rounded-md px-2 py-1 text-[10px] font-mono text-muted-foreground">
                     run {comment.runId.slice(0, 8)}
                   </span>
                 )}
@@ -349,13 +352,18 @@ export function CommentThread({
 
   return (
     <div className="space-y-4">
-      <h3 className="text-sm font-semibold">Comments &amp; Runs ({timeline.length})</h3>
+      <div className="paperclip-section-header">
+        <div>
+          <p className="paperclip-work-kicker">Conversation Log</p>
+          <h3 className="mt-1 text-sm font-semibold">Comments &amp; Runs ({timeline.length})</h3>
+        </div>
+      </div>
 
       <TimelineList timeline={timeline} agentMap={agentMap} highlightCommentId={highlightCommentId} />
 
       {liveRunSlot}
 
-      <div className="space-y-2">
+      <div className="paperclip-work-card space-y-3 rounded-[calc(var(--radius)+0.35rem)] p-4">
         <MarkdownEditor
           ref={editorRef}
           value={body}

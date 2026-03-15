@@ -37,10 +37,42 @@ export function Projects() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
+      <section className="paperclip-work-hero px-5 py-5 sm:px-6">
+        <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+          <div className="space-y-3">
+            <p className="paperclip-work-kicker">Execution Map</p>
+            <div className="space-y-2">
+              <h1 className="paperclip-work-title">Projects</h1>
+              <p className="max-w-2xl text-sm text-muted-foreground">
+                Track the delivery lanes carrying roadmap work from planning into execution.
+              </p>
+            </div>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="paperclip-work-stat min-w-[8.5rem] px-4 py-3">
+              <p className="paperclip-work-label">Total</p>
+              <p className="mt-2 text-2xl font-semibold">{projects?.length ?? 0}</p>
+            </div>
+            <div className="paperclip-work-stat min-w-[8.5rem] px-4 py-3">
+              <p className="paperclip-work-label">Active</p>
+              <p className="mt-2 text-2xl font-semibold">
+                {projects?.filter((project) => project.status === "in_progress").length ?? 0}
+              </p>
+            </div>
+            <div className="paperclip-work-stat min-w-[8.5rem] px-4 py-3">
+              <p className="paperclip-work-label">Planned</p>
+              <p className="mt-2 text-2xl font-semibold">
+                {projects?.filter((project) => project.status === "planned" || project.status === "backlog").length ?? 0}
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <div className="flex items-center justify-end">
         <Button size="sm" variant="outline" onClick={openNewProject}>
-          <Plus className="h-4 w-4 mr-1" />
+          <Plus className="mr-1 h-4 w-4" />
           Add Project
         </Button>
       </div>
@@ -57,7 +89,7 @@ export function Projects() {
       )}
 
       {projects && projects.length > 0 && (
-        <div className="border border-border">
+        <div className="paperclip-work-list">
           {projects.map((project) => (
             <EntityRow
               key={project.id}

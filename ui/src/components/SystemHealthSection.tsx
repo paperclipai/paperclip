@@ -31,13 +31,11 @@ export function SystemHealthSection({
   onRefresh,
 }: SystemHealthSectionProps) {
   return (
-    <section className="space-y-3">
+    <section className="paperclip-monitor-card space-y-4 p-4 md:p-5">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            System Health
-          </h2>
-          <p className="text-sm text-muted-foreground">
+          <h2 className="paperclip-monitor-title">System Health</h2>
+          <p className="paperclip-monitor-subtitle mt-2 text-sm">
             Instance-level diagnostics for the control plane and local runtimes.
           </p>
         </div>
@@ -48,33 +46,33 @@ export function SystemHealthSection({
       </div>
 
       {isLoading && (
-        <div className="border border-border px-4 py-3 text-sm text-muted-foreground">
+        <div className="paperclip-monitor-card rounded-[calc(var(--radius)-0.05rem)] px-4 py-3 text-sm text-muted-foreground">
           Loading subsystem diagnostics...
         </div>
       )}
 
       {error && (
-        <div className="border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-500/30 dark:bg-red-950/50 dark:text-red-200">
+        <div className="rounded-[calc(var(--radius)-0.05rem)] border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-700 dark:text-red-200">
           {error.message}
         </div>
       )}
 
       {data && (
-        <div className="space-y-2">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <div className="space-y-4">
+          <div className="paperclip-chip flex items-center gap-2 rounded-[calc(var(--radius)-0.1rem)] px-3 py-2 text-sm text-muted-foreground">
             <StatusDot status={data.status} />
             <span className="capitalize">{data.status}</span>
             <span>checked {timeAgo(data.testedAt)}</span>
           </div>
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             {data.checks.map((check) => (
-              <article key={check.id} className="border border-border p-4 space-y-2">
+              <article key={check.id} className="paperclip-monitor-card h-full space-y-3 p-4">
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <StatusDot status={check.status} />
                     <h3 className="text-sm font-medium">{check.label}</h3>
                   </div>
-                  <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                  <span className="paperclip-nav-meta text-[0.58rem] text-muted-foreground">
                     {check.blocking ? "blocking" : "advisory"}
                   </span>
                 </div>

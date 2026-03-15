@@ -564,10 +564,10 @@ export function IssueDetail() {
   const isImageAttachment = (attachment: IssueAttachment) => attachment.contentType.startsWith("image/");
 
   return (
-    <div className="max-w-2xl space-y-6">
+    <div className="max-w-4xl space-y-6">
       {/* Parent chain breadcrumb */}
       {ancestors.length > 0 && (
-        <nav className="flex items-center gap-1 text-xs text-muted-foreground flex-wrap">
+        <nav className="paperclip-work-card flex flex-wrap items-center gap-1 rounded-[calc(var(--radius)+0.35rem)] px-4 py-3 text-xs text-muted-foreground">
           {[...ancestors].reverse().map((ancestor, i) => (
             <span key={ancestor.id} className="flex items-center gap-1">
               {i > 0 && <ChevronRight className="h-3 w-3 shrink-0" />}
@@ -586,13 +586,13 @@ export function IssueDetail() {
       )}
 
       {issue.hiddenAt && (
-        <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+        <div className="paperclip-work-card flex items-center gap-2 rounded-[calc(var(--radius)+0.3rem)] border-destructive/30 bg-destructive/10 px-3 py-3 text-sm text-destructive">
           <EyeOff className="h-4 w-4 shrink-0" />
           This issue is hidden
         </div>
       )}
 
-      <div className="space-y-3">
+      <section className="paperclip-work-hero space-y-4 px-5 py-5 sm:px-6">
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
           <StatusIcon
             status={issue.status}
@@ -602,7 +602,7 @@ export function IssueDetail() {
             priority={issue.priority}
             onChange={(priority) => updateIssue.mutate({ priority })}
           />
-          <span className="text-sm font-mono text-muted-foreground shrink-0">{issue.identifier ?? issue.id.slice(0, 8)}</span>
+          <span className="paperclip-work-meta shrink-0">{issue.identifier ?? issue.id.slice(0, 8)}</span>
 
           {hasLiveRuns && (
             <span className="inline-flex items-center gap-1.5 rounded-full bg-cyan-500/10 border border-cyan-500/30 px-2 py-0.5 text-[10px] font-medium text-cyan-600 dark:text-cyan-400 shrink-0">
@@ -713,14 +713,14 @@ export function IssueDetail() {
           value={issue.title}
           onSave={(title) => updateIssue.mutate({ title })}
           as="h2"
-          className="text-xl font-bold"
+          className="paperclip-work-title"
         />
 
         <InlineEditor
           value={issue.description ?? ""}
           onSave={(description) => updateIssue.mutate({ description })}
           as="p"
-          className="text-sm text-muted-foreground"
+          className="max-w-3xl text-sm text-muted-foreground"
           placeholder="Add a description..."
           multiline
           mentions={mentionOptions}
@@ -735,11 +735,14 @@ export function IssueDetail() {
             {promoteToResult.error instanceof Error ? promoteToResult.error.message : "Failed to promote issue"}
           </p>
         ) : null}
-      </div>
+      </section>
 
-      <div className="space-y-3">
+      <section className="paperclip-work-card space-y-4 rounded-[calc(var(--radius)+0.4rem)] p-4 sm:p-5">
         <div className="flex items-center justify-between gap-2">
-          <h3 className="text-sm font-medium text-muted-foreground">Attachments</h3>
+          <div>
+            <p className="paperclip-work-kicker">Assets</p>
+            <h3 className="mt-1 text-sm font-medium text-muted-foreground">Attachments</h3>
+          </div>
           <div className="flex items-center gap-2">
             <input
               ref={fileInputRef}
@@ -767,9 +770,12 @@ export function IssueDetail() {
         {(!attachments || attachments.length === 0) ? (
           <p className="text-xs text-muted-foreground">No attachments yet.</p>
         ) : (
-          <div className="space-y-2">
+          <div className="grid gap-3 md:grid-cols-2">
             {attachments.map((attachment) => (
-              <div key={attachment.id} className="border border-border rounded-md p-2">
+              <div
+                key={attachment.id}
+                className="paperclip-work-card rounded-[calc(var(--radius)+0.25rem)] p-3"
+              >
                 <div className="flex items-center justify-between gap-2">
                   <a
                     href={attachment.contentPath}
@@ -798,7 +804,7 @@ export function IssueDetail() {
                     <img
                       src={attachment.contentPath}
                       alt={attachment.originalFilename ?? "attachment"}
-                      className="mt-2 max-h-56 rounded border border-border object-contain bg-accent/10"
+                      className="mt-2 max-h-56 rounded border border-border bg-accent/10 object-contain"
                       loading="lazy"
                     />
                   </a>
@@ -807,12 +813,12 @@ export function IssueDetail() {
             ))}
           </div>
         )}
-      </div>
+      </section>
 
       <Separator />
 
       <Tabs value={detailTab} onValueChange={setDetailTab} className="space-y-3">
-        <TabsList variant="line" className="w-full justify-start gap-1">
+        <TabsList variant="line" className="paperclip-work-tabs w-full justify-start gap-1">
           <TabsTrigger value="comments" className="gap-1.5">
             <MessageSquare className="h-3.5 w-3.5" />
             Comments
@@ -858,14 +864,16 @@ export function IssueDetail() {
 
         <TabsContent value="subissues">
           {childIssues.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No sub-issues.</p>
+            <div className="paperclip-work-card rounded-[calc(var(--radius)+0.25rem)] px-4 py-3 text-xs text-muted-foreground">
+              No sub-issues.
+            </div>
           ) : (
-            <div className="border border-border rounded-lg divide-y divide-border">
+            <div className="paperclip-work-list divide-y divide-border">
               {childIssues.map((child) => (
                 <Link
                   key={child.id}
                   to={`/issues/${child.identifier ?? child.id}`}
-                  className="flex items-center justify-between px-3 py-2 text-sm hover:bg-accent/20 transition-colors"
+                  className="paperclip-work-row flex items-center justify-between px-3 py-3 text-sm transition-colors"
                 >
                   <div className="flex items-center gap-2 min-w-0">
                     <StatusIcon status={child.status} />
@@ -889,11 +897,13 @@ export function IssueDetail() {
 
         <TabsContent value="activity">
           {!activity || activity.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No activity yet.</p>
+            <div className="paperclip-work-card rounded-[calc(var(--radius)+0.25rem)] px-4 py-3 text-xs text-muted-foreground">
+              No activity yet.
+            </div>
           ) : (
-            <div className="space-y-1.5">
+            <div className="paperclip-work-list divide-y divide-border/70">
               {activity.slice(0, 20).map((evt) => (
-                <div key={evt.id} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <div key={evt.id} className="paperclip-work-row flex items-center gap-1.5 px-4 py-3 text-xs text-muted-foreground">
                   <ActorIdentity evt={evt} agentMap={agentMap} />
                   <span>{formatAction(evt.action, evt.details)}</span>
                   <span className="ml-auto shrink-0">{relativeTime(evt.createdAt)}</span>
@@ -908,7 +918,7 @@ export function IssueDetail() {
         <Collapsible
           open={secondaryOpen.approvals}
           onOpenChange={(open) => setSecondaryOpen((prev) => ({ ...prev, approvals: open }))}
-          className="rounded-lg border border-border"
+          className="paperclip-work-card overflow-hidden rounded-[calc(var(--radius)+0.35rem)]"
         >
           <CollapsibleTrigger className="flex w-full items-center justify-between px-3 py-2 text-left">
             <span className="text-sm font-medium text-muted-foreground">
@@ -924,7 +934,7 @@ export function IssueDetail() {
                 <Link
                   key={approval.id}
                   to={`/approvals/${approval.id}`}
-                  className="flex items-center justify-between px-3 py-2 text-xs hover:bg-accent/20 transition-colors"
+                  className="paperclip-work-row flex items-center justify-between px-3 py-3 text-xs transition-colors"
                 >
                   <div className="flex items-center gap-2">
                     <StatusBadge status={approval.status} />
@@ -945,7 +955,7 @@ export function IssueDetail() {
         <Collapsible
           open={secondaryOpen.cost}
           onOpenChange={(open) => setSecondaryOpen((prev) => ({ ...prev, cost: open }))}
-          className="rounded-lg border border-border"
+          className="paperclip-work-card overflow-hidden rounded-[calc(var(--radius)+0.35rem)]"
         >
           <CollapsibleTrigger className="flex w-full items-center justify-between px-3 py-2 text-left">
             <span className="text-sm font-medium text-muted-foreground">Cost Summary</span>
@@ -954,7 +964,7 @@ export function IssueDetail() {
             />
           </CollapsibleTrigger>
           <CollapsibleContent>
-            <div className="border-t border-border px-3 py-2">
+            <div className="border-t border-border px-4 py-3">
               {!issueCostSummary.hasCost && !issueCostSummary.hasTokens ? (
                 <div className="text-xs text-muted-foreground">No cost data yet.</div>
               ) : (
@@ -989,7 +999,7 @@ export function IssueDetail() {
         <Collapsible
           open={secondaryOpen.activity}
           onOpenChange={(open) => setSecondaryOpen((prev) => ({ ...prev, activity: open }))}
-          className="rounded-lg border border-border"
+          className="paperclip-work-card overflow-hidden rounded-[calc(var(--radius)+0.35rem)]"
         >
           <CollapsibleTrigger className="flex w-full items-center justify-between px-3 py-2 text-left">
             <span className="text-sm font-medium text-muted-foreground">Workspace Isolation</span>
@@ -998,9 +1008,12 @@ export function IssueDetail() {
             />
           </CollapsibleTrigger>
           <CollapsibleContent>
-            <div className="space-y-2 border-t border-border px-3 py-2">
+            <div className="space-y-2 border-t border-border px-4 py-3">
               {workspaceSummary.map((row) => (
-                <div key={row.runId} className="rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs">
+                <div
+                  key={row.runId}
+                  className="paperclip-work-card rounded-[calc(var(--radius)+0.15rem)] px-3 py-3 text-xs"
+                >
                   <div className="font-medium text-foreground">{row.path}</div>
                   <div className="mt-1 flex flex-wrap gap-2 text-muted-foreground">
                     {row.branch ? <span>Branch {row.branch}</span> : null}

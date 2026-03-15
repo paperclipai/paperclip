@@ -29,8 +29,8 @@ interface IssuePropertiesProps {
 
 function PropertyRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-center gap-3 py-1.5">
-      <span className="text-xs text-muted-foreground shrink-0 w-20">{label}</span>
+    <div className="flex items-center gap-3 rounded-[calc(var(--radius)-0.15rem)] px-2 py-2">
+      <span className="paperclip-work-meta shrink-0 w-20 text-[0.62rem]">{label}</span>
       <div className="flex items-center gap-1.5 min-w-0 flex-1">{children}</div>
     </div>
   );
@@ -61,7 +61,7 @@ function PropertyPicker({
   children: React.ReactNode;
 }) {
   const btnCn = cn(
-    "inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors",
+    "paperclip-chip inline-flex items-center gap-1.5 cursor-pointer rounded px-2 py-1 transition-colors",
     triggerClassName,
   );
 
@@ -75,7 +75,7 @@ function PropertyPicker({
           {extra}
         </PropertyRow>
         {open && (
-          <div className={cn("rounded-md border border-border bg-popover p-1 mb-2", popoverClassName)}>
+          <div className={cn("paperclip-work-card mb-2 rounded-md p-1", popoverClassName)}>
             {children}
           </div>
         )}

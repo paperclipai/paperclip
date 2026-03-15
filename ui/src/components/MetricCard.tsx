@@ -15,20 +15,27 @@ export function MetricCard({ icon: Icon, value, label, description, to, onClick 
   const isClickable = !!(to || onClick);
 
   const inner = (
-    <div className={`h-full px-4 py-4 sm:px-5 sm:py-5 rounded-lg transition-colors${isClickable ? " hover:bg-accent/50 cursor-pointer" : ""}`}>
-      <div className="flex items-start justify-between gap-3">
+    <div className={`paperclip-monitor-card-strong relative h-full overflow-hidden p-4 sm:p-5${isClickable ? " cursor-pointer" : ""}`}>
+      <div className="pointer-events-none absolute right-0 top-0 h-24 w-24 rounded-full bg-[radial-gradient(circle,color-mix(in_oklab,var(--primary)_18%,transparent),transparent_68%)]" />
+      <div className="relative flex h-full flex-col justify-between gap-5">
+        <div className="flex items-start justify-between gap-3">
+          <div className="paperclip-chip flex h-10 w-10 items-center justify-center rounded-[calc(var(--radius)-0.15rem)]">
+            <Icon className="h-4 w-4 text-primary" />
+          </div>
+          {isClickable && <span className="paperclip-nav-meta text-primary">Open</span>}
+        </div>
+
         <div className="flex-1 min-w-0">
-          <p className="text-2xl sm:text-3xl font-semibold tracking-tight">
+          <p className="text-3xl font-semibold tracking-[-0.04em] sm:text-4xl">
             {value}
           </p>
-          <p className="text-xs sm:text-sm font-medium text-muted-foreground mt-1">
+          <p className="paperclip-monitor-title mt-2">
             {label}
           </p>
           {description && (
-            <div className="text-xs text-muted-foreground/70 mt-1.5 hidden sm:block">{description}</div>
+            <div className="paperclip-monitor-subtitle mt-3 hidden text-xs leading-5 sm:block">{description}</div>
           )}
         </div>
-        <Icon className="h-4 w-4 text-muted-foreground/50 shrink-0 mt-1.5" />
       </div>
     </div>
   );

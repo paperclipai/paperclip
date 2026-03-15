@@ -105,27 +105,27 @@ function SortableCompanyItem({
               e.preventDefault();
               onSelect();
             }}
-            className="relative flex items-center justify-center group overflow-visible"
+            className="group relative flex items-center justify-center overflow-visible"
           >
-            {/* Selection indicator pill */}
             <div
               className={cn(
-                "absolute left-[-14px] w-1 rounded-r-full bg-foreground transition-[height] duration-150",
-                isSelected
-                  ? "h-5"
-                  : "h-0 group-hover:h-2"
+                "absolute left-[-16px] w-1.5 rounded-r-full bg-primary transition-[height,opacity] duration-150",
+                isSelected ? "h-8 opacity-100" : "h-0 opacity-0 group-hover:h-4 group-hover:opacity-70",
               )}
             />
             <div
-              className={cn("relative overflow-visible transition-transform duration-150", isDragging && "scale-105")}
+              className={cn(
+                "paperclip-chip relative overflow-visible rounded-[1rem] p-1.5 transition-[transform,box-shadow,border-color,background-color] duration-150",
+                isSelected && "paperclip-panel-strong",
+                !isSelected && "group-hover:translate-x-[2px] group-hover:scale-[1.02]",
+                isDragging && "scale-105",
+              )}
             >
               <CompanyPatternIcon
                 companyName={company.name}
                 brandColor={company.brandColor}
                 className={cn(
-                  isSelected
-                    ? "rounded-[14px]"
-                    : "rounded-[22px] group-hover:rounded-[14px]",
+                  isSelected ? "rounded-[14px]" : "rounded-[18px] group-hover:rounded-[14px]",
                   isDragging && "shadow-lg",
                 )}
               />
@@ -261,14 +261,16 @@ export function CompanyRail() {
   );
 
   return (
-    <div className="flex flex-col items-center w-[72px] shrink-0 h-full bg-background border-r border-border">
-      {/* Paperclip icon - aligned with top sections (implied line, no visible border) */}
-      <div className="flex items-center justify-center h-12 w-full shrink-0">
-        <Paperclip className="h-5 w-5 text-foreground" />
+    <div className="paperclip-panel relative flex h-full w-[88px] shrink-0 flex-col items-center overflow-hidden rounded-[calc(var(--radius)+0.55rem)]">
+      {/* The rail behaves like a company switchboard, so the brand mark gets a clear console mount. */}
+      <div className="flex w-full shrink-0 flex-col items-center gap-2 border-b border-[color:var(--surface-outline)] px-3 py-4">
+        <div className="paperclip-chip flex h-11 w-11 items-center justify-center rounded-[calc(var(--radius)-0.15rem)]">
+          <Paperclip className="h-5 w-5 text-primary" />
+        </div>
+        <span className="paperclip-kicker text-center text-[0.6rem]">Net</span>
       </div>
 
-      {/* Company list */}
-      <div className="flex-1 flex flex-col items-center gap-2 py-3 w-full overflow-y-auto overflow-x-hidden scrollbar-none">
+      <div className="scrollbar-none flex w-full flex-1 flex-col items-center gap-3 overflow-y-auto overflow-x-hidden px-2 py-4">
         <DndContext
           sensors={sensors}
           collisionDetection={closestCenter}
@@ -292,16 +294,14 @@ export function CompanyRail() {
         </DndContext>
       </div>
 
-      {/* Separator before add button */}
-      <div className="w-8 h-px bg-border mx-auto shrink-0" />
+      <div className="mx-auto h-px w-10 shrink-0 bg-[linear-gradient(90deg,transparent,color-mix(in_oklab,var(--primary)_24%,var(--border)),transparent)]" />
 
-      {/* Add company button */}
-      <div className="flex items-center justify-center py-2 shrink-0">
+      <div className="flex shrink-0 items-center justify-center py-3">
         <Tooltip delayDuration={300}>
           <TooltipTrigger asChild>
             <button
               onClick={() => openOnboarding()}
-              className="flex items-center justify-center w-11 h-11 rounded-[22px] hover:rounded-[14px] border-2 border-dashed border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground transition-[border-color,color,border-radius] duration-150"
+              className="paperclip-chip flex h-12 w-12 items-center justify-center rounded-[1rem] border-dashed text-muted-foreground transition-[border-color,color,transform] duration-150 hover:-translate-y-[1px] hover:text-foreground"
               aria-label="Add company"
             >
               <Plus className="h-5 w-5" />

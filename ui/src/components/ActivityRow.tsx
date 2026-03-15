@@ -130,8 +130,8 @@ export function ActivityRow({ event, agentMap, entityNameMap, entityTitleMap, cl
   );
 
   const classes = cn(
-    "px-4 py-2 text-sm",
-    link && "cursor-pointer hover:bg-accent/50 transition-colors",
+    "paperclip-monitor-row px-4 py-3 text-sm",
+    link && "cursor-pointer",
     className,
   );
 

@@ -10,12 +10,15 @@ export function PropertiesPanel() {
 
   return (
     <aside
-      className="hidden md:flex border-l border-border bg-card flex-col shrink-0 overflow-hidden transition-[width,opacity] duration-200 ease-in-out"
+      className="hidden shrink-0 overflow-hidden border-l border-[color:var(--surface-outline)] bg-transparent transition-[width,opacity] duration-200 ease-in-out md:flex"
       style={{ width: panelVisible ? 320 : 0, opacity: panelVisible ? 1 : 0 }}
     >
-      <div className="w-80 flex-1 flex flex-col min-w-[320px]">
-        <div className="flex items-center justify-between px-4 py-2 border-b border-border">
-          <span className="text-sm font-medium">Properties</span>
+      <div className="paperclip-panel flex min-w-[320px] w-80 flex-1 flex-col rounded-none border-0 border-l border-[color:var(--surface-outline)]">
+        <div className="flex items-center justify-between border-b border-[color:var(--surface-outline)] px-4 py-3">
+          <div>
+            <div className="paperclip-kicker mb-1">Context</div>
+            <span className="text-sm font-semibold">Properties</span>
+          </div>
           <Button variant="ghost" size="icon-xs" onClick={() => setPanelVisible(false)}>
             <X className="h-4 w-4" />
           </Button>

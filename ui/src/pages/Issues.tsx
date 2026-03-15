@@ -86,17 +86,49 @@ export function Issues() {
   }
 
   return (
-    <IssuesList
-      issues={issues ?? []}
-      isLoading={isLoading}
-      error={error as Error | null}
-      agents={agents}
-      liveIssueIds={liveIssueIds}
-      viewStateKey="paperclip:issues-view"
-      initialAssignees={searchParams.get("assignee") ? [searchParams.get("assignee")!] : undefined}
-      initialSearch={initialSearch}
-      onSearchChange={handleSearchChange}
-      onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
-    />
+    <div className="space-y-5">
+      <section className="paperclip-work-hero px-5 py-5 sm:px-6">
+        <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+          <div className="space-y-3">
+            <p className="paperclip-work-kicker">Work Queue</p>
+            <div className="space-y-2">
+              <h1 className="paperclip-work-title">Issues</h1>
+              <p className="max-w-2xl text-sm text-muted-foreground">
+                Scan the full operating backlog, live execution, and recently updated requests in one dense surface.
+              </p>
+            </div>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="paperclip-work-stat min-w-[8.5rem] px-4 py-3">
+              <p className="paperclip-work-label">Total</p>
+              <p className="mt-2 text-2xl font-semibold">{issues?.length ?? 0}</p>
+            </div>
+            <div className="paperclip-work-stat min-w-[8.5rem] px-4 py-3">
+              <p className="paperclip-work-label">Active</p>
+              <p className="mt-2 text-2xl font-semibold">
+                {issues?.filter((issue) => ["todo", "in_progress", "in_review", "blocked"].includes(issue.status)).length ?? 0}
+              </p>
+            </div>
+            <div className="paperclip-work-stat min-w-[8.5rem] px-4 py-3">
+              <p className="paperclip-work-label">Live</p>
+              <p className="mt-2 text-2xl font-semibold">{liveIssueIds.size}</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <IssuesList
+        issues={issues ?? []}
+        isLoading={isLoading}
+        error={error as Error | null}
+        agents={agents}
+        liveIssueIds={liveIssueIds}
+        viewStateKey="paperclip:issues-view"
+        initialAssignees={searchParams.get("assignee") ? [searchParams.get("assignee")!] : undefined}
+        initialSearch={initialSearch}
+        onSearchChange={handleSearchChange}
+        onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
+      />
+    </div>
   );
 }

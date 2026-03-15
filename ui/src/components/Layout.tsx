@@ -184,7 +184,9 @@ export function Layout() {
   );
 
   return (
-    <div className="flex h-dvh bg-background text-foreground overflow-hidden pt-[env(safe-area-inset-top)]">
+    <div className="relative flex h-dvh overflow-hidden bg-background pt-[env(safe-area-inset-top)] text-foreground">
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-28 bg-[linear-gradient(180deg,color-mix(in_oklab,var(--primary)_9%,transparent),transparent)]" />
+      <div className="pointer-events-none absolute inset-x-6 top-5 hidden h-px bg-[linear-gradient(90deg,transparent,color-mix(in_oklab,var(--primary)_24%,transparent),transparent)] md:block" />
       <a
         href="#main-content"
         className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[200] focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:shadow-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -195,25 +197,25 @@ export function Layout() {
       {isMobile && sidebarOpen && (
         <button
           type="button"
-          className="fixed inset-0 z-40 bg-black/50"
+          className="fixed inset-0 z-40 bg-black/55 backdrop-blur-sm"
           onClick={() => setSidebarOpen(false)}
           aria-label="Close sidebar"
         />
       )}
 
-      {/* Combined sidebar area: company rail + inner sidebar + docs bar */}
+      {/* Keep the chrome panels separate so navigation reads as a switchboard beside the active workspace. */}
       {isMobile ? (
         <div
           className={cn(
-            "fixed inset-y-0 left-0 z-50 flex flex-col overflow-hidden pt-[env(safe-area-inset-top)] transition-transform duration-100 ease-out",
-            sidebarOpen ? "translate-x-0" : "-translate-x-full"
+            "fixed inset-y-2 left-2 z-50 flex max-w-[calc(100vw-1rem)] flex-col overflow-hidden pt-[env(safe-area-inset-top)] transition-transform duration-150 ease-out",
+            sidebarOpen ? "translate-x-0" : "-translate-x-[calc(100%+1rem)]",
           )}
         >
-          <div className="flex flex-1 min-h-0 overflow-hidden">
+          <div className="flex min-h-0 flex-1 gap-2 overflow-hidden">
             <CompanyRail />
             <Sidebar />
           </div>
-          <div className="border-t border-r border-border px-3 py-2 bg-background">
+          <div className="paperclip-panel mt-2 rounded-[calc(var(--radius)+0.4rem)] border px-3 py-2">
             <div className="flex items-center gap-1">
               <SidebarNavItem
                 to="/docs"
@@ -236,19 +238,19 @@ export function Layout() {
           </div>
         </div>
       ) : (
-        <div className="flex flex-col shrink-0 h-full">
-          <div className="flex flex-1 min-h-0">
+        <div className="flex h-full shrink-0 flex-col px-3 py-3 pr-0">
+          <div className="flex min-h-0 flex-1 gap-2">
             <CompanyRail />
             <div
               className={cn(
-                "overflow-hidden transition-[width] duration-100 ease-out",
-                sidebarOpen ? "w-60" : "w-0"
+                "overflow-hidden transition-[width,opacity] duration-150 ease-out",
+                sidebarOpen ? "w-64 opacity-100" : "w-0 opacity-0",
               )}
             >
               <Sidebar />
             </div>
           </div>
-          <div className="border-t border-r border-border px-3 py-2">
+          <div className="paperclip-panel mt-2 rounded-[calc(var(--radius)+0.4rem)] border px-3 py-2">
             <div className="flex items-center gap-1">
               <SidebarNavItem
                 to="/docs"
@@ -272,20 +274,25 @@ export function Layout() {
         </div>
       )}
 
-      {/* Main content */}
-      <div className="flex-1 flex flex-col min-w-0 h-full">
-        <BreadcrumbBar />
-        <div className="flex flex-1 min-h-0">
+      <div className="flex h-full min-w-0 flex-1 flex-col px-3 py-3 pl-3">
+        <div className="paperclip-panel-strong relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-[calc(var(--radius)+0.9rem)]">
+          <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-[linear-gradient(90deg,transparent,color-mix(in_oklab,var(--primary)_42%,transparent),transparent)]" />
+          <BreadcrumbBar />
+          <div className="flex min-h-0 flex-1">
           <main
             id="main-content"
             tabIndex={-1}
-            className={cn("flex-1 overflow-auto p-4 md:p-6", isMobile && "pb-[calc(5rem+env(safe-area-inset-bottom))]")}
+            className={cn(
+              "flex-1 overflow-auto px-4 pb-4 pt-4 md:px-6 md:pb-6 md:pt-5",
+              isMobile && "pb-[calc(6.25rem+env(safe-area-inset-bottom))]",
+            )}
             onScroll={handleMainScroll}
           >
             <Outlet />
           </main>
           <PropertiesPanel />
         </div>
+      </div>
       </div>
       {isMobile && <MobileBottomNav visible={mobileNavVisible} />}
       <CommandPalette />

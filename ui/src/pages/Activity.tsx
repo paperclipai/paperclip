@@ -99,22 +99,40 @@ export function Activity() {
     : [];
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-end">
-        <Select value={filter} onValueChange={setFilter}>
-          <SelectTrigger className="w-[140px] h-8 text-xs">
-            <SelectValue placeholder="Filter by type" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All types</SelectItem>
-            {entityTypes.map((type) => (
-              <SelectItem key={type} value={type}>
-                {type.charAt(0).toUpperCase() + type.slice(1)}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
+    <div className="space-y-6">
+      <section className="paperclip-monitor-hero px-5 py-5 sm:px-6">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div className="space-y-3">
+            <p className="paperclip-kicker">Operational Feed</p>
+            <div className="space-y-2">
+              <h1 className="text-3xl font-semibold text-foreground sm:text-4xl">Activity stream</h1>
+              <p className="max-w-2xl text-sm leading-6 text-muted-foreground sm:text-base">
+                Inspect every agent, issue, project, and goal event in one chronological feed.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <div className="paperclip-chip rounded-2xl px-4 py-3">
+              <p className="paperclip-monitor-title">Visible Events</p>
+              <p className="mt-2 text-2xl font-semibold text-foreground">{filtered?.length ?? 0}</p>
+            </div>
+            <Select value={filter} onValueChange={setFilter}>
+              <SelectTrigger className="paperclip-panel h-11 min-w-[11rem] rounded-full border-primary/20 bg-background/20 px-4 text-xs">
+                <SelectValue placeholder="Filter by type" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All types</SelectItem>
+                {entityTypes.map((type) => (
+                  <SelectItem key={type} value={type}>
+                    {type.charAt(0).toUpperCase() + type.slice(1)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+      </section>
 
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
@@ -123,7 +141,7 @@ export function Activity() {
       )}
 
       {filtered && filtered.length > 0 && (
-        <div className="border border-border divide-y divide-border">
+        <div className="paperclip-monitor-list divide-y divide-border/70">
           {filtered.map((event) => (
             <ActivityRow
               key={event.id}

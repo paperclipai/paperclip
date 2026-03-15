@@ -114,18 +114,33 @@ export function InviteLandingPage() {
   });
 
   if (!token) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-destructive">Invalid invite token.</div>;
+    return (
+      <div className="paperclip-edge-shell items-center justify-center p-6">
+        <div className="paperclip-edge-card w-full max-w-2xl px-6 py-8">
+          <p className="paperclip-edge-kicker">Company Invite</p>
+          <p className="mt-4 text-sm text-destructive">Invalid invite token.</p>
+        </div>
+      </div>
+    );
   }
 
   if (inviteQuery.isLoading || healthQuery.isLoading || sessionQuery.isLoading) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading invite...</div>;
+    return (
+      <div className="paperclip-edge-shell items-center justify-center p-6">
+        <div className="paperclip-edge-card w-full max-w-2xl px-6 py-8">
+          <p className="paperclip-edge-kicker">Company Invite</p>
+          <p className="mt-4 text-sm text-muted-foreground">Loading invite…</p>
+        </div>
+      </div>
+    );
   }
 
   if (inviteQuery.error || !invite) {
     return (
-      <div className="mx-auto max-w-xl py-10">
-        <div className="rounded-lg border border-border bg-card p-6">
-          <h1 className="text-lg font-semibold">Invite not available</h1>
+      <div className="paperclip-edge-shell items-center justify-center p-6">
+        <div className="paperclip-edge-card w-full max-w-2xl px-6 py-8">
+          <p className="paperclip-edge-kicker">Company Invite</p>
+          <h1 className="mt-3 text-2xl font-semibold">Invite not available</h1>
           <p className="mt-2 text-sm text-muted-foreground">
             This invite may be expired, revoked, or already used.
           </p>
@@ -136,9 +151,10 @@ export function InviteLandingPage() {
 
   if (result?.kind === "bootstrap") {
     return (
-      <div className="mx-auto max-w-xl py-10">
-        <div className="rounded-lg border border-border bg-card p-6">
-          <h1 className="text-lg font-semibold">Bootstrap complete</h1>
+      <div className="paperclip-edge-shell items-center justify-center p-6">
+        <div className="paperclip-edge-card w-full max-w-2xl px-6 py-8">
+          <p className="paperclip-edge-kicker">Bootstrap</p>
+          <h1 className="mt-3 text-2xl font-semibold">Bootstrap complete</h1>
           <p className="mt-2 text-sm text-muted-foreground">
             The first instance admin is now configured. You can continue to the board.
           </p>
@@ -171,24 +187,25 @@ export function InviteLandingPage() {
     const onboardingTextPath = readNestedString(payload.onboarding, ["textInstructions", "path"]);
     const diagnostics = Array.isArray(payload.diagnostics) ? payload.diagnostics : [];
     return (
-      <div className="mx-auto max-w-xl py-10">
-        <div className="rounded-lg border border-border bg-card p-6">
-          <h1 className="text-lg font-semibold">Join request submitted</h1>
+      <div className="paperclip-edge-shell items-center justify-center p-6">
+        <div className="paperclip-edge-card w-full max-w-2xl px-6 py-8">
+          <p className="paperclip-edge-kicker">Join Request</p>
+          <h1 className="mt-3 text-2xl font-semibold">Join request submitted</h1>
           <p className="mt-2 text-sm text-muted-foreground">
             Your request is pending admin approval. You will not have access until approved.
           </p>
-          <div className="mt-4 rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
+          <div className="paperclip-gov-card mt-4 p-3 text-xs text-muted-foreground">
             Request ID: <span className="font-mono">{payload.id}</span>
           </div>
           {claimSecret && claimApiKeyPath && (
-            <div className="mt-3 space-y-1 rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
+            <div className="paperclip-gov-card mt-3 space-y-1 p-3 text-xs text-muted-foreground">
               <p className="font-medium text-foreground">One-time claim secret (save now)</p>
               <p className="font-mono break-all">{claimSecret}</p>
               <p className="font-mono break-all">POST {claimApiKeyPath}</p>
             </div>
           )}
           {(onboardingSkillUrl || onboardingSkillPath || onboardingInstallPath) && (
-            <div className="mt-3 space-y-1 rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
+            <div className="paperclip-gov-card mt-3 space-y-1 p-3 text-xs text-muted-foreground">
               <p className="font-medium text-foreground">Paperclip skill bootstrap</p>
               {onboardingSkillUrl && <p className="font-mono break-all">GET {onboardingSkillUrl}</p>}
               {!onboardingSkillUrl && onboardingSkillPath && <p className="font-mono break-all">GET {onboardingSkillPath}</p>}
@@ -196,14 +213,14 @@ export function InviteLandingPage() {
             </div>
           )}
           {(onboardingTextUrl || onboardingTextPath) && (
-            <div className="mt-3 space-y-1 rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
+            <div className="paperclip-gov-card mt-3 space-y-1 p-3 text-xs text-muted-foreground">
               <p className="font-medium text-foreground">Agent-readable onboarding text</p>
               {onboardingTextUrl && <p className="font-mono break-all">GET {onboardingTextUrl}</p>}
               {!onboardingTextUrl && onboardingTextPath && <p className="font-mono break-all">GET {onboardingTextPath}</p>}
             </div>
           )}
           {diagnostics.length > 0 && (
-            <div className="mt-3 space-y-1 rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
+            <div className="paperclip-gov-card mt-3 space-y-1 p-3 text-xs text-muted-foreground">
               <p className="font-medium text-foreground">Connectivity diagnostics</p>
               {diagnostics.map((diag, idx) => (
                 <div key={`${diag.code}:${idx}`} className="space-y-0.5">
@@ -221,9 +238,12 @@ export function InviteLandingPage() {
   }
 
   return (
-    <div className="mx-auto max-w-xl py-10">
-      <div className="rounded-lg border border-border bg-card p-6">
-        <h1 className="text-xl font-semibold">
+    <div className="paperclip-edge-shell items-center justify-center p-6">
+      <div className="paperclip-edge-card w-full max-w-2xl px-6 py-8">
+        <p className="paperclip-edge-kicker">
+          {invite.inviteType === "bootstrap_ceo" ? "Instance Bootstrap" : "Company Invite"}
+        </p>
+        <h1 className="mt-3 text-3xl font-semibold">
           {invite.inviteType === "bootstrap_ceo" ? "Bootstrap your Paperclip instance" : "Join this Paperclip company"}
         </h1>
         <p className="mt-2 text-sm text-muted-foreground">Invite expires {dateTime(invite.expiresAt)}.</p>
@@ -235,10 +255,10 @@ export function InviteLandingPage() {
                 key={type}
                 type="button"
                 onClick={() => setJoinType(type)}
-                className={`rounded-md border px-3 py-1.5 text-sm ${
+                className={`paperclip-gov-pill px-3 py-1.5 text-sm ${
                   joinType === type
-                    ? "border-foreground bg-foreground text-background"
-                    : "border-border bg-background text-foreground"
+                    ? "bg-foreground text-background"
+                    : "text-foreground"
                 }`}
               >
                 Join as {type}
@@ -284,7 +304,7 @@ export function InviteLandingPage() {
         )}
 
         {requiresAuthForHuman && (
-          <div className="mt-4 rounded-md border border-border bg-muted/30 p-3 text-sm">
+          <div className="paperclip-gov-card mt-4 p-3 text-sm">
             Sign in or create an account before submitting a human join request.
             <div className="mt-2">
               <Button asChild size="sm" variant="outline">

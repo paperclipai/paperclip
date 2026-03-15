@@ -35,13 +35,16 @@ export function ApprovalCard({
   const label = typeLabel[approval.type] ?? approval.type;
 
   return (
-    <div className="border border-border rounded-lg p-4 space-y-0">
+    <div className="paperclip-monitor-card space-y-4 p-4">
       {/* Header */}
       <div className="flex items-start justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <Icon className="h-4 w-4 text-muted-foreground shrink-0" />
-          <div className="flex items-center gap-2">
-            <span className="font-medium text-sm">{label}</span>
+        <div className="flex items-start gap-3">
+          <div className="paperclip-chip flex h-9 w-9 shrink-0 items-center justify-center rounded-full">
+            <Icon className="h-4 w-4 text-primary" />
+          </div>
+          <div className="space-y-1">
+            <p className="paperclip-monitor-title">{label}</p>
+            <span className="text-sm font-medium text-foreground">Approval request</span>
             {requesterAgent && (
               <span className="text-xs text-muted-foreground">
                 requested by <Identity name={requesterAgent.name} size="sm" className="inline-flex" />
@@ -49,9 +52,11 @@ export function ApprovalCard({
             )}
           </div>
         </div>
-        <div className="flex items-center gap-1.5 shrink-0">
+        <div className="paperclip-chip flex items-center gap-1.5 rounded-full px-3 py-1.5 shrink-0">
           {statusIcon(approval.status)}
-          <span className="text-xs text-muted-foreground capitalize">{approval.status}</span>
+          <span className="paperclip-nav-meta text-[0.62rem] text-muted-foreground capitalize">
+            {approval.status}
+          </span>
           <span className="text-xs text-muted-foreground">· {timeAgo(approval.createdAt)}</span>
         </div>
       </div>
@@ -61,14 +66,14 @@ export function ApprovalCard({
 
       {/* Decision note */}
       {approval.decisionNote && (
-        <div className="mt-3 text-xs text-muted-foreground italic border-t border-border pt-2">
+        <div className="rounded-xl border border-border/70 bg-background/35 px-3 py-2 text-xs text-muted-foreground italic">
           Note: {approval.decisionNote}
         </div>
       )}
 
       {/* Actions */}
       {(approval.status === "pending" || approval.status === "revision_requested") && (
-        <div className="flex gap-2 mt-4 pt-3 border-t border-border">
+        <div className="flex gap-2 border-t border-border/70 pt-3">
           <Button
             size="sm"
             className="bg-green-700 hover:bg-green-600 text-white"
@@ -87,13 +92,19 @@ export function ApprovalCard({
           </Button>
         </div>
       )}
-      <div className="mt-3">
+
+      <div>
         {detailLink ? (
-          <Button variant="ghost" size="sm" className="text-xs px-0" asChild>
+          <Button variant="ghost" size="sm" className="text-xs px-0 text-primary hover:text-primary" asChild>
             <Link to={detailLink}>View details</Link>
           </Button>
         ) : (
-          <Button variant="ghost" size="sm" className="text-xs px-0" onClick={onOpen}>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-xs px-0 text-primary hover:text-primary"
+            onClick={onOpen}
+          >
             View details
           </Button>
         )}

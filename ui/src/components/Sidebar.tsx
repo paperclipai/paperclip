@@ -45,38 +45,50 @@ export function Sidebar() {
   }
 
   return (
-    <aside className="w-60 h-full min-h-0 border-r border-border bg-background flex flex-col">
-      {/* Top bar: Company name (bold) + Search — aligned with top sections (no visible border) */}
-      <div className="flex items-center gap-1 px-3 h-12 shrink-0">
-        {selectedCompany?.brandColor && (
+    <aside className="paperclip-panel relative flex h-full min-h-0 w-64 flex-col overflow-hidden rounded-[calc(var(--radius)+0.55rem)]">
+      {/* The header anchors the current company so the nav reads like an active console, not a generic drawer. */}
+      <div className="border-b border-[color:var(--surface-outline)] px-4 py-4">
+        <div className="paperclip-kicker mb-3">Company Console</div>
+        <div className="flex items-start gap-3">
           <div
-            className="w-4 h-4 rounded-sm shrink-0 ml-1"
-            style={{ backgroundColor: selectedCompany.brandColor }}
-          />
-        )}
-        <span className="flex-1 text-sm font-bold text-foreground truncate pl-1">
-          {selectedCompany?.name ?? "Select company"}
-        </span>
+            className="paperclip-chip flex h-10 w-10 shrink-0 items-center justify-center rounded-[calc(var(--radius)-0.15rem)]"
+            style={selectedCompany?.brandColor ? { color: selectedCompany.brandColor } : undefined}
+          >
+            <div
+              className="h-4 w-4 rounded-sm"
+              style={{ backgroundColor: selectedCompany?.brandColor ?? "var(--primary)" }}
+            />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold tracking-[0.01em] text-foreground">
+              {selectedCompany?.name ?? "Select company"}
+            </p>
+            <p className="paperclip-nav-meta mt-1 text-muted-foreground">
+              {selectedCompany?.issuePrefix ?? "No prefix"} route space
+            </p>
+          </div>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="shrink-0 text-muted-foreground"
+            onClick={openSearch}
+            aria-label="Open command search"
+          >
+            <Search className="h-4 w-4" />
+          </Button>
+        </div>
         <Button
-          variant="ghost"
-          size="icon-sm"
-          className="text-muted-foreground shrink-0"
-          onClick={openSearch}
+          type="button"
+          onClick={() => openNewIssue()}
+          className="mt-4 w-full justify-start gap-2.5"
         >
-          <Search className="h-4 w-4" />
+          <SquarePen className="h-4 w-4" />
+          <span>New Issue</span>
         </Button>
       </div>
 
-      <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide flex flex-col gap-4 px-3 py-2">
-        <div className="flex flex-col gap-0.5">
-          {/* New Issue button aligned with nav items */}
-          <button
-            onClick={() => openNewIssue()}
-            className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
-          >
-            <SquarePen className="h-4 w-4 shrink-0" />
-            <span className="truncate">New Issue</span>
-          </button>
+      <nav className="scrollbar-auto-hide flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-3 py-4">
+        <div className="flex flex-col gap-1">
           <SidebarNavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
           <SidebarNavItem to="/briefings/board" label="Briefings" icon={FileText} />
           <SidebarNavItem to="/knowledge" label="Knowledge" icon={Library} />

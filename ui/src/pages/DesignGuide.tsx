@@ -130,11 +130,10 @@ import { Identity } from "@/components/Identity";
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="space-y-4">
-      <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
-        {title}
-      </h3>
-      <Separator />
+    <section className="paperclip-panel space-y-5 rounded-[calc(var(--radius)+0.75rem)] p-6">
+      <div className="paperclip-section-header">
+        <h3 className="paperclip-kicker">{title}</h3>
+      </div>
       {children}
     </section>
   );
@@ -143,7 +142,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 function SubSection({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="space-y-3">
-      <h4 className="text-sm font-medium">{title}</h4>
+      <h4 className="text-sm font-semibold tracking-[0.01em]">{title}</h4>
       {children}
     </div>
   );
@@ -155,13 +154,13 @@ function SubSection({ title, children }: { title: string; children: React.ReactN
 
 function Swatch({ name, cssVar }: { name: string; cssVar: string }) {
   return (
-    <div className="flex items-center gap-3">
+    <div className="paperclip-chip flex items-center gap-3 rounded-[calc(var(--radius)-0.2rem)] p-3">
       <div
-        className="h-8 w-8 rounded-md border border-border shrink-0"
+        className="h-9 w-9 shrink-0 rounded-[calc(var(--radius)-0.35rem)] border border-[color:var(--surface-outline)]"
         style={{ backgroundColor: `var(${cssVar})` }}
       />
       <div>
-        <p className="text-xs font-mono">{cssVar}</p>
+        <p className="paperclip-nav-meta text-[0.6rem]">{cssVar}</p>
         <p className="text-xs text-muted-foreground">{name}</p>
       </div>
     </div>
@@ -189,14 +188,76 @@ export function DesignGuide() {
   ]);
 
   return (
-    <div className="space-y-10 max-w-4xl">
-      {/* Page header */}
-      <div>
-        <h2 className="text-xl font-bold">Design Guide</h2>
-        <p className="text-sm text-muted-foreground mt-1">
-          Every component, style, and pattern used across Paperclip.
-        </p>
+    <div className="mx-auto flex max-w-5xl flex-col gap-10 pb-10">
+      <div className="paperclip-panel-strong relative overflow-hidden rounded-[calc(var(--radius)+1rem)] p-6 md:p-8">
+        <div className="pointer-events-none absolute inset-y-0 right-0 w-1/2 bg-[radial-gradient(circle_at_top_right,color-mix(in_oklab,var(--primary)_22%,transparent),transparent_62%)]" />
+        <div className="relative space-y-6">
+          <div className="space-y-3">
+            <div className="paperclip-kicker">Visual System</div>
+            <div className="max-w-3xl space-y-3">
+              <h2 className="text-3xl font-semibold md:text-4xl">Paperclip Operator Console</h2>
+              <p className="max-w-2xl text-sm leading-6 text-muted-foreground md:text-base">
+                Dark mode is the primary cyberpunk cockpit. Light mode remains a blueprint companion
+                so both themes feel like the same command surface instead of two unrelated products.
+              </p>
+            </div>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-3">
+            {[
+              {
+                title: "Dark Theme",
+                body: "Near-black frames, neon telemetry accents, and higher-contrast status cues.",
+              },
+              {
+                title: "Light Theme",
+                body: "Blueprint surfaces, sharp borders, and the same routing hierarchy with less glare.",
+              },
+              {
+                title: "Typography",
+                body: "Space Grotesk carries hierarchy while IBM Plex Mono marks machine context.",
+              },
+            ].map((item) => (
+              <div key={item.title} className="paperclip-chip rounded-[calc(var(--radius)-0.1rem)] p-4">
+                <p className="paperclip-kicker mb-2 text-[0.6rem]">{item.title}</p>
+                <p className="text-sm leading-6 text-muted-foreground">{item.body}</p>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
+
+      <Section title="System Direction">
+        <div className="grid gap-4 md:grid-cols-3">
+          <div className="paperclip-chip rounded-[calc(var(--radius)-0.1rem)] p-4">
+            <div className="flex items-center gap-2">
+              <Zap className="h-4 w-4 text-primary" />
+              <span className="paperclip-kicker text-[0.6rem]">Signal First</span>
+            </div>
+            <p className="mt-3 text-sm leading-6 text-muted-foreground">
+              Alerts, live runs, and ownership state need to separate themselves instantly from passive content.
+            </p>
+          </div>
+          <div className="paperclip-chip rounded-[calc(var(--radius)-0.1rem)] p-4">
+            <div className="flex items-center gap-2">
+              <Hexagon className="h-4 w-4 text-primary" />
+              <span className="paperclip-kicker text-[0.6rem]">Framed Surfaces</span>
+            </div>
+            <p className="mt-3 text-sm leading-6 text-muted-foreground">
+              Panels should feel mounted into a console with visible edges, depth, and subtle atmospheric glow.
+            </p>
+          </div>
+          <div className="paperclip-chip rounded-[calc(var(--radius)-0.1rem)] p-4">
+            <div className="flex items-center gap-2">
+              <CommandIcon className="h-4 w-4 text-primary" />
+              <span className="paperclip-kicker text-[0.6rem]">Machine Context</span>
+            </div>
+            <p className="mt-3 text-sm leading-6 text-muted-foreground">
+              Identifiers, metrics, and action labels use mono treatment so tactical information scans faster.
+            </p>
+          </div>
+        </div>
+      </Section>
 
       {/* ============================================================ */}
       {/*  COVERAGE                                                     */}

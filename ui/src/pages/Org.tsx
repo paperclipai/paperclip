@@ -11,6 +11,10 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { ChevronRight, GitBranch } from "lucide-react";
 import { cn } from "../lib/utils";
 
+function countOrgNodes(nodes: OrgNode[]): number {
+  return nodes.reduce((total, node) => total + 1 + countOrgNodes(node.reports), 0);
+}
+
 function OrgTree({
   nodes,
   depth = 0,
@@ -45,7 +49,7 @@ function OrgTreeNode({
     <div>
       <Link
         to={hrefFn(node.id)}
-        className="flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors cursor-pointer hover:bg-accent/50 no-underline text-inherit"
+        className="paperclip-gov-tree-link flex cursor-pointer items-center gap-2 px-3 py-2 text-sm no-underline text-inherit"
         style={{ paddingLeft: `${depth * 16 + 12}px` }}
       >
         {hasChildren ? (
@@ -111,8 +115,39 @@ export function Org() {
     return <PageSkeleton variant="list" />;
   }
 
+  const rootCount = data?.length ?? 0;
+  const totalCount = countOrgNodes(data ?? []);
+
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
+      <section className="paperclip-gov-hero px-5 py-5 sm:px-6">
+        <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
+          <div className="space-y-3">
+            <p className="paperclip-gov-kicker">Reporting Graph</p>
+            <div className="space-y-2">
+              <h1 className="paperclip-gov-title">Org Chart</h1>
+              <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
+                Inspect command hierarchy, management span, and status posture across the full operating tree.
+              </p>
+            </div>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="paperclip-gov-stat min-w-[8.5rem] px-4 py-3">
+              <p className="paperclip-gov-label">Roots</p>
+              <p className="mt-2 text-2xl font-semibold">{rootCount}</p>
+            </div>
+            <div className="paperclip-gov-stat min-w-[8.5rem] px-4 py-3">
+              <p className="paperclip-gov-label">Agents</p>
+              <p className="mt-2 text-2xl font-semibold">{totalCount}</p>
+            </div>
+            <div className="paperclip-gov-stat min-w-[8.5rem] px-4 py-3">
+              <p className="paperclip-gov-label">Depth</p>
+              <p className="mt-2 text-2xl font-semibold">{rootCount > 0 ? "Live" : "Idle"}</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       {data && data.length === 0 && (
@@ -123,7 +158,7 @@ export function Org() {
       )}
 
       {data && data.length > 0 && (
-        <div className="border border-border py-1">
+        <div className="paperclip-gov-card p-2 sm:p-3">
           <OrgTree nodes={data} hrefFn={(id) => `/agents/${id}`} />
         </div>
       )}

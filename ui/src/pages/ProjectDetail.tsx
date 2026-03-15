@@ -49,28 +49,28 @@ function OverviewContent({
   imageUploadHandler?: (file: File) => Promise<string>;
 }) {
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <InlineEditor
         value={project.description ?? ""}
         onSave={(description) => onUpdate({ description })}
         as="p"
-        className="text-sm text-muted-foreground"
+        className="paperclip-work-card rounded-[calc(var(--radius)+0.35rem)] px-4 py-4 text-sm text-muted-foreground"
         placeholder="Add a description..."
         multiline
         imageUploadHandler={imageUploadHandler}
       />
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
-        <div>
-          <span className="text-muted-foreground">Status</span>
-          <div className="mt-1">
+      <div className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
+        <div className="paperclip-work-stat px-4 py-4">
+          <span className="paperclip-work-label">Status</span>
+          <div className="mt-3">
             <StatusBadge status={project.status} />
           </div>
         </div>
         {project.targetDate && (
-          <div>
-            <span className="text-muted-foreground">Target Date</span>
-            <p>{project.targetDate}</p>
+          <div className="paperclip-work-stat px-4 py-4">
+            <span className="paperclip-work-label">Target Date</span>
+            <p className="mt-3 text-base font-medium">{project.targetDate}</p>
           </div>
         )}
       </div>
@@ -326,51 +326,60 @@ export function ProjectDetail() {
     ...(Object.prototype.hasOwnProperty.call(projectConfigPatch, "goalIds") ? { goals: [] } : null),
   };
   const hasConfigChanges = Object.keys(projectConfigPatch).length > 0;
-
   return (
     <div className="space-y-6">
-      <div className="flex items-start gap-3">
-        <div className="h-7 flex items-center">
-          <ColorPicker
-            currentColor={project.color ?? "#6366f1"}
-            onSelect={(color) => updateProject.mutate({ color })}
-          />
+      <section className="paperclip-work-hero px-5 py-5 sm:px-6">
+        <div className="flex flex-wrap items-start gap-4">
+          <div className="paperclip-work-stat flex h-11 items-center px-3">
+            <ColorPicker
+              currentColor={project.color ?? "#6366f1"}
+              onSelect={(color) => updateProject.mutate({ color })}
+            />
+            <span className="paperclip-work-meta ml-3">Project Color</span>
+          </div>
+          <div className="min-w-0 flex-1 space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="paperclip-work-kicker">Execution Lane</p>
+              <StatusBadge status={project.status} />
+              {project.targetDate ? <span className="paperclip-work-meta">Target {project.targetDate}</span> : null}
+            </div>
+            <InlineEditor
+              value={project.name}
+              onSave={(name) => updateProject.mutate({ name })}
+              as="h2"
+              className="paperclip-work-title"
+            />
+          </div>
+          {activeTab !== "configuration" ? (
+            <>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                className="paperclip-icon-button md:hidden shrink-0"
+                onClick={() => setMobilePropsOpen(true)}
+                title="Properties"
+              >
+                <SlidersHorizontal className="h-4 w-4" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                className={cn(
+                  "paperclip-icon-button hidden shrink-0 transition-opacity duration-200 md:flex",
+                  panelVisible ? "pointer-events-none w-0 overflow-hidden opacity-0" : "opacity-100",
+                )}
+                onClick={() => setPanelVisible(true)}
+                title="Show properties"
+              >
+                <SlidersHorizontal className="h-4 w-4" />
+              </Button>
+            </>
+          ) : null}
         </div>
-        <InlineEditor
-          value={project.name}
-          onSave={(name) => updateProject.mutate({ name })}
-          as="h2"
-          className="text-xl font-bold"
-        />
-        {activeTab !== "configuration" ? (
-          <>
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              className="ml-auto md:hidden shrink-0"
-              onClick={() => setMobilePropsOpen(true)}
-              title="Properties"
-            >
-              <SlidersHorizontal className="h-4 w-4" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              className={cn(
-                "shrink-0 ml-auto transition-opacity duration-200 hidden md:flex",
-                panelVisible ? "opacity-0 pointer-events-none w-0 overflow-hidden" : "opacity-100",
-              )}
-              onClick={() => setPanelVisible(true)}
-              title="Show properties"
-            >
-              <SlidersHorizontal className="h-4 w-4" />
-            </Button>
-          </>
-        ) : null}
-      </div>
+      </section>
 
       {/* Top-level project tabs */}
-      <div className="flex items-center gap-1 border-b border-border">
+      <div className="paperclip-work-tabs flex items-center gap-1">
         <button
           className={`px-3 py-2 text-sm font-medium transition-colors border-b-2 ${
             activeTab === "overview"
@@ -419,11 +428,12 @@ export function ProjectDetail() {
         <ProjectIssuesList projectId={project.id} companyId={resolvedCompanyId} />
       )}
 
-      {activeTab === "configuration" && (
+      {activeTab === "configuration" && configurationDraft && (
         <div className="space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-card/60 p-4">
+          <div className="paperclip-work-card-strong flex flex-wrap items-center justify-between gap-3 rounded-[calc(var(--radius)+0.45rem)] p-4">
             <div>
-              <h3 className="text-sm font-medium">Project Configuration</h3>
+              <p className="paperclip-work-kicker">Control Surface</p>
+              <h3 className="mt-1 text-sm font-medium">Project Configuration</h3>
               <p className="text-xs text-muted-foreground">
                 Save roadmap linkage and project settings deliberately so reviews stay easy to follow.
               </p>

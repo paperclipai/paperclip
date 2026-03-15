@@ -19,7 +19,7 @@ import { PriorityIcon } from "../components/PriorityIcon";
 import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
-import { cn, formatCents } from "../lib/utils";
+import { formatCents } from "../lib/utils";
 import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
@@ -95,6 +95,7 @@ export function Dashboard() {
 
   const recentIssues = issues ? getRecentIssues(issues) : [];
   const recentActivity = useMemo(() => (activity ?? []).slice(0, 10), [activity]);
+  const selectedCompany = companies.find((company) => company.id === selectedCompanyId) ?? null;
 
   useEffect(() => {
     for (const timer of activityAnimationTimersRef.current) {
@@ -200,10 +201,55 @@ export function Dashboard() {
 
   return (
     <div className="space-y-6">
+      <section className="paperclip-monitor-hero px-5 py-5 sm:px-6">
+        <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+          <div className="space-y-3">
+            <p className="paperclip-kicker">Mission Control</p>
+            <div className="space-y-2">
+              <h1 className="text-3xl font-semibold text-foreground sm:text-4xl">
+                {selectedCompany?.name ?? "Company"} operations
+              </h1>
+              <p className="max-w-2xl text-sm leading-6 text-muted-foreground sm:text-base">
+                Track live agent execution, queue pressure, approval load, and task movement from one surface.
+              </p>
+            </div>
+          </div>
+
+          {/* Surface the core operating counters before users drill into charts and lists. */}
+          {data && (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <div className="paperclip-chip min-w-[10rem] rounded-2xl px-4 py-3">
+                <p className="paperclip-monitor-title">Run Load</p>
+                <p className="mt-2 text-2xl font-semibold text-foreground">{data.agents.running}</p>
+                <p className="mt-1 text-xs text-muted-foreground">agents currently executing</p>
+              </div>
+              <div className="paperclip-chip min-w-[10rem] rounded-2xl px-4 py-3">
+                <p className="paperclip-monitor-title">Task Queue</p>
+                <p className="mt-2 text-2xl font-semibold text-foreground">{data.tasks.inProgress}</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {data.tasks.open} open, {data.tasks.blocked} blocked
+                </p>
+              </div>
+              <div className="paperclip-chip min-w-[10rem] rounded-2xl px-4 py-3">
+                <p className="paperclip-monitor-title">Budget Pulse</p>
+                <p className="mt-2 text-2xl font-semibold text-foreground">
+                  {formatCents(data.costs.monthSpendCents)}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {data.costs.monthBudgetCents > 0
+                    ? `${data.costs.monthUtilizationPercent}% utilized`
+                    : "no monthly cap"}
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+      </section>
+
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       {hasNoAgents && (
-        <div className="flex items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 dark:border-amber-500/25 dark:bg-amber-950/60">
+        <div className="paperclip-monitor-card flex items-center justify-between gap-3 border-amber-300/80 bg-amber-50/70 px-4 py-3 dark:border-amber-500/25 dark:bg-amber-950/60">
           <div className="flex items-center gap-2.5">
             <Bot className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />
             <p className="text-sm text-amber-900 dark:text-amber-100">
@@ -233,7 +279,7 @@ export function Dashboard() {
 
       {data && (
         <>
-          <div className="grid grid-cols-2 xl:grid-cols-4 gap-1 sm:gap-2">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <MetricCard
               icon={Bot}
               value={data.agents.active + data.agents.running + data.agents.paused + data.agents.error}
@@ -285,7 +331,7 @@ export function Dashboard() {
             />
           </div>
 
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2 xl:grid-cols-4">
             <ChartCard title="Run Activity" subtitle="Last 14 days">
               <RunActivityChart runs={runs ?? []} />
             </ChartCard>
@@ -300,14 +346,20 @@ export function Dashboard() {
             </ChartCard>
           </div>
 
-          <div className="grid md:grid-cols-2 gap-4">
+          <div className="grid gap-4 md:grid-cols-2">
             {/* Recent Activity */}
             {recentActivity.length > 0 && (
-              <div className="min-w-0">
-                <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                  Recent Activity
-                </h3>
-                <div className="border border-border divide-y divide-border overflow-hidden">
+              <div className="paperclip-monitor-card min-w-0 p-4">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="paperclip-monitor-title">Recent Activity</p>
+                    <p className="mt-1 text-sm text-muted-foreground">Latest system events across agents, issues, and projects.</p>
+                  </div>
+                  <Link to="/activity" className="paperclip-nav-meta text-xs text-primary hover:text-primary">
+                    Open
+                  </Link>
+                </div>
+                <div className="paperclip-monitor-list divide-y divide-border/70">
                   {recentActivity.map((event) => (
                     <ActivityRow
                       key={event.id}
@@ -323,21 +375,27 @@ export function Dashboard() {
             )}
 
             {/* Recent Tasks */}
-            <div className="min-w-0">
-              <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                Recent Tasks
-              </h3>
+            <div className="paperclip-monitor-card min-w-0 p-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <p className="paperclip-monitor-title">Recent Tasks</p>
+                  <p className="mt-1 text-sm text-muted-foreground">Freshly updated work items and their current owners.</p>
+                </div>
+                <Link to="/issues" className="paperclip-nav-meta text-xs text-primary hover:text-primary">
+                  Open
+                </Link>
+              </div>
               {recentIssues.length === 0 ? (
-                <div className="border border-border p-4">
+                <div className="paperclip-monitor-list p-4">
                   <p className="text-sm text-muted-foreground">No tasks yet.</p>
                 </div>
               ) : (
-                <div className="border border-border divide-y divide-border overflow-hidden">
+                <div className="paperclip-monitor-list divide-y divide-border/70">
                   {recentIssues.slice(0, 10).map((issue) => (
                     <Link
                       key={issue.id}
                       to={`/issues/${issue.identifier ?? issue.id}`}
-                      className="px-4 py-2 text-sm cursor-pointer hover:bg-accent/50 transition-colors no-underline text-inherit block"
+                      className="paperclip-monitor-row block cursor-pointer px-4 py-3 text-sm no-underline text-inherit transition-colors"
                     >
                       <div className="flex gap-3">
                         <div className="flex items-start gap-2 min-w-0 flex-1">
@@ -365,7 +423,6 @@ export function Dashboard() {
               )}
             </div>
           </div>
-
         </>
       )}
     </div>

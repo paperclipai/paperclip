@@ -8,6 +8,7 @@ interface EntityRowProps {
   title: string;
   subtitle?: string;
   trailing?: ReactNode;
+  trailingOutsideLink?: boolean;
   selected?: boolean;
   to?: string;
   onClick?: () => void;
@@ -20,6 +21,7 @@ export function EntityRow({
   title,
   subtitle,
   trailing,
+  trailingOutsideLink,
   selected,
   to,
   onClick,
@@ -27,28 +29,46 @@ export function EntityRow({
 }: EntityRowProps) {
   const isClickable = !!(to || onClick);
   const classes = cn(
-    "flex items-center gap-3 px-4 py-2 text-sm border-b border-border last:border-b-0 transition-colors",
-    isClickable && "cursor-pointer hover:bg-accent/50",
-    selected && "bg-accent/30",
+    "paperclip-work-row flex items-center gap-3 border-b border-[color:color-mix(in_oklab,var(--primary)_10%,var(--border))] px-4 py-3 text-sm last:border-b-0 transition-colors",
+    isClickable && "cursor-pointer",
+    selected && "bg-[color:color-mix(in_oklab,var(--surface-panel-strong)_84%,transparent)]",
     className
   );
 
-  const content = (
+  const mainContent = (
     <>
       {leading && <div className="flex items-center gap-2 shrink-0">{leading}</div>}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           {identifier && (
-            <span className="text-xs text-muted-foreground font-mono shrink-0 relative top-[1px]">
+            <span className="paperclip-work-meta shrink-0 relative top-[1px] text-[0.62rem]">
               {identifier}
             </span>
           )}
-          <span className="truncate">{title}</span>
+          <span className="truncate font-medium">{title}</span>
         </div>
         {subtitle && (
-          <p className="text-xs text-muted-foreground truncate mt-0.5">{subtitle}</p>
+          <p className="mt-0.5 truncate text-xs text-muted-foreground">{subtitle}</p>
         )}
       </div>
+    </>
+  );
+
+  if (to && trailingOutsideLink) {
+    return (
+      <div className={classes}>
+        {/* Keep trailing interactive controls outside the row link so we never nest anchors. */}
+        <Link to={to} className="flex min-w-0 flex-1 items-center gap-3 no-underline text-inherit" onClick={onClick}>
+          {mainContent}
+        </Link>
+        {trailing && <div className="flex items-center gap-2 shrink-0">{trailing}</div>}
+      </div>
+    );
+  }
+
+  const content = (
+    <>
+      {mainContent}
       {trailing && <div className="flex items-center gap-2 shrink-0">{trailing}</div>}
     </>
   );

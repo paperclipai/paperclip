@@ -213,12 +213,12 @@ function FailedRunCard({
   });
 
   return (
-    <div className="group relative overflow-hidden rounded-xl border border-red-500/30 bg-gradient-to-br from-red-500/10 via-card to-card p-4">
+    <div className="paperclip-monitor-card-strong group relative overflow-hidden border-red-500/30 p-4">
       <div className="absolute right-0 top-0 h-24 w-24 rounded-full bg-red-500/10 blur-2xl" />
       <button
         type="button"
         onClick={onDismiss}
-        className="absolute right-2 top-2 z-10 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100"
+        className="paperclip-icon-button absolute right-2 top-2 z-10 rounded-md p-1 text-muted-foreground opacity-0 group-hover:opacity-100"
         aria-label="Dismiss"
       >
         <X className="h-4 w-4" />
@@ -227,12 +227,12 @@ function FailedRunCard({
         {issue ? (
           <Link
             to={`/issues/${issue.identifier ?? issue.id}`}
-            className="block truncate text-sm font-medium transition-colors hover:text-foreground no-underline text-inherit"
+            className="block truncate no-underline text-inherit transition-colors hover:text-foreground"
           >
-            <span className="font-mono text-muted-foreground mr-1.5">
+            <span className="paperclip-monitor-title mr-1.5 align-middle">
               {issue.identifier ?? issue.id.slice(0, 8)}
             </span>
-            {issue.title}
+            <span className="text-sm font-medium">{issue.title}</span>
           </Link>
         ) : (
           <span className="block text-sm text-muted-foreground">
@@ -243,7 +243,7 @@ function FailedRunCard({
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="rounded-md bg-red-500/20 p-1.5">
+              <span className="paperclip-chip rounded-full bg-red-500/12 p-2">
                 <XCircle className="h-4 w-4 text-red-600 dark:text-red-400" />
               </span>
               {linkedAgentName ? (
@@ -284,12 +284,12 @@ function FailedRunCard({
           </div>
         </div>
 
-        <div className="rounded-md border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm">
+        <div className="rounded-2xl border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm">
           {displayError}
         </div>
 
         <div className="text-xs">
-          <span className="font-mono text-muted-foreground">run {run.id.slice(0, 8)}</span>
+          <span className="paperclip-nav-meta text-[0.62rem] text-muted-foreground">run {run.id.slice(0, 8)}</span>
         </div>
 
         {retryRun.isError && (
@@ -589,66 +589,88 @@ export function Inbox() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <Tabs value={tab} onValueChange={(value) => navigate(`/inbox/${value === "all" ? "all" : "new"}`)}>
-          <PageTabBar
-            items={[
-              {
-                value: "new",
-                label: (
-                  <>
-                    New
-                    {newItemCount > 0 && (
-                      <span className="ml-1.5 rounded-full bg-blue-500/20 px-1.5 py-0.5 text-[10px] font-medium text-blue-500">
-                        {newItemCount}
-                      </span>
-                    )}
-                  </>
-                ),
-              },
-              { value: "all", label: "All" },
-            ]}
-          />
-        </Tabs>
-
-        {tab === "all" && (
-          <div className="flex flex-wrap items-center gap-2">
-            <Select
-              value={allCategoryFilter}
-              onValueChange={(value) => setAllCategoryFilter(value as InboxCategoryFilter)}
-            >
-              <SelectTrigger className="h-8 w-[170px] text-xs">
-                <SelectValue placeholder="Category" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="everything">All categories</SelectItem>
-                <SelectItem value="issues_i_touched">My recent issues</SelectItem>
-                <SelectItem value="join_requests">Join requests</SelectItem>
-                <SelectItem value="approvals">Approvals</SelectItem>
-                <SelectItem value="failed_runs">Failed runs</SelectItem>
-                <SelectItem value="alerts">Alerts</SelectItem>
-                <SelectItem value="stale_work">Stale work</SelectItem>
-              </SelectContent>
-            </Select>
-
-            {showApprovalsCategory && (
-              <Select
-                value={allApprovalFilter}
-                onValueChange={(value) => setAllApprovalFilter(value as InboxApprovalFilter)}
-              >
-                <SelectTrigger className="h-8 w-[170px] text-xs">
-                  <SelectValue placeholder="Approval status" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All approval statuses</SelectItem>
-                  <SelectItem value="actionable">Needs action</SelectItem>
-                  <SelectItem value="resolved">Resolved</SelectItem>
-                </SelectContent>
-              </Select>
-            )}
+      <section className="paperclip-monitor-hero px-5 py-5 sm:px-6">
+        <div className="flex flex-col gap-5">
+          <div className="space-y-3">
+            <p className="paperclip-kicker">Triage Queue</p>
+            <div className="space-y-2">
+              <h1 className="text-3xl font-semibold text-foreground sm:text-4xl">Inbox</h1>
+              <p className="max-w-2xl text-sm leading-6 text-muted-foreground sm:text-base">
+                Review failed runs, approvals, join requests, stale work, and recent issue activity from one queue.
+              </p>
+            </div>
           </div>
-        )}
-      </div>
+
+          {/* Keep nav and filters in the hero so the queue state is obvious on both desktop and mobile. */}
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+            <Tabs value={tab} onValueChange={(value) => navigate(`/inbox/${value === "all" ? "all" : "new"}`)}>
+              <PageTabBar
+                items={[
+                  {
+                    value: "new",
+                    label: (
+                      <>
+                        New
+                        {newItemCount > 0 && (
+                          <span className="ml-1.5 rounded-full bg-blue-500/20 px-1.5 py-0.5 text-[10px] font-medium text-blue-500">
+                            {newItemCount}
+                          </span>
+                        )}
+                      </>
+                    ),
+                  },
+                  { value: "all", label: "All" },
+                ]}
+              />
+            </Tabs>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="paperclip-chip rounded-2xl px-4 py-3">
+                <p className="paperclip-monitor-title">Visible Sections</p>
+                <p className="mt-2 text-2xl font-semibold text-foreground">{visibleSections.length}</p>
+              </div>
+
+              {tab === "all" && (
+                <>
+                  <Select
+                    value={allCategoryFilter}
+                    onValueChange={(value) => setAllCategoryFilter(value as InboxCategoryFilter)}
+                  >
+                    <SelectTrigger className="paperclip-panel h-11 w-[180px] rounded-full border-primary/20 bg-background/20 text-xs">
+                      <SelectValue placeholder="Category" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="everything">All categories</SelectItem>
+                      <SelectItem value="issues_i_touched">My recent issues</SelectItem>
+                      <SelectItem value="join_requests">Join requests</SelectItem>
+                      <SelectItem value="approvals">Approvals</SelectItem>
+                      <SelectItem value="failed_runs">Failed runs</SelectItem>
+                      <SelectItem value="alerts">Alerts</SelectItem>
+                      <SelectItem value="stale_work">Stale work</SelectItem>
+                    </SelectContent>
+                  </Select>
+
+                  {showApprovalsCategory && (
+                    <Select
+                      value={allApprovalFilter}
+                      onValueChange={(value) => setAllApprovalFilter(value as InboxApprovalFilter)}
+                    >
+                      <SelectTrigger className="paperclip-panel h-11 w-[190px] rounded-full border-primary/20 bg-background/20 text-xs">
+                        <SelectValue placeholder="Approval status" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All approval statuses</SelectItem>
+                        <SelectItem value="actionable">Needs action</SelectItem>
+                        <SelectItem value="resolved">Resolved</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      </section>
 
       {approvalsError && <p className="text-sm text-destructive">{approvalsError.message}</p>}
       {actionError && <p className="text-sm text-destructive">{actionError}</p>}
@@ -671,10 +693,13 @@ export function Inbox() {
       {showApprovalsSection && (
         <>
           {showSeparatorBefore("approvals") && <Separator />}
-          <div>
-            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              {tab === "new" ? "Approvals Needing Action" : "Approvals"}
-            </h3>
+          <section className="paperclip-monitor-card p-4">
+            <div className="mb-3">
+              <p className="paperclip-monitor-title">
+                {tab === "new" ? "Approvals Needing Action" : "Approvals"}
+              </p>
+              <p className="mt-1 text-sm text-muted-foreground">Requests waiting for operator review.</p>
+            </div>
             <div className="grid gap-3">
               {approvalsToRender.map((approval) => (
                 <ApprovalCard
@@ -692,20 +717,21 @@ export function Inbox() {
                 />
               ))}
             </div>
-          </div>
+          </section>
         </>
       )}
 
       {showJoinRequestsSection && (
         <>
           {showSeparatorBefore("join_requests") && <Separator />}
-          <div>
-            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              Join Requests
-            </h3>
+          <section className="paperclip-monitor-card p-4">
+            <div className="mb-3">
+              <p className="paperclip-monitor-title">Join Requests</p>
+              <p className="mt-1 text-sm text-muted-foreground">New humans or agents asking to enter the company perimeter.</p>
+            </div>
             <div className="grid gap-3">
               {joinRequests.map((joinRequest) => (
-                <div key={joinRequest.id} className="rounded-xl border border-border bg-card p-4">
+                <div key={joinRequest.id} className="paperclip-monitor-row rounded-2xl border border-border/60 bg-background/25 p-4">
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                     <div className="space-y-1">
                       <p className="text-sm font-medium">
@@ -746,17 +772,18 @@ export function Inbox() {
                 </div>
               ))}
             </div>
-          </div>
+          </section>
         </>
       )}
 
       {showFailedRunsSection && (
         <>
           {showSeparatorBefore("failed_runs") && <Separator />}
-          <div>
-            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              Failed Runs
-            </h3>
+          <section className="paperclip-monitor-card p-4">
+            <div className="mb-3">
+              <p className="paperclip-monitor-title">Failed Runs</p>
+              <p className="mt-1 text-sm text-muted-foreground">Most recent failure per agent, with direct retry paths.</p>
+            </div>
             <div className="grid gap-3">
               {failedRuns.map((run) => (
                 <FailedRunCard
@@ -768,20 +795,21 @@ export function Inbox() {
                 />
               ))}
             </div>
-          </div>
+          </section>
         </>
       )}
 
       {showAlertsSection && (
         <>
           {showSeparatorBefore("alerts") && <Separator />}
-          <div>
-            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              Alerts
-            </h3>
-            <div className="divide-y divide-border border border-border">
+          <section className="paperclip-monitor-card p-4">
+            <div className="mb-3">
+              <p className="paperclip-monitor-title">Alerts</p>
+              <p className="mt-1 text-sm text-muted-foreground">Budget and agent state warnings that need attention.</p>
+            </div>
+            <div className="paperclip-monitor-list divide-y divide-border/70">
               {showAggregateAgentError && (
-                <div className="group/alert relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50">
+                <div className="group/alert paperclip-monitor-row relative flex items-center gap-3 px-4 py-3">
                   <Link
                     to="/agents"
                     className="flex flex-1 cursor-pointer items-center gap-3 no-underline text-inherit"
@@ -795,7 +823,7 @@ export function Inbox() {
                   <button
                     type="button"
                     onClick={() => dismiss("alert:agent-errors")}
-                    className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/alert:opacity-100"
+                    className="paperclip-icon-button rounded-md p-1 text-muted-foreground opacity-0 group-hover/alert:opacity-100"
                     aria-label="Dismiss"
                   >
                     <X className="h-3.5 w-3.5" />
@@ -803,7 +831,7 @@ export function Inbox() {
                 </div>
               )}
               {showBudgetAlert && (
-                <div className="group/alert relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50">
+                <div className="group/alert paperclip-monitor-row relative flex items-center gap-3 px-4 py-3">
                   <Link
                     to="/costs"
                     className="flex flex-1 cursor-pointer items-center gap-3 no-underline text-inherit"
@@ -818,7 +846,7 @@ export function Inbox() {
                   <button
                     type="button"
                     onClick={() => dismiss("alert:budget")}
-                    className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/alert:opacity-100"
+                    className="paperclip-icon-button rounded-md p-1 text-muted-foreground opacity-0 group-hover/alert:opacity-100"
                     aria-label="Dismiss"
                   >
                     <X className="h-3.5 w-3.5" />
@@ -826,22 +854,23 @@ export function Inbox() {
                 </div>
               )}
             </div>
-          </div>
+          </section>
         </>
       )}
 
       {showStaleSection && (
         <>
           {showSeparatorBefore("stale_work") && <Separator />}
-          <div>
-            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              Stale Work
-            </h3>
-            <div className="divide-y divide-border border border-border">
+          <section className="paperclip-monitor-card p-4">
+            <div className="mb-3">
+              <p className="paperclip-monitor-title">Stale Work</p>
+              <p className="mt-1 text-sm text-muted-foreground">Open issues that have gone quiet beyond the stale threshold.</p>
+            </div>
+            <div className="paperclip-monitor-list divide-y divide-border/70">
               {staleIssues.map((issue) => (
                 <div
                   key={issue.id}
-                  className="group/stale relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50"
+                  className="group/stale paperclip-monitor-row relative flex items-center gap-3 px-4 py-3"
                 >
                   <Link
                     to={`/issues/${issue.identifier ?? issue.id}`}
@@ -872,7 +901,7 @@ export function Inbox() {
                   <button
                     type="button"
                     onClick={() => dismiss(`stale:${issue.id}`)}
-                    className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/stale:opacity-100"
+                    className="paperclip-icon-button rounded-md p-1 text-muted-foreground opacity-0 group-hover/stale:opacity-100"
                     aria-label="Dismiss"
                   >
                     <X className="h-3.5 w-3.5" />
@@ -880,25 +909,26 @@ export function Inbox() {
                 </div>
               ))}
             </div>
-          </div>
+          </section>
         </>
       )}
 
       {showTouchedSection && (
         <>
           {showSeparatorBefore("issues_i_touched") && <Separator />}
-          <div>
-            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              My Recent Issues
-            </h3>
-            <div className="divide-y divide-border border border-border">
+          <section className="paperclip-monitor-card p-4">
+            <div className="mb-3">
+              <p className="paperclip-monitor-title">My Recent Issues</p>
+              <p className="mt-1 text-sm text-muted-foreground">Recent issue movement where you were involved and may still owe a response.</p>
+            </div>
+            <div className="paperclip-monitor-list divide-y divide-border/70">
               {touchedIssues.map((issue) => {
                 const isUnread = issue.isUnreadForMe && !fadingOutIssues.has(issue.id);
                 const isFading = fadingOutIssues.has(issue.id);
                 return (
                   <div
                     key={issue.id}
-                    className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50"
+                    className="paperclip-monitor-row flex items-center gap-3 px-4 py-3"
                   >
                     <span className="flex w-4 shrink-0 justify-center">
                       {(isUnread || isFading) && (
@@ -940,7 +970,7 @@ export function Inbox() {
                 );
               })}
             </div>
-          </div>
+          </section>
         </>
       )}
     </div>

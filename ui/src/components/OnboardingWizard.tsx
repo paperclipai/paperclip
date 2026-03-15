@@ -535,12 +535,12 @@ export function OnboardingWizard() {
         {/* Plain div instead of DialogOverlay — Radix's overlay wraps in
             RemoveScroll which blocks wheel events on our custom (non-DialogContent)
             scroll container. A plain div preserves the background without scroll-locking. */}
-        <div className="fixed inset-0 z-50 bg-background" />
-        <div className="fixed inset-0 z-50 flex" onKeyDown={handleKeyDown}>
+        <div className="fixed inset-0 z-50 bg-background/70 backdrop-blur-md" />
+        <div className="paperclip-edge-shell z-50" onKeyDown={handleKeyDown}>
           {/* Close button */}
           <button
             onClick={handleClose}
-            className="absolute top-4 left-4 z-10 rounded-sm p-1.5 text-muted-foreground/60 hover:text-foreground transition-colors"
+            className="paperclip-gov-pill absolute left-4 top-4 z-10 p-1.5 text-muted-foreground/80 transition-colors hover:text-foreground"
           >
             <X className="h-5 w-5" />
             <span className="sr-only">Close</span>
@@ -549,621 +549,651 @@ export function OnboardingWizard() {
           {/* Left half — form */}
           <div className="w-full md:w-1/2 flex flex-col overflow-y-auto">
             <div className="w-full max-w-md mx-auto my-auto px-8 py-12 shrink-0">
-              {/* Progress indicators */}
-              <div className="flex items-center gap-2 mb-8">
-                <Sparkles className="h-4 w-4 text-muted-foreground" />
-                <span className="text-sm font-medium">Get Started</span>
-                <span className="text-sm text-muted-foreground/60">
-                  Step {step} of 4
-                </span>
-                <div className="flex items-center gap-1.5 ml-auto">
-                  {[1, 2, 3, 4].map((s) => (
-                    <div
-                      key={s}
-                      className={cn(
-                        "h-1.5 w-6 rounded-full transition-colors",
-                        s < step
-                          ? "bg-green-500"
-                          : s === step
-                            ? "bg-foreground"
-                            : "bg-muted"
-                      )}
-                    />
-                  ))}
-                </div>
-              </div>
-
-              {/* Step content */}
-              {step === 1 && (
-                <div className="space-y-5">
-                  <div className="flex items-center gap-3 mb-1">
-                    <div className="bg-muted/50 p-2">
-                      <Building2 className="h-5 w-5 text-muted-foreground" />
-                    </div>
-                    <div>
-                      <h3 className="font-medium">Name your company</h3>
-                      <p className="text-xs text-muted-foreground">
-                        This is the organization your agents will work for.
-                      </p>
-                    </div>
-                  </div>
-                  <div>
-                    <label className="text-xs text-muted-foreground mb-1 block">
-                      Company name
-                    </label>
-                    <input
-                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                      placeholder="Acme Corp"
-                      value={companyName}
-                      onChange={(e) => setCompanyName(e.target.value)}
-                      autoFocus
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs text-muted-foreground mb-1 block">
-                      Mission / goal (optional)
-                    </label>
-                    <textarea
-                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[60px]"
-                      placeholder="What is this company trying to achieve?"
-                      value={companyGoal}
-                      onChange={(e) => setCompanyGoal(e.target.value)}
-                    />
+              <div className="paperclip-edge-card px-6 py-7 sm:px-8 sm:py-9">
+                {/* Progress indicators */}
+                <div className="mb-8 flex items-center gap-2">
+                  <Sparkles className="h-4 w-4 text-primary" />
+                  <span className="paperclip-edge-kicker">Get Started</span>
+                  <span className="text-sm text-muted-foreground/70">
+                    Step {step} of 4
+                  </span>
+                  <div className="ml-auto flex items-center gap-1.5">
+                    {[1, 2, 3, 4].map((s) => (
+                      <div
+                        key={s}
+                        className={cn(
+                          "h-1.5 w-6 rounded-full transition-colors",
+                          s < step
+                            ? "bg-green-500"
+                            : s === step
+                              ? "bg-foreground"
+                              : "bg-muted"
+                        )}
+                      />
+                    ))}
                   </div>
                 </div>
-              )}
 
-              {step === 2 && (
-                <div className="space-y-5">
-                  <div className="flex items-center gap-3 mb-1">
-                    <div className="bg-muted/50 p-2">
-                      <Bot className="h-5 w-5 text-muted-foreground" />
+                {/* Step content */}
+                {step === 1 && (
+                  <div className="space-y-5">
+                    <div className="flex items-center gap-3 mb-1">
+                      <div className="paperclip-gov-pill p-2.5">
+                        <Building2 className="h-5 w-5 text-muted-foreground" />
+                      </div>
+                      <div>
+                        <h3 className="font-medium">Name your company</h3>
+                        <p className="text-xs text-muted-foreground">
+                          This is the organization your agents will work for.
+                        </p>
+                      </div>
                     </div>
                     <div>
-                      <h3 className="font-medium">Create your first agent</h3>
-                      <p className="text-xs text-muted-foreground">
-                        Choose how this agent will run tasks.
-                      </p>
+                      <label className="paperclip-gov-label mb-1.5 block">
+                        Company name
+                      </label>
+                      <input
+                        className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                        placeholder="Acme Corp"
+                        value={companyName}
+                        onChange={(e) => setCompanyName(e.target.value)}
+                        autoFocus
+                      />
+                    </div>
+                    <div>
+                      <label className="paperclip-gov-label mb-1.5 block">
+                        Mission / goal (optional)
+                      </label>
+                      <textarea
+                        className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[60px]"
+                        placeholder="What is this company trying to achieve?"
+                        value={companyGoal}
+                        onChange={(e) => setCompanyGoal(e.target.value)}
+                      />
                     </div>
                   </div>
-                  <div>
-                    <label className="text-xs text-muted-foreground mb-1 block">
-                      Agent name
-                    </label>
-                    <input
-                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                      placeholder="CEO"
-                      value={agentName}
-                      onChange={(e) => setAgentName(e.target.value)}
-                      autoFocus
-                    />
-                  </div>
+                )}
 
-                  {/* Adapter type radio cards */}
-                  <div>
-                    <label className="text-xs text-muted-foreground mb-2 block">
-                      Adapter type
-                    </label>
-                    <div className="grid grid-cols-2 gap-2">
-                      {[
-                        {
-                          value: "claude_local" as const,
-                          label: "Claude Code",
-                          icon: Sparkles,
-                          desc: "Local Claude agent",
-                          recommended: true
-                        },
-                        {
-                          value: "codex_local" as const,
-                          label: "Codex",
-                          icon: Code,
-                          desc: "Local Codex agent",
-                          recommended: true
-                        },
-                        {
-                          value: "opencode_local" as const,
-                          label: "OpenCode",
-                          icon: OpenCodeLogoIcon,
-                          desc: "Local multi-provider agent"
-                        },
-                        {
-                          value: "pi_local" as const,
-                          label: "Pi",
-                          icon: Terminal,
-                          desc: "Local Pi agent"
-                        },
-                        {
-                          value: "openclaw_gateway" as const,
-                          label: "OpenClaw Gateway",
-                          icon: Bot,
-                          desc: "Invoke OpenClaw via gateway protocol",
-                          comingSoon: true,
-                          disabledLabel: "Configure OpenClaw within the App"
-                        },
-                        {
-                          value: "cursor" as const,
-                          label: "Cursor",
-                          icon: MousePointer2,
-                          desc: "Local Cursor agent"
-                        }
-                      ].map((opt) => (
-                        <button
-                          key={opt.value}
-                          disabled={!!opt.comingSoon}
-                          className={cn(
-                            "flex flex-col items-center gap-1.5 rounded-md border p-3 text-xs transition-colors relative",
-                            opt.comingSoon
-                              ? "border-border opacity-40 cursor-not-allowed"
-                              : adapterType === opt.value
-                                ? "border-foreground bg-accent"
-                                : "border-border hover:bg-accent/50"
-                          )}
-                          onClick={() => {
-                            if (opt.comingSoon) return;
-                            const nextType = opt.value as AdapterType;
-                            setAdapterType(nextType);
-                            if (nextType === "codex_local" && !model) {
-                              setModel(DEFAULT_CODEX_LOCAL_MODEL);
-                            } else if (nextType === "cursor" && !model) {
-                              setModel(DEFAULT_CURSOR_LOCAL_MODEL);
-                            }
-                            if (nextType === "opencode_local") {
-                              if (!model.includes("/")) {
-                                setModel("");
+                {step === 2 && (
+                  <div className="space-y-5">
+                    <div className="flex items-center gap-3 mb-1">
+                      <div className="paperclip-gov-pill p-2.5">
+                        <Bot className="h-5 w-5 text-muted-foreground" />
+                      </div>
+                      <div>
+                        <h3 className="font-medium">Create your first agent</h3>
+                        <p className="text-xs text-muted-foreground">
+                          Choose how this agent will run tasks.
+                        </p>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="paperclip-gov-label mb-1.5 block">
+                        Agent name
+                      </label>
+                      <input
+                        className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                        placeholder="CEO"
+                        value={agentName}
+                        onChange={(e) => setAgentName(e.target.value)}
+                        autoFocus
+                      />
+                    </div>
+
+                    {/* Adapter type radio cards */}
+                    <div>
+                      <label className="paperclip-gov-label mb-2 block">
+                        Adapter type
+                      </label>
+                      <div className="grid grid-cols-2 gap-2">
+                        {[
+                          {
+                            value: "claude_local" as const,
+                            label: "Claude Code",
+                            icon: Sparkles,
+                            desc: "Local Claude agent",
+                            recommended: true
+                          },
+                          {
+                            value: "codex_local" as const,
+                            label: "Codex",
+                            icon: Code,
+                            desc: "Local Codex agent",
+                            recommended: true
+                          },
+                          {
+                            value: "opencode_local" as const,
+                            label: "OpenCode",
+                            icon: OpenCodeLogoIcon,
+                            desc: "Local multi-provider agent"
+                          },
+                          {
+                            value: "pi_local" as const,
+                            label: "Pi",
+                            icon: Terminal,
+                            desc: "Local Pi agent"
+                          },
+                          {
+                            value: "openclaw_gateway" as const,
+                            label: "OpenClaw Gateway",
+                            icon: Bot,
+                            desc: "Invoke OpenClaw via gateway protocol",
+                            comingSoon: true,
+                            disabledLabel: "Configure OpenClaw within the App"
+                          },
+                          {
+                            value: "cursor" as const,
+                            label: "Cursor",
+                            icon: MousePointer2,
+                            desc: "Local Cursor agent"
+                          }
+                        ].map((opt) => (
+                          <button
+                            key={opt.value}
+                            disabled={!!opt.comingSoon}
+                            className={cn(
+                              "paperclip-gov-card flex flex-col items-center gap-1.5 p-3 text-xs transition-colors relative",
+                              opt.comingSoon
+                                ? "opacity-40 cursor-not-allowed"
+                                : adapterType === opt.value
+                                  ? "border-foreground bg-accent"
+                                  : "hover:bg-accent/50"
+                            )}
+                            onClick={() => {
+                              if (opt.comingSoon) return;
+                              const nextType = opt.value as AdapterType;
+                              setAdapterType(nextType);
+                              if (nextType === "codex_local" && !model) {
+                                setModel(DEFAULT_CODEX_LOCAL_MODEL);
+                              } else if (nextType === "cursor" && !model) {
+                                setModel(DEFAULT_CURSOR_LOCAL_MODEL);
                               }
-                              return;
-                            }
-                            setModel("");
-                          }}
-                        >
-                          {opt.recommended && (
-                            <span className="absolute -top-1.5 right-1.5 bg-green-500 text-white text-[9px] font-semibold px-1.5 py-0.5 rounded-full leading-none">
-                              Recommended
-                            </span>
-                          )}
-                          <opt.icon className="h-4 w-4" />
-                          <span className="font-medium">{opt.label}</span>
-                          <span className="text-muted-foreground text-[10px]">
-                            {opt.comingSoon
-                              ? (opt as { disabledLabel?: string }).disabledLabel ??
-                                "Coming soon"
-                              : opt.desc}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Conditional adapter fields */}
-                  {(adapterType === "claude_local" ||
-                    adapterType === "codex_local" ||
-                    adapterType === "opencode_local" ||
-                    adapterType === "pi_local" ||
-                    adapterType === "cursor") && (
-                    <div className="space-y-3">
-                      <div>
-                        <div className="flex items-center gap-1.5 mb-1">
-                          <label className="text-xs text-muted-foreground">
-                            Working directory
-                          </label>
-                          <HintIcon text="Paperclip works best if you create a new folder for your agents to keep their memories and stay organized. Create a new folder and put the path here." />
-                        </div>
-                        <div className="flex items-center gap-2 rounded-md border border-border px-2.5 py-1.5">
-                          <FolderOpen className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                          <input
-                            className="w-full bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/50"
-                            placeholder="/path/to/project"
-                            value={cwd}
-                            onChange={(e) => setCwd(e.target.value)}
-                          />
-                          <ChoosePathButton />
-                        </div>
-                      </div>
-                      <div>
-                        <label className="text-xs text-muted-foreground mb-1 block">
-                          Model
-                        </label>
-                        <Popover
-                          open={modelOpen}
-                          onOpenChange={(next) => {
-                            setModelOpen(next);
-                            if (!next) setModelSearch("");
-                          }}
-                        >
-                          <PopoverTrigger asChild>
-                            <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
-                              <span
-                                className={cn(
-                                  !model && "text-muted-foreground"
-                                )}
-                              >
-                                {selectedModel
-                                  ? selectedModel.label
-                                  : model ||
-                                    (adapterType === "opencode_local"
-                                      ? "Select model (required)"
-                                      : "Default")}
-                              </span>
-                              <ChevronDown className="h-3 w-3 text-muted-foreground" />
-                            </button>
-                          </PopoverTrigger>
-                          <PopoverContent
-                            className="w-[var(--radix-popover-trigger-width)] p-1"
-                            align="start"
-                          >
-                            <input
-                              className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-                              placeholder="Search models..."
-                              value={modelSearch}
-                              onChange={(e) => setModelSearch(e.target.value)}
-                              autoFocus
-                            />
-                            {adapterType !== "opencode_local" && (
-                              <button
-                                className={cn(
-                                  "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
-                                  !model && "bg-accent"
-                                )}
-                                onClick={() => {
+                              if (nextType === "opencode_local") {
+                                if (!model.includes("/")) {
                                   setModel("");
-                                  setModelOpen(false);
-                                }}
-                              >
-                                  Default
-                                </button>
+                                }
+                                return;
+                              }
+                              setModel("");
+                            }}
+                          >
+                            {opt.recommended && (
+                              <span className="absolute -top-1.5 right-1.5 rounded-full bg-green-500 px-1.5 py-0.5 text-[9px] font-semibold leading-none text-white">
+                                Recommended
+                              </span>
                             )}
-                            <div className="max-h-[240px] overflow-y-auto">
-                              {groupedModels.map((group) => (
-                                <div key={group.provider} className="mb-1 last:mb-0">
-                                  {adapterType === "opencode_local" && (
-                                    <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-muted-foreground">
-                                      {group.provider} ({group.entries.length})
-                                    </div>
-                                  )}
-                                  {group.entries.map((m) => (
-                                    <button
-                                      key={m.id}
-                                      className={cn(
-                                        "flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
-                                        m.id === model && "bg-accent"
-                                      )}
-                                      onClick={() => {
-                                        setModel(m.id);
-                                        setModelOpen(false);
-                                      }}
-                                    >
-                                      <span className="block w-full text-left truncate" title={m.id}>
-                                        {adapterType === "opencode_local" ? extractModelName(m.id) : m.label}
-                                      </span>
-                                    </button>
-                                  ))}
-                                </div>
-                              ))}
-                            </div>
-                            {filteredModels.length === 0 && (
-                              <p className="px-2 py-1.5 text-xs text-muted-foreground">
-                                No models discovered.
-                              </p>
-                            )}
-                          </PopoverContent>
-                        </Popover>
+                            <opt.icon className="h-4 w-4" />
+                            <span className="font-medium">{opt.label}</span>
+                            <span className="text-muted-foreground text-[10px]">
+                              {opt.comingSoon
+                                ? (opt as { disabledLabel?: string }).disabledLabel ??
+                                  "Coming soon"
+                                : opt.desc}
+                            </span>
+                          </button>
+                        ))}
                       </div>
                     </div>
-                  )}
 
-                  {isLocalAdapter && (
-                    <div className="space-y-2 rounded-md border border-border p-3">
-                      <div className="flex items-center justify-between gap-2">
+                    {/* Conditional adapter fields */}
+                    {(adapterType === "claude_local" ||
+                      adapterType === "codex_local" ||
+                      adapterType === "opencode_local" ||
+                      adapterType === "pi_local" ||
+                      adapterType === "cursor") && (
+                      <div className="space-y-3">
                         <div>
-                          <p className="text-xs font-medium">
-                            Adapter environment check
-                          </p>
-                          <p className="text-[11px] text-muted-foreground">
-                            Runs a live probe that asks the adapter CLI to
-                            respond with hello.
-                          </p>
+                          <div className="flex items-center gap-1.5 mb-1">
+                            <label className="paperclip-gov-label">
+                              Working directory
+                            </label>
+                            <HintIcon text="Paperclip works best if you create a new folder for your agents to keep their memories and stay organized. Create a new folder and put the path here." />
+                          </div>
+                          <div className="paperclip-gov-card flex items-center gap-2 px-2.5 py-1.5">
+                            <FolderOpen className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                            <input
+                              className="w-full bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/50"
+                              placeholder="/path/to/project"
+                              value={cwd}
+                              onChange={(e) => setCwd(e.target.value)}
+                            />
+                            <ChoosePathButton />
+                          </div>
                         </div>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="h-7 px-2.5 text-xs"
-                          disabled={adapterEnvLoading}
-                          onClick={() => void runAdapterEnvironmentTest()}
-                        >
-                          {adapterEnvLoading ? "Testing..." : "Test now"}
-                        </Button>
+                        <div>
+                          <label className="paperclip-gov-label mb-1.5 block">
+                            Model
+                          </label>
+                          <Popover
+                            open={modelOpen}
+                            onOpenChange={(next) => {
+                              setModelOpen(next);
+                              if (!next) setModelSearch("");
+                            }}
+                          >
+                            <PopoverTrigger asChild>
+                              <button className="paperclip-gov-card inline-flex w-full items-center justify-between gap-1.5 px-2.5 py-1.5 text-sm transition-colors hover:bg-accent/50">
+                                <span
+                                  className={cn(
+                                    !model && "text-muted-foreground"
+                                  )}
+                                >
+                                  {selectedModel
+                                    ? selectedModel.label
+                                    : model ||
+                                      (adapterType === "opencode_local"
+                                        ? "Select model (required)"
+                                        : "Default")}
+                                </span>
+                                <ChevronDown className="h-3 w-3 text-muted-foreground" />
+                              </button>
+                            </PopoverTrigger>
+                            <PopoverContent
+                              className="w-[var(--radix-popover-trigger-width)] p-1"
+                              align="start"
+                            >
+                              <input
+                                className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
+                                placeholder="Search models..."
+                                value={modelSearch}
+                                onChange={(e) => setModelSearch(e.target.value)}
+                                autoFocus
+                              />
+                              {adapterType !== "opencode_local" && (
+                                <button
+                                  className={cn(
+                                    "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
+                                    !model && "bg-accent"
+                                  )}
+                                  onClick={() => {
+                                    setModel("");
+                                    setModelOpen(false);
+                                  }}
+                                >
+                                    Default
+                                  </button>
+                              )}
+                              <div className="max-h-[240px] overflow-y-auto">
+                                {groupedModels.map((group) => (
+                                  <div key={group.provider} className="mb-1 last:mb-0">
+                                    {adapterType === "opencode_local" && (
+                                      <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+                                        {group.provider} ({group.entries.length})
+                                      </div>
+                                    )}
+                                    {group.entries.map((m) => (
+                                      <button
+                                        key={m.id}
+                                        className={cn(
+                                          "flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
+                                          m.id === model && "bg-accent"
+                                        )}
+                                        onClick={() => {
+                                          setModel(m.id);
+                                          setModelOpen(false);
+                                        }}
+                                      >
+                                        <span className="block w-full text-left truncate" title={m.id}>
+                                          {adapterType === "opencode_local" ? extractModelName(m.id) : m.label}
+                                        </span>
+                                      </button>
+                                    ))}
+                                  </div>
+                                ))}
+                              </div>
+                              {filteredModels.length === 0 && (
+                                <p className="px-2 py-1.5 text-xs text-muted-foreground">
+                                  No models discovered.
+                                </p>
+                              )}
+                            </PopoverContent>
+                          </Popover>
+                        </div>
                       </div>
+                    )}
 
-                      {adapterEnvError && (
-                        <div className="rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-[11px] text-destructive">
-                          {adapterEnvError}
-                        </div>
-                      )}
-
-                      {adapterEnvResult && (
-                        <AdapterEnvironmentResult result={adapterEnvResult} />
-                      )}
-
-                      {shouldSuggestUnsetAnthropicApiKey && (
-                        <div className="rounded-md border border-amber-300/60 bg-amber-50/40 px-2.5 py-2 space-y-2">
-                          <p className="text-[11px] text-amber-900/90 leading-relaxed">
-                            Claude failed while <span className="font-mono">ANTHROPIC_API_KEY</span> is set.
-                            You can clear it in this CEO adapter config and retry the probe.
-                          </p>
+                    {isLocalAdapter && (
+                      <div className="paperclip-gov-card space-y-2 p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <div>
+                            <p className="text-xs font-medium">
+                              Adapter environment check
+                            </p>
+                            <p className="text-[11px] text-muted-foreground">
+                              Runs a live probe that asks the adapter CLI to
+                              respond with hello.
+                            </p>
+                          </div>
                           <Button
                             size="sm"
                             variant="outline"
                             className="h-7 px-2.5 text-xs"
-                            disabled={adapterEnvLoading || unsetAnthropicLoading}
-                            onClick={() => void handleUnsetAnthropicApiKey()}
+                            disabled={adapterEnvLoading}
+                            onClick={() => void runAdapterEnvironmentTest()}
                           >
-                            {unsetAnthropicLoading ? "Retrying..." : "Unset ANTHROPIC_API_KEY"}
+                            {adapterEnvLoading ? "Testing..." : "Test now"}
                           </Button>
                         </div>
-                      )}
 
-                      <div className="rounded-md border border-border/70 bg-muted/20 px-2.5 py-2 text-[11px] space-y-1.5">
-                        <p className="font-medium">Manual debug</p>
-                        <p className="text-muted-foreground font-mono break-all">
-                          {adapterType === "cursor"
-                            ? `${effectiveAdapterCommand} -p --mode ask --output-format json \"Respond with hello.\"`
-                            : adapterType === "codex_local"
-                            ? `${effectiveAdapterCommand} exec --json -`
-                            : adapterType === "opencode_local"
-                              ? `${effectiveAdapterCommand} run --format json "Respond with hello."`
-                            : `${effectiveAdapterCommand} --print - --output-format stream-json --verbose`}
-                        </p>
-                        <p className="text-muted-foreground">
-                          Prompt:{" "}
-                          <span className="font-mono">Respond with hello.</span>
-                        </p>
-                        {adapterType === "cursor" || adapterType === "codex_local" || adapterType === "opencode_local" ? (
-                          <p className="text-muted-foreground">
-                            If auth fails, set{" "}
-                            <span className="font-mono">
-                              {adapterType === "cursor" ? "CURSOR_API_KEY" : "OPENAI_API_KEY"}
-                            </span>{" "}
-                            in
-                            env or run{" "}
-                            <span className="font-mono">
-                              {adapterType === "cursor"
-                                ? "agent login"
-                                : adapterType === "codex_local"
-                                  ? "codex login"
-                                  : "opencode auth login"}
-                            </span>.
-                          </p>
-                        ) : (
-                          <p className="text-muted-foreground">
-                            If login is required, run{" "}
-                            <span className="font-mono">claude login</span> and
-                            retry.
-                          </p>
+                        {adapterEnvError && (
+                          <div className="rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-[11px] text-destructive">
+                            {adapterEnvError}
+                          </div>
                         )}
-                      </div>
-                    </div>
-                  )}
 
-                  {adapterType === "process" && (
-                    <div className="space-y-3">
+                        {adapterEnvResult && (
+                          <AdapterEnvironmentResult result={adapterEnvResult} />
+                        )}
+
+                        {shouldSuggestUnsetAnthropicApiKey && (
+                          <div className="rounded-md border border-amber-300/60 bg-amber-50/40 px-2.5 py-2 space-y-2">
+                            <p className="text-[11px] text-amber-900/90 leading-relaxed">
+                              Claude failed while <span className="font-mono">ANTHROPIC_API_KEY</span> is set.
+                              You can clear it in this CEO adapter config and retry the probe.
+                            </p>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-7 px-2.5 text-xs"
+                              disabled={adapterEnvLoading || unsetAnthropicLoading}
+                              onClick={() => void handleUnsetAnthropicApiKey()}
+                            >
+                              {unsetAnthropicLoading ? "Retrying..." : "Unset ANTHROPIC_API_KEY"}
+                            </Button>
+                          </div>
+                        )}
+
+                        <div className="paperclip-gov-card space-y-1.5 px-2.5 py-2 text-[11px]">
+                          <p className="font-medium">Manual debug</p>
+                          <p className="text-muted-foreground font-mono break-all">
+                            {adapterType === "cursor"
+                              ? `${effectiveAdapterCommand} -p --mode ask --output-format json "Respond with hello."`
+                              : adapterType === "codex_local"
+                              ? `${effectiveAdapterCommand} exec --json -`
+                              : adapterType === "opencode_local"
+                                ? `${effectiveAdapterCommand} run --format json "Respond with hello."`
+                              : `${effectiveAdapterCommand} --print - --output-format stream-json --verbose`}
+                          </p>
+                          <p className="text-muted-foreground">
+                            Prompt:{" "}
+                            <span className="font-mono">Respond with hello.</span>
+                          </p>
+                          {adapterType === "cursor" || adapterType === "codex_local" || adapterType === "opencode_local" ? (
+                            <p className="text-muted-foreground">
+                              If auth fails, set{" "}
+                              <span className="font-mono">
+                                {adapterType === "cursor" ? "CURSOR_API_KEY" : "OPENAI_API_KEY"}
+                              </span>{" "}
+                              in
+                              env or run{" "}
+                              <span className="font-mono">
+                                {adapterType === "cursor"
+                                  ? "agent login"
+                                  : adapterType === "codex_local"
+                                    ? "codex login"
+                                    : "opencode auth login"}
+                              </span>.
+                            </p>
+                          ) : (
+                            <p className="text-muted-foreground">
+                              If login is required, run{" "}
+                              <span className="font-mono">claude login</span> and
+                              retry.
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {adapterType === "process" && (
+                      <div className="space-y-3">
+                        <div>
+                          <label className="paperclip-gov-label mb-1.5 block">
+                            Command
+                          </label>
+                          <input
+                            className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                            placeholder="e.g. node, python"
+                            value={command}
+                            onChange={(e) => setCommand(e.target.value)}
+                          />
+                        </div>
+                        <div>
+                          <label className="paperclip-gov-label mb-1.5 block">
+                            Args (comma-separated)
+                          </label>
+                          <input
+                            className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                            placeholder="e.g. script.js, --flag"
+                            value={args}
+                            onChange={(e) => setArgs(e.target.value)}
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    {(adapterType === "http" || adapterType === "openclaw_gateway") && (
                       <div>
-                        <label className="text-xs text-muted-foreground mb-1 block">
-                          Command
+                        <label className="paperclip-gov-label mb-1.5 block">
+                          {adapterType === "openclaw_gateway" ? "Gateway URL" : "Webhook URL"}
                         </label>
                         <input
                           className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                          placeholder="e.g. node, python"
-                          value={command}
-                          onChange={(e) => setCommand(e.target.value)}
+                          placeholder={adapterType === "openclaw_gateway" ? "ws://127.0.0.1:18789" : "https://..."}
+                          value={url}
+                          onChange={(e) => setUrl(e.target.value)}
                         />
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {step === 3 && (
+                  <div className="space-y-5">
+                    <div className="flex items-center gap-3 mb-1">
+                      <div className="paperclip-gov-pill p-2.5">
+                        <ListTodo className="h-5 w-5 text-muted-foreground" />
                       </div>
                       <div>
-                        <label className="text-xs text-muted-foreground mb-1 block">
-                          Args (comma-separated)
-                        </label>
-                        <input
-                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                          placeholder="e.g. script.js, --flag"
-                          value={args}
-                          onChange={(e) => setArgs(e.target.value)}
-                        />
+                        <h3 className="font-medium">Give it something to do</h3>
+                        <p className="text-xs text-muted-foreground">
+                          Give your agent a small task to start with — a bug fix,
+                          a research question, writing a script.
+                        </p>
                       </div>
                     </div>
-                  )}
-
-                  {(adapterType === "http" || adapterType === "openclaw_gateway") && (
                     <div>
-                      <label className="text-xs text-muted-foreground mb-1 block">
-                        {adapterType === "openclaw_gateway" ? "Gateway URL" : "Webhook URL"}
+                      <label className="paperclip-gov-label mb-1.5 block">
+                        Task title
                       </label>
                       <input
-                        className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                        placeholder={adapterType === "openclaw_gateway" ? "ws://127.0.0.1:18789" : "https://..."}
-                        value={url}
-                        onChange={(e) => setUrl(e.target.value)}
+                        className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                        placeholder="e.g. Research competitor pricing"
+                        value={taskTitle}
+                        onChange={(e) => setTaskTitle(e.target.value)}
+                        autoFocus
                       />
                     </div>
-                  )}
-                </div>
-              )}
-
-              {step === 3 && (
-                <div className="space-y-5">
-                  <div className="flex items-center gap-3 mb-1">
-                    <div className="bg-muted/50 p-2">
-                      <ListTodo className="h-5 w-5 text-muted-foreground" />
-                    </div>
                     <div>
-                      <h3 className="font-medium">Give it something to do</h3>
-                      <p className="text-xs text-muted-foreground">
-                        Give your agent a small task to start with — a bug fix,
-                        a research question, writing a script.
-                      </p>
+                      <label className="paperclip-gov-label mb-1.5 block">
+                        Description (optional)
+                      </label>
+                      <textarea
+                        ref={textareaRef}
+                        className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[120px] max-h-[300px] overflow-y-auto"
+                        placeholder="Add more detail about what the agent should do..."
+                        value={taskDescription}
+                        onChange={(e) => setTaskDescription(e.target.value)}
+                      />
                     </div>
                   </div>
-                  <div>
-                    <label className="text-xs text-muted-foreground mb-1 block">
-                      Task title
-                    </label>
-                    <input
-                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                      placeholder="e.g. Research competitor pricing"
-                      value={taskTitle}
-                      onChange={(e) => setTaskTitle(e.target.value)}
-                      autoFocus
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs text-muted-foreground mb-1 block">
-                      Description (optional)
-                    </label>
-                    <textarea
-                      ref={textareaRef}
-                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[120px] max-h-[300px] overflow-y-auto"
-                      placeholder="Add more detail about what the agent should do..."
-                      value={taskDescription}
-                      onChange={(e) => setTaskDescription(e.target.value)}
-                    />
-                  </div>
-                </div>
-              )}
+                )}
 
-              {step === 4 && (
-                <div className="space-y-5">
-                  <div className="flex items-center gap-3 mb-1">
-                    <div className="bg-muted/50 p-2">
-                      <Rocket className="h-5 w-5 text-muted-foreground" />
-                    </div>
-                    <div>
-                      <h3 className="font-medium">Ready to launch</h3>
-                      <p className="text-xs text-muted-foreground">
-                        Everything is set up. Your assigned task already woke
-                        the agent, so you can jump straight to the issue.
-                      </p>
-                    </div>
-                  </div>
-                  <div className="border border-border divide-y divide-border">
-                    <div className="flex items-center gap-3 px-3 py-2.5">
-                      <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium truncate">
-                          {companyName}
-                        </p>
-                        <p className="text-xs text-muted-foreground">Company</p>
+                {step === 4 && (
+                  <div className="space-y-5">
+                    <div className="flex items-center gap-3 mb-1">
+                      <div className="paperclip-gov-pill p-2.5">
+                        <Rocket className="h-5 w-5 text-muted-foreground" />
                       </div>
-                      <Check className="h-4 w-4 text-green-500 shrink-0" />
-                    </div>
-                    <div className="flex items-center gap-3 px-3 py-2.5">
-                      <Bot className="h-4 w-4 text-muted-foreground shrink-0" />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium truncate">
-                          {agentName}
-                        </p>
+                      <div>
+                        <h3 className="font-medium">Ready to launch</h3>
                         <p className="text-xs text-muted-foreground">
-                          {getUIAdapter(adapterType).label}
+                          Everything is set up. Your assigned task already woke
+                          the agent, so you can jump straight to the issue.
                         </p>
                       </div>
-                      <Check className="h-4 w-4 text-green-500 shrink-0" />
                     </div>
-                    <div className="flex items-center gap-3 px-3 py-2.5">
-                      <ListTodo className="h-4 w-4 text-muted-foreground shrink-0" />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium truncate">
-                          {taskTitle}
-                        </p>
-                        <p className="text-xs text-muted-foreground">Task</p>
+                    <div className="paperclip-gov-list divide-y divide-border">
+                      <div className="paperclip-gov-row flex items-center gap-3 px-3 py-2.5">
+                        <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium truncate">
+                            {companyName}
+                          </p>
+                          <p className="text-xs text-muted-foreground">Company</p>
+                        </div>
+                        <Check className="h-4 w-4 text-green-500 shrink-0" />
                       </div>
-                      <Check className="h-4 w-4 text-green-500 shrink-0" />
+                      <div className="paperclip-gov-row flex items-center gap-3 px-3 py-2.5">
+                        <Bot className="h-4 w-4 text-muted-foreground shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium truncate">
+                            {agentName}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {getUIAdapter(adapterType).label}
+                          </p>
+                        </div>
+                        <Check className="h-4 w-4 text-green-500 shrink-0" />
+                      </div>
+                      <div className="paperclip-gov-row flex items-center gap-3 px-3 py-2.5">
+                        <ListTodo className="h-4 w-4 text-muted-foreground shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium truncate">
+                            {taskTitle}
+                          </p>
+                          <p className="text-xs text-muted-foreground">Task</p>
+                        </div>
+                        <Check className="h-4 w-4 text-green-500 shrink-0" />
+                      </div>
                     </div>
                   </div>
-                </div>
-              )}
+                )}
 
-              {/* Error */}
-              {error && (
-                <div className="mt-3">
-                  <p className="text-xs text-destructive">{error}</p>
-                </div>
-              )}
+                {/* Error */}
+                {error && (
+                  <div className="mt-3">
+                    <p className="text-xs text-destructive">{error}</p>
+                  </div>
+                )}
 
-              {/* Footer navigation */}
-              <div className="flex items-center justify-between mt-8">
-                <div>
-                  {step > 1 && step > (onboardingOptions.initialStep ?? 1) && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setStep((step - 1) as Step)}
-                      disabled={loading}
-                    >
-                      <ArrowLeft className="h-3.5 w-3.5 mr-1" />
-                      Back
-                    </Button>
-                  )}
-                </div>
-                <div className="flex items-center gap-2">
-                  {step === 1 && (
-                    <Button
-                      size="sm"
-                      disabled={!companyName.trim() || loading}
-                      onClick={handleStep1Next}
-                    >
-                      {loading ? (
-                        <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-                      ) : (
-                        <ArrowRight className="h-3.5 w-3.5 mr-1" />
-                      )}
-                      {loading ? "Creating..." : "Next"}
-                    </Button>
-                  )}
-                  {step === 2 && (
-                    <Button
-                      size="sm"
-                      disabled={
-                        !agentName.trim() || loading || adapterEnvLoading
-                      }
-                      onClick={handleStep2Next}
-                    >
-                      {loading ? (
-                        <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-                      ) : (
-                        <ArrowRight className="h-3.5 w-3.5 mr-1" />
-                      )}
-                      {loading ? "Creating..." : "Next"}
-                    </Button>
-                  )}
-                  {step === 3 && (
-                    <Button
-                      size="sm"
-                      disabled={!taskTitle.trim() || loading}
-                      onClick={handleStep3Next}
-                    >
-                      {loading ? (
-                        <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-                      ) : (
-                        <ArrowRight className="h-3.5 w-3.5 mr-1" />
-                      )}
-                      {loading ? "Creating..." : "Next"}
-                    </Button>
-                  )}
-                  {step === 4 && (
-                    <Button size="sm" disabled={loading} onClick={handleLaunch}>
-                      {loading ? (
-                        <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-                      ) : (
-                        <ArrowRight className="h-3.5 w-3.5 mr-1" />
-                      )}
-                      {loading ? "Opening..." : "Open Issue"}
-                    </Button>
-                  )}
+                {/* Footer navigation */}
+                <div className="flex items-center justify-between mt-8">
+                  <div>
+                    {step > 1 && step > (onboardingOptions.initialStep ?? 1) && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setStep((step - 1) as Step)}
+                        disabled={loading}
+                      >
+                        <ArrowLeft className="h-3.5 w-3.5 mr-1" />
+                        Back
+                      </Button>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {step === 1 && (
+                      <Button
+                        size="sm"
+                        disabled={!companyName.trim() || loading}
+                        onClick={handleStep1Next}
+                      >
+                        {loading ? (
+                          <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                        ) : (
+                          <ArrowRight className="h-3.5 w-3.5 mr-1" />
+                        )}
+                        {loading ? "Creating..." : "Next"}
+                      </Button>
+                    )}
+                    {step === 2 && (
+                      <Button
+                        size="sm"
+                        disabled={
+                          !agentName.trim() || loading || adapterEnvLoading
+                        }
+                        onClick={handleStep2Next}
+                      >
+                        {loading ? (
+                          <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                        ) : (
+                          <ArrowRight className="h-3.5 w-3.5 mr-1" />
+                        )}
+                        {loading ? "Creating..." : "Next"}
+                      </Button>
+                    )}
+                    {step === 3 && (
+                      <Button
+                        size="sm"
+                        disabled={!taskTitle.trim() || loading}
+                        onClick={handleStep3Next}
+                      >
+                        {loading ? (
+                          <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                        ) : (
+                          <ArrowRight className="h-3.5 w-3.5 mr-1" />
+                        )}
+                        {loading ? "Creating..." : "Next"}
+                      </Button>
+                    )}
+                    {step === 4 && (
+                      <Button size="sm" disabled={loading} onClick={handleLaunch}>
+                        {loading ? (
+                          <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                        ) : (
+                          <ArrowRight className="h-3.5 w-3.5 mr-1" />
+                        )}
+                        {loading ? "Opening..." : "Open Issue"}
+                      </Button>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
           </div>
-
           {/* Right half — ASCII art (hidden on mobile) */}
-          <div className="hidden md:block w-1/2 overflow-hidden">
-            <AsciiArtAnimation />
+          <div className="hidden md:flex md:w-1/2 md:flex-col md:overflow-hidden">
+            <div className="paperclip-edge-panel flex h-full flex-col justify-between px-8 py-10">
+              <div className="max-w-lg space-y-4">
+                <p className="paperclip-edge-kicker">Bootstrap Sequence</p>
+                <h2 className="paperclip-edge-title text-4xl">Stand up the company with one guided flow.</h2>
+                <p className="text-sm leading-6 text-muted-foreground">
+                  Create the company, configure the first operator, and open the first issue without breaking the onboarding sequence.
+                </p>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="paperclip-gov-stat px-4 py-3">
+                    <p className="paperclip-gov-label">Step 1</p>
+                    <p className="mt-2 text-sm font-semibold">Company identity and mission</p>
+                  </div>
+                  <div className="paperclip-gov-stat px-4 py-3">
+                    <p className="paperclip-gov-label">Step 2</p>
+                    <p className="mt-2 text-sm font-semibold">Agent runtime and environment check</p>
+                  </div>
+                  <div className="paperclip-gov-stat px-4 py-3">
+                    <p className="paperclip-gov-label">Step 3</p>
+                    <p className="mt-2 text-sm font-semibold">Seed the first assignment</p>
+                  </div>
+                  <div className="paperclip-gov-stat px-4 py-3">
+                    <p className="paperclip-gov-label">Step 4</p>
+                    <p className="mt-2 text-sm font-semibold">Launch straight into work</p>
+                  </div>
+                </div>
+              </div>
+              <div className="mt-8 overflow-hidden rounded-[1.5rem] border border-border/70">
+                <AsciiArtAnimation />
+              </div>
+            </div>
           </div>
         </div>
       </DialogPortal>

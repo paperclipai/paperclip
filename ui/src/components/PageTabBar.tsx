@@ -21,7 +21,7 @@ export function PageTabBar({ items, value, onValueChange }: PageTabBarProps) {
       <select
         value={value}
         onChange={(e) => onValueChange(e.target.value)}
-        className="h-9 rounded-md border border-border bg-background px-2 py-1 text-base focus:outline-none focus:ring-1 focus:ring-ring"
+        className="paperclip-panel paperclip-nav-meta h-10 rounded-full px-4 py-1 text-[0.7rem] text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
       >
         {items.map((item) => (
           <option key={item.value} value={item.value}>
@@ -33,9 +33,13 @@ export function PageTabBar({ items, value, onValueChange }: PageTabBarProps) {
   }
 
   return (
-    <TabsList variant="line">
+    <TabsList variant="line" className="paperclip-chip rounded-full p-1">
       {items.map((item) => (
-        <TabsTrigger key={item.value} value={item.value}>
+        <TabsTrigger
+          key={item.value}
+          value={item.value}
+          className="paperclip-nav-meta rounded-full px-3 text-[0.68rem] text-muted-foreground data-[state=active]:border-primary/20 data-[state=active]:bg-primary/10 data-[state=active]:text-foreground data-[state=active]:shadow-none"
+        >
           {item.label}
         </TabsTrigger>
       ))}

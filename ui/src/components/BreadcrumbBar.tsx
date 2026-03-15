@@ -34,19 +34,23 @@ export function BreadcrumbBar() {
   // Single breadcrumb = page title (uppercase)
   if (breadcrumbs.length === 1) {
     return (
-      <div className="border-b border-border px-4 md:px-6 h-12 shrink-0 flex items-center min-w-0 overflow-hidden">
+      <div className="flex h-16 min-w-0 shrink-0 items-center overflow-hidden border-b border-[color:var(--surface-outline)] bg-[linear-gradient(180deg,color-mix(in_oklab,var(--primary)_8%,transparent),transparent)] px-4 md:px-6">
         {menuButton}
-        <h1 className="text-sm font-semibold uppercase tracking-wider truncate">
-          {breadcrumbs[0].label}
-        </h1>
+        <div className="min-w-0">
+          <div className="paperclip-kicker mb-1">Active Surface</div>
+          <h1 className="truncate text-base font-semibold md:text-lg">{breadcrumbs[0].label}</h1>
+        </div>
       </div>
     );
   }
 
   // Multiple breadcrumbs = breadcrumb trail
   return (
-    <div className="border-b border-border px-4 md:px-6 h-12 shrink-0 flex items-center min-w-0 overflow-hidden">
+    <div className="flex h-16 min-w-0 shrink-0 items-center overflow-hidden border-b border-[color:var(--surface-outline)] bg-[linear-gradient(180deg,color-mix(in_oklab,var(--primary)_8%,transparent),transparent)] px-4 md:px-6">
       {menuButton}
+      <div className="mr-4 hidden md:block">
+        <div className="paperclip-kicker">Route Trace</div>
+      </div>
       <Breadcrumb className="min-w-0 overflow-hidden">
         <BreadcrumbList className="flex-nowrap">
           {breadcrumbs.map((crumb, i) => {

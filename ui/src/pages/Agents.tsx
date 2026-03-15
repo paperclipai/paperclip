@@ -126,85 +126,142 @@ export function Agents() {
 
   const filtered = filterAgents(agents ?? [], tab, showTerminated);
   const filteredOrg = filterOrgTree(orgTree ?? [], tab, showTerminated);
+  const activeCount = (agents ?? []).filter((agent) =>
+    ["active", "running", "idle"].includes(agent.status),
+  ).length;
+  const pausedCount = (agents ?? []).filter((agent) => agent.status === "paused").length;
+  const errorCount = (agents ?? []).filter((agent) => agent.status === "error").length;
+  const liveAgentCount = liveRunByAgent.size;
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <Tabs value={tab} onValueChange={(v) => navigate(`/agents/${v}`)}>
-          <PageTabBar
-            items={[
-              { value: "all", label: "All" },
-              { value: "active", label: "Active" },
-              { value: "paused", label: "Paused" },
-              { value: "error", label: "Error" },
-            ]}
-            value={tab}
-            onValueChange={(v) => navigate(`/agents/${v}`)}
-          />
-        </Tabs>
-        <div className="flex items-center gap-2">
-          {/* Filters */}
-          <div className="relative">
-            <button
-              className={cn(
-                "flex items-center gap-1.5 px-2 py-1.5 text-xs transition-colors border border-border",
-                filtersOpen || showTerminated ? "text-foreground bg-accent" : "text-muted-foreground hover:bg-accent/50"
-              )}
-              onClick={() => setFiltersOpen(!filtersOpen)}
-            >
-              <SlidersHorizontal className="h-3 w-3" />
-              Filters
-              {showTerminated && <span className="ml-0.5 px-1 bg-foreground/10 rounded text-[10px]">1</span>}
-            </button>
-            {filtersOpen && (
-              <div className="absolute right-0 top-full mt-1 z-50 w-48 border border-border bg-popover shadow-md p-1">
-                <button
-                  className="flex items-center gap-2 w-full px-2 py-1.5 text-xs text-left hover:bg-accent/50 transition-colors"
-                  onClick={() => setShowTerminated(!showTerminated)}
-                >
-                  <span className={cn(
-                    "flex items-center justify-center h-3.5 w-3.5 border border-border rounded-sm",
-                    showTerminated && "bg-foreground"
-                  )}>
-                    {showTerminated && <span className="text-background text-[10px] leading-none">&#10003;</span>}
+    <div className="space-y-5">
+      <section className="paperclip-gov-hero px-5 py-5 sm:px-6">
+        <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
+          <div className="space-y-3">
+            <p className="paperclip-gov-kicker">Command Structure</p>
+            <div className="space-y-2">
+              <h1 className="paperclip-gov-title">Agents</h1>
+              <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
+                Monitor operator coverage, execution posture, and reporting structure without leaving the command surface.
+              </p>
+            </div>
+          </div>
+          {/* Keep the org pulse visible before users switch between list and hierarchy views. */}
+          <div className="grid gap-3 sm:grid-cols-4">
+            <div className="paperclip-gov-stat min-w-[8.5rem] px-4 py-3">
+              <p className="paperclip-gov-label">Total</p>
+              <p className="mt-2 text-2xl font-semibold">{agents?.length ?? 0}</p>
+            </div>
+            <div className="paperclip-gov-stat min-w-[8.5rem] px-4 py-3">
+              <p className="paperclip-gov-label">Active</p>
+              <p className="mt-2 text-2xl font-semibold">{activeCount}</p>
+            </div>
+            <div className="paperclip-gov-stat min-w-[8.5rem] px-4 py-3">
+              <p className="paperclip-gov-label">Live</p>
+              <p className="mt-2 text-2xl font-semibold">{liveAgentCount}</p>
+            </div>
+            <div className="paperclip-gov-stat min-w-[8.5rem] px-4 py-3">
+              <p className="paperclip-gov-label">Watchlist</p>
+              <p className="mt-2 text-2xl font-semibold">{pausedCount + errorCount}</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div className="paperclip-gov-toolbar p-3 sm:p-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <Tabs value={tab} onValueChange={(v) => navigate(`/agents/${v}`)}>
+            <PageTabBar
+              items={[
+                { value: "all", label: "All" },
+                { value: "active", label: "Active" },
+                { value: "paused", label: "Paused" },
+                { value: "error", label: "Error" },
+              ]}
+              value={tab}
+              onValueChange={(v) => navigate(`/agents/${v}`)}
+            />
+          </Tabs>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative">
+              <button
+                className={cn(
+                  "paperclip-gov-pill flex items-center gap-1.5 px-3 py-2 text-xs transition-colors",
+                  filtersOpen || showTerminated
+                    ? "text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+                onClick={() => setFiltersOpen(!filtersOpen)}
+              >
+                <SlidersHorizontal className="h-3 w-3" />
+                Filters
+                {showTerminated && (
+                  <span className="rounded-full bg-foreground/10 px-1.5 py-0.5 text-[10px] text-foreground">
+                    1
                   </span>
-                  Show terminated
+                )}
+              </button>
+              {filtersOpen && (
+                <div className="paperclip-gov-card absolute right-0 top-full z-50 mt-2 w-52 p-1.5">
+                  <button
+                    className="paperclip-gov-row flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors"
+                    onClick={() => setShowTerminated(!showTerminated)}
+                  >
+                    <span
+                      className={cn(
+                        "flex h-3.5 w-3.5 items-center justify-center rounded-sm border border-border",
+                        showTerminated && "bg-foreground",
+                      )}
+                    >
+                      {showTerminated && (
+                        <span className="text-[10px] leading-none text-background">&#10003;</span>
+                      )}
+                    </span>
+                    Show terminated
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {!forceListView && (
+              <div className="paperclip-gov-pill flex items-center p-1">
+                <button
+                  className={cn(
+                    "rounded-full p-1.5 transition-colors",
+                    effectiveView === "list"
+                      ? "bg-foreground text-background"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                  onClick={() => setView("list")}
+                >
+                  <List className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  className={cn(
+                    "rounded-full p-1.5 transition-colors",
+                    effectiveView === "org"
+                      ? "bg-foreground text-background"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                  onClick={() => setView("org")}
+                >
+                  <GitBranch className="h-3.5 w-3.5" />
                 </button>
               </div>
             )}
+
+            <Button size="sm" variant="outline" onClick={openNewAgent}>
+              <Plus className="h-3.5 w-3.5 mr-1.5" />
+              New Agent
+            </Button>
           </div>
-          {/* View toggle */}
-          {!forceListView && (
-            <div className="flex items-center border border-border">
-              <button
-                className={cn(
-                  "p-1.5 transition-colors",
-                  effectiveView === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
-                )}
-                onClick={() => setView("list")}
-              >
-                <List className="h-3.5 w-3.5" />
-              </button>
-              <button
-                className={cn(
-                  "p-1.5 transition-colors",
-                  effectiveView === "org" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
-                )}
-                onClick={() => setView("org")}
-              >
-                <GitBranch className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          )}
-          <Button size="sm" variant="outline" onClick={openNewAgent}>
-            <Plus className="h-3.5 w-3.5 mr-1.5" />
-            New Agent
-          </Button>
         </div>
       </div>
 
       {filtered.length > 0 && (
-        <p className="text-xs text-muted-foreground">{filtered.length} agent{filtered.length !== 1 ? "s" : ""}</p>
+        <p className="paperclip-gov-label">
+          {filtered.length} visible agent{filtered.length !== 1 ? "s" : ""}
+        </p>
       )}
 
       {error && <p className="text-sm text-destructive">{error.message}</p>}
@@ -220,7 +277,7 @@ export function Agents() {
 
       {/* List view */}
       {effectiveView === "list" && filtered.length > 0 && (
-        <div className="border border-border">
+        <div className="paperclip-gov-list">
           {filtered.map((agent) => {
             return (
               <EntityRow
@@ -228,6 +285,7 @@ export function Agents() {
                 title={agent.name}
                 subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
                 to={agentUrl(agent)}
+                trailingOutsideLink={liveRunByAgent.has(agent.id)}
                 leading={
                   <span className="relative flex h-2.5 w-2.5">
                     <span
@@ -275,14 +333,12 @@ export function Agents() {
       )}
 
       {effectiveView === "list" && agents && agents.length > 0 && filtered.length === 0 && (
-        <p className="text-sm text-muted-foreground text-center py-8">
-          No agents match the selected filter.
-        </p>
+        <EmptyState icon={Bot} message="No agents match the selected filter." />
       )}
 
       {/* Org chart view */}
       {effectiveView === "org" && filteredOrg.length > 0 && (
-        <div className="border border-border py-1">
+        <div className="paperclip-gov-card p-2 sm:p-3">
           {filteredOrg.map((node) => (
             <OrgTreeNode key={node.id} node={node} depth={0} agentMap={agentMap} liveRunByAgent={liveRunByAgent} />
           ))}
@@ -290,15 +346,11 @@ export function Agents() {
       )}
 
       {effectiveView === "org" && orgTree && orgTree.length > 0 && filteredOrg.length === 0 && (
-        <p className="text-sm text-muted-foreground text-center py-8">
-          No agents match the selected filter.
-        </p>
+        <EmptyState icon={GitBranch} message="No agents match the selected hierarchy filter." />
       )}
 
       {effectiveView === "org" && orgTree && orgTree.length === 0 && (
-        <p className="text-sm text-muted-foreground text-center py-8">
-          No organizational hierarchy defined.
-        </p>
+        <EmptyState icon={GitBranch} message="No organizational hierarchy is defined yet." />
       )}
     </div>
   );
@@ -318,23 +370,27 @@ function OrgTreeNode({
   const agent = agentMap.get(node.id);
 
   const statusColor = agentStatusDot[node.status] ?? agentStatusDotDefault;
+  const destination = agent ? agentUrl(agent) : `/agents/${node.id}`;
 
   return (
     <div style={{ paddingLeft: depth * 24 }}>
-      <Link
-        to={agent ? agentUrl(agent) : `/agents/${node.id}`}
-        className="flex items-center gap-3 px-3 py-2 hover:bg-accent/30 transition-colors w-full text-left no-underline text-inherit"
-      >
-        <span className="relative flex h-2.5 w-2.5 shrink-0">
-          <span className={`absolute inline-flex h-full w-full rounded-full ${statusColor}`} />
-        </span>
-        <div className="flex-1 min-w-0">
-          <span className="text-sm font-medium">{node.name}</span>
-          <span className="text-xs text-muted-foreground ml-2">
-            {roleLabels[node.role] ?? node.role}
-            {agent?.title ? ` - ${agent.title}` : ""}
+      {/* Split the row link from the live-run link so the org chart never nests anchors. */}
+      <div className="paperclip-gov-tree-link flex w-full items-center gap-3 px-3 py-2">
+        <Link
+          to={destination}
+          className="flex min-w-0 flex-1 items-center gap-3 no-underline text-inherit"
+        >
+          <span className="relative flex h-2.5 w-2.5 shrink-0">
+            <span className={`absolute inline-flex h-full w-full rounded-full ${statusColor}`} />
           </span>
-        </div>
+          <div className="flex-1 min-w-0">
+            <span className="text-sm font-medium">{node.name}</span>
+            <span className="text-xs text-muted-foreground ml-2">
+              {roleLabels[node.role] ?? node.role}
+              {agent?.title ? ` - ${agent.title}` : ""}
+            </span>
+          </div>
+        </Link>
         <div className="flex items-center gap-3 shrink-0">
           <span className="sm:hidden">
             {liveRunByAgent.has(node.id) ? (
@@ -370,9 +426,9 @@ function OrgTreeNode({
             </span>
           </div>
         </div>
-      </Link>
+      </div>
       {node.reports && node.reports.length > 0 && (
-        <div className="border-l border-border/50 ml-4">
+        <div className="ml-4 border-l border-border/50">
           {node.reports.map((child) => (
             <OrgTreeNode key={child.id} node={child} depth={depth + 1} agentMap={agentMap} liveRunByAgent={liveRunByAgent} />
           ))}

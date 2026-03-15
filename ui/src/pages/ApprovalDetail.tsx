@@ -184,15 +184,45 @@ export function ApprovalDetail() {
             label: "Open hired agent",
             to: `/agents/${linkedAgentId}`,
           }
-        : {
-            label: "Back to approvals",
-            to: "/approvals",
-          };
+      : {
+          label: "Back to approvals",
+          to: "/approvals",
+        };
+  const commentCount = comments?.length ?? 0;
+  const linkedIssueCount = linkedIssues?.length ?? 0;
 
   return (
-    <div className="space-y-6 max-w-3xl">
+    <div className="max-w-4xl space-y-6">
+      <section className="paperclip-gov-hero px-5 py-5 sm:px-6">
+        <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
+          <div className="space-y-3">
+            <p className="paperclip-gov-kicker">Decision Surface</p>
+            <div className="space-y-2">
+              <h1 className="paperclip-gov-title">{typeLabel[approval.type] ?? approval.type.replace(/_/g, " ")}</h1>
+              <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
+                Review the payload, linked issues, and discussion history before making a governance decision.
+              </p>
+            </div>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="paperclip-gov-stat min-w-[8.5rem] px-4 py-3">
+              <p className="paperclip-gov-label">Status</p>
+              <p className="mt-2 text-sm font-semibold capitalize">{approval.status.replace(/_/g, " ")}</p>
+            </div>
+            <div className="paperclip-gov-stat min-w-[8.5rem] px-4 py-3">
+              <p className="paperclip-gov-label">Linked</p>
+              <p className="mt-2 text-2xl font-semibold">{linkedIssueCount}</p>
+            </div>
+            <div className="paperclip-gov-stat min-w-[8.5rem] px-4 py-3">
+              <p className="paperclip-gov-label">Comments</p>
+              <p className="mt-2 text-2xl font-semibold">{commentCount}</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
       {showApprovedBanner && (
-        <div className="border border-green-300 dark:border-green-700/40 bg-green-50 dark:bg-green-900/20 rounded-lg px-4 py-3 animate-in fade-in zoom-in-95 duration-300">
+        <div className="paperclip-gov-card border-green-300 bg-green-50 px-4 py-3 animate-in fade-in zoom-in-95 duration-300 dark:border-green-700/40 dark:bg-green-900/20">
           <div className="flex items-start justify-between gap-3">
             <div className="flex items-start gap-2">
               <div className="relative mt-0.5">
@@ -217,13 +247,15 @@ export function ApprovalDetail() {
           </div>
         </div>
       )}
-      <div className="border border-border rounded-lg p-4 space-y-3">
+      <div className="paperclip-gov-card-strong p-5 space-y-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <TypeIcon className="h-5 w-5 text-muted-foreground shrink-0" />
+            <div className="paperclip-gov-pill flex h-10 w-10 items-center justify-center">
+              <TypeIcon className="h-5 w-5 text-primary shrink-0" />
+            </div>
             <div>
               <h2 className="text-lg font-semibold">{typeLabel[approval.type] ?? approval.type.replace(/_/g, " ")}</h2>
-              <p className="text-xs text-muted-foreground font-mono">{approval.id}</p>
+              <p className="paperclip-gov-label mt-1">{approval.id}</p>
             </div>
           </div>
           <StatusBadge status={approval.status} />
@@ -259,13 +291,13 @@ export function ApprovalDetail() {
         {error && <p className="text-sm text-destructive">{error}</p>}
         {linkedIssues && linkedIssues.length > 0 && (
           <div className="pt-2 border-t border-border/60">
-            <p className="text-xs text-muted-foreground mb-1.5">Linked Issues</p>
-            <div className="space-y-1.5">
+            <p className="paperclip-gov-label mb-2">Linked Issues</p>
+            <div className="paperclip-gov-list">
               {linkedIssues.map((issue) => (
                 <Link
                   key={issue.id}
                   to={`/issues/${issue.identifier ?? issue.id}`}
-                  className="block text-xs rounded border border-border/70 px-2 py-1.5 hover:bg-accent/20"
+                  className="paperclip-gov-row block border-b border-border/60 px-3 py-2 text-xs last:border-b-0 hover:bg-accent/20"
                 >
                   <span className="font-mono text-muted-foreground mr-2">
                     {issue.identifier ?? issue.id.slice(0, 8)}
@@ -345,11 +377,11 @@ export function ApprovalDetail() {
         </div>
       </div>
 
-      <div className="border border-border rounded-lg p-4 space-y-3">
-        <h3 className="text-sm font-medium">Comments ({comments?.length ?? 0})</h3>
+      <div className="paperclip-gov-card p-5 space-y-3">
+        <h3 className="text-sm font-medium">Comments ({commentCount})</h3>
         <div className="space-y-2">
           {(comments ?? []).map((comment: ApprovalComment) => (
-            <div key={comment.id} className="border border-border/60 rounded-md p-3">
+            <div key={comment.id} className="paperclip-gov-card p-3">
               <div className="flex items-center justify-between mb-1">
                 {comment.authorAgentId ? (
                   <Link to={`/agents/${comment.authorAgentId}`} className="hover:underline">

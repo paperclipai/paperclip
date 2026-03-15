@@ -19,11 +19,11 @@ function formatDayLabel(dateStr: string): string {
 
 function DateLabels({ days }: { days: string[] }) {
   return (
-    <div className="flex gap-[3px] mt-1.5">
+    <div className="mt-2 flex gap-[3px]">
       {days.map((day, i) => (
         <div key={day} className="flex-1 text-center">
           {(i === 0 || i === 6 || i === 13) ? (
-            <span className="text-[9px] text-muted-foreground tabular-nums">{formatDayLabel(day)}</span>
+            <span className="paperclip-nav-meta text-[0.52rem] text-muted-foreground tabular-nums">{formatDayLabel(day)}</span>
           ) : null}
         </div>
       ))}
@@ -33,9 +33,9 @@ function DateLabels({ days }: { days: string[] }) {
 
 function ChartLegend({ items }: { items: { color: string; label: string }[] }) {
   return (
-    <div className="flex flex-wrap gap-x-2.5 gap-y-0.5 mt-2">
+    <div className="mt-3 flex flex-wrap gap-x-2.5 gap-y-1">
       {items.map(item => (
-        <span key={item.label} className="flex items-center gap-1 text-[9px] text-muted-foreground">
+        <span key={item.label} className="paperclip-nav-meta flex items-center gap-1 text-[0.52rem] text-muted-foreground">
           <span className="h-1.5 w-1.5 rounded-full shrink-0" style={{ backgroundColor: item.color }} />
           {item.label}
         </span>
@@ -46,10 +46,13 @@ function ChartLegend({ items }: { items: { color: string; label: string }[] }) {
 
 export function ChartCard({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
   return (
-    <div className="border border-border rounded-lg p-4 space-y-3">
-      <div>
-        <h3 className="text-xs font-medium text-muted-foreground">{title}</h3>
-        {subtitle && <span className="text-[10px] text-muted-foreground/60">{subtitle}</span>}
+    <div className="paperclip-monitor-card h-full space-y-4 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h3 className="paperclip-monitor-title">{title}</h3>
+          {subtitle && <span className="paperclip-monitor-subtitle mt-1 block text-[11px]">{subtitle}</span>}
+        </div>
+        <div className="paperclip-chip h-2 w-2 rounded-full p-0" />
       </div>
       {children}
     </div>

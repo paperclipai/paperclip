@@ -67,17 +67,17 @@ function SortableProjectItem({
           if (isMobile) setSidebarOpen(false);
         }}
         className={cn(
-          "flex items-center gap-2.5 px-3 py-1.5 text-[13px] font-medium transition-colors",
+          "paperclip-nav-link text-[13px] font-medium",
           activeProjectRef === routeRef || activeProjectRef === project.id
-            ? "bg-accent text-foreground"
-            : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
+            ? "paperclip-nav-link-active"
+            : "paperclip-nav-link",
         )}
       >
         <span
-          className="shrink-0 h-3.5 w-3.5 rounded-sm"
+          className="h-3.5 w-3.5 shrink-0 rounded-sm"
           style={{ backgroundColor: project.color ?? "#6366f1" }}
         />
-        <span className="flex-1 truncate">{project.name}</span>
+        <span className="flex-1 truncate tracking-[0.01em]">{project.name}</span>
       </NavLink>
     </div>
   );
@@ -138,24 +138,22 @@ export function SidebarProjects() {
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
       <div className="group">
-        <div className="flex items-center px-3 py-1.5">
-          <CollapsibleTrigger className="flex items-center gap-1 flex-1 min-w-0">
+        <div className="flex items-center gap-2 px-1">
+          <CollapsibleTrigger className="paperclip-section-header flex flex-1 items-center gap-1 min-w-0">
             <ChevronRight
               className={cn(
-                "h-3 w-3 text-muted-foreground/60 transition-transform opacity-0 group-hover:opacity-100",
-                open && "rotate-90"
+                "h-3 w-3 text-muted-foreground transition-transform opacity-0 group-hover:opacity-100",
+                open && "rotate-90",
               )}
             />
-            <span className="text-[10px] font-medium uppercase tracking-widest font-mono text-muted-foreground/60">
-              Projects
-            </span>
+            <span className="paperclip-kicker">Projects</span>
           </CollapsibleTrigger>
           <button
             onClick={(e) => {
               e.stopPropagation();
               openNewProject();
             }}
-            className="flex items-center justify-center h-4 w-4 rounded text-muted-foreground/60 hover:text-foreground hover:bg-accent/50 transition-colors"
+            className="paperclip-icon-button h-5 w-5 text-muted-foreground"
             aria-label="New project"
           >
             <Plus className="h-3 w-3" />
@@ -173,7 +171,7 @@ export function SidebarProjects() {
             items={orderedProjects.map((project) => project.id)}
             strategy={verticalListSortingStrategy}
           >
-            <div className="flex flex-col gap-0.5 mt-0.5">
+            <div className="mt-2 flex flex-col gap-1">
               {orderedProjects.map((project: Project) => (
                 <SortableProjectItem
                   key={project.id}

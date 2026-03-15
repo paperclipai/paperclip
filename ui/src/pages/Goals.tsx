@@ -56,7 +56,32 @@ export function Goals() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
+      <section className="paperclip-work-hero px-5 py-5 sm:px-6">
+        <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+          <div className="space-y-3">
+            <p className="paperclip-work-kicker">Strategic Horizon</p>
+            <div className="space-y-2">
+              <h1 className="paperclip-work-title">Roadmap</h1>
+              <p className="max-w-2xl text-sm text-muted-foreground">
+                Keep the operating plan legible across current commitments, next-stage preparation, and later bets.
+              </p>
+            </div>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-3">
+            {ROADMAP_SECTIONS.map((section) => {
+              const count = (goals ?? []).filter((goal) => goal.planningHorizon === section.id).length;
+              return (
+                <div key={section.id} className="paperclip-work-stat min-w-[8.5rem] px-4 py-3">
+                  <p className="paperclip-work-label">{section.title}</p>
+                  <p className="mt-2 text-2xl font-semibold">{count}</p>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </section>
+
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       {goals && goals.length === 0 && (
@@ -90,15 +115,15 @@ export function Goals() {
                 }
                 const sectionGoals = goals.filter((goal) => branchIds.has(goal.id));
                 return (
-                  <section key={section.id} className="space-y-2">
-                    <div>
-                      <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+                  <section key={section.id} className="paperclip-work-card space-y-4 rounded-[calc(var(--radius)+0.5rem)] p-4 sm:p-5">
+                    <div className="space-y-2">
+                      <h2 className="paperclip-work-kicker">
                         {section.title}
                       </h2>
                       <p className="text-sm text-muted-foreground">{section.description}</p>
                     </div>
                     {sectionGoals.length === 0 ? (
-                      <div className="border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
+                      <div className="rounded-[calc(var(--radius)+0.2rem)] border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
                         No roadmap items in this horizon.
                       </div>
                     ) : (

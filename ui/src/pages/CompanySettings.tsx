@@ -189,18 +189,55 @@ export function CompanySettings() {
   }
 
   return (
-    <div className="max-w-2xl space-y-6">
-      <div className="flex items-center gap-2">
-        <Settings className="h-5 w-5 text-muted-foreground" />
-        <h1 className="text-lg font-semibold">Company Settings</h1>
-      </div>
+    <div className="max-w-4xl space-y-6">
+      <section className="paperclip-gov-hero px-5 py-5 sm:px-6">
+        <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
+          <div className="flex items-start gap-4">
+            <CompanyPatternIcon
+              companyName={companyName || selectedCompany.name}
+              brandColor={brandColor || null}
+              className="rounded-[20px]"
+            />
+            <div className="space-y-3">
+              <p className="paperclip-gov-kicker">Company Control</p>
+              <div className="space-y-2">
+                <h1 className="paperclip-gov-title">Settings</h1>
+                <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
+                  Tune company identity, hiring rules, and onboarding entry points without changing execution behavior.
+                </p>
+              </div>
+            </div>
+          </div>
+          {/* Keep identity and governance defaults visible while the operator edits individual sections. */}
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="paperclip-gov-stat min-w-[8.5rem] px-4 py-3">
+              <p className="paperclip-gov-label">Prefix</p>
+              <p className="mt-2 text-2xl font-semibold">{selectedCompany.issuePrefix}</p>
+            </div>
+            <div className="paperclip-gov-stat min-w-[8.5rem] px-4 py-3">
+              <p className="paperclip-gov-label">Hiring</p>
+              <p className="mt-2 text-sm font-semibold">
+                {selectedCompany.requireBoardApprovalForNewAgents ? "Board approval" : "Direct"}
+              </p>
+            </div>
+            <div className="paperclip-gov-stat min-w-[8.5rem] px-4 py-3">
+              <p className="paperclip-gov-label">Planning</p>
+              <p className="mt-2 text-sm font-semibold">
+                {selectedCompany.defaultManagerPlanningMode === "approval_required"
+                  ? "Approval required"
+                  : "Automatic"}
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
 
       {/* General */}
       <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        <div className="paperclip-gov-label">
           General
         </div>
-        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+        <div className="paperclip-gov-card space-y-3 px-5 py-5">
           <Field label="Company name" hint="The display name for your company.">
             <input
               className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
@@ -226,10 +263,10 @@ export function CompanySettings() {
 
       {/* Appearance */}
       <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        <div className="paperclip-gov-label">
           Appearance
         </div>
-        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+        <div className="paperclip-gov-card space-y-3 px-5 py-5">
           <div className="flex items-start gap-4">
             <div className="shrink-0">
               <CompanyPatternIcon
@@ -281,7 +318,7 @@ export function CompanySettings() {
 
       {/* Save button for General + Appearance */}
       {generalDirty && (
-        <div className="flex items-center gap-2">
+        <div className="paperclip-gov-toolbar flex items-center gap-2 px-4 py-3">
           <Button
             size="sm"
             onClick={handleSaveGeneral}
@@ -304,10 +341,10 @@ export function CompanySettings() {
 
       {/* Hiring */}
       <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        <div className="paperclip-gov-label">
           Hiring
         </div>
-        <div className="space-y-4 rounded-md border border-border px-4 py-4">
+        <div className="paperclip-gov-card space-y-4 px-5 py-5">
           <ToggleField
             label="Require board approval for new hires"
             hint="New agent hires stay pending until approved by board."
@@ -348,10 +385,10 @@ export function CompanySettings() {
 
       {/* Invites */}
       <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        <div className="paperclip-gov-label">
           Invites
         </div>
-        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+        <div className="paperclip-gov-card space-y-3 px-5 py-5">
           <div className="flex items-center gap-1.5">
             <span className="text-xs text-muted-foreground">
               Generate an OpenClaw agent invite snippet.
@@ -373,9 +410,9 @@ export function CompanySettings() {
             <p className="text-sm text-destructive">{inviteError}</p>
           )}
           {inviteSnippet && (
-            <div className="rounded-md border border-border bg-muted/30 p-2">
+            <div className="paperclip-gov-card-strong p-3">
               <div className="flex items-center justify-between gap-2">
-                <div className="text-xs text-muted-foreground">
+                <div className="paperclip-gov-label">
                   OpenClaw Invite Prompt
                 </div>
                 {snippetCopied && (
@@ -420,10 +457,10 @@ export function CompanySettings() {
 
       {/* Danger Zone */}
       <div className="space-y-4">
-        <div className="text-xs font-medium text-destructive uppercase tracking-wide">
+        <div className="paperclip-gov-label text-destructive">
           Danger Zone
         </div>
-        <div className="space-y-3 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-4">
+        <div className="paperclip-gov-card space-y-3 border-destructive/40 bg-destructive/5 px-5 py-5">
           <p className="text-sm text-muted-foreground">
             Archive this company to hide it from the sidebar. This persists in
             the database.

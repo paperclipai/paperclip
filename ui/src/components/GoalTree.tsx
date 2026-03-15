@@ -32,7 +32,7 @@ function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect }: GoalN
     <>
       {hasChildren ? (
         <button
-          className="p-0.5"
+          className="paperclip-icon-button rounded-full p-0.5"
           onClick={(e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -46,9 +46,9 @@ function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect }: GoalN
       ) : (
         <span className="w-4" />
       )}
-      <span className="text-xs text-muted-foreground capitalize">{goal.level}</span>
+      <span className="paperclip-work-meta capitalize">{goal.level}</span>
       <div className="min-w-0 flex-1">
-        <div className="truncate">{goal.title}</div>
+        <div className="truncate font-medium">{goal.title}</div>
         {guidancePreview && (
           <div className="truncate text-xs text-muted-foreground">
             {guidancePreview}
@@ -60,7 +60,7 @@ function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect }: GoalN
   );
 
   const classes = cn(
-    "flex items-center gap-2 px-3 py-1.5 text-sm transition-colors cursor-pointer hover:bg-accent/50",
+    "paperclip-work-row flex items-center gap-2 border-b border-[color:color-mix(in_oklab,var(--primary)_10%,var(--border))] px-3 py-2 text-sm transition-colors cursor-pointer last:border-b-0",
   );
 
   return (
@@ -110,7 +110,7 @@ export function GoalTree({ goals, goalLink, onSelect }: GoalTreeProps) {
   }
 
   return (
-    <div className="border border-border py-1">
+    <div className="paperclip-work-list py-1">
       {roots.map((goal) => (
         <GoalNode
           key={goal.id}

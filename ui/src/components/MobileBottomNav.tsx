@@ -66,12 +66,12 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
   return (
     <nav
       className={cn(
-        "fixed bottom-0 left-0 right-0 z-30 border-t border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85 transition-transform duration-200 ease-out md:hidden pb-[env(safe-area-inset-bottom)]",
+        "paperclip-panel-strong fixed bottom-3 left-3 right-3 z-30 rounded-[calc(var(--radius)+0.85rem)] transition-transform duration-200 ease-out md:hidden pb-[env(safe-area-inset-bottom)]",
         visible ? "translate-y-0" : "translate-y-full",
       )}
       aria-label="Mobile navigation"
     >
-      <div className="grid h-16 grid-cols-5 px-1">
+      <div className="grid h-[72px] grid-cols-5 gap-1 p-2">
         {items.map((item) => {
           if (item.type === "action") {
             const Icon = item.icon;
@@ -82,14 +82,14 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
                 type="button"
                 onClick={item.onClick}
                 className={cn(
-                  "relative flex min-w-0 flex-col items-center justify-center gap-1 rounded-md text-[10px] font-medium transition-colors",
+                  "relative -mt-5 flex min-w-0 flex-col items-center justify-center gap-1 rounded-[1rem] border px-2 py-3 shadow-[0_16px_30px_color-mix(in_oklab,var(--primary)_16%,transparent)] transition-colors",
                   active
-                    ? "text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
+                    ? "border-[color:var(--surface-outline)] bg-primary text-primary-foreground"
+                    : "border-[color:var(--surface-outline)] bg-[color:var(--surface-panel-strong)] text-foreground",
                 )}
               >
                 <Icon className="h-[18px] w-[18px]" />
-                <span className="truncate">{item.label}</span>
+                <span className="paperclip-nav-meta truncate text-[0.58rem]">{item.label}</span>
               </button>
             );
           }
@@ -101,10 +101,10 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
               to={item.to}
               className={({ isActive }) =>
                 cn(
-                  "relative flex min-w-0 flex-col items-center justify-center gap-1 rounded-md text-[10px] font-medium transition-colors",
+                  "relative flex min-w-0 flex-col items-center justify-center gap-1 rounded-[0.95rem] border px-2 py-2 text-[10px] font-medium transition-colors",
                   isActive
-                    ? "text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
+                    ? "border-[color:var(--surface-outline)] bg-[color:var(--surface-panel-strong)] text-foreground"
+                    : "border-transparent text-muted-foreground hover:border-[color:var(--surface-outline)] hover:bg-[color:var(--surface-panel-muted)] hover:text-foreground",
                 )
               }
             >
@@ -118,7 +118,9 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
                       </span>
                     )}
                   </span>
-                  <span className="truncate">{item.label}</span>
+                  <span className={cn("paperclip-nav-meta truncate text-[0.58rem]", isActive && "text-primary")}>
+                    {item.label}
+                  </span>
                 </>
               )}
             </NavLink>

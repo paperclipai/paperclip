@@ -33,8 +33,8 @@ const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 
 function PropertyRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-center gap-3 py-1.5">
-      <span className="text-xs text-muted-foreground shrink-0 w-20">{label}</span>
+    <div className="flex items-center gap-3 rounded-[calc(var(--radius)-0.15rem)] px-2 py-2">
+      <span className="paperclip-work-meta shrink-0 w-20 text-[0.62rem]">{label}</span>
       <div className="flex items-center gap-1.5 min-w-0">{children}</div>
     </div>
   );
@@ -278,11 +278,11 @@ export function ProjectProperties({ project, onUpdate }: ProjectPropertiesProps)
               {linkedGoals.length === 0 ? (
                 <span className="text-sm text-muted-foreground">None</span>
               ) : (
-                <div className="flex flex-wrap justify-end gap-1.5 max-w-[220px]">
+                <div className="flex max-w-[220px] flex-wrap justify-end gap-1.5">
                   {linkedGoals.map((goal) => (
                     <span
                       key={goal.id}
-                      className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs"
+                      className="paperclip-chip inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs"
                     >
                       <Link to={`/roadmap/${goal.id}`} className="hover:underline max-w-[140px] truncate">
                         {goal.title}

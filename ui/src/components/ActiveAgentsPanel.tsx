@@ -377,16 +377,16 @@ export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
   }, [activeRunIds, companyId, runById]);
 
   return (
-    <div>
-      <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-        Agents
-      </h3>
+    <div className="space-y-3">
+      <div className="paperclip-section-header">
+        <p className="paperclip-monitor-title">Agents</p>
+      </div>
       {runs.length === 0 ? (
-        <div className="border border-border rounded-lg p-4">
+        <div className="paperclip-monitor-card p-4">
           <p className="text-sm text-muted-foreground">No recent agent runs.</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2 sm:gap-4">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {runs.map((run) => (
             <AgentRunCard
               key={run.id}
@@ -423,14 +423,14 @@ function AgentRunCard({
   }, [feed.length]);
 
   return (
-    <div className={cn(
-      "flex flex-col rounded-lg border overflow-hidden min-h-[200px]",
-      isActive
-        ? "border-blue-500/30 bg-background/80 shadow-[0_0_12px_rgba(59,130,246,0.08)]"
-        : "border-border bg-background/50",
-    )}>
+    <div
+      className={cn(
+        "flex min-h-[220px] flex-col overflow-hidden",
+        isActive ? "paperclip-monitor-card-strong shadow-[0_0_32px_color-mix(in_oklab,var(--primary)_16%,transparent)]" : "paperclip-monitor-card",
+      )}
+    >
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-border/50">
+      <div className="flex items-center justify-between border-b border-border/60 px-3 py-2.5">
         <div className="flex items-center gap-2 min-w-0">
           {isActive ? (
             <span className="relative flex h-2 w-2 shrink-0">
@@ -444,12 +444,12 @@ function AgentRunCard({
           )}
           <Identity name={run.agentName} size="sm" />
           {isActive && (
-            <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">Live</span>
+            <span className="paperclip-nav-meta text-[0.62rem] text-blue-600 dark:text-blue-400">Live</span>
           )}
         </div>
         <Link
           to={`/agents/${run.agentId}/runs/${run.id}`}
-          className="inline-flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground shrink-0"
+          className="paperclip-chip inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10px] text-muted-foreground hover:text-foreground shrink-0"
         >
           <ExternalLink className="h-2.5 w-2.5" />
         </Link>
@@ -457,7 +457,7 @@ function AgentRunCard({
 
       {/* Issue context */}
       {run.issueId && (
-        <div className="px-3 py-1.5 border-b border-border/40 text-xs flex items-center gap-1 min-w-0">
+        <div className="flex min-w-0 items-center gap-1 border-b border-border/50 px-3 py-2 text-xs">
           <Link
             to={`/issues/${issue?.identifier ?? run.issueId}`}
             className={cn(
@@ -473,12 +473,14 @@ function AgentRunCard({
       )}
 
       {/* Feed body */}
-      <div ref={bodyRef} className="flex-1 max-h-[140px] overflow-y-auto p-2 font-mono text-[11px] space-y-1">
+      <div ref={bodyRef} className="flex-1 space-y-1 overflow-y-auto p-3 font-mono text-[11px]">
         {isActive && recent.length === 0 && (
-          <div className="text-xs text-muted-foreground">Waiting for output...</div>
+          <div className="rounded-xl bg-background/35 px-2.5 py-2 text-xs text-muted-foreground">
+            Waiting for output...
+          </div>
         )}
         {!isActive && recent.length === 0 && (
-          <div className="text-xs text-muted-foreground">
+          <div className="rounded-xl bg-background/35 px-2.5 py-2 text-xs text-muted-foreground">
             {run.finishedAt ? `Finished ${relativeTime(run.finishedAt)}` : `Started ${relativeTime(run.createdAt)}`}
           </div>
         )}
@@ -486,7 +488,8 @@ function AgentRunCard({
           <div
             key={item.id}
             className={cn(
-              "flex gap-2 items-start",
+              "rounded-xl border border-border/50 bg-background/30 px-2.5 py-2",
+              "flex items-start gap-2",
               index === recent.length - 1 && isActive && "animate-in fade-in slide-in-from-bottom-1 duration-300",
             )}
           >

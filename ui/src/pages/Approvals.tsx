@@ -12,6 +12,7 @@ import { Tabs } from "@/components/ui/tabs";
 import { ShieldCheck } from "lucide-react";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { EmptyState } from "../components/EmptyState";
 
 type StatusFilter = "pending" | "all";
 
@@ -73,6 +74,9 @@ export function Approvals() {
   const pendingCount = (data ?? []).filter(
     (a) => a.status === "pending" || a.status === "revision_requested",
   ).length;
+  const resolvedCount = (data ?? []).filter(
+    (a) => a.status === "approved" || a.status === "rejected",
+  ).length;
 
   if (!selectedCompanyId) {
     return <p className="text-sm text-muted-foreground">Select a company first.</p>;
@@ -83,8 +87,37 @@ export function Approvals() {
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
+    <div className="space-y-5">
+      <section className="paperclip-gov-hero px-5 py-5 sm:px-6">
+        <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
+          <div className="space-y-3">
+            <p className="paperclip-gov-kicker">Governance Queue</p>
+            <div className="space-y-2">
+              <h1 className="paperclip-gov-title">Approvals</h1>
+              <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
+                Review hires, revisions, and sensitive actions from the same operator console used to run the company.
+              </p>
+            </div>
+          </div>
+          {/* Keep the approval backlog readable before users drill into specific requests. */}
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="paperclip-gov-stat min-w-[8.5rem] px-4 py-3">
+              <p className="paperclip-gov-label">Pending</p>
+              <p className="mt-2 text-2xl font-semibold">{pendingCount}</p>
+            </div>
+            <div className="paperclip-gov-stat min-w-[8.5rem] px-4 py-3">
+              <p className="paperclip-gov-label">Resolved</p>
+              <p className="mt-2 text-2xl font-semibold">{resolvedCount}</p>
+            </div>
+            <div className="paperclip-gov-stat min-w-[8.5rem] px-4 py-3">
+              <p className="paperclip-gov-label">Total</p>
+              <p className="mt-2 text-2xl font-semibold">{data?.length ?? 0}</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div className="paperclip-gov-toolbar p-3 sm:p-4">
         <Tabs value={statusFilter} onValueChange={(v) => navigate(`/approvals/${v}`)}>
           <PageTabBar items={[
             { value: "pending", label: <>Pending{pendingCount > 0 && (
@@ -104,12 +137,10 @@ export function Approvals() {
       {actionError && <p className="text-sm text-destructive">{actionError}</p>}
 
       {filtered.length === 0 && (
-        <div className="flex flex-col items-center justify-center py-16 text-center">
-          <ShieldCheck className="h-8 w-8 text-muted-foreground/30 mb-3" />
-          <p className="text-sm text-muted-foreground">
-            {statusFilter === "pending" ? "No pending approvals." : "No approvals yet."}
-          </p>
-        </div>
+        <EmptyState
+          icon={ShieldCheck}
+          message={statusFilter === "pending" ? "No pending approvals." : "No approvals yet."}
+        />
       )}
 
       {filtered.length > 0 && (

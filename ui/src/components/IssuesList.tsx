@@ -295,7 +295,7 @@ export function IssuesList({
   return (
     <div className="space-y-4">
       {/* Toolbar */}
-      <div className="flex items-center justify-between gap-2 sm:gap-3">
+      <div className="paperclip-work-card-strong flex items-center justify-between gap-2 rounded-[calc(var(--radius)+0.55rem)] px-4 py-4 sm:gap-3 sm:px-5">
         <div className="flex min-w-0 items-center gap-2 sm:gap-3">
           <Button size="sm" variant="outline" onClick={() => openNewIssue(newIssueDefaults())}>
             <Plus className="h-4 w-4 sm:mr-1" />
@@ -318,16 +318,16 @@ export function IssuesList({
 
         <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
           {/* View mode toggle */}
-          <div className="flex items-center border border-border rounded-md overflow-hidden mr-1">
+          <div className="paperclip-chip mr-1 flex items-center overflow-hidden rounded-md">
             <button
-              className={`p-1.5 transition-colors ${viewState.viewMode === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+              className={`p-1.5 transition-colors ${viewState.viewMode === "list" ? "bg-[color:color-mix(in_oklab,var(--surface-panel-strong)_90%,transparent)] text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "list" })}
               title="List view"
             >
               <List className="h-3.5 w-3.5" />
             </button>
             <button
-              className={`p-1.5 transition-colors ${viewState.viewMode === "board" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+              className={`p-1.5 transition-colors ${viewState.viewMode === "board" ? "bg-[color:color-mix(in_oklab,var(--surface-panel-strong)_90%,transparent)] text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "board" })}
               title="Board view"
             >
@@ -356,7 +356,7 @@ export function IssuesList({
               </Button>
             </PopoverTrigger>
             <PopoverContent align="end" className="w-[min(480px,calc(100vw-2rem))] p-0">
-              <div className="p-3 space-y-3">
+              <div className="space-y-3 p-3">
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-medium">Filters</span>
                   {activeFilterCount > 0 && (
@@ -381,7 +381,7 @@ export function IssuesList({
                           className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${
                             isActive
                               ? "bg-primary text-primary-foreground border-primary"
-                              : "border-border text-muted-foreground hover:text-foreground hover:border-foreground/30"
+                              : "paperclip-chip text-muted-foreground hover:text-foreground hover:border-foreground/30"
                           }`}
                           onClick={() => updateView({ statuses: isActive ? [] : [...preset.statuses] })}
                         >
@@ -614,17 +614,18 @@ export function IssuesList({
             }}
           >
             {group.label && (
-              <div className="flex items-center py-1.5 pl-1 pr-3">
+              <div className="paperclip-section-header rounded-[calc(var(--radius)+0.2rem)] px-3 py-2">
                 <CollapsibleTrigger className="flex items-center gap-1.5">
                   <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform [[data-state=open]>&]:rotate-90" />
-                  <span className="text-sm font-semibold uppercase tracking-wide">
+                  <span className="paperclip-work-meta text-[0.68rem]">
                     {group.label}
                   </span>
+                  <span className="text-xs text-muted-foreground">{group.items.length}</span>
                 </CollapsibleTrigger>
                 <Button
                   variant="ghost"
                   size="icon-xs"
-                  className="ml-auto text-muted-foreground"
+                  className="paperclip-icon-button ml-auto text-muted-foreground"
                   onClick={() => openNewIssue(newIssueDefaults(group.key))}
                 >
                   <Plus className="h-3 w-3" />
@@ -632,12 +633,13 @@ export function IssuesList({
               </div>
             )}
             <CollapsibleContent>
-              {group.items.map((issue) => (
-                <Link
-                  key={issue.id}
-                  to={`/issues/${issue.identifier ?? issue.id}`}
-                  className="flex items-center gap-2 py-2 pl-1 pr-3 text-sm border-b border-border last:border-b-0 cursor-pointer hover:bg-accent/50 transition-colors no-underline text-inherit"
-                >
+              <div className="paperclip-work-list">
+                {group.items.map((issue) => (
+                  <Link
+                    key={issue.id}
+                    to={`/issues/${issue.identifier ?? issue.id}`}
+                    className="paperclip-work-row flex items-center gap-2 border-b border-[color:color-mix(in_oklab,var(--primary)_10%,var(--border))] py-3 pl-3 pr-3 text-sm transition-colors last:border-b-0 no-underline text-inherit"
+                  >
                   {/* Spacer matching caret width so status icon aligns with group title (hidden on mobile) */}
                   <div className="w-3.5 shrink-0 hidden sm:block" />
                   <div className="shrink-0" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
@@ -646,10 +648,10 @@ export function IssuesList({
                       onChange={(s) => onUpdateIssue(issue.id, { status: s })}
                     />
                   </div>
-                  <span className="text-sm text-muted-foreground font-mono shrink-0">
+                  <span className="paperclip-work-meta shrink-0 text-[0.64rem]">
                     {issue.identifier ?? issue.id.slice(0, 8)}
                   </span>
-                  <span className="truncate flex-1 min-w-0">{issue.title}</span>
+                  <span className="min-w-0 flex-1 truncate font-medium">{issue.title}</span>
                   {(issue.labels ?? []).length > 0 && (
                     <div className="hidden md:flex items-center gap-1 max-w-[240px] overflow-hidden">
                       {(issue.labels ?? []).slice(0, 3).map((label) => (
@@ -690,7 +692,7 @@ export function IssuesList({
                       >
                         <PopoverTrigger asChild>
                           <button
-                            className="flex w-[180px] shrink-0 items-center rounded-md px-2 py-1 hover:bg-accent/50 transition-colors"
+                            className="paperclip-chip flex w-[180px] shrink-0 items-center rounded-md px-2 py-1 transition-colors"
                             onClick={(e) => {
                               e.preventDefault();
                               e.stopPropagation();
@@ -787,8 +789,9 @@ export function IssuesList({
                       {formatDate(issue.createdAt)}
                     </span>
                   </div>
-                </Link>
-              ))}
+                  </Link>
+                ))}
+              </div>
             </CollapsibleContent>
           </Collapsible>
         ))

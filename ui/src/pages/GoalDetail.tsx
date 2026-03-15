@@ -122,12 +122,12 @@ export function GoalDetail() {
 
   return (
     <div className="space-y-6">
-      <div className="space-y-3">
-        <div className="flex items-center gap-2">
-          <span className="text-xs uppercase text-muted-foreground">
+      <section className="paperclip-work-hero space-y-5 px-5 py-5 sm:px-6">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="paperclip-work-meta">
             {goal.level}
           </span>
-          <span className="text-xs uppercase text-muted-foreground">
+          <span className="paperclip-work-meta">
             {ROADMAP_HORIZON_LABELS[goal.planningHorizon]}
           </span>
           <StatusBadge status={goal.status} />
@@ -137,14 +137,14 @@ export function GoalDetail() {
           value={goal.title}
           onSave={(title) => updateGoal.mutate({ title })}
           as="h2"
-          className="text-xl font-bold"
+          className="paperclip-work-title"
         />
 
         <InlineEditor
           value={goal.description ?? ""}
           onSave={(description) => updateGoal.mutate({ description })}
           as="p"
-          className="text-sm text-muted-foreground"
+          className="max-w-3xl text-sm text-muted-foreground"
           placeholder="Add a description..."
           multiline
           imageUploadHandler={async (file) => {
@@ -153,8 +153,8 @@ export function GoalDetail() {
           }}
         />
 
-        <div className="space-y-1">
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        <div className="paperclip-work-card max-w-3xl space-y-2 rounded-[calc(var(--radius)+0.35rem)] px-4 py-4">
+          <p className="paperclip-work-kicker">
             Manager guidance
           </p>
           <InlineEditor
@@ -166,9 +166,9 @@ export function GoalDetail() {
             multiline
           />
         </div>
-      </div>
+      </section>
 
-      <Tabs defaultValue="children">
+      <Tabs defaultValue="children" className="space-y-4">
         <TabsList>
           <TabsTrigger value="children">
             Sub-Items ({childGoals.length})
@@ -190,7 +190,9 @@ export function GoalDetail() {
             </Button>
           </div>
           {childGoals.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No child roadmap items.</p>
+            <div className="paperclip-work-card rounded-[calc(var(--radius)+0.3rem)] px-4 py-3 text-sm text-muted-foreground">
+              No child roadmap items.
+            </div>
           ) : (
             <GoalTree goals={childGoals} goalLink={(g) => `/roadmap/${g.id}`} />
           )}
@@ -198,9 +200,11 @@ export function GoalDetail() {
 
         <TabsContent value="projects" className="mt-4">
           {linkedProjects.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No linked projects.</p>
+            <div className="paperclip-work-card rounded-[calc(var(--radius)+0.3rem)] px-4 py-3 text-sm text-muted-foreground">
+              No linked projects.
+            </div>
           ) : (
-            <div className="border border-border">
+            <div className="paperclip-work-list">
               {linkedProjects.map((project) => (
                 <EntityRow
                   key={project.id}

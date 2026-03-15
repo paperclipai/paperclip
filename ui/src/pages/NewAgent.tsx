@@ -199,15 +199,36 @@ export function NewAgent() {
     : `Use company default (${selectedCompany?.defaultManagerPlanningMode === "approval_required" ? "Approval required" : "Automatic"})`;
 
   return (
-    <div className="mx-auto max-w-2xl space-y-6">
-      <div>
-        <h1 className="text-lg font-semibold">New Agent</h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Advanced agent configuration
-        </p>
-      </div>
+    <div className="mx-auto max-w-4xl space-y-6">
+      <section className="paperclip-gov-hero px-5 py-5 sm:px-6">
+        <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
+          <div className="space-y-3">
+            <p className="paperclip-gov-kicker">Hiring Console</p>
+            <div className="space-y-2">
+              <h1 className="paperclip-gov-title">New Agent</h1>
+              <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
+                Configure a new operator, route it into the command structure, and keep the adapter contract explicit.
+              </p>
+            </div>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="paperclip-gov-stat min-w-[8.5rem] px-4 py-3">
+              <p className="paperclip-gov-label">Company</p>
+              <p className="mt-2 text-sm font-semibold">{selectedCompany?.name ?? "Select one"}</p>
+            </div>
+            <div className="paperclip-gov-stat min-w-[8.5rem] px-4 py-3">
+              <p className="paperclip-gov-label">Role</p>
+              <p className="mt-2 text-sm font-semibold">{roleLabels[effectiveRole] ?? effectiveRole}</p>
+            </div>
+            <div className="paperclip-gov-stat min-w-[8.5rem] px-4 py-3">
+              <p className="paperclip-gov-label">Mode</p>
+              <p className="mt-2 text-sm font-semibold">{isFirstAgent ? "Bootstrap CEO" : "Advanced config"}</p>
+            </div>
+          </div>
+        </div>
+      </section>
 
-      <div className="border border-border">
+      <div className="paperclip-gov-card-strong overflow-hidden">
         {/* Name */}
         <div className="px-4 pt-4 pb-2">
           <input
@@ -235,7 +256,7 @@ export function NewAgent() {
             <PopoverTrigger asChild>
               <button
                 className={cn(
-                  "inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors",
+                  "paperclip-gov-pill inline-flex items-center gap-1.5 px-3 py-1.5 text-xs transition-colors",
                   isFirstAgent && "opacity-60 cursor-not-allowed"
                 )}
                 disabled={isFirstAgent}
@@ -264,7 +285,7 @@ export function NewAgent() {
             <PopoverTrigger asChild>
               <button
                 className={cn(
-                  "inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors",
+                  "paperclip-gov-pill inline-flex items-center gap-1.5 px-3 py-1.5 text-xs transition-colors",
                   isFirstAgent && "opacity-60 cursor-not-allowed"
                 )}
                 disabled={isFirstAgent}
@@ -312,7 +333,7 @@ export function NewAgent() {
           <Popover open={managerPlanningModeOpen} onOpenChange={setManagerPlanningModeOpen}>
             <PopoverTrigger asChild>
               <button
-                className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors"
+                className="paperclip-gov-pill inline-flex items-center gap-1.5 px-3 py-1.5 text-xs transition-colors"
               >
                 <Shield className="h-3 w-3 text-muted-foreground" />
                 {managerPlanningModeLabel}
