@@ -1,0 +1,1 @@
+{"version":3,"file":"windowsPaths.d.ts","sourceRoot":"","sources":["../../../src/providers/chromium/windowsPaths.ts"],"names":[],"mappings":"AAKA,wBAAgB,2BAA2B,CAAC,OAAO,EAAE;IACpD,sBAAsB,EAAE,MAAM,CAAC;IAC/B,OAAO,CAAC,EAAE,MAAM,CAAC;CACjB,GAAG;IAAE,MAAM,EAAE,MAAM,GAAG,IAAI,CAAC;IAAC,WAAW,EAAE,MAAM,GAAG,IAAI,CAAA;CAAE,CAmCxD"}

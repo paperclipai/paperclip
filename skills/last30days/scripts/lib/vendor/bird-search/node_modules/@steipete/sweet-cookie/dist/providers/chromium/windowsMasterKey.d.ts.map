@@ -1,0 +1,1 @@
+{"version":3,"file":"windowsMasterKey.d.ts","sourceRoot":"","sources":["../../../src/providers/chromium/windowsMasterKey.ts"],"names":[],"mappings":"AAKA,wBAAsB,2BAA2B,CAChD,WAAW,EAAE,MAAM,EACnB,KAAK,EAAE,MAAM,GACX,OAAO,CACP;IAAE,EAAE,EAAE,IAAI,CAAC;IAAC,KAAK,EAAE,MAAM,CAAA;CAAE,GAC3B;IACA,EAAE,EAAE,KAAK,CAAC;IACV,KAAK,EAAE,MAAM,CAAC;CACb,CACH,CAsCA"}

@@ -1,0 +1,40 @@
+{
+	"name": "@steipete/sweet-cookie",
+	"version": "0.1.0",
+	"description": "Inline-first browser cookie extraction for local tooling (no native addons).",
+	"license": "MIT",
+	"author": "Peter Steinberger",
+	"type": "module",
+	"main": "dist/index.js",
+	"types": "dist/index.d.ts",
+	"files": [
+		"dist",
+		"README.md",
+		"LICENSE"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/steipete/sweet-cookie.git",
+		"directory": "packages/core"
+	},
+	"bugs": {
+		"url": "https://github.com/steipete/sweet-cookie/issues"
+	},
+	"homepage": "https://github.com/steipete/sweet-cookie#readme",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		}
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"scripts": {
+		"build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json",
+		"typecheck": "tsc -p tsconfig.json --noEmit"
+	},
+	"engines": {
+		"node": ">=22"
+	}
+}

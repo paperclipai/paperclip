@@ -1,0 +1,6 @@
+__pycache__/
+# Override root node_modules/ ignore for vendored bird-search dependency
+!scripts/lib/vendor/bird-search/node_modules/
+!scripts/lib/vendor/bird-search/node_modules/@steipete/
+!scripts/lib/vendor/bird-search/node_modules/@steipete/sweet-cookie/
+!scripts/lib/vendor/bird-search/node_modules/@steipete/sweet-cookie/**
