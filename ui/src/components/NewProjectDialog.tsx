@@ -29,7 +29,7 @@ import {
 } from "lucide-react";
 import { PROJECT_COLORS } from "@paperclipai/shared";
 import { cn } from "../lib/utils";
-import { MarkdownEditor, type MarkdownEditorRef } from "./MarkdownEditor";
+import { MarkdownEditor, type MarkdownEditorRef } from "./MarkdownEditorLazy";
 import { StatusBadge } from "./StatusBadge";
 import { ChoosePathButton } from "./PathInstructionsModal";
 

@@ -1,3 +1,4 @@
+import "@mdxeditor/editor/style.css";
 import {
   forwardRef,
   useCallback,

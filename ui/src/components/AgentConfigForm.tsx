@@ -41,7 +41,7 @@ import {
 import { defaultCreateValues } from "./agent-config-defaults";
 import { getUIAdapter } from "../adapters";
 import { ClaudeLocalAdvancedFields } from "../adapters/claude-local/config-fields";
-import { MarkdownEditor } from "./MarkdownEditor";
+import { MarkdownEditor } from "./MarkdownEditorLazy";
 import { ChoosePathButton } from "./PathInstructionsModal";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 

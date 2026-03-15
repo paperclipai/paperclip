@@ -23,7 +23,7 @@ import {
   Layers,
 } from "lucide-react";
 import { cn } from "../lib/utils";
-import { MarkdownEditor, type MarkdownEditorRef } from "./MarkdownEditor";
+import { MarkdownEditor, type MarkdownEditorRef } from "./MarkdownEditorLazy";
 import { StatusBadge } from "./StatusBadge";
 
 const levelLabels: Record<string, string> = {
