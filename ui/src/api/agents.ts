@@ -23,6 +23,11 @@ export interface AdapterModel {
   label: string;
 }
 
+export interface SkillIndexEntry {
+  name: string;
+  path: string;
+}
+
 export interface ClaudeLoginResult {
   exitCode: number | null;
   signal: string | null;
@@ -130,6 +135,10 @@ export const agentsApi = {
       `/companies/${companyId}/adapters/${type}/test-environment`,
       data,
     ),
+  listSkills: async () => {
+    const payload = await api.get<{ skills: SkillIndexEntry[] }>("/skills/index");
+    return (payload.skills ?? []).map((entry) => entry.name);
+  },
   invoke: (id: string, companyId?: string) => api.post<HeartbeatRun>(agentPath(id, companyId, "/heartbeat/invoke"), {}),
   wakeup: (
     id: string,

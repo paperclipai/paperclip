@@ -126,6 +126,20 @@ function formatArgList(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+function normalizeSkillSelection(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const name = item.trim().toLowerCase();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    result.push(name);
+  }
+  return result;
+}
+
 const codexThinkingEffortOptions = [
   { id: "", label: "Auto" },
   { id: "minimal", label: "Minimal" },
@@ -300,6 +314,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     enabled: Boolean(selectedCompanyId),
   });
   const models = fetchedModels ?? externalModels ?? [];
+  const {
+    data: availableSkills = [],
+    error: availableSkillsError,
+  } = useQuery({
+    queryKey: ["skills", "index", selectedCompanyId ?? "__no-company__"],
+    queryFn: () => agentsApi.listSkills(),
+    enabled: Boolean(selectedCompanyId),
+  });
 
   /** Props passed to adapter-specific config field components */
   const adapterFieldProps = {
@@ -319,6 +341,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // Popover states
   const [modelOpen, setModelOpen] = useState(false);
   const [thinkingEffortOpen, setThinkingEffortOpen] = useState(false);
+  const [skillsOpen, setSkillsOpen] = useState(false);
 
   // Create mode helpers
   const val = isCreate ? props.values : null;
@@ -383,6 +406,20 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const codexSearchEnabled = adapterType === "codex_local"
     ? (isCreate ? Boolean(val!.search) : eff("adapterConfig", "search", Boolean(config.search)))
     : false;
+  const selectedSkillsRaw = !isCreate
+    ? eff("adapterConfig", "skills", normalizeSkillSelection(config.skills))
+    : [];
+  const selectedSkills = normalizeSkillSelection(selectedSkillsRaw);
+  const skillOptions = useMemo(() => {
+    const merged = [...availableSkills, ...selectedSkills];
+    const seen = new Set<string>();
+    return merged.filter((name) => {
+      const normalized = name.trim().toLowerCase();
+      if (!normalized || seen.has(normalized)) return false;
+      seen.add(normalized);
+      return true;
+    });
+  }, [availableSkills, selectedSkills]);
 
   return (
     <div className={cn("relative", cards && "space-y-6")}>
@@ -663,6 +700,25 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     ? fetchedModelsError.message
                     : "Failed to load adapter models."}
                 </p>
+              )}
+
+              {!isCreate && (
+                <>
+                  <SkillsDropdown
+                    options={skillOptions}
+                    value={selectedSkills}
+                    onChange={(next) => mark("adapterConfig", "skills", next.length > 0 ? next : undefined)}
+                    open={skillsOpen}
+                    onOpenChange={setSkillsOpen}
+                  />
+                  {availableSkillsError && (
+                    <p className="text-xs text-destructive">
+                      {availableSkillsError instanceof Error
+                        ? availableSkillsError.message
+                        : "Failed to load skills index."}
+                    </p>
+                  )}
+                </>
               )}
 
               {showThinkingEffort && (
@@ -1360,6 +1416,83 @@ function ModelDropdown({
             {filteredModels.length === 0 && (
               <p className="px-2 py-1.5 text-xs text-muted-foreground">No models found.</p>
             )}
+          </div>
+        </PopoverContent>
+      </Popover>
+    </Field>
+  );
+}
+
+function SkillsDropdown({
+  options,
+  value,
+  onChange,
+  open,
+  onOpenChange,
+}: {
+  options: string[];
+  value: string[];
+  onChange: (next: string[]) => void;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return options;
+    return options.filter((name) => name.toLowerCase().includes(q));
+  }, [options, search]);
+
+  const toggle = (name: string) => {
+    onChange(value.includes(name) ? value.filter((entry) => entry !== name) : [...value, name]);
+  };
+
+  return (
+    <Field label="Skills" hint={help.skills}>
+      <Popover
+        open={open}
+        onOpenChange={(nextOpen) => {
+          onOpenChange(nextOpen);
+          if (!nextOpen) setSearch("");
+        }}
+      >
+        <PopoverTrigger asChild>
+          <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
+            <span className={cn(value.length === 0 && "text-muted-foreground")}>
+              {value.length === 0 ? "All discovered skills" : `${value.length} selected`}
+            </span>
+            <ChevronDown className="h-3 w-3 text-muted-foreground" />
+          </button>
+        </PopoverTrigger>
+        <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-1" align="start">
+          <input
+            className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
+            placeholder="Search skills..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            autoFocus
+          />
+          <div className="max-h-[220px] overflow-y-auto">
+            {filtered.map((name) => {
+              const checked = value.includes(name);
+              return (
+                <button
+                  key={name}
+                  type="button"
+                  className={cn(
+                    "flex items-center justify-between w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
+                    checked && "bg-accent",
+                  )}
+                  onClick={() => toggle(name)}
+                >
+                  <span>{name}</span>
+                  {checked ? <span className="text-xs text-muted-foreground">Selected</span> : null}
+                </button>
+              );
+            })}
+            {filtered.length === 0 ? (
+              <p className="px-2 py-2 text-xs text-muted-foreground">No matching skills</p>
+            ) : null}
           </div>
         </PopoverContent>
       </Popover>

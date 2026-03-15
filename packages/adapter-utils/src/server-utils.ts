@@ -36,6 +36,14 @@ const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
   "../../skills",
   "../../../../../skills",
 ];
+const PAPERCLIP_SKILL_MULTI_ROOT_RELATIVE_CANDIDATES = [
+  "../../.agents/skills",
+  "../../.claude/skills",
+  "../../skills",
+  "../../../../../.agents/skills",
+  "../../../../../.claude/skills",
+  "../../../../../skills",
+];
 
 export interface PaperclipSkillEntry {
   name: string;
@@ -71,6 +79,18 @@ export function asBoolean(value: unknown, fallback: boolean): boolean {
 
 export function asStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+export function normalizeSelectedSkillNames(value: unknown): string[] {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const raw of asStringArray(value)) {
+    const skillName = raw.trim().toLowerCase();
+    if (!skillName || seen.has(skillName)) continue;
+    seen.add(skillName);
+    normalized.push(skillName);
+  }
+  return normalized;
 }
 
 export function parseJson(value: string): Record<string, unknown> | null {
@@ -296,20 +316,43 @@ export async function listPaperclipSkillEntries(
   moduleDir: string,
   additionalCandidates: string[] = [],
 ): Promise<PaperclipSkillEntry[]> {
-  const root = await resolvePaperclipSkillsDir(moduleDir, additionalCandidates);
-  if (!root) return [];
+  const candidates = [
+    ...PAPERCLIP_SKILL_MULTI_ROOT_RELATIVE_CANDIDATES.map((relativePath) => path.resolve(moduleDir, relativePath)),
+    ...additionalCandidates.map((candidate) => path.resolve(candidate)),
+  ];
+  const seenRoots = new Set<string>();
+  const seenNames = new Set<string>();
+  const result: PaperclipSkillEntry[] = [];
 
-  try {
-    const entries = await fs.readdir(root, { withFileTypes: true });
-    return entries
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => ({
+  for (const root of candidates) {
+    if (seenRoots.has(root)) continue;
+    seenRoots.add(root);
+    const isDirectory = await fs.stat(root).then((stats) => stats.isDirectory()).catch(() => false);
+    if (!isDirectory) continue;
+
+    const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (seenNames.has(entry.name)) continue;
+      seenNames.add(entry.name);
+      result.push({
         name: entry.name,
         source: path.join(root, entry.name),
-      }));
-  } catch {
-    return [];
+      });
+    }
   }
+
+  return result;
+}
+
+export function filterPaperclipSkillEntriesBySelection(
+  entries: PaperclipSkillEntry[],
+  selectedSkillNames: unknown,
+): PaperclipSkillEntry[] {
+  const selected = normalizeSelectedSkillNames(selectedSkillNames);
+  if (selected.length === 0) return entries;
+  const allowed = new Set(selected);
+  return entries.filter((entry) => allowed.has(entry.name.toLowerCase()));
 }
 
 export async function readPaperclipSkillMarkdown(
@@ -333,8 +376,10 @@ export async function readPaperclipSkillMarkdown(
 export async function ensurePaperclipSkillSymlink(
   source: string,
   target: string,
-  linkSkill: (source: string, target: string) => Promise<void> = (linkSource, linkTarget) =>
-    fs.symlink(linkSource, linkTarget),
+  linkSkill: (source: string, target: string) => Promise<void> = (linkSource, linkTarget) => {
+    const symlinkType: "junction" | "dir" = process.platform === "win32" ? "junction" : "dir";
+    return fs.symlink(linkSource, linkTarget, symlinkType);
+  },
 ): Promise<"created" | "repaired" | "skipped"> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {

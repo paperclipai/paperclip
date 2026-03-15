@@ -6,7 +6,7 @@ import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { Settings, Check } from "lucide-react";
+import { Settings, Check, Download } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
@@ -47,6 +47,7 @@ export function CompanySettings() {
   const [inviteSnippet, setInviteSnippet] = useState<string | null>(null);
   const [snippetCopied, setSnippetCopied] = useState(false);
   const [snippetCopyDelightId, setSnippetCopyDelightId] = useState(0);
+  const [exporting, setExporting] = useState(false);
 
   const generalDirty =
     !!selectedCompany &&
@@ -178,11 +179,41 @@ export function CompanySettings() {
     });
   }
 
+  async function handleExportCompany() {
+    if (!selectedCompanyId || !selectedCompany) return;
+    try {
+      setExporting(true);
+      const exported = await companiesApi.exportBundle(selectedCompanyId, {
+        include: { company: true, agents: true }
+      });
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const safeName = selectedCompany.name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "company";
+      const blob = new Blob([JSON.stringify(exported, null, 2)], { type: "application/json;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `${safeName}-${selectedCompany.issuePrefix}-${timestamp}.paperclip.json`;
+      anchor.rel = "noopener";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } finally {
+      setExporting(false);
+    }
+  }
+
   return (
     <div className="max-w-2xl space-y-6">
-      <div className="flex items-center gap-2">
-        <Settings className="h-5 w-5 text-muted-foreground" />
-        <h1 className="text-lg font-semibold">Company Settings</h1>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <Settings className="h-5 w-5 text-muted-foreground" />
+          <h1 className="text-lg font-semibold">Company Settings</h1>
+        </div>
+        <Button size="sm" variant="outline" onClick={handleExportCompany} disabled={exporting}>
+          <Download className="h-4 w-4 mr-1.5" />
+          {exporting ? "Exporting..." : "Export Company"}
+        </Button>
       </div>
 
       {/* General */}

@@ -15,6 +15,7 @@ import {
   ensurePaperclipSkillSymlink,
   ensurePathInEnv,
   listPaperclipSkillEntries,
+  filterPaperclipSkillEntriesBySelection,
   removeMaintainerOnlySkillSymlinks,
   renderTemplate,
   joinPromptSections,
@@ -84,6 +85,7 @@ function cursorSkillsHome(): string {
 type EnsureCursorSkillsInjectedOptions = {
   skillsDir?: string | null;
   skillsEntries?: Array<{ name: string; source: string }>;
+  selectedSkillNames?: unknown;
   skillsHome?: string;
   linkSkill?: (source: string, target: string) => Promise<void>;
 };
@@ -92,12 +94,16 @@ export async function ensureCursorSkillsInjected(
   onLog: AdapterExecutionContext["onLog"],
   options: EnsureCursorSkillsInjectedOptions = {},
 ) {
-  const skillsEntries = options.skillsEntries
+  const allSkillsEntries = options.skillsEntries
     ?? (options.skillsDir
       ? (await fs.readdir(options.skillsDir, { withFileTypes: true }))
           .filter((entry) => entry.isDirectory())
           .map((entry) => ({ name: entry.name, source: path.join(options.skillsDir!, entry.name) }))
       : await listPaperclipSkillEntries(__moduleDir));
+  const skillsEntries = filterPaperclipSkillEntriesBySelection(
+    allSkillsEntries,
+    options.selectedSkillNames,
+  );
   if (skillsEntries.length === 0) return;
 
   const skillsHome = options.skillsHome ?? cursorSkillsHome();
@@ -120,7 +126,8 @@ export async function ensureCursorSkillsInjected(
       `[paperclip] Removed maintainer-only Cursor skill "${skillName}" from ${skillsHome}\n`,
     );
   }
-  const linkSkill = options.linkSkill ?? ((source: string, target: string) => fs.symlink(source, target));
+  const symlinkType: "junction" | "dir" = process.platform === "win32" ? "junction" : "dir";
+  const linkSkill = options.linkSkill ?? ((source: string, target: string) => fs.symlink(source, target, symlinkType));
   for (const entry of skillsEntries) {
     const target = path.join(skillsHome, entry.name);
     try {
@@ -168,7 +175,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
-  await ensureCursorSkillsInjected(onLog);
+  await ensureCursorSkillsInjected(onLog, { selectedSkillNames: config.skills });
 
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =

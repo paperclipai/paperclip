@@ -16,6 +16,7 @@ import {
   joinPromptSections,
   ensurePathInEnv,
   listPaperclipSkillEntries,
+  filterPaperclipSkillEntriesBySelection,
   removeMaintainerOnlySkillSymlinks,
   parseObject,
   redactEnvForLogs,
@@ -84,8 +85,10 @@ function geminiSkillsHome(): string {
  */
 async function ensureGeminiSkillsInjected(
   onLog: AdapterExecutionContext["onLog"],
+  selectedSkillNames?: unknown,
 ): Promise<void> {
-  const skillsEntries = await listPaperclipSkillEntries(__moduleDir);
+  const allSkillsEntries = await listPaperclipSkillEntries(__moduleDir);
+  const skillsEntries = filterPaperclipSkillEntriesBySelection(allSkillsEntries, selectedSkillNames);
   if (skillsEntries.length === 0) return;
 
   const skillsHome = geminiSkillsHome();
@@ -109,11 +112,14 @@ async function ensureGeminiSkillsInjected(
     );
   }
 
+  const symlinkType: "junction" | "dir" = process.platform === "win32" ? "junction" : "dir";
+  const linkSkill = (source: string, target: string) => fs.symlink(source, target, symlinkType);
+
   for (const entry of skillsEntries) {
     const target = path.join(skillsHome, entry.name);
 
     try {
-      const result = await ensurePaperclipSkillSymlink(entry.source, target);
+      const result = await ensurePaperclipSkillSymlink(entry.source, target, linkSkill);
       if (result === "skipped") continue;
       await onLog(
         "stderr",
@@ -156,7 +162,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
-  await ensureGeminiSkillsInjected(onLog);
+  await ensureGeminiSkillsInjected(onLog, config.skills);
 
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =

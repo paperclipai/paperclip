@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Paperclip, Plus } from "lucide-react";
-import { useQueries } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { Paperclip, Plus, Upload } from "lucide-react";
+import { useQueries, useQueryClient } from "@tanstack/react-query";
 import {
   DndContext,
   closestCenter,
@@ -28,8 +28,18 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import type { Company } from "@paperclipai/shared";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import type { Company, CompanyPortabilityExportResult } from "@paperclipai/shared";
 import { CompanyPatternIcon } from "./CompanyPatternIcon";
+import { companiesApi } from "../api/companies";
+import { useToast } from "../context/ToastContext";
 
 const ORDER_STORAGE_KEY = "paperclip.companyOrder";
 
@@ -155,6 +165,9 @@ function SortableCompanyItem({
 export function CompanyRail() {
   const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { openOnboarding } = useDialog();
+  const { pushToast } = useToast();
+  const queryClient = useQueryClient();
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const navigate = useNavigate();
   const location = useLocation();
   const isInstanceRoute = location.pathname.startsWith("/instance/");
@@ -265,6 +278,38 @@ export function CompanyRail() {
     [orderedCompanies]
   );
 
+  const handleImportFile = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    try {
+      const parsed = JSON.parse(await file.text()) as CompanyPortabilityExportResult;
+      const payload = {
+        source: { type: "inline" as const, manifest: parsed.manifest, files: parsed.files },
+        include: { company: true, agents: true },
+        target: { mode: "new_company" as const },
+        agents: "all" as const,
+        collisionStrategy: "rename" as const,
+      };
+      const preview = await companiesApi.importPreview(payload);
+      if (preview.errors.length > 0) throw new Error(preview.errors.join("; "));
+      const imported = await companiesApi.importBundle(payload);
+      const importedCompany = await companiesApi.get(imported.company.id);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      setSelectedCompanyId(importedCompany.id);
+      pushToast({ title: "Company imported", body: importedCompany.name, tone: "success" });
+      if (isInstanceRoute) {
+        navigate(`/${importedCompany.issuePrefix}/dashboard`);
+      }
+    } catch (error) {
+      pushToast({
+        title: "Import failed",
+        body: error instanceof Error ? error.message : "Unable to import company",
+        tone: "error",
+      });
+    }
+  }, [isInstanceRoute, navigate, pushToast, queryClient, setSelectedCompanyId]);
+
   return (
     <div className="flex flex-col items-center w-[72px] shrink-0 h-full bg-background border-r border-border">
       {/* Paperclip icon - aligned with top sections (implied line, no visible border) */}
@@ -305,23 +350,45 @@ export function CompanyRail() {
       {/* Separator before add button */}
       <div className="w-8 h-px bg-border mx-auto shrink-0" />
 
-      {/* Add company button */}
       <div className="flex items-center justify-center py-2 shrink-0">
-        <Tooltip delayDuration={300}>
-          <TooltipTrigger asChild>
-            <button
-              onClick={() => openOnboarding()}
-              className="flex items-center justify-center w-11 h-11 rounded-[22px] hover:rounded-[14px] border-2 border-dashed border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground transition-[border-color,color,border-radius] duration-150"
-              aria-label="Add company"
-            >
-              <Plus className="h-5 w-5" />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="right" sideOffset={8}>
-            <p>Add company</p>
-          </TooltipContent>
-        </Tooltip>
+        <DropdownMenu>
+          <Tooltip delayDuration={300}>
+            <TooltipTrigger asChild>
+              <DropdownMenuTrigger asChild>
+                <button
+                  className="flex items-center justify-center w-11 h-11 rounded-[22px] hover:rounded-[14px] border-2 border-dashed border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground transition-[border-color,color,border-radius] duration-150"
+                  aria-label="Add company"
+                >
+                  <Plus className="h-5 w-5" />
+                </button>
+              </DropdownMenuTrigger>
+            </TooltipTrigger>
+            <TooltipContent side="right" sideOffset={8}>
+              <p>Add company</p>
+            </TooltipContent>
+          </Tooltip>
+          <DropdownMenuContent side="right" align="start" sideOffset={8}>
+            <DropdownMenuLabel>Import</DropdownMenuLabel>
+            <DropdownMenuItem onSelect={() => fileInputRef.current?.click()}>
+              <Upload className="h-4 w-4" />
+              Import Company
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel>Create</DropdownMenuLabel>
+            <DropdownMenuItem onSelect={() => openOnboarding()}>
+              <Plus className="h-4 w-4" />
+              Create Company
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="application/json,.json"
+        className="hidden"
+        onChange={handleImportFile}
+      />
     </div>
   );
 }

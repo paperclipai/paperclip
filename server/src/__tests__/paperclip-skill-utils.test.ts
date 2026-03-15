@@ -19,19 +19,23 @@ describe("paperclip skill utils", () => {
     cleanupDirs.clear();
   });
 
-  it("lists runtime skills from ./skills without pulling in .agents/skills", async () => {
+  it("lists runtime skills from .agents/.claude/skills roots with deterministic priority", async () => {
     const root = await makeTempDir("paperclip-skill-roots-");
     cleanupDirs.add(root);
 
     const moduleDir = path.join(root, "a", "b", "c", "d", "e");
     await fs.mkdir(moduleDir, { recursive: true });
-    await fs.mkdir(path.join(root, "skills", "paperclip"), { recursive: true });
     await fs.mkdir(path.join(root, ".agents", "skills", "release"), { recursive: true });
+    await fs.mkdir(path.join(root, ".claude", "skills", "review"), { recursive: true });
+    await fs.mkdir(path.join(root, "skills", "paperclip"), { recursive: true });
+    await fs.mkdir(path.join(root, "skills", "release"), { recursive: true });
 
     const entries = await listPaperclipSkillEntries(moduleDir);
 
-    expect(entries.map((entry) => entry.name)).toEqual(["paperclip"]);
-    expect(entries[0]?.source).toBe(path.join(root, "skills", "paperclip"));
+    expect(entries.map((entry) => entry.name)).toEqual(["release", "review", "paperclip"]);
+    expect(entries[0]?.source).toBe(path.join(root, ".agents", "skills", "release"));
+    expect(entries[1]?.source).toBe(path.join(root, ".claude", "skills", "review"));
+    expect(entries[2]?.source).toBe(path.join(root, "skills", "paperclip"));
   });
 
   it("removes stale maintainer-only symlinks from a shared skills home", async () => {

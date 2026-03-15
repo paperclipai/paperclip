@@ -28,6 +28,7 @@ import {
   PERMISSION_KEYS
 } from "@paperclipai/shared";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import { listPaperclipSkillEntries } from "@paperclipai/adapter-utils/server-utils";
 import {
   forbidden,
   conflict,
@@ -95,28 +96,35 @@ function requestBaseUrl(req: Request) {
   return `${proto}://${host}`;
 }
 
-function readSkillMarkdown(skillName: string): string | null {
-  const normalized = skillName.trim().toLowerCase();
-  if (
-    normalized !== "paperclip" &&
-    normalized !== "paperclip-create-agent" &&
-    normalized !== "para-memory-files"
-  )
-    return null;
-  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
-  const candidates = [
-    path.resolve(moduleDir, "../../skills", normalized, "SKILL.md"), // published: dist/routes/ -> <pkg>/skills/
-    path.resolve(process.cwd(), "skills", normalized, "SKILL.md"), // cwd (e.g. monorepo root)
-    path.resolve(moduleDir, "../../../skills", normalized, "SKILL.md") // dev: src/routes/ -> repo root/skills/
+const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
+
+function resolveServerSkillCandidates(): string[] {
+  return [
+    path.resolve(__moduleDir, "../../../.agents/skills"),
+    path.resolve(__moduleDir, "../../../.claude/skills"),
+    path.resolve(__moduleDir, "../../../skills"),
+    path.resolve(__moduleDir, "../../.agents/skills"),
+    path.resolve(__moduleDir, "../../.claude/skills"),
+    path.resolve(__moduleDir, "../../skills"),
+    path.resolve(process.cwd(), ".agents", "skills"),
+    path.resolve(process.cwd(), ".claude", "skills"),
+    path.resolve(process.cwd(), "skills"),
   ];
-  for (const skillPath of candidates) {
-    try {
-      return fs.readFileSync(skillPath, "utf8");
-    } catch {
-      // Continue to next candidate.
-    }
+}
+
+async function readSkillMarkdown(skillName: string): Promise<string | null> {
+  const normalized = skillName.trim().toLowerCase();
+  if (!normalized) return null;
+
+  const entries = await listPaperclipSkillEntries(__moduleDir, resolveServerSkillCandidates());
+  const match = entries.find((entry) => entry.name === normalized);
+  if (!match) return null;
+
+  try {
+    return await fs.promises.readFile(path.join(match.source, "SKILL.md"), "utf8");
+  } catch {
+    return null;
   }
-  return null;
 }
 
 function toJoinRequestResponse(row: typeof joinRequests.$inferSelect) {
@@ -1610,25 +1618,19 @@ export function accessRoutes(
     return { token, created, normalizedAgentMessage };
   }
 
-  router.get("/skills/index", (_req, res) => {
+  router.get("/skills/index", async (_req, res) => {
+    const skills = await listPaperclipSkillEntries(__moduleDir, resolveServerSkillCandidates());
     res.json({
-      skills: [
-        { name: "paperclip", path: "/api/skills/paperclip" },
-        {
-          name: "para-memory-files",
-          path: "/api/skills/para-memory-files"
-        },
-        {
-          name: "paperclip-create-agent",
-          path: "/api/skills/paperclip-create-agent"
-        }
-      ]
+      skills: skills.map((entry) => ({
+        name: entry.name,
+        path: `/api/skills/${entry.name}`
+      }))
     });
   });
 
-  router.get("/skills/:skillName", (req, res) => {
+  router.get("/skills/:skillName", async (req, res) => {
     const skillName = (req.params.skillName as string).trim().toLowerCase();
-    const markdown = readSkillMarkdown(skillName);
+    const markdown = await readSkillMarkdown(skillName);
     if (!markdown) throw notFound("Skill not found");
     res.type("text/markdown").send(markdown);
   });

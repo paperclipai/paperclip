@@ -15,6 +15,7 @@ import {
   ensurePaperclipSkillSymlink,
   ensurePathInEnv,
   listPaperclipSkillEntries,
+  filterPaperclipSkillEntriesBySelection,
   removeMaintainerOnlySkillSymlinks,
   renderTemplate,
   joinPromptSections,
@@ -92,6 +93,7 @@ async function isLikelyPaperclipRuntimeSkillSource(candidate: string, skillName:
 type EnsureCodexSkillsInjectedOptions = {
   skillsHome?: string;
   skillsEntries?: Awaited<ReturnType<typeof listPaperclipSkillEntries>>;
+  selectedSkillNames?: unknown;
   linkSkill?: (source: string, target: string) => Promise<void>;
 };
 
@@ -99,7 +101,11 @@ export async function ensureCodexSkillsInjected(
   onLog: AdapterExecutionContext["onLog"],
   options: EnsureCodexSkillsInjectedOptions = {},
 ) {
-  const skillsEntries = options.skillsEntries ?? await listPaperclipSkillEntries(__moduleDir);
+  const allSkillsEntries = options.skillsEntries ?? await listPaperclipSkillEntries(__moduleDir);
+  const skillsEntries = filterPaperclipSkillEntriesBySelection(
+    allSkillsEntries,
+    options.selectedSkillNames,
+  );
   if (skillsEntries.length === 0) return;
 
   const skillsHome = options.skillsHome ?? path.join(resolveCodexHomeDir(process.env), "skills");
@@ -114,7 +120,8 @@ export async function ensureCodexSkillsInjected(
       `[paperclip] Removed maintainer-only Codex skill "${skillName}" from ${skillsHome}\n`,
     );
   }
-  const linkSkill = options.linkSkill;
+  const symlinkType: "junction" | "dir" = process.platform === "win32" ? "junction" : "dir";
+  const linkSkill = options.linkSkill ?? ((source: string, target: string) => fs.symlink(source, target, symlinkType));
   for (const entry of skillsEntries) {
     const target = path.join(skillsHome, entry.name);
 
@@ -131,11 +138,7 @@ export async function ensureCodexSkillsInjected(
           (await isLikelyPaperclipRuntimeSkillSource(resolvedLinkedPath, entry.name))
         ) {
           await fs.unlink(target);
-          if (linkSkill) {
-            await linkSkill(entry.source, target);
-          } else {
-            await fs.symlink(entry.source, target);
-          }
+          await linkSkill(entry.source, target);
           await onLog(
             "stderr",
             `[paperclip] Repaired Codex skill "${entry.name}" into ${skillsHome}\n`,
@@ -220,7 +223,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effectiveCodexHome = configuredCodexHome ?? preparedWorktreeCodexHome;
   await ensureCodexSkillsInjected(
     onLog,
-    effectiveCodexHome ? { skillsHome: path.join(effectiveCodexHome, "skills") } : {},
+    effectiveCodexHome
+      ? { skillsHome: path.join(effectiveCodexHome, "skills"), selectedSkillNames: config.skills }
+      : { selectedSkillNames: config.skills },
   );
   const hasExplicitApiKey =
     typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;

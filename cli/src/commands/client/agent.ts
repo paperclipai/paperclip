@@ -1,8 +1,8 @@
 import { Command } from "commander";
 import type { Agent } from "@paperclipai/shared";
 import {
+  listPaperclipSkillEntries,
   removeMaintainerOnlySkillSymlinks,
-  resolvePaperclipSkillsDir,
 } from "@paperclipai/adapter-utils/server-utils";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -43,6 +43,8 @@ interface SkillsInstallSummary {
   failed: Array<{ name: string; error: string }>;
 }
 
+type SkillEntry = { name: string; source: string };
+
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
 function codexSkillsHome(): string {
@@ -58,7 +60,7 @@ function claudeSkillsHome(): string {
 }
 
 async function installSkillsForTarget(
-  sourceSkillsDir: string,
+  sourceSkillsEntries: SkillEntry[],
   targetSkillsDir: string,
   tool: "codex" | "claude",
 ): Promise<SkillsInstallSummary> {
@@ -72,14 +74,13 @@ async function installSkillsForTarget(
   };
 
   await fs.mkdir(targetSkillsDir, { recursive: true });
-  const entries = await fs.readdir(sourceSkillsDir, { withFileTypes: true });
   summary.removed = await removeMaintainerOnlySkillSymlinks(
     targetSkillsDir,
-    entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name),
+    sourceSkillsEntries.map((entry) => entry.name),
   );
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const source = path.join(sourceSkillsDir, entry.name);
+  const symlinkType: "junction" | "dir" = process.platform === "win32" ? "junction" : "dir";
+  for (const entry of sourceSkillsEntries) {
+    const source = entry.source;
     const target = path.join(targetSkillsDir, entry.name);
     const existing = await fs.lstat(target).catch(() => null);
     if (existing) {
@@ -90,7 +91,7 @@ async function installSkillsForTarget(
         } catch (err) {
           await fs.unlink(target);
           try {
-            await fs.symlink(source, target);
+            await fs.symlink(source, target, symlinkType);
             summary.linked.push(entry.name);
             continue;
           } catch (linkErr) {
@@ -128,7 +129,7 @@ async function installSkillsForTarget(
     }
 
     try {
-      await fs.symlink(source, target);
+      await fs.symlink(source, target, symlinkType);
       summary.linked.push(entry.name);
     } catch (err) {
       summary.failed.push({
@@ -248,16 +249,20 @@ export function registerAgentCommands(program: Command): void {
 
           const installSummaries: SkillsInstallSummary[] = [];
           if (opts.installSkills !== false) {
-            const skillsDir = await resolvePaperclipSkillsDir(__moduleDir, [path.resolve(process.cwd(), "skills")]);
-            if (!skillsDir) {
+            const skillsEntries = await listPaperclipSkillEntries(__moduleDir, [
+              path.resolve(process.cwd(), ".agents", "skills"),
+              path.resolve(process.cwd(), ".claude", "skills"),
+              path.resolve(process.cwd(), "skills"),
+            ]);
+            if (skillsEntries.length === 0) {
               throw new Error(
-                "Could not locate local Paperclip skills directory. Expected ./skills in the repo checkout.",
+                "Could not locate local Paperclip skills directory. Expected .agents/skills, .claude/skills, or ./skills in the repo checkout.",
               );
             }
 
             installSummaries.push(
-              await installSkillsForTarget(skillsDir, codexSkillsHome(), "codex"),
-              await installSkillsForTarget(skillsDir, claudeSkillsHome(), "claude"),
+              await installSkillsForTarget(skillsEntries, codexSkillsHome(), "codex"),
+              await installSkillsForTarget(skillsEntries, claudeSkillsHome(), "claude"),
             );
           }
 

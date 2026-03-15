@@ -16,6 +16,7 @@ import {
   ensurePaperclipSkillSymlink,
   ensurePathInEnv,
   listPaperclipSkillEntries,
+  filterPaperclipSkillEntriesBySelection,
   removeMaintainerOnlySkillSymlinks,
   renderTemplate,
   runChildProcess,
@@ -50,8 +51,12 @@ function parseModelId(model: string | null): string | null {
   return trimmed.slice(trimmed.indexOf("/") + 1).trim() || null;
 }
 
-async function ensurePiSkillsInjected(onLog: AdapterExecutionContext["onLog"]) {
-  const skillsEntries = await listPaperclipSkillEntries(__moduleDir);
+async function ensurePiSkillsInjected(
+  onLog: AdapterExecutionContext["onLog"],
+  selectedSkillNames?: unknown,
+) {
+  const allSkillsEntries = await listPaperclipSkillEntries(__moduleDir);
+  const skillsEntries = filterPaperclipSkillEntriesBySelection(allSkillsEntries, selectedSkillNames);
   if (skillsEntries.length === 0) return;
 
   const piSkillsHome = path.join(os.homedir(), ".pi", "agent", "skills");
@@ -67,11 +72,14 @@ async function ensurePiSkillsInjected(onLog: AdapterExecutionContext["onLog"]) {
     );
   }
 
+  const symlinkType: "junction" | "dir" = process.platform === "win32" ? "junction" : "dir";
+  const linkSkill = (source: string, target: string) => fs.symlink(source, target, symlinkType);
+
   for (const entry of skillsEntries) {
     const target = path.join(piSkillsHome, entry.name);
 
     try {
-      const result = await ensurePaperclipSkillSymlink(entry.source, target);
+      const result = await ensurePaperclipSkillSymlink(entry.source, target, linkSkill);
       if (result === "skipped") continue;
       await onLog(
         "stderr",
@@ -133,7 +141,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   await ensureSessionsDir();
   
   // Inject skills
-  await ensurePiSkillsInjected(onLog);
+  await ensurePiSkillsInjected(onLog, config.skills);
 
   // Build environment
   const envConfig = parseObject(config.env);
