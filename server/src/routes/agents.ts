@@ -1432,13 +1432,30 @@ export function agentRoutes(db: Db) {
     res.json(result);
   });
 
+  router.get("/companies/:companyId/heartbeat-runs/stats", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const agentId = req.query.agentId as string | undefined;
+    const stats = await heartbeat.stats(companyId, agentId);
+    res.json(stats);
+  });
+
+  router.get("/companies/:companyId/heartbeat-runs/latest-failed", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const runs = await heartbeat.latestFailed(companyId);
+    res.json(runs);
+  });
+
   router.get("/companies/:companyId/heartbeat-runs", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const agentId = req.query.agentId as string | undefined;
     const limitParam = req.query.limit as string | undefined;
-    const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
-    const runs = await heartbeat.list(companyId, agentId, limit);
+    const offsetParam = req.query.offset as string | undefined;
+    const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : 200;
+    const offset = offsetParam ? Math.max(0, parseInt(offsetParam, 10) || 0) : undefined;
+    const runs = await heartbeat.list(companyId, agentId, limit, offset);
     res.json(runs);
   });
 

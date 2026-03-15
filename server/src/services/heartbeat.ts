@@ -2660,8 +2660,8 @@ export function heartbeatService(db: Db) {
   }
 
   return {
-    list: async (companyId: string, agentId?: string, limit?: number) => {
-      const query = db
+    list: async (companyId: string, agentId?: string, limit?: number, offset?: number) => {
+      let query = db
         .select(heartbeatRunListColumns)
         .from(heartbeatRuns)
         .where(
@@ -2671,10 +2671,85 @@ export function heartbeatService(db: Db) {
         )
         .orderBy(desc(heartbeatRuns.createdAt));
 
-      const rows = limit ? await query.limit(limit) : await query;
+      if (limit !== undefined) {
+        query = query.limit(limit) as any;
+      }
+      if (offset !== undefined && offset > 0) {
+        query = query.offset(offset) as any;
+      }
+
+      const rows = await query;
       return rows.map((row) => ({
         ...row,
         resultJson: summarizeHeartbeatRunResultJson(row.resultJson),
+      }));
+    },
+
+    stats: async (companyId: string, agentId?: string) => {
+      const now = new Date();
+      const fourteenDaysAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
+      const dateBucket = sql<string>`DATE(${heartbeatRuns.createdAt} AT TIME ZONE 'UTC')`;
+
+      const condition = agentId
+        ? and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId), gt(heartbeatRuns.createdAt, fourteenDaysAgo))
+        : and(eq(heartbeatRuns.companyId, companyId), gt(heartbeatRuns.createdAt, fourteenDaysAgo));
+
+      const rows = await db
+        .select({
+          date: dateBucket.as("date"),
+          status: heartbeatRuns.status,
+          count: sql<number>`count(*)`.as("count"),
+        })
+        .from(heartbeatRuns)
+        .where(condition)
+        .groupBy(dateBucket, heartbeatRuns.status);
+
+      return rows.map(r => ({ ...r, count: Number(r.count) }));
+    },
+
+    latestFailed: async (companyId: string) => {
+      // Get the most recent run for each agent in the company
+      const rows = await db.execute(sql`
+        SELECT DISTINCT ON (agent_id)
+          *
+        FROM heartbeat_runs
+        WHERE company_id = ${companyId}
+        ORDER BY agent_id, created_at DESC
+      `);
+
+      // Filter to only those whose most recent run was a failure
+      const failedRows = rows.filter((r: any) => r.status === 'failed' || r.status === 'timed_out');
+
+      // We need to map snake_case to camelCase since execute() returns raw sql rows
+      return failedRows.map((row: any) => ({
+        id: row.id,
+        companyId: row.company_id,
+        agentId: row.agent_id,
+        status: row.status,
+        errorCode: row.error_code,
+        error: row.error,
+        stderrExcerpt: row.stderr_excerpt,
+        invocationSource: row.invocation_source,
+        triggerDetail: row.trigger_detail,
+        contextSnapshot: row.context_snapshot,
+        resultJson: summarizeHeartbeatRunResultJson(row.result_json),
+        logStore: row.log_store,
+        logRef: row.log_ref,
+        startedAt: row.started_at,
+        finishedAt: row.finished_at,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        wakeupRequestId: row.wakeup_request_id,
+        exitCode: row.exit_code,
+        signal: row.signal,
+        usageJson: row.usage_json,
+        sessionIdBefore: row.session_id_before,
+        sessionIdAfter: row.session_id_after,
+        logBytes: row.log_bytes,
+        logSha256: row.log_sha256,
+        logCompressed: row.log_compressed,
+        stdoutExcerpt: row.stdout_excerpt,
+        externalRunId: row.external_run_id,
       }));
     },
 

@@ -176,8 +176,7 @@ describe("inbox helpers", () => {
       approvals: [makeApproval("pending"), makeApproval("approved")],
       joinRequests: [makeJoinRequest("join-1")],
       dashboard,
-      heartbeatRuns: [
-        makeRun("run-old", "failed", "2026-03-11T00:00:00.000Z"),
+      latestFailedRuns: [
         makeRun("run-latest", "timed_out", "2026-03-11T01:00:00.000Z"),
         makeRun("run-other-agent", "failed", "2026-03-11T02:00:00.000Z", "agent-2"),
       ],
@@ -200,7 +199,7 @@ describe("inbox helpers", () => {
       approvals: [],
       joinRequests: [],
       dashboard,
-      heartbeatRuns: [makeRun("run-1", "failed", "2026-03-11T00:00:00.000Z")],
+      latestFailedRuns: [makeRun("run-1", "failed", "2026-03-11T00:00:00.000Z")],
       unreadIssues: [],
       dismissed: new Set<string>(["run:run-1", "alert:budget", "alert:agent-errors"]),
     });

@@ -1,4 +1,5 @@
 import type { HeartbeatRun } from "@paperclipai/shared";
+import type { HeartbeatRunStats } from "../api/heartbeats";
 
 /* ---- Utilities ---- */
 
@@ -58,18 +59,18 @@ export function ChartCard({ title, subtitle, children }: { title: string; subtit
 
 /* ---- Chart Components ---- */
 
-export function RunActivityChart({ runs }: { runs: HeartbeatRun[] }) {
+export function RunActivityChart({ stats }: { stats: HeartbeatRunStats[] }) {
   const days = getLast14Days();
 
   const grouped = new Map<string, { succeeded: number; failed: number; other: number }>();
   for (const day of days) grouped.set(day, { succeeded: 0, failed: 0, other: 0 });
-  for (const run of runs) {
-    const day = new Date(run.createdAt).toISOString().slice(0, 10);
+  for (const stat of stats) {
+    const day = stat.date;
     const entry = grouped.get(day);
     if (!entry) continue;
-    if (run.status === "succeeded") entry.succeeded++;
-    else if (run.status === "failed" || run.status === "timed_out") entry.failed++;
-    else entry.other++;
+    if (stat.status === "succeeded") entry.succeeded += stat.count;
+    else if (stat.status === "failed" || stat.status === "timed_out") entry.failed += stat.count;
+    else entry.other += stat.count;
   }
 
   const maxValue = Math.max(...Array.from(grouped.values()).map(v => v.succeeded + v.failed + v.other), 1);
@@ -224,16 +225,16 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
   );
 }
 
-export function SuccessRateChart({ runs }: { runs: HeartbeatRun[] }) {
+export function SuccessRateChart({ stats }: { stats: HeartbeatRunStats[] }) {
   const days = getLast14Days();
   const grouped = new Map<string, { succeeded: number; total: number }>();
   for (const day of days) grouped.set(day, { succeeded: 0, total: 0 });
-  for (const run of runs) {
-    const day = new Date(run.createdAt).toISOString().slice(0, 10);
+  for (const stat of stats) {
+    const day = stat.date;
     const entry = grouped.get(day);
     if (!entry) continue;
-    entry.total++;
-    if (run.status === "succeeded") entry.succeeded++;
+    entry.total += stat.count;
+    if (stat.status === "succeeded") entry.succeeded += stat.count;
   }
 
   const hasData = Array.from(grouped.values()).some(v => v.total > 0);
