@@ -1223,27 +1223,7 @@ function RunsTab({
     fetchingNextPageRef.current = Boolean(isFetchingNextPage);
   }, [isFetchingNextPage]);
 
-  useEffect(() => {
-    if (!observerTarget.current || !hasNextPage || !fetchNextPage) return;
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0]?.isIntersecting && !fetchingNextPageRef.current) {
-          fetchNextPage();
-        }
-      },
-      { threshold: 0.1, rootMargin: "100px" }
-    );
-
-    const currentTarget = observerTarget.current;
-    observer.observe(currentTarget);
-
-    return () => {
-      if (currentTarget) {
-        observer.unobserve(currentTarget);
-      }
-    };
-  }, [hasNextPage, fetchNextPage]);
+  }, [hasNextPage, fetchNextPage, isMobile]);
 
   if (runs.length === 0) {
     return <p className="text-sm text-muted-foreground">No runs yet.</p>;
