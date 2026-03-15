@@ -39,6 +39,17 @@ tmp/
 /deerflow/backend/.venv/
 /deerflow/**/__pycache__/
 
+# Local skill symlinks (machine-specific absolute paths)
+skills/*
+!skills/create-agent-adapter/
+!skills/memory/
+!skills/paperclip/
+!skills/paperclip-create-agent/
+!skills/para-memory-files/
+!skills/release/
+!skills/release-changelog/
+!skills/skill-discovery/
+
 # Editor / tool temp files
 *.tmp
 .vscode/
