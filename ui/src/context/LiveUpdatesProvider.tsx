@@ -581,10 +581,14 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       };
     };
 
-    connect();
+    // Delay initial connect slightly so React StrictMode's double-invoke
+    // cleanup fires before the WebSocket is created, avoiding the
+    // "WebSocket closed before connection established" dev-mode error.
+    const connectTimer = window.setTimeout(connect, 0);
 
     return () => {
       closed = true;
+      window.clearTimeout(connectTimer);
       clearReconnect();
       if (socket) {
         socket.onopen = null;
