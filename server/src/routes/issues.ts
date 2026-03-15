@@ -23,8 +23,6 @@ import {
   issueService,
   documentService,
   knowledgeService,
-  documentService,
-  knowledgeService,
   logActivity,
   projectService,
 } from "../services/index.js";
