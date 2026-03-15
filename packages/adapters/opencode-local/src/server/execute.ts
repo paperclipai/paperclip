@@ -394,6 +394,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       resultJson: {
         stdout: attempt.proc.stdout,
         stderr: attempt.proc.stderr,
+        ...(parsedError ? { parsedErrorMessage: parsedError } : {}),
       },
       summary: attempt.parsed.summary,
       clearSession: Boolean(clearSessionOnMissingSession && !attempt.parsed.sessionId),
