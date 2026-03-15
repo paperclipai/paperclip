@@ -140,6 +140,15 @@ export interface AvailablePluginExample {
   tag: "example";
 }
 
+export interface DirectoryPlugin {
+  name: string;
+  packageName: string;
+  description: string;
+  author: string;
+  category: string;
+  source?: string;
+}
+
 /**
  * Plugin management API client.
  *
@@ -170,6 +179,12 @@ export const pluginsApi = {
    */
   listExamples: () =>
     api.get<AvailablePluginExample[]>("/plugins/examples"),
+
+  /**
+   * Fetch the community plugin directory.
+   */
+  directory: () =>
+    api.get<DirectoryPlugin[]>("/plugins/directory"),
 
   /**
    * Fetch a single plugin record by its UUID or plugin key.

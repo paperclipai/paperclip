@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "updated": "2026-03-14",
+  "plugins": [
+    {
+      "name": "Hello World Widget",
+      "packageName": "@paperclipai/plugin-hello-world-example",
+      "description": "Reference UI plugin that adds a simple Hello World widget to the dashboard.",
+      "author": "paperclipai",
+      "category": "example",
+      "source": "https://github.com/paperclipai/paperclip/tree/master/packages/plugins/examples/plugin-hello-world-example"
+    },
+    {
+      "name": "File Browser",
+      "packageName": "@paperclipai/plugin-file-browser-example",
+      "description": "Adds a Files link in project navigation and a project detail file browser.",
+      "author": "paperclipai",
+      "category": "example",
+      "source": "https://github.com/paperclipai/paperclip/tree/master/packages/plugins/examples/plugin-file-browser-example"
+    },
+    {
+      "name": "Kitchen Sink",
+      "packageName": "@paperclipai/plugin-kitchen-sink-example",
+      "description": "Demonstrates the full Paperclip plugin API surface: bridge flows, UI slots, jobs, webhooks, tools, and streams.",
+      "author": "paperclipai",
+      "category": "example",
+      "source": "https://github.com/paperclipai/paperclip/tree/master/packages/plugins/examples/plugin-kitchen-sink-example"
+    }
+  ]
+}

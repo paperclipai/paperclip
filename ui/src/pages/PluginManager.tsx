@@ -8,10 +8,10 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { PluginRecord } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
-import { AlertTriangle, FlaskConical, Plus, Power, Puzzle, Settings, Trash } from "lucide-react";
+import { AlertTriangle, ExternalLink, FlaskConical, Globe, Plus, Power, Puzzle, Search, Settings, Trash } from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
-import { pluginsApi } from "@/api/plugins";
+import { pluginsApi, type DirectoryPlugin } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -71,6 +71,7 @@ export function PluginManager() {
   const [uninstallPluginId, setUninstallPluginId] = useState<string | null>(null);
   const [uninstallPluginName, setUninstallPluginName] = useState<string>("");
   const [errorDetailsPlugin, setErrorDetailsPlugin] = useState<PluginRecord | null>(null);
+  const [directorySearch, setDirectorySearch] = useState("");
 
   useEffect(() => {
     setBreadcrumbs([
@@ -88,6 +89,12 @@ export function PluginManager() {
   const examplesQuery = useQuery({
     queryKey: queryKeys.plugins.examples,
     queryFn: () => pluginsApi.listExamples(),
+  });
+
+  const directoryQuery = useQuery({
+    queryKey: queryKeys.plugins.directory,
+    queryFn: () => pluginsApi.directory(),
+    staleTime: Infinity,
   });
 
   const invalidatePluginQueries = () => {
@@ -155,6 +162,19 @@ export function PluginManager() {
     [installedPlugins]
   );
 
+  const filteredDirectory = useMemo(() => {
+    const entries = directoryQuery.data ?? [];
+    if (!directorySearch.trim()) return entries;
+    const q = directorySearch.toLowerCase();
+    return entries.filter(
+      (p) =>
+        p.name.toLowerCase().includes(q) ||
+        p.description.toLowerCase().includes(q) ||
+        p.category.toLowerCase().includes(q) ||
+        p.author.toLowerCase().includes(q),
+    );
+  }, [directoryQuery.data, directorySearch]);
+
   if (isLoading) return <div className="p-4 text-sm text-muted-foreground">Loading plugins...</div>;
   if (error) return <div className="p-4 text-sm text-destructive">Failed to load plugins.</div>;
 
@@ -215,6 +235,92 @@ export function PluginManager() {
           </div>
         </div>
       </div>
+
+      <section className="space-y-3">
+        <div className="flex items-center gap-2">
+          <Globe className="h-5 w-5 text-muted-foreground" />
+          <h2 className="text-base font-semibold">Plugin Directory</h2>
+          <Badge variant="outline">Community</Badge>
+        </div>
+
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            placeholder="Search plugins..."
+            value={directorySearch}
+            onChange={(e) => setDirectorySearch(e.target.value)}
+            className="pl-9"
+          />
+        </div>
+
+        {directoryQuery.isLoading ? (
+          <div className="text-sm text-muted-foreground">Loading plugin directory...</div>
+        ) : directoryQuery.error ? (
+          <div className="text-sm text-destructive">Failed to load plugin directory.</div>
+        ) : filteredDirectory.length === 0 ? (
+          <div className="rounded-md border border-dashed px-4 py-3 text-sm text-muted-foreground">
+            {directorySearch ? "No plugins match your search." : "No plugins in the directory yet."}
+          </div>
+        ) : (
+          <ul className="divide-y rounded-md border bg-card">
+            {filteredDirectory.map((entry) => {
+              const installedPlugin = installedByPackageName.get(entry.packageName);
+              const installPending =
+                installMutation.isPending &&
+                installMutation.variables?.packageName === entry.packageName;
+
+              return (
+                <li key={entry.packageName}>
+                  <div className="flex items-center gap-4 px-4 py-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-medium">{entry.name}</span>
+                        <Badge variant="outline">{entry.category}</Badge>
+                        {installedPlugin && (
+                          <Badge
+                            variant={installedPlugin.status === "ready" ? "default" : "secondary"}
+                            className={installedPlugin.status === "ready" ? "bg-green-600 hover:bg-green-700" : ""}
+                          >
+                            Installed
+                          </Badge>
+                        )}
+                      </div>
+                      <p className="mt-1 text-sm text-muted-foreground">{entry.description}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        by {entry.author} · {entry.packageName}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {entry.source && (
+                        <Button variant="outline" size="icon-sm" className="h-8 w-8" asChild>
+                          <a href={entry.source} target="_blank" rel="noopener noreferrer" title="View source">
+                            <ExternalLink className="h-4 w-4" />
+                          </a>
+                        </Button>
+                      )}
+                      {installedPlugin ? (
+                        <Button variant="outline" size="sm" asChild>
+                          <Link to={`/instance/settings/plugins/${installedPlugin.id}`}>
+                            Open Settings
+                          </Link>
+                        </Button>
+                      ) : (
+                        <Button
+                          size="sm"
+                          disabled={installPending || installMutation.isPending}
+                          onClick={() => installMutation.mutate({ packageName: entry.packageName })}
+                        >
+                          {installPending ? "Installing..." : "Install"}
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
 
       <section className="space-y-3">
         <div className="flex items-center gap-2">
