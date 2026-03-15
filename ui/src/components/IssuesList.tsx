@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { issuesApi } from "../api/issues";
-import { authApi } from "../api/auth";
+import { projectsApi } from "../api/projects";
 import { queryKeys } from "../lib/queryKeys";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { groupBy } from "../lib/groupBy";
@@ -40,6 +40,7 @@ export type IssueViewState = {
   priorities: string[];
   assignees: string[];
   labels: string[];
+  projects: string[];
   sortField: "status" | "priority" | "title" | "created" | "updated";
   sortDir: "asc" | "desc";
   groupBy: "status" | "priority" | "assignee" | "none";
@@ -52,6 +53,7 @@ const defaultViewState: IssueViewState = {
   priorities: [],
   assignees: [],
   labels: [],
+  projects: [],
   sortField: "updated",
   sortDir: "desc",
   groupBy: "none",
@@ -104,6 +106,7 @@ function applyFilters(issues: Issue[], state: IssueViewState, currentUserId?: st
     });
   }
   if (state.labels.length > 0) result = result.filter((i) => (i.labelIds ?? []).some((id) => state.labels.includes(id)));
+  if (state.projects.length > 0) result = result.filter((i) => i.projectId != null && state.projects.includes(i.projectId));
   return result;
 }
 
@@ -135,6 +138,7 @@ function countActiveFilters(state: IssueViewState): number {
   if (state.priorities.length > 0) count++;
   if (state.assignees.length > 0) count++;
   if (state.labels.length > 0) count++;
+  if (state.projects.length > 0) count++;
   return count;
 }
 
@@ -250,6 +254,12 @@ export function IssuesList({
     enabled: !!selectedCompanyId,
   });
 
+  const { data: projects } = useQuery({
+    queryKey: queryKeys.projects.list(selectedCompanyId!),
+    queryFn: () => projectsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId && !projectId,
+  });
+
   const activeFilterCount = countActiveFilters(viewState);
 
   const groupedContent = useMemo(() => {
@@ -362,7 +372,7 @@ export function IssuesList({
                     className="h-3 w-3 ml-1 hidden sm:block"
                     onClick={(e) => {
                       e.stopPropagation();
-                      updateView({ statuses: [], priorities: [], assignees: [], labels: [] });
+                      updateView({ statuses: [], priorities: [], assignees: [], labels: [], projects: [] });
                     }}
                   />
                 )}
@@ -375,7 +385,7 @@ export function IssuesList({
                   {activeFilterCount > 0 && (
                     <button
                       className="text-xs text-muted-foreground hover:text-foreground"
-                      onClick={() => updateView({ statuses: [], priorities: [], assignees: [], labels: [] })}
+                      onClick={() => updateView({ statuses: [], priorities: [], assignees: [], labels: [], projects: [] })}
                     >
                       Clear
                     </button>
@@ -490,6 +500,23 @@ export function IssuesList({
                               />
                               <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: label.color }} />
                               <span className="text-sm">{label.name}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {projects && projects.length > 0 && !projectId && (
+                      <div className="space-y-1">
+                        <span className="text-xs text-muted-foreground">Project</span>
+                        <div className="space-y-0.5 max-h-32 overflow-y-auto">
+                          {projects.map((project) => (
+                            <label key={project.id} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
+                              <Checkbox
+                                checked={viewState.projects.includes(project.id)}
+                                onCheckedChange={() => updateView({ projects: toggleInArray(viewState.projects, project.id) })}
+                              />
+                              <span className="text-sm">{project.name}</span>
                             </label>
                           ))}
                         </div>
