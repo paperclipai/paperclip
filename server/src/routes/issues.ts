@@ -1665,10 +1665,16 @@ export function issueRoutes(
     }
     const assigneeChanged =
       issue.assigneeAgentId !== existing.assigneeAgentId || issue.assigneeUserId !== existing.assigneeUserId;
+    const assigneeExplicitlySpecified =
+      req.body.assigneeAgentId !== undefined && !!issue.assigneeAgentId;
     const statusChangedFromBacklog =
       existing.status === "backlog" &&
       issue.status !== "backlog" &&
       req.body.status !== undefined;
+    const statusChangedToNonBacklog =
+      req.body.status !== undefined &&
+      issue.status !== "backlog" &&
+      existing.status !== issue.status;
     const previousExecutionState = parseIssueExecutionState(existing.executionState);
     const nextExecutionState = parseIssueExecutionState(issue.executionState);
     const executionStageWakeup = buildExecutionStageWakeup({
@@ -1694,7 +1700,7 @@ export function issueRoutes(
 
       if (executionStageWakeup) {
         addWakeup(executionStageWakeup.agentId, executionStageWakeup.wakeup);
-      } else if (assigneeChanged && issue.assigneeAgentId && issue.status !== "backlog") {
+      } else if ((assigneeChanged || assigneeExplicitlySpecified) && issue.assigneeAgentId && issue.status !== "backlog") {
         addWakeup(issue.assigneeAgentId, {
           source: "assignment",
           triggerDetail: "system",
@@ -1722,7 +1728,7 @@ export function issueRoutes(
         });
       }
 
-      if (!assigneeChanged && statusChangedFromBacklog && issue.assigneeAgentId) {
+      if (!assigneeChanged && !assigneeExplicitlySpecified && (statusChangedFromBacklog || statusChangedToNonBacklog) && issue.assigneeAgentId) {
         addWakeup(issue.assigneeAgentId, {
           source: "automation",
           triggerDetail: "system",
@@ -2016,6 +2022,90 @@ export function issueRoutes(
     });
 
     res.json(released);
+  });
+
+  router.post("/issues/:id/retrigger", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+
+    if (!issue.assigneeAgentId) {
+      res.status(422).json({ error: "Issue has no assigned agent" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    let cancelledRunId: string | null = null;
+
+    // Cancel any active run tied to this issue
+    if (issue.executionRunId) {
+      try {
+        const cancelled = await heartbeat.cancelRun(issue.executionRunId);
+        if (cancelled && (cancelled.status === "cancelled")) {
+          cancelledRunId = cancelled.id;
+          await logActivity(db, {
+            companyId: issue.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "heartbeat.cancelled",
+            entityType: "heartbeat_run",
+            entityId: cancelled.id,
+            details: {
+              agentId: cancelled.agentId,
+              source: "issue_retrigger",
+              issueId: issue.id,
+            },
+          });
+        }
+      } catch (err) {
+        logger.warn({ err, issueId: issue.id }, "failed to cancel existing run during retrigger");
+      }
+    }
+
+    // Fire a fresh wake
+    const run = await heartbeat.wakeup(issue.assigneeAgentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "issue_retrigger",
+      payload: { issueId: issue.id, mutation: "retrigger" },
+      requestedByActorType: actor.actorType,
+      requestedByActorId: actor.actorId,
+      contextSnapshot: {
+        issueId: issue.id,
+        source: "issue.retrigger",
+        ...(cancelledRunId ? { cancelledRunId } : {}),
+      },
+    });
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.retriggered",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        assigneeAgentId: issue.assigneeAgentId,
+        identifier: issue.identifier,
+        ...(cancelledRunId ? { cancelledRunId } : {}),
+      },
+    });
+
+    res.json({
+      ok: true,
+      issueId: issue.id,
+      agentId: issue.assigneeAgentId,
+      run,
+      cancelledRunId,
+    });
   });
 
   router.get("/issues/:id/comments", async (req, res) => {
