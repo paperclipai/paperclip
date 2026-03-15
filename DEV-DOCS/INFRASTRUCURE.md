@@ -1,6 +1,6 @@
 # Infrastructure
 
-Last updated: 2026-03-11
+Last updated: 2026-03-15
 
 ## 1. Purpose
 
@@ -501,10 +501,22 @@ Local adapters run tools directly on the host machine and can support:
 - timer ticks
 - on-demand wakes
 - workspace resolution
+- lockfile-aware checkout bootstrap for repo-backed local runs
 - run creation and status changes
 - adapter invocation
+- structured run-event persistence
+- review-submission metadata persistence onto active checkout rows
 - log/event publishing
 - orphan-run reaping
+
+### Repo-backed local execution contract
+
+When the resolved working directory is an isolated repo checkout:
+
+- Paperclip detects the checkout package manager from the lockfile before invoking the local adapter
+- bootstrap state is cached on `workspace_checkouts.metadata.workspaceBootstrap`
+- local adapters receive checkout env including cwd, checkout id, branch, repo URL, and repo ref
+- review handoff metadata from issue updates persists back onto the active checkout row so the reviewer can recover the exact branch/PR context
 
 ## 12. Realtime Infrastructure
 

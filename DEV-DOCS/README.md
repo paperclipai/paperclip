@@ -2,7 +2,7 @@
 
 This folder captures the **current local development state** of the Paperclip repository as verified in this workspace.
 
-Last updated: 2026-03-13 (America/New_York)
+Last updated: 2026-03-15 (America/New_York)
 
 ## Scope
 
@@ -10,7 +10,7 @@ Last updated: 2026-03-13 (America/New_York)
 - Branch maintenance status (local only)
 - Verified repository structure
 - Recent merged product/runtime changes
-- Current QoL adoption work around issue assignment, new-issue dialog flow, and operator-facing log privacy
+- Current QoL adoption work around issue assignment, new-issue dialog flow, operator-facing log privacy, and repo-backed review handoff observability
 - Build/test/dev command references
 - Environment and architecture notes
 
@@ -65,4 +65,4 @@ If you only read two files before continuing work on this branch:
 If the task is about safe simplification or codebase cleanup, read `DEV-DOCS/CONDENSE-AUDIT.md` immediately after those two files.
 If the task is about runtime topology, deployment, or subsystem interactions, read `DEV-DOCS/INFRASTRUCURE.md` and `DEV-DOCS/MAP.md`.
 If the task is about upstream parity or selective backports, read `DEV-DOCS/UPSTREAM-COMPARISON-2026-03-11.md`.
-If the task is about assignee UX, create-issue behavior, or transcript privacy, read `DEV-DOCS/work-log.md` for the latest change notes.
+If the task is about assignee UX, repo-backed review handoff, create-issue behavior, or transcript privacy, read `DEV-DOCS/work-log.md` and `DEV-DOCS/recent-changes.md` for the latest change notes.

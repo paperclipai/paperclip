@@ -1,20 +1,76 @@
 # Recent Changes Snapshot
 
-Date: 2026-03-14
+Date: 2026-03-15
 
 This file explains the current state of the repo in product and operational terms so a human can look at the running app and understand what is actually new.
 
-## March 14 follow-up hardening
+## March 14 development-window follow-up
 
-No new product surface landed in the reviewed March 14 integration window. The concrete delta on `origin/development` is correctness hardening and regression coverage for already-shipped operator workflows.
+The reviewed window on `origin/development` changed repo-backed execution behavior, review handoff metadata, and one agent-setup flow. It did not add a new top-level board destination or API family.
 
-Reviewed commits:
+Reviewed merged commits:
 
-1. `494b867` `fix redaction home-path prefix collision`
-2. `2f6bec2` `fix(redaction): redact delimited home-dir roots`
-3. `7e08582` `Add issues list assignee filter tests`
+1. `1abd1e0` `Implement repo review handoff and run observability`
+2. `04e3a55` `Fix OpenClaw gateway agent creation config`
+3. `494b867` `fix redaction home-path prefix collision`
+4. `2f6bec2` `fix(redaction): redact delimited home-dir roots`
+5. `7e08582` `Add issues list assignee filter tests`
+
+Excluded from this snapshot:
+
+- `1b425441` `feat(ui): ship cyberpunk operator console overhaul`
+  - present only on `origin/blu-26-cyberpunk-ui-overhaul`
+  - not merged into `origin/development` as of this review
+
+## Repo-backed execution and review handoff
 
 Actual code touchpoints:
+
+- `server/src/services/heartbeat.ts`
+- `server/src/routes/issues.ts`
+- `server/src/services/run-transcript-events.ts`
+- `packages/adapter-utils/src/server-utils.ts`
+- `packages/shared/src/types/issue.ts`
+- `packages/shared/src/validators/issue.ts`
+- `packages/db/src/schema/workspace_checkouts.ts`
+- `ui/src/lib/run-events.ts`
+- `ui/src/pages/AgentDetail.tsx`
+
+What changed in practice:
+
+- repo-backed issue checkouts now bootstrap Node dependencies before local adapter execution instead of immediately failing later with missing-module noise
+- bootstrap is lockfile-aware and records its result under `workspace_checkouts.metadata.workspaceBootstrap`
+- local adapters now receive checkout-scoped env with the resolved checkout id, branch, repo URL, and repo ref
+- when an assignee agent hands repo-backed work back as `in_review` or `done`, the issue update must include `reviewSubmission` metadata with the branch, head commit SHA, and PR URL
+- Paperclip persists that PR metadata onto the active checkout row and appends it to the handoff comment so the next reviewer has the branch and PR context inline
+- supported local adapters now emit structured `heartbeat_run_events`, and the operator transcript/events UI prefers those structured events over raw-log heuristics when available
+
+What did not change:
+
+- no new company-scoped top-level route was introduced
+- the review handoff rides the existing issue update flow rather than a separate review API
+
+## OpenClaw gateway create flow
+
+Actual code touchpoints:
+
+- `ui/src/adapters/openclaw-gateway/config-fields.tsx`
+- `packages/adapters/openclaw-gateway/src/ui/build-config.ts`
+- `ui/src/components/agent-config-defaults.ts`
+- `packages/adapter-utils/src/types.ts`
+
+What changed in practice:
+
+- the `openclaw_gateway` create flow no longer hides required gateway fields behind edit-only behavior
+- operators can now set the gateway token, Paperclip API URL override, role, scopes, wait timeout, and session strategy/session key when creating a new agent
+- the create-form serializer now turns the token into the header shape the server expects: `headers.x-openclaw-token`
+
+What did not change:
+
+- no new adapter type landed
+- the server-side runtime contract for `openclaw_gateway` is unchanged; this was a create-form correctness fix
+
+## March 14 correctness hardening
 
 - `server/src/redaction.ts`
 - `server/src/__tests__/redaction.test.ts`
@@ -32,7 +88,7 @@ What did not change:
 
 - no new API surface
 - no new route
-- no new product destination in the board UI
+- no new product destination in the board UI from these hardening commits alone
 
 ## Post-merge CI update
 

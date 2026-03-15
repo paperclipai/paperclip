@@ -15,6 +15,32 @@
   - `pnpm test:run`
   - `pnpm build`
 
+### Session: repo review handoff and structured run observability
+
+- Added lockfile-aware workspace bootstrap in `server/src/services/heartbeat.ts` for repo-backed issue checkouts:
+  - detects `pnpm`, `npm`, `yarn`, and `bun` lockfiles
+  - skips reinstall when the saved bootstrap metadata still matches the checkout
+  - fails early with a bootstrap error when the required package manager is missing or install fails
+- Extended the repo-backed local-adapter runtime contract so execution now receives checkout-specific env such as:
+  - `PAPERCLIP_WORKSPACE_CWD`
+  - `PAPERCLIP_WORKSPACE_CHECKOUT_ID`
+  - `PAPERCLIP_WORKSPACE_BRANCH`
+  - `PAPERCLIP_WORKSPACE_REPO_URL`
+  - `PAPERCLIP_WORKSPACE_REPO_REF`
+- Added `reviewSubmission` to issue update contracts for repo-backed handoffs to `in_review` / `done`:
+  - active checkouts now require branch name, head commit SHA, and PR URL when the assignee agent hands work back
+  - `workspace_checkouts` now persist branch/remote/PR metadata plus `submittedForReviewAt`
+  - handoff comments append the review-submission details for the human creator, project lead, or manager reviewer
+- Structured run observability is now first-class for supported local adapters:
+  - machine-readable stdout now persists as `heartbeat_run_events`
+  - agent detail prefers those structured events for transcripts and the Events panel while older runs still fall back to raw log parsing
+- Added focused coverage in:
+  - `server/src/__tests__/heartbeat-bootstrap.test.ts`
+  - `server/src/__tests__/issues-routes.test.ts`
+  - `server/src/__tests__/run-transcript-events.test.ts`
+  - `ui/src/lib/run-events.test.ts`
+  - `ui/src/components/planning-mode-ui.test.tsx`
+
 ### Session: follow-up hardening for redaction boundaries and issues-list assignee helpers
 
 - Reviewed the 2026-03-14 `origin/development` commits that changed shipped behavior or regression coverage:

@@ -1,6 +1,6 @@
 # System Map
 
-Last updated: 2026-03-11
+Last updated: 2026-03-15
 
 ## 1. Purpose
 
@@ -162,14 +162,18 @@ sequenceDiagram
    - project primary workspace
    - task session
    - fallback agent home
-4. The adapter executes and streams status or logs when supported.
-5. The service persists:
+4. If the working directory is an isolated repo checkout with `package.json`, the service bootstraps dependencies with the lockfile-matched package manager before local adapter execution.
+5. The adapter executes and streams status or logs when supported.
+6. For supported local adapters, machine-readable stdout is normalized into structured `heartbeat_run_events`.
+7. If the assignee agent hands repo-backed work back as `in_review` or `done`, the issue update includes `reviewSubmission` so the checkout row and handoff comment keep the branch/PR context.
+8. The service persists:
    - run rows
    - runtime state
    - task session state
    - run events
-6. Live events notify the UI.
-7. The operator sees run activity in issue detail, agent detail, and dashboard surfaces.
+   - checkout bootstrap and review-submission metadata
+9. Live events notify the UI.
+10. The operator sees run activity in issue detail, agent detail, and dashboard surfaces.
 
 ## 8. Records and Briefings Map
 

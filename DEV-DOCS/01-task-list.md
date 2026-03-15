@@ -1,6 +1,6 @@
 # Task List
 
-Last updated: 2026-03-14
+Last updated: 2026-03-15
 
 ## Done
 
@@ -73,6 +73,16 @@ Last updated: 2026-03-14
   - PR verify on `development`
   - promotion verify on `master`
   - lockfile refresh bot on `development`
+- Add repo-backed execution handoff and observability:
+  - lockfile-aware checkout bootstrap before local adapter execution
+  - checkout-scoped `PAPERCLIP_WORKSPACE_*` env for local adapters
+  - required `reviewSubmission` metadata when repo-backed agents hand work back for review
+  - structured local-adapter run events in the agent transcript/events UI
+- Fix the `openclaw_gateway` create flow so new-agent setup exposes and serializes the full gateway configuration:
+  - auth token header
+  - Paperclip API URL override
+  - role and scopes
+  - wait timeout and session strategy/session key
 - Backfill follow-up coverage and hardening for the 2026-03-14 integration fixes:
   - redaction edge cases around home-dir prefix collisions and punctuation-delimited roots
   - reusable issues-list assignee filter/group/default helpers with focused tests
@@ -100,6 +110,8 @@ Last updated: 2026-03-14
   - roadmap list/detail flows
   - company settings planning mode controls
   - agent create/edit planning mode controls
+  - repo-backed issue handoff to `in_review` / `done` with PR metadata
+  - structured run transcript/events rendering in agent detail
 - Tighten checkout lifecycle semantics:
   - release/archive rules
   - cleanup policy

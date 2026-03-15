@@ -1,6 +1,6 @@
 # Architecture
 
-Last updated: 2026-03-11
+Last updated: 2026-03-15
 
 ## 1. System shape
 
@@ -57,6 +57,12 @@ Recent additions relevant to this change set:
 - `goals.guidance`
 - `goals.planningHorizon`
 - `goals.sortOrder`
+- `workspace_checkouts.headCommitSha`
+- `workspace_checkouts.remoteBranchName`
+- `workspace_checkouts.pullRequestUrl`
+- `workspace_checkouts.pullRequestNumber`
+- `workspace_checkouts.pullRequestTitle`
+- `workspace_checkouts.submittedForReviewAt`
 
 ### `server`
 
@@ -159,8 +165,12 @@ Issues are the atomic execution unit. Current invariants still matter:
 - checkout-aware execution
 - activity logging on mutations
 - approval links tracked through `issue_approvals`
+- repo-backed review handoffs to `in_review` / `done` require `reviewSubmission` whenever the assignee agent still owns an active checkout
 
-For this change set, issue creation also gained optional `approvalId` input so approved manager plans can be attached and enforced at creation time.
+For the current code state:
+
+- issue creation accepts optional `approvalId` so approved manager plans can be attached and enforced at creation time
+- issue handoff updates can persist branch, commit, and PR metadata for repo-backed review flows
 
 ### Approval
 
@@ -284,8 +294,16 @@ Relevant supporting systems:
 - wakeup queueing through `heartbeat.wakeup(...)`
 - runtime session persistence
 - checkout-aware workspace resolution
+- lockfile-aware checkout bootstrap before local adapter execution
 - adapter execution and environment testing
+- structured run-event persistence for supported local adapters
 - cost and activity recording
+
+Repo-backed execution now has an explicit handoff contract:
+
+- local adapters receive checkout env including cwd, checkout id, branch, repo URL, and repo ref
+- issue updates to `in_review` / `done` can carry `reviewSubmission`
+- the active checkout row stores branch/commit/PR metadata when the assignee agent submits work for review
 
 Approval completion feeds back into orchestration:
 
@@ -323,6 +341,10 @@ This change set added coverage for:
 - manager planning mode resolution
 - approval-required issue creation enforcement
 - manager-plan approval wakeup flow
+- heartbeat checkout bootstrap behavior
+- repo-backed review-submission persistence
+- structured run-event normalization and transcript consumption
+- OpenClaw gateway create-form config serialization
 - roadmap route helpers
 - system health UI rendering
 - manager-plan approval rendering
