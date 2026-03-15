@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { Navigate, Outlet, Route, Routes, useLocation, useParams } from "@/lib/router";
+import { Link, Navigate, Outlet, Route, Routes, useLocation, useParams } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Layout } from "./components/Layout";
@@ -38,6 +38,35 @@ import { queryKeys } from "./lib/queryKeys";
 import { useCompany } from "./context/CompanyContext";
 import { useDialog } from "./context/DialogContext";
 import { loadLastInboxTab } from "./lib/inbox";
+
+const PAPERCLIP_DOCS_URL = "https://github.com/paperclipai/paperclip#readme";
+
+function DocsRedirectPage() {
+  useEffect(() => {
+    window.location.replace(PAPERCLIP_DOCS_URL);
+  }, []);
+
+  return (
+    <div className="mx-auto max-w-xl py-10">
+      <div className="rounded-lg border border-border bg-card p-6">
+        <h1 className="text-xl font-semibold">Opening documentation…</h1>
+        <p className="mt-2 text-sm text-muted-foreground">
+          If you are not redirected automatically, open the Paperclip docs manually.
+        </p>
+        <div className="mt-4 flex gap-2">
+          <Button asChild>
+            <a href={PAPERCLIP_DOCS_URL} target="_blank" rel="noreferrer noopener">
+              Open docs
+            </a>
+          </Button>
+          <Button variant="outline" asChild>
+            <Link to="/">Back to app</Link>
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function BootstrapPendingPage({ hasActiveInvite = false }: { hasActiveInvite?: boolean }) {
   return (
@@ -296,6 +325,7 @@ export function App() {
         <Route path="auth" element={<AuthPage />} />
         <Route path="board-claim/:token" element={<BoardClaimPage />} />
         <Route path="invite/:token" element={<InviteLandingPage />} />
+        <Route path="docs" element={<DocsRedirectPage />} />
 
         <Route element={<CloudAccessGate />}>
           <Route index element={<CompanyRootRedirect />} />
