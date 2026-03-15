@@ -303,6 +303,21 @@ export function agentService(db: Db) {
       .then((rows) => rows[0] ?? null);
     const normalizedUpdated = updated ? normalizeAgentRow(updated) : null;
 
+    if (normalizedUpdated && normalizedUpdated.budgetMonthlyCents > 0) {
+      const shouldPause =
+        normalizedUpdated.spentMonthlyCents >= normalizedUpdated.budgetMonthlyCents &&
+        normalizedUpdated.status !== "paused" &&
+        normalizedUpdated.status !== "terminated";
+
+      if (shouldPause) {
+        await db
+          .update(agents)
+          .set({ status: "paused", updatedAt: new Date() })
+          .where(eq(agents.id, id));
+        normalizedUpdated.status = "paused";
+      }
+    }
+
     if (normalizedUpdated && shouldRecordRevision && beforeConfig) {
       const afterConfig = buildConfigSnapshot(normalizedUpdated);
       const changedKeys = diffConfigSnapshot(beforeConfig, afterConfig);

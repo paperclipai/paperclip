@@ -7,6 +7,7 @@ import {
   agentRuntimeState,
   agentTaskSessions,
   agentWakeupRequests,
+  companies,
   heartbeatRunEvents,
   heartbeatRuns,
   issues,
@@ -2232,6 +2233,73 @@ export function heartbeatService(db: Db) {
       agent.status === "pending_approval"
     ) {
       throw conflict("Agent is not invokable in its current state", { status: agent.status });
+    }
+
+    const budgetCheck = await db.transaction(async (tx) => {
+      const lockedAgent = await tx
+        .select()
+        .from(agents)
+        .where(eq(agents.id, agentId))
+        .for("update")
+        .execute()
+        .then((rows) => rows[0] ?? null);
+
+      if (!lockedAgent) return { agentExceeded: false, companyExceeded: false, company: null, lockedAgent: null };
+
+      const agentExceeded =
+        lockedAgent.budgetMonthlyCents > 0 &&
+        lockedAgent.spentMonthlyCents >= lockedAgent.budgetMonthlyCents;
+
+      const company = await tx
+        .select()
+        .from(companies)
+        .where(eq(companies.id, lockedAgent.companyId))
+        .for("update")
+        .execute()
+        .then((rows) => rows[0] ?? null);
+
+      const companyExceeded =
+        company &&
+        company.budgetMonthlyCents > 0 &&
+        company.spentMonthlyCents >= company.budgetMonthlyCents;
+
+      return { agentExceeded, companyExceeded, company, lockedAgent };
+    });
+
+    if (budgetCheck.agentExceeded) {
+      logger.warn(
+        {
+          agentId,
+          companyId: budgetCheck.lockedAgent?.companyId,
+          budgetCents: budgetCheck.lockedAgent?.budgetMonthlyCents,
+          spentCents: budgetCheck.lockedAgent?.spentMonthlyCents,
+          source,
+          triggerDetail,
+        },
+        "Agent wakeup rejected: exceeded monthly budget",
+      );
+      throw conflict("Agent has exceeded its monthly budget", {
+        budgetCents: budgetCheck.lockedAgent!.budgetMonthlyCents,
+        spentCents: budgetCheck.lockedAgent!.spentMonthlyCents,
+      });
+    }
+
+    if (budgetCheck.companyExceeded) {
+      logger.warn(
+        {
+          agentId,
+          companyId: budgetCheck.company!.id,
+          budgetCents: budgetCheck.company!.budgetMonthlyCents,
+          spentCents: budgetCheck.company!.spentMonthlyCents,
+          source,
+          triggerDetail,
+        },
+        "Agent wakeup rejected: company exceeded monthly budget",
+      );
+      throw conflict("Company has exceeded its monthly budget", {
+        budgetCents: budgetCheck.company!.budgetMonthlyCents,
+        spentCents: budgetCheck.company!.spentMonthlyCents,
+      });
     }
 
     const policy = parseHeartbeatPolicy(agent);
