@@ -2192,7 +2192,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
       {(run.status === "failed" || run.status === "timed_out") && (
         <Collapsible open={open} onOpenChange={setOpen}>
-          <CollapsibleTrigger className={cn("group w-full flex items-center gap-2 px-3 py-2 text-xs fontgroup flex items-center gap-2 px-3 py-2 text-xs font-medium text-red-700 dark:text-red-300 bg-red-100 dark:bg-red-950/40 cursor-pointer rounded-t-lg border-x border-t border-red-300 dark:border-red-500/30", !open && "border-b")}>
+          <CollapsibleTrigger className={cn("group w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-red-700 dark:text-red-300 bg-red-100 dark:bg-red-950/40 cursor-pointer rounded-t-lg border-x border-t border-red-300 dark:border-red-500/30", !open && "border-b")}>
             <ChevronRight
               className={cn(
                 "h-3 w-3 text-red-700 dark:text-red-300 transition-transform",
