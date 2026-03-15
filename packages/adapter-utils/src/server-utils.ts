@@ -158,7 +158,7 @@ export function defaultPathForPlatform() {
 }
 
 function windowsPathExts(env: NodeJS.ProcessEnv): string[] {
-  return (env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean);
+  return (env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM;.PS1").split(";").filter(Boolean);
 }
 
 async function pathExists(candidate: string) {
@@ -452,7 +452,7 @@ export async function runChildProcess(
         const child = spawn(target.command, target.args, {
           cwd: opts.cwd,
           env: mergedEnv,
-          shell: false,
+          shell: process.platform === "win32",
           stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
         }) as ChildProcessWithEvents;
 
