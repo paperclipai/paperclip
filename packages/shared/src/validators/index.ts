@@ -99,8 +99,12 @@ export {
 export {
   chatMessageRoleSchema,
   addChatMessageSchema,
+  createChatSessionSchema,
+  updateChatSessionSchema,
   type ChatMessageRole,
   type AddChatMessage,
+  type CreateChatSession,
+  type UpdateChatSession,
 } from "./chat.js";
 
 export {

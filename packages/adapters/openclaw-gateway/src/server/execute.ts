@@ -18,6 +18,7 @@ type WakePayload = {
   wakeReason: string | null;
   wakeCommentId: string | null;
   chatMessageId: string | null;
+  chatSessionId: string | null;
   approvalId: string | null;
   approvalStatus: string | null;
   issueIds: string[];
@@ -293,6 +294,7 @@ function buildWakePayload(ctx: AdapterExecutionContext): WakePayload {
     wakeReason: nonEmpty(context.wakeReason),
     wakeCommentId: nonEmpty(context.wakeCommentId) ?? nonEmpty(context.commentId),
     chatMessageId: nonEmpty(context.chatMessageId),
+    chatSessionId: nonEmpty(context.chatSessionId),
     approvalId: nonEmpty(context.approvalId),
     approvalStatus: nonEmpty(context.approvalStatus),
     issueIds: Array.isArray(context.issueIds)
@@ -331,6 +333,9 @@ function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: Wak
   if (wakePayload.chatMessageId) {
     paperclipEnv.PAPERCLIP_CHAT_MESSAGE_ID = wakePayload.chatMessageId;
   }
+  if (wakePayload.chatSessionId) {
+    paperclipEnv.PAPERCLIP_CHAT_SESSION_ID = wakePayload.chatSessionId;
+  }
   if (wakePayload.approvalId) paperclipEnv.PAPERCLIP_APPROVAL_ID = wakePayload.approvalId;
   if (wakePayload.approvalStatus) paperclipEnv.PAPERCLIP_APPROVAL_STATUS = wakePayload.approvalStatus;
   if (wakePayload.issueIds.length > 0) {
@@ -351,6 +356,7 @@ function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string
     "PAPERCLIP_WAKE_REASON",
     "PAPERCLIP_WAKE_COMMENT_ID",
     "PAPERCLIP_CHAT_MESSAGE_ID",
+    "PAPERCLIP_CHAT_SESSION_ID",
     "PAPERCLIP_APPROVAL_ID",
     "PAPERCLIP_APPROVAL_STATUS",
     "PAPERCLIP_LINKED_ISSUE_IDS",
@@ -450,6 +456,8 @@ function buildStandardPaperclipPayload(
     issueIds: wakePayload.issueIds,
     wakeReason: wakePayload.wakeReason,
     wakeCommentId: wakePayload.wakeCommentId,
+    chatMessageId: wakePayload.chatMessageId,
+    chatSessionId: wakePayload.chatSessionId,
     approvalId: wakePayload.approvalId,
     approvalStatus: wakePayload.approvalStatus,
     apiUrl: paperclipEnv.PAPERCLIP_API_URL ?? null,
@@ -466,6 +474,10 @@ function buildStandardPaperclipPayload(
       ...configuredWorkspaceRuntime,
       ...(runtimeServiceIntents.length > 0 ? { services: runtimeServiceIntents } : {}),
     };
+  }
+  const paperclipChat = asRecord(ctx.context.paperclipChat);
+  if (paperclipChat) {
+    standardPaperclip.chat = paperclipChat;
   }
 
   return {
@@ -1060,6 +1072,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const wakePayload = buildWakePayload(ctx);
   const paperclipEnv = buildPaperclipEnvForWake(ctx, wakePayload);
   const wakeText = buildWakeText(wakePayload, paperclipEnv);
+  const paperclipChat = asRecord(ctx.context.paperclipChat);
+  const chatMode = nonEmpty(paperclipChat?.mode);
+  const chatPrompt = nonEmpty(paperclipChat?.promptText);
 
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
   const configuredSessionKey = nonEmpty(ctx.config.sessionKey);
@@ -1071,7 +1086,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
 
   const templateMessage = nonEmpty(payloadTemplate.message) ?? nonEmpty(payloadTemplate.text);
-  const message = templateMessage ? appendWakeText(templateMessage, wakeText) : wakeText;
+  const chatPreface = chatMode === "interactive_chat" && chatPrompt ? `${chatPrompt}\n\n` : "";
+  const baseMessage = templateMessage ? appendWakeText(templateMessage, wakeText) : wakeText;
+  const message = `${chatPreface}${baseMessage}`;
   const paperclipPayload = buildStandardPaperclipPayload(ctx, wakePayload, paperclipEnv, payloadTemplate);
 
   const agentParams: Record<string, unknown> = {

@@ -45,6 +45,7 @@ export function agentRoutes(db: Db) {
     codex_local: "instructionsFilePath",
     opencode_local: "instructionsFilePath",
     cursor: "instructionsFilePath",
+    pi_local: "instructionsFilePath",
   };
   const KNOWN_INSTRUCTIONS_PATH_KEYS = new Set(["instructionsFilePath", "agentsMdPath"]);
 

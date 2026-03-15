@@ -21,6 +21,7 @@ export { labels } from "./labels.js";
 export { issueLabels } from "./issue_labels.js";
 export { issueApprovals } from "./issue_approvals.js";
 export { issueComments } from "./issue_comments.js";
+export { chatSessions } from "./chat_sessions.js";
 export { chatMessages } from "./chat_messages.js";
 export { issueReadStates } from "./issue_read_states.js";
 export { inboxDismissals } from "./inbox_dismissals.js";

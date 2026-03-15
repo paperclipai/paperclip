@@ -10,6 +10,8 @@ import {
   agentWakeupRequests,
   heartbeatRunEvents,
   heartbeatRuns,
+  chatMessages,
+  chatSessions,
   costEvents,
   issues,
   projects,
@@ -49,6 +51,7 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
+const CHAT_HISTORY_LIMIT = 40;
 
 const summarizedHeartbeatRunResultJson = sql<Record<string, unknown> | null>`
   CASE
@@ -382,6 +385,23 @@ function mergeCoalescedContextSnapshot(
     merged.wakeCommentId = commentId;
   }
   return merged;
+}
+
+function buildChatHistoryText(
+  rows: Array<{
+    role: string;
+    content: string;
+    createdAt: Date;
+  }>,
+) {
+  if (rows.length === 0) return "";
+  return rows
+    .map((row) => {
+      const speaker = row.role === "assistant" ? "Assistant" : "User";
+      return `${speaker}: ${row.content.trim()}`;
+    })
+    .join("\n\n")
+    .trim();
 }
 
 function runTaskKey(run: typeof heartbeatRuns.$inferSelect) {
@@ -1118,6 +1138,127 @@ export function heartbeatService(db: Db) {
     });
   }
 
+  async function enrichChatInvocationContext(input: {
+    agentId: string;
+    companyId: string;
+    context: Record<string, unknown>;
+  }) {
+    const { agentId, companyId, context } = input;
+    const wakeReason = readNonEmptyString(context.wakeReason);
+    if (wakeReason !== "chat_message") {
+      delete context.paperclipChat;
+      return;
+    }
+
+    const chatMessageId = readNonEmptyString(context.chatMessageId);
+    if (!chatMessageId) {
+      context.paperclipChat = {
+        mode: "interactive_chat",
+        sessionId: readNonEmptyString(context.chatSessionId),
+      };
+      return;
+    }
+
+    const sourceMessage = await db
+      .select()
+      .from(chatMessages)
+      .where(
+        and(
+          eq(chatMessages.id, chatMessageId),
+          eq(chatMessages.agentId, agentId),
+          eq(chatMessages.companyId, companyId),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+
+    if (!sourceMessage) {
+      context.paperclipChat = {
+        mode: "interactive_chat",
+        sessionId: readNonEmptyString(context.chatSessionId),
+        messageId: chatMessageId,
+      };
+      return;
+    }
+
+    const sessionId = readNonEmptyString(context.chatSessionId) ?? sourceMessage.chatSessionId;
+    if (sessionId) {
+      context.chatSessionId = sessionId;
+    }
+
+    const session = sessionId
+      ? await db
+          .select()
+          .from(chatSessions)
+          .where(
+            and(
+              eq(chatSessions.id, sessionId),
+              eq(chatSessions.agentId, agentId),
+              eq(chatSessions.companyId, companyId),
+            ),
+          )
+          .then((rows) => rows[0] ?? null)
+      : null;
+
+    const historyDesc = await db
+      .select({
+        id: chatMessages.id,
+        role: chatMessages.role,
+        content: chatMessages.content,
+        createdAt: chatMessages.createdAt,
+      })
+      .from(chatMessages)
+      .where(
+        and(
+          eq(chatMessages.agentId, agentId),
+          eq(chatMessages.companyId, companyId),
+          sessionId ? eq(chatMessages.chatSessionId, sessionId) : eq(chatMessages.id, sourceMessage.id),
+        ),
+      )
+      .orderBy(desc(chatMessages.createdAt))
+      .limit(CHAT_HISTORY_LIMIT);
+    const history = [...historyDesc].reverse();
+    const historyText = buildChatHistoryText(history);
+    const latestUserEntry =
+      [...history].reverse().find((item) => item.role === "user") ??
+      (sourceMessage.role === "user"
+        ? { role: sourceMessage.role, content: sourceMessage.content, createdAt: sourceMessage.createdAt }
+        : null);
+    const latestUserMessage = latestUserEntry?.content?.trim() ?? sourceMessage.content;
+
+    context.paperclipChat = {
+      mode: "interactive_chat",
+      messageId: sourceMessage.id,
+      sessionId,
+      taskKey: readNonEmptyString(context.taskKey),
+      title: session?.title ?? null,
+      latestUserMessage,
+      currentMessage: {
+        id: sourceMessage.id,
+        role: sourceMessage.role,
+        content: sourceMessage.content,
+        createdAt: sourceMessage.createdAt.toISOString(),
+      },
+      history: history.map((item) => ({
+        id: item.id,
+        role: item.role,
+        content: item.content,
+        createdAt: item.createdAt.toISOString(),
+      })),
+      historyText,
+      promptText: [
+        "This invocation is an interactive chat reply.",
+        "Reply directly to the latest user message.",
+        "Respect agent instructions and Paperclip operational rules.",
+        "",
+        "Conversation history (oldest to newest):",
+        historyText || "(no prior messages)",
+        "",
+        "Latest user message:",
+        latestUserMessage,
+      ].join("\n"),
+    };
+  }
+
   async function executeRun(runId: string) {
     let run = await getRun(runId);
     if (!run) return;
@@ -1150,6 +1291,11 @@ export function heartbeatService(db: Db) {
 
     const runtime = await ensureRuntimeState(agent);
     const context = parseObject(run.contextSnapshot);
+    await enrichChatInvocationContext({
+      agentId: agent.id,
+      companyId: agent.companyId,
+      context,
+    });
     const taskKey = deriveTaskKey(context, null);
     const sessionCodec = getAdapterSessionCodec(agent.adapterType);
     const issueId = readNonEmptyString(context.issueId);

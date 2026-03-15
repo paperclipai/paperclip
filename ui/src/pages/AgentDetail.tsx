@@ -26,7 +26,7 @@ import { EntityRow } from "../components/EntityRow";
 import { Identity } from "../components/Identity";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { ScrollToBottom } from "../components/ScrollToBottom";
-import { AgentChatTab } from "../components/AgentChatTab";
+import { AgentChatSessionTab } from "../components/AgentChatSessionTab";
 import { formatCents, formatDate, relativeTime, formatTokens } from "../lib/utils";
 import { cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
@@ -674,7 +674,7 @@ export function AgentDetail() {
       )}
 
       {activeView === "chat" && (
-        <AgentChatTab
+        <AgentChatSessionTab
           agentId={agent.id}
           adapterType={agent.adapterType}
           agentName={agent.name}

@@ -127,6 +127,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     typeof context.chatMessageId === "string" && context.chatMessageId.trim().length > 0
       ? context.chatMessageId.trim()
       : null;
+  const chatSessionId =
+    typeof context.chatSessionId === "string" && context.chatSessionId.trim().length > 0
+      ? context.chatSessionId.trim()
+      : null;
   const approvalId =
     typeof context.approvalId === "string" && context.approvalId.trim().length > 0
       ? context.approvalId.trim()
@@ -142,6 +146,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (wakeReason) injectedEnv.PAPERCLIP_WAKE_REASON = wakeReason;
   if (wakeCommentId) injectedEnv.PAPERCLIP_WAKE_COMMENT_ID = wakeCommentId;
   if (chatMessageId) injectedEnv.PAPERCLIP_CHAT_MESSAGE_ID = chatMessageId;
+  if (chatSessionId) injectedEnv.PAPERCLIP_CHAT_SESSION_ID = chatSessionId;
   if (approvalId) injectedEnv.PAPERCLIP_APPROVAL_ID = approvalId;
   if (approvalStatus) injectedEnv.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
   if (linkedIssueIds.length > 0) injectedEnv.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
@@ -243,7 +248,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     run: { id: runId, source: "on_demand" },
     context,
   });
-  const prompt = `${instructionsPrefix}${renderedPrompt}`;
+  const paperclipChat = parseObject(context.paperclipChat);
+  const chatMode = asString(paperclipChat.mode, "");
+  const chatPrompt = asString(paperclipChat.promptText, "").trim();
+  const chatPrefix = chatMode === "interactive_chat" && chatPrompt ? `${chatPrompt}\n\n` : "";
+  const prompt = `${instructionsPrefix}${chatPrefix}${renderedPrompt}`;
 
   const buildArgs = (resumeSessionId: string | null) => {
     const args = ["run", "--format", "json"];

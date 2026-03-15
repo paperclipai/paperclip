@@ -1,3 +1,5 @@
+export { AgentChatSessionTab as AgentChatTab } from "./AgentChatSessionTab";
+/*
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ChatMessage, CreateChatMessageResponse } from "@paperclipai/shared";
@@ -324,3 +326,4 @@ export function AgentChatTab({
     </div>
   );
 }
+*/
