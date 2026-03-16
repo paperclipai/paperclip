@@ -9,9 +9,7 @@ One file. Every session. Claude speaks your domain's language automatically.
 
 ## The Problem
 
-Claude defaults to generic naming: "user" instead of "subscriber", "transaction" instead of "settlement", "order" instead of "purchase order". Without a domain glossary, you correct the same terms every session — and the corrections don't stick. The arXiv study (Dec 2025) quantified it: 65% of AI outputs contain terminology inconsistencies without glossaries. METR puts the cost at 19% slower task completion.
-
-The fix: GLOSSARY.md + an `@` reference in CLAUDE.md + a PostToolUse hook. Claude reads your terms before every session and gets flagged when it drifts.
+Claude defaults to generic naming: "user" instead of "subscriber", "transaction" instead of "settlement", "order" instead of "purchase order". Without a domain glossary, you correct the same terms every session — and the corrections don't stick.
 
 ## Quick Setup (3 Steps)
 
