@@ -13,7 +13,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { CheckCircle2, ChevronRight, Sparkles } from "lucide-react";
-import type { ApprovalComment } from "@paperclipai/shared";
+import type { ApprovalComment, ApprovalDecision } from "@paperclipai/shared";
 import { MarkdownBody } from "../components/MarkdownBody";
 
 export function ApprovalDetail() {
@@ -44,6 +44,14 @@ export function ApprovalDetail() {
     queryKey: queryKeys.approvals.issues(approvalId!),
     queryFn: () => approvalsApi.listIssues(approvalId!),
     enabled: !!approvalId,
+  });
+
+  const isMultiApproval = (approval?.requiredApprovalCount ?? 1) > 1;
+
+  const { data: decisions } = useQuery({
+    queryKey: [...queryKeys.approvals.detail(approvalId!), "decisions"],
+    queryFn: () => approvalsApi.listDecisions(approvalId!),
+    enabled: !!approvalId && isMultiApproval,
   });
 
   const { data: agents } = useQuery({
@@ -86,10 +94,13 @@ export function ApprovalDetail() {
 
   const approveMutation = useMutation({
     mutationFn: () => approvalsApi.approve(approvalId!),
-    onSuccess: () => {
+    onSuccess: (result) => {
       setError(null);
       refresh();
-      navigate(`/approvals/${approvalId}?resolved=approved`, { replace: true });
+      // Only navigate to resolved view if the approval was fully resolved
+      if (result.votesReceived !== undefined && result.votesRequired !== undefined && result.votesReceived >= result.votesRequired) {
+        navigate(`/approvals/${approvalId}?resolved=approved`, { replace: true });
+      }
     },
     onError: (err) => setError(err instanceof Error ? err.message : "Approve failed"),
   });
@@ -169,6 +180,9 @@ export function ApprovalDetail() {
             to: "/approvals",
           };
 
+  const approvedVotes = (decisions ?? []).filter((d) => d.decision === "approved");
+  const approvedCount = approvedVotes.length;
+
   return (
     <div className="space-y-6 max-w-3xl">
       {showApprovedBanner && (
@@ -208,6 +222,40 @@ export function ApprovalDetail() {
           </div>
           <StatusBadge status={approval.status} />
         </div>
+
+        {/* Multi-approval progress */}
+        {isMultiApproval && (
+          <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-xs font-medium">
+                Approvals: {approvedCount} of {approval.requiredApprovalCount} required
+              </span>
+              {approval.status === "approved" && (
+                <span className="text-xs text-green-600 dark:text-green-400 font-medium">Quorum reached</span>
+              )}
+            </div>
+            <div className="w-full bg-muted rounded-full h-1.5">
+              <div
+                className="bg-green-600 dark:bg-green-500 h-1.5 rounded-full transition-all"
+                style={{ width: `${Math.min(100, (approvedCount / approval.requiredApprovalCount) * 100)}%` }}
+              />
+            </div>
+            {approvedVotes.length > 0 && (
+              <div className="mt-2 space-y-1">
+                {approvedVotes.map((vote: ApprovalDecision) => (
+                  <div key={vote.id} className="flex items-center justify-between text-xs">
+                    <span className="text-muted-foreground">
+                      <Identity name={vote.userId === "board" ? "Board" : vote.userId.slice(0, 8)} size="sm" className="inline-flex" />
+                      {vote.note && <span className="ml-1 italic">— {vote.note}</span>}
+                    </span>
+                    <span className="text-muted-foreground">{new Date(vote.createdAt).toLocaleString()}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="text-sm space-y-1">
           {approval.requestedByAgentId && (
             <div className="flex items-center gap-2">
@@ -268,7 +316,9 @@ export function ApprovalDetail() {
                 onClick={() => approveMutation.mutate()}
                 disabled={approveMutation.isPending}
               >
-                Approve
+                {isMultiApproval
+                  ? `Add Approval (${approvedCount}/${approval.requiredApprovalCount})`
+                  : "Approve"}
               </Button>
               <Button
                 variant="destructive"
@@ -353,7 +403,7 @@ export function ApprovalDetail() {
             onClick={() => addCommentMutation.mutate()}
             disabled={!commentBody.trim() || addCommentMutation.isPending}
           >
-            {addCommentMutation.isPending ? "Posting…" : "Post comment"}
+            {addCommentMutation.isPending ? "Posting..." : "Post comment"}
           </Button>
         </div>
       </div>

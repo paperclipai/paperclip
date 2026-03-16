@@ -24,9 +24,10 @@ type ApprovalRecord = {
   status: string;
   payload: Record<string, unknown>;
   requestedByAgentId: string | null;
+  requiredApprovalCount: number;
 };
 
-function createApproval(status: string): ApprovalRecord {
+function createApproval(status: string, requiredApprovalCount = 1): ApprovalRecord {
   return {
     id: "approval-1",
     companyId: "company-1",
@@ -34,10 +35,11 @@ function createApproval(status: string): ApprovalRecord {
     status,
     payload: { agentId: "agent-1" },
     requestedByAgentId: "requester-1",
+    requiredApprovalCount,
   };
 }
 
-function createDbStub(selectResults: ApprovalRecord[][], updateResults: ApprovalRecord[]) {
+function createDbStub(selectResults: unknown[][], updateResults: ApprovalRecord[]) {
   const pendingSelectResults = [...selectResults];
   const selectWhere = vi.fn(async () => pendingSelectResults.shift() ?? []);
   const from = vi.fn(() => ({ where: selectWhere }));
@@ -48,10 +50,21 @@ function createDbStub(selectResults: ApprovalRecord[][], updateResults: Approval
   const set = vi.fn(() => ({ where: updateWhere }));
   const update = vi.fn(() => ({ set }));
 
+  // insert mock for recordVote
+  const insertReturning = vi.fn(async () => [{ id: "decision-1" }]);
+  const insertValues = vi.fn(() => ({ returning: insertReturning }));
+  const insert = vi.fn(() => ({ values: insertValues }));
+
+  // delete mock for resubmit clearing votes
+  const deleteWhere = vi.fn(async () => []);
+  const deleteFn = vi.fn(() => ({ where: deleteWhere }));
+
   return {
-    db: { select, update },
+    db: { select, update, insert, delete: deleteFn },
     selectWhere,
     returning,
+    insert,
+    insertReturning,
   };
 }
 
@@ -65,8 +78,9 @@ describe("approvalService resolution idempotency", () => {
   });
 
   it("treats repeated approve retries as no-ops after another worker resolves the approval", async () => {
+    // First select: approval is already approved (another worker resolved it)
     const dbStub = createDbStub(
-      [[createApproval("pending")], [createApproval("approved")]],
+      [[createApproval("approved")]],
       [],
     );
 
@@ -80,8 +94,9 @@ describe("approvalService resolution idempotency", () => {
   });
 
   it("treats repeated reject retries as no-ops after another worker resolves the approval", async () => {
+    // First select: approval is already rejected
     const dbStub = createDbStub(
-      [[createApproval("pending")], [createApproval("rejected")]],
+      [[createApproval("rejected")]],
       [],
     );
 
@@ -95,7 +110,13 @@ describe("approvalService resolution idempotency", () => {
 
   it("still performs side effects when the resolution update is newly applied", async () => {
     const approved = createApproval("approved");
-    const dbStub = createDbStub([[createApproval("pending")]], [approved]);
+    // select 1: getExistingApproval in approve() -> pending
+    // select 2: countApprovedVotes -> 1 approved vote (meets quorum of 1)
+    // select 3: getExistingApproval in resolveApproval() -> pending
+    const dbStub = createDbStub(
+      [[createApproval("pending")], [{ count: 1 }], [createApproval("pending")]],
+      [approved],
+    );
 
     const svc = approvalService(dbStub.db as any);
     const result = await svc.approve("approval-1", "board", "ship it");

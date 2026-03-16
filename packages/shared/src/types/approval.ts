@@ -8,11 +8,22 @@ export interface Approval {
   requestedByUserId: string | null;
   status: ApprovalStatus;
   payload: Record<string, unknown>;
+  requiredApprovalCount: number;
   decisionNote: string | null;
   decidedByUserId: string | null;
   decidedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface ApprovalDecision {
+  id: string;
+  approvalId: string;
+  companyId: string;
+  userId: string;
+  decision: "approved" | "rejected";
+  note: string | null;
+  createdAt: Date;
 }
 
 export interface ApprovalComment {

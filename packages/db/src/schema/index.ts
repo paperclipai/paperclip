@@ -33,6 +33,7 @@ export { heartbeatRunEvents } from "./heartbeat_run_events.js";
 export { costEvents } from "./cost_events.js";
 export { approvals } from "./approvals.js";
 export { approvalComments } from "./approval_comments.js";
+export { approvalDecisions } from "./approval_decisions.js";
 export { activityLog } from "./activity_log.js";
 export { companySecrets } from "./company_secrets.js";
 export { companySecretVersions } from "./company_secret_versions.js";

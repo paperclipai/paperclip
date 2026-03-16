@@ -1,5 +1,7 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
+import { companies } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
 import {
   addApprovalCommentSchema,
   createApprovalSchema,
@@ -71,10 +73,19 @@ export function approvalRoutes(db: Db) {
           )
         : approvalInput.payload;
 
+    // Snapshot the company's requiredApprovalCount at creation time
+    const company = await db
+      .select({ requiredApprovalCount: companies.requiredApprovalCount })
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .then((rows) => rows[0] ?? null);
+    const requiredApprovalCount = company?.requiredApprovalCount ?? 1;
+
     const actor = getActorInfo(req);
     const approval = await svc.create(companyId, {
       ...approvalInput,
       payload: normalizedPayload,
+      requiredApprovalCount,
       requestedByUserId: actor.actorType === "user" ? actor.actorId : null,
       requestedByAgentId:
         approvalInput.requestedByAgentId ?? (actor.actorType === "agent" ? actor.actorId : null),
@@ -118,10 +129,22 @@ export function approvalRoutes(db: Db) {
     res.json(issues);
   });
 
+  router.get("/approvals/:id/decisions", async (req, res) => {
+    const id = req.params.id as string;
+    const approval = await svc.getById(id);
+    if (!approval) {
+      res.status(404).json({ error: "Approval not found" });
+      return;
+    }
+    assertCompanyAccess(req, approval.companyId);
+    const decisions = await svc.listDecisions(id);
+    res.json(decisions);
+  });
+
   router.post("/approvals/:id/approve", validate(resolveApprovalSchema), async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
-    const { approval, applied } = await svc.approve(
+    const { approval, applied, votesReceived, votesRequired } = await svc.approve(
       id,
       req.body.decidedByUserId ?? "board",
       req.body.decisionNote,
@@ -208,9 +231,28 @@ export function approvalRoutes(db: Db) {
           });
         }
       }
+    } else if (votesReceived !== undefined) {
+      // Partial vote logged (quorum not yet met)
+      await logActivity(db, {
+        companyId: approval.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "approval.vote_recorded",
+        entityType: "approval",
+        entityId: approval.id,
+        details: {
+          type: approval.type,
+          votesReceived,
+          votesRequired,
+        },
+      });
     }
 
-    res.json(redactApprovalPayload(approval));
+    res.json({
+      ...redactApprovalPayload(approval),
+      votesReceived: votesReceived ?? undefined,
+      votesRequired: votesRequired ?? undefined,
+    });
   });
 
   router.post("/approvals/:id/reject", validate(resolveApprovalSchema), async (req, res) => {

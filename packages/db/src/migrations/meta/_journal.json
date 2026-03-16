@@ -218,6 +218,13 @@
       "when": 1773670925214,
       "tag": "0030_rich_magneto",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1773680599599,
+      "tag": "0031_loud_black_knight",
+      "breakpoints": true
     }
   ]
 }

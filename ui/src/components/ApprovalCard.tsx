@@ -22,6 +22,7 @@ export function ApprovalCard({
   onOpen,
   detailLink,
   isPending,
+  votesReceived,
 }: {
   approval: Approval;
   requesterAgent: Agent | null;
@@ -30,6 +31,7 @@ export function ApprovalCard({
   onOpen?: () => void;
   detailLink?: string;
   isPending: boolean;
+  votesReceived?: number;
 }) {
   const Icon = typeIcon[approval.type] ?? defaultTypeIcon;
   const label = typeLabel[approval.type] ?? approval.type;
@@ -52,6 +54,11 @@ export function ApprovalCard({
         <div className="flex items-center gap-1.5 shrink-0">
           {statusIcon(approval.status)}
           <span className="text-xs text-muted-foreground capitalize">{approval.status}</span>
+          {approval.requiredApprovalCount > 1 && (approval.status === "pending" || approval.status === "revision_requested") && votesReceived !== undefined && (
+            <span className="text-xs font-medium text-muted-foreground bg-muted rounded px-1.5 py-0.5">
+              {votesReceived}/{approval.requiredApprovalCount}
+            </span>
+          )}
           <span className="text-xs text-muted-foreground">· {timeAgo(approval.createdAt)}</span>
         </div>
       </div>

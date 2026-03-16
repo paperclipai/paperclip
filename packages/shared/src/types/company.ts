@@ -10,6 +10,7 @@ export interface Company {
   budgetMonthlyCents: number;
   spentMonthlyCents: number;
   requireBoardApprovalForNewAgents: boolean;
+  requiredApprovalCount: number;
   brandColor: string | null;
   logoAssetId: string | null;
   logoUrl: string | null;

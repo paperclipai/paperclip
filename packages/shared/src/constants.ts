@@ -153,6 +153,9 @@ export const PROJECT_COLORS = [
 export const APPROVAL_TYPES = ["hire_agent", "approve_ceo_strategy"] as const;
 export type ApprovalType = (typeof APPROVAL_TYPES)[number];
 
+export const APPROVAL_DECISION_TYPES = ["approved", "rejected"] as const;
+export type ApprovalDecisionType = (typeof APPROVAL_DECISION_TYPES)[number];
+
 export const APPROVAL_STATUSES = [
   "pending",
   "revision_requested",

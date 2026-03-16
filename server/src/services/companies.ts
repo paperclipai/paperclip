@@ -40,6 +40,7 @@ export function companyService(db: Db) {
     budgetMonthlyCents: companies.budgetMonthlyCents,
     spentMonthlyCents: companies.spentMonthlyCents,
     requireBoardApprovalForNewAgents: companies.requireBoardApprovalForNewAgents,
+    requiredApprovalCount: companies.requiredApprovalCount,
     brandColor: companies.brandColor,
     logoAssetId: companyLogos.assetId,
     createdAt: companies.createdAt,

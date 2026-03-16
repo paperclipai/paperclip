@@ -1,5 +1,10 @@
-import type { Approval, ApprovalComment, Issue } from "@paperclipai/shared";
+import type { Approval, ApprovalComment, ApprovalDecision, Issue } from "@paperclipai/shared";
 import { api } from "./client";
+
+export type ApproveResponse = Approval & {
+  votesReceived?: number;
+  votesRequired?: number;
+};
 
 export const approvalsApi = {
   list: (companyId: string, status?: string) =>
@@ -10,7 +15,7 @@ export const approvalsApi = {
     api.post<Approval>(`/companies/${companyId}/approvals`, data),
   get: (id: string) => api.get<Approval>(`/approvals/${id}`),
   approve: (id: string, decisionNote?: string) =>
-    api.post<Approval>(`/approvals/${id}/approve`, { decisionNote }),
+    api.post<ApproveResponse>(`/approvals/${id}/approve`, { decisionNote }),
   reject: (id: string, decisionNote?: string) =>
     api.post<Approval>(`/approvals/${id}/reject`, { decisionNote }),
   requestRevision: (id: string, decisionNote?: string) =>
@@ -21,4 +26,5 @@ export const approvalsApi = {
   addComment: (id: string, body: string) =>
     api.post<ApprovalComment>(`/approvals/${id}/comments`, { body }),
   listIssues: (id: string) => api.get<Issue[]>(`/approvals/${id}/issues`),
+  listDecisions: (id: string) => api.get<ApprovalDecision[]>(`/approvals/${id}/decisions`),
 };

@@ -38,6 +38,7 @@ function makeApproval(status: Approval["status"]): Approval {
     requestedByUserId: null,
     status,
     payload: {},
+    requiredApprovalCount: 1,
     decisionNote: null,
     decidedByUserId: null,
     decidedAt: null,

@@ -1,6 +1,6 @@
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, count, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { approvalComments, approvals } from "@paperclipai/db";
+import { approvalComments, approvalDecisions, approvals } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { agentService } from "./agents.js";
@@ -74,6 +74,48 @@ export function approvalService(db: Db) {
     );
   }
 
+  /** Record a vote in approval_decisions. Throws on duplicate. */
+  async function recordVote(
+    approval: ApprovalRecord,
+    userId: string,
+    decision: "approved" | "rejected",
+    note: string | null | undefined,
+  ) {
+    try {
+      return await db
+        .insert(approvalDecisions)
+        .values({
+          approvalId: approval.id,
+          companyId: approval.companyId,
+          userId,
+          decision,
+          note: note ?? null,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+    } catch (err: unknown) {
+      // PostgreSQL unique_violation (23505) on approval_decisions_approval_user_uq
+      if (typeof err === "object" && err !== null && "code" in err && (err as { code?: string }).code === "23505") {
+        throw unprocessable("You have already voted on this approval");
+      }
+      throw err;
+    }
+  }
+
+  /** Count "approved" votes for an approval. */
+  async function countApprovedVotes(approvalId: string): Promise<number> {
+    return db
+      .select({ count: count() })
+      .from(approvalDecisions)
+      .where(
+        and(
+          eq(approvalDecisions.approvalId, approvalId),
+          eq(approvalDecisions.decision, "approved"),
+        ),
+      )
+      .then((rows) => rows[0]?.count ?? 0);
+  }
+
   return {
     list: (companyId: string, status?: string) => {
       const conditions = [eq(approvals.companyId, companyId)];
@@ -96,6 +138,27 @@ export function approvalService(db: Db) {
         .then((rows) => rows[0]),
 
     approve: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
+      const existing = await getExistingApproval(id);
+
+      // Gate: only resolvable statuses can accept votes
+      if (!canResolveStatuses.has(existing.status)) {
+        if (existing.status === "approved") {
+          return { approval: existing, applied: false, votesReceived: existing.requiredApprovalCount, votesRequired: existing.requiredApprovalCount };
+        }
+        throw unprocessable("Only pending or revision requested approvals can be approved");
+      }
+
+      // Record vote (throws on duplicate)
+      await recordVote(existing, decidedByUserId, "approved", decisionNote);
+      const approvedCount = await countApprovedVotes(id);
+      const required = existing.requiredApprovalCount;
+
+      // If quorum not yet met, return without resolving
+      if (approvedCount < required) {
+        return { approval: existing, applied: false, votesReceived: approvedCount, votesRequired: required };
+      }
+
+      // Quorum met — resolve the approval
       const { approval: updated, applied } = await resolveApproval(
         id,
         "approved",
@@ -147,10 +210,24 @@ export function approvalService(db: Db) {
         }
       }
 
-      return { approval: updated, applied };
+      return { approval: updated, applied, votesReceived: approvedCount, votesRequired: required };
     },
 
     reject: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
+      const existing = await getExistingApproval(id);
+
+      // Gate: only resolvable statuses
+      if (!canResolveStatuses.has(existing.status)) {
+        if (existing.status === "rejected") {
+          return { approval: existing, applied: false };
+        }
+        throw unprocessable("Only pending or revision requested approvals can be rejected");
+      }
+
+      // Record a rejection vote
+      await recordVote(existing, decidedByUserId, "rejected", decisionNote);
+
+      // Single veto — immediately reject
       const { approval: updated, applied } = await resolveApproval(
         id,
         "rejected",
@@ -197,6 +274,11 @@ export function approvalService(db: Db) {
       }
 
       const now = new Date();
+      // Clear all previous votes on resubmit
+      await db
+        .delete(approvalDecisions)
+        .where(eq(approvalDecisions.approvalId, id));
+
       return db
         .update(approvals)
         .set({
@@ -210,6 +292,15 @@ export function approvalService(db: Db) {
         .where(eq(approvals.id, id))
         .returning()
         .then((rows) => rows[0]);
+    },
+
+    listDecisions: async (approvalId: string) => {
+      await getExistingApproval(approvalId);
+      return db
+        .select()
+        .from(approvalDecisions)
+        .where(eq(approvalDecisions.approvalId, approvalId))
+        .orderBy(asc(approvalDecisions.createdAt));
     },
 
     listComments: async (approvalId: string) => {
