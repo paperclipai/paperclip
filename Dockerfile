@@ -73,8 +73,10 @@ if [ -f "$OPENCLAW_SSH_KEY" ]; then
     -o StrictHostKeyChecking=no \
     -o ServerAliveInterval=30 \
     -o ServerAliveCountMax=3 \
+    -o ConnectTimeout=10 \
     -o ExitOnForwardFailure=yes \
-    clawd@3.130.67.249 || echo "[entrypoint] WARNING: SSH tunnel failed to start"
+    clawd@3.130.67.249 &
+  echo "[entrypoint] SSH tunnel starting in background (PID: $!)"
 fi
 
 exec gosu node node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js
