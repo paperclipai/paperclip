@@ -1,3 +1,10 @@
 iteration	trigger_pct	nofire_pct	output_pct	lines	status	description
 0	100	100	100	143	baseline	Baseline measurement
 1	100	100	100	124	kept	Remove 3 pointer-only sections (Schema Definition, CRUD Operations, Querying the Graph)
+2	100	100	100	100	kept	Move TypeScript interfaces to 01-schema-format.md — replace 23-line code block with 2-line reference
+3	100	100	100	86	kept	Remove 7 hr dividers + blank line condensing
+4	100	100	100	84	kept	Trim anti-rationalization to 3 entries (remove 2 untested entries)
+5	100	100	100	76	kept	Remove anti-rationalization section entirely — A05 fully covered by Why Flat Files section
+6	100	100	100	67	kept	Merge intro + Why Flat Files section into compact 2-paragraph opening
+7	100	100	100	58	kept	Remove Reference Files table — all refs still cited inline in sections
+8	100	100	100	56	kept	Remove inline Example line — A03 worked example fully in 04-composability-protocol.md
