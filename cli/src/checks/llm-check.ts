@@ -71,6 +71,27 @@ export async function llmCheck(config: PaperclipConfig): Promise<CheckResult> {
         status: "warn",
         message: `OpenAI API returned status ${res.status}`,
       };
+    } else if (config.llm.provider === "zai") {
+      const res = await fetch("https://api.z.ai/api/paas/v4/models", {
+        headers: { Authorization: `Bearer ${config.llm.apiKey}` },
+      });
+      if (res.ok) {
+        return { name: "LLM provider", status: "pass", message: "Z.AI API key is valid" };
+      }
+      if (res.status === 401) {
+        return {
+          name: "LLM provider",
+          status: "fail",
+          message: "Z.AI API key is invalid (401)",
+          canRepair: false,
+          repairHint: "Run `paperclipai configure --section llm`",
+        };
+      }
+      return {
+        name: "LLM provider",
+        status: "warn",
+        message: `Z.AI API returned status ${res.status}`,
+      };
     }
   } catch {
     return {
@@ -79,4 +100,10 @@ export async function llmCheck(config: PaperclipConfig): Promise<CheckResult> {
       message: "Could not reach API to validate key",
     };
   }
+
+  return {
+    name: "LLM provider",
+    status: "warn",
+    message: `Unknown LLM provider: ${config.llm.provider}`,
+  };
 }
