@@ -5,8 +5,6 @@ description: Build proactive agents in Claude Code that act on their own schedul
 
 # Proactive Agent
 
-Reactive agents answer questions. Proactive agents anticipate needs.
-
 Three native primitives: **CronCreate** (scheduled jobs), **/loop + heartbeat** (silent monitoring), **Stop/SessionStart hooks** (state persistence). No external daemons.
 
 ---
