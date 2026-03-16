@@ -473,4 +473,34 @@ describe("PATCH /issues/:id task control", () => {
       "failed to cancel managed run during issue update",
     );
   });
+
+  it("does not enforce chain-of-command or interrupt runs for assigneeUserId-only updates", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-outsider",
+      companyId: "company-1",
+      role: "manager",
+      permissions: { canCreateAgents: false, canManageTasks: true },
+    });
+    mockAgentService.getChainOfCommand.mockResolvedValue([{ id: "agent-ceo", name: "CEO", role: "ceo", title: null }]);
+
+    const res = await request(
+      createApp({
+        type: "agent",
+        agentId: "agent-outsider",
+        companyId: "company-1",
+        runId: "run-outsider",
+        source: "agent_key",
+      }),
+    )
+      .patch("/api/issues/issue-1")
+      .send({ assigneeUserId: "user-2" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith("issue-1", { assigneeUserId: "user-2" });
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "issue.task_control_denied" }),
+    );
+  });
 });
