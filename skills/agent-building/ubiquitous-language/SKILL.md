@@ -31,8 +31,6 @@ Add this line to your CLAUDE.md. Claude loads it on every session automatically.
 
 ## GLOSSARY.md Structure
 
-Each entry has four fields:
-
 ```markdown
 ## [Term]
 
