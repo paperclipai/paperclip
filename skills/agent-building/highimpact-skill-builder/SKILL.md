@@ -160,8 +160,6 @@ See `references/optimize.md` for: description A/B testing procedure, trigger phr
 
 ### Anti-Rationalization
 
-You will find reasons to cut corners on skill building. Cut them off:
-
 | What you'll tell yourself | The truth |
 |---|---|
 | "The description is good enough" | Descriptions are the #1 reason skills don't trigger. 5 minutes optimizing saves every future user from a miss. Run the eval. |
