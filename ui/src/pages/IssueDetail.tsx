@@ -13,6 +13,7 @@ import { usePanel } from "../context/PanelContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { readIssueDetailBreadcrumb } from "../lib/issueDetailBreadcrumb";
+import { cronPresetOptions } from "../lib/cron-presets";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatTokens } from "../lib/utils";
 import { InlineEditor } from "../components/InlineEditor";
@@ -171,6 +172,12 @@ export function IssueDetail() {
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const lastMarkedReadIssueIdRef = useRef<string | null>(null);
+  const recurringPresetValue = useMemo(() => {
+    const normalized = recurringExpression.trim();
+    if (!normalized) return "__custom__";
+    const match = cronPresetOptions.find((option) => option.expression === normalized);
+    return match?.id ?? "__custom__";
+  }, [recurringExpression]);
 
   const { data: issue, isLoading, error } = useQuery({
     queryKey: queryKeys.issues.detail(issueId!),
@@ -1033,6 +1040,27 @@ export function IssueDetail() {
                   </div>
                 </div>
                 <div className="grid gap-2 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <label className="text-xs text-muted-foreground">Preset</label>
+                    <select
+                      className="w-full rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+                      value={recurringPresetValue}
+                      onChange={(e) => {
+                        const nextId = e.target.value;
+                        if (nextId === "__custom__") return;
+                        const preset = cronPresetOptions.find((option) => option.id === nextId);
+                        if (!preset) return;
+                        setRecurringExpression(preset.expression);
+                      }}
+                    >
+                      <option value="__custom__">Custom expression</option>
+                      {cronPresetOptions.map((option) => (
+                        <option key={option.id} value={option.id}>
+                          {option.label} ({option.expression})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                   <div className="space-y-1">
                     <label className="text-xs text-muted-foreground">Cron expression</label>
                     <input

@@ -41,6 +41,7 @@ import {
 import { cn } from "../lib/utils";
 import { extractProviderIdWithFallback } from "../lib/model-utils";
 import { issueStatusText, issueStatusTextDefault, priorityColor, priorityColorDefault } from "../lib/status-colors";
+import { cronPresetOptions } from "../lib/cron-presets";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { AgentIcon } from "./AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
@@ -187,6 +188,7 @@ export function NewIssueDialog() {
   const [assigneeThinkingEffort, setAssigneeThinkingEffort] = useState("");
   const [assigneeChrome, setAssigneeChrome] = useState(false);
   const [useIsolatedExecutionWorkspace, setUseIsolatedExecutionWorkspace] = useState(false);
+  const [recurringSectionOpen, setRecurringSectionOpen] = useState(false);
   const [recurringEnabled, setRecurringEnabled] = useState(false);
   const [recurringName, setRecurringName] = useState("");
   const [recurringExpression, setRecurringExpression] = useState("0 9 * * 1-5");
@@ -389,6 +391,7 @@ export function NewIssueDialog() {
       setAssigneeChrome(false);
       setUseIsolatedExecutionWorkspace(false);
       setRecurringEnabled(false);
+      setRecurringSectionOpen(false);
       setRecurringName("");
       setRecurringExpression("0 9 * * 1-5");
       setRecurringTimezone("UTC");
@@ -405,6 +408,7 @@ export function NewIssueDialog() {
       setAssigneeChrome(draft.assigneeChrome ?? false);
       setUseIsolatedExecutionWorkspace(draft.useIsolatedExecutionWorkspace ?? false);
       setRecurringEnabled(draft.recurringEnabled ?? false);
+      setRecurringSectionOpen(false);
       setRecurringName(draft.recurringName ?? "");
       setRecurringExpression(draft.recurringExpression ?? "0 9 * * 1-5");
       setRecurringTimezone(draft.recurringTimezone ?? "UTC");
@@ -419,6 +423,7 @@ export function NewIssueDialog() {
       setAssigneeChrome(false);
       setUseIsolatedExecutionWorkspace(false);
       setRecurringEnabled(false);
+      setRecurringSectionOpen(false);
       setRecurringName("");
       setRecurringExpression("0 9 * * 1-5");
       setRecurringTimezone("UTC");
@@ -467,6 +472,7 @@ export function NewIssueDialog() {
     setAssigneeChrome(false);
     setUseIsolatedExecutionWorkspace(false);
     setRecurringEnabled(false);
+    setRecurringSectionOpen(false);
     setRecurringName("");
     setRecurringExpression("0 9 * * 1-5");
     setRecurringTimezone("UTC");
@@ -531,7 +537,7 @@ export function NewIssueDialog() {
         ? {
           enabled: true,
           name: recurringName.trim() || `${title.trim()} recurring`,
-          expression: recurringExpression.trim(),
+          expression: recurringExpression.trim() || "0 9 * * 1-5",
           timezone: recurringTimezone.trim() || "UTC",
           issueMode: recurringIssueMode,
         }
@@ -653,6 +659,12 @@ export function NewIssueDialog() {
     },
     [assigneeAdapterModels],
   );
+  const recurringPresetValue = useMemo(() => {
+    const normalized = recurringExpression.trim();
+    if (!normalized) return "__custom__";
+    const match = cronPresetOptions.find((option) => option.expression === normalized);
+    return match?.id ?? "__custom__";
+  }, [recurringExpression]);
 
   return (
     <Dialog
@@ -981,15 +993,33 @@ export function NewIssueDialog() {
         <div className="px-4 pb-2 shrink-0">
           <button
             className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
-            onClick={() => setRecurringEnabled((open) => !open)}
+            onClick={() => setRecurringSectionOpen((open) => !open)}
             type="button"
           >
-            {recurringEnabled ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+            {recurringSectionOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
             <Clock3 className="h-3 w-3" />
             Recurring task
           </button>
-          {recurringEnabled && (
+          {recurringSectionOpen && (
             <div className="mt-2 rounded-md border border-border p-3 bg-muted/20 space-y-3">
+              <div className="flex items-center justify-between rounded-md border border-border px-2 py-1.5">
+                <div className="text-xs text-muted-foreground">Enable recurring schedule</div>
+                <button
+                  className={cn(
+                    "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
+                    recurringEnabled ? "bg-green-600" : "bg-muted",
+                  )}
+                  onClick={() => setRecurringEnabled((value) => !value)}
+                  type="button"
+                >
+                  <span
+                    className={cn(
+                      "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
+                      recurringEnabled ? "translate-x-4.5" : "translate-x-0.5",
+                    )}
+                  />
+                </button>
+              </div>
               <div className="space-y-1.5">
                 <div className="text-xs text-muted-foreground">Name</div>
                 <input
@@ -997,9 +1027,32 @@ export function NewIssueDialog() {
                   value={recurringName}
                   onChange={(e) => setRecurringName(e.target.value)}
                   placeholder="Weekly status report"
+                  disabled={!recurringEnabled}
                 />
               </div>
               <div className="grid gap-2 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <div className="text-xs text-muted-foreground">Preset</div>
+                  <select
+                    className="w-full rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+                    value={recurringPresetValue}
+                    onChange={(e) => {
+                      const nextId = e.target.value;
+                      if (nextId === "__custom__") return;
+                      const preset = cronPresetOptions.find((option) => option.id === nextId);
+                      if (!preset) return;
+                      setRecurringExpression(preset.expression);
+                    }}
+                    disabled={!recurringEnabled}
+                  >
+                    <option value="__custom__">Custom expression</option>
+                    {cronPresetOptions.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.label} ({option.expression})
+                      </option>
+                    ))}
+                  </select>
+                </div>
                 <div className="space-y-1.5">
                   <div className="text-xs text-muted-foreground">Cron expression</div>
                   <input
@@ -1007,6 +1060,7 @@ export function NewIssueDialog() {
                     value={recurringExpression}
                     onChange={(e) => setRecurringExpression(e.target.value)}
                     placeholder="0 9 * * 1-5"
+                    disabled={!recurringEnabled}
                   />
                 </div>
                 <div className="space-y-1.5">
@@ -1016,6 +1070,7 @@ export function NewIssueDialog() {
                     value={recurringTimezone}
                     onChange={(e) => setRecurringTimezone(e.target.value)}
                     placeholder="UTC"
+                    disabled={!recurringEnabled}
                   />
                 </div>
               </div>
@@ -1027,13 +1082,14 @@ export function NewIssueDialog() {
                   onChange={(e) =>
                     setRecurringIssueMode(e.target.value as "create_new" | "reuse_existing" | "reopen_existing")
                   }
+                  disabled={!recurringEnabled}
                 >
                   <option value="reopen_existing">Reopen this issue when done</option>
                   <option value="reuse_existing">Reuse this issue</option>
                   <option value="create_new">Create a new issue each run</option>
                 </select>
               </div>
-              {!assigneeId && (
+              {recurringEnabled && !assigneeId && (
                 <div className="text-[11px] text-amber-500">
                   Select an assignee to enable recurring scheduling.
                 </div>

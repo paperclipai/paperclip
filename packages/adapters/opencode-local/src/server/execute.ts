@@ -269,7 +269,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (resumeSessionId) args.push("--session", resumeSessionId);
     if (model) args.push("--model", model);
     if (variant) args.push("--variant", variant);
-    args.push("--add-dir", skillsDir);
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
   };

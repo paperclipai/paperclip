@@ -53,6 +53,19 @@ function defaultIssueDescription(schedule: CronScheduleRow) {
   ].join("\n");
 }
 
+function nonTerminalIssueStatus(value: unknown): string | null {
+  if (typeof value !== "string" || value.trim().length === 0) return null;
+  const normalized = value.trim();
+  if (normalized === "done" || normalized === "cancelled") return null;
+  return normalized;
+}
+
+function withOriginTag(description: string, sourceIdentifier: string | null): string {
+  if (!sourceIdentifier) return description;
+  if (description.includes(sourceIdentifier)) return description;
+  return `${description}\n\n- Origin issue: \`${sourceIdentifier}\``;
+}
+
 export function taskCronService(db: Db) {
   const issuesSvc = issueService(db);
   const heartbeat = heartbeatService(db);
@@ -188,28 +201,49 @@ export function taskCronService(db: Db) {
     const mode = (schedule.issueMode as "create_new" | "reuse_existing" | "reopen_existing") ?? "create_new";
     const issueTemplate = asRecord(schedule.issueTemplate) ?? {};
     const payload = asRecord(schedule.payload) ?? {};
+    const sourceIssue =
+      schedule.issueId
+        ? await issuesSvc.getById(schedule.issueId).then((issue) =>
+            issue && issue.companyId === schedule.companyId ? issue : null,
+          )
+        : null;
+    const sourceIdentifier = sourceIssue?.identifier ?? sourceIssue?.id ?? null;
 
     const createIssue = async () =>
       issuesSvc.create(schedule.companyId, {
-        title: asString(issueTemplate.title) ?? defaultIssueTitle(schedule),
-        description:
+        title: asString(issueTemplate.title) ?? sourceIssue?.title ?? defaultIssueTitle(schedule),
+        description: withOriginTag(
           asString(issueTemplate.description) ??
-          asString(payload.description) ??
-          defaultIssueDescription(schedule),
-        status: asString(issueTemplate.status) ?? "todo",
-        priority: asString(issueTemplate.priority) ?? "medium",
-        projectId: asString(issueTemplate.projectId),
-        goalId: asString(issueTemplate.goalId),
-        parentId: asString(issueTemplate.parentId),
+            asString(payload.description) ??
+            sourceIssue?.description ??
+            defaultIssueDescription(schedule),
+          sourceIdentifier,
+        ),
+        status: asString(issueTemplate.status) ?? nonTerminalIssueStatus(sourceIssue?.status) ?? "todo",
+        priority: asString(issueTemplate.priority) ?? sourceIssue?.priority ?? "medium",
+        projectId: asString(issueTemplate.projectId) ?? sourceIssue?.projectId ?? null,
+        goalId: asString(issueTemplate.goalId) ?? sourceIssue?.goalId ?? null,
+        parentId: asString(issueTemplate.parentId) ?? sourceIssue?.id ?? null,
         assigneeAgentId: schedule.agentId,
-        billingCode: asString(issueTemplate.billingCode),
+        labelIds: sourceIssue?.labelIds ?? [],
+        assigneeAdapterOverrides: asRecord(sourceIssue?.assigneeAdapterOverrides) ?? null,
+        executionWorkspaceSettings: asRecord(sourceIssue?.executionWorkspaceSettings) ?? null,
+        billingCode: asString(issueTemplate.billingCode) ?? sourceIssue?.billingCode ?? null,
         requestDepth: 0,
         createdByAgentId: null,
         createdByUserId: null,
       });
 
     if (mode === "create_new") {
-      return createIssue();
+      const created = await createIssue();
+      if (sourceIssue) {
+        await issuesSvc.addComment(
+          sourceIssue.id,
+          `Recurring schedule \`${schedule.name}\` created follow-up issue ${created.identifier ?? created.id}.`,
+          {},
+        );
+      }
+      return created;
     }
 
     if (schedule.issueId) {
@@ -224,6 +258,13 @@ export function taskCronService(db: Db) {
     }
 
     const created = await createIssue();
+    if (sourceIssue) {
+      await issuesSvc.addComment(
+        sourceIssue.id,
+        `Recurring schedule \`${schedule.name}\` created follow-up issue ${created.identifier ?? created.id}.`,
+        {},
+      );
+    }
     await db
       .update(cronSchedules)
       .set({
