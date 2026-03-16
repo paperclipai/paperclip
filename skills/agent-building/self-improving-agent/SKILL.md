@@ -96,17 +96,9 @@ Run the same test cases before and after every change. Score on two dimensions:
 
 ## Session-End Summary
 
-Stop hook audits the session: tools called, violations fired, decisions made. Saves a 5-line summary.
+Stop hook audits the session: violations fired, counts by type, 5-line summary saved to disk.
 
-```json
-{
-  "hooks": {
-    "Stop": [{"hooks": [{"type": "command", "command": "node ~/.claude/hooks/session-audit.js"}]}]
-  }
-}
-```
-
-→ Full Stop hook, compression format, where to save: [05-session-end-summary.md](references/05-session-end-summary.md)
+→ Hook config, output format, SessionStart pair: [05-session-end-summary.md](references/05-session-end-summary.md)
 
 ---
 
