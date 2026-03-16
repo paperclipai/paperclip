@@ -9,8 +9,6 @@ Give Claude Code a typed, queryable entity graph in plain JSON Lines files. Any 
 
 Three primitives: **entities** (typed nodes), **relations** (typed edges), **schema** (constraints).
 
----
-
 ## Why Flat Files Break Down
 
 MEMORY.md fails when you need to:
@@ -19,8 +17,6 @@ MEMORY.md fails when you need to:
 - Share typed state between skills — no protocol for interoperability
 
 The entity graph solves this with two files: `memory/ontology/graph.jsonl` (data) + `memory/ontology/schema.json` (constraints).
-
----
 
 ## Quick Setup (5 Minutes)
 
@@ -34,15 +30,11 @@ The entity graph solves this with two files: `memory/ontology/graph.jsonl` (data
    ```
 5. Write your first entity — see `references/02-crud-operations.md`
 
----
-
 ## The Data Model
 
 Two record types in `graph.jsonl`: `EntityRecord` (typed node) and `RelationRecord` (typed edge). Full TypeScript interfaces in `references/01-schema-format.md`.
 
 **Append-only invariant:** Never delete or overwrite lines. Updates append a new record with the same `id` — last record wins. Soft-delete via `deletedAt`. Full audit trail, concurrent-write safe.
-
----
 
 ## Cross-Skill Composability Protocol
 
@@ -61,8 +53,6 @@ ontology:
 
 Full protocol spec, worked example, and conflict prevention rules in `references/04-composability-protocol.md`.
 
----
-
 ## Anti-Patterns
 
 | Anti-Pattern | Why It Fails |
@@ -75,8 +65,6 @@ Full protocol spec, worked example, and conflict prevention rules in `references
 
 More patterns and recovery examples in `references/05-anti-patterns.md`.
 
----
-
 ## Anti-Rationalization
 
 | What you'll tell yourself | The truth |
@@ -87,13 +75,11 @@ More patterns and recovery examples in `references/05-anti-patterns.md`.
 | "I'll add the ontology: header to my skill later" | Later means never. It's 4 lines — add it when you write the skill. |
 | "Other skills can just parse my MEMORY.md" | Prose is not a protocol. The `ontology:` header is machine-readable intent. |
 
----
-
 ## Reference Files
 
 | File | Contents |
 |------|----------|
-| `references/01-schema-format.md` | Schema JSON structure, field types, enums, cardinality, worked example |
+| `references/01-schema-format.md` | Record interfaces, schema JSON structure, field types, enums, cardinality, worked example |
 | `references/02-crud-operations.md` | Create/read/update/delete patterns, compaction workflow |
 | `references/03-query-patterns.md` | Filter by type/field, traversal, reverse lookup, aggregation |
 | `references/04-composability-protocol.md` | `ontology:` header spec, ownership rules, conflict prevention, worked example |
