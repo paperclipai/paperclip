@@ -54,18 +54,7 @@ Three disciplines eliminate each failure mode.
 
 ## The Pre-Commit Stop Hook
 
-A Stop hook runs your test suite before every Claude session exits. Exit 1 = session blocked. Claude sees the test output and must fix before it can finish.
-
-**Auto-detect test runner (from project root):**
-
-| Project file | Runner |
-|---|---|
-| `package.json` + bun lockfile | `bun test` |
-| `package.json` | `npm test` |
-| `pyproject.toml` or `pytest.ini` | `pytest` |
-| `Cargo.toml` | `cargo test` |
-
-The hook detects which runner to use automatically.
+A Stop hook runs your test suite before every Claude session exits. Exit 1 = session blocked. Claude sees the test output and must fix before it can finish. Auto-detects bun/npm/pytest/cargo from project root.
 
 → Complete hook script with detection logic: `references/pre-commit-stop-hook.md`
 
