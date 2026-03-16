@@ -58,18 +58,6 @@ See `references/create.md` for: interview question bank, SKILL.md templates, nam
 
 4. **Flag gaps** — any missed triggers, wrong triggers (false positives), or output quality issues.
 
-```
-Test Results: [skill-name] — iteration N
-┌─────────────────────────────┬──────────┬───────────┐
-│ Test Case                   │ Trigger? │ Output OK?│
-├─────────────────────────────┼──────────┼───────────┤
-│ "make a skill for X"        │ YES      │ PASS      │
-│ "create a workflow for X"   │ NO ✗     │ —         │
-│ "what is a skill" (no-fire) │ NO ✓     │ —         │
-└─────────────────────────────┴──────────┴───────────┘
-Score: 4/5 trigger tests passed, 3/4 output tests passed
-```
-
 5. **Save checkpoint** — write current iteration number and test scores to `references/test-log.md` before proceeding. This survives context compression.
 
 See `references/test.md` for: assertion patterns, trigger-testing procedure, output evaluation rubric, how to handle borderline cases.
