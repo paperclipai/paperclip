@@ -801,6 +801,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const reviewSubmission = req.body.reviewSubmission;
     const normalizedBody: Record<string, unknown> = { ...req.body };
     let commentBodyForPersistence = commentBody;
+    let checkoutOwnershipVerified = false;
 
     let reviewTarget: ReviewTarget | null = null;
     if (requestedAgentReviewStatus && req.actor.agentId) {
@@ -821,6 +822,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
         return;
       }
       if (reviewSubmission) {
+        // Verify checkout ownership before mutating review metadata so rejected
+        // handoffs cannot partially update the checkout record.
+        if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
+        checkoutOwnershipVerified = true;
         await heartbeat.recordReviewSubmission({
           companyId: existing.companyId,
           issueId: existing.id,
@@ -864,7 +869,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
         await assertCanAssignTasks(req, existing.companyId);
       }
     }
-    if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
+    if (!checkoutOwnershipVerified && !(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
 
     const {
       comment: _commentBody,

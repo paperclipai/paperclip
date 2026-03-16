@@ -11,8 +11,11 @@
     "dev:ui": "pnpm --filter @paperclipai/ui dev",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
-    "test": "vitest",
-    "test:run": "vitest run",
+    "test": "pnpm test:unit",
+    "test:unit": "vitest run",
+    "test:run": "pnpm test:unit",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "playwright test",
     "db:generate": "pnpm --filter @paperclipai/db generate",
     "db:migrate": "pnpm --filter @paperclipai/db migrate",
     "secrets:migrate-inline-env": "tsx scripts/migrate-inline-env-secrets.ts",
@@ -29,6 +32,8 @@
     "smoke:openclaw-sse-standalone": "./scripts/smoke/openclaw-sse-standalone.sh"
   },
   "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "@vitest/coverage-v8": "^3.2.4",
     "@changesets/cli": "^2.30.0",
     "cross-env": "^10.1.0",
     "esbuild": "^0.27.3",

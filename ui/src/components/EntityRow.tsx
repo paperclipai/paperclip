@@ -1,5 +1,5 @@
-import { type ReactNode } from "react";
-import { Link } from "@/lib/router";
+import { type MouseEvent, type ReactNode } from "react";
+import { Link, useNavigate } from "@/lib/router";
 import { cn } from "../lib/utils";
 
 interface EntityRowProps {
@@ -27,6 +27,7 @@ export function EntityRow({
   onClick,
   className,
 }: EntityRowProps) {
+  const navigate = useNavigate();
   const isClickable = !!(to || onClick);
   const classes = cn(
     "paperclip-work-row flex items-center gap-3 border-b border-[color:color-mix(in_oklab,var(--primary)_10%,var(--border))] px-4 py-3 text-sm last:border-b-0 transition-colors",
@@ -34,6 +35,20 @@ export function EntityRow({
     selected && "bg-[color:color-mix(in_oklab,var(--surface-panel-strong)_84%,transparent)]",
     className
   );
+
+  function isNestedInteractiveTarget(target: EventTarget | null) {
+    if (!(target instanceof Node)) return false;
+    const element = target instanceof Element ? target : target.parentElement;
+    return !!element?.closest(
+      "a,button,input,select,textarea,summary,[role='button'],[role='link']",
+    );
+  }
+
+  function handleOuterClick(event: MouseEvent<HTMLDivElement>) {
+    if (isNestedInteractiveTarget(event.target)) return;
+    if (to) navigate(to);
+    onClick?.();
+  }
 
   const mainContent = (
     <>
@@ -56,7 +71,7 @@ export function EntityRow({
 
   if (to && trailingOutsideLink) {
     return (
-      <div className={classes}>
+      <div className={classes} onClick={handleOuterClick}>
         {/* Keep trailing interactive controls outside the row link so we never nest anchors. */}
         <Link to={to} className="flex min-w-0 flex-1 items-center gap-3 no-underline text-inherit" onClick={onClick}>
           {mainContent}

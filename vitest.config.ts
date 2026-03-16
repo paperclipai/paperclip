@@ -2,6 +2,18 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
-    projects: ["packages/db", "packages/adapters/opencode-local", "server", "ui", "cli"],
+    // Keep the root test matrix authoritative so no real suites are excluded
+    // from the default verification command.
+    projects: [
+      "packages/db",
+      "packages/shared",
+      "packages/adapter-utils",
+      "packages/adapters/opencode-local",
+      "packages/adapters/pi-local",
+      "server",
+      "ui",
+      "cli",
+      "scripts",
+    ],
   },
 });

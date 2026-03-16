@@ -35,6 +35,15 @@ describe("run event transcript helpers", () => {
     ).toBe(true);
   });
 
+  it("keeps stderr-only transcripts in the legacy transcript mode", () => {
+    expect(
+      hasStructuredTranscriptEvents([
+        makeEvent({ eventType: "adapter.invoke" }),
+        makeEvent({ eventType: "transcript.stderr", stream: "stderr" }),
+      ]),
+    ).toBe(false);
+  });
+
   it("rebuilds command execution and assistant transcript entries", () => {
     const entries = buildTranscriptFromRunEvents([
       makeEvent({

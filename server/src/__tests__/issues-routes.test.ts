@@ -1,6 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { conflict } from "../errors.js";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 
@@ -429,6 +430,45 @@ describe("issue routes", () => {
       expect.stringContaining("## Review Submission"),
       { agentId: "agent-1", userId: undefined },
     );
+  });
+
+  it("rejects review submissions before checkout metadata is persisted when checkout ownership fails", async () => {
+    mockIssueService.getById.mockResolvedValue(createIssue());
+    mockIssueService.assertCheckoutOwner.mockRejectedValueOnce(
+      conflict("Issue run ownership conflict"),
+    );
+    mockHeartbeatService.getActiveCheckoutForIssueAgent.mockResolvedValue({
+      id: "checkout-1",
+      issueId: ISSUE_ID,
+      agentId: "agent-1",
+      branchName: "codex/paperclip/agent-1/pap-12",
+      worktreePath: "/tmp/worktree",
+    });
+
+    const app = createApp({
+      type: "agent",
+      source: "agent_key",
+      companyId: COMPANY_ID,
+      agentId: "agent-1",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .patch(`/api/issues/${ISSUE_ID}`)
+      .send({
+        status: "done",
+        comment: "Ready for review.",
+        reviewSubmission: {
+          checkoutId: "66666666-6666-4666-8666-666666666666",
+          branchName: "codex/paperclip/agent-1/pap-12",
+          headCommitSha: "abc123",
+          pullRequestUrl: "https://github.com/paperclipai/paperclip/pull/42",
+        },
+      });
+
+    expect(res.status).toBe(409);
+    expect(mockHeartbeatService.recordReviewSubmission).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("rejects top-level issue creation without approval in approval-required mode", async () => {

@@ -11,7 +11,6 @@ const STRUCTURED_TRANSCRIPT_EVENT_TYPES = new Set([
   "command.execution.completed",
   "adapter.session.init",
   "adapter.result",
-  "transcript.stderr",
   "transcript.system",
   "transcript.stdout",
 ]);

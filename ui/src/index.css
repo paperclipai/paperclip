@@ -1,4 +1,3 @@
-@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;700&display=swap");
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
@@ -47,9 +46,10 @@
 
 :root {
   color-scheme: light;
-  --font-display: "Space Grotesk", "Avenir Next", sans-serif;
-  --font-body: "Space Grotesk", "Avenir Next", sans-serif;
-  --font-code: "IBM Plex Mono", "SFMono-Regular", monospace;
+  /* Prefer local-first stacks so private deployments never depend on a third-party font CDN. */
+  --font-display: "Space Grotesk", "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+  --font-body: "Space Grotesk", "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+  --font-code: "IBM Plex Mono", "SFMono-Regular", "SF Mono", ui-monospace, monospace;
   --radius: 0.95rem;
   --background: oklch(0.956 0.014 236);
   --foreground: oklch(0.244 0.03 255);
