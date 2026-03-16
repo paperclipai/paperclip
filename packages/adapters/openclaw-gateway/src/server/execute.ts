@@ -366,6 +366,7 @@ function buildWakeText(
   payload: WakePayload,
   paperclipEnv: Record<string, string>,
   structuredWakePrompt: string,
+  hasCustomInstructions = false,
 ): string {
   const claimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
   const orderedKeys = [
@@ -392,10 +393,26 @@ function buildWakeText(
   const issueIdHint = payload.taskId ?? payload.issueId ?? "";
   const apiBaseHint = paperclipEnv.PAPERCLIP_API_URL ?? "<set PAPERCLIP_API_URL>";
 
+  const preamble = hasCustomInstructions
+    ? "Your agent instructions above are the primary authority. The values below are runtime context."
+    : "Run this procedure now. Do not guess undocumented endpoints and do not ask for additional heartbeat docs.";
+
+  const endpointRule = hasCustomInstructions
+    ? "- Use /api endpoints documented in your instructions above, plus the fallback endpoints below."
+    : "- Use only /api endpoints listed below.";
+
+  const guessRule = hasCustomInstructions
+    ? "- Do NOT call fabricated endpoints like /api/cloud-adapter/*, /api/cloud-adapters/*, /api/adapters/cloud/*, or /api/heartbeat."
+    : "- Do NOT call guessed endpoints like /api/cloud-adapter/*, /api/cloud-adapters/*, /api/adapters/cloud/*, or /api/heartbeat.";
+
+  const workflowLabel = hasCustomInstructions
+    ? "Fallback workflow (use if no heartbeat procedure provided above):"
+    : "Workflow:";
+
   const lines = [
     "Paperclip wake event for a cloud adapter.",
     "",
-    "Run this procedure now. Do not guess undocumented endpoints and do not ask for additional heartbeat docs.",
+    preamble,
     "",
     "Set these values in your run context:",
     ...envLines,
@@ -419,10 +436,10 @@ function buildWakeText(
     "HTTP rules:",
     "- Use Authorization: Bearer $PAPERCLIP_API_KEY on every API call.",
     "- Use X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID on every mutating API call.",
-    "- Use only /api endpoints listed below.",
-    "- Do NOT call guessed endpoints like /api/cloud-adapter/*, /api/cloud-adapters/*, /api/adapters/cloud/*, or /api/heartbeat.",
+    endpointRule,
+    guessRule,
     "",
-    "Workflow:",
+    workflowLabel,
     "1) GET /api/agents/me",
     `2) Determine issueId: PAPERCLIP_TASK_ID if present, otherwise issue_id (${issueIdHint}).`,
     "3) If issueId exists:",
@@ -1116,12 +1133,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const paperclipEnv = buildPaperclipEnvForWake(ctx, wakePayload);
   const structuredWakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake);
   const structuredWakeJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake);
+  const hasCustomInstructions = Boolean(nonEmpty(payloadTemplate.message) ?? nonEmpty(payloadTemplate.text));
   const wakeText = buildWakeText(
     wakePayload,
     paperclipEnv,
     structuredWakeJson
       ? joinWakePayloadSections(structuredWakePrompt, structuredWakeJson)
       : structuredWakePrompt,
+    hasCustomInstructions,
   );
 
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
