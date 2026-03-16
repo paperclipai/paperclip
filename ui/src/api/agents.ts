@@ -104,7 +104,9 @@ export const agentsApi = {
     api.patch<Agent>(agentPath(id, companyId, "/permissions"), data),
   pause: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/pause"), {}),
   resume: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/resume"), {}),
-  terminate: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/terminate"), {}),
+  terminate: (id: string, companyId?: string, options?: { force?: boolean }) =>
+    api.post<Agent>(agentPath(id, companyId, "/terminate"), options ?? {}),
+  reactivate: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/reactivate"), {}),
   remove: (id: string, companyId?: string) => api.delete<{ ok: true }>(agentPath(id, companyId)),
   listKeys: (id: string, companyId?: string) => api.get<AgentKey[]>(agentPath(id, companyId, "/keys")),
   createKey: (id: string, name: string, companyId?: string) =>

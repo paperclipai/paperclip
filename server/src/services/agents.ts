@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, ne, notInArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -391,10 +391,52 @@ export function agentService(db: Db) {
       return updated ? normalizeAgentRow(updated) : null;
     },
 
-    terminate: async (id: string) => {
+    terminate: async (id: string, options?: { force?: boolean }) => {
       const existing = await getById(id);
       if (!existing) return null;
 
+      // Already terminated - return early (idempotent)
+      if (existing.status === "terminated") {
+        return existing;
+      }
+
+      // CEO termination protection: prevent terminating the only CEO
+      // Use transaction to prevent TOCTOU race condition
+      if (existing.role === "ceo" && !options?.force) {
+        return db.transaction(async (tx) => {
+          const otherCeo = await tx
+            .select({ id: agents.id })
+            .from(agents)
+            .where(
+              and(
+                eq(agents.companyId, existing.companyId),
+                eq(agents.role, "ceo"),
+                notInArray(agents.status, ["terminated", "pending_approval"]),
+                ne(agents.id, id)
+              )
+            )
+            .limit(1);
+          if (otherCeo.length === 0) {
+            throw conflict(
+              "Cannot terminate the only CEO. Use force: true to override, or create a replacement CEO first."
+            );
+          }
+
+          await tx
+            .update(agents)
+            .set({ status: "terminated", updatedAt: new Date() })
+            .where(eq(agents.id, id));
+
+          await tx
+            .update(agentApiKeys)
+            .set({ revokedAt: new Date() })
+            .where(eq(agentApiKeys.agentId, id));
+
+          return getById(id);
+        });
+      }
+
+      // Non-CEO or force=true: terminate without protection check
       await db
         .update(agents)
         .set({ status: "terminated", updatedAt: new Date() })
@@ -406,6 +448,35 @@ export function agentService(db: Db) {
         .where(eq(agentApiKeys.agentId, id));
 
       return getById(id);
+    },
+
+    reactivate: async (id: string) => {
+      const existing = await getById(id);
+      if (!existing) return null;
+      if (existing.status !== "terminated") {
+        throw conflict("Only terminated agents can be reactivated");
+      }
+
+      // Check for shortname collision with active agents
+      await assertCompanyShortnameAvailable(existing.companyId, existing.name, { excludeAgentId: id });
+
+      // Use transaction to atomically update status and restore API keys
+      return db.transaction(async (tx) => {
+        const updated = await tx
+          .update(agents)
+          .set({ status: "idle", updatedAt: new Date() })
+          .where(eq(agents.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+
+        // Restore API keys that were revoked during termination
+        await tx
+          .update(agentApiKeys)
+          .set({ revokedAt: null })
+          .where(eq(agentApiKeys.agentId, id));
+
+        return updated ? normalizeAgentRow(updated) : null;
+      });
     },
 
     remove: async (id: string) => {
