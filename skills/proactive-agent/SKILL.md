@@ -71,7 +71,6 @@ The silence contract is non-negotiable. A heartbeat that narrates every quiet ch
 |---|---|
 | "I'll add the silence contract later" | Without it, every quiet check generates output. It's one line. Add it now. |
 | "I don't need state persistence for a simple cron" | Session ends, cron reschedules, reprocesses items it already handled. One state file prevents this. |
-| "I'll just poll every minute, it's lightweight" | 1/min × 8h = 480 API calls. Use minimum interval for acceptable latency. |
 | "Heartbeat can do everything CronCreate can" | Heartbeat needs an active session. CronCreate fires independently. Wrong tool = broken schedule when session closes. |
 | "I'll check state from memory" | No memory between sessions without a file. No exceptions. Write the lock file. |
 
