@@ -21,8 +21,6 @@ Claude defaults to generic naming: "user" instead of "subscriber", "transaction"
 @GLOSSARY.md
 ```
 
-Add this line to your CLAUDE.md. Claude loads it on every session automatically.
-
 **Step 3 — Install hooks** from [02-hooks.md](references/02-hooks.md):
 - `SessionStart` hook: surfaces active glossary count at session start
 - `PostToolUse` hook: flags anti-pattern terms in Write/Edit before they land in git
