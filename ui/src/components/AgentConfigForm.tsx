@@ -945,7 +945,7 @@ function AdapterTypeDropdown({
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
+        <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/10 transition-colors w-full justify-between">
           <span className="inline-flex items-center gap-1.5">
             {value === "opencode_local" ? <OpenCodeLogoIcon className="h-3.5 w-3.5" /> : null}
             <span>{adapterLabels[value] ?? value}</span>
@@ -962,7 +962,7 @@ function AdapterTypeDropdown({
               "flex items-center justify-between w-full px-2 py-1.5 text-sm rounded",
               item.comingSoon
                 ? "opacity-40 cursor-not-allowed"
-                : "hover:bg-accent/50",
+                : "hover:bg-accent/10",
               item.value === value && !item.comingSoon && "bg-accent",
             )}
             onClick={() => {
@@ -1183,7 +1183,7 @@ function EnvVarEditor({
                 </select>
                 <button
                   type="button"
-                  className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 transition-colors shrink-0"
+                  className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent/10 transition-colors shrink-0"
                   onClick={() => sealRow(i)}
                   disabled={!row.key.trim() || !row.plainValue}
                   title="Create secret from current plain value"
@@ -1201,7 +1201,7 @@ function EnvVarEditor({
                 />
                 <button
                   type="button"
-                  className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 transition-colors shrink-0"
+                  className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent/10 transition-colors shrink-0"
                   onClick={() => sealRow(i)}
                   disabled={!row.key.trim() || !row.plainValue}
                   title="Store value as secret and replace with reference"
@@ -1299,7 +1299,7 @@ function ModelDropdown({
         }}
       >
         <PopoverTrigger asChild>
-          <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
+          <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/10 transition-colors w-full justify-between">
             <span className={cn(!value && "text-muted-foreground")}>
               {selected
                 ? selected.label
@@ -1320,7 +1320,7 @@ function ModelDropdown({
             {allowDefault && (
               <button
                 className={cn(
-                  "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
+                  "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/10",
                   !value && "bg-accent",
                 )}
                 onClick={() => {
@@ -1342,7 +1342,7 @@ function ModelDropdown({
                   <button
                     key={m.id}
                     className={cn(
-                      "flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
+                      "flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/10",
                       m.id === value && "bg-accent",
                     )}
                     onClick={() => {
@@ -1386,7 +1386,7 @@ function ThinkingEffortDropdown({
     <Field label="Thinking effort" hint={help.thinkingEffort}>
       <Popover open={open} onOpenChange={onOpenChange}>
         <PopoverTrigger asChild>
-          <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
+          <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/10 transition-colors w-full justify-between">
             <span className={cn(!value && "text-muted-foreground")}>{selected?.label ?? "Auto"}</span>
             <ChevronDown className="h-3 w-3 text-muted-foreground" />
           </button>
@@ -1396,7 +1396,7 @@ function ThinkingEffortDropdown({
             <button
               key={option.id || "auto"}
               className={cn(
-                "flex items-center justify-between w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
+                "flex items-center justify-between w-full px-2 py-1.5 text-sm rounded hover:bg-accent/10",
                 option.id === value && "bg-accent",
               )}
               onClick={() => {

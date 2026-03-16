@@ -45,7 +45,7 @@ function OrgTreeNode({
     <div>
       <Link
         to={hrefFn(node.id)}
-        className="flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors cursor-pointer hover:bg-accent/50 no-underline text-inherit"
+        className="flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors cursor-pointer hover:bg-accent/10 no-underline text-inherit"
         style={{ paddingLeft: `${depth * 16 + 12}px` }}
       >
         {hasChildren ? (

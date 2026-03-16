@@ -712,8 +712,8 @@ export function OnboardingWizard() {
                           className={cn(
                             "flex flex-col items-center gap-1.5 rounded-md border p-3 text-xs transition-colors relative",
                             adapterType === opt.value
-                              ? "border-foreground bg-accent"
-                              : "border-border hover:bg-accent/50"
+                              ? "border-accent bg-accent/12 text-accent"
+                              : "border-border hover:bg-accent/10"
                           )}
                           onClick={() => {
                             const nextType = opt.value as AdapterType;
@@ -797,8 +797,8 @@ export function OnboardingWizard() {
                               opt.comingSoon
                                 ? "border-border opacity-40 cursor-not-allowed"
                                 : adapterType === opt.value
-                                ? "border-foreground bg-accent"
-                                : "border-border hover:bg-accent/50"
+                                ? "border-accent bg-accent/12 text-accent"
+                                : "border-border hover:bg-accent/10"
                             )}
                             onClick={() => {
                               if (opt.comingSoon) return;
@@ -873,7 +873,7 @@ export function OnboardingWizard() {
                           }}
                         >
                           <PopoverTrigger asChild>
-                            <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
+                            <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/10 transition-colors w-full justify-between">
                               <span
                                 className={cn(
                                   !model && "text-muted-foreground"
@@ -903,7 +903,7 @@ export function OnboardingWizard() {
                             {adapterType !== "opencode_local" && (
                               <button
                                 className={cn(
-                                  "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
+                                  "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/10",
                                   !model && "bg-accent"
                                 )}
                                 onClick={() => {
@@ -929,7 +929,7 @@ export function OnboardingWizard() {
                                     <button
                                       key={m.id}
                                       className={cn(
-                                        "flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
+                                        "flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/10",
                                         m.id === model && "bg-accent"
                                       )}
                                       onClick={() => {

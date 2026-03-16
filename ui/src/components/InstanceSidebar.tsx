@@ -34,8 +34,8 @@ export function InstanceSidebar() {
                     [
                       "rounded-md px-2 py-1.5 text-xs transition-colors",
                       isActive
-                        ? "bg-accent text-foreground"
-                        : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                        ? "bg-accent/12 text-accent"
+                        : "text-muted-foreground hover:bg-accent/10 hover:text-foreground",
                     ].join(" ")
                   }
                 >

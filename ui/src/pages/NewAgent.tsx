@@ -228,7 +228,7 @@ export function NewAgent() {
             <PopoverTrigger asChild>
               <button
                 className={cn(
-                  "inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors",
+                  "inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/10 transition-colors",
                   isFirstAgent && "opacity-60 cursor-not-allowed"
                 )}
                 disabled={isFirstAgent}
@@ -242,8 +242,8 @@ export function NewAgent() {
                 <button
                   key={r}
                   className={cn(
-                    "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-                    r === role && "bg-accent"
+                    "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/10",
+                    r === role && "bg-accent/12 text-accent"
                   )}
                   onClick={() => { setRole(r); setRoleOpen(false); }}
                 >
@@ -257,7 +257,7 @@ export function NewAgent() {
             <PopoverTrigger asChild>
               <button
                 className={cn(
-                  "inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors",
+                  "inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/10 transition-colors",
                   isFirstAgent && "opacity-60 cursor-not-allowed"
                 )}
                 disabled={isFirstAgent}
@@ -278,8 +278,8 @@ export function NewAgent() {
             <PopoverContent className="w-48 p-1" align="start">
               <button
                 className={cn(
-                  "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-                  !reportsTo && "bg-accent"
+                  "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/10",
+                  !reportsTo && "bg-accent/12 text-accent"
                 )}
                 onClick={() => { setReportsTo(""); setReportsToOpen(false); }}
               >
@@ -289,7 +289,7 @@ export function NewAgent() {
                 <button
                   key={a.id}
                   className={cn(
-                    "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 truncate",
+                    "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/10 truncate",
                     a.id === reportsTo && "bg-accent"
                   )}
                   onClick={() => { setReportsTo(a.id); setReportsToOpen(false); }}

@@ -308,7 +308,7 @@ export function Layout() {
                   href="https://docs.paperclip.ing/"
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors text-foreground/80 hover:bg-accent/50 hover:text-foreground flex-1 min-w-0"
+                  className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors text-foreground/80 hover:bg-accent/10 hover:text-foreground flex-1 min-w-0"
                 >
                   <BookOpen className="h-4 w-4 shrink-0" />
                   <span className="truncate">Documentation</span>
@@ -358,7 +358,7 @@ export function Layout() {
                   href="https://docs.paperclip.ing/"
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors text-foreground/80 hover:bg-accent/50 hover:text-foreground flex-1 min-w-0"
+                  className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors text-foreground/80 hover:bg-accent/10 hover:text-foreground flex-1 min-w-0"
                 >
                   <BookOpen className="h-4 w-4 shrink-0" />
                   <span className="truncate">Documentation</span>

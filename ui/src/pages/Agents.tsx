@@ -149,7 +149,7 @@ export function Agents() {
             <button
               className={cn(
                 "flex items-center gap-1.5 px-2 py-1.5 text-xs transition-colors border border-border",
-                filtersOpen || showTerminated ? "text-foreground bg-accent" : "text-muted-foreground hover:bg-accent/50"
+                filtersOpen || showTerminated ? "text-accent bg-accent/12" : "text-muted-foreground hover:bg-accent/10"
               )}
               onClick={() => setFiltersOpen(!filtersOpen)}
             >
@@ -160,7 +160,7 @@ export function Agents() {
             {filtersOpen && (
               <div className="absolute right-0 top-full mt-1 z-50 w-48 border border-border bg-popover shadow-md p-1">
                 <button
-                  className="flex items-center gap-2 w-full px-2 py-1.5 text-xs text-left hover:bg-accent/50 transition-colors"
+                  className="flex items-center gap-2 w-full px-2 py-1.5 text-xs text-left hover:bg-accent/10 transition-colors"
                   onClick={() => setShowTerminated(!showTerminated)}
                 >
                   <span className={cn(
@@ -180,7 +180,7 @@ export function Agents() {
               <button
                 className={cn(
                   "p-1.5 transition-colors",
-                  effectiveView === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
+                  effectiveView === "list" ? "bg-accent/12 text-accent" : "text-muted-foreground hover:bg-accent/10"
                 )}
                 onClick={() => setView("list")}
               >
@@ -189,7 +189,7 @@ export function Agents() {
               <button
                 className={cn(
                   "p-1.5 transition-colors",
-                  effectiveView === "org" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
+                  effectiveView === "org" ? "bg-accent/12 text-accent" : "text-muted-foreground hover:bg-accent/10"
                 )}
                 onClick={() => setView("org")}
               >

@@ -772,7 +772,7 @@ export function IssueDetail() {
               </PopoverTrigger>
             <PopoverContent className="w-44 p-1" align="end">
               <button
-                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
+                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/10 text-destructive"
                 onClick={() => {
                   updateIssue.mutate(
                     { hiddenAt: new Date().toISOString() },

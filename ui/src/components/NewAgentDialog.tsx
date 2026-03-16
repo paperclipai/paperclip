@@ -197,7 +197,7 @@ export function NewAgentDialog() {
                   <button
                     key={opt.value}
                     className={cn(
-                      "flex flex-col items-center gap-1.5 rounded-md border border-border p-3 text-xs transition-colors hover:bg-accent/50 relative"
+                      "flex flex-col items-center gap-1.5 rounded-md border border-border p-3 text-xs transition-colors hover:bg-accent/10 relative"
                     )}
                     onClick={() => handleAdvancedAdapterPick(opt.value)}
                   >

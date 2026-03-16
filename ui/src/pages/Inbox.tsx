@@ -148,7 +148,7 @@ function FailedRunCard({
       <button
         type="button"
         onClick={onDismiss}
-        className="absolute right-2 top-2 z-10 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100"
+        className="absolute right-2 top-2 z-10 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent/10 hover:text-foreground group-hover:opacity-100"
         aria-label="Dismiss"
       >
         <X className="h-4 w-4" />
@@ -757,7 +757,7 @@ export function Inbox() {
             </h3>
             <div className="divide-y divide-border border border-border">
               {showAggregateAgentError && (
-                <div className="group/alert relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50">
+                <div className="group/alert relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/10">
                   <Link
                     to="/agents"
                     className="flex flex-1 cursor-pointer items-center gap-3 no-underline text-inherit"
@@ -771,7 +771,7 @@ export function Inbox() {
                   <button
                     type="button"
                     onClick={() => dismiss("alert:agent-errors")}
-                    className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/alert:opacity-100"
+                    className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent/10 hover:text-foreground group-hover/alert:opacity-100"
                     aria-label="Dismiss"
                   >
                     <X className="h-3.5 w-3.5" />
@@ -779,7 +779,7 @@ export function Inbox() {
                 </div>
               )}
               {showBudgetAlert && (
-                <div className="group/alert relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50">
+                <div className="group/alert relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/10">
                   <Link
                     to="/costs"
                     className="flex flex-1 cursor-pointer items-center gap-3 no-underline text-inherit"
@@ -794,7 +794,7 @@ export function Inbox() {
                   <button
                     type="button"
                     onClick={() => dismiss("alert:budget")}
-                    className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/alert:opacity-100"
+                    className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent/10 hover:text-foreground group-hover/alert:opacity-100"
                     aria-label="Dismiss"
                   >
                     <X className="h-3.5 w-3.5" />

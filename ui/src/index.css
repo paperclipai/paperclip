@@ -155,19 +155,23 @@
     touch-action: manipulation;
   }
 
-  /* nClouds button styling for primary CTAs */
-  button[data-variant="primary"],
-  button:not([data-variant]),
-  [role="button"][data-variant="primary"] {
+  /* nClouds button styling — 5px radius for all branded button variants */
+  [data-slot="button"] {
     border-radius: 5px;
   }
 
-  /* Card styling - white surfaces on subtle background */
+  /* Card styling — white surfaces on subtle background with nClouds shadow */
   [data-slot="card"],
   .card {
     background-color: var(--card);
     border-radius: 16px;
-    box-shadow: 0 2px 18px 0 rgba(0, 0, 0, 0.2);
+    box-shadow: 0 2px 18px 0 rgba(0, 0, 0, 0.08);
+  }
+
+  /* Accent bottom-border emphasis on cards (nClouds second-pass brand touch) */
+  [data-slot="card"][data-accent-edge],
+  .card[data-accent-edge] {
+    border-bottom: 4px solid var(--accent);
   }
 }
 

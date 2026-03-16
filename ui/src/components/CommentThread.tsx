@@ -236,7 +236,7 @@ const TimelineList = memo(function TimelineList({
                 {comment.runAgentId ? (
                   <Link
                     to={`/agents/${comment.runAgentId}/runs/${comment.runId}`}
-                    className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-[10px] font-mono text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
+                    className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-[10px] font-mono text-muted-foreground hover:text-foreground hover:bg-accent/10 transition-colors"
                   >
                     run {comment.runId.slice(0, 8)}
                   </Link>

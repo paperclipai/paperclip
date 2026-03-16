@@ -86,8 +86,8 @@ export function PathInstructionsModal({
               className={cn(
                 "flex flex-1 items-center justify-center gap-1.5 rounded px-2 py-1 text-xs transition-colors",
                 platform === p.id
-                  ? "bg-accent text-foreground"
-                  : "text-muted-foreground hover:text-foreground hover:bg-accent/50",
+                  ? "bg-accent/12 text-accent"
+                  : "text-muted-foreground hover:text-foreground hover:bg-accent/10",
               )}
               onClick={() => setPlatform(p.id)}
             >
@@ -130,7 +130,7 @@ export function ChoosePathButton({ className }: { className?: string }) {
       <button
         type="button"
         className={cn(
-          "inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 transition-colors shrink-0",
+          "inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent/10 transition-colors shrink-0",
           className,
         )}
         onClick={() => setOpen(true)}

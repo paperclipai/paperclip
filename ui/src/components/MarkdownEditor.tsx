@@ -579,7 +579,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
             <button
               key={option.id}
               className={cn(
-                "flex items-center gap-2 w-full px-3 py-1.5 text-sm text-left hover:bg-accent/50 transition-colors",
+                "flex items-center gap-2 w-full px-3 py-1.5 text-sm text-left hover:bg-accent/10 transition-colors",
                 i === mentionIndex && "bg-accent",
               )}
               onMouseDown={(e) => {

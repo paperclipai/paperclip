@@ -282,7 +282,7 @@ export function RunTranscriptUxLab() {
                     type="button"
                     className={cn(
                       "rounded-full px-3 py-1 text-xs font-medium capitalize transition-colors",
-                      detailMode === mode ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground",
+                      detailMode === mode ? "bg-accent/12 text-accent" : "text-muted-foreground hover:text-foreground",
                     )}
                     onClick={() => setDetailMode(mode)}
                   >
@@ -297,7 +297,7 @@ export function RunTranscriptUxLab() {
                     type="button"
                     className={cn(
                       "rounded-full px-3 py-1 text-xs font-medium capitalize transition-colors",
-                      density === nextDensity ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground",
+                      density === nextDensity ? "bg-accent/12 text-accent" : "text-muted-foreground hover:text-foreground",
                     )}
                     onClick={() => setDensity(nextDensity)}
                   >

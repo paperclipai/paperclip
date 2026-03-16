@@ -321,7 +321,7 @@ export function Dashboard() {
                     <Link
                       key={issue.id}
                       to={`/issues/${issue.identifier ?? issue.id}`}
-                      className="px-4 py-3 text-sm cursor-pointer hover:bg-accent/50 transition-colors no-underline text-inherit block"
+                      className="px-4 py-3 text-sm cursor-pointer hover:bg-accent/10 transition-colors no-underline text-inherit block"
                     >
                       <div className="flex items-start gap-2 sm:items-center sm:gap-3">
                         {/* Status icon - left column on mobile */}

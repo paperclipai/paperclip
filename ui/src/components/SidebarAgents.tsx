@@ -96,7 +96,7 @@ export function SidebarAgents() {
               e.stopPropagation();
               openNewAgent();
             }}
-            className="flex items-center justify-center h-4 w-4 rounded text-muted-foreground/60 hover:text-foreground hover:bg-accent/50 transition-colors"
+            className="flex items-center justify-center h-4 w-4 rounded text-muted-foreground/60 hover:text-foreground hover:bg-accent/10 transition-colors"
             aria-label="New agent"
           >
             <Plus className="h-3 w-3" />
@@ -118,8 +118,8 @@ export function SidebarAgents() {
                 className={cn(
                   "flex items-center gap-2.5 px-3 py-1.5 text-[13px] font-medium transition-colors",
                   activeAgentId === agentRouteRef(agent)
-                    ? "bg-accent text-foreground"
-                    : "text-foreground/80 hover:bg-accent/50 hover:text-foreground"
+                    ? "bg-accent/12 text-accent"
+                    : "text-foreground/80 hover:bg-accent/10 hover:text-foreground"
                 )}
               >
                 <AgentIcon icon={agent.icon} className="shrink-0 h-3.5 w-3.5 text-muted-foreground" />

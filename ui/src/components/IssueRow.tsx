@@ -44,7 +44,7 @@ export function IssueRow({
       to={`/issues/${issuePathId}`}
       state={issueLinkState}
       className={cn(
-        "flex items-start gap-2 border-b border-border py-2.5 pl-2 pr-3 text-sm no-underline text-inherit transition-colors hover:bg-accent/50 last:border-b-0 sm:items-center sm:py-2 sm:pl-1",
+        "flex items-start gap-2 border-b border-border py-2.5 pl-2 pr-3 text-sm no-underline text-inherit transition-colors hover:bg-accent/10 last:border-b-0 sm:items-center sm:py-2 sm:pl-1",
         className,
       )}
     >

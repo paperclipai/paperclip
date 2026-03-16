@@ -1102,22 +1102,22 @@ export function DesignGuide() {
       <Section title="Navigation Patterns">
         <SubSection title="Sidebar nav items">
           <div className="w-60 border border-border rounded-md p-3 space-y-0.5 bg-card">
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium bg-accent text-accent-foreground">
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium bg-accent/12 text-accent">
               <LayoutDashboard className="h-4 w-4" />
               Dashboard
             </div>
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground cursor-pointer">
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent/10 hover:text-foreground cursor-pointer">
               <CircleDot className="h-4 w-4" />
               Issues
               <span className="ml-auto text-xs bg-primary text-primary-foreground rounded-full px-1.5 py-0.5">
                 12
               </span>
             </div>
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground cursor-pointer">
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent/10 hover:text-foreground cursor-pointer">
               <Bot className="h-4 w-4" />
               Agents
             </div>
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground cursor-pointer">
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent/10 hover:text-foreground cursor-pointer">
               <Hexagon className="h-4 w-4" />
               Projects
             </div>
@@ -1126,11 +1126,11 @@ export function DesignGuide() {
 
         <SubSection title="View toggle">
           <div className="flex items-center border border-border rounded-md w-fit">
-            <button className="px-3 py-1.5 text-xs font-medium bg-accent text-foreground rounded-l-md">
+            <button className="px-3 py-1.5 text-xs font-medium bg-accent/12 text-accent rounded-l-md">
               <ListTodo className="h-3.5 w-3.5 inline mr-1" />
               List
             </button>
-            <button className="px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent/50 rounded-r-md">
+            <button className="px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent/10 rounded-r-md">
               <Target className="h-3.5 w-3.5 inline mr-1" />
               Org
             </button>

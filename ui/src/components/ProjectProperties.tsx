@@ -468,7 +468,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                   availableGoals.map((goal) => (
                     <button
                       key={goal.id}
-                      className="flex items-center w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
+                      className="flex items-center w-full px-2 py-1.5 text-xs rounded hover:bg-accent/10"
                       onClick={() => addGoal(goal.id)}
                     >
                       {goal.title}

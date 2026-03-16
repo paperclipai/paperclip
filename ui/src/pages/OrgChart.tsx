@@ -280,7 +280,7 @@ export function OrgChart() {
       {/* Zoom controls */}
       <div className="absolute top-3 right-3 z-10 flex flex-col gap-1">
         <button
-          className="w-7 h-7 flex items-center justify-center bg-background border border-border rounded text-sm hover:bg-accent transition-colors"
+          className="w-7 h-7 flex items-center justify-center bg-background border border-border rounded text-sm hover:bg-accent/10 transition-colors"
           onClick={() => {
             const newZoom = Math.min(zoom * 1.2, 2);
             const container = containerRef.current;
@@ -297,7 +297,7 @@ export function OrgChart() {
           +
         </button>
         <button
-          className="w-7 h-7 flex items-center justify-center bg-background border border-border rounded text-sm hover:bg-accent transition-colors"
+          className="w-7 h-7 flex items-center justify-center bg-background border border-border rounded text-sm hover:bg-accent/10 transition-colors"
           onClick={() => {
             const newZoom = Math.max(zoom * 0.8, 0.2);
             const container = containerRef.current;
@@ -314,7 +314,7 @@ export function OrgChart() {
           &minus;
         </button>
         <button
-          className="w-7 h-7 flex items-center justify-center bg-background border border-border rounded text-[10px] hover:bg-accent transition-colors"
+          className="w-7 h-7 flex items-center justify-center bg-background border border-border rounded text-[10px] hover:bg-accent/10 transition-colors"
           onClick={() => {
             if (!containerRef.current) return;
             const cW = containerRef.current.clientWidth;

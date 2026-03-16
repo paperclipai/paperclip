@@ -333,14 +333,14 @@ export function IssuesList({
           {/* View mode toggle */}
           <div className="flex items-center border border-border rounded-md overflow-hidden mr-1">
             <button
-              className={`p-1.5 transition-colors ${viewState.viewMode === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+              className={`p-1.5 transition-colors ${viewState.viewMode === "list" ? "bg-accent/12 text-accent" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "list" })}
               title="List view"
             >
               <List className="h-3.5 w-3.5" />
             </button>
             <button
-              className={`p-1.5 transition-colors ${viewState.viewMode === "board" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+              className={`p-1.5 transition-colors ${viewState.viewMode === "board" ? "bg-accent/12 text-accent" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "board" })}
               title="Board view"
             >
@@ -414,7 +414,7 @@ export function IssuesList({
                     <span className="text-xs text-muted-foreground">Status</span>
                     <div className="space-y-0.5">
                       {statusOrder.map((s) => (
-                        <label key={s} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
+                        <label key={s} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/10 cursor-pointer">
                           <Checkbox
                             checked={viewState.statuses.includes(s)}
                             onCheckedChange={() => updateView({ statuses: toggleInArray(viewState.statuses, s) })}
@@ -433,7 +433,7 @@ export function IssuesList({
                       <span className="text-xs text-muted-foreground">Priority</span>
                       <div className="space-y-0.5">
                         {priorityOrder.map((p) => (
-                          <label key={p} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
+                          <label key={p} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/10 cursor-pointer">
                             <Checkbox
                               checked={viewState.priorities.includes(p)}
                               onCheckedChange={() => updateView({ priorities: toggleInArray(viewState.priorities, p) })}
@@ -449,7 +449,7 @@ export function IssuesList({
                     <div className="space-y-1">
                       <span className="text-xs text-muted-foreground">Assignee</span>
                       <div className="space-y-0.5 max-h-32 overflow-y-auto">
-                        <label className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
+                        <label className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/10 cursor-pointer">
                           <Checkbox
                             checked={viewState.assignees.includes("__unassigned")}
                             onCheckedChange={() => updateView({ assignees: toggleInArray(viewState.assignees, "__unassigned") })}
@@ -457,7 +457,7 @@ export function IssuesList({
                           <span className="text-sm">No assignee</span>
                         </label>
                         {currentUserId && (
-                          <label className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
+                          <label className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/10 cursor-pointer">
                             <Checkbox
                               checked={viewState.assignees.includes("__me")}
                               onCheckedChange={() => updateView({ assignees: toggleInArray(viewState.assignees, "__me") })}
@@ -467,7 +467,7 @@ export function IssuesList({
                           </label>
                         )}
                         {(agents ?? []).map((agent) => (
-                          <label key={agent.id} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
+                          <label key={agent.id} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/10 cursor-pointer">
                             <Checkbox
                               checked={viewState.assignees.includes(agent.id)}
                               onCheckedChange={() => updateView({ assignees: toggleInArray(viewState.assignees, agent.id) })}
@@ -483,7 +483,7 @@ export function IssuesList({
                         <span className="text-xs text-muted-foreground">Labels</span>
                         <div className="space-y-0.5 max-h-32 overflow-y-auto">
                           {labels.map((label) => (
-                            <label key={label.id} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
+                            <label key={label.id} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/10 cursor-pointer">
                               <Checkbox
                                 checked={viewState.labels.includes(label.id)}
                                 onCheckedChange={() => updateView({ labels: toggleInArray(viewState.labels, label.id) })}
@@ -522,7 +522,7 @@ export function IssuesList({
                     <button
                       key={field}
                       className={`flex items-center justify-between w-full px-2 py-1.5 text-sm rounded-sm ${
-                        viewState.sortField === field ? "bg-accent/50 text-foreground" : "hover:bg-accent/50 text-muted-foreground"
+                        viewState.sortField === field ? "bg-accent/15 text-accent" : "hover:bg-accent/10 text-muted-foreground"
                       }`}
                       onClick={() => {
                         if (viewState.sortField === field) {
@@ -565,7 +565,7 @@ export function IssuesList({
                     <button
                       key={value}
                       className={`flex items-center justify-between w-full px-2 py-1.5 text-sm rounded-sm ${
-                        viewState.groupBy === value ? "bg-accent/50 text-foreground" : "hover:bg-accent/50 text-muted-foreground"
+                        viewState.groupBy === value ? "bg-accent/15 text-accent" : "hover:bg-accent/10 text-muted-foreground"
                       }`}
                       onClick={() => updateView({ groupBy: value })}
                     >
@@ -717,7 +717,7 @@ export function IssuesList({
                       >
                         <PopoverTrigger asChild>
                           <button
-                            className="flex w-[180px] shrink-0 items-center rounded-md px-2 py-1 transition-colors hover:bg-accent/50"
+                            className="flex w-[180px] shrink-0 items-center rounded-md px-2 py-1 transition-colors hover:bg-accent/10"
                             onClick={(e) => {
                               e.preventDefault();
                               e.stopPropagation();
@@ -758,7 +758,7 @@ export function IssuesList({
                           <div className="max-h-48 overflow-y-auto overscroll-contain">
                             <button
                               className={cn(
-                                "flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50",
+                                "flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/10",
                                 !issue.assigneeAgentId && !issue.assigneeUserId && "bg-accent",
                               )}
                               onClick={(e) => {
@@ -772,7 +772,7 @@ export function IssuesList({
                             {currentUserId && (
                               <button
                                 className={cn(
-                                  "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent/50",
+                                  "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent/10",
                                   issue.assigneeUserId === currentUserId && "bg-accent",
                                 )}
                                 onClick={(e) => {
@@ -796,7 +796,7 @@ export function IssuesList({
                                 <button
                                   key={agent.id}
                                   className={cn(
-                                    "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent/50",
+                                    "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent/10",
                                     issue.assigneeAgentId === agent.id && "bg-accent",
                                   )}
                                   onClick={(e) => {

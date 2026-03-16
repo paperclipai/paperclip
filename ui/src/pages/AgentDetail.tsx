@@ -528,7 +528,7 @@ export function AgentDetail() {
             </PopoverTrigger>
             <PopoverContent className="w-44 p-1" align="end">
               <button
-                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
+                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/10"
                 onClick={() => {
                   navigator.clipboard.writeText(agent.id);
                   setMoreOpen(false);
@@ -538,7 +538,7 @@ export function AgentDetail() {
                 Copy Agent ID
               </button>
               <button
-                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
+                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/10"
                 onClick={() => {
                   resetTaskSession.mutate(null);
                   setMoreOpen(false);
@@ -548,7 +548,7 @@ export function AgentDetail() {
                 Reset Sessions
               </button>
               <button
-                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
+                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/10 text-destructive"
                 onClick={() => {
                   agentAction.mutate("terminate");
                   setMoreOpen(false);

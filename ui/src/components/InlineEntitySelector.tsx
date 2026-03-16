@@ -98,7 +98,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
             ref={ref}
             type="button"
             className={cn(
-              "inline-flex min-w-0 items-center gap-1 rounded-md border border-border bg-muted/40 px-2 py-1 text-sm font-medium text-foreground transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              "inline-flex min-w-0 items-center gap-1 rounded-md border border-border bg-muted/40 px-2 py-1 text-sm font-medium text-foreground transition-colors hover:bg-accent/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               className,
             )}
             onPointerDown={() => { isPointerDownRef.current = true; }}
