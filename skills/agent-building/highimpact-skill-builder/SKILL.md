@@ -1,6 +1,6 @@
 ---
 name: highimpact-skill-builder
-description: Use when creating, testing, improving, or benchmarking Claude Code skills. Triggers on: "create a skill", "make a skill for X", "turn this into a skill", "improve this skill", "test this skill", "benchmark this skill", "optimize skill description", "skill performance", "skill quality", "write a skill that does X", "skill triggering", "skill isn't working well". Skills are the highest-leverage artifact in Claude Code — one good skill multiplies across every future invocation. This skill guides the full lifecycle.
+description: Use when creating, testing, improving, or benchmarking Claude Code skills. Triggers on: "create a skill", "make a skill for X", "turn this into a skill", "improve this skill", "test this skill", "benchmark this skill", "optimize skill description", "skill performance", "skill quality", "write a skill that does X", "skill triggering", "skill isn't working well", "quick skill". Skills are the highest-leverage artifact in Claude Code — one good skill multiplies across every future invocation. This skill guides the full lifecycle.
 ---
 
 # High-Impact Skill Builder
