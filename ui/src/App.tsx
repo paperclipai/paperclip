@@ -77,10 +77,9 @@ function CloudAccessGate() {
   }
 
   if (isAuthenticatedMode && healthQuery.data?.bootstrapStatus === "bootstrap_pending") {
-    if (healthQuery.data?.bootstrapInviteToken) {
-      return <Navigate to={`/invite/${healthQuery.data.bootstrapInviteToken}`} replace />;
-    }
-    return <BootstrapPendingPage />;
+    // During bootstrap, redirect to signup instead of invite landing
+    // This simplifies onboarding - no need to accept invite twice
+    return <Navigate to="/auth" replace />;
   }
 
   if (isAuthenticatedMode && !sessionQuery.data) {
@@ -148,7 +147,9 @@ function CompanyRootRedirect() {
     return <NoCompaniesStartPage autoOpen={false} />;
   }
 
-  const targetCompany = selectedCompany ?? companies[0] ?? null;
+  // Only use non-archived companies
+  const activeCompanies = companies.filter((c) => c.status !== "archived");
+  const targetCompany = selectedCompany ?? activeCompanies[0] ?? null;
   if (!targetCompany) {
     return <NoCompaniesStartPage />;
   }
@@ -164,7 +165,9 @@ function UnprefixedBoardRedirect() {
     return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
   }
 
-  const targetCompany = selectedCompany ?? companies[0] ?? null;
+  // Only use non-archived companies
+  const activeCompanies = companies.filter((c) => c.status !== "archived");
+  const targetCompany = selectedCompany ?? activeCompanies[0] ?? null;
   if (!targetCompany) {
     return <NoCompaniesStartPage />;
   }

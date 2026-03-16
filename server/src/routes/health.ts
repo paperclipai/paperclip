@@ -1,8 +1,11 @@
 import { Router } from "express";
+import { randomBytes } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import { count, sql } from "drizzle-orm";
 import { instanceUserRoles } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+
+let cachedBootstrapToken: string | undefined;
 
 export function healthRoutes(
   db?: Db,
@@ -36,7 +39,15 @@ export function healthRoutes(
       bootstrapStatus = roleCount > 0 ? "ready" : "bootstrap_pending";
     }
 
-    const bootstrapInviteToken = process.env.PAPERCLIP_BOOTSTRAP_INVITE_TOKEN;
+    // Auto-generate bootstrap token if needed
+    let bootstrapInviteToken = process.env.PAPERCLIP_BOOTSTRAP_INVITE_TOKEN;
+    if (bootstrapStatus === "bootstrap_pending" && !bootstrapInviteToken && !cachedBootstrapToken) {
+      // Generate a random token if not already created
+      cachedBootstrapToken = randomBytes(32).toString("hex");
+      bootstrapInviteToken = cachedBootstrapToken;
+    } else if (bootstrapStatus === "bootstrap_pending") {
+      bootstrapInviteToken = cachedBootstrapToken;
+    }
 
     res.json({
       status: "ok",

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type UIEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { BookOpen, Moon, Sun } from "lucide-react";
+import { LogOut, Moon, Sun } from "lucide-react";
 import { Outlet, useLocation, useNavigate, useParams } from "@/lib/router";
 import { CompanyRail } from "./CompanyRail";
 import { Sidebar } from "./Sidebar";
@@ -22,6 +22,7 @@ import { useTheme } from "../context/ThemeContext";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
 import { healthApi } from "../api/health";
+import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
@@ -57,13 +58,21 @@ export function Layout() {
   useEffect(() => {
     if (!companyPrefix || companiesLoading || companies.length === 0) return;
 
+    const activeCompanies = companies.filter((c) => c.status !== "archived");
     const requestedPrefix = companyPrefix.toUpperCase();
     const matched = companies.find((company) => company.issuePrefix.toUpperCase() === requestedPrefix);
 
-    if (!matched) {
+    if (!matched || matched.status === "archived") {
+      // If requested company doesn't exist or is archived, redirect to active company or onboarding
       const fallback =
-        (selectedCompanyId ? companies.find((company) => company.id === selectedCompanyId) : null)
-        ?? companies[0]!;
+        (selectedCompanyId ? activeCompanies.find((company) => company.id === selectedCompanyId) : null)
+        ?? activeCompanies[0] ?? null;
+
+      if (!fallback) {
+        navigate("/", { replace: true });
+        return;
+      }
+
       navigate(`/${fallback.issuePrefix}/dashboard`, { replace: true });
       return;
     }
@@ -90,15 +99,26 @@ export function Layout() {
 
   const togglePanel = togglePanelVisible;
 
-  // Cmd+1..9 to switch companies
+  // Cmd+1..9 to switch companies (only active companies)
   const switchCompany = useCallback(
     (index: number) => {
-      if (index < companies.length) {
-        setSelectedCompanyId(companies[index]!.id);
+      const activeCompanies = companies.filter((c) => c.status !== "archived");
+      if (index < activeCompanies.length) {
+        setSelectedCompanyId(activeCompanies[index]!.id);
       }
     },
     [companies, setSelectedCompanyId],
   );
+
+  const handleLogout = useCallback(async () => {
+    try {
+      await authApi.signOut();
+    } catch (err) {
+      console.error("Logout failed:", err);
+    }
+    // Full page reload to clear all state and redirect to login
+    window.location.href = "/auth";
+  }, []);
 
   useCompanyPageMemory();
 
@@ -215,12 +235,15 @@ export function Layout() {
           </div>
           <div className="border-t border-r border-border px-3 py-2 bg-background">
             <div className="flex items-center gap-1">
-              <SidebarNavItem
-                to="/docs"
-                label="Documentation"
-                icon={BookOpen}
-                className="flex-1 min-w-0"
-              />
+              <Button
+                variant="ghost"
+                size="sm"
+                className="flex-1 min-w-0 justify-start text-muted-foreground hover:text-foreground"
+                onClick={handleLogout}
+              >
+                <LogOut className="h-4 w-4 mr-2 shrink-0" />
+                <span className="truncate">Logout</span>
+              </Button>
               <Button
                 type="button"
                 variant="ghost"
@@ -250,12 +273,15 @@ export function Layout() {
           </div>
           <div className="border-t border-r border-border px-3 py-2">
             <div className="flex items-center gap-1">
-              <SidebarNavItem
-                to="/docs"
-                label="Documentation"
-                icon={BookOpen}
-                className="flex-1 min-w-0"
-              />
+              <Button
+                variant="ghost"
+                size="sm"
+                className="flex-1 min-w-0 justify-start text-muted-foreground hover:text-foreground"
+                onClick={handleLogout}
+              >
+                <LogOut className="h-4 w-4 mr-2 shrink-0" />
+                <span className="truncate">Logout</span>
+              </Button>
               <Button
                 type="button"
                 variant="ghost"

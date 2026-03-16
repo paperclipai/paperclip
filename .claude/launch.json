@@ -1,0 +1,30 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "PostgreSQL (Docker)",
+      "runtimeExecutable": "docker-compose",
+      "runtimeArgs": ["up", "-d", "db"],
+      "port": 5432
+    },
+    {
+      "name": "Node.js Backend (Server)",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@paperclipai/server", "dev:watch"],
+      "port": 3100
+    },
+    {
+      "name": "React UI (Vite)",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@paperclipai/ui", "dev"],
+      "port": 5173
+    },
+    {
+      "name": "All (Integrated Dev)",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["dev:watch"],
+      "port": 3100,
+      "autoPort": true
+    }
+  ]
+}

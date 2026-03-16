@@ -22,8 +22,13 @@ import { activityRoutes } from "./routes/activity.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { llmRoutes } from "./routes/llms.js";
+import { llmCredentialsRoutes } from "./routes/llm-credentials.js";
+import { companyLlmSettingsRoutes } from "./routes/company-llm-settings.js";
+import { llmModelsRoutes } from "./routes/llm-models.js";
+import { agentChatRoutes } from "./routes/agent_chat.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
+import { createWorkflowRoutes } from "./routes/workflows.js";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 
 type UiMode = "none" | "static" | "vite-dev";
@@ -101,10 +106,14 @@ export async function createApp(
     }),
   );
   api.use("/companies", companyRoutes(db));
+  api.use("/users/me/llm-credentials", llmCredentialsRoutes(db));
+  api.use("/llm-providers", llmModelsRoutes(db));
   api.use(agentRoutes(db));
+  api.use("/agents", agentChatRoutes(db));
   api.use(assetRoutes(db, opts.storageService));
   api.use(projectRoutes(db));
   api.use(issueRoutes(db, opts.storageService));
+  api.use("/companies/:companyId/workflows", createWorkflowRoutes(db));
   api.use(goalRoutes(db));
   api.use(approvalRoutes(db));
   api.use(secretRoutes(db));

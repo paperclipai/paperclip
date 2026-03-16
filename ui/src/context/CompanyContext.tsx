@@ -60,11 +60,19 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
     [companies],
   );
 
-  // Auto-select first company when list loads
+  // Auto-select first non-archived company when list loads
   useEffect(() => {
     if (companies.length === 0) return;
 
-    const selectableCompanies = sidebarCompanies.length > 0 ? sidebarCompanies : companies;
+    const selectableCompanies = sidebarCompanies; // Only non-archived companies
+
+    // If no active companies, clear selection to trigger onboarding
+    if (selectableCompanies.length === 0) {
+      setSelectedCompanyIdState(null);
+      localStorage.removeItem(STORAGE_KEY);
+      return;
+    }
+
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored && selectableCompanies.some((c) => c.id === stored)) return;
     if (selectedCompanyId && selectableCompanies.some((c) => c.id === selectedCompanyId)) return;

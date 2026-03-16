@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useDialog } from "../context/DialogContext";
 import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
 import { queryKeys } from "../lib/queryKeys";
@@ -10,10 +11,12 @@ import { Settings } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import { Field, ToggleField, HintIcon } from "../components/agent-config-primitives";
 import { CompanyIntegrations } from "./CompanyIntegrations";
+import { CompanyLlmSettings } from "../components/CompanyLlmSettings";
 
 export function CompanySettings() {
   const { companies, selectedCompany, selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { openOnboarding } = useDialog();
   const queryClient = useQueryClient();
 
   // General settings local state
@@ -86,6 +89,9 @@ export function CompanySettings() {
     onSuccess: async ({ nextCompanyId }) => {
       if (nextCompanyId) {
         setSelectedCompanyId(nextCompanyId);
+      } else {
+        // No other companies exist - open onboarding wizard to create a new one
+        openOnboarding();
       }
       await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
       await queryClient.invalidateQueries({ queryKey: queryKeys.companies.stats });
@@ -237,6 +243,9 @@ export function CompanySettings() {
           />
         </div>
       </div>
+
+      {/* LLM Provider Settings */}
+      <CompanyLlmSettings companyId={selectedCompanyId!} />
 
       {/* Integrations */}
       <CompanyIntegrations />

@@ -55,13 +55,17 @@ type AdapterType =
   | "cursor"
   | "process"
   | "http"
-  | "openclaw";
+  | "openclaw"
+  | "platform";
 
-const DEFAULT_TASK_DESCRIPTION = `Setup yourself as the CEO. Use the ceo persona found here: [https://github.com/paperclipai/companies/blob/main/default/ceo/AGENTS.md](https://github.com/paperclipai/companies/blob/main/default/ceo/AGENTS.md)
+const DEFAULT_TASK_DESCRIPTION = `Setup yourself as the CEO using the built-in CEO persona configuration.
 
-Ensure you have a folder agents/ceo and then download this AGENTS.md as well as the sibling HEARTBEAT.md, SOUL.md, and TOOLS.md. and set that AGENTS.md as the path to your agents instruction file
+Configure your CEO agent with the following instructions:
+- Create a folder agents/ceo in your workspace
+- Set the AGENTS.md file path in your agent configuration
+- Review the HEARTBEAT.md, SOUL.md, and TOOLS.md files for role definition
 
-And after you've finished that, hire yourself a Founding Engineer agent`;
+Once your CEO is configured, you can hire a Founding Engineer agent to assist with technical tasks.`;
 
 export function OnboardingWizard() {
   const { onboardingOpen, onboardingOptions, closeOnboarding } = useDialog();
@@ -83,7 +87,7 @@ export function OnboardingWizard() {
 
   // Step 2
   const [agentName, setAgentName] = useState("CEO");
-  const [adapterType, setAdapterType] = useState<AdapterType>("claude_local");
+  const [adapterType, setAdapterType] = useState<AdapterType>("platform");
   const [cwd, setCwd] = useState("");
   const [model, setModel] = useState("");
   const [command, setCommand] = useState("");
@@ -574,6 +578,13 @@ export function OnboardingWizard() {
                     <div className="grid grid-cols-2 gap-2">
                       {[
                         {
+                          value: "platform" as const,
+                          label: "Platform (Built-in)",
+                          icon: Sparkles,
+                          desc: "LLM-powered agent",
+                          recommended: true
+                        },
+                        {
                           value: "claude_local" as const,
                           label: "Claude Code",
                           icon: Sparkles,
@@ -660,11 +671,12 @@ export function OnboardingWizard() {
                     </div>
                   </div>
 
-                  {/* Conditional adapter fields */}
-                  {(adapterType === "claude_local" ||
-                    adapterType === "codex_local" ||
-                    adapterType === "opencode_local" ||
-                    adapterType === "cursor") && (
+                  {/* Conditional adapter fields - not needed for platform adapter */}
+                  {adapterType !== "platform" &&
+                    (adapterType === "claude_local" ||
+                      adapterType === "codex_local" ||
+                      adapterType === "opencode_local" ||
+                      adapterType === "cursor") && (
                     <div className="space-y-3">
                       <div>
                         <div className="flex items-center gap-1.5 mb-1">

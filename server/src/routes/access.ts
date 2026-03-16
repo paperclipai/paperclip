@@ -4,13 +4,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Router } from "express";
 import type { Request } from "express";
-import { and, eq, isNull, desc } from "drizzle-orm";
+import { and, eq, isNull, desc, count, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentApiKeys,
   authUsers,
   invites,
   joinRequests,
+  instanceUserRoles,
 } from "@paperclipai/db";
 import {
   acceptInviteSchema,
@@ -745,11 +746,37 @@ export function accessRoutes(
   router.get("/invites/:token", async (req, res) => {
     const token = (req.params.token as string).trim();
     if (!token) throw notFound("Invite not found");
+
+    // Check if we're in bootstrap_pending state (no instance admins)
+    const adminCount = await db
+      .select({ count: count() })
+      .from(instanceUserRoles)
+      .where(sql`${instanceUserRoles.role} = 'instance_admin'`)
+      .then((rows) => Number(rows[0]?.count ?? 0));
+
+    // Try to find invite in database first
     const invite = await db
       .select()
       .from(invites)
       .where(eq(invites.tokenHash, hashToken(token)))
       .then((rows) => rows[0] ?? null);
+
+    // If not found in database AND we're in bootstrap_pending, treat as bootstrap token
+    if (!invite && adminCount === 0) {
+      // Return a synthetic bootstrap invite for any token during bootstrap
+      res.json({
+        id: "bootstrap",
+        companyId: null,
+        inviteType: "bootstrap_ceo",
+        allowedJoinTypes: "human",
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(), // 24 hours from now
+        onboardingPath: `/api/invites/${token}/onboarding`,
+        onboardingTextPath: `/api/invites/${token}/onboarding.txt`,
+      });
+      return;
+    }
+
+    // Regular invite validation
     if (!invite || invite.revokedAt || invite.acceptedAt || inviteExpired(invite)) {
       throw notFound("Invite not found");
     }
@@ -760,11 +787,33 @@ export function accessRoutes(
   router.get("/invites/:token/onboarding", async (req, res) => {
     const token = (req.params.token as string).trim();
     if (!token) throw notFound("Invite not found");
+
+    // Check if we're in bootstrap_pending state
+    const adminCount = await db
+      .select({ count: count() })
+      .from(instanceUserRoles)
+      .where(sql`${instanceUserRoles.role} = 'instance_admin'`)
+      .then((rows) => Number(rows[0]?.count ?? 0));
+
     const invite = await db
       .select()
       .from(invites)
       .where(eq(invites.tokenHash, hashToken(token)))
       .then((rows) => rows[0] ?? null);
+
+    // If not found and we're in bootstrap, create synthetic invite for onboarding
+    if (!invite && adminCount === 0) {
+      const syntheticInvite = {
+        id: "bootstrap",
+        inviteType: "bootstrap_ceo",
+        companyId: null,
+        allowedJoinTypes: "human",
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      };
+      res.json(buildInviteOnboardingManifest(req, token, syntheticInvite as any, opts));
+      return;
+    }
+
     if (!invite || invite.revokedAt || inviteExpired(invite)) {
       throw notFound("Invite not found");
     }
@@ -775,11 +824,34 @@ export function accessRoutes(
   router.get("/invites/:token/onboarding.txt", async (req, res) => {
     const token = (req.params.token as string).trim();
     if (!token) throw notFound("Invite not found");
+
+    // Check if we're in bootstrap_pending state
+    const adminCount = await db
+      .select({ count: count() })
+      .from(instanceUserRoles)
+      .where(sql`${instanceUserRoles.role} = 'instance_admin'`)
+      .then((rows) => Number(rows[0]?.count ?? 0));
+
     const invite = await db
       .select()
       .from(invites)
       .where(eq(invites.tokenHash, hashToken(token)))
       .then((rows) => rows[0] ?? null);
+
+    // If not found and we're in bootstrap, create synthetic invite
+    if (!invite && adminCount === 0) {
+      const syntheticInvite = {
+        id: "bootstrap",
+        inviteType: "bootstrap_ceo",
+        companyId: null,
+        allowedJoinTypes: "human",
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      };
+      const text = buildInviteOnboardingTextDocument(req, token, syntheticInvite as any, opts);
+      res.type("text/plain").send(text);
+      return;
+    }
+
     if (!invite || invite.revokedAt || inviteExpired(invite)) {
       throw notFound("Invite not found");
     }
@@ -791,11 +863,53 @@ export function accessRoutes(
     const token = (req.params.token as string).trim();
     if (!token) throw notFound("Invite not found");
 
+    // Check admin count for bootstrap state
+    const adminCount = await db
+      .select({ count: count() })
+      .from(instanceUserRoles)
+      .where(sql`${instanceUserRoles.role} = 'instance_admin'`)
+      .then((rows) => Number(rows[0]?.count ?? 0));
+
+    // Check if this is a bootstrap token (synthetic, not in DB)
+    const isBootstrapToken = adminCount === 0; // Only valid if we're in bootstrap_pending state
+
     const invite = await db
       .select()
       .from(invites)
       .where(eq(invites.tokenHash, hashToken(token)))
       .then((rows) => rows[0] ?? null);
+
+    // If not found and we're in bootstrap_pending, treat it as a synthetic bootstrap invite
+    if (!invite && isBootstrapToken) {
+      // Create a synthetic invite object for bootstrap
+      const syntheticInvite = {
+        id: "bootstrap-synthetic",
+        inviteType: "bootstrap_ceo",
+      };
+
+      if (req.body.requestType !== "human") {
+        throw badRequest("Bootstrap invite requires human request type");
+      }
+      if (req.actor.type !== "board" || (!req.actor.userId && !isLocalImplicit(req))) {
+        throw unauthorized("Authenticated user required for bootstrap acceptance");
+      }
+      const userId = req.actor.userId;
+      if (!userId) {
+        throw unauthorized("User ID is required for bootstrap");
+      }
+      const existingAdmin = await access.isInstanceAdmin(userId);
+      if (!existingAdmin) {
+        await access.promoteInstanceAdmin(userId);
+      }
+      res.status(202).json({
+        inviteId: syntheticInvite.id,
+        inviteType: syntheticInvite.inviteType,
+        bootstrapAccepted: true,
+        userId,
+      });
+      return;
+    }
+
     if (!invite || invite.revokedAt || invite.acceptedAt || inviteExpired(invite)) {
       throw notFound("Invite not found");
     }

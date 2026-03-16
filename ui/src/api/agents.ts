@@ -141,4 +141,10 @@ export const agentsApi = {
   ) => api.post<HeartbeatRun | { status: "skipped" }>(agentPath(id, companyId, "/wakeup"), data),
   loginWithClaude: (id: string, companyId?: string) =>
     api.post<ClaudeLoginResult>(agentPath(id, companyId, "/claude-login"), {}),
+  getChatMessages: (id: string, companyId?: string) =>
+    api.get<Array<{ id: string; agentId: string; role: "user" | "assistant"; content: string; metadata?: Record<string, any>; createdAt: string }>>(agentPath(id, companyId, "/chat")),
+  sendChatMessage: (id: string, message: string, companyId?: string) =>
+    api.post<{ id: string; agentId: string; role: "user" | "assistant"; content: string; metadata?: Record<string, any>; createdAt: string }>(agentPath(id, companyId, "/chat"), { message }),
+  generateAgentConfig: (data: { role: string; context?: string }) =>
+    api.post<{ name: string; role: string; instructions: string; icon: string }>("/agents/ai-generate", data),
 };

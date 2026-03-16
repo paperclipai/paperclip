@@ -226,6 +226,16 @@ export {
   type CompanyPortabilityExport,
   type CompanyPortabilityPreview,
   type CompanyPortabilityImport,
+  llmProviderTypeSchema,
+  createUserLlmCredentialSchema,
+  updateUserLlmCredentialSchema,
+  setCompanyLlmSettingsSchema,
+  validateLlmCredentialSchema,
+  type LlmProviderType,
+  type CreateUserLlmCredential,
+  type UpdateUserLlmCredential,
+  type SetCompanyLlmSettings,
+  type ValidateLlmCredential,
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";

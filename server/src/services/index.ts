@@ -1,5 +1,6 @@
 export { companyService } from "./companies.js";
 export { agentService } from "./agents.js";
+export { agentChatService } from "./agent_chat.js";
 export { assetService } from "./assets.js";
 export { projectService } from "./projects.js";
 export { issueService, type IssueFilters } from "./issues.js";

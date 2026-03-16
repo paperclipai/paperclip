@@ -131,3 +131,16 @@ export {
   type UpdateMemberPermissions,
   type UpdateUserCompanyAccess,
 } from "./access.js";
+
+export {
+  llmProviderTypeSchema,
+  createUserLlmCredentialSchema,
+  updateUserLlmCredentialSchema,
+  setCompanyLlmSettingsSchema,
+  validateLlmCredentialSchema,
+  type LlmProviderType,
+  type CreateUserLlmCredential,
+  type UpdateUserLlmCredential,
+  type SetCompanyLlmSettings,
+  type ValidateLlmCredential,
+} from "./llm.js";

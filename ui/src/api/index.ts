@@ -14,3 +14,6 @@ export { dashboardApi } from "./dashboard";
 export { heartbeatsApi } from "./heartbeats";
 export { sidebarBadgesApi } from "./sidebarBadges";
 export { secretsApi } from "./secrets";
+export { llmCredentialsApi } from "./llmCredentials";
+export { companyLlmSettingsApi } from "./companyLlmSettings";
+export { llmModelsApi } from "./llmModels";

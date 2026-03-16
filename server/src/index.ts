@@ -26,6 +26,7 @@ import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import { heartbeatService } from "./services/index.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
+import { initializeWorkflowScheduler } from "./services/workflow-scheduler.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 
@@ -463,6 +464,11 @@ process.env.PAPERCLIP_API_URL = `http://${runtimeApiHost}:${listenPort}`;
 setupLiveEventsWebSocketServer(server, db as any, {
   deploymentMode: config.deploymentMode,
   resolveSessionFromHeaders,
+});
+
+// Initialize workflow scheduler
+void initializeWorkflowScheduler(db as any).catch((err) => {
+  logger.error(`Error initializing workflow scheduler: ${err?.message}`);
 });
 
 if (config.heartbeatSchedulerEnabled) {

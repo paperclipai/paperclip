@@ -11,6 +11,7 @@ export const queryKeys = {
     taskSessions: (id: string) => ["agents", "task-sessions", id] as const,
     keys: (agentId: string) => ["agents", "keys", agentId] as const,
     configRevisions: (agentId: string) => ["agents", "config-revisions", agentId] as const,
+    chat: (agentId: string) => ["agents", "chat", agentId] as const,
   },
   issues: {
     list: (companyId: string) => ["issues", companyId] as const,

@@ -19,7 +19,8 @@ services:
     image: paperclip-local
     restart: always
     ports:
-      - "3100:3100"
+      - "3100:3000"
+      - "3000:3000"
     environment:
       DATABASE_URL: postgres://paperclip:paperclip_password@db:5432/paperclip
       BETTER_AUTH_SECRET: paperclip_auth_secret_change_me
@@ -27,38 +28,13 @@ services:
       PAPERCLIP_DEPLOYMENT_EXPOSURE: private
       SERVE_UI: "true"
       HOST: "0.0.0.0"
-      PORT: "3100"
+      PORT: "3000"
     depends_on:
       db:
         condition: service_healthy
     volumes:
       - paperclip_app_data:/paperclip
 
-  coworker:
-    image: node:22-alpine # Or your custom coworker image
-    command: sh -c "npx create-coworker-app@latest . && npm run start"
-    restart: always
-    ports:
-      - "4111:4111"
-    environment:
-      - NODE_ENV=production
-    volumes:
-      - coworker_data:/data
-
-  zeroclaw:
-    image: ghcr.io/zeroclaw-labs/zeroclaw:latest
-    restart: unless-stopped
-    environment:
-      - PROVIDER=openrouter
-      - ZEROCLAW_ALLOW_PUBLIC_BIND=true
-      - ZEROCLAW_GATEWAY_PORT=42617
-    ports:
-      - "42617:42617"
-    volumes:
-      - zeroclaw_data:/zeroclaw-data
-
 volumes:
   paperclip_db_data:
   paperclip_app_data:
-  coworker_data:
-  zeroclaw_data:

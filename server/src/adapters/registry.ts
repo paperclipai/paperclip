@@ -33,6 +33,7 @@ import {
 } from "@paperclipai/adapter-openclaw";
 import { listCodexModels } from "./codex-models.js";
 import { listCursorModels } from "./cursor-models.js";
+import { platformAdapter } from "./platform/index.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
 import { coworkerAdapter } from "./coworker/index.js";
@@ -90,7 +91,7 @@ const openclawAdapter: ServerAdapterModule = {
 };
 
 const adaptersByType = new Map<string, ServerAdapterModule>(
-  [claudeLocalAdapter, codexLocalAdapter, opencodeLocalAdapter, cursorLocalAdapter, openclawAdapter, processAdapter, httpAdapter, coworkerAdapter, zeroclawAdapter].map((a) => [a.type, a]),
+  [platformAdapter, claudeLocalAdapter, codexLocalAdapter, opencodeLocalAdapter, cursorLocalAdapter, openclawAdapter, processAdapter, httpAdapter, coworkerAdapter, zeroclawAdapter].map((a) => [a.type, a]),
 );
 
 export function getServerAdapter(type: string): ServerAdapterModule {
