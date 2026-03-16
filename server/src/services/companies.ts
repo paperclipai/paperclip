@@ -8,6 +8,7 @@ import {
   agentTaskSessions,
   agentWakeupRequests,
   issues,
+  issueAttachments,
   issueComments,
   issueReadStates,
   projects,
@@ -18,11 +19,13 @@ import {
   approvalComments,
   approvals,
   activityLog,
+  assets,
   companySecrets,
   joinRequests,
   invites,
   principalPermissionGrants,
   companyMemberships,
+  workspaceRuntimeServices,
 } from "@paperclipai/db";
 
 export function companyService(db: Db) {
@@ -101,6 +104,10 @@ export function companyService(db: Db) {
     remove: (id: string) =>
       db.transaction(async (tx) => {
         // Delete from child tables in dependency order
+        // issueAttachments has FK to assets — must delete before assets
+        await tx.delete(issueAttachments).where(eq(issueAttachments.companyId, id));
+        await tx.delete(assets).where(eq(assets.companyId, id));
+        await tx.delete(workspaceRuntimeServices).where(eq(workspaceRuntimeServices.companyId, id));
         // activityLog has FK to heartbeatRuns — must delete first
         await tx.delete(activityLog).where(eq(activityLog.companyId, id));
         await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.companyId, id));
