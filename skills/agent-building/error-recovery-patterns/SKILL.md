@@ -99,14 +99,7 @@ Recovery manifest contents:
 
 ## Sub-Agent Retry with Preserved Context
 
-Never retry a failed operation in the same context. Accumulated error traces pollute reasoning. Delegate retry to a fresh sub-agent passing only the checkpoint manifest.
-
-```python
-# After failure — spawn clean:
-Agent(prompt=f"Resume from checkpoint:\n{open('recovery.md').read()}\n\nAttempt the failed step.")
-```
-
-Context rot from retry traces is the primary reason inline retry loops fail. Fresh context + clean checkpoint = clean retry.
+Never retry a failed operation in the same context. Accumulated error traces pollute reasoning. Delegate retry to a fresh sub-agent passing only the checkpoint manifest. Context rot is the primary reason inline retry loops fail.
 
 → Full pattern + checkpoint manifest schema: `references/sub-agent-retry.md`
 
