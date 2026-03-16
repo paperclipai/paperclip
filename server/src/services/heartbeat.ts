@@ -552,6 +552,40 @@ function resolveNextSessionState(input: {
   };
 }
 
+// Keywords in issue titles that indicate complex engineering work requiring a capable model.
+const COMPLEX_TASK_KEYWORDS = /\b(implement|fix|debug|refactor|migrate|build|design|architect|code|develop|create|deploy|investigate|diagnose|optimize|analyse|analyze|review|test)\b/i;
+const MODEL_HAIKU = "claude-haiku-4-5-20251001";
+const MODEL_SONNET = "claude-sonnet-4-6";
+
+/**
+ * Selects the appropriate model for a run based on issue priority and title heuristics.
+ * Only applies when no model is already configured in the adapter config.
+ * - priority=low AND no complex keywords in title → Haiku (cheaper)
+ * - priority=critical/high OR complex keywords → Sonnet (capable)
+ * - Otherwise → no override (use whatever default Claude CLI picks)
+ */
+function resolveModelForRun(
+  config: Record<string, unknown>,
+  issueInfo: { priority: string | null | undefined; title: string | null | undefined } | null | undefined,
+): Record<string, unknown> {
+  // If a model is already explicitly configured, never override it.
+  const existingModel = typeof config.model === "string" ? config.model.trim() : "";
+  if (existingModel) return config;
+  if (!issueInfo) return config;
+
+  const priority = typeof issueInfo.priority === "string" ? issueInfo.priority : "medium";
+  const title = typeof issueInfo.title === "string" ? issueInfo.title : "";
+  const hasComplexKeyword = COMPLEX_TASK_KEYWORDS.test(title);
+
+  if (priority === "low" && !hasComplexKeyword) {
+    return { ...config, model: MODEL_HAIKU };
+  }
+  if (priority === "critical" || priority === "high" || hasComplexKeyword) {
+    return { ...config, model: MODEL_SONNET };
+  }
+  return config;
+}
+
 export function heartbeatService(db: Db) {
   const runLogStore = getRunLogStore();
   const secretsSvc = secretService(db);
@@ -1405,6 +1439,8 @@ export function heartbeatService(db: Db) {
             assigneeAgentId: issues.assigneeAgentId,
             assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
             executionWorkspaceSettings: issues.executionWorkspaceSettings,
+            priority: issues.priority,
+            title: issues.title,
           })
           .from(issues)
           .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
@@ -1459,9 +1495,12 @@ export function heartbeatService(db: Db) {
     const mergedConfig = issueAssigneeOverrides?.adapterConfig
       ? { ...workspaceManagedConfig, ...issueAssigneeOverrides.adapterConfig }
       : workspaceManagedConfig;
+    // Model Selection by complexity: route simple low-priority tasks to cheaper models.
+    // Only applies when no model is already explicitly configured.
+    const mergedConfigWithModel = resolveModelForRun(mergedConfig, issueAssigneeConfig);
     const { config: resolvedConfig, secretKeys } = await secretsSvc.resolveAdapterConfigForRuntime(
       agent.companyId,
-      mergedConfig,
+      mergedConfigWithModel,
     );
     const issueRef = issueId
       ? await db

@@ -42,12 +42,18 @@ async function resolvePaperclipSkillsDir(): Promise<string | null> {
   return null;
 }
 
+// Skills that are only useful when the agent has active Paperclip work
+const PAPERCLIP_TASK_SKILLS = new Set(["paperclip", "paperclip-create-agent"]);
+
 /**
  * Create a tmpdir with `.claude/skills/` containing symlinks to skills from
  * the repo's `skills/` directory, so `--add-dir` makes Claude Code discover
  * them as proper registered skills.
+ *
+ * When `hasPaperclipWork` is false, Paperclip-specific skills are omitted to
+ * reduce context size for agents with no active tasks.
  */
-async function buildSkillsDir(): Promise<string> {
+async function buildSkillsDir(hasPaperclipWork: boolean): Promise<string> {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skills-"));
   const target = path.join(tmp, ".claude", "skills");
   await fs.mkdir(target, { recursive: true });
@@ -55,12 +61,12 @@ async function buildSkillsDir(): Promise<string> {
   if (!skillsDir) return tmp;
   const entries = await fs.readdir(skillsDir, { withFileTypes: true });
   for (const entry of entries) {
-    if (entry.isDirectory()) {
-      await fs.symlink(
-        path.join(skillsDir, entry.name),
-        path.join(target, entry.name),
-      );
-    }
+    if (!entry.isDirectory()) continue;
+    if (!hasPaperclipWork && PAPERCLIP_TASK_SKILLS.has(entry.name)) continue;
+    await fs.symlink(
+      path.join(skillsDir, entry.name),
+      path.join(target, entry.name),
+    );
   }
   return tmp;
 }
@@ -337,7 +343,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     extraArgs,
   } = runtimeConfig;
   const billingType = resolveClaudeBillingType(env);
-  const skillsDir = await buildSkillsDir();
+  // Conditional Skill Loading: only include Paperclip skills when the agent has active work.
+  // hasPaperclipWork is true if: a task was assigned (taskId in context), OR the server signals
+  // that the inbox is non-empty via context.paperclipHasWork.
+  const contextTaskId =
+    (typeof context.taskId === "string" && context.taskId.trim().length > 0) ||
+    (typeof context.issueId === "string" && context.issueId.trim().length > 0);
+  const hasPaperclipWork = contextTaskId || context.paperclipHasWork === true;
+  const skillsDir = await buildSkillsDir(hasPaperclipWork);
 
   // When instructionsFilePath is configured, create a combined temp file that
   // includes both the file content and the path directive, so we only need
