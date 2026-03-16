@@ -1,2 +1,10 @@
 iteration	trigger_pct	nofire_pct	output_pct	lines	status	description
 0	100	100	100	181	baseline	Initial state before optimization
+1	100	100	100	169	kept	Remove inline recovery.md template — duplicates checkpoint-pattern.md
+2	100	100	100	162	kept	Remove inline sub-agent Python code block — duplicates sub-agent-retry.md
+3	100	100	100	155	kept	Remove inline recovery manifest bullets — duplicates stop-hook-state.md
+4	100	100	100	149	kept	Collapse Three Failure Modes body — intro table already names all three
+5	100	100	100	142	kept	Collapse escalation protocol decision tree — rule + pointer covers it
+6	100	100	100	140	kept	Remove circuit breaker tagline — first sentence already covers it
+7	100	100	100	138	kept	Remove opening tagline — marketing copy, table is self-evident
+8	100	100	100	136	kept	Remove checklist intro line — section heading + items are self-evident
