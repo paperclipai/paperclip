@@ -1,4 +1,5 @@
 import type { AdapterModel } from "./types.js";
+import { resolveZaiModelsEndpoint } from "@paperclipai/shared";
 import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local";
 import { readConfigFile } from "../config-file.js";
 
@@ -36,16 +37,16 @@ function resolveLlmDetails(): { apiKey: string | null; endpoint: string; provide
 
   if (config?.llm?.provider === "zai") {
     const envKey = process.env.ZAI_API_KEY?.trim();
-    const envEndpoint = process.env.ZAI_BASE_URL ? `${process.env.ZAI_BASE_URL.replace(/\/$/, "")}/models` : null;
+    const envEndpoint = resolveZaiModelsEndpoint(process.env.ZAI_BASE_URL);
     
     if (envKey) {
-      return { apiKey: envKey, endpoint: envEndpoint || "https://api.z.ai/api/paas/v4/models", provider: "zai" };
+      return { apiKey: envKey, endpoint: envEndpoint, provider: "zai" };
     }
     
     const configKey = config.llm.apiKey?.trim();
     return {
       apiKey: configKey && configKey.length > 0 ? configKey : null,
-      endpoint: envEndpoint || "https://api.z.ai/api/paas/v4/models",
+      endpoint: envEndpoint,
       provider: "zai",
     };
   }

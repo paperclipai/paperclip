@@ -13,6 +13,12 @@ import {
   type SecretProvider,
   type StorageProvider,
 } from "@paperclipai/shared";
+import {
+  llmConfigSchema,
+  paperclipConfigSchema,
+  resolveZaiModelsEndpoint,
+  type LlmConfig,
+} from "@paperclipai/shared";
 import { configExists, readConfig, resolveConfigPath, writeConfig } from "../config/store.js";
 import type { PaperclipConfig } from "../config/schema.js";
 import { ensureAgentJwtSecret, resolveAgentJwtEnvFile } from "../config/env.js";
@@ -342,9 +348,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
             s.stop(pc.yellow("Could not validate API key — continuing anyway"));
           }
         } else if (llm.provider === "zai") {
-          const endpoint = process.env.ZAI_BASE_URL
-            ? `${process.env.ZAI_BASE_URL.replace(/\/$/, "")}/models`
-            : "https://api.z.ai/api/paas/v4/models";
+          const endpoint = resolveZaiModelsEndpoint(process.env.ZAI_BASE_URL);
           const res = await fetch(endpoint, {
             headers: { Authorization: `Bearer ${llm.apiKey}` },
           });
