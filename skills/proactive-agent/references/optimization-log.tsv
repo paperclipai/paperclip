@@ -1,2 +1,10 @@
 iteration	trigger_pct	nofire_pct	output_pct	lines	status	description
 0	91.7	100	100	121	baseline	Initial QC-passed skill: 11/12 trigger (T11 borderline), 5/5 no-fire, 31/31 output
+1	100	100	100	121	KEEP	Add agent state persistence + save state before session ends to trigger phrases — fixes T11 (11→12/12)
+2	100	100	100	111	KEEP	Remove From Reactive to Proactive section — implicit throughout skill (-10 lines)
+3	100	100	100	105	KEEP	Remove CronList/CronDelete bullets + common expressions from CronCreate — covered in 01 (-6 lines)
+4	100	100	100	98	KEEP	Collapse End-to-End Example + Anti-Patterns into single References section (-7 lines)
+5	100	100	100	84	KEEP	Remove State Management inline code block — all 4 T11 assertions in 03-state-management.md (-14 lines)
+6	100	100	100	83	KEEP	Trim anti-rationalization — remove poll-every-minute row, covered by rate tables in references (-1 line)
+7	100	100	100	77	KEEP	Compress intro primitives table into one-line summary (-6 lines)
+8	100	100	100	75	KEEP	Remove reactive/proactive tagline — implicit in skill description (-2 lines)
