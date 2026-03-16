@@ -108,13 +108,7 @@ A PostToolUse hook on Bash writes each debugging attempt to `debug-log.md` in yo
 
 ## Regression Prevention
 
-Every bug fix ships with a test that would have caught the bug. This compounds: the pre-commit gate grows more protective with each fix.
-
-| Bug type | Test pattern |
-|---|---|
-| Logic error | Unit test on the function with the failing case |
-| Edge case | Parameterized test with the edge input |
-| API contract | Integration test pinning expected response |
+Every bug fix ships with a test that would have caught the bug. The pre-commit gate grows more protective with each fix.
 
 **Rule:** If your fix doesn't include a regression test, the bug isn't fixed — it's temporarily absent.
 
