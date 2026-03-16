@@ -7460,7 +7460,7 @@ export function heartbeatService(db: Db) {
   }
 
   return {
-    list: async (companyId: string, agentId?: string, limit?: number) => {
+    list: async (companyId: string, agentId?: string, limit?: number, offset?: number) => {
       const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
       const query = db
         .select(
@@ -7484,7 +7484,17 @@ export function heartbeatService(db: Db) {
         )
         .orderBy(desc(heartbeatRuns.createdAt));
 
-      const rows = limit ? await query.limit(limit) : await query;
+      let rows;
+      if (limit !== undefined && offset !== undefined && offset > 0) {
+        rows = await query.limit(limit).offset(offset);
+      } else if (limit !== undefined) {
+        rows = await query.limit(limit);
+      } else if (offset !== undefined && offset > 0) {
+        rows = await query.offset(offset);
+      } else {
+        rows = await query;
+      }
+
       return rows.map((row) => {
         const {
           contextIssueId,
@@ -7538,6 +7548,38 @@ export function heartbeatService(db: Db) {
               }),
         };
       });
+    },
+
+    stats: async (companyId: string, agentId?: string) => {
+      const now = new Date();
+      // Calculate 14 days ago for the trailing activity window
+      const fourteenDaysAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
+      
+      const condition = agentId 
+        ? and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId), gt(heartbeatRuns.createdAt, fourteenDaysAgo))
+        : and(eq(heartbeatRuns.companyId, companyId), gt(heartbeatRuns.createdAt, fourteenDaysAgo));
+
+      const rows = await db
+        .select({
+          date: sql<string>`DATE(${heartbeatRuns.createdAt})`.as("date"),
+          status: heartbeatRuns.status,
+          count: sql<number>`count(*)`.as("count"),
+        })
+        .from(heartbeatRuns)
+        .where(condition)
+        .groupBy(sql`DATE(${heartbeatRuns.createdAt})`, heartbeatRuns.status);
+      
+      return rows.map(r => ({ ...r, count: Number(r.count) }));
+    },
+
+    latestFailed: async (companyId: string) => {
+      const rows = await db
+        .selectDistinctOn([heartbeatRuns.agentId], heartbeatRunSafeColumns)
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.companyId, companyId))
+        .orderBy(heartbeatRuns.agentId, desc(heartbeatRuns.createdAt));
+
+      return rows.filter((row) => row.status === "failed" || row.status === "timed_out");
     },
 
     getRun,
