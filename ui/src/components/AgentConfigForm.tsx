@@ -285,7 +285,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     adapterType === "codex_local" ||
     adapterType === "gemini_local" ||
     adapterType === "opencode_local" ||
-    adapterType === "cursor";
+    adapterType === "cursor" ||
+    adapterType === "hermes_local";
   const uiAdapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
 
   // Fetch adapter models for the effective adapter type
@@ -924,7 +925,7 @@ function AdapterEnvironmentResult({ result }: { result: AdapterEnvironmentTestRe
 
 /* ---- Internal sub-components ---- */
 
-const ENABLED_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "gemini_local", "opencode_local", "cursor"]);
+const ENABLED_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "gemini_local", "opencode_local", "cursor", "hermes_local"]);
 
 /** Display list includes all real adapter types plus UI-only coming-soon entries. */
 const ADAPTER_DISPLAY_LIST: { value: string; label: string; comingSoon: boolean }[] = [

@@ -63,7 +63,8 @@ type AdapterType =
   | "cursor"
   | "process"
   | "http"
-  | "openclaw_gateway";
+  | "openclaw_gateway"
+  | "hermes_local";
 
 const DEFAULT_TASK_DESCRIPTION = `Setup yourself as the CEO. Use the ceo persona found here: 
 
@@ -178,7 +179,8 @@ export function OnboardingWizard() {
     adapterType === "codex_local" ||
     adapterType === "gemini_local" ||
     adapterType === "opencode_local" ||
-    adapterType === "cursor";
+    adapterType === "cursor" ||
+    adapterType === "hermes_local";
   const effectiveAdapterCommand =
     command.trim() ||
     (adapterType === "codex_local"
@@ -189,6 +191,8 @@ export function OnboardingWizard() {
       ? "agent"
       : adapterType === "opencode_local"
       ? "opencode"
+      : adapterType === "hermes_local"
+      ? "hermes"
       : "claude");
 
   useEffect(() => {
@@ -769,6 +773,12 @@ export function OnboardingWizard() {
                             desc: "Local multi-provider agent"
                           },
                           {
+                            value: "hermes_local" as const,
+                            label: "Hermes Agent",
+                            icon: Terminal,
+                            desc: "Local Hermes agent"
+                          },
+                          {
                             value: "pi_local" as const,
                             label: "Pi",
                             icon: Terminal,
@@ -841,7 +851,8 @@ export function OnboardingWizard() {
                     adapterType === "gemini_local" ||
                     adapterType === "opencode_local" ||
                     adapterType === "pi_local" ||
-                    adapterType === "cursor") && (
+                    adapterType === "cursor" ||
+                    adapterType === "hermes_local") && (
                     <div className="space-y-3">
                       <div>
                         <div className="flex items-center gap-1.5 mb-1">

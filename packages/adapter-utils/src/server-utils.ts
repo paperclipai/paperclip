@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { constants as fsConstants, promises as fs } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 export interface RunProcessResult {
@@ -122,6 +123,23 @@ export function joinPromptSections(
     .join(separator);
 }
 
+/**
+ * Expand ~ to the current user's home directory.
+ * Handles ~/path (current user's home).
+ * Note: ~user/path syntax falls back to current user's home (not that user's home).
+ */
+export function expandHomeDir(inputPath: string): string {
+  if (!inputPath.startsWith("~")) return inputPath;
+  // ~/path -> /home/user/path
+  if (inputPath === "~" || inputPath.startsWith("~/")) {
+    return path.join(os.homedir(), inputPath.slice(2));
+  }
+  // ~user/path - fall back to current user's home
+  const slashIndex = inputPath.indexOf("/");
+  const rest = slashIndex > 0 ? inputPath.slice(slashIndex) : "";
+  return path.join(os.homedir(), rest);
+}
+
 export function redactEnvForLogs(env: Record<string, string>): Record<string, string> {
   const redacted: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
@@ -239,14 +257,17 @@ export async function ensureAbsoluteDirectory(
   cwd: string,
   opts: { createIfMissing?: boolean } = {},
 ) {
-  if (!path.isAbsolute(cwd)) {
-    throw new Error(`Working directory must be an absolute path: "${cwd}"`);
+  // Expand ~ to home directory first
+  const expandedCwd = expandHomeDir(cwd);
+  
+  if (!path.isAbsolute(expandedCwd)) {
+    throw new Error(`Working directory must be an absolute path: "${cwd}" (expanded: "${expandedCwd}")`);
   }
 
   const assertDirectory = async () => {
-    const stats = await fs.stat(cwd);
+    const stats = await fs.stat(expandedCwd);
     if (!stats.isDirectory()) {
-      throw new Error(`Working directory is not a directory: "${cwd}"`);
+      throw new Error(`Working directory is not a directory: "${expandedCwd}"`);
     }
   };
 
@@ -257,18 +278,18 @@ export async function ensureAbsoluteDirectory(
     const code = (err as NodeJS.ErrnoException).code;
     if (!opts.createIfMissing || code !== "ENOENT") {
       if (code === "ENOENT") {
-        throw new Error(`Working directory does not exist: "${cwd}"`);
+        throw new Error(`Working directory does not exist: "${expandedCwd}"`);
       }
       throw err instanceof Error ? err : new Error(String(err));
     }
   }
 
   try {
-    await fs.mkdir(cwd, { recursive: true });
+    await fs.mkdir(expandedCwd, { recursive: true });
     await assertDirectory();
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    throw new Error(`Could not create working directory "${cwd}": ${reason}`);
+    throw new Error(`Could not create working directory "${expandedCwd}": ${reason}`);
   }
 }
 
