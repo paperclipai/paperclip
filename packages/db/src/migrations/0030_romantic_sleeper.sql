@@ -1,0 +1,1 @@
+ALTER TABLE "issue_favorites" ALTER COLUMN "user_id" SET DATA TYPE text;

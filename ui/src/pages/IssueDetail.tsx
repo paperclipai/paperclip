@@ -46,7 +46,9 @@ import {
   Paperclip,
   SlidersHorizontal,
   Trash2,
+  Star,
 } from "lucide-react";
+import { FavoriteButton } from "../components/FavoriteButton";
 import type { ActivityEvent } from "@paperclipai/shared";
 import type { Agent, IssueAttachment } from "@paperclipai/shared";
 
@@ -693,6 +695,7 @@ export function IssueDetail() {
             onChange={(priority) => updateIssue.mutate({ priority })}
           />
           <span className="text-sm font-mono text-muted-foreground shrink-0">{issue.identifier ?? issue.id.slice(0, 8)}</span>
+          <FavoriteButton issueId={issue.id} companyId={issue.companyId} size="xs" />
 
           {hasLiveRuns && (
             <span className="inline-flex items-center gap-1.5 rounded-full bg-cyan-500/10 border border-cyan-500/30 px-2 py-0.5 text-[10px] font-medium text-cyan-600 dark:text-cyan-400 shrink-0">

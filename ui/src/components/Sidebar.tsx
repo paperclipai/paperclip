@@ -9,6 +9,7 @@ import {
   SquarePen,
   Network,
   Settings,
+  Star,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarSection } from "./SidebarSection";
@@ -97,6 +98,7 @@ export function Sidebar() {
 
         <SidebarSection label="Work">
           <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} />
+          <SidebarNavItem to="/favorites" label="Favorites" icon={Star} />
           <SidebarNavItem to="/goals" label="Goals" icon={Target} />
         </SidebarSection>
 

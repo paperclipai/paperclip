@@ -90,4 +90,10 @@ export const issuesApi = {
     api.post<Approval[]>(`/issues/${id}/approvals`, { approvalId }),
   unlinkApproval: (id: string, approvalId: string) =>
     api.delete<{ ok: true }>(`/issues/${id}/approvals/${approvalId}`),
+  // Favorite endpoints
+  listFavorites: (companyId: string) => api.get<Issue[]>(`/companies/${companyId}/issues/favorites`),
+  getFavoriteIds: (companyId: string) =>
+    api.get<{ ids: string[] }>(`/companies/${companyId}/issues/favorite-ids`),
+  addFavorite: (id: string) => api.post<{ ok: true }>(`/issues/${id}/favorite`, {}),
+  removeFavorite: (id: string) => api.delete<{ ok: true }>(`/issues/${id}/favorite`),
 };

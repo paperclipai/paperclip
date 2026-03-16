@@ -211,6 +211,13 @@
       "when": 1773417600000,
       "tag": "0029_plugin_tables",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1773645965454,
+      "tag": "0030_romantic_sleeper",
+      "breakpoints": true
     }
   ]
 }

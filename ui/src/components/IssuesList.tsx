@@ -14,6 +14,7 @@ import { PriorityIcon } from "./PriorityIcon";
 import { EmptyState } from "./EmptyState";
 import { Identity } from "./Identity";
 import { IssueRow } from "./IssueRow";
+import { FavoriteButton } from "./FavoriteButton";
 import { PageSkeleton } from "./PageSkeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -158,6 +159,8 @@ interface IssuesListProps {
   initialSearch?: string;
   onSearchChange?: (search: string) => void;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
+  /** Hide filter/sort/group toolbar controls */
+  showFilters?: boolean;
 }
 
 export function IssuesList({
@@ -173,6 +176,7 @@ export function IssuesList({
   initialSearch,
   onSearchChange,
   onUpdateIssue,
+  showFilters = true,
 }: IssuesListProps) {
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialog();
@@ -329,6 +333,7 @@ export function IssuesList({
           </div>
         </div>
 
+        {showFilters && (
         <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
           {/* View mode toggle */}
           <div className="flex items-center border border-border rounded-md overflow-hidden mr-1">
@@ -578,6 +583,7 @@ export function IssuesList({
             </Popover>
           )}
         </div>
+        )}
       </div>
 
       {isLoading && <PageSkeleton variant="issues-list" />}
@@ -637,6 +643,7 @@ export function IssuesList({
                   issue={issue}
                   issueLinkState={issueLinkState}
                   desktopLeadingSpacer
+                  className="group"
                   mobileLeading={(
                     <span
                       onClick={(e) => {
@@ -670,6 +677,14 @@ export function IssuesList({
                       <span className="shrink-0 font-mono text-xs text-muted-foreground">
                         {issue.identifier ?? issue.id.slice(0, 8)}
                       </span>
+                      {selectedCompanyId && (
+                        <FavoriteButton
+                          issueId={issue.id}
+                          companyId={selectedCompanyId}
+                          size="xs"
+                          className="opacity-0 group-hover:opacity-100 transition-opacity"
+                        />
+                      )}
                       {liveIssueIds?.has(issue.id) && (
                         <span className="inline-flex items-center gap-1 rounded-full bg-blue-500/10 px-1.5 py-0.5 sm:gap-1.5 sm:px-2">
                           <span className="relative flex h-2 w-2">

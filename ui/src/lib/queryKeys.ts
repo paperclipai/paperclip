@@ -21,6 +21,8 @@ export const queryKeys = {
     listAssignedToMe: (companyId: string) => ["issues", companyId, "assigned-to-me"] as const,
     listTouchedByMe: (companyId: string) => ["issues", companyId, "touched-by-me"] as const,
     listUnreadTouchedByMe: (companyId: string) => ["issues", companyId, "unread-touched-by-me"] as const,
+    favorites: (companyId: string) => ["issues", companyId, "favorites"] as const,
+    favoriteIds: (companyId: string) => ["issues", companyId, "favorite-ids"] as const,
     labels: (companyId: string) => ["issues", companyId, "labels"] as const,
     listByProject: (companyId: string, projectId: string) =>
       ["issues", companyId, "project", projectId] as const,

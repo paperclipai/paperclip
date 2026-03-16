@@ -9,6 +9,7 @@ import {
   goals,
   heartbeatRuns,
   issueAttachments,
+  issueFavorites,
   issueLabels,
   issueComments,
   issueDocuments,
@@ -1525,6 +1526,100 @@ export function issueService(db: Db) {
         project: a.projectId ? projectMap.get(a.projectId) ?? null : null,
         goal: a.goalId ? goalMap.get(a.goalId) ?? null : null,
       }));
+    },
+
+    // Favorite methods for starring/un-starring issues
+    addFavorite: async (companyId: string, issueId: string, userId: string) => {
+      const now = new Date();
+      const [row] = await db
+        .insert(issueFavorites)
+        .values({
+          companyId,
+          issueId,
+          userId,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .onConflictDoNothing()
+        .returning();
+      return row ?? null;
+    },
+
+    removeFavorite: async (companyId: string, issueId: string, userId: string) => {
+      const [removed] = await db
+        .delete(issueFavorites)
+        .where(
+          and(
+            eq(issueFavorites.companyId, companyId),
+            eq(issueFavorites.issueId, issueId),
+            eq(issueFavorites.userId, userId),
+          ),
+        )
+        .returning();
+      return removed ?? null;
+    },
+
+    listFavorites: async (companyId: string, userId: string) => {
+      const favoriteRows = await db
+        .select({
+          id: issueFavorites.id,
+          issueId: issueFavorites.issueId,
+          createdAt: issueFavorites.createdAt,
+        })
+        .from(issueFavorites)
+        .where(
+          and(
+            eq(issueFavorites.companyId, companyId),
+            eq(issueFavorites.userId, userId),
+          ),
+        )
+        .orderBy(desc(issueFavorites.createdAt));
+
+      if (favoriteRows.length === 0) return [];
+
+      const issueIds = favoriteRows.map((row) => row.issueId);
+      const issueRows = await db
+        .select()
+        .from(issues)
+        .where(and(inArray(issues.id, issueIds), isNull(issues.hiddenAt)));
+
+      const enriched = await withIssueLabels(db, issueRows);
+      const runMap = await activeRunMapForIssues(db, enriched);
+      const withRuns = withActiveRuns(enriched, runMap);
+
+      // Sort by favorite order (most recently favorited first)
+      const issueMap = new Map(withRuns.map((issue) => [issue.id, issue]));
+      return favoriteRows
+        .map((fav) => issueMap.get(fav.issueId))
+        .filter((issue): issue is NonNullable<typeof issue> => issue != null);
+    },
+
+    getFavoriteIssueIds: async (companyId: string, userId: string) => {
+      const rows = await db
+        .select({ issueId: issueFavorites.issueId })
+        .from(issueFavorites)
+        .where(
+          and(
+            eq(issueFavorites.companyId, companyId),
+            eq(issueFavorites.userId, userId),
+          ),
+        );
+      return new Set(rows.map((row) => row.issueId));
+    },
+
+    countFavorites: async (companyId: string, userId: string) => {
+      const [row] = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(issueFavorites)
+        .innerJoin(issues, eq(issueFavorites.issueId, issues.id))
+        .where(
+          and(
+            eq(issueFavorites.companyId, companyId),
+            eq(issueFavorites.userId, userId),
+            isNull(issues.hiddenAt),
+          ),
+        );
+      return Number(row?.count ?? 0);
     },
   };
 }
