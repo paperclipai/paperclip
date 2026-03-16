@@ -38,6 +38,16 @@ if ! git merge --no-edit "upstream/$BASE_BRANCH"; then
 fi
 
 new_commit_count=$(git log --oneline "origin/$BASE_BRANCH..HEAD" | wc -l | tr -d ' ')
+if [ "$new_commit_count" = "0" ]; then
+  cat > "$SUMMARY_FILE" <<EOF
+## Upstream Sync $(date +%Y-%m-%d)
+
+No net commits found between \`origin/$BASE_BRANCH\` and \`$INTEGRATION_BRANCH\`.
+EOF
+  touch .upstream-sync-noop
+  exit 0
+fi
+
 migration_note=""
 if git diff --name-only "origin/$BASE_BRANCH..HEAD" | rg -q '^packages/db/src/migrations/'; then
   migration_note="**WARNING: migration files changed. Verify migration safety before merge.**"
