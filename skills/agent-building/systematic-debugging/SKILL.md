@@ -105,15 +105,7 @@ Prevents shotgun debugging: random changes, endless retries, Claude confidently 
 
 ## Root Cause vs. Symptom
 
-Surface errors (`undefined`, `NullPointerException`, `500`) almost never describe the actual problem. Apply the 5 Whys:
-
-1. **Why** did this error occur? → *Because X was null*
-2. **Why** was X null? → *Because the function returned early*
-3. **Why** did the function return early? → *Because the input validation failed*
-4. **Why** did validation fail? → *Because the input format changed in the last commit*
-5. **Root cause:** input format change — not null handling
-
-Fix the root cause. Everything else is symptom treatment.
+Surface errors (`undefined`, `NullPointerException`, `500`) almost never describe the actual problem. Apply the 5 Whys — ask "why" five times to trace from symptom to root cause. Fix the root cause. Everything else is symptom treatment.
 
 → Error chain tracing patterns + 5 Whys templates: `references/root-cause-tracing.md`
 
