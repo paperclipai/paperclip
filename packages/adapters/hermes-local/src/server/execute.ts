@@ -21,6 +21,7 @@ import {
   buildPaperclipEnv,
   renderTemplate,
   ensureAbsoluteDirectory,
+  parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   HERMES_CLI,
@@ -358,6 +359,7 @@ export interface ExecuteContext {
     projectName?: string;
     workspaceDir?: string;
   };
+  context?: Record<string, unknown>;
   runtime?: {
     sessionParams?: { sessionId?: string };
   };
@@ -446,7 +448,7 @@ export async function execute(ctx: ExecuteContext): Promise<ExecuteResult> {
   // ── Build environment ──────────────────────────────────────────────────
   const env: Record<string, string | undefined> = {
     ...process.env,
-    ...buildPaperclipEnv(ctx.agent),
+    ...(ctx.agent?.id && ctx.agent?.companyId ? buildPaperclipEnv({ id: ctx.agent.id, companyId: ctx.agent.companyId }) : {}),
   };
 
   if (ctx.runId) env.PAPERCLIP_RUN_ID = ctx.runId;
@@ -460,7 +462,11 @@ export async function execute(ctx: ExecuteContext): Promise<ExecuteResult> {
   }
 
   // ── Resolve working directory ──────────────────────────────────────────
-  const cwd = cfgString(config.cwd) || cfgString(ctx.config?.workspaceDir) || ".";
+  // Priority: config.cwd > context.paperclipWorkspace.cwd > "."
+  const workspaceContext = parseObject(ctx.context?.paperclipWorkspace);
+  const workspaceCwd = cfgString(workspaceContext.cwd);
+  const configuredCwd = cfgString(config.cwd);
+  const cwd = configuredCwd || workspaceCwd || ".";
   try {
     await ensureAbsoluteDirectory(cwd);
   } catch {
