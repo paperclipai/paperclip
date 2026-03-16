@@ -5,3 +5,4 @@ iteration	trigger_pct	nofire_pct	output_pct	lines	status	description
 3	100	100	100	58	KEEP	Removed 'Why No External Tools' from 01 — redundant with SKILL.md intro (-10 lines in ref 01)
 4	100	100	100	58	KEEP	Removed console.log PreToolUse example from 05 — not tested, PostToolUse example sufficient (-21 lines in ref 05)
 5	100	100	100	58	KEEP	Trimmed Common Mistakes in 02 — dropped 'too broad/narrow' (obvious), kept invariant/non-goals entries (-3 lines in ref 02)
+6	100	100	100	58	KEEP	Trimmed 'When NOT to Scale' in 08 — dropped 2 obvious rows, kept 3 high-stakes ones (-3 lines in ref 08)

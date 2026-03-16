@@ -95,23 +95,3 @@ Next session, Claude reads this and picks up exactly where you left off. No re-e
 | Session 12: inconsistent naming | Invariant: "All API functions: `[resource][Action]`" |
 | Session 15: you discover architecture diverged 8 sessions ago | Invariant violations surfaced immediately |
 
-## Minimum Viable CLAUDE.md
-
-For a new project, start here and expand as decisions solidify:
-
-```markdown
-## Project: [Name]
-
-### Invariants
-- NEVER [most critical constraint #1]
-- NEVER [most critical constraint #2]
-- ALWAYS run `bun test` before marking any step done
-
-### Stack
-- [Runtime, UI lib, data layer, deploy platform]
-
-### Session State
-Phase: 1
-Active Step: none
-Last Session: [date] — just started
-```
