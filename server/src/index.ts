@@ -1,5 +1,5 @@
 /// <reference path="./types/express.d.ts" />
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, renameSync, mkdirSync, readdirSync } from "node:fs";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -295,7 +295,17 @@ export async function startServer(): Promise<StartedServer> {
     }
   
     const clusterVersionFile = resolve(dataDir, "PG_VERSION");
-    const clusterAlreadyInitialized = existsSync(clusterVersionFile);
+    let clusterAlreadyInitialized = existsSync(clusterVersionFile);
+
+    if (!clusterAlreadyInitialized && existsSync(dataDir) && readdirSync(dataDir).length > 0) {
+      const backupDir = `${dataDir}_corrupted_${Date.now()}`;
+      logger.warn(
+        { dataDir, backupDir },
+        "Database directory is not empty but missing PG_VERSION. Backing up and starting fresh.",
+      );
+      renameSync(dataDir, backupDir);
+      mkdirSync(dataDir, { recursive: true });
+    }
     const postmasterPidFile = resolve(dataDir, "postmaster.pid");
     const isPidRunning = (pid: number): boolean => {
       try {
