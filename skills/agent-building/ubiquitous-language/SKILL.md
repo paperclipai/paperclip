@@ -5,8 +5,6 @@ description: Use when Claude keeps using wrong domain terms, generic naming inst
 
 # Ubiquitous Language — Domain Glossary for AI Agents
 
-One file. Every session. Claude speaks your domain's language automatically.
-
 ## The Problem
 
 Claude defaults to generic naming: "user" instead of "subscriber", "transaction" instead of "settlement", "order" instead of "purchase order". Without a domain glossary, you correct the same terms every session — and the corrections don't stick.
