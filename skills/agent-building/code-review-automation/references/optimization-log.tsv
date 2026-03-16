@@ -1,0 +1,2 @@
+iteration	trigger_pct	nofire_pct	output_pct	lines	status	description
+0	100	100	100	181	baseline	Baseline — 100% all categories, 181 lines, 6 ref files
