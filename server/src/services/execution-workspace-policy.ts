@@ -88,6 +88,7 @@ export function resolveExecutionWorkspaceMode(input: {
   projectPolicy: ProjectExecutionWorkspacePolicy | null;
   issueSettings: IssueExecutionWorkspaceSettings | null;
   legacyUseProjectWorkspace: boolean | null;
+  agentWorkspaceStrategy?: string | null;
 }): ParsedExecutionWorkspaceMode {
   const issueMode = input.issueSettings?.mode;
   if (issueMode && issueMode !== "inherit") {
@@ -99,6 +100,9 @@ export function resolveExecutionWorkspaceMode(input: {
   if (input.legacyUseProjectWorkspace === false) {
     return "agent_default";
   }
+  if (input.agentWorkspaceStrategy === "git_worktree") {
+    return "isolated";
+  }
   return "project_primary";
 }
 
@@ -108,6 +112,7 @@ export function buildExecutionWorkspaceAdapterConfig(input: {
   issueSettings: IssueExecutionWorkspaceSettings | null;
   mode: ParsedExecutionWorkspaceMode;
   legacyUseProjectWorkspace: boolean | null;
+  agentWorkspaceStrategy?: string | null;
 }): Record<string, unknown> {
   const nextConfig = { ...input.agentConfig };
   const projectHasPolicy = Boolean(input.projectPolicy?.enabled);
@@ -116,7 +121,11 @@ export function buildExecutionWorkspaceAdapterConfig(input: {
     input.issueSettings?.workspaceStrategy ||
     input.issueSettings?.workspaceRuntime,
   );
-  const hasWorkspaceControl = projectHasPolicy || issueHasWorkspaceOverrides || input.legacyUseProjectWorkspace === false;
+  const hasWorkspaceControl =
+    projectHasPolicy ||
+    issueHasWorkspaceOverrides ||
+    input.legacyUseProjectWorkspace === false ||
+    input.agentWorkspaceStrategy === "git_worktree";
 
   if (hasWorkspaceControl) {
     if (input.mode === "isolated") {

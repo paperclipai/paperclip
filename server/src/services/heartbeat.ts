@@ -1438,10 +1438,14 @@ export function heartbeatService(db: Db) {
       sessionCodec.deserialize(taskSessionForRun?.sessionParamsJson ?? null),
     );
     const config = parseObject(agent.adapterConfig);
+    const agentRuntimeConfig = parseObject(agent.runtimeConfig);
+    const agentWorkspaceStrategy =
+      typeof agentRuntimeConfig.workspaceStrategy === "string" ? agentRuntimeConfig.workspaceStrategy : null;
     const executionWorkspaceMode = resolveExecutionWorkspaceMode({
       projectPolicy: projectExecutionWorkspacePolicy,
       issueSettings: issueExecutionWorkspaceSettings,
       legacyUseProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null,
+      agentWorkspaceStrategy,
     });
     const resolvedWorkspace = await resolveWorkspaceForRun(
       agent,
@@ -1455,6 +1459,7 @@ export function heartbeatService(db: Db) {
       issueSettings: issueExecutionWorkspaceSettings,
       mode: executionWorkspaceMode,
       legacyUseProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null,
+      agentWorkspaceStrategy,
     });
     const mergedConfig = issueAssigneeOverrides?.adapterConfig
       ? { ...workspaceManagedConfig, ...issueAssigneeOverrides.adapterConfig }
