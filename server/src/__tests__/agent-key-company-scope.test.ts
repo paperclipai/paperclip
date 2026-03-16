@@ -43,25 +43,10 @@ function createApp(actor: Record<string, unknown>) {
 
 describe("agent key company scope", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
   });
 
-  it("rejects agent shortname lookups when an agent key targets another company", async () => {
-    const app = createApp({
-      type: "agent",
-      agentId: "agent-1",
-      companyId: "company-1",
-      source: "agent_key",
-    });
-
-    const res = await request(app).get("/api/agents/ceo?companyId=company-2");
-
-    expect(res.status).toBe(403);
-    expect(res.body.error).toBe("Agent key cannot access another company");
-    expect(mockAgentService.resolveByReference).not.toHaveBeenCalled();
-  });
-
-  it("uses the actor company for shortname lookups when no company query is supplied", async () => {
+  function mockSameCompanyAgentLookup() {
     mockAgentService.resolveByReference.mockResolvedValue({
       ambiguous: false,
       agent: { id: "agent-2", companyId: "company-1" },
@@ -86,6 +71,25 @@ describe("agent key company scope", () => {
       return null;
     });
     mockAgentService.getChainOfCommand.mockResolvedValue([]);
+  }
+
+  it("rejects agent shortname lookups when an agent key targets another company", async () => {
+    const app = createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_key",
+    });
+
+    const res = await request(app).get("/api/agents/ceo?companyId=company-2");
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Agent key cannot access another company");
+    expect(mockAgentService.resolveByReference).not.toHaveBeenCalled();
+  });
+
+  it("uses the actor company for shortname lookups when no company query is supplied", async () => {
+    mockSameCompanyAgentLookup();
 
     const app = createApp({
       type: "agent",
@@ -95,6 +99,27 @@ describe("agent key company scope", () => {
     });
 
     const res = await request(app).get("/api/agents/ceo");
+
+    expect(res.status).toBe(200);
+    expect(res.body.adapterConfig).toEqual({});
+    expect(res.body.runtimeConfig).toEqual({});
+    expect(mockAgentService.resolveByReference).toHaveBeenCalledWith(
+      "company-1",
+      "ceo",
+    );
+  });
+
+  it("allows agent shortname lookups when the company query matches the actor company", async () => {
+    mockSameCompanyAgentLookup();
+
+    const app = createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_key",
+    });
+
+    const res = await request(app).get("/api/agents/ceo?companyId=company-1");
 
     expect(res.status).toBe(200);
     expect(mockAgentService.resolveByReference).toHaveBeenCalledWith(
