@@ -1258,7 +1258,9 @@ export function heartbeatService(db: Db) {
         });
         await releaseIssueExecutionAndPromote(updatedRun);
       }
-      await finalizeAgentStatus(run.agentId, "failed");
+      // Use "cancelled" outcome so the agent recovers to "idle" instead of
+      // "error" — process_lost is an infrastructure event, not an agent fault.
+      await finalizeAgentStatus(run.agentId, "cancelled");
       await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
