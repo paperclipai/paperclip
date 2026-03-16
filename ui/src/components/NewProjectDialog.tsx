@@ -353,6 +353,11 @@ export function NewProjectDialog() {
                 onChange={(e) => setWorkspaceRepoUrl(e.target.value)}
                 placeholder="https://github.com/org/repo or any git host"
               />
+              {workspaceRepoUrl.trim().startsWith("http://") && (
+                <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">
+                  This URL uses an unencrypted connection. Consider using HTTPS if your server supports it.
+                </p>
+              )}
             </div>
           )}
           {workspaceError && (

@@ -295,7 +295,8 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
       const owner = segments[segments.length - 2];
       const repo = segments[segments.length - 1]?.replace(/\.git$/i, "");
       if (!owner || !repo) return value;
-      return `${owner}/${repo}`;
+      const prefix = segments.length > 2 ? "\u2026/" : "";
+      return `${prefix}${owner}/${repo}`;
     } catch {
       return value;
     }
@@ -672,6 +673,11 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                 onChange={(e) => setWorkspaceRepoUrl(e.target.value)}
                 placeholder="https://github.com/org/repo or any git host"
               />
+              {workspaceRepoUrl.trim().startsWith("http://") && (
+                <p className="text-[11px] text-amber-600 dark:text-amber-400">
+                  This URL uses an unencrypted connection. Consider using HTTPS if your server supports it.
+                </p>
+              )}
               <div className="flex items-center gap-2">
                 <Button
                   variant="outline"
