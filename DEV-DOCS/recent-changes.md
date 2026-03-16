@@ -1,8 +1,142 @@
 # Recent Changes Snapshot
 
-Date: 2026-03-15
+Date: 2026-03-16
 
 This file explains the current state of the repo in product and operational terms so a human can look at the running app and understand what is actually new.
+
+## March 15 late-window follow-up
+
+The reviewed window on `origin/development` added roadmap item lifecycle controls, hardened repo-backed transcript and review-handoff behavior, tightened CI verification gates, and moved the top-level issues page to a paginated contract.
+
+Reviewed merged commits:
+
+1. `bd43e51` `Trim OpenClaw gateway create URLs`
+2. `9cba34a` `fix(server): preserve transcript lines across stream chunks`
+3. `17ca926` `Expose roadmap status editing on goal detail`
+4. `6ff2476` `fix: restore roadmap item controls on development`
+5. `f5fabfe` `fix roadmap board lanes and delete modal`
+6. `0cf4cd5` `Harden test coverage and CI gates`
+7. `97b9d26` `Add paginated company issues query`
+8. `9636895` `feat: paginate the top-level issues page`
+9. `9845d17` `Fix repo review handoff without checkout metadata`
+10. `24626f8` `Fix paginated issues page regression`
+
+Excluded from this snapshot:
+
+- `4d8bccc` `docs(plan): hand off BLU-28 roadmap item controls`
+  - planning handoff doc only
+- `1fa7ba7` `docs: add paperclip README screenshots`
+  - README presentation only
+- `f41b903` `address master promotion blockers`
+  - covered indirectly by the broader CI and regression notes below
+- `41fea62` `Push development changes to master`
+  - promotion merge, not a distinct feature change on `development`
+
+## Roadmap item lifecycle controls
+
+Actual code touchpoints:
+
+- `server/src/services/goals.ts`
+- `server/src/__tests__/roadmap-routes.test.ts`
+- `ui/src/pages/GoalDetail.tsx`
+- `ui/src/pages/GoalDetail.test.tsx`
+- `ui/src/components/RoadmapLaneMenu.tsx`
+- `ui/src/components/GoalTree.tsx`
+- `ui/src/pages/Goals.tsx`
+- `ui/src/lib/roadmap.ts`
+- `ui/src/lib/roadmap.test.ts`
+
+What changed in practice:
+
+- roadmap detail now exposes an inline status picker in the hero row instead of requiring the side panel for a core lifecycle action
+- roadmap detail restores direct add-child and delete actions on `development`
+- deleting a roadmap item now checks child roadmap items, linked projects, linked issues, and historical cost records first so operators get a deterministic conflict message instead of a raw foreign-key failure
+- roadmap board lane menus and delete-modal behavior are back on the board surface after the integration-branch regression
+
+What did not change:
+
+- roadmap items still persist in the existing `goals` model
+- no separate roadmap-only storage table was introduced
+
+## Structured transcript and review-handoff hardening
+
+Actual code touchpoints:
+
+- `server/src/services/heartbeat.ts`
+- `server/src/services/run-transcript-events.ts`
+- `packages/adapter-utils/src/server-utils.ts`
+- `server/src/__tests__/run-transcript-events.test.ts`
+- `server/src/__tests__/issues-routes.test.ts`
+
+What changed in practice:
+
+- structured transcript ingestion now buffers partial stdout/stderr lines across stream chunks before parsing them into `heartbeat_run_events`
+- supported local adapters no longer lose or merge transcript lines incorrectly when a provider splits one logical line across multiple chunks
+- repo-backed review handoff instructions now describe the required `reviewSubmission` fields differently depending on whether a checkout id already exists
+- when repo-backed work needs review metadata persisted but no active checkout row exists yet, the server can materialize a fallback `workspace_checkouts` row from the project workspace and then attach the branch/commit/PR metadata there
+
+What did not change:
+
+- the handoff still goes through the existing issue update route
+- the persisted review payload is still `reviewSubmission`
+
+## Verification and CI gates
+
+Actual code touchpoints:
+
+- `.github/workflows/pr-verify.yml`
+- `doc/DEVELOPING.md`
+- `playwright.config.ts`
+- `vitest.coverage.ts`
+- `tests/e2e/board-flows.spec.ts`
+- `tests/e2e/helpers.ts`
+- `ui/src/test/render.tsx`
+- `ui/src/test/setup.ts`
+
+What changed in practice:
+
+- PR verification now runs `pnpm test:coverage` instead of the looser `pnpm test:run`
+- CI now installs Playwright Chromium and runs `pnpm test:e2e` before build
+- the repo now has explicit command/documentation separation between `pnpm test:unit`, `pnpm test:coverage`, and `pnpm test:e2e`
+- Playwright browser flows now run against a temporary local Paperclip instance spun up by `playwright.config.ts`
+
+What did not change:
+
+- `pnpm -r typecheck` and `pnpm build` remain part of the required hand-off gate
+- CI still targets the integration branch model documented in `doc/DEVELOPING.md`
+
+## Paginated top-level issues page
+
+Actual code touchpoints:
+
+- `server/src/routes/issues.ts`
+- `server/src/services/issues.ts`
+- `packages/shared/src/types/issue.ts`
+- `packages/shared/src/validators/issue.ts`
+- `ui/src/api/issues.ts`
+- `ui/src/pages/Issues.tsx`
+- `ui/src/pages/Issues.test.tsx`
+- `ui/src/components/NewIssueDialog.tsx`
+- `server/src/__tests__/issues-routes.test.ts`
+- `server/src/__tests__/issues-integration.test.ts`
+- `tests/e2e/board-flows.spec.ts`
+
+What changed in practice:
+
+- top-level `/issues` no longer relies on the long-lived array response used by other issue consumers; it now reads from `/api/companies/:companyId/issues/page`
+- the paginated route validates page, page size, sort field, sort direction, and terminal-age trimming explicitly
+- the UI keeps search, filters, sorting, and page number in the URL so issue-list state is shareable and browser-navigation-safe
+- the issues page defaults to 25 rows per page
+- terminal `done` and `cancelled` issues older than 48 hours are trimmed by default, with explicit options to show 24h, 7d, or all terminal history
+- search can sort by updated time, created time, priority, title, or status
+- issue rows now receive `activeRun` context from the paginated service so the page can still show live-run state without reverting to the old list contract
+- when filters shrink the result set and the chosen page is out of range, the UI snaps back to the last valid page instead of leaving the operator on an empty invalid page
+- the new-issue dialog regression introduced by pagination work was fixed in `24626f8`, so creating a new issue from `/issues` preserves the intended prefilled project behavior
+
+What did not change:
+
+- existing consumers of `/api/companies/:companyId/issues` still receive the older array response
+- board-only `assigneeUserId=me`, `touchedByUserId=me`, and `unreadForUserId=me` semantics are preserved across both routes
 
 ## March 14 development-window follow-up
 

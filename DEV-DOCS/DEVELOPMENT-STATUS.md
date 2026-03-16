@@ -1,6 +1,6 @@
 # Development Status
 
-Last updated: 2026-03-15
+Last updated: 2026-03-16
 
 ## Current feature status
 
@@ -49,6 +49,21 @@ Last updated: 2026-03-15
 - OpenClaw gateway create flow: `done`
   - create mode now exposes the gateway auth token, Paperclip API URL override, role, scopes, wait timeout, and session strategy/session key fields
   - the create-form serializer now emits the server-required gateway header shape, including `headers.x-openclaw-token`
+- OpenClaw gateway URL normalization: `done`
+  - create-mode URL fields now trim surrounding whitespace before adapter config serialization
+- Roadmap item lifecycle controls: `done`
+  - roadmap detail now exposes inline status changes, add-child, and delete actions without depending on the side panel
+  - roadmap deletion now fails with dependency-aware conflict copy when child goals, linked projects, linked issues, or historical cost records still reference the item
+  - roadmap board lane menus and delete-modal behavior are restored on `development`
+- Paginated top-level issues page: `done`
+  - `/api/companies/:companyId/issues/page` adds explicit page/sort/terminal-age query validation while keeping the older array route stable for existing consumers
+  - `/issues` now persists filters and pagination in the URL, supports sorting, trims older terminal issues by default, and recovers gracefully when the selected page goes out of range
+- Transcript chunk preservation and repo review fallback: `done`
+  - structured transcript ingestion now buffers partial stdout/stderr lines across stream chunks instead of dropping or merging them incorrectly
+  - repo-backed review handoff can now materialize a fallback `workspace_checkouts` row when metadata must be persisted but no active checkout row exists yet
+- Coverage and browser verification gates: `done`
+  - PR verification now runs `pnpm test:coverage`, installs Playwright Chromium, and runs `pnpm test:e2e`
+  - the repo now has dedicated `test:unit`, `test:coverage`, and `test:e2e` command guidance
 - Runs and configuration UX: `done`
   - reusable transcript renderer with `nice` / `raw` modes
   - agent runs remain a first-class detail surface
@@ -70,7 +85,7 @@ Last updated: 2026-03-15
 
 - Active integration branch: `development`
 - Docs sync branch: `documentation-update`
-- Current working baseline contains the roadmap/health/governance implementation plus selective upstream adoption for startup safety, transcript UX, the March 14 redaction/issues-list follow-up hardening, repo-backed review handoff observability, and the OpenClaw gateway create-form fix.
+- Current working baseline contains the roadmap/health/governance implementation plus selective upstream adoption for startup safety, transcript UX, the March 14 redaction/issues-list follow-up hardening, roadmap item lifecycle controls, top-level issues pagination, repo-backed review handoff fallback persistence, and the OpenClaw gateway create-form fixes.
 
 ## Primary gap
 
@@ -102,12 +117,11 @@ Definition of done for the current branch remains:
 
 ```bash
 pnpm -r typecheck
-pnpm test:run
+pnpm test:coverage
+pnpm test:e2e
 pnpm build
 ```
 
 Verified on this branch:
 
-- `pnpm -r typecheck`
-- `pnpm test:run`
-- `pnpm build`
+- Documentation sync only in this session; full verification has not been re-run yet.

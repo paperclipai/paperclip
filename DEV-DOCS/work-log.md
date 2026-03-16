@@ -1,5 +1,28 @@
 # Work Log
 
+## 2026-03-16
+
+### Session: late March 15 docs sync
+
+- Reviewed the post-`2026-03-15T13:00:15Z` `origin/development` window before updating DEV-DOCS.
+- Grounded the update in these behavior-changing commits:
+  - `bd43e51` `Trim OpenClaw gateway create URLs`
+  - `9cba34a` `fix(server): preserve transcript lines across stream chunks`
+  - `17ca926` `Expose roadmap status editing on goal detail`
+  - `6ff2476` `fix: restore roadmap item controls on development`
+  - `f5fabfe` `fix roadmap board lanes and delete modal`
+  - `0cf4cd5` `Harden test coverage and CI gates`
+  - `97b9d26` `Add paginated company issues query`
+  - `9636895` `feat: paginate the top-level issues page`
+  - `9845d17` `Fix repo review handoff without checkout metadata`
+  - `24626f8` `Fix paginated issues page regression`
+- Refreshed the DEV-DOCS operational spine so it now reflects:
+  - roadmap item lifecycle controls and dependency-aware delete guardrails
+  - transcript chunk preservation and fallback checkout persistence for repo-backed review handoff
+  - the expanded verification contract (`typecheck`, `test:coverage`, `test:e2e`, `build`)
+  - the new paginated `/issues` route and UI behavior
+- No speculative entries were added for docs-only commits or merge-only commits.
+
 ## 2026-03-14
 
 ### Session: OpenClaw agent creation form fix

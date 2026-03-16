@@ -1,6 +1,6 @@
 # Task List
 
-Last updated: 2026-03-15
+Last updated: 2026-03-16
 
 ## Done
 
@@ -83,9 +83,25 @@ Last updated: 2026-03-15
   - Paperclip API URL override
   - role and scopes
   - wait timeout and session strategy/session key
+- Trim surrounding whitespace from OpenClaw gateway create-form URL fields before serialization
 - Backfill follow-up coverage and hardening for the 2026-03-14 integration fixes:
   - redaction edge cases around home-dir prefix collisions and punctuation-delimited roots
   - reusable issues-list assignee filter/group/default helpers with focused tests
+- Restore roadmap item lifecycle controls on `development`:
+  - inline status changes on detail
+  - add-child action on detail
+  - dependency-aware delete guardrails and modal copy
+  - roadmap board lane menus and delete behavior
+- Preserve structured transcript lines across chunked adapter stdout/stderr
+- Persist repo-backed review submissions even when a fallback checkout row must be created lazily
+- Add top-level issues pagination:
+  - dedicated `/api/companies/:companyId/issues/page` contract
+  - URL-backed filter/sort/page state in `/issues`
+  - default terminal-age trimming with valid-page recovery
+- Expand verification gates:
+  - `pnpm test:coverage`
+  - `pnpm test:e2e`
+  - Playwright-backed board flow coverage in CI
 
 ## Partial
 
@@ -108,10 +124,12 @@ Last updated: 2026-03-15
 - Do browser QA on:
   - dashboard health section
   - roadmap list/detail flows
+  - roadmap lane menu and delete-modal flows
   - company settings planning mode controls
   - agent create/edit planning mode controls
   - repo-backed issue handoff to `in_review` / `done` with PR metadata
   - structured run transcript/events rendering in agent detail
+  - paginated `/issues` filters, sorting, and page recovery
 - Tighten checkout lifecycle semantics:
   - release/archive rules
   - cleanup policy
