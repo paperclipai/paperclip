@@ -12,6 +12,8 @@ export type CreateCompany = z.infer<typeof createCompanySchema>;
 export const companySettingsSchema = z.object({
   telegram: z.object({
     chatId: z.string().optional(),
+    forumChatId: z.string().optional(),
+    defaultAssigneeAgentId: z.string().uuid().optional(),
   }).optional(),
 }).optional();
 

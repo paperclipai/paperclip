@@ -3,6 +3,8 @@ import type { CompanyStatus } from "../constants.js";
 export interface CompanySettings {
   telegram?: {
     chatId?: string;
+    forumChatId?: string;
+    defaultAssigneeAgentId?: string;
   };
 }
 

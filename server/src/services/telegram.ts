@@ -2,8 +2,8 @@ import type { LiveEvent } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { subscribeAllLiveEvents } from "./live-events.js";
 import type { Db } from "@paperclipai/db";
-import { companies } from "@paperclipai/db";
-import { eq } from "drizzle-orm";
+import { companies, telegramThreadMappings, agents } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
 
 const TELEGRAM_API = "https://api.telegram.org";
 
@@ -73,6 +73,65 @@ async function sendMessage(botToken: string, chatId: string, text: string): Prom
   }
 }
 
+/** Send a message into a specific forum topic thread. */
+export async function sendMessageToThread(
+  botToken: string,
+  chatId: string,
+  messageThreadId: string,
+  text: string,
+): Promise<void> {
+  const url = `${TELEGRAM_API}/bot${botToken}/sendMessage`;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_thread_id: Number(messageThreadId),
+        text,
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      logger.warn({ status: res.status, body, chatId, messageThreadId }, "Telegram sendMessageToThread failed");
+    }
+  } catch (err) {
+    logger.warn({ err }, "Telegram sendMessageToThread request error");
+  }
+}
+
+/** Create a forum topic in a supergroup. Returns the message_thread_id. */
+export async function createForumTopic(
+  botToken: string,
+  chatId: string,
+  name: string,
+): Promise<string | null> {
+  const url = `${TELEGRAM_API}/bot${botToken}/createForumTopic`;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        name: name.slice(0, 128), // Telegram limit
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      logger.warn({ status: res.status, body, chatId, name }, "Telegram createForumTopic failed");
+      return null;
+    }
+    const json = (await res.json()) as { ok: boolean; result?: { message_thread_id: number } };
+    if (!json.ok || !json.result) return null;
+    return String(json.result.message_thread_id);
+  } catch (err) {
+    logger.warn({ err }, "Telegram createForumTopic request error");
+    return null;
+  }
+}
+
 /** Resolve the chatId for an event (per-company override or global fallback). */
 async function resolveChatId(
   db: Db,
@@ -96,6 +155,50 @@ function escapeHtml(text: string): string {
 function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
   return text.slice(0, max) + "...";
+}
+
+// ---------------------------------------------------------------------------
+// Agent response relay — sends agent comments to Telegram forum threads
+// ---------------------------------------------------------------------------
+
+async function relayAgentCommentToThread(
+  event: LiveEvent,
+  db: Db,
+  config: TelegramConfig,
+  details: Record<string, unknown>,
+): Promise<void> {
+  const issueId = event.payload?.entityId as string | undefined;
+  if (!issueId) return;
+
+  // Look up thread mapping for this issue
+  const rows = await db
+    .select({
+      chatId: telegramThreadMappings.chatId,
+      messageThreadId: telegramThreadMappings.messageThreadId,
+    })
+    .from(telegramThreadMappings)
+    .where(eq(telegramThreadMappings.issueId, issueId))
+    .limit(1);
+
+  const mapping = rows[0];
+  if (!mapping) return;
+
+  // Resolve agent name
+  const p = event.payload as Record<string, unknown>;
+  const agentId = p.agentId as string | undefined;
+  let agentName = "Agent";
+  if (agentId) {
+    const agentRows = await db
+      .select({ name: agents.name })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .limit(1);
+    if (agentRows[0]?.name) agentName = agentRows[0].name;
+  }
+
+  const bodySnippet = (details.bodySnippet as string) ?? "";
+  const text = `<b>${escapeHtml(agentName)}</b>:\n${escapeHtml(truncate(bodySnippet, 500))}`;
+  void sendMessageToThread(config.botToken, mapping.chatId, mapping.messageThreadId, text);
 }
 
 // ---------------------------------------------------------------------------
@@ -125,6 +228,21 @@ async function handleActivityLogged(
   const identifier = (details.identifier as string) ?? p.entityId ?? "";
 
   if (action === "issue.comment_added") {
+    // Anti-loop: skip relay for comments originating from Telegram
+    const telegramOrigin = details.telegramOrigin as boolean | undefined;
+
+    if (!telegramOrigin) {
+      // If this is an agent comment, try to relay to the forum thread
+      if (p.actorType === "agent" || p.agentId) {
+        try {
+          await relayAgentCommentToThread(event, db, config, details);
+        } catch (err) {
+          logger.warn({ err, entityId: p.entityId }, "Failed to relay agent comment to Telegram thread");
+        }
+      }
+    }
+
+    // Still send to the notification chat (existing behavior)
     const bodySnippet = (details.bodySnippet as string) ?? "";
     const issueTitle = (details.issueTitle as string) ?? "";
     const hasMention = /\B@[^\s@,!?.]+/.test(bodySnippet);
