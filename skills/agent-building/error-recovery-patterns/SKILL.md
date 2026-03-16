@@ -86,13 +86,6 @@ Three strikes: agent stops and asks for help instead of spiraling.
 
 A Stop hook writes a recovery manifest on every session exit — normal or abnormal. The next session's SessionStart hook reads it and restores context.
 
-Recovery manifest contents:
-- Current task and sub-step
-- Last checkpoint reached
-- Files modified this session
-- Last 5 errors
-- One-sentence resume instruction
-
 → Full serializer + manifest format + SessionStart reader: `references/stop-hook-state.md`
 
 ---
