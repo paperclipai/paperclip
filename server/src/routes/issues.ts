@@ -439,7 +439,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       details: { title: issue.title, identifier: issue.identifier },
     });
 
-    if (issue.assigneeAgentId && issue.status !== "backlog") {
+    if (issue.assigneeAgentId) {
       void heartbeat
         .wakeup(issue.assigneeAgentId, {
           source: "assignment",
@@ -611,7 +611,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     void (async () => {
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
 
-      if ((assigneeChanged || assigneeExplicitlySpecified) && issue.assigneeAgentId && issue.status !== "backlog") {
+      if ((assigneeChanged || assigneeExplicitlySpecified) && issue.assigneeAgentId) {
         wakeups.set(issue.assigneeAgentId, {
           source: "assignment",
           triggerDetail: "system",
