@@ -30,6 +30,9 @@ import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { createWorkflowRoutes } from "./routes/workflows.js";
 import { createWorkflowWebhookRoutes } from "./routes/workflow-webhooks.js";
+import { knowledgeRoutes } from "./routes/knowledge.js";
+import { skillsRoutes } from "./routes/skills.js";
+import { messagingRoutes } from "./routes/messaging.js";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 
 type UiMode = "none" | "static" | "vite-dev";
@@ -114,6 +117,9 @@ export async function createApp(
   api.use("/llm-providers", llmModelsRoutes(db));
   api.use(agentRoutes(db));
   api.use("/agents", agentChatRoutes(db));
+  api.use(knowledgeRoutes(db));
+  api.use("/skills", skillsRoutes(db));
+  api.use(messagingRoutes(db));
   api.use(assetRoutes(db, opts.storageService));
   api.use(projectRoutes(db));
   api.use(issueRoutes(db, opts.storageService));

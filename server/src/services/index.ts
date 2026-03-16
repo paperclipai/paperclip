@@ -18,3 +18,7 @@ export { companyPortabilityService } from "./company-portability.js";
 export { logActivity, type LogActivityInput } from "./activity-log.js";
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
+export { DocumentProcessor, getDocumentProcessor, type DocumentChunk, type ProcessedDocument } from "./document-processor.js";
+export { VectorStore, getVectorStore, type SearchResult } from "./vector-store.js";
+export { ContextManager, getContextManager, type AgentContext, type MemoryEntry } from "./context-manager.js";
+export { SkillsService, getSkillsService } from "./skills.js";

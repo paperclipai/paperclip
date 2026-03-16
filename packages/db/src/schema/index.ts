@@ -38,3 +38,50 @@ export { workflows } from "./workflows.js";
 export { workflowRuns } from "./workflow_runs.js";
 export { workflowRunSteps } from "./workflow_run_steps.js";
 export { workflowWebhooks } from "./workflow_webhooks.js";
+export {
+  knowledgeDocuments,
+  knowledgeChunks,
+  agentMemory,
+  conversationHistory,
+  conversationSummaries,
+  agentKnowledgeAssociations,
+} from "./knowledge.js";
+export {
+  skills,
+  skillInstallations,
+  skillExecutions,
+  skillReviews,
+  skillCategoryEnum,
+  skillStatusEnum,
+  skillRuntimeEnum,
+  skillExecutionStatusEnum,
+} from "./skills.js";
+export {
+  messagingConnectors,
+  messagingChannels,
+  messagingMessages,
+  messagingWebhooks,
+  messagingUserMappings,
+  messagingPlatformEnum,
+  messagingConnectorStatusEnum,
+  messagingChannelTypeEnum,
+  messagingDirectionEnum,
+  messagingStatusEnum,
+  messagingWebhookStatusEnum,
+} from "./messaging.js";
+export {
+  mcpServers,
+  externalApiIntegrations,
+  apiRequestLogs,
+  customAdapters,
+  mcpTools,
+  mcpResources,
+  agentApiAssociations,
+  apiEventSubscriptions,
+  mcpServerTypeEnum,
+  mcpProtocolEnum,
+  healthStatusEnum,
+  authenticationTypeEnum,
+  adapterTypeEnum,
+  testStatusEnum,
+} from "./mcp.js";
