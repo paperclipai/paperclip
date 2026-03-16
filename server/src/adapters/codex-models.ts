@@ -32,6 +32,23 @@ function mergedWithFallback(models: AdapterModel[]): AdapterModel[] {
 }
 
 function resolveLlmDetails(): { apiKey: string | null; endpoint: string } {
+  const config = readConfigFile();
+
+  if (config?.llm?.provider === "zai") {
+    const envKey = process.env.ZAI_API_KEY?.trim();
+    const envEndpoint = process.env.ZAI_BASE_URL ? `${process.env.ZAI_BASE_URL.replace(/\/$/, "")}/models` : null;
+    
+    if (envKey) {
+      return { apiKey: envKey, endpoint: envEndpoint || "https://api.z.ai/api/paas/v4/models" };
+    }
+    
+    const configKey = config.llm.apiKey?.trim();
+    return {
+      apiKey: configKey && configKey.length > 0 ? configKey : null,
+      endpoint: envEndpoint || "https://api.z.ai/api/paas/v4/models",
+    };
+  }
+
   const envKey = process.env.OPENAI_API_KEY?.trim();
   const envEndpoint = process.env.OPENAI_BASE_URL ? `${process.env.OPENAI_BASE_URL.replace(/\/$/, "")}/models` : null;
 
@@ -39,20 +56,11 @@ function resolveLlmDetails(): { apiKey: string | null; endpoint: string } {
     return { apiKey: envKey, endpoint: envEndpoint || OPENAI_MODELS_ENDPOINT };
   }
 
-  const config = readConfigFile();
   if (config?.llm?.provider === "openai") {
     const configKey = config.llm.apiKey?.trim();
     return {
       apiKey: configKey && configKey.length > 0 ? configKey : null,
       endpoint: envEndpoint || OPENAI_MODELS_ENDPOINT,
-    };
-  }
-
-  if (config?.llm?.provider === "zai") {
-    const configKey = config.llm.apiKey?.trim();
-    return {
-      apiKey: configKey && configKey.length > 0 ? configKey : null,
-      endpoint: "https://api.z.ai/api/paas/v4/models",
     };
   }
 
