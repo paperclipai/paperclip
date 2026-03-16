@@ -18,6 +18,9 @@ export interface HeartbeatRun {
   finishedAt: Date | null;
   error: string | null;
   wakeupRequestId: string | null;
+  retryOfRunId: string | null;
+  retryCount: number;
+  notBeforeAt: Date | null;
   exitCode: number | null;
   signal: string | null;
   usageJson: Record<string, unknown> | null;

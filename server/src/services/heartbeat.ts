@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BillingType } from "@paperclipai/shared";
 import {
@@ -46,6 +46,8 @@ import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
+export const MAX_PROCESS_LOST_RETRIES = 3;
+export const RETRY_BACKOFF_BASE_MS = 1000;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
@@ -69,6 +71,9 @@ const heartbeatRunListColumns = {
   finishedAt: heartbeatRuns.finishedAt,
   error: heartbeatRuns.error,
   wakeupRequestId: heartbeatRuns.wakeupRequestId,
+  retryOfRunId: heartbeatRuns.retryOfRunId,
+  retryCount: heartbeatRuns.retryCount,
+  notBeforeAt: heartbeatRuns.notBeforeAt,
   exitCode: heartbeatRuns.exitCode,
   signal: heartbeatRuns.signal,
   usageJson: heartbeatRuns.usageJson,
@@ -145,6 +150,19 @@ type SessionCompactionDecision = {
   reason: string | null;
   handoffMarkdown: string | null;
   previousRunId: string | null;
+};
+
+type ProcessLostRetryIssueState = {
+  id: string;
+  status: string;
+  assigneeAgentId: string | null;
+  cancelledAt: Date | null;
+} | null;
+
+type ProcessLostRetryDecision = {
+  eligible: boolean;
+  retryCount: number;
+  backoffMs: number;
 };
 
 interface ParsedIssueAssigneeAdapterOverrides {
@@ -424,6 +442,44 @@ export function shouldResetTaskSessionForWake(
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (wakeReason === "issue_assigned") return true;
   return false;
+}
+
+function hasExcerptContent(value: string | null | undefined) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+export function computeProcessLostRetryBackoffMs(retryCount: number) {
+  const normalizedRetryCount = Math.max(0, Math.floor(asNumber(retryCount, 0)));
+  return RETRY_BACKOFF_BASE_MS * 2 ** normalizedRetryCount;
+}
+
+export function getProcessLostAutoRetryDecision(input: {
+  run: Pick<
+    typeof heartbeatRuns.$inferSelect,
+    "agentId" | "stdoutExcerpt" | "stderrExcerpt" | "retryCount"
+  >;
+  runEventCount: number;
+  issue: ProcessLostRetryIssueState;
+}): ProcessLostRetryDecision {
+  const retryCount = Math.max(0, Math.floor(asNumber(input.run.retryCount, 0)));
+  const outputStarted =
+    hasExcerptContent(input.run.stdoutExcerpt) || hasExcerptContent(input.run.stderrExcerpt);
+  const hasRunEvents = Math.max(0, Math.floor(asNumber(input.runEventCount, 0))) > 0;
+  const issueEligible =
+    input.issue === null ||
+    (input.issue.status === "in_progress" &&
+      input.issue.assigneeAgentId === input.run.agentId &&
+      input.issue.cancelledAt === null);
+
+  return {
+    eligible:
+      !outputStarted &&
+      !hasRunEvents &&
+      retryCount < MAX_PROCESS_LOST_RETRIES &&
+      issueEligible,
+    retryCount: retryCount + 1,
+    backoffMs: computeProcessLostRetryBackoffMs(retryCount),
+  };
 }
 
 function describeSessionResetReason(
@@ -1326,27 +1382,174 @@ export function heartbeatService(db: Db) {
         if (now.getTime() - refTime < staleThresholdMs) continue;
       }
 
-      await setRunStatus(run.id, "failed", {
-        error: "Process lost -- server may have restarted",
-        errorCode: "process_lost",
-        finishedAt: now,
+      const finalized = await db.transaction(async (tx) => {
+        const failedRun = await tx
+          .update(heartbeatRuns)
+          .set({
+            status: "failed",
+            error: "Process lost -- server may have restarted",
+            errorCode: "process_lost",
+            finishedAt: now,
+            updatedAt: now,
+          })
+          .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "running")))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!failedRun) return { kind: "skipped" as const };
+
+        const [{ count: runEventCount }] = await tx
+          .select({ count: sql<number>`count(*)` })
+          .from(heartbeatRunEvents)
+          .where(
+            and(
+              eq(heartbeatRunEvents.companyId, failedRun.companyId),
+              eq(heartbeatRunEvents.runId, failedRun.id),
+            ),
+          );
+
+        await tx.execute(
+          sql`select id from issues where company_id = ${failedRun.companyId} and execution_run_id = ${failedRun.id} for update`,
+        );
+        const issue = await tx
+          .select({
+            id: issues.id,
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            cancelledAt: issues.cancelledAt,
+          })
+          .from(issues)
+          .where(and(eq(issues.companyId, failedRun.companyId), eq(issues.executionRunId, failedRun.id)))
+          .then((rows) => rows[0] ?? null);
+
+        const decision = getProcessLostAutoRetryDecision({
+          run: failedRun,
+          runEventCount: Number(runEventCount ?? 0),
+          issue,
+        });
+
+        if (!decision.eligible) {
+          if (failedRun.wakeupRequestId) {
+            await tx
+              .update(agentWakeupRequests)
+              .set({
+                status: "failed",
+                finishedAt: now,
+                error: "Process lost -- server may have restarted",
+                updatedAt: now,
+              })
+              .where(eq(agentWakeupRequests.id, failedRun.wakeupRequestId));
+          }
+
+          return {
+            kind: "failed" as const,
+            failedRun,
+          };
+        }
+
+        const nextRun = await tx
+          .insert(heartbeatRuns)
+          .values({
+            companyId: failedRun.companyId,
+            agentId: failedRun.agentId,
+            invocationSource: failedRun.invocationSource,
+            triggerDetail: failedRun.triggerDetail,
+            status: "queued",
+            wakeupRequestId: failedRun.wakeupRequestId,
+            retryOfRunId: failedRun.id,
+            retryCount: decision.retryCount,
+            notBeforeAt: new Date(now.getTime() + decision.backoffMs),
+            contextSnapshot: failedRun.contextSnapshot,
+            sessionIdBefore: failedRun.sessionIdBefore,
+          })
+          .returning()
+          .then((rows) => rows[0]);
+
+        if (failedRun.wakeupRequestId) {
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "queued",
+              runId: nextRun.id,
+              claimedAt: null,
+              finishedAt: null,
+              error: null,
+              updatedAt: now,
+            })
+            .where(eq(agentWakeupRequests.id, failedRun.wakeupRequestId));
+        }
+
+        if (issue) {
+          await tx
+            .update(issues)
+            .set({
+              executionRunId: nextRun.id,
+              executionLockedAt: now,
+              updatedAt: now,
+            })
+            .where(eq(issues.id, issue.id));
+        }
+
+        return {
+          kind: "retried" as const,
+          failedRun,
+          nextRun,
+          decision,
+        };
       });
-      await setWakeupStatus(run.wakeupRequestId, "failed", {
-        finishedAt: now,
-        error: "Process lost -- server may have restarted",
-      });
-      const updatedRun = await getRun(run.id);
-      if (updatedRun) {
-        await appendRunEvent(updatedRun, 1, {
+
+      if (finalized.kind === "skipped") continue;
+
+      if (finalized.kind === "retried") {
+        await appendRunEvent(finalized.failedRun, 1, {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: `Process lost -- auto-retrying (attempt ${finalized.decision.retryCount}/${MAX_PROCESS_LOST_RETRIES})`,
+        });
+
+        publishLiveEvent({
+          companyId: finalized.nextRun.companyId,
+          type: "heartbeat.run.queued",
+          payload: {
+            runId: finalized.nextRun.id,
+            agentId: finalized.nextRun.agentId,
+            invocationSource: finalized.nextRun.invocationSource,
+            triggerDetail: finalized.nextRun.triggerDetail,
+            wakeupRequestId: finalized.nextRun.wakeupRequestId,
+          },
+        });
+
+        await finalizeAgentStatus(run.agentId, "cancelled");
+        await startNextQueuedRunForAgent(run.agentId);
+
+        const retryTimer = setTimeout(() => {
+          void startNextQueuedRunForAgent(run.agentId).catch((err) => {
+            logger.warn({ err, agentId: run.agentId, runId: finalized.nextRun.id }, "failed to start auto-retry run");
+          });
+        }, finalized.decision.backoffMs);
+        retryTimer.unref?.();
+
+        logger.warn(
+          {
+            runId: finalized.failedRun.id,
+            retryRunId: finalized.nextRun.id,
+            retryCount: finalized.decision.retryCount,
+            backoffMs: finalized.decision.backoffMs,
+          },
+          "auto-retrying process_lost heartbeat run",
+        );
+      } else {
+        await appendRunEvent(finalized.failedRun, 1, {
           eventType: "lifecycle",
           stream: "system",
           level: "error",
           message: "Process lost -- server may have restarted",
         });
-        await releaseIssueExecutionAndPromote(updatedRun);
+        await releaseIssueExecutionAndPromote(finalized.failedRun);
+        await finalizeAgentStatus(run.agentId, "failed");
+        await startNextQueuedRunForAgent(run.agentId);
       }
-      await finalizeAgentStatus(run.agentId, "failed");
-      await startNextQueuedRunForAgent(run.agentId);
+
       runningProcesses.delete(run.id);
       reaped.push(run.id);
     }
@@ -1439,7 +1642,13 @@ export function heartbeatService(db: Db) {
       const queuedRuns = await db
         .select()
         .from(heartbeatRuns)
-        .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")))
+        .where(
+          and(
+            eq(heartbeatRuns.agentId, agentId),
+            eq(heartbeatRuns.status, "queued"),
+            or(isNull(heartbeatRuns.notBeforeAt), sql`${heartbeatRuns.notBeforeAt} <= now()`),
+          ),
+        )
         .orderBy(asc(heartbeatRuns.createdAt))
         .limit(availableSlots);
       if (queuedRuns.length === 0) return [];
