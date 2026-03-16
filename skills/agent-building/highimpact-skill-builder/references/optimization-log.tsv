@@ -1,2 +1,10 @@
 iteration	trigger_pct	nofire_pct	output_pct	lines	status	description
 0	91.7	100.0	100.0	207	baseline	Baseline — T10 "quick skill" not in description triggers
+1	100.0	100.0	100.0	207	keep	Add "quick skill" trigger phrase — 91.7%→100% trigger score
+2	100.0	100.0	100.0	202	keep	Remove redundant intro paragraph — 207→202 lines (-5)
+3	100.0	100.0	100.0	191	keep	Remove inline test result table from Phase 2 — 202→191 lines (-11)
+4	100.0	100.0	100.0	189	keep	Remove anti-rationalization intro sentence — 191→189 lines (-2)
+5	100.0	100.0	100.0	187	keep	Shorten "What Makes High-Impact" item 7 — 189→187 lines (-2)
+6	100.0	100.0	100.0	185	keep	Remove agents/ and scripts/ from Reference Index — not in published content, 187→185 lines (-2)
+7	100.0	100.0	100.0	186	keep	Add schemas.md to Reference Index — undocumented file now discoverable, 185→186 lines (+1)
+8	100.0	100.0	100.0	183	keep	Remove "Three phases" header line — phase detection table makes it obvious, 186→183 lines (-3)
