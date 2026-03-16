@@ -1,4 +1,8 @@
-import type { TranscriptEntry } from "@paperclipai/adapter-utils";
+import {
+  redactHomePathUserSegments,
+  redactHomePathUserSegmentsInValue,
+  type TranscriptEntry,
+} from "@paperclipai/adapter-utils";
 
 function safeJsonParse(text: string): unknown {
   try {
@@ -39,12 +43,12 @@ function errorText(value: unknown): string {
 }
 
 function stringifyUnknown(value: unknown): string {
-  if (typeof value === "string") return value;
+  if (typeof value === "string") return redactHomePathUserSegments(value);
   if (value === null || value === undefined) return "";
   try {
-    return JSON.stringify(value, null, 2);
+    return JSON.stringify(redactHomePathUserSegmentsInValue(value), null, 2);
   } catch {
-    return String(value);
+    return redactHomePathUserSegments(String(value));
   }
 }
 
@@ -57,22 +61,24 @@ function parseCommandExecutionItem(
   const command = asString(item.command);
   const status = asString(item.status);
   const exitCode = typeof item.exit_code === "number" && Number.isFinite(item.exit_code) ? item.exit_code : null;
-  const output = asString(item.aggregated_output).replace(/\s+$/, "");
+  const safeCommand = redactHomePathUserSegments(command);
+  const output = redactHomePathUserSegments(asString(item.aggregated_output)).replace(/\s+$/, "");
 
   if (phase === "started") {
     return [{
       kind: "tool_call",
       ts,
       name: "command_execution",
+      toolUseId: id || command || "command_execution",
       input: {
         id,
-        command,
+        command: safeCommand,
       },
     }];
   }
 
   const lines: string[] = [];
-  if (command) lines.push(`command: ${command}`);
+  if (safeCommand) lines.push(`command: ${safeCommand}`);
   if (status) lines.push(`status: ${status}`);
   if (exitCode !== null) lines.push(`exit_code: ${exitCode}`);
   if (output) {
@@ -103,7 +109,7 @@ function parseFileChangeItem(item: Record<string, unknown>, ts: string): Transcr
     .filter((change): change is Record<string, unknown> => Boolean(change))
     .map((change) => {
       const kind = asString(change.kind, "update");
-      const path = asString(change.path, "unknown");
+      const path = redactHomePathUserSegments(asString(change.path, "unknown"));
       return `${kind} ${path}`;
     });
 
@@ -125,13 +131,13 @@ function parseCodexItem(
 
   if (itemType === "agent_message") {
     const text = asString(item.text);
-    if (text) return [{ kind: "assistant", ts, text }];
+    if (text) return [{ kind: "assistant", ts, text: redactHomePathUserSegments(text) }];
     return [];
   }
 
   if (itemType === "reasoning") {
     const text = asString(item.text);
-    if (text) return [{ kind: "thinking", ts, text }];
+    if (text) return [{ kind: "thinking", ts, text: redactHomePathUserSegments(text) }];
     return [{ kind: "system", ts, text: phase === "started" ? "reasoning started" : "reasoning completed" }];
   }
 
@@ -147,8 +153,9 @@ function parseCodexItem(
     return [{
       kind: "tool_call",
       ts,
-      name: asString(item.name, "unknown"),
-      input: item.input ?? {},
+      name: redactHomePathUserSegments(asString(item.name, "unknown")),
+      toolUseId: asString(item.id),
+      input: redactHomePathUserSegmentsInValue(item.input ?? {}),
     }];
   }
 
@@ -160,24 +167,28 @@ function parseCodexItem(
       asString(item.result) ||
       stringifyUnknown(item.content ?? item.output ?? item.result);
     const isError = item.is_error === true || asString(item.status) === "error";
-    return [{ kind: "tool_result", ts, toolUseId, content, isError }];
+    return [{ kind: "tool_result", ts, toolUseId, content: redactHomePathUserSegments(content), isError }];
   }
 
   if (itemType === "error" && phase === "completed") {
     const text = errorText(item.message ?? item.error ?? item);
-    return [{ kind: "stderr", ts, text: text || "error" }];
+    return [{ kind: "stderr", ts, text: redactHomePathUserSegments(text || "error") }];
   }
 
   const id = asString(item.id);
   const status = asString(item.status);
   const meta = [id ? `id=${id}` : "", status ? `status=${status}` : ""].filter(Boolean).join(" ");
-  return [{ kind: "system", ts, text: `item ${phase}: ${itemType || "unknown"}${meta ? ` (${meta})` : ""}` }];
+  return [{
+    kind: "system",
+    ts,
+    text: redactHomePathUserSegments(`item ${phase}: ${itemType || "unknown"}${meta ? ` (${meta})` : ""}`),
+  }];
 }
 
 export function parseCodexStdoutLine(line: string, ts: string): TranscriptEntry[] {
   const parsed = asRecord(safeJsonParse(line));
   if (!parsed) {
-    return [{ kind: "stdout", ts, text: line }];
+    return [{ kind: "stdout", ts, text: redactHomePathUserSegments(line) }];
   }
 
   const type = asString(parsed.type);
@@ -187,8 +198,8 @@ export function parseCodexStdoutLine(line: string, ts: string): TranscriptEntry[
     return [{
       kind: "init",
       ts,
-      model: asString(parsed.model, "codex"),
-      sessionId: threadId,
+      model: redactHomePathUserSegments(asString(parsed.model, "codex")),
+      sessionId: redactHomePathUserSegments(threadId),
     }];
   }
 
@@ -210,15 +221,15 @@ export function parseCodexStdoutLine(line: string, ts: string): TranscriptEntry[
     return [{
       kind: "result",
       ts,
-      text: asString(parsed.result),
+      text: redactHomePathUserSegments(asString(parsed.result)),
       inputTokens,
       outputTokens,
       cachedTokens,
       costUsd: asNumber(parsed.total_cost_usd),
-      subtype: asString(parsed.subtype),
+      subtype: redactHomePathUserSegments(asString(parsed.subtype)),
       isError: parsed.is_error === true,
       errors: Array.isArray(parsed.errors)
-        ? parsed.errors.map(errorText).filter(Boolean)
+        ? parsed.errors.map(errorText).map(redactHomePathUserSegments).filter(Boolean)
         : [],
     }];
   }
@@ -232,21 +243,21 @@ export function parseCodexStdoutLine(line: string, ts: string): TranscriptEntry[
     return [{
       kind: "result",
       ts,
-      text: asString(parsed.result),
+      text: redactHomePathUserSegments(asString(parsed.result)),
       inputTokens,
       outputTokens,
       cachedTokens,
       costUsd: asNumber(parsed.total_cost_usd),
-      subtype: asString(parsed.subtype, "turn.failed"),
+      subtype: redactHomePathUserSegments(asString(parsed.subtype, "turn.failed")),
       isError: true,
-      errors: message ? [message] : [],
+      errors: message ? [redactHomePathUserSegments(message)] : [],
     }];
   }
 
   if (type === "error") {
     const message = errorText(parsed.message ?? parsed.error ?? parsed);
-    return [{ kind: "stderr", ts, text: message || line }];
+    return [{ kind: "stderr", ts, text: redactHomePathUserSegments(message || line) }];
   }
 
-  return [{ kind: "stdout", ts, text: line }];
+  return [{ kind: "stdout", ts, text: redactHomePathUserSegments(line) }];
 }

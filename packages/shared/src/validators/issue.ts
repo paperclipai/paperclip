@@ -1,6 +1,25 @@
 import { z } from "zod";
 import { ISSUE_PRIORITIES, ISSUE_STATUSES } from "../constants.js";
 
+const executionWorkspaceStrategySchema = z
+  .object({
+    type: z.enum(["project_primary", "git_worktree"]).optional(),
+    baseRef: z.string().optional().nullable(),
+    branchTemplate: z.string().optional().nullable(),
+    worktreeParentDir: z.string().optional().nullable(),
+    provisionCommand: z.string().optional().nullable(),
+    teardownCommand: z.string().optional().nullable(),
+  })
+  .strict();
+
+export const issueExecutionWorkspaceSettingsSchema = z
+  .object({
+    mode: z.enum(["inherit", "project_primary", "isolated", "agent_default"]).optional(),
+    workspaceStrategy: executionWorkspaceStrategySchema.optional().nullable(),
+    workspaceRuntime: z.record(z.unknown()).optional().nullable(),
+  })
+  .strict();
+
 export const issueAssigneeAdapterOverridesSchema = z
   .object({
     adapterConfig: z.record(z.unknown()).optional(),
@@ -21,6 +40,7 @@ export const createIssueSchema = z.object({
   requestDepth: z.number().int().nonnegative().optional().default(0),
   billingCode: z.string().optional().nullable(),
   assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema.optional().nullable(),
+  executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
   labelIds: z.array(z.string().uuid()).optional(),
 });
 
@@ -39,6 +59,7 @@ export const updateIssueSchema = createIssueSchema.partial().extend({
 });
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;
+export type IssueExecutionWorkspaceSettings = z.infer<typeof issueExecutionWorkspaceSettingsSchema>;
 
 export const checkoutIssueSchema = z.object({
   agentId: z.string().uuid(),
@@ -66,3 +87,25 @@ export const createIssueAttachmentMetadataSchema = z.object({
 });
 
 export type CreateIssueAttachmentMetadata = z.infer<typeof createIssueAttachmentMetadataSchema>;
+
+export const ISSUE_DOCUMENT_FORMATS = ["markdown"] as const;
+
+export const issueDocumentFormatSchema = z.enum(ISSUE_DOCUMENT_FORMATS);
+
+export const issueDocumentKeySchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .regex(/^[a-z0-9][a-z0-9_-]*$/, "Document key must be lowercase letters, numbers, _ or -");
+
+export const upsertIssueDocumentSchema = z.object({
+  title: z.string().trim().max(200).nullable().optional(),
+  format: issueDocumentFormatSchema,
+  body: z.string().max(524288),
+  changeSummary: z.string().trim().max(500).nullable().optional(),
+  baseRevisionId: z.string().uuid().nullable().optional(),
+});
+
+export type IssueDocumentFormat = z.infer<typeof issueDocumentFormatSchema>;
+export type UpsertIssueDocument = z.infer<typeof upsertIssueDocumentSchema>;

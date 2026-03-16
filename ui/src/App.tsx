@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { Navigate, Outlet, Route, Routes, useLocation } from "@/lib/router";
+import { Navigate, Outlet, Route, Routes, useLocation, useParams } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Layout } from "./components/Layout";
@@ -23,14 +23,21 @@ import { Activity } from "./pages/Activity";
 import { Inbox } from "./pages/Inbox";
 import { CompanySettings } from "./pages/CompanySettings";
 import { DesignGuide } from "./pages/DesignGuide";
+import { InstanceSettings } from "./pages/InstanceSettings";
+import { PluginManager } from "./pages/PluginManager";
+import { PluginSettings } from "./pages/PluginSettings";
+import { PluginPage } from "./pages/PluginPage";
+import { RunTranscriptUxLab } from "./pages/RunTranscriptUxLab";
 import { OrgChart } from "./pages/OrgChart";
 import { NewAgent } from "./pages/NewAgent";
 import { AuthPage } from "./pages/Auth";
 import { BoardClaimPage } from "./pages/BoardClaim";
 import { InviteLandingPage } from "./pages/InviteLanding";
+import { NotFoundPage } from "./pages/NotFound";
 import { queryKeys } from "./lib/queryKeys";
 import { useCompany } from "./context/CompanyContext";
 import { useDialog } from "./context/DialogContext";
+import { loadLastInboxTab } from "./lib/inbox";
 
 function BootstrapPendingPage({ hasActiveInvite = false }: { hasActiveInvite?: boolean }) {
   return (
@@ -104,8 +111,12 @@ function boardRoutes() {
     <>
       <Route index element={<Navigate to="dashboard" replace />} />
       <Route path="dashboard" element={<Dashboard />} />
+      <Route path="onboarding" element={<OnboardingRoutePage />} />
       <Route path="companies" element={<Companies />} />
       <Route path="company/settings" element={<CompanySettings />} />
+      <Route path="settings" element={<LegacySettingsRedirect />} />
+      <Route path="settings/*" element={<LegacySettingsRedirect />} />
+      <Route path="plugins/:pluginId" element={<PluginPage />} />
       <Route path="org" element={<OrgChart />} />
       <Route path="agents" element={<Navigate to="/agents/all" replace />} />
       <Route path="agents/all" element={<Agents />} />
@@ -121,6 +132,7 @@ function boardRoutes() {
       <Route path="projects/:projectId/overview" element={<ProjectDetail />} />
       <Route path="projects/:projectId/issues" element={<ProjectDetail />} />
       <Route path="projects/:projectId/issues/:filter" element={<ProjectDetail />} />
+      <Route path="projects/:projectId/configuration" element={<ProjectDetail />} />
       <Route path="issues" element={<Issues />} />
       <Route path="issues/all" element={<Navigate to="/issues" replace />} />
       <Route path="issues/active" element={<Navigate to="/issues" replace />} />
@@ -136,11 +148,76 @@ function boardRoutes() {
       <Route path="approvals/:approvalId" element={<ApprovalDetail />} />
       <Route path="costs" element={<Costs />} />
       <Route path="activity" element={<Activity />} />
-      <Route path="inbox" element={<Navigate to="/inbox/new" replace />} />
-      <Route path="inbox/new" element={<Inbox />} />
+      <Route path="inbox" element={<InboxRootRedirect />} />
+      <Route path="inbox/recent" element={<Inbox />} />
+      <Route path="inbox/unread" element={<Inbox />} />
       <Route path="inbox/all" element={<Inbox />} />
+      <Route path="inbox/new" element={<Navigate to="/inbox/recent" replace />} />
       <Route path="design-guide" element={<DesignGuide />} />
+      <Route path="tests/ux/runs" element={<RunTranscriptUxLab />} />
+      <Route path=":pluginRoutePath" element={<PluginPage />} />
+      <Route path="*" element={<NotFoundPage scope="board" />} />
     </>
+  );
+}
+
+function InboxRootRedirect() {
+  return <Navigate to={`/inbox/${loadLastInboxTab()}`} replace />;
+}
+
+function LegacySettingsRedirect() {
+  const location = useLocation();
+  return <Navigate to={`/instance/settings/heartbeats${location.search}${location.hash}`} replace />;
+}
+
+function OnboardingRoutePage() {
+  const { companies, loading } = useCompany();
+  const { onboardingOpen, openOnboarding } = useDialog();
+  const { companyPrefix } = useParams<{ companyPrefix?: string }>();
+  const opened = useRef(false);
+  const matchedCompany = companyPrefix
+    ? companies.find((company) => company.issuePrefix.toUpperCase() === companyPrefix.toUpperCase()) ?? null
+    : null;
+
+  useEffect(() => {
+    if (loading || opened.current || onboardingOpen) return;
+    opened.current = true;
+    if (matchedCompany) {
+      openOnboarding({ initialStep: 2, companyId: matchedCompany.id });
+      return;
+    }
+    openOnboarding();
+  }, [companyPrefix, loading, matchedCompany, onboardingOpen, openOnboarding]);
+
+  const title = matchedCompany
+    ? `Add another agent to ${matchedCompany.name}`
+    : companies.length > 0
+      ? "Create another company"
+      : "Create your first company";
+  const description = matchedCompany
+    ? "Run onboarding again to add an agent and a starter task for this company."
+    : companies.length > 0
+      ? "Run onboarding again to create another company and seed its first agent."
+      : "Get started by creating a company and your first agent.";
+
+  return (
+    <div className="mx-auto max-w-xl py-10">
+      <div className="rounded-lg border border-border bg-card p-6">
+        <h1 className="text-xl font-semibold">{title}</h1>
+        <p className="mt-2 text-sm text-muted-foreground">{description}</p>
+        <div className="mt-4">
+          <Button
+            onClick={() =>
+              matchedCompany
+                ? openOnboarding({ initialStep: 2, companyId: matchedCompany.id })
+                : openOnboarding()
+            }
+          >
+            {matchedCompany ? "Add Agent" : "Start Onboarding"}
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -222,9 +299,19 @@ export function App() {
 
         <Route element={<CloudAccessGate />}>
           <Route index element={<CompanyRootRedirect />} />
+          <Route path="onboarding" element={<OnboardingRoutePage />} />
+          <Route path="instance" element={<Navigate to="/instance/settings/heartbeats" replace />} />
+          <Route path="instance/settings" element={<Layout />}>
+            <Route index element={<Navigate to="heartbeats" replace />} />
+            <Route path="heartbeats" element={<InstanceSettings />} />
+            <Route path="plugins" element={<PluginManager />} />
+            <Route path="plugins/:pluginId" element={<PluginSettings />} />
+          </Route>
           <Route path="companies" element={<UnprefixedBoardRedirect />} />
           <Route path="issues" element={<UnprefixedBoardRedirect />} />
           <Route path="issues/:issueId" element={<UnprefixedBoardRedirect />} />
+          <Route path="settings" element={<LegacySettingsRedirect />} />
+          <Route path="settings/*" element={<LegacySettingsRedirect />} />
           <Route path="agents" element={<UnprefixedBoardRedirect />} />
           <Route path="agents/new" element={<UnprefixedBoardRedirect />} />
           <Route path="agents/:agentId" element={<UnprefixedBoardRedirect />} />
@@ -235,9 +322,12 @@ export function App() {
           <Route path="projects/:projectId/overview" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId/issues" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId/issues/:filter" element={<UnprefixedBoardRedirect />} />
+          <Route path="projects/:projectId/configuration" element={<UnprefixedBoardRedirect />} />
+          <Route path="tests/ux/runs" element={<UnprefixedBoardRedirect />} />
           <Route path=":companyPrefix" element={<Layout />}>
             {boardRoutes()}
           </Route>
+          <Route path="*" element={<NotFoundPage scope="global" />} />
         </Route>
       </Routes>
       <OnboardingWizard />

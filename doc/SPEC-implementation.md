@@ -37,7 +37,7 @@ These decisions close open questions from `SPEC.md` for V1.
 | Visibility | Full visibility to board and all agents in same company |
 | Communication | Tasks + comments only (no separate chat system) |
 | Task ownership | Single assignee; atomic checkout required for `in_progress` transition |
-| Recovery | No automatic reassignment; stale work is surfaced, not silently fixed |
+| Recovery | No automatic reassignment; work recovery stays manual/explicit |
 | Agent adapters | Built-in `process` and `http` adapters |
 | Auth | Mode-dependent human auth (`local_trusted` implicit board in current code; authenticated mode uses sessions), API keys for agents |
 | Budget period | Monthly UTC calendar window |
@@ -106,7 +106,6 @@ A lightweight scheduler/worker in the server process handles:
 - heartbeat trigger checks
 - stuck run detection
 - budget threshold checks
-- stale task reporting generation
 
 Separate queue infrastructure is not required for V1.
 
@@ -331,6 +330,34 @@ Operational policy:
   - `asset_id` uuid fk not null
   - `issue_comment_id` uuid fk null
 
+## 7.15 `documents` + `document_revisions` + `issue_documents`
+
+- `documents` stores editable text-first documents:
+  - `id` uuid pk
+  - `company_id` uuid fk not null
+  - `title` text null
+  - `format` text not null (`markdown`)
+  - `latest_body` text not null
+  - `latest_revision_id` uuid null
+  - `latest_revision_number` int not null
+  - `created_by_agent_id` uuid fk null
+  - `created_by_user_id` uuid/text fk null
+  - `updated_by_agent_id` uuid fk null
+  - `updated_by_user_id` uuid/text fk null
+- `document_revisions` stores append-only history:
+  - `id` uuid pk
+  - `company_id` uuid fk not null
+  - `document_id` uuid fk not null
+  - `revision_number` int not null
+  - `body` text not null
+  - `change_summary` text null
+- `issue_documents` links documents to issues with a stable workflow key:
+  - `id` uuid pk
+  - `company_id` uuid fk not null
+  - `issue_id` uuid fk not null
+  - `document_id` uuid fk not null
+  - `key` text not null (`plan`, `design`, `notes`, etc.)
+
 ## 8. State Machines
 
 ## 8.1 Agent Status
@@ -442,6 +469,11 @@ All endpoints are under `/api` and return JSON.
 - `POST /companies/:companyId/issues`
 - `GET /issues/:issueId`
 - `PATCH /issues/:issueId`
+- `GET /issues/:issueId/documents`
+- `GET /issues/:issueId/documents/:key`
+- `PUT /issues/:issueId/documents/:key`
+- `GET /issues/:issueId/documents/:key/revisions`
+- `DELETE /issues/:issueId/documents/:key`
 - `POST /issues/:issueId/checkout`
 - `POST /issues/:issueId/release`
 - `POST /issues/:issueId/comments`
@@ -502,7 +534,6 @@ Dashboard payload must include:
 - open/in-progress/blocked/done issue counts
 - month-to-date spend and budget utilization
 - pending approvals count
-- stale task count
 
 ## 10.9 Error Semantics
 
@@ -681,7 +712,6 @@ Required UX behaviors:
 - global company selector
 - quick actions: pause/resume agent, create task, approve/reject request
 - conflict toasts on atomic checkout failure
-- clear stale-task indicators
 - no silent background failures; every failed run visible in UI
 
 ## 15. Operational Requirements
@@ -780,7 +810,6 @@ A release candidate is blocked unless these pass:
 
 - add company selector and org chart view
 - add approvals and cost pages
-- add operational dashboard and stale-task surfacing
 
 ## Milestone 6: Hardening and Release
 

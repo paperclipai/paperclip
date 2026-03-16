@@ -18,5 +18,4 @@ export interface DashboardSummary {
     monthUtilizationPercent: number;
   };
   pendingApprovals: number;
-  staleTasks: number;
 }

@@ -32,19 +32,6 @@ export function dashboardService(db: Db) {
         .where(and(eq(approvals.companyId, companyId), eq(approvals.status, "pending")))
         .then((rows) => Number(rows[0]?.count ?? 0));
 
-      const staleCutoff = new Date(Date.now() - 60 * 60 * 1000);
-      const staleTasks = await db
-        .select({ count: sql<number>`count(*)` })
-        .from(issues)
-        .where(
-          and(
-            eq(issues.companyId, companyId),
-            eq(issues.status, "in_progress"),
-            sql`${issues.startedAt} < ${staleCutoff.toISOString()}`,
-          ),
-        )
-        .then((rows) => Number(rows[0]?.count ?? 0));
-
       const agentCounts: Record<string, number> = {
         active: 0,
         running: 0,
@@ -107,7 +94,6 @@ export function dashboardService(db: Db) {
           monthUtilizationPercent: Number(utilization.toFixed(2)),
         },
         pendingApprovals,
-        staleTasks,
       };
     },
   };

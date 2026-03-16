@@ -1,6 +1,6 @@
 {
   "name": "paperclipai",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Paperclip CLI — orchestrate AI agent teams to run a business",
   "type": "module",
   "bin": {
@@ -37,6 +37,7 @@
     "@paperclipai/adapter-claude-local": "workspace:*",
     "@paperclipai/adapter-codex-local": "workspace:*",
     "@paperclipai/adapter-cursor-local": "workspace:*",
+    "@paperclipai/adapter-gemini-local": "workspace:*",
     "@paperclipai/adapter-opencode-local": "workspace:*",
     "@paperclipai/adapter-pi-local": "workspace:*",
     "@paperclipai/adapter-openclaw-gateway": "workspace:*",

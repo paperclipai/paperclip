@@ -1,4 +1,8 @@
-import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import type {
+  AdapterExecutionContext,
+  AdapterExecutionResult,
+  AdapterRuntimeServiceReport,
+} from "@paperclipai/adapter-utils";
 import { asNumber, asString, buildPaperclipEnv, parseObject } from "@paperclipai/adapter-utils/server-utils";
 import crypto, { randomUUID } from "node:crypto";
 import { WebSocket } from "ws";
@@ -409,6 +413,58 @@ function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string
 function appendWakeText(baseText: string, wakeText: string): string {
   const trimmedBase = baseText.trim();
   return trimmedBase.length > 0 ? `${trimmedBase}\n\n${wakeText}` : wakeText;
+}
+
+function buildStandardPaperclipPayload(
+  ctx: AdapterExecutionContext,
+  wakePayload: WakePayload,
+  paperclipEnv: Record<string, string>,
+  payloadTemplate: Record<string, unknown>,
+): Record<string, unknown> {
+  const templatePaperclip = parseObject(payloadTemplate.paperclip);
+  const workspace = asRecord(ctx.context.paperclipWorkspace);
+  const workspaces = Array.isArray(ctx.context.paperclipWorkspaces)
+    ? ctx.context.paperclipWorkspaces.filter((entry): entry is Record<string, unknown> => Boolean(asRecord(entry)))
+    : [];
+  const configuredWorkspaceRuntime = parseObject(ctx.config.workspaceRuntime);
+  const runtimeServiceIntents = Array.isArray(ctx.context.paperclipRuntimeServiceIntents)
+    ? ctx.context.paperclipRuntimeServiceIntents.filter(
+        (entry): entry is Record<string, unknown> => Boolean(asRecord(entry)),
+      )
+    : [];
+
+  const standardPaperclip: Record<string, unknown> = {
+    runId: ctx.runId,
+    companyId: ctx.agent.companyId,
+    agentId: ctx.agent.id,
+    agentName: ctx.agent.name,
+    taskId: wakePayload.taskId,
+    issueId: wakePayload.issueId,
+    issueIds: wakePayload.issueIds,
+    wakeReason: wakePayload.wakeReason,
+    wakeCommentId: wakePayload.wakeCommentId,
+    approvalId: wakePayload.approvalId,
+    approvalStatus: wakePayload.approvalStatus,
+    apiUrl: paperclipEnv.PAPERCLIP_API_URL ?? null,
+  };
+
+  if (workspace) {
+    standardPaperclip.workspace = workspace;
+  }
+  if (workspaces.length > 0) {
+    standardPaperclip.workspaces = workspaces;
+  }
+  if (runtimeServiceIntents.length > 0 || Object.keys(configuredWorkspaceRuntime).length > 0) {
+    standardPaperclip.workspaceRuntime = {
+      ...configuredWorkspaceRuntime,
+      ...(runtimeServiceIntents.length > 0 ? { services: runtimeServiceIntents } : {}),
+    };
+  }
+
+  return {
+    ...templatePaperclip,
+    ...standardPaperclip,
+  };
 }
 
 function normalizeUrl(input: string): URL | null {
@@ -835,6 +891,91 @@ function parseUsage(value: unknown): AdapterExecutionResult["usage"] | undefined
   };
 }
 
+function extractRuntimeServicesFromMeta(meta: Record<string, unknown> | null): AdapterRuntimeServiceReport[] {
+  if (!meta) return [];
+  const reports: AdapterRuntimeServiceReport[] = [];
+
+  const runtimeServices = Array.isArray(meta.runtimeServices)
+    ? meta.runtimeServices.filter((entry): entry is Record<string, unknown> => Boolean(asRecord(entry)))
+    : [];
+  for (const entry of runtimeServices) {
+    const serviceName = nonEmpty(entry.serviceName) ?? nonEmpty(entry.name);
+    if (!serviceName) continue;
+    const rawStatus = nonEmpty(entry.status)?.toLowerCase();
+    const status =
+      rawStatus === "starting" || rawStatus === "running" || rawStatus === "stopped" || rawStatus === "failed"
+        ? rawStatus
+        : "running";
+    const rawLifecycle = nonEmpty(entry.lifecycle)?.toLowerCase();
+    const lifecycle = rawLifecycle === "shared" ? "shared" : "ephemeral";
+    const rawScopeType = nonEmpty(entry.scopeType)?.toLowerCase();
+    const scopeType =
+      rawScopeType === "project_workspace" ||
+      rawScopeType === "execution_workspace" ||
+      rawScopeType === "agent"
+        ? rawScopeType
+        : "run";
+    const rawHealth = nonEmpty(entry.healthStatus)?.toLowerCase();
+    const healthStatus =
+      rawHealth === "healthy" || rawHealth === "unhealthy" || rawHealth === "unknown"
+        ? rawHealth
+        : status === "running"
+          ? "healthy"
+          : "unknown";
+
+    reports.push({
+      id: nonEmpty(entry.id),
+      projectId: nonEmpty(entry.projectId),
+      projectWorkspaceId: nonEmpty(entry.projectWorkspaceId),
+      issueId: nonEmpty(entry.issueId),
+      scopeType,
+      scopeId: nonEmpty(entry.scopeId),
+      serviceName,
+      status,
+      lifecycle,
+      reuseKey: nonEmpty(entry.reuseKey),
+      command: nonEmpty(entry.command),
+      cwd: nonEmpty(entry.cwd),
+      port: parseOptionalPositiveInteger(entry.port),
+      url: nonEmpty(entry.url),
+      providerRef: nonEmpty(entry.providerRef) ?? nonEmpty(entry.previewId),
+      ownerAgentId: nonEmpty(entry.ownerAgentId),
+      stopPolicy: asRecord(entry.stopPolicy),
+      healthStatus,
+    });
+  }
+
+  const previewUrl = nonEmpty(meta.previewUrl);
+  if (previewUrl) {
+    reports.push({
+      serviceName: "preview",
+      status: "running",
+      lifecycle: "ephemeral",
+      scopeType: "run",
+      url: previewUrl,
+      providerRef: nonEmpty(meta.previewId) ?? previewUrl,
+      healthStatus: "healthy",
+    });
+  }
+
+  const previewUrls = Array.isArray(meta.previewUrls)
+    ? meta.previewUrls.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+    : [];
+  previewUrls.forEach((url, index) => {
+    reports.push({
+      serviceName: index === 0 ? "preview" : `preview-${index + 1}`,
+      status: "running",
+      lifecycle: "ephemeral",
+      scopeType: "run",
+      url,
+      providerRef: `${url}#${index}`,
+      healthStatus: "healthy",
+    });
+  });
+
+  return reports;
+}
+
 function extractResultText(value: unknown): string | null {
   const record = asRecord(value);
   if (!record) return null;
@@ -924,6 +1065,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const templateMessage = nonEmpty(payloadTemplate.message) ?? nonEmpty(payloadTemplate.text);
   const message = templateMessage ? appendWakeText(templateMessage, wakeText) : wakeText;
+  const paperclipPayload = buildStandardPaperclipPayload(ctx, wakePayload, paperclipEnv, payloadTemplate);
 
   const agentParams: Record<string, unknown> = {
     ...payloadTemplate,
@@ -1188,12 +1330,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         null;
       const summary = summaryFromEvents || summaryFromPayload || null;
 
-      const meta = asRecord(asRecord(acceptedPayload?.result)?.meta) ?? asRecord(acceptedPayload?.meta);
-      const agentMeta = asRecord(meta?.agentMeta);
-      const usage = parseUsage(agentMeta?.usage ?? meta?.usage);
-      const provider = nonEmpty(agentMeta?.provider) ?? nonEmpty(meta?.provider) ?? "openclaw";
-      const model = nonEmpty(agentMeta?.model) ?? nonEmpty(meta?.model) ?? null;
-      const costUsd = asNumber(agentMeta?.costUsd ?? meta?.costUsd, 0);
+      const acceptedResult = asRecord(acceptedPayload?.result);
+      const latestPayload = asRecord(latestResultPayload);
+      const latestResult = asRecord(latestPayload?.result);
+      const acceptedMeta = asRecord(acceptedResult?.meta) ?? asRecord(acceptedPayload?.meta);
+      const latestMeta = asRecord(latestResult?.meta) ?? asRecord(latestPayload?.meta);
+      const mergedMeta = {
+        ...(acceptedMeta ?? {}),
+        ...(latestMeta ?? {}),
+      };
+      const agentMeta =
+        asRecord(mergedMeta.agentMeta) ??
+        asRecord(acceptedMeta?.agentMeta) ??
+        asRecord(latestMeta?.agentMeta);
+      const usage = parseUsage(agentMeta?.usage ?? mergedMeta.usage);
+      const runtimeServices = extractRuntimeServicesFromMeta(agentMeta ?? mergedMeta);
+      const provider = nonEmpty(agentMeta?.provider) ?? nonEmpty(mergedMeta.provider) ?? "openclaw";
+      const model = nonEmpty(agentMeta?.model) ?? nonEmpty(mergedMeta.model) ?? null;
+      const costUsd = asNumber(agentMeta?.costUsd ?? mergedMeta.costUsd, 0);
 
       await ctx.onLog(
         "stdout",
@@ -1209,6 +1363,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ...(usage ? { usage } : {}),
         ...(costUsd > 0 ? { costUsd } : {}),
         resultJson: asRecord(latestResultPayload),
+        ...(runtimeServices.length > 0 ? { runtimeServices } : {}),
         ...(summary ? { summary } : {}),
       };
     } catch (err) {

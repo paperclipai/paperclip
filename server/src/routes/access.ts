@@ -97,7 +97,11 @@ function requestBaseUrl(req: Request) {
 
 function readSkillMarkdown(skillName: string): string | null {
   const normalized = skillName.trim().toLowerCase();
-  if (normalized !== "paperclip" && normalized !== "paperclip-create-agent")
+  if (
+    normalized !== "paperclip" &&
+    normalized !== "paperclip-create-agent" &&
+    normalized !== "para-memory-files"
+  )
     return null;
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
   const candidates = [
@@ -1610,6 +1614,10 @@ export function accessRoutes(
     res.json({
       skills: [
         { name: "paperclip", path: "/api/skills/paperclip" },
+        {
+          name: "para-memory-files",
+          path: "/api/skills/para-memory-files"
+        },
         {
           name: "paperclip-create-agent",
           path: "/api/skills/paperclip-create-agent"

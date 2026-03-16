@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { COMPANY_STATUSES } from "../constants.js";
 
+const logoAssetIdSchema = z.string().uuid().nullable().optional();
+
 export const createCompanySchema = z.object({
   name: z.string().min(1),
   description: z.string().optional().nullable(),
@@ -16,6 +18,7 @@ export const updateCompanySchema = createCompanySchema
     spentMonthlyCents: z.number().int().nonnegative().optional(),
     requireBoardApprovalForNewAgents: z.boolean().optional(),
     brandColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable().optional(),
+    logoAssetId: logoAssetIdSchema,
   });
 
 export type UpdateCompany = z.infer<typeof updateCompanySchema>;

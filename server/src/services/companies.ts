@@ -2,6 +2,8 @@ import { eq, count } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   companies,
+  companyLogos,
+  assets,
   agents,
   agentApiKeys,
   agentRuntimeState,
@@ -23,9 +25,40 @@ import {
   principalPermissionGrants,
   companyMemberships,
 } from "@paperclipai/db";
+import { notFound, unprocessable } from "../errors.js";
 
 export function companyService(db: Db) {
   const ISSUE_PREFIX_FALLBACK = "CMP";
+
+  const companySelection = {
+    id: companies.id,
+    name: companies.name,
+    description: companies.description,
+    status: companies.status,
+    issuePrefix: companies.issuePrefix,
+    issueCounter: companies.issueCounter,
+    budgetMonthlyCents: companies.budgetMonthlyCents,
+    spentMonthlyCents: companies.spentMonthlyCents,
+    requireBoardApprovalForNewAgents: companies.requireBoardApprovalForNewAgents,
+    brandColor: companies.brandColor,
+    logoAssetId: companyLogos.assetId,
+    createdAt: companies.createdAt,
+    updatedAt: companies.updatedAt,
+  };
+
+  function enrichCompany<T extends { logoAssetId: string | null }>(company: T) {
+    return {
+      ...company,
+      logoUrl: company.logoAssetId ? `/api/assets/${company.logoAssetId}/content` : null,
+    };
+  }
+
+  function getCompanyQuery(database: Pick<Db, "select">) {
+    return database
+      .select(companySelection)
+      .from(companies)
+      .leftJoin(companyLogos, eq(companyLogos.companyId, companies.id));
+  }
 
   function deriveIssuePrefixBase(name: string) {
     const normalized = name.toUpperCase().replace(/[^A-Z]/g, "");
@@ -70,32 +103,97 @@ export function companyService(db: Db) {
   }
 
   return {
-    list: () => db.select().from(companies),
+    list: () =>
+      getCompanyQuery(db).then((rows) => rows.map((row) => enrichCompany(row))),
 
     getById: (id: string) =>
-      db
-        .select()
-        .from(companies)
+      getCompanyQuery(db)
         .where(eq(companies.id, id))
-        .then((rows) => rows[0] ?? null),
+        .then((rows) => (rows[0] ? enrichCompany(rows[0]) : null)),
 
-    create: async (data: typeof companies.$inferInsert) => createCompanyWithUniquePrefix(data),
+    create: async (data: typeof companies.$inferInsert) => {
+      const created = await createCompanyWithUniquePrefix(data);
+      const row = await getCompanyQuery(db)
+        .where(eq(companies.id, created.id))
+        .then((rows) => rows[0] ?? null);
+      if (!row) throw notFound("Company not found after creation");
+      return enrichCompany(row);
+    },
 
-    update: (id: string, data: Partial<typeof companies.$inferInsert>) =>
-      db
-        .update(companies)
-        .set({ ...data, updatedAt: new Date() })
-        .where(eq(companies.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null),
+    update: (
+      id: string,
+      data: Partial<typeof companies.$inferInsert> & { logoAssetId?: string | null },
+    ) =>
+      db.transaction(async (tx) => {
+        const existing = await getCompanyQuery(tx)
+          .where(eq(companies.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!existing) return null;
+
+        const { logoAssetId, ...companyPatch } = data;
+
+        if (logoAssetId !== undefined && logoAssetId !== null) {
+          const nextLogoAsset = await tx
+            .select({ id: assets.id, companyId: assets.companyId })
+            .from(assets)
+            .where(eq(assets.id, logoAssetId))
+            .then((rows) => rows[0] ?? null);
+          if (!nextLogoAsset) throw notFound("Logo asset not found");
+          if (nextLogoAsset.companyId !== existing.id) {
+            throw unprocessable("Logo asset must belong to the same company");
+          }
+        }
+
+        const updated = await tx
+          .update(companies)
+          .set({ ...companyPatch, updatedAt: new Date() })
+          .where(eq(companies.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!updated) return null;
+
+        if (logoAssetId === null) {
+          await tx.delete(companyLogos).where(eq(companyLogos.companyId, id));
+        } else if (logoAssetId !== undefined) {
+          await tx
+            .insert(companyLogos)
+            .values({
+              companyId: id,
+              assetId: logoAssetId,
+            })
+            .onConflictDoUpdate({
+              target: companyLogos.companyId,
+              set: {
+                assetId: logoAssetId,
+                updatedAt: new Date(),
+              },
+            });
+        }
+
+        if (logoAssetId !== undefined && existing.logoAssetId && existing.logoAssetId !== logoAssetId) {
+          await tx.delete(assets).where(eq(assets.id, existing.logoAssetId));
+        }
+
+        return enrichCompany({
+          ...updated,
+          logoAssetId: logoAssetId === undefined ? existing.logoAssetId : logoAssetId,
+        });
+      }),
 
     archive: (id: string) =>
-      db
-        .update(companies)
-        .set({ status: "archived", updatedAt: new Date() })
-        .where(eq(companies.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null),
+      db.transaction(async (tx) => {
+        const updated = await tx
+          .update(companies)
+          .set({ status: "archived", updatedAt: new Date() })
+          .where(eq(companies.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!updated) return null;
+        const row = await getCompanyQuery(tx)
+          .where(eq(companies.id, id))
+          .then((rows) => rows[0] ?? null);
+        return row ? enrichCompany(row) : null;
+      }),
 
     remove: (id: string) =>
       db.transaction(async (tx) => {
@@ -116,6 +214,8 @@ export function companyService(db: Db) {
         await tx.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, id));
         await tx.delete(companyMemberships).where(eq(companyMemberships.companyId, id));
         await tx.delete(issues).where(eq(issues.companyId, id));
+        await tx.delete(companyLogos).where(eq(companyLogos.companyId, id));
+        await tx.delete(assets).where(eq(assets.companyId, id));
         await tx.delete(goals).where(eq(goals.companyId, id));
         await tx.delete(projects).where(eq(projects.companyId, id));
         await tx.delete(agents).where(eq(agents.companyId, id));

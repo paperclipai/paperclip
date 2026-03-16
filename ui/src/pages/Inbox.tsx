@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { approvalsApi } from "../api/approvals";
@@ -11,11 +11,13 @@ import { heartbeatsApi } from "../api/heartbeats";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
-import { StatusIcon } from "../components/StatusIcon";
-import { PriorityIcon } from "../components/PriorityIcon";
+import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { ApprovalCard } from "../components/ApprovalCard";
+import { IssueRow } from "../components/IssueRow";
+import { PriorityIcon } from "../components/PriorityIcon";
+import { StatusIcon } from "../components/StatusIcon";
 import { StatusBadge } from "../components/StatusBadge";
 import { timeAgo } from "../lib/timeAgo";
 import { Button } from "@/components/ui/button";
@@ -31,7 +33,6 @@ import {
 import {
   Inbox as InboxIcon,
   AlertTriangle,
-  Clock,
   ArrowUpRight,
   XCircle,
   X,
@@ -40,59 +41,29 @@ import {
 import { Identity } from "../components/Identity";
 import { PageTabBar } from "../components/PageTabBar";
 import type { HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
+import {
+  ACTIONABLE_APPROVAL_STATUSES,
+  getLatestFailedRunsByAgent,
+  getRecentTouchedIssues,
+  type InboxTab,
+  saveLastInboxTab,
+} from "../lib/inbox";
+import { useDismissedInboxItems } from "../hooks/useInboxBadge";
 
-const STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24 hours
-const RECENT_ISSUES_LIMIT = 100;
-const FAILED_RUN_STATUSES = new Set(["failed", "timed_out"]);
-const ACTIONABLE_APPROVAL_STATUSES = new Set(["pending", "revision_requested"]);
-
-type InboxTab = "new" | "all";
 type InboxCategoryFilter =
   | "everything"
   | "issues_i_touched"
   | "join_requests"
   | "approvals"
   | "failed_runs"
-  | "alerts"
-  | "stale_work";
+  | "alerts";
 type InboxApprovalFilter = "all" | "actionable" | "resolved";
 type SectionKey =
   | "issues_i_touched"
   | "join_requests"
   | "approvals"
   | "failed_runs"
-  | "alerts"
-  | "stale_work";
-
-const DISMISSED_KEY = "paperclip:inbox:dismissed";
-
-function loadDismissed(): Set<string> {
-  try {
-    const raw = localStorage.getItem(DISMISSED_KEY);
-    return raw ? new Set(JSON.parse(raw)) : new Set();
-  } catch {
-    return new Set();
-  }
-}
-
-function saveDismissed(ids: Set<string>) {
-  localStorage.setItem(DISMISSED_KEY, JSON.stringify([...ids]));
-}
-
-function useDismissedItems() {
-  const [dismissed, setDismissed] = useState<Set<string>>(loadDismissed);
-
-  const dismiss = useCallback((id: string) => {
-    setDismissed((prev) => {
-      const next = new Set(prev);
-      next.add(id);
-      saveDismissed(next);
-      return next;
-    });
-  }, []);
-
-  return { dismissed, dismiss };
-}
+  | "alerts";
 
 const RUN_SOURCE_LABELS: Record<string, string> = {
   timer: "Scheduled",
@@ -100,32 +71,6 @@ const RUN_SOURCE_LABELS: Record<string, string> = {
   on_demand: "Manual",
   automation: "Automation",
 };
-
-function getStaleIssues(issues: Issue[]): Issue[] {
-  const now = Date.now();
-  return issues
-    .filter(
-      (i) =>
-        ["in_progress", "todo"].includes(i.status) &&
-        now - new Date(i.updatedAt).getTime() > STALE_THRESHOLD_MS,
-    )
-    .sort((a, b) => new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime());
-}
-
-function getLatestFailedRunsByAgent(runs: HeartbeatRun[]): HeartbeatRun[] {
-  const sorted = [...runs].sort(
-    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-  );
-  const latestByAgent = new Map<string, HeartbeatRun>();
-
-  for (const run of sorted) {
-    if (!latestByAgent.has(run.agentId)) {
-      latestByAgent.set(run.agentId, run);
-    }
-  }
-
-  return Array.from(latestByAgent.values()).filter((run) => FAILED_RUN_STATUSES.has(run.status));
-}
 
 function firstNonEmptyLine(value: string | null | undefined): string | null {
   if (!value) return null;
@@ -135,23 +80,6 @@ function firstNonEmptyLine(value: string | null | undefined): string | null {
 
 function runFailureMessage(run: HeartbeatRun): string {
   return firstNonEmptyLine(run.error) ?? firstNonEmptyLine(run.stderrExcerpt) ?? "Run exited with an error.";
-}
-
-function normalizeTimestamp(value: string | Date | null | undefined): number {
-  if (!value) return 0;
-  const timestamp = new Date(value).getTime();
-  return Number.isFinite(timestamp) ? timestamp : 0;
-}
-
-function issueLastActivityTimestamp(issue: Issue): number {
-  const lastExternalCommentAt = normalizeTimestamp(issue.lastExternalCommentAt);
-  if (lastExternalCommentAt > 0) return lastExternalCommentAt;
-
-  const updatedAt = normalizeTimestamp(issue.updatedAt);
-  const myLastTouchAt = normalizeTimestamp(issue.myLastTouchAt);
-  if (myLastTouchAt > 0 && updatedAt <= myLastTouchAt) return 0;
-
-  return updatedAt;
 }
 
 function readIssueIdFromRun(run: HeartbeatRun): string | null {
@@ -171,11 +99,13 @@ function FailedRunCard({
   run,
   issueById,
   agentName: linkedAgentName,
+  issueLinkState,
   onDismiss,
 }: {
   run: HeartbeatRun;
   issueById: Map<string, Issue>;
   agentName: string | null;
+  issueLinkState: unknown;
   onDismiss: () => void;
 }) {
   const queryClient = useQueryClient();
@@ -227,6 +157,7 @@ function FailedRunCard({
         {issue ? (
           <Link
             to={`/issues/${issue.identifier ?? issue.id}`}
+            state={issueLinkState}
             className="block truncate text-sm font-medium transition-colors hover:text-foreground no-underline text-inherit"
           >
             <span className="font-mono text-muted-foreground mr-1.5">
@@ -311,10 +242,19 @@ export function Inbox() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [allCategoryFilter, setAllCategoryFilter] = useState<InboxCategoryFilter>("everything");
   const [allApprovalFilter, setAllApprovalFilter] = useState<InboxApprovalFilter>("all");
-  const { dismissed, dismiss } = useDismissedItems();
+  const { dismissed, dismiss } = useDismissedInboxItems();
 
-  const pathSegment = location.pathname.split("/").pop() ?? "new";
-  const tab: InboxTab = pathSegment === "all" ? "all" : "new";
+  const pathSegment = location.pathname.split("/").pop() ?? "recent";
+  const tab: InboxTab =
+    pathSegment === "all" || pathSegment === "unread" ? pathSegment : "recent";
+  const issueLinkState = useMemo(
+    () =>
+      createIssueDetailLocationState(
+        "Inbox",
+        `${location.pathname}${location.search}${location.hash}`,
+      ),
+    [location.pathname, location.search, location.hash],
+  );
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -325,6 +265,10 @@ export function Inbox() {
   useEffect(() => {
     setBreadcrumbs([{ label: "Inbox" }]);
   }, [setBreadcrumbs]);
+
+  useEffect(() => {
+    saveLastInboxTab(tab);
+  }, [tab]);
 
   const {
     data: approvals,
@@ -385,22 +329,10 @@ export function Inbox() {
     enabled: !!selectedCompanyId,
   });
 
-  const staleIssues = useMemo(
-    () => (issues ? getStaleIssues(issues) : []).filter((i) => !dismissed.has(`stale:${i.id}`)),
-    [issues, dismissed],
-  );
-  const sortByMostRecentActivity = useCallback(
-    (a: Issue, b: Issue) => {
-      const activityDiff = issueLastActivityTimestamp(b) - issueLastActivityTimestamp(a);
-      if (activityDiff !== 0) return activityDiff;
-      return normalizeTimestamp(b.updatedAt) - normalizeTimestamp(a.updatedAt);
-    },
-    [],
-  );
-
-  const touchedIssues = useMemo(
-    () => [...touchedIssuesRaw].sort(sortByMostRecentActivity).slice(0, RECENT_ISSUES_LIMIT),
-    [sortByMostRecentActivity, touchedIssuesRaw],
+  const touchedIssues = useMemo(() => getRecentTouchedIssues(touchedIssuesRaw), [touchedIssuesRaw]);
+  const unreadTouchedIssues = useMemo(
+    () => touchedIssues.filter((issue) => issue.isUnreadForMe),
+    [touchedIssues],
   );
 
   const agentById = useMemo(() => {
@@ -419,6 +351,15 @@ export function Inbox() {
     () => getLatestFailedRunsByAgent(heartbeatRuns ?? []).filter((r) => !dismissed.has(`run:${r.id}`)),
     [heartbeatRuns, dismissed],
   );
+  const liveIssueIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const run of heartbeatRuns ?? []) {
+      if (run.status !== "running" && run.status !== "queued") continue;
+      const issueId = readIssueIdFromRun(run);
+      if (issueId) ids.add(issueId);
+    }
+    return ids;
+  }, [heartbeatRuns]);
 
   const allApprovals = useMemo(
     () =>
@@ -500,23 +441,51 @@ export function Inbox() {
 
   const [fadingOutIssues, setFadingOutIssues] = useState<Set<string>>(new Set());
 
+  const invalidateInboxIssueQueries = () => {
+    if (!selectedCompanyId) return;
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
+  };
+
   const markReadMutation = useMutation({
     mutationFn: (id: string) => issuesApi.markRead(id),
     onMutate: (id) => {
       setFadingOutIssues((prev) => new Set(prev).add(id));
     },
     onSuccess: () => {
-      if (selectedCompanyId) {
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId) });
-        queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
-      }
+      invalidateInboxIssueQueries();
     },
     onSettled: (_data, _error, id) => {
       setTimeout(() => {
         setFadingOutIssues((prev) => {
           const next = new Set(prev);
           next.delete(id);
+          return next;
+        });
+      }, 300);
+    },
+  });
+
+  const markAllReadMutation = useMutation({
+    mutationFn: async (issueIds: string[]) => {
+      await Promise.all(issueIds.map((issueId) => issuesApi.markRead(issueId)));
+    },
+    onMutate: (issueIds) => {
+      setFadingOutIssues((prev) => {
+        const next = new Set(prev);
+        for (const issueId of issueIds) next.add(issueId);
+        return next;
+      });
+    },
+    onSuccess: () => {
+      invalidateInboxIssueQueries();
+    },
+    onSettled: (_data, _error, issueIds) => {
+      setTimeout(() => {
+        setFadingOutIssues((prev) => {
+          const next = new Set(prev);
+          for (const issueId of issueIds) next.delete(issueId);
           return next;
         });
       }, 300);
@@ -535,15 +504,8 @@ export function Inbox() {
     dashboard.costs.monthUtilizationPercent >= 80 &&
     !dismissed.has("alert:budget");
   const hasAlerts = showAggregateAgentError || showBudgetAlert;
-  const hasStale = staleIssues.length > 0;
   const hasJoinRequests = joinRequests.length > 0;
   const hasTouchedIssues = touchedIssues.length > 0;
-
-  const newItemCount =
-    failedRuns.length +
-    staleIssues.length +
-    (showAggregateAgentError ? 1 : 0) +
-    (showBudgetAlert ? 1 : 0);
 
   const showJoinRequestsCategory =
     allCategoryFilter === "everything" || allCategoryFilter === "join_requests";
@@ -553,25 +515,26 @@ export function Inbox() {
   const showFailedRunsCategory =
     allCategoryFilter === "everything" || allCategoryFilter === "failed_runs";
   const showAlertsCategory = allCategoryFilter === "everything" || allCategoryFilter === "alerts";
-  const showStaleCategory = allCategoryFilter === "everything" || allCategoryFilter === "stale_work";
 
-  const approvalsToRender = tab === "new" ? actionableApprovals : filteredAllApprovals;
-  const showTouchedSection = tab === "new" ? hasTouchedIssues : showTouchedCategory && hasTouchedIssues;
+  const approvalsToRender = tab === "all" ? filteredAllApprovals : actionableApprovals;
+  const showTouchedSection =
+    tab === "all"
+      ? showTouchedCategory && hasTouchedIssues
+      : tab === "unread"
+        ? unreadTouchedIssues.length > 0
+        : hasTouchedIssues;
   const showJoinRequestsSection =
-    tab === "new" ? hasJoinRequests : showJoinRequestsCategory && hasJoinRequests;
-  const showApprovalsSection =
-    tab === "new"
-      ? actionableApprovals.length > 0
-      : showApprovalsCategory && filteredAllApprovals.length > 0;
+    tab === "all" ? showJoinRequestsCategory && hasJoinRequests : tab === "unread" && hasJoinRequests;
+  const showApprovalsSection = tab === "all"
+    ? showApprovalsCategory && filteredAllApprovals.length > 0
+    : actionableApprovals.length > 0;
   const showFailedRunsSection =
-    tab === "new" ? hasRunFailures : showFailedRunsCategory && hasRunFailures;
-  const showAlertsSection = tab === "new" ? hasAlerts : showAlertsCategory && hasAlerts;
-  const showStaleSection = tab === "new" ? hasStale : showStaleCategory && hasStale;
+    tab === "all" ? showFailedRunsCategory && hasRunFailures : tab === "unread" && hasRunFailures;
+  const showAlertsSection = tab === "all" ? showAlertsCategory && hasAlerts : tab === "unread" && hasAlerts;
 
   const visibleSections = [
     showFailedRunsSection ? "failed_runs" : null,
     showAlertsSection ? "alerts" : null,
-    showStaleSection ? "stale_work" : null,
     showApprovalsSection ? "approvals" : null,
     showJoinRequestsSection ? "join_requests" : null,
     showTouchedSection ? "issues_i_touched" : null,
@@ -586,33 +549,44 @@ export function Inbox() {
     !isRunsLoading;
 
   const showSeparatorBefore = (key: SectionKey) => visibleSections.indexOf(key) > 0;
+  const unreadIssueIds = unreadTouchedIssues
+    .filter((issue) => !fadingOutIssues.has(issue.id))
+    .map((issue) => issue.id);
+  const canMarkAllRead = unreadIssueIds.length > 0;
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <Tabs value={tab} onValueChange={(value) => navigate(`/inbox/${value === "all" ? "all" : "new"}`)}>
-          <PageTabBar
-            items={[
-              {
-                value: "new",
-                label: (
-                  <>
-                    New
-                    {newItemCount > 0 && (
-                      <span className="ml-1.5 rounded-full bg-blue-500/20 px-1.5 py-0.5 text-[10px] font-medium text-blue-500">
-                        {newItemCount}
-                      </span>
-                    )}
-                  </>
-                ),
-              },
-              { value: "all", label: "All" },
-            ]}
-          />
-        </Tabs>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-wrap items-center gap-2">
+          <Tabs value={tab} onValueChange={(value) => navigate(`/inbox/${value}`)}>
+            <PageTabBar
+              items={[
+                {
+                  value: "recent",
+                  label: "Recent",
+                },
+                { value: "unread", label: "Unread" },
+                { value: "all", label: "All" },
+              ]}
+            />
+          </Tabs>
+
+          {canMarkAllRead && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8 shrink-0"
+              onClick={() => markAllReadMutation.mutate(unreadIssueIds)}
+              disabled={markAllReadMutation.isPending}
+            >
+              {markAllReadMutation.isPending ? "Marking…" : "Mark all as read"}
+            </Button>
+          )}
+        </div>
 
         {tab === "all" && (
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2 sm:justify-end">
             <Select
               value={allCategoryFilter}
               onValueChange={(value) => setAllCategoryFilter(value as InboxCategoryFilter)}
@@ -627,7 +601,6 @@ export function Inbox() {
                 <SelectItem value="approvals">Approvals</SelectItem>
                 <SelectItem value="failed_runs">Failed runs</SelectItem>
                 <SelectItem value="alerts">Alerts</SelectItem>
-                <SelectItem value="stale_work">Stale work</SelectItem>
               </SelectContent>
             </Select>
 
@@ -661,9 +634,11 @@ export function Inbox() {
         <EmptyState
           icon={InboxIcon}
           message={
-            tab === "new"
-              ? "No issues you're involved in yet."
-              : "No inbox items match these filters."
+            tab === "unread"
+              ? "No new inbox items."
+              : tab === "recent"
+                ? "No recent inbox items."
+                : "No inbox items match these filters."
           }
         />
       )}
@@ -673,7 +648,7 @@ export function Inbox() {
           {showSeparatorBefore("approvals") && <Separator />}
           <div>
             <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              {tab === "new" ? "Approvals Needing Action" : "Approvals"}
+              {tab === "unread" ? "Approvals Needing Action" : "Approvals"}
             </h3>
             <div className="grid gap-3">
               {approvalsToRender.map((approval) => (
@@ -764,6 +739,7 @@ export function Inbox() {
                   run={run}
                   issueById={issueById}
                   agentName={agentName(run.agentId)}
+                  issueLinkState={issueLinkState}
                   onDismiss={() => dismiss(`run:${run.id}`)}
                 />
               ))}
@@ -830,166 +806,56 @@ export function Inbox() {
         </>
       )}
 
-      {showStaleSection && (
-        <>
-          {showSeparatorBefore("stale_work") && <Separator />}
-          <div>
-            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              Stale Work
-            </h3>
-            <div className="divide-y divide-border border border-border">
-              {staleIssues.map((issue) => (
-                <div
-                  key={issue.id}
-                  className="group/stale relative flex items-start gap-2 overflow-hidden px-3 py-3 transition-colors hover:bg-accent/50 sm:items-center sm:gap-3 sm:px-4"
-                >
-                  {/* Status icon - left column on mobile; Clock icon on desktop */}
-                  <span className="shrink-0 sm:hidden">
-                    <StatusIcon status={issue.status} />
-                  </span>
-                  <Clock className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground hidden sm:block sm:mt-0" />
-
-                  <Link
-                    to={`/issues/${issue.identifier ?? issue.id}`}
-                    className="flex min-w-0 flex-1 cursor-pointer flex-col gap-1 no-underline text-inherit sm:flex-row sm:items-center sm:gap-3"
-                  >
-                    <span className="line-clamp-2 text-sm sm:order-2 sm:flex-1 sm:min-w-0 sm:line-clamp-none sm:truncate">
-                      {issue.title}
-                    </span>
-                    <span className="flex items-center gap-2 sm:order-1 sm:shrink-0">
-                      <span className="hidden sm:inline-flex"><PriorityIcon priority={issue.priority} /></span>
-                      <span className="hidden sm:inline-flex"><StatusIcon status={issue.status} /></span>
-                      <span className="shrink-0 text-xs font-mono text-muted-foreground">
-                        {issue.identifier ?? issue.id.slice(0, 8)}
-                      </span>
-                      {issue.assigneeAgentId &&
-                        (() => {
-                          const name = agentName(issue.assigneeAgentId);
-                          return name ? (
-                            <span className="hidden sm:inline-flex"><Identity name={name} size="sm" /></span>
-                          ) : null;
-                        })()}
-                      <span className="text-xs text-muted-foreground sm:hidden">&middot;</span>
-                      <span className="shrink-0 text-xs text-muted-foreground sm:order-last">
-                        updated {timeAgo(issue.updatedAt)}
-                      </span>
-                    </span>
-                  </Link>
-                  <button
-                    type="button"
-                    onClick={() => dismiss(`stale:${issue.id}`)}
-                    className="mt-0.5 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/stale:opacity-100 sm:mt-0"
-                    aria-label="Dismiss"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        </>
-      )}
-
       {showTouchedSection && (
         <>
           {showSeparatorBefore("issues_i_touched") && <Separator />}
           <div>
-            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              My Recent Issues
-            </h3>
-            <div className="divide-y divide-border border border-border">
-              {touchedIssues.map((issue) => {
+            <div>
+              {(tab === "unread" ? unreadTouchedIssues : touchedIssues).map((issue) => {
                 const isUnread = issue.isUnreadForMe && !fadingOutIssues.has(issue.id);
                 const isFading = fadingOutIssues.has(issue.id);
                 return (
-                  <Link
+                  <IssueRow
                     key={issue.id}
-                    to={`/issues/${issue.identifier ?? issue.id}`}
-                    className="flex min-w-0 cursor-pointer items-start gap-2 px-3 py-3 no-underline text-inherit transition-colors hover:bg-accent/50 sm:items-center sm:gap-3 sm:px-4"
-                  >
-                    {/* Status icon - left column on mobile, inline on desktop */}
-                    <span className="shrink-0 sm:hidden">
-                      <StatusIcon status={issue.status} />
-                    </span>
-
-                    {/* Right column on mobile: title + metadata stacked */}
-                    <span className="flex min-w-0 flex-1 flex-col gap-1 sm:contents">
-                      <span className="line-clamp-2 text-sm sm:order-2 sm:flex-1 sm:min-w-0 sm:line-clamp-none sm:truncate">
-                        {issue.title}
-                      </span>
-                      <span className="flex items-center gap-2 sm:order-1 sm:shrink-0">
-                        {(isUnread || isFading) ? (
-                          <span
-                            role="button"
-                            tabIndex={0}
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              markReadMutation.mutate(issue.id);
-                            }}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter" || e.key === " ") {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                markReadMutation.mutate(issue.id);
-                              }
-                            }}
-                            className="hidden sm:inline-flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors hover:bg-blue-500/20"
-                            aria-label="Mark as read"
-                          >
-                            <span
-                              className={`h-2 w-2 rounded-full bg-blue-600 dark:bg-blue-400 transition-opacity duration-300 ${
-                                isFading ? "opacity-0" : "opacity-100"
-                              }`}
-                            />
-                          </span>
-                        ) : (
-                          <span className="hidden sm:inline-flex h-4 w-4 shrink-0" />
-                        )}
-                        <span className="hidden sm:inline-flex"><PriorityIcon priority={issue.priority} /></span>
-                        <span className="hidden sm:inline-flex"><StatusIcon status={issue.status} /></span>
-                        <span className="text-xs font-mono text-muted-foreground">
+                    issue={issue}
+                    issueLinkState={issueLinkState}
+                    desktopMetaLeading={(
+                      <>
+                        <span className="hidden sm:inline-flex">
+                          <PriorityIcon priority={issue.priority} />
+                        </span>
+                        <span className="hidden shrink-0 sm:inline-flex">
+                          <StatusIcon status={issue.status} />
+                        </span>
+                        <span className="shrink-0 font-mono text-xs text-muted-foreground">
                           {issue.identifier ?? issue.id.slice(0, 8)}
                         </span>
-                        <span className="text-xs text-muted-foreground sm:hidden">
-                          &middot;
-                        </span>
-                        <span className="text-xs text-muted-foreground sm:order-last">
-                          {issue.lastExternalCommentAt
-                            ? `commented ${timeAgo(issue.lastExternalCommentAt)}`
-                            : `updated ${timeAgo(issue.updatedAt)}`}
-                        </span>
-                      </span>
-                    </span>
-
-                    {/* Unread dot - right side, vertically centered (mobile only; desktop keeps inline) */}
-                    {(isUnread || isFading) && (
-                      <span
-                        role="button"
-                        tabIndex={0}
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          markReadMutation.mutate(issue.id);
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === " ") {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            markReadMutation.mutate(issue.id);
-                          }
-                        }}
-                        className="shrink-0 self-center cursor-pointer sm:hidden"
-                        aria-label="Mark as read"
-                      >
-                        <span
-                          className={`block h-2 w-2 rounded-full bg-blue-600 dark:bg-blue-400 transition-opacity duration-300 ${
-                            isFading ? "opacity-0" : "opacity-100"
-                          }`}
-                        />
-                      </span>
+                        {liveIssueIds.has(issue.id) && (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-blue-500/10 px-1.5 py-0.5 sm:gap-1.5 sm:px-2">
+                            <span className="relative flex h-2 w-2">
+                              <span className="absolute inline-flex h-full w-full animate-pulse rounded-full bg-blue-400 opacity-75" />
+                              <span className="relative inline-flex h-2 w-2 rounded-full bg-blue-500" />
+                            </span>
+                            <span className="hidden text-[11px] font-medium text-blue-600 dark:text-blue-400 sm:inline">
+                              Live
+                            </span>
+                          </span>
+                        )}
+                      </>
                     )}
-                  </Link>
+                    mobileMeta={
+                      issue.lastExternalCommentAt
+                        ? `commented ${timeAgo(issue.lastExternalCommentAt)}`
+                        : `updated ${timeAgo(issue.updatedAt)}`
+                    }
+                    unreadState={isUnread ? "visible" : isFading ? "fading" : "hidden"}
+                    onMarkRead={() => markReadMutation.mutate(issue.id)}
+                    trailingMeta={
+                      issue.lastExternalCommentAt
+                        ? `commented ${timeAgo(issue.lastExternalCommentAt)}`
+                        : `updated ${timeAgo(issue.updatedAt)}`
+                    }
+                  />
                 );
               })}
             </div>

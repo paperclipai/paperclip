@@ -162,4 +162,3 @@ export async function promptServer(opts?: {
     auth,
   };
 }
-

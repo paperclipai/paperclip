@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
-import { useParams, Link, useNavigate } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from "react";
+import { Link, useLocation, useNavigate, useParams } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
 import { activityApi } from "../api/activity";
@@ -11,10 +11,12 @@ import { useCompany } from "../context/CompanyContext";
 import { usePanel } from "../context/PanelContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
+import { readIssueDetailBreadcrumb } from "../lib/issueDetailBreadcrumb";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatTokens } from "../lib/utils";
 import { InlineEditor } from "../components/InlineEditor";
 import { CommentThread } from "../components/CommentThread";
+import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
 import { IssueProperties } from "../components/IssueProperties";
 import { LiveRunWidget } from "../components/LiveRunWidget";
 import type { MentionOption } from "../components/MarkdownEditor";
@@ -23,6 +25,8 @@ import { StatusIcon } from "../components/StatusIcon";
 import { PriorityIcon } from "../components/PriorityIcon";
 import { StatusBadge } from "../components/StatusBadge";
 import { Identity } from "../components/Identity";
+import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
+import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
@@ -59,6 +63,9 @@ const ACTION_LABELS: Record<string, string> = {
   "issue.comment_added": "added a comment",
   "issue.attachment_added": "added an attachment",
   "issue.attachment_removed": "removed an attachment",
+  "issue.document_created": "created a document",
+  "issue.document_updated": "updated a document",
+  "issue.document_deleted": "deleted a document",
   "issue.deleted": "deleted the issue",
   "agent.created": "created an agent",
   "agent.updated": "updated the agent",
@@ -96,6 +103,36 @@ function truncate(text: string, max: number): string {
   return text.slice(0, max - 1) + "\u2026";
 }
 
+function isMarkdownFile(file: File) {
+  const name = file.name.toLowerCase();
+  return (
+    name.endsWith(".md") ||
+    name.endsWith(".markdown") ||
+    file.type === "text/markdown"
+  );
+}
+
+function fileBaseName(filename: string) {
+  return filename.replace(/\.[^.]+$/, "");
+}
+
+function slugifyDocumentKey(input: string) {
+  const slug = input
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "document";
+}
+
+function titleizeFilename(input: string) {
+  return input
+    .split(/[-_ ]+/g)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
 function formatAction(action: string, details?: Record<string, unknown> | null): string {
   if (action === "issue.updated" && details) {
     const previous = (details._previous ?? {}) as Record<string, unknown>;
@@ -129,6 +166,14 @@ function formatAction(action: string, details?: Record<string, unknown> | null):
 
     if (parts.length > 0) return parts.join(", ");
   }
+  if (
+    (action === "issue.document_created" || action === "issue.document_updated" || action === "issue.document_deleted") &&
+    details
+  ) {
+    const key = typeof details.key === "string" ? details.key : "document";
+    const title = typeof details.title === "string" && details.title ? ` (${details.title})` : "";
+    return `${ACTION_LABELS[action] ?? action} ${key}${title}`;
+  }
   return ACTION_LABELS[action] ?? action.replace(/[._]/g, " ");
 }
 
@@ -150,6 +195,7 @@ export function IssueDetail() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const location = useLocation();
   const [moreOpen, setMoreOpen] = useState(false);
   const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
   const [detailTab, setDetailTab] = useState("comments");
@@ -158,6 +204,7 @@ export function IssueDetail() {
     cost: false,
   });
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [attachmentDragActive, setAttachmentDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const lastMarkedReadIssueIdRef = useRef<string | null>(null);
 
@@ -166,6 +213,7 @@ export function IssueDetail() {
     queryFn: () => issuesApi.get(issueId!),
     enabled: !!issueId,
   });
+  const resolvedCompanyId = issue?.companyId ?? selectedCompanyId;
 
   const { data: comments } = useQuery({
     queryKey: queryKeys.issues.comments(issueId!),
@@ -213,6 +261,10 @@ export function IssueDetail() {
   });
 
   const hasLiveRuns = (liveRuns ?? []).length > 0 || !!activeRun;
+  const sourceBreadcrumb = useMemo(
+    () => readIssueDetailBreadcrumb(location.state) ?? { label: "Issues", href: "/issues" },
+    [location.state],
+  );
 
   // Filter out runs already shown by the live widget to avoid duplication
   const timelineRuns = useMemo(() => {
@@ -251,6 +303,21 @@ export function IssueDetail() {
     companyId: selectedCompanyId,
     userId: currentUserId,
   });
+  const { slots: issuePluginDetailSlots } = usePluginSlots({
+    slotTypes: ["detailTab"],
+    entityType: "issue",
+    companyId: resolvedCompanyId,
+    enabled: !!resolvedCompanyId,
+  });
+  const issuePluginTabItems = useMemo(
+    () => issuePluginDetailSlots.map((slot) => ({
+      value: `plugin:${slot.pluginKey}:${slot.id}`,
+      label: slot.displayName,
+      slot,
+    })),
+    [issuePluginDetailSlots],
+  );
+  const activePluginTab = issuePluginTabItems.find((item) => item.value === detailTab) ?? null;
 
   const agentMap = useMemo(() => {
     const map = new Map<string, Agent>();
@@ -298,8 +365,7 @@ export function IssueDetail() {
       options.push({ id: `agent:${agent.id}`, label: agent.name });
     }
     if (currentUserId) {
-      const label = currentUserId === "local-board" ? "Board" : "Me (Board)";
-      options.push({ id: `user:${currentUserId}`, label });
+      options.push({ id: `user:${currentUserId}`, label: "Me" });
     }
     return options;
   }, [agents, currentUserId]);
@@ -379,6 +445,7 @@ export function IssueDetail() {
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(issueId!) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.approvals(issueId!) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(issueId!) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.documents(issueId!) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(issueId!) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(issueId!) });
     if (selectedCompanyId) {
@@ -453,6 +520,30 @@ export function IssueDetail() {
     },
   });
 
+  const importMarkdownDocument = useMutation({
+    mutationFn: async (file: File) => {
+      const baseName = fileBaseName(file.name);
+      const key = slugifyDocumentKey(baseName);
+      const existing = (issue?.documentSummaries ?? []).find((doc) => doc.key === key) ?? null;
+      const body = await file.text();
+      const inferredTitle = titleizeFilename(baseName);
+      const nextTitle = existing?.title ?? inferredTitle ?? null;
+      return issuesApi.upsertDocument(issueId!, key, {
+        title: key === "plan" ? null : nextTitle,
+        format: "markdown",
+        body,
+        baseRevisionId: existing?.latestRevisionId ?? null,
+      });
+    },
+    onSuccess: () => {
+      setAttachmentError(null);
+      invalidateIssue();
+    },
+    onError: (err) => {
+      setAttachmentError(err instanceof Error ? err.message : "Document import failed");
+    },
+  });
+
   const deleteAttachment = useMutation({
     mutationFn: (attachmentId: string) => issuesApi.deleteAttachment(attachmentId),
     onSuccess: () => {
@@ -468,17 +559,17 @@ export function IssueDetail() {
   useEffect(() => {
     const titleLabel = issue?.title ?? issueId ?? "Issue";
     setBreadcrumbs([
-      { label: "Issues", href: "/issues" },
+      sourceBreadcrumb,
       { label: hasLiveRuns ? `🔵 ${titleLabel}` : titleLabel },
     ]);
-  }, [setBreadcrumbs, issue, issueId, hasLiveRuns]);
+  }, [setBreadcrumbs, sourceBreadcrumb, issue, issueId, hasLiveRuns]);
 
   // Redirect to identifier-based URL if navigated via UUID
   useEffect(() => {
     if (issue?.identifier && issueId !== issue.identifier) {
-      navigate(`/issues/${issue.identifier}`, { replace: true });
+      navigate(`/issues/${issue.identifier}`, { replace: true, state: location.state });
     }
-  }, [issue, issueId, navigate]);
+  }, [issue, issueId, navigate, location.state]);
 
   useEffect(() => {
     if (!issue?.id) return;
@@ -504,15 +595,62 @@ export function IssueDetail() {
   const ancestors = issue.ancestors ?? [];
 
   const handleFilePicked = async (evt: ChangeEvent<HTMLInputElement>) => {
-    const file = evt.target.files?.[0];
-    if (!file) return;
-    await uploadAttachment.mutateAsync(file);
+    const files = evt.target.files;
+    if (!files || files.length === 0) return;
+    for (const file of Array.from(files)) {
+      if (isMarkdownFile(file)) {
+        await importMarkdownDocument.mutateAsync(file);
+      } else {
+        await uploadAttachment.mutateAsync(file);
+      }
+    }
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
   };
 
+  const handleAttachmentDrop = async (evt: DragEvent<HTMLDivElement>) => {
+    evt.preventDefault();
+    setAttachmentDragActive(false);
+    const files = evt.dataTransfer.files;
+    if (!files || files.length === 0) return;
+    for (const file of Array.from(files)) {
+      if (isMarkdownFile(file)) {
+        await importMarkdownDocument.mutateAsync(file);
+      } else {
+        await uploadAttachment.mutateAsync(file);
+      }
+    }
+  };
+
   const isImageAttachment = (attachment: IssueAttachment) => attachment.contentType.startsWith("image/");
+  const attachmentList = attachments ?? [];
+  const hasAttachments = attachmentList.length > 0;
+  const attachmentUploadButton = (
+    <>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*,application/pdf,text/plain,text/markdown,application/json,text/csv,text/html,.md,.markdown"
+        className="hidden"
+        onChange={handleFilePicked}
+        multiple
+      />
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => fileInputRef.current?.click()}
+        disabled={uploadAttachment.isPending || importMarkdownDocument.isPending}
+        className={cn(
+          "shadow-none",
+          attachmentDragActive && "border-primary bg-primary/5",
+        )}
+      >
+        <Paperclip className="h-3.5 w-3.5 mr-1.5" />
+        {uploadAttachment.isPending || importMarkdownDocument.isPending ? "Uploading..." : "Upload attachment"}
+      </Button>
+    </>
+  );
 
   return (
     <div className="max-w-2xl space-y-6">
@@ -524,6 +662,7 @@ export function IssueDetail() {
               {i > 0 && <ChevronRight className="h-3 w-3 shrink-0" />}
               <Link
                 to={`/issues/${ancestor.identifier ?? ancestor.id}`}
+                state={location.state}
                 className="hover:text-foreground transition-colors truncate max-w-[200px]"
                 title={ancestor.title}
               >
@@ -558,7 +697,7 @@ export function IssueDetail() {
           {hasLiveRuns && (
             <span className="inline-flex items-center gap-1.5 rounded-full bg-cyan-500/10 border border-cyan-500/30 px-2 py-0.5 text-[10px] font-medium text-cyan-600 dark:text-cyan-400 shrink-0">
               <span className="relative flex h-1.5 w-1.5">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
+                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
                 <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-cyan-400" />
               </span>
               Live
@@ -652,16 +791,16 @@ export function IssueDetail() {
 
         <InlineEditor
           value={issue.title}
-          onSave={(title) => updateIssue.mutate({ title })}
+          onSave={(title) => updateIssue.mutateAsync({ title })}
           as="h2"
           className="text-xl font-bold"
         />
 
         <InlineEditor
           value={issue.description ?? ""}
-          onSave={(description) => updateIssue.mutate({ description })}
+          onSave={(description) => updateIssue.mutateAsync({ description })}
           as="p"
-          className="text-sm text-muted-foreground"
+          className="text-[15px] leading-7 text-foreground"
           placeholder="Add a description..."
           multiline
           mentions={mentionOptions}
@@ -672,77 +811,127 @@ export function IssueDetail() {
         />
       </div>
 
-      <div className="space-y-3">
+      <PluginSlotOutlet
+        slotTypes={["toolbarButton", "contextMenuItem"]}
+        entityType="issue"
+        context={{
+          companyId: issue.companyId,
+          projectId: issue.projectId ?? null,
+          entityId: issue.id,
+          entityType: "issue",
+        }}
+        className="flex flex-wrap gap-2"
+        itemClassName="inline-flex"
+        missingBehavior="placeholder"
+      />
+
+      <PluginLauncherOutlet
+        placementZones={["toolbarButton"]}
+        entityType="issue"
+        context={{
+          companyId: issue.companyId,
+          projectId: issue.projectId ?? null,
+          entityId: issue.id,
+          entityType: "issue",
+        }}
+        className="flex flex-wrap gap-2"
+        itemClassName="inline-flex"
+      />
+
+      <PluginSlotOutlet
+        slotTypes={["taskDetailView"]}
+        entityType="issue"
+        context={{
+          companyId: issue.companyId,
+          projectId: issue.projectId ?? null,
+          entityId: issue.id,
+          entityType: "issue",
+        }}
+        className="space-y-3"
+        itemClassName="rounded-lg border border-border p-3"
+        missingBehavior="placeholder"
+      />
+
+      <IssueDocumentsSection
+        issue={issue}
+        canDeleteDocuments={Boolean(session?.user?.id)}
+        mentions={mentionOptions}
+        imageUploadHandler={async (file) => {
+          const attachment = await uploadAttachment.mutateAsync(file);
+          return attachment.contentPath;
+        }}
+        extraActions={!hasAttachments ? attachmentUploadButton : undefined}
+      />
+
+      {hasAttachments ? (
+        <div
+        className={cn(
+          "space-y-3 rounded-lg transition-colors",
+        )}
+        onDragEnter={(evt) => {
+          evt.preventDefault();
+          setAttachmentDragActive(true);
+        }}
+        onDragOver={(evt) => {
+          evt.preventDefault();
+          setAttachmentDragActive(true);
+        }}
+        onDragLeave={(evt) => {
+          if (evt.currentTarget.contains(evt.relatedTarget as Node | null)) return;
+          setAttachmentDragActive(false);
+        }}
+        onDrop={(evt) => void handleAttachmentDrop(evt)}
+      >
         <div className="flex items-center justify-between gap-2">
           <h3 className="text-sm font-medium text-muted-foreground">Attachments</h3>
-          <div className="flex items-center gap-2">
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/png,image/jpeg,image/webp,image/gif"
-              className="hidden"
-              onChange={handleFilePicked}
-            />
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={uploadAttachment.isPending}
-            >
-              <Paperclip className="h-3.5 w-3.5 mr-1.5" />
-              {uploadAttachment.isPending ? "Uploading..." : "Upload image"}
-            </Button>
-          </div>
+          {attachmentUploadButton}
         </div>
 
         {attachmentError && (
           <p className="text-xs text-destructive">{attachmentError}</p>
         )}
 
-        {(!attachments || attachments.length === 0) ? (
-          <p className="text-xs text-muted-foreground">No attachments yet.</p>
-        ) : (
-          <div className="space-y-2">
-            {attachments.map((attachment) => (
-              <div key={attachment.id} className="border border-border rounded-md p-2">
-                <div className="flex items-center justify-between gap-2">
-                  <a
-                    href={attachment.contentPath}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-xs hover:underline truncate"
-                    title={attachment.originalFilename ?? attachment.id}
-                  >
-                    {attachment.originalFilename ?? attachment.id}
-                  </a>
-                  <button
-                    type="button"
-                    className="text-muted-foreground hover:text-destructive"
-                    onClick={() => deleteAttachment.mutate(attachment.id)}
-                    disabled={deleteAttachment.isPending}
-                    title="Delete attachment"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-                <p className="text-[11px] text-muted-foreground">
-                  {attachment.contentType} · {(attachment.byteSize / 1024).toFixed(1)} KB
-                </p>
-                {isImageAttachment(attachment) && (
-                  <a href={attachment.contentPath} target="_blank" rel="noreferrer">
-                    <img
-                      src={attachment.contentPath}
-                      alt={attachment.originalFilename ?? "attachment"}
-                      className="mt-2 max-h-56 rounded border border-border object-contain bg-accent/10"
-                      loading="lazy"
-                    />
-                  </a>
-                )}
+        <div className="space-y-2">
+          {attachmentList.map((attachment) => (
+            <div key={attachment.id} className="border border-border rounded-md p-2">
+              <div className="flex items-center justify-between gap-2">
+                <a
+                  href={attachment.contentPath}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs hover:underline truncate"
+                  title={attachment.originalFilename ?? attachment.id}
+                >
+                  {attachment.originalFilename ?? attachment.id}
+                </a>
+                <button
+                  type="button"
+                  className="text-muted-foreground hover:text-destructive"
+                  onClick={() => deleteAttachment.mutate(attachment.id)}
+                  disabled={deleteAttachment.isPending}
+                  title="Delete attachment"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
               </div>
-            ))}
-          </div>
-        )}
-      </div>
+              <p className="text-[11px] text-muted-foreground">
+                {attachment.contentType} · {(attachment.byteSize / 1024).toFixed(1)} KB
+              </p>
+              {isImageAttachment(attachment) && (
+                <a href={attachment.contentPath} target="_blank" rel="noreferrer">
+                  <img
+                    src={attachment.contentPath}
+                    alt={attachment.originalFilename ?? "attachment"}
+                    className="mt-2 max-h-56 rounded border border-border object-contain bg-accent/10"
+                    loading="lazy"
+                  />
+                </a>
+              )}
+            </div>
+          ))}
+        </div>
+        </div>
+      ) : null}
 
       <Separator />
 
@@ -760,12 +949,19 @@ export function IssueDetail() {
             <ActivityIcon className="h-3.5 w-3.5" />
             Activity
           </TabsTrigger>
+          {issuePluginTabItems.map((item) => (
+            <TabsTrigger key={item.value} value={item.value}>
+              {item.label}
+            </TabsTrigger>
+          ))}
         </TabsList>
 
         <TabsContent value="comments">
           <CommentThread
             comments={commentsWithRunMeta}
             linkedRuns={timelineRuns}
+            companyId={issue.companyId}
+            projectId={issue.projectId}
             issueStatus={issue.status}
             agentMap={agentMap}
             draftKey={`paperclip:issue-comment-draft:${issue.id}`}
@@ -800,6 +996,7 @@ export function IssueDetail() {
                 <Link
                   key={child.id}
                   to={`/issues/${child.identifier ?? child.id}`}
+                  state={location.state}
                   className="flex items-center justify-between px-3 py-2 text-sm hover:bg-accent/20 transition-colors"
                 >
                   <div className="flex items-center gap-2 min-w-0">
@@ -837,6 +1034,21 @@ export function IssueDetail() {
             </div>
           )}
         </TabsContent>
+
+        {activePluginTab && (
+          <TabsContent value={activePluginTab.value}>
+            <PluginSlotMount
+              slot={activePluginTab.slot}
+              context={{
+                companyId: issue.companyId,
+                projectId: issue.projectId ?? null,
+                entityId: issue.id,
+                entityType: "issue",
+              }}
+              missingBehavior="placeholder"
+            />
+          </TabsContent>
+        )}
       </Tabs>
 
       {linkedApprovals && linkedApprovals.length > 0 && (
@@ -893,7 +1105,7 @@ export function IssueDetail() {
               {!issueCostSummary.hasCost && !issueCostSummary.hasTokens ? (
                 <div className="text-xs text-muted-foreground">No cost data yet.</div>
               ) : (
-                <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+                <div className="flex flex-wrap gap-3 text-xs text-muted-foreground tabular-nums">
                   {issueCostSummary.hasCost && (
                     <span className="font-medium text-foreground">
                       ${issueCostSummary.cost.toFixed(4)}
