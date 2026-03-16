@@ -8,6 +8,14 @@ description: Use when managing Claude Code context, controlling costs, hitting r
 
 Most Claude Code slowdowns, limit-hits, and cost explosions aren't about Claude — they're about unaudited context and unmanaged session hygiene. Token auditing, strategic `/compact`, MCP slimming, and model routing can extend session longevity 10x and cut spend 15x without changing a line of code.
 
+## Customization
+
+**Before executing, check for user customizations:**
+1. Read `{project}/.claude/skill-customizations/context-cost-management/PREFERENCES.md` (if exists)
+2. Read `~/.claude/skill-customizations/context-cost-management/PREFERENCES.md` (if exists)
+3. Project-local overrides global. Both override skill defaults.
+4. If neither exists, proceed with skill defaults.
+
 ## Workflow Routing
 
 | Symptom / Request | Route To |

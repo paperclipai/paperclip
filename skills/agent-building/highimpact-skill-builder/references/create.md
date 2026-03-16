@@ -56,6 +56,24 @@ description: |
 - Progressive disclosure: keep SKILL.md under 500 lines; move reference material to `references/`
 - When supporting multiple domains (e.g., iOS vs web), one reference file per domain
 
+### Customization Block
+
+Include this near the top of execution — after the intro, before the first step. Replace `{skill-name}` with the skill's directory name.
+
+```markdown
+## Customization
+
+**Before executing, check for user customizations:**
+1. Read `{project}/.claude/skill-customizations/{skill-name}/PREFERENCES.md` (if exists)
+2. Read `~/.claude/skill-customizations/{skill-name}/PREFERENCES.md` (if exists)
+3. Project-local overrides global. Both override skill defaults.
+4. If neither exists, proceed with skill defaults.
+```
+
+Users create a `PREFERENCES.md` with freeform markdown — no schema needed. The LLM reads it and adjusts. Users who don't customize are unaffected. See `docs/conventions/skill-customization.md`.
+
+---
+
 ### Example pattern
 
 ```markdown

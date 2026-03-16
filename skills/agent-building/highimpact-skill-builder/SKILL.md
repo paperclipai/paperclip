@@ -133,6 +133,26 @@ See `references/optimize.md` for: description A/B testing procedure, trigger phr
 
 ## Skill Writing Guide
 
+### User Customization
+
+Every skill should support user overrides via `skill-customizations/`. Add this block near the top of execution — after the intro, before the first step:
+
+```markdown
+## Customization
+
+**Before executing, check for user customizations:**
+1. Read `{project}/.claude/skill-customizations/{skill-name}/PREFERENCES.md` (if exists)
+2. Read `~/.claude/skill-customizations/{skill-name}/PREFERENCES.md` (if exists)
+3. Project-local overrides global. Both override skill defaults.
+4. If neither exists, proceed with skill defaults.
+```
+
+Replace `{skill-name}` with the skill's directory name (e.g., `tdd-workflow`). No parsing required — the LLM reads the markdown and adjusts accordingly. Users who don't customize are unaffected.
+
+See `docs/conventions/skill-customization.md` for the full convention and directory structure.
+
+---
+
 ### When to Use Sub-Routing
 
 | Condition | Decision |

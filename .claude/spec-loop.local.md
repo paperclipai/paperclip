@@ -5,7 +5,7 @@ current_iteration: 2
 started_at: 2026-03-16T18:30:00Z
 no_progress_count: 2
 error_count: 0
-last_completed_step: 0
+last_completed_step: 1
 circuit_breaker: open
 current_trace_path: null
 traces_emitted: 0
@@ -28,7 +28,7 @@ Implementing: spec/20260316-pai-patterns
 - 5 iterations with repeated errors → OPEN
 
 When circuit breaker opens, analyze and fix before continuing.
-last_completed_step: 0
+last_completed_step: 1
 0
-last_completed_step: 0
+last_completed_step: 1
 0

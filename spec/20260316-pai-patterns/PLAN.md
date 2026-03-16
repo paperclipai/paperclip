@@ -6,7 +6,7 @@ Six patterns borrowed from danielmiessler/Personal_AI_Infrastructure (10K stars)
 ## Status
 ⬜ Not Started
 
-**Progress:** 1/6 steps
+**Progress:** 3/6 steps
 **Branch:** feat/pai-patterns
 **Depends on:** None
 
@@ -65,9 +65,9 @@ Step 5 (Evals) ── independent
 | # | Step | Status | Dependencies | Complexity |
 |---|------|--------|--------------|------------|
 | 1 | Workflow Sub-Routing | ✅ | None | M |
-| 2 | User Customization Layer | ⬜ | None | S |
+| 2 | User Customization Layer | ✅ | None | S |
 | 3 | Deep Investigation | ⬜ | Step 1 | M |
-| 4 | Agent Composition from Traits | ⬜ | None | M |
+| 4 | Agent Composition from Traits | ✅ | None | M |
 | 5 | Evals Framework | ⬜ | None | M |
 | 6 | Pack/Install Wizard | ⬜ | Steps 1, 2 | S |
 
@@ -135,3 +135,5 @@ Step 5 (Evals) ── independent
 | Step | Completed | Summary |
 |------|-----------|---------|
 | 1 | 2026-03-16 | Workflow Sub-Routing: convention doc, 7 workflow files for context-cost-management (202→38 lines), publish-skill.ts updated, skill-builder updated |
+| 2 | 2026-03-16 | User Customization Layer: convention doc, ~/.claude/skill-customizations/ with README + example, skill-builder + context-cost-management updated |
+| 4 | 2026-03-16 | Agent Composition from Traits: 16 trait files (6 expertise + 6 personality + 4 approach), compose-agent.ts with --list/--task, README |
