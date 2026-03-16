@@ -31,6 +31,13 @@ const mockIssueService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockLogger = vi.hoisted(() => ({
+  warn: vi.fn(),
+  info: vi.fn(),
+  error: vi.fn(),
+  debug: vi.fn(),
+  child: vi.fn(),
+}));
 
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
@@ -42,6 +49,10 @@ vi.mock("../services/index.js", () => ({
   issueApprovalService: () => ({}),
   documentService: () => ({}),
   logActivity: mockLogActivity,
+}));
+
+vi.mock("../middleware/logger.js", () => ({
+  logger: mockLogger,
 }));
 
 function createApp(actor: Record<string, unknown>) {
@@ -133,6 +144,7 @@ describe("PATCH /issues/:id task control", () => {
     mockIssueService.findMentionedAgents.mockReset().mockResolvedValue([]);
     mockIssueService.assertCheckoutOwner.mockReset().mockResolvedValue({});
     mockLogActivity.mockReset().mockResolvedValue(undefined);
+    mockLogger.warn.mockReset();
   });
 
   it("allows CEO agent to cancel a subordinate issue and interrupts the active run", async () => {
@@ -342,6 +354,33 @@ describe("PATCH /issues/:id task control", () => {
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
   });
 
+  it("does not apply the manager-only cancellation gate to unrelated updates on already-cancelled issues", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      ...baseIssue,
+      status: "cancelled",
+      cancelledAt: new Date("2026-03-16T18:30:00.000Z"),
+    });
+
+    const res = await request(
+      createApp({
+        type: "agent",
+        agentId: "agent-manager",
+        companyId: "company-1",
+        runId: "run-manager",
+        source: "agent_key",
+      }),
+    )
+      .patch("/api/issues/issue-1")
+      .send({ priority: "high" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith("issue-1", { priority: "high" });
+    expect(mockLogActivity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "issue.task_control_denied" }),
+    );
+  });
+
   it("still updates the issue when no active run exists", async () => {
     mockAgentService.getById.mockResolvedValue({
       id: "agent-ceo",
@@ -368,5 +407,35 @@ describe("PATCH /issues/:id task control", () => {
     expect(res.status).toBe(200);
     expect(mockIssueService.update).toHaveBeenCalledWith("issue-1", { status: "cancelled" });
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+  });
+
+  it("still updates the issue when cancelling the managed run throws", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-ceo",
+      companyId: "company-1",
+      role: "ceo",
+      permissions: { canCreateAgents: true, canManageTasks: true },
+    });
+    mockAgentService.getChainOfCommand.mockResolvedValue([{ id: "agent-ceo", name: "CEO", role: "ceo", title: null }]);
+    mockHeartbeatService.cancelRun.mockRejectedValue(new Error("db unavailable"));
+
+    const res = await request(
+      createApp({
+        type: "agent",
+        agentId: "agent-ceo",
+        companyId: "company-1",
+        runId: "run-ceo",
+        source: "agent_key",
+      }),
+    )
+      .patch("/api/issues/issue-1")
+      .send({ status: "cancelled" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith("issue-1", { status: "cancelled" });
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ issueId: "issue-1", err: expect.any(Error) }),
+      "failed to cancel managed run during issue update",
+    );
   });
 });

@@ -179,6 +179,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     },
     options: {
       nextStatus: string;
+      requestedStatus?: string;
       nextAssigneeAgentId: string | null;
       nextAssigneeUserId: string | null;
     },
@@ -193,7 +194,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const nextStatus = options.nextStatus;
     const assigneeChanges =
       currentAssigneeAgentId !== nextAssigneeAgentId || issue.assigneeUserId !== nextAssigneeUserId;
-    const cancelsTask = nextStatus === "cancelled";
+    const cancelsTask = options.requestedStatus === "cancelled" && issue.status !== "cancelled";
 
     const managedAgentId =
       currentAssigneeAgentId && currentAssigneeAgentId !== actorAgentId && (assigneeChanges || cancelsTask)
@@ -840,6 +841,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const nextStatus = req.body.status ?? existing.status;
     await assertAgentCanManageTaskControl(req, existing, {
       nextStatus,
+      requestedStatus: req.body.status,
       nextAssigneeAgentId,
       nextAssigneeUserId,
     });
@@ -919,23 +921,27 @@ export function issueRoutes(db: Db, storage: StorageService) {
       (req.body.status === "cancelled" || assigneeWillChange);
     let interruptedRunId: string | null = null;
     if (shouldInterruptManagedRun) {
-      const runToInterrupt = await resolveActiveRunForIssue(existing);
-      if (runToInterrupt && (runToInterrupt.status === "queued" || runToInterrupt.status === "running")) {
-        const cancelled = await heartbeat.cancelRun(runToInterrupt.id);
-        if (cancelled) {
-          interruptedRunId = cancelled.id;
-          await logActivity(db, {
-            companyId: cancelled.companyId,
-            actorType: actor.actorType,
-            actorId: actor.actorId,
-            agentId: actor.agentId,
-            runId: actor.runId,
-            action: "heartbeat.cancelled",
-            entityType: "heartbeat_run",
-            entityId: cancelled.id,
-            details: { agentId: cancelled.agentId, source: "issue_update_interrupt", issueId: existing.id },
-          });
+      try {
+        const runToInterrupt = await resolveActiveRunForIssue(existing);
+        if (runToInterrupt && (runToInterrupt.status === "queued" || runToInterrupt.status === "running")) {
+          const cancelled = await heartbeat.cancelRun(runToInterrupt.id);
+          if (cancelled) {
+            interruptedRunId = cancelled.id;
+            await logActivity(db, {
+              companyId: cancelled.companyId,
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              runId: actor.runId,
+              action: "heartbeat.cancelled",
+              entityType: "heartbeat_run",
+              entityId: cancelled.id,
+              details: { agentId: cancelled.agentId, source: "issue_update_interrupt", issueId: existing.id },
+            });
+          }
         }
+      } catch (err) {
+        logger.warn({ err, issueId: existing.id }, "failed to cancel managed run during issue update");
       }
     }
 
