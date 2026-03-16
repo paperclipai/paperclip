@@ -7,6 +7,7 @@ import {
   copyGitHooksToWorktreeGitDir,
   copySeededSecretsKey,
   rebindWorkspaceCwd,
+  resolveSourceConfigPath,
   resolveGitWorktreeAddArgs,
   resolveWorktreeMakeTargetPath,
   worktreeInitCommand,
@@ -16,6 +17,7 @@ import {
   buildWorktreeConfig,
   buildWorktreeEnvEntries,
   formatShellExports,
+  generateWorktreeColor,
   resolveWorktreeSeedPlan,
   resolveWorktreeLocalPaths,
   rewriteLocalUrlPort,
@@ -181,11 +183,20 @@ describe("worktree helpers", () => {
       path.resolve("/tmp/paperclip-worktrees", "instances", "feature-worktree-support", "data", "storage"),
     );
 
-    const env = buildWorktreeEnvEntries(paths);
+    const env = buildWorktreeEnvEntries(paths, {
+      name: "feature-worktree-support",
+      color: "#3abf7a",
+    });
     expect(env.PAPERCLIP_HOME).toBe(path.resolve("/tmp/paperclip-worktrees"));
     expect(env.PAPERCLIP_INSTANCE_ID).toBe("feature-worktree-support");
     expect(env.PAPERCLIP_IN_WORKTREE).toBe("true");
+    expect(env.PAPERCLIP_WORKTREE_NAME).toBe("feature-worktree-support");
+    expect(env.PAPERCLIP_WORKTREE_COLOR).toBe("#3abf7a");
     expect(formatShellExports(env)).toContain("export PAPERCLIP_INSTANCE_ID='feature-worktree-support'");
+  });
+
+  it("generates vivid worktree colors as hex", () => {
+    expect(generateWorktreeColor()).toMatch(/^#[0-9a-f]{6}$/);
   });
 
   it("uses minimal seed mode to keep app state but drop heavy runtime history", () => {
@@ -280,13 +291,69 @@ describe("worktree helpers", () => {
       });
 
       const envPath = path.join(repoRoot, ".paperclip", ".env");
-      expect(fs.readFileSync(envPath, "utf8")).toContain("PAPERCLIP_AGENT_JWT_SECRET=worktree-shared-secret");
+      const envContents = fs.readFileSync(envPath, "utf8");
+      expect(envContents).toContain("PAPERCLIP_AGENT_JWT_SECRET=worktree-shared-secret");
+      expect(envContents).toContain("PAPERCLIP_WORKTREE_NAME=repo");
+      expect(envContents).toMatch(/PAPERCLIP_WORKTREE_COLOR=\"#[0-9a-f]{6}\"/);
     } finally {
       process.chdir(originalCwd);
       if (originalJwtSecret === undefined) {
         delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
       } else {
         process.env.PAPERCLIP_AGENT_JWT_SECRET = originalJwtSecret;
+      }
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("defaults the seed source config to the current repo-local Paperclip config", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-source-config-"));
+    const repoRoot = path.join(tempRoot, "repo");
+    const localConfigPath = path.join(repoRoot, ".paperclip", "config.json");
+    const originalCwd = process.cwd();
+    const originalPaperclipConfig = process.env.PAPERCLIP_CONFIG;
+
+    try {
+      fs.mkdirSync(path.dirname(localConfigPath), { recursive: true });
+      fs.writeFileSync(localConfigPath, JSON.stringify(buildSourceConfig()), "utf8");
+      delete process.env.PAPERCLIP_CONFIG;
+      process.chdir(repoRoot);
+
+      expect(fs.realpathSync(resolveSourceConfigPath({}))).toBe(fs.realpathSync(localConfigPath));
+    } finally {
+      process.chdir(originalCwd);
+      if (originalPaperclipConfig === undefined) {
+        delete process.env.PAPERCLIP_CONFIG;
+      } else {
+        process.env.PAPERCLIP_CONFIG = originalPaperclipConfig;
+      }
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves the source config path across worktree:make cwd changes", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-source-override-"));
+    const sourceConfigPath = path.join(tempRoot, "source", "config.json");
+    const targetRoot = path.join(tempRoot, "target");
+    const originalCwd = process.cwd();
+    const originalPaperclipConfig = process.env.PAPERCLIP_CONFIG;
+
+    try {
+      fs.mkdirSync(path.dirname(sourceConfigPath), { recursive: true });
+      fs.mkdirSync(targetRoot, { recursive: true });
+      fs.writeFileSync(sourceConfigPath, JSON.stringify(buildSourceConfig()), "utf8");
+      delete process.env.PAPERCLIP_CONFIG;
+      process.chdir(targetRoot);
+
+      expect(resolveSourceConfigPath({ sourceConfigPathOverride: sourceConfigPath })).toBe(
+        path.resolve(sourceConfigPath),
+      );
+    } finally {
+      process.chdir(originalCwd);
+      if (originalPaperclipConfig === undefined) {
+        delete process.env.PAPERCLIP_CONFIG;
+      } else {
+        process.env.PAPERCLIP_CONFIG = originalPaperclipConfig;
       }
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }

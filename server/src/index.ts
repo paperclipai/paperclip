@@ -53,6 +53,7 @@ type EmbeddedPostgresCtor = new (opts: {
   password: string;
   port: number;
   persistent: boolean;
+  initdbFlags?: string[];
   onLog?: (message: unknown) => void;
   onError?: (message: unknown) => void;
 }) => EmbeddedPostgresInstance;
@@ -334,6 +335,7 @@ export async function startServer(): Promise<StartedServer> {
         password: "paperclip",
         port,
         persistent: true,
+        initdbFlags: ["--encoding=UTF8", "--locale=C"],
         onLog: appendEmbeddedPostgresLog,
         onError: appendEmbeddedPostgresLog,
       });
@@ -512,16 +514,19 @@ export async function startServer(): Promise<StartedServer> {
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any);
   
-    // Reap orphaned runs at startup (no threshold -- runningProcesses is empty)
-    void heartbeat.reapOrphanedRuns().catch((err) => {
-      logger.error({ err }, "startup reap of orphaned heartbeat runs failed");
-    });
+    // Reap orphaned running runs at startup while in-memory execution state is empty,
+    // then resume any persisted queued runs that were waiting on the previous process.
+    void heartbeat
+      .reapOrphanedRuns()
+      .then(() => heartbeat.resumeQueuedRuns())
+      .catch((err) => {
+        logger.error({ err }, "startup heartbeat recovery failed");
+      });
 
-    // Release any locks whose run already reached a terminal state
+    // Release any locks whose run already reached a terminal state.
     void heartbeat.expireTerminatedRunLocks().catch((err) => {
       logger.error({ err }, "startup expiry of terminated-run locks failed");
     });
-
     setInterval(() => {
       void heartbeat
         .tickTimers(new Date())
@@ -536,11 +541,13 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "heartbeat timer tick failed");
         });
   
-      // Periodically reap orphaned runs (5-min staleness threshold)
+      // Periodically reap orphaned runs (5-min staleness threshold) and make sure
+      // persisted queued work is still being driven forward.
       void heartbeat
         .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
+        .then(() => heartbeat.resumeQueuedRuns())
         .catch((err) => {
-          logger.error({ err }, "periodic reap of orphaned heartbeat runs failed");
+          logger.error({ err }, "periodic heartbeat recovery failed");
         });
 
       // Periodically expire any locks whose run is already terminal

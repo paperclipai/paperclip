@@ -1,3 +1,4 @@
+import { randomInt } from "node:crypto";
 import path from "node:path";
 import type { PaperclipConfig } from "../config/schema.js";
 import { expandHomePrefix } from "../config/home.js";
@@ -44,6 +45,11 @@ export type WorktreeLocalPaths = {
   storageDir: string;
 };
 
+export type WorktreeUiBranding = {
+  name: string;
+  color: string;
+};
+
 export function isWorktreeSeedMode(value: string): value is WorktreeSeedMode {
   return (WORKTREE_SEED_MODES as readonly string[]).includes(value);
 }
@@ -85,6 +91,51 @@ export function sanitizeWorktreeInstanceId(rawValue: string): string {
 
 export function resolveSuggestedWorktreeName(cwd: string, explicitName?: string): string {
   return nonEmpty(explicitName) ?? path.basename(path.resolve(cwd));
+}
+
+function hslComponentToHex(n: number): string {
+  return Math.round(Math.max(0, Math.min(255, n)))
+    .toString(16)
+    .padStart(2, "0");
+}
+
+function hslToHex(hue: number, saturation: number, lightness: number): string {
+  const s = Math.max(0, Math.min(100, saturation)) / 100;
+  const l = Math.max(0, Math.min(100, lightness)) / 100;
+  const c = (1 - Math.abs((2 * l) - 1)) * s;
+  const h = ((hue % 360) + 360) % 360;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = l - (c / 2);
+
+  let r = 0;
+  let g = 0;
+  let b = 0;
+
+  if (h < 60) {
+    r = c;
+    g = x;
+  } else if (h < 120) {
+    r = x;
+    g = c;
+  } else if (h < 180) {
+    g = c;
+    b = x;
+  } else if (h < 240) {
+    g = x;
+    b = c;
+  } else if (h < 300) {
+    r = x;
+    b = c;
+  } else {
+    r = c;
+    b = x;
+  }
+
+  return `#${hslComponentToHex((r + m) * 255)}${hslComponentToHex((g + m) * 255)}${hslComponentToHex((b + m) * 255)}`;
+}
+
+export function generateWorktreeColor(): string {
+  return hslToHex(randomInt(0, 360), 68, 56);
 }
 
 export function resolveWorktreeLocalPaths(opts: {
@@ -196,13 +247,18 @@ export function buildWorktreeConfig(input: {
   };
 }
 
-export function buildWorktreeEnvEntries(paths: WorktreeLocalPaths): Record<string, string> {
+export function buildWorktreeEnvEntries(
+  paths: WorktreeLocalPaths,
+  branding?: WorktreeUiBranding,
+): Record<string, string> {
   return {
     PAPERCLIP_HOME: paths.homeDir,
     PAPERCLIP_INSTANCE_ID: paths.instanceId,
     PAPERCLIP_CONFIG: paths.configPath,
     PAPERCLIP_CONTEXT: paths.contextPath,
     PAPERCLIP_IN_WORKTREE: "true",
+    ...(branding?.name ? { PAPERCLIP_WORKTREE_NAME: branding.name } : {}),
+    ...(branding?.color ? { PAPERCLIP_WORKTREE_COLOR: branding.color } : {}),
   };
 }
 

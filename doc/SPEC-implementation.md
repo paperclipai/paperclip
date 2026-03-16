@@ -330,6 +330,34 @@ Operational policy:
   - `asset_id` uuid fk not null
   - `issue_comment_id` uuid fk null
 
+## 7.15 `documents` + `document_revisions` + `issue_documents`
+
+- `documents` stores editable text-first documents:
+  - `id` uuid pk
+  - `company_id` uuid fk not null
+  - `title` text null
+  - `format` text not null (`markdown`)
+  - `latest_body` text not null
+  - `latest_revision_id` uuid null
+  - `latest_revision_number` int not null
+  - `created_by_agent_id` uuid fk null
+  - `created_by_user_id` uuid/text fk null
+  - `updated_by_agent_id` uuid fk null
+  - `updated_by_user_id` uuid/text fk null
+- `document_revisions` stores append-only history:
+  - `id` uuid pk
+  - `company_id` uuid fk not null
+  - `document_id` uuid fk not null
+  - `revision_number` int not null
+  - `body` text not null
+  - `change_summary` text null
+- `issue_documents` links documents to issues with a stable workflow key:
+  - `id` uuid pk
+  - `company_id` uuid fk not null
+  - `issue_id` uuid fk not null
+  - `document_id` uuid fk not null
+  - `key` text not null (`plan`, `design`, `notes`, etc.)
+
 ## 8. State Machines
 
 ## 8.1 Agent Status
@@ -441,6 +469,11 @@ All endpoints are under `/api` and return JSON.
 - `POST /companies/:companyId/issues`
 - `GET /issues/:issueId`
 - `PATCH /issues/:issueId`
+- `GET /issues/:issueId/documents`
+- `GET /issues/:issueId/documents/:key`
+- `PUT /issues/:issueId/documents/:key`
+- `GET /issues/:issueId/documents/:key/revisions`
+- `DELETE /issues/:issueId/documents/:key`
 - `POST /issues/:issueId/checkout`
 - `POST /issues/:issueId/release`
 - `POST /issues/:issueId/comments`

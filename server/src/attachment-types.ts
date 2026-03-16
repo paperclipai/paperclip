@@ -21,6 +21,12 @@ export const DEFAULT_ALLOWED_TYPES: readonly string[] = [
   "image/jpg",
   "image/webp",
   "image/gif",
+  "application/pdf",
+  "text/markdown",
+  "text/plain",
+  "application/json",
+  "text/csv",
+  "text/html",
 ];
 
 /**

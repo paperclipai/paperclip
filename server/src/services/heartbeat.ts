@@ -18,7 +18,7 @@ import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, runningProcesses } from "../adapters/index.js";
-import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec } from "../adapters/index.js";
+import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec, UsageSummary } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
@@ -47,6 +47,14 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
+const SESSIONED_LOCAL_ADAPTERS = new Set([
+  "claude_local",
+  "codex_local",
+  "cursor",
+  "gemini_local",
+  "opencode_local",
+  "pi_local",
+]);
 
 const heartbeatRunListColumns = {
   id: heartbeatRuns.id,
@@ -117,6 +125,26 @@ interface WakeupOptions {
   contextSnapshot?: Record<string, unknown>;
 }
 
+type UsageTotals = {
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+};
+
+type SessionCompactionPolicy = {
+  enabled: boolean;
+  maxSessionRuns: number;
+  maxRawInputTokens: number;
+  maxSessionAgeHours: number;
+};
+
+type SessionCompactionDecision = {
+  rotate: boolean;
+  reason: string | null;
+  handoffMarkdown: string | null;
+  previousRunId: string | null;
+};
+
 interface ParsedIssueAssigneeAdapterOverrides {
   adapterConfig: Record<string, unknown> | null;
   useProjectWorkspace: boolean | null;
@@ -140,6 +168,88 @@ export type ResolvedWorkspaceForRun = {
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function normalizeUsageTotals(usage: UsageSummary | null | undefined): UsageTotals | null {
+  if (!usage) return null;
+  return {
+    inputTokens: Math.max(0, Math.floor(asNumber(usage.inputTokens, 0))),
+    cachedInputTokens: Math.max(0, Math.floor(asNumber(usage.cachedInputTokens, 0))),
+    outputTokens: Math.max(0, Math.floor(asNumber(usage.outputTokens, 0))),
+  };
+}
+
+function readRawUsageTotals(usageJson: unknown): UsageTotals | null {
+  const parsed = parseObject(usageJson);
+  if (Object.keys(parsed).length === 0) return null;
+
+  const inputTokens = Math.max(
+    0,
+    Math.floor(asNumber(parsed.rawInputTokens, asNumber(parsed.inputTokens, 0))),
+  );
+  const cachedInputTokens = Math.max(
+    0,
+    Math.floor(asNumber(parsed.rawCachedInputTokens, asNumber(parsed.cachedInputTokens, 0))),
+  );
+  const outputTokens = Math.max(
+    0,
+    Math.floor(asNumber(parsed.rawOutputTokens, asNumber(parsed.outputTokens, 0))),
+  );
+
+  if (inputTokens <= 0 && cachedInputTokens <= 0 && outputTokens <= 0) {
+    return null;
+  }
+
+  return {
+    inputTokens,
+    cachedInputTokens,
+    outputTokens,
+  };
+}
+
+function deriveNormalizedUsageDelta(current: UsageTotals | null, previous: UsageTotals | null): UsageTotals | null {
+  if (!current) return null;
+  if (!previous) return { ...current };
+
+  const inputTokens = current.inputTokens >= previous.inputTokens
+    ? current.inputTokens - previous.inputTokens
+    : current.inputTokens;
+  const cachedInputTokens = current.cachedInputTokens >= previous.cachedInputTokens
+    ? current.cachedInputTokens - previous.cachedInputTokens
+    : current.cachedInputTokens;
+  const outputTokens = current.outputTokens >= previous.outputTokens
+    ? current.outputTokens - previous.outputTokens
+    : current.outputTokens;
+
+  return {
+    inputTokens: Math.max(0, inputTokens),
+    cachedInputTokens: Math.max(0, cachedInputTokens),
+    outputTokens: Math.max(0, outputTokens),
+  };
+}
+
+function formatCount(value: number | null | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "0";
+  return value.toLocaleString("en-US");
+}
+
+function parseSessionCompactionPolicy(agent: typeof agents.$inferSelect): SessionCompactionPolicy {
+  const runtimeConfig = parseObject(agent.runtimeConfig);
+  const heartbeat = parseObject(runtimeConfig.heartbeat);
+  const compaction = parseObject(
+    heartbeat.sessionCompaction ?? heartbeat.sessionRotation ?? runtimeConfig.sessionCompaction,
+  );
+  const supportsSessions = SESSIONED_LOCAL_ADAPTERS.has(agent.adapterType);
+  const enabled = compaction.enabled === undefined
+    ? supportsSessions
+    : asBoolean(compaction.enabled, supportsSessions);
+
+  return {
+    enabled,
+    maxSessionRuns: Math.max(0, Math.floor(asNumber(compaction.maxSessionRuns, 200))),
+    maxRawInputTokens: Math.max(0, Math.floor(asNumber(compaction.maxRawInputTokens, 2_000_000))),
+    maxSessionAgeHours: Math.max(0, Math.floor(asNumber(compaction.maxSessionAgeHours, 72))),
+  };
 }
 
 export function resolveRuntimeSessionParamsForWorkspace(input: {
@@ -268,29 +378,20 @@ export function shouldSkipTimerWake(runtimeConfig: unknown, openIssueCount: numb
 export function shouldResetTaskSessionForWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
+  if (contextSnapshot?.forceFreshSession === true) return true;
+
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (wakeReason === "issue_assigned") return true;
-
-  const wakeSource = readNonEmptyString(contextSnapshot?.wakeSource);
-  if (wakeSource === "timer") return true;
-
-  const wakeTriggerDetail = readNonEmptyString(contextSnapshot?.wakeTriggerDetail);
-  return wakeSource === "on_demand" && wakeTriggerDetail === "manual";
+  return false;
 }
 
 function describeSessionResetReason(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
+  if (contextSnapshot?.forceFreshSession === true) return "forceFreshSession was requested";
+
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (wakeReason === "issue_assigned") return "wake reason is issue_assigned";
-
-  const wakeSource = readNonEmptyString(contextSnapshot?.wakeSource);
-  if (wakeSource === "timer") return "wake source is timer";
-
-  const wakeTriggerDetail = readNonEmptyString(contextSnapshot?.wakeTriggerDetail);
-  if (wakeSource === "on_demand" && wakeTriggerDetail === "manual") {
-    return "this is a manual invoke";
-  }
   return null;
 }
 
@@ -477,6 +578,7 @@ export function heartbeatService(db: Db) {
   const runLogStore = getRunLogStore();
   const secretsSvc = secretService(db);
   const issuesSvc = issueService(db);
+  const activeRunExecutions = new Set<string>();
 
   async function getAgent(agentId: string) {
     return db
@@ -520,6 +622,176 @@ export function heartbeatService(db: Db) {
         ),
       )
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function getLatestRunForSession(
+    agentId: string,
+    sessionId: string,
+    opts?: { excludeRunId?: string | null },
+  ) {
+    const conditions = [
+      eq(heartbeatRuns.agentId, agentId),
+      eq(heartbeatRuns.sessionIdAfter, sessionId),
+    ];
+    if (opts?.excludeRunId) {
+      conditions.push(sql`${heartbeatRuns.id} <> ${opts.excludeRunId}`);
+    }
+    return db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(...conditions))
+      .orderBy(desc(heartbeatRuns.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function getOldestRunForSession(agentId: string, sessionId: string) {
+    return db
+      .select({
+        id: heartbeatRuns.id,
+        createdAt: heartbeatRuns.createdAt,
+      })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.sessionIdAfter, sessionId)))
+      .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function resolveNormalizedUsageForSession(input: {
+    agentId: string;
+    runId: string;
+    sessionId: string | null;
+    rawUsage: UsageTotals | null;
+  }) {
+    const { agentId, runId, sessionId, rawUsage } = input;
+    if (!sessionId || !rawUsage) {
+      return {
+        normalizedUsage: rawUsage,
+        previousRawUsage: null as UsageTotals | null,
+        derivedFromSessionTotals: false,
+      };
+    }
+
+    const previousRun = await getLatestRunForSession(agentId, sessionId, { excludeRunId: runId });
+    const previousRawUsage = readRawUsageTotals(previousRun?.usageJson);
+    return {
+      normalizedUsage: deriveNormalizedUsageDelta(rawUsage, previousRawUsage),
+      previousRawUsage,
+      derivedFromSessionTotals: previousRawUsage !== null,
+    };
+  }
+
+  async function evaluateSessionCompaction(input: {
+    agent: typeof agents.$inferSelect;
+    sessionId: string | null;
+    issueId: string | null;
+  }): Promise<SessionCompactionDecision> {
+    const { agent, sessionId, issueId } = input;
+    if (!sessionId) {
+      return {
+        rotate: false,
+        reason: null,
+        handoffMarkdown: null,
+        previousRunId: null,
+      };
+    }
+
+    const policy = parseSessionCompactionPolicy(agent);
+    if (!policy.enabled) {
+      return {
+        rotate: false,
+        reason: null,
+        handoffMarkdown: null,
+        previousRunId: null,
+      };
+    }
+
+    const fetchLimit = Math.max(policy.maxSessionRuns > 0 ? policy.maxSessionRuns + 1 : 0, 4);
+    const runs = await db
+      .select({
+        id: heartbeatRuns.id,
+        createdAt: heartbeatRuns.createdAt,
+        usageJson: heartbeatRuns.usageJson,
+        resultJson: heartbeatRuns.resultJson,
+        error: heartbeatRuns.error,
+      })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.agentId, agent.id), eq(heartbeatRuns.sessionIdAfter, sessionId)))
+      .orderBy(desc(heartbeatRuns.createdAt))
+      .limit(fetchLimit);
+
+    if (runs.length === 0) {
+      return {
+        rotate: false,
+        reason: null,
+        handoffMarkdown: null,
+        previousRunId: null,
+      };
+    }
+
+    const latestRun = runs[0] ?? null;
+    const oldestRun =
+      policy.maxSessionAgeHours > 0
+        ? await getOldestRunForSession(agent.id, sessionId)
+        : runs[runs.length - 1] ?? latestRun;
+    const latestRawUsage = readRawUsageTotals(latestRun?.usageJson);
+    const sessionAgeHours =
+      latestRun && oldestRun
+        ? Math.max(
+            0,
+            (new Date(latestRun.createdAt).getTime() - new Date(oldestRun.createdAt).getTime()) / (1000 * 60 * 60),
+          )
+        : 0;
+
+    let reason: string | null = null;
+    if (policy.maxSessionRuns > 0 && runs.length > policy.maxSessionRuns) {
+      reason = `session exceeded ${policy.maxSessionRuns} runs`;
+    } else if (
+      policy.maxRawInputTokens > 0 &&
+      latestRawUsage &&
+      latestRawUsage.inputTokens >= policy.maxRawInputTokens
+    ) {
+      reason =
+        `session raw input reached ${formatCount(latestRawUsage.inputTokens)} tokens ` +
+        `(threshold ${formatCount(policy.maxRawInputTokens)})`;
+    } else if (policy.maxSessionAgeHours > 0 && sessionAgeHours >= policy.maxSessionAgeHours) {
+      reason = `session age reached ${Math.floor(sessionAgeHours)} hours`;
+    }
+
+    if (!reason || !latestRun) {
+      return {
+        rotate: false,
+        reason: null,
+        handoffMarkdown: null,
+        previousRunId: latestRun?.id ?? null,
+      };
+    }
+
+    const latestSummary = summarizeHeartbeatRunResultJson(latestRun.resultJson);
+    const latestTextSummary =
+      readNonEmptyString(latestSummary?.summary) ??
+      readNonEmptyString(latestSummary?.result) ??
+      readNonEmptyString(latestSummary?.message) ??
+      readNonEmptyString(latestRun.error);
+
+    const handoffMarkdown = [
+      "Paperclip session handoff:",
+      `- Previous session: ${sessionId}`,
+      issueId ? `- Issue: ${issueId}` : "",
+      `- Rotation reason: ${reason}`,
+      latestTextSummary ? `- Last run summary: ${latestTextSummary}` : "",
+      "Continue from the current task state. Rebuild only the minimum context you need.",
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    return {
+      rotate: true,
+      reason,
+      handoffMarkdown,
+      previousRunId: latestRun.id,
+    };
   }
 
   async function resolveSessionBeforeForWakeup(
@@ -973,16 +1245,16 @@ export function heartbeatService(db: Db) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
 
-    // Find all runs in "queued" or "running" state
+    // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
     const activeRuns = await db
       .select()
       .from(heartbeatRuns)
-      .where(inArray(heartbeatRuns.status, ["queued", "running"]));
+      .where(eq(heartbeatRuns.status, "running"));
 
     const reaped: string[] = [];
 
     for (const run of activeRuns) {
-      if (runningProcesses.has(run.id)) continue;
+      if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
 
       // Apply staleness threshold to avoid false positives
       if (staleThresholdMs > 0) {
@@ -1064,14 +1336,27 @@ export function heartbeatService(db: Db) {
     return { released: released.length, runIds: released };
   }
 
+  async function resumeQueuedRuns() {
+    const queuedRuns = await db
+      .select({ agentId: heartbeatRuns.agentId })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.status, "queued"));
+
+    const agentIds = [...new Set(queuedRuns.map((r) => r.agentId))];
+    for (const agentId of agentIds) {
+      await startNextQueuedRunForAgent(agentId);
+    }
+  }
+
   async function updateRuntimeState(
     agent: typeof agents.$inferSelect,
     run: typeof heartbeatRuns.$inferSelect,
     result: AdapterExecutionResult,
     session: { legacySessionId: string | null },
+    normalizedUsage?: UsageTotals | null,
   ) {
     await ensureRuntimeState(agent);
-    const usage = result.usage;
+    const usage = normalizedUsage ?? normalizeUsageTotals(result.usage);
     const inputTokens = usage?.inputTokens ?? 0;
     const outputTokens = usage?.outputTokens ?? 0;
     const cachedInputTokens = usage?.cachedInputTokens ?? 0;
@@ -1155,6 +1440,9 @@ export function heartbeatService(db: Db) {
       run = claimed;
     }
 
+    activeRunExecutions.add(run.id);
+
+    try {
     const agent = await getAgent(run.agentId);
     if (!agent) {
       await setRunStatus(runId, "failed", {
@@ -1301,6 +1589,7 @@ export function heartbeatService(db: Db) {
       repoRef: executionWorkspace.repoRef,
       branchName: executionWorkspace.branchName,
       worktreePath: executionWorkspace.worktreePath,
+      agentHome: resolveDefaultAgentWorkspaceDir(agent.id),
     };
     context.paperclipWorkspaces = resolvedWorkspace.workspaceHints;
     const runtimeServiceIntents = (() => {
@@ -1320,15 +1609,42 @@ export function heartbeatService(db: Db) {
       context.projectId = executionWorkspace.projectId;
     }
     const runtimeSessionFallback = taskKey || resetTaskSession ? null : runtime.sessionId;
-    const previousSessionDisplayId = truncateDisplayId(
+    let previousSessionDisplayId = truncateDisplayId(
       taskSessionForRun?.sessionDisplayId ??
         (sessionCodec.getDisplayId ? sessionCodec.getDisplayId(runtimeSessionParams) : null) ??
         readNonEmptyString(runtimeSessionParams?.sessionId) ??
         runtimeSessionFallback,
     );
+    let runtimeSessionIdForAdapter =
+      readNonEmptyString(runtimeSessionParams?.sessionId) ?? runtimeSessionFallback;
+    let runtimeSessionParamsForAdapter = runtimeSessionParams;
+
+    const sessionCompaction = await evaluateSessionCompaction({
+      agent,
+      sessionId: previousSessionDisplayId ?? runtimeSessionIdForAdapter,
+      issueId,
+    });
+    if (sessionCompaction.rotate) {
+      context.paperclipSessionHandoffMarkdown = sessionCompaction.handoffMarkdown;
+      context.paperclipSessionRotationReason = sessionCompaction.reason;
+      context.paperclipPreviousSessionId = previousSessionDisplayId ?? runtimeSessionIdForAdapter;
+      runtimeSessionIdForAdapter = null;
+      runtimeSessionParamsForAdapter = null;
+      previousSessionDisplayId = null;
+      if (sessionCompaction.reason) {
+        runtimeWorkspaceWarnings.push(
+          `Starting a fresh session because ${sessionCompaction.reason}.`,
+        );
+      }
+    } else {
+      delete context.paperclipSessionHandoffMarkdown;
+      delete context.paperclipSessionRotationReason;
+      delete context.paperclipPreviousSessionId;
+    }
+
     const runtimeForAdapter = {
-      sessionId: readNonEmptyString(runtimeSessionParams?.sessionId) ?? runtimeSessionFallback,
-      sessionParams: runtimeSessionParams,
+      sessionId: runtimeSessionIdForAdapter,
+      sessionParams: runtimeSessionParamsForAdapter,
       sessionDisplayId: previousSessionDisplayId,
       taskKey,
     };
@@ -1572,6 +1888,14 @@ export function heartbeatService(db: Db) {
         previousDisplayId: runtimeForAdapter.sessionDisplayId,
         previousLegacySessionId: runtimeForAdapter.sessionId,
       });
+      const rawUsage = normalizeUsageTotals(adapterResult.usage);
+      const sessionUsageResolution = await resolveNormalizedUsageForSession({
+        agentId: agent.id,
+        runId: run.id,
+        sessionId: nextSessionState.displayId ?? nextSessionState.legacySessionId,
+        rawUsage,
+      });
+      const normalizedUsage = sessionUsageResolution.normalizedUsage;
 
       let outcome: "succeeded" | "failed" | "cancelled" | "timed_out";
       const latestRun = await getRun(run.id);
@@ -1600,9 +1924,23 @@ export function heartbeatService(db: Db) {
               : "failed";
 
       const usageJson =
-        adapterResult.usage || adapterResult.costUsd != null
+        normalizedUsage || adapterResult.costUsd != null
           ? ({
-              ...(adapterResult.usage ?? {}),
+              ...(normalizedUsage ?? {}),
+              ...(rawUsage ? {
+                rawInputTokens: rawUsage.inputTokens,
+                rawCachedInputTokens: rawUsage.cachedInputTokens,
+                rawOutputTokens: rawUsage.outputTokens,
+              } : {}),
+              ...(sessionUsageResolution.derivedFromSessionTotals ? { usageSource: "session_delta" } : {}),
+              ...((nextSessionState.displayId ?? nextSessionState.legacySessionId)
+                ? { persistedSessionId: nextSessionState.displayId ?? nextSessionState.legacySessionId }
+                : {}),
+              sessionReused: runtimeForAdapter.sessionId != null || runtimeForAdapter.sessionDisplayId != null,
+              taskSessionReused: taskSessionForRun != null,
+              freshSession: runtimeForAdapter.sessionId == null && runtimeForAdapter.sessionDisplayId == null,
+              sessionRotated: sessionCompaction.rotate,
+              sessionRotationReason: sessionCompaction.reason,
               ...(adapterResult.costUsd != null ? { costUsd: adapterResult.costUsd } : {}),
               ...(adapterResult.billingType ? { billingType: adapterResult.billingType } : {}),
             } as Record<string, unknown>)
@@ -1659,7 +1997,7 @@ export function heartbeatService(db: Db) {
       if (finalizedRun) {
         await updateRuntimeState(agent, finalizedRun, adapterResult, {
           legacySessionId: nextSessionState.legacySessionId,
-        });
+        }, normalizedUsage);
         if (taskKey) {
           if (adapterResult.clearSession || (!nextSessionState.params && !nextSessionState.displayId)) {
             await clearTaskSessions(agent.companyId, agent.id, {
@@ -1742,10 +2080,41 @@ export function heartbeatService(db: Db) {
       }
 
       await finalizeAgentStatus(agent.id, "failed");
-    } finally {
-      await releaseRuntimeServicesForRun(run.id);
-      await startNextQueuedRunForAgent(agent.id);
     }
+    } catch (outerErr) {
+          // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
+          // The inner catch did not fire, so we must record the failure here.
+          const message = outerErr instanceof Error ? outerErr.message : "Unknown setup failure";
+          logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
+          await setRunStatus(runId, "failed", {
+            error: message,
+            errorCode: "adapter_failed",
+            finishedAt: new Date(),
+          }).catch(() => undefined);
+          await setWakeupStatus(run.wakeupRequestId, "failed", {
+            finishedAt: new Date(),
+            error: message,
+          }).catch(() => undefined);
+          const failedRun = await getRun(runId).catch(() => null);
+          if (failedRun) {
+            // Emit a run-log event so the failure is visible in the run timeline,
+            // consistent with what the inner catch block does for adapter failures.
+            await appendRunEvent(failedRun, 1, {
+              eventType: "error",
+              stream: "system",
+              level: "error",
+              message,
+            }).catch(() => undefined);
+            await releaseIssueExecutionAndPromote(failedRun).catch(() => undefined);
+          }
+          // Ensure the agent is not left stuck in "running" if the inner catch handler's
+          // DB calls threw (e.g. a transient DB error in finalizeAgentStatus).
+          await finalizeAgentStatus(run.agentId, "failed").catch(() => undefined);
+        } finally {
+          await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
+          activeRunExecutions.delete(run.id);
+          await startNextQueuedRunForAgent(run.agentId);
+        }
   }
 
   async function releaseIssueExecutionAndPromote(run: typeof heartbeatRuns.$inferSelect) {
@@ -2492,6 +2861,7 @@ export function heartbeatService(db: Db) {
     reapOrphanedRuns,
 
     expireTerminatedRunLocks,
+    resumeQueuedRuns,
 
     tickTimers: async (now = new Date()) => {
       const allAgents = await db.select().from(agents);

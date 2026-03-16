@@ -26,11 +26,11 @@ export const AGENT_ADAPTER_TYPES = [
   "http",
   "claude_local",
   "codex_local",
-  "gemini_local",
   "opencode_local",
   "pi_local",
   "cursor",
   "openclaw_gateway",
+  "hermes_local",
 ] as const;
 export type AgentAdapterType = (typeof AGENT_ADAPTER_TYPES)[number];
 
@@ -213,6 +213,9 @@ export const LIVE_EVENT_TYPES = [
   "heartbeat.run.log",
   "agent.status",
   "activity.logged",
+  "plugin.ui.updated",
+  "plugin.worker.crashed",
+  "plugin.worker.restarted",
 ] as const;
 export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number];
 
@@ -246,3 +249,338 @@ export const PERMISSION_KEYS = [
   "joins:approve",
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
+
+// ---------------------------------------------------------------------------
+// Plugin System — see doc/plugins/PLUGIN_SPEC.md for the full specification
+// ---------------------------------------------------------------------------
+
+/**
+ * The current version of the Plugin API contract.
+ *
+ * Increment this value whenever a breaking change is made to the plugin API
+ * so that the host can reject incompatible plugin manifests.
+ *
+ * @see PLUGIN_SPEC.md §4 — Versioning
+ */
+export const PLUGIN_API_VERSION = 1 as const;
+
+/**
+ * Lifecycle statuses for an installed plugin.
+ *
+ * State machine: installed → ready | error, ready → disabled | error | upgrade_pending | uninstalled,
+ * disabled → ready | uninstalled, error → ready | uninstalled,
+ * upgrade_pending → ready | error | uninstalled, uninstalled → installed (reinstall).
+ *
+ * @see {@link PluginStatus} — inferred union type
+ * @see PLUGIN_SPEC.md §21.3 `plugins.status`
+ */
+export const PLUGIN_STATUSES = [
+  "installed",
+  "ready",
+  "disabled",
+  "error",
+  "upgrade_pending",
+  "uninstalled",
+] as const;
+export type PluginStatus = (typeof PLUGIN_STATUSES)[number];
+
+/**
+ * Plugin classification categories. A plugin declares one or more categories
+ * in its manifest to describe its primary purpose.
+ *
+ * @see PLUGIN_SPEC.md §6.2
+ */
+export const PLUGIN_CATEGORIES = [
+  "connector",
+  "workspace",
+  "automation",
+  "ui",
+] as const;
+export type PluginCategory = (typeof PLUGIN_CATEGORIES)[number];
+
+/**
+ * Named permissions the host grants to a plugin. Plugins declare required
+ * capabilities in their manifest; the host enforces them at runtime via the
+ * plugin capability validator.
+ *
+ * Grouped into: Data Read, Data Write, Plugin State, Runtime/Integration,
+ * Agent Tools, and UI.
+ *
+ * @see PLUGIN_SPEC.md §15 — Capability Model
+ */
+export const PLUGIN_CAPABILITIES = [
+  // Data Read
+  "companies.read",
+  "projects.read",
+  "project.workspaces.read",
+  "issues.read",
+  "issue.comments.read",
+  "agents.read",
+  "goals.read",
+  "goals.create",
+  "goals.update",
+  "activity.read",
+  "costs.read",
+  // Data Write
+  "issues.create",
+  "issues.update",
+  "issue.comments.create",
+  "agents.pause",
+  "agents.resume",
+  "agents.invoke",
+  "agent.sessions.create",
+  "agent.sessions.list",
+  "agent.sessions.send",
+  "agent.sessions.close",
+  "activity.log.write",
+  "metrics.write",
+  // Plugin State
+  "plugin.state.read",
+  "plugin.state.write",
+  // Runtime / Integration
+  "events.subscribe",
+  "events.emit",
+  "jobs.schedule",
+  "webhooks.receive",
+  "http.outbound",
+  "secrets.read-ref",
+  // Agent Tools
+  "agent.tools.register",
+  // UI
+  "instance.settings.register",
+  "ui.sidebar.register",
+  "ui.page.register",
+  "ui.detailTab.register",
+  "ui.dashboardWidget.register",
+  "ui.commentAnnotation.register",
+  "ui.action.register",
+] as const;
+export type PluginCapability = (typeof PLUGIN_CAPABILITIES)[number];
+
+/**
+ * UI extension slot types. Each slot type corresponds to a mount point in the
+ * Paperclip UI where plugin components can be rendered.
+ *
+ * @see PLUGIN_SPEC.md §19 — UI Extension Model
+ */
+export const PLUGIN_UI_SLOT_TYPES = [
+  "page",
+  "detailTab",
+  "taskDetailView",
+  "dashboardWidget",
+  "sidebar",
+  "sidebarPanel",
+  "projectSidebarItem",
+  "globalToolbarButton",
+  "toolbarButton",
+  "contextMenuItem",
+  "commentAnnotation",
+  "commentContextMenuItem",
+  "settingsPage",
+] as const;
+export type PluginUiSlotType = (typeof PLUGIN_UI_SLOT_TYPES)[number];
+
+/**
+ * Reserved company-scoped route segments that plugin page routes may not claim.
+ *
+ * These map to first-class host pages under `/:companyPrefix/...`.
+ */
+export const PLUGIN_RESERVED_COMPANY_ROUTE_SEGMENTS = [
+  "dashboard",
+  "onboarding",
+  "companies",
+  "company",
+  "settings",
+  "plugins",
+  "org",
+  "agents",
+  "projects",
+  "issues",
+  "goals",
+  "approvals",
+  "costs",
+  "activity",
+  "inbox",
+  "design-guide",
+  "tests",
+] as const;
+export type PluginReservedCompanyRouteSegment =
+  (typeof PLUGIN_RESERVED_COMPANY_ROUTE_SEGMENTS)[number];
+
+/**
+ * Launcher placement zones describe where a plugin-owned launcher can appear
+ * in the host UI. These are intentionally aligned with current slot surfaces
+ * so manifest authors can describe launch intent without coupling to a single
+ * component implementation detail.
+ */
+export const PLUGIN_LAUNCHER_PLACEMENT_ZONES = [
+  "page",
+  "detailTab",
+  "taskDetailView",
+  "dashboardWidget",
+  "sidebar",
+  "sidebarPanel",
+  "projectSidebarItem",
+  "globalToolbarButton",
+  "toolbarButton",
+  "contextMenuItem",
+  "commentAnnotation",
+  "commentContextMenuItem",
+  "settingsPage",
+] as const;
+export type PluginLauncherPlacementZone = (typeof PLUGIN_LAUNCHER_PLACEMENT_ZONES)[number];
+
+/**
+ * Launcher action kinds describe what the launcher does when activated.
+ */
+export const PLUGIN_LAUNCHER_ACTIONS = [
+  "navigate",
+  "openModal",
+  "openDrawer",
+  "openPopover",
+  "performAction",
+  "deepLink",
+] as const;
+export type PluginLauncherAction = (typeof PLUGIN_LAUNCHER_ACTIONS)[number];
+
+/**
+ * Optional size hints the host can use when rendering plugin-owned launcher
+ * destinations such as overlays, drawers, or full page handoffs.
+ */
+export const PLUGIN_LAUNCHER_BOUNDS = [
+  "inline",
+  "compact",
+  "default",
+  "wide",
+  "full",
+] as const;
+export type PluginLauncherBounds = (typeof PLUGIN_LAUNCHER_BOUNDS)[number];
+
+/**
+ * Render environments describe the container a launcher expects after it is
+ * activated. The current host may map these to concrete UI primitives.
+ */
+export const PLUGIN_LAUNCHER_RENDER_ENVIRONMENTS = [
+  "hostInline",
+  "hostOverlay",
+  "hostRoute",
+  "external",
+  "iframe",
+] as const;
+export type PluginLauncherRenderEnvironment =
+  (typeof PLUGIN_LAUNCHER_RENDER_ENVIRONMENTS)[number];
+
+/**
+ * Entity types that a `detailTab` UI slot can attach to.
+ *
+ * @see PLUGIN_SPEC.md §19.3 — Detail Tabs
+ */
+export const PLUGIN_UI_SLOT_ENTITY_TYPES = [
+  "project",
+  "issue",
+  "agent",
+  "goal",
+  "run",
+  "comment",
+] as const;
+export type PluginUiSlotEntityType = (typeof PLUGIN_UI_SLOT_ENTITY_TYPES)[number];
+
+/**
+ * Scope kinds for plugin state storage. Determines the granularity at which
+ * a plugin stores key-value state data.
+ *
+ * @see PLUGIN_SPEC.md §21.3 `plugin_state.scope_kind`
+ */
+export const PLUGIN_STATE_SCOPE_KINDS = [
+  "instance",
+  "company",
+  "project",
+  "project_workspace",
+  "agent",
+  "issue",
+  "goal",
+  "run",
+] as const;
+export type PluginStateScopeKind = (typeof PLUGIN_STATE_SCOPE_KINDS)[number];
+
+/** Statuses for a plugin's scheduled job definition. */
+export const PLUGIN_JOB_STATUSES = [
+  "active",
+  "paused",
+  "failed",
+] as const;
+export type PluginJobStatus = (typeof PLUGIN_JOB_STATUSES)[number];
+
+/** Statuses for individual job run executions. */
+export const PLUGIN_JOB_RUN_STATUSES = [
+  "pending",
+  "queued",
+  "running",
+  "succeeded",
+  "failed",
+  "cancelled",
+] as const;
+export type PluginJobRunStatus = (typeof PLUGIN_JOB_RUN_STATUSES)[number];
+
+/** What triggered a particular job run. */
+export const PLUGIN_JOB_RUN_TRIGGERS = [
+  "schedule",
+  "manual",
+  "retry",
+] as const;
+export type PluginJobRunTrigger = (typeof PLUGIN_JOB_RUN_TRIGGERS)[number];
+
+/** Statuses for inbound webhook deliveries. */
+export const PLUGIN_WEBHOOK_DELIVERY_STATUSES = [
+  "pending",
+  "success",
+  "failed",
+] as const;
+export type PluginWebhookDeliveryStatus = (typeof PLUGIN_WEBHOOK_DELIVERY_STATUSES)[number];
+
+/**
+ * Core domain event types that plugins can subscribe to via the
+ * `events.subscribe` capability.
+ *
+ * @see PLUGIN_SPEC.md §16 — Event System
+ */
+export const PLUGIN_EVENT_TYPES = [
+  "company.created",
+  "company.updated",
+  "project.created",
+  "project.updated",
+  "project.workspace_created",
+  "project.workspace_updated",
+  "project.workspace_deleted",
+  "issue.created",
+  "issue.updated",
+  "issue.comment.created",
+  "agent.created",
+  "agent.updated",
+  "agent.status_changed",
+  "agent.run.started",
+  "agent.run.finished",
+  "agent.run.failed",
+  "agent.run.cancelled",
+  "goal.created",
+  "goal.updated",
+  "approval.created",
+  "approval.decided",
+  "cost_event.created",
+  "activity.logged",
+] as const;
+export type PluginEventType = (typeof PLUGIN_EVENT_TYPES)[number];
+
+/**
+ * Error codes returned by the plugin bridge when a UI → worker call fails.
+ *
+ * @see PLUGIN_SPEC.md §19.7 — Error Propagation Through The Bridge
+ */
+export const PLUGIN_BRIDGE_ERROR_CODES = [
+  "WORKER_UNAVAILABLE",
+  "CAPABILITY_DENIED",
+  "WORKER_ERROR",
+  "TIMEOUT",
+  "UNKNOWN",
+] as const;
+export type PluginBridgeErrorCode = (typeof PLUGIN_BRIDGE_ERROR_CODES)[number];

@@ -581,6 +581,34 @@ export function agentRoutes(db: Db) {
     res.json({ ...agent, chainOfCommand });
   });
 
+  router.get("/agents/me/inbox-lite", async (req, res) => {
+    if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId) {
+      res.status(401).json({ error: "Agent authentication required" });
+      return;
+    }
+
+    const issuesSvc = issueService(db);
+    const rows = await issuesSvc.list(req.actor.companyId, {
+      assigneeAgentId: req.actor.agentId,
+      status: "todo,in_progress,blocked",
+    });
+
+    res.json(
+      rows.map((issue) => ({
+        id: issue.id,
+        identifier: issue.identifier,
+        title: issue.title,
+        status: issue.status,
+        priority: issue.priority,
+        projectId: issue.projectId,
+        goalId: issue.goalId,
+        parentId: issue.parentId,
+        updatedAt: issue.updatedAt,
+        activeRun: issue.activeRun,
+      })),
+    );
+  });
+
   router.get("/agents/:id", async (req, res) => {
     const id = req.params.id as string;
     const agent = await svc.getById(id);
@@ -1281,6 +1309,7 @@ export function agentRoutes(db: Db) {
       contextSnapshot: {
         triggeredBy: req.actor.type,
         actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,
+        forceFreshSession: req.body.forceFreshSession === true,
       },
     });
 
