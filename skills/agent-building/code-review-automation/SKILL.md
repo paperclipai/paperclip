@@ -78,17 +78,6 @@ When to use each: new comment on first review, `--edit-last` for iteration updat
 
 Create `~/.claude/review-checklist.md` with stack-specific rules. The orchestrator reads this and appends it to each sub-reviewer prompt at review time.
 
-```markdown
-## Next.js/Convex
-- [ ] Convex validators on all mutations (prevents injection via schema)
-- [ ] Missing "use client" on components using hooks or event handlers
-- [ ] Server components fetching sensitive data without auth check
-
-## iOS/Swift
-- [ ] Force unwraps in production code paths (crash risk)
-- [ ] Missing @MainActor on UI-touching async functions
-```
-
 → See [04-custom-checklists.md](references/04-custom-checklists.md) for full Next.js, iOS, Python, and Go examples.
 
 ---
