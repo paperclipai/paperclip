@@ -184,5 +184,3 @@ See `references/optimize.md` for: description A/B testing procedure, trigger phr
 | `references/optimize.md` | Description A/B testing, trigger phrase bank, false-positive debugging |
 | `references/test-cases.md` | Live test cases for the skill under development (written during Phase 1) |
 | `references/test-log.md` | Iteration history and scores (checkpoint file — survives compression) |
-| `agents/` | Subagent prompts for parallelizing test runs or evaluation tasks |
-| `scripts/` | Any automation for running tests or generating reports |
