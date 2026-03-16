@@ -342,6 +342,10 @@ export function OnboardingWizard() {
   }
 
   async function handleStep1Next() {
+    if (createdCompanyId) {
+      setStep(2);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -376,6 +380,10 @@ export function OnboardingWizard() {
 
   async function handleStep2Next() {
     if (!createdCompanyId) return;
+    if (createdAgentId) {
+      setStep(3);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
