@@ -1,2 +1,10 @@
 iteration	trigger_pct	nofire_pct	output_pct	lines	status	description
 0	100	100	100	156	baseline	Baseline after QC fix (AIS-37)
+1	100	100	100	141	KEEP	Remove Phase 1 inline JSON + violation types list — covered in 01-violation-hooks.md (-15 lines)
+2	100	100	100	132	KEEP	Remove Phase 2 inline entry format block — covered in 02-lessons-file.md (-9 lines)
+3	100	100	100	124	KEEP	Remove Session-End Summary inline JSON block — covered in 05-session-end-summary.md (-8 lines)
+4	100	100	100	122	KEEP	Remove 'Three failure modes' label — table header is self-explanatory (-2 lines)
+5	100	100	100	120	KEEP	Remove 'The fix' closing line from Why Agents Stay Dumb — fix is the four-phase loop itself (-2 lines)
+6	100	100	100	118	KEEP	Remove redundant closing sentence from Four-Phase Loop — covered by line 10 intro (-2 lines)
+7	100	100	100	116	KEEP	Remove 'Group by violation type' workflow line from Phase 3 — covered in 03-rule-refinement.md (-2 lines)
+8	100	100	100	114	KEEP	Remove Phase 4 intro sentence — scoring table is self-explanatory (-2 lines)
