@@ -813,6 +813,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               numberHint={help.intervalSec}
               showNumber={val!.heartbeatEnabled}
             />
+            {val!.heartbeatEnabled && (
+              <HeartbeatTriageModelDropdown
+                models={models}
+                value={val!.heartbeatModel}
+                onChange={(v) => set!({ heartbeatModel: v })}
+              />
+            )}
           </div>
         </div>
       ) : (
@@ -835,6 +842,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 numberHint={help.intervalSec}
                 showNumber={eff("heartbeat", "enabled", heartbeat.enabled !== false)}
               />
+              {eff("heartbeat", "enabled", heartbeat.enabled !== false) && (
+                <HeartbeatTriageModelDropdown
+                  models={models}
+                  value={eff("heartbeat", "heartbeatModel", String(heartbeat.heartbeatModel ?? ""))}
+                  onChange={(v) => mark("heartbeat", "heartbeatModel", v || undefined)}
+                />
+              )}
             </div>
             <CollapsibleSection
               title="Advanced Run Policy"
@@ -1360,6 +1374,78 @@ function ModelDropdown({
             {filteredModels.length === 0 && (
               <p className="px-2 py-1.5 text-xs text-muted-foreground">No models found.</p>
             )}
+          </div>
+        </PopoverContent>
+      </Popover>
+    </Field>
+  );
+}
+
+function HeartbeatTriageModelDropdown({
+  models,
+  value,
+  onChange,
+}: {
+  models: AdapterModel[];
+  value: string;
+  onChange: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const selected = models.find((m) => m.id === value);
+
+  const isExpensiveModel = value && /opus|sonnet/i.test(value) && !/haiku/i.test(value);
+  const hint = isExpensiveModel
+    ? "⚠ Selected model may be expensive for triage. Consider a lighter model (e.g. Haiku) to save tokens."
+    : "Optional cheaper model for heartbeat triage. Checks for work first, escalates to main model for complex tasks.";
+
+  const sortedModels = [...models].sort((a, b) => {
+    const aLight = /haiku/i.test(a.id) ? 0 : /sonnet/i.test(a.id) ? 1 : 2;
+    const bLight = /haiku/i.test(b.id) ? 0 : /sonnet/i.test(b.id) ? 1 : 2;
+    return aLight - bLight;
+  });
+
+  return (
+    <Field label="Heartbeat triage model" hint={hint}>
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
+            <span className={cn(!value && "text-muted-foreground")}>
+              {selected ? selected.label : value || "None (skip triage)"}
+            </span>
+            <ChevronDown className="h-3 w-3 text-muted-foreground" />
+          </button>
+        </PopoverTrigger>
+        <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-1" align="start">
+          <div className="max-h-[240px] overflow-y-auto">
+            <button
+              className={cn(
+                "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
+                !value && "bg-accent",
+              )}
+              onClick={() => {
+                onChange("");
+                setOpen(false);
+              }}
+            >
+              None (skip triage)
+            </button>
+            {sortedModels.map((m) => (
+              <button
+                key={m.id}
+                className={cn(
+                  "flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
+                  m.id === value && "bg-accent",
+                )}
+                onClick={() => {
+                  onChange(m.id);
+                  setOpen(false);
+                }}
+              >
+                <span className="block w-full text-left truncate" title={m.id}>
+                  {m.label}
+                </span>
+              </button>
+            ))}
           </div>
         </PopoverContent>
       </Popover>

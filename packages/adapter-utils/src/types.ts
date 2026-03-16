@@ -247,5 +247,6 @@ export interface CreateConfigValues {
   runtimeServicesJson?: string;
   maxTurnsPerRun: number;
   heartbeatEnabled: boolean;
+  heartbeatModel: string;
   intervalSec: number;
 }
