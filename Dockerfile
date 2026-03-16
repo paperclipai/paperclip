@@ -40,7 +40,8 @@ FROM base AS production
 WORKDIR /app
 COPY --from=build /app /app
 RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai \
-  && mkdir -p /paperclip
+  && mkdir -p /paperclip \
+  && apt-get update && apt-get install -y --no-install-recommends gosu && rm -rf /var/lib/apt/lists/*
 
 ENV NODE_ENV=production \
   HOME=/paperclip \
@@ -55,4 +56,11 @@ ENV NODE_ENV=production \
 
 EXPOSE 3100
 
-CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
+COPY <<'ENTRYPOINT' /entrypoint.sh
+#!/bin/sh
+chown -R node:node /paperclip
+exec gosu node node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js
+ENTRYPOINT
+RUN chmod +x /entrypoint.sh
+
+CMD ["/entrypoint.sh"]
