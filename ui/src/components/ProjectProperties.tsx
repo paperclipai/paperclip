@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Link } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Project } from "@paperclipai/shared";
@@ -90,9 +90,30 @@ function FieldLabel({
   state: ProjectFieldSaveState;
 }) {
   return (
-    <div className="flex items-center gap-3 rounded-[calc(var(--radius)-0.15rem)] px-2 py-2">
+    <div className="flex items-center gap-2">
       <span className="paperclip-work-meta shrink-0 w-20 text-[0.62rem]">{label}</span>
-      <div className="flex items-center gap-1.5 min-w-0">{children}</div>
+      <SaveIndicator state={state} />
+    </div>
+  );
+}
+
+function PropertyRow({
+  label,
+  children,
+  alignStart = false,
+  valueClassName,
+}: {
+  label: ReactNode;
+  children: ReactNode;
+  alignStart?: boolean;
+  valueClassName?: string;
+}) {
+  return (
+    <div className={cn("flex gap-3 rounded-[calc(var(--radius)-0.15rem)] px-2 py-2", alignStart && "items-start")}>
+      <div className="shrink-0 w-28">{label}</div>
+      <div className={cn("min-w-0 flex-1 flex items-center gap-1.5", alignStart && "pt-0.5", valueClassName)}>
+        {children}
+      </div>
     </div>
   );
 }
@@ -457,7 +478,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                 </Popover>
               )}
             </div>
-          )}
+          </div>
           {(onUpdate || onFieldUpdate) && (
             <Popover open={goalOpen} onOpenChange={setGoalOpen}>
               <PopoverTrigger asChild>
@@ -490,7 +511,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
               </PopoverContent>
             </Popover>
           )}
-        </PropertyRow>
+        </div>
         <PropertyRow label={<FieldLabel label="Created" state="idle" />}>
           <span className="text-sm">{formatDate(project.createdAt)}</span>
         </PropertyRow>
