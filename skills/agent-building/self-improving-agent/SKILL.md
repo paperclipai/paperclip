@@ -30,8 +30,6 @@ The loop runs *across* sessions, not within them. Each session produces data. Th
 
 Every session starts cold. No memory of what broke last time. **Session amnesia** means an agent that captures nothing = an agent that repeats everything.
 
-Three failure modes that look like improvement but aren't:
-
 | Failure Mode | What happens |
 |---|---|
 | Capture without apply | Violations logged, CLAUDE.md never updated — same mistakes next session |
