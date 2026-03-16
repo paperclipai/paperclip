@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 const {
+  buildGitGrepPattern,
   resolveDynamicForbiddenTokens,
   resolveForbiddenTokens,
   runForbiddenTokenCheck,
@@ -63,6 +64,7 @@ describe("forbidden token check", () => {
     const exitCode = runForbiddenTokenCheck({
       repoRoot: "/repo",
       tokens: ["paperclip", "custom-token"],
+      dynamicTokens: ["paperclip"],
       exec,
       log,
       error,
@@ -73,5 +75,10 @@ describe("forbidden token check", () => {
     expect(error).toHaveBeenCalledWith("ERROR: Forbidden tokens found in tracked files:\n");
     expect(error).toHaveBeenCalledWith("  server/file.ts:1:found");
     expect(error).toHaveBeenCalledWith("\nBuild blocked. Remove the forbidden token(s) before publishing.");
+  });
+
+  it("uses boundary-aware grep patterns for dynamic username tokens", () => {
+    expect(buildGitGrepPattern("paperclip", "dynamic_username")).toBe("(^|[^A-Za-z0-9_])paperclip([^A-Za-z0-9_]|$)");
+    expect(buildGitGrepPattern("custom-token")).toBe("custom-token");
   });
 });

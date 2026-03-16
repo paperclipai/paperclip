@@ -10,6 +10,8 @@ import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { usePanel } from "../context/PanelContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useDocumentVisibility } from "../hooks/useDocumentVisibility";
+import { getIssueDetailRefetchInterval, getUnreadIssueReadVersion } from "../lib/issue-detail-live";
 import { queryKeys } from "../lib/queryKeys";
 import { readIssueDetailBreadcrumb } from "../lib/issueDetailBreadcrumb";
 import { useProjectOrder } from "../hooks/useProjectOrder";
@@ -206,60 +208,73 @@ export function IssueDetail() {
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [attachmentDragActive, setAttachmentDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const lastMarkedReadIssueIdRef = useRef<string | null>(null);
+  const lastMarkedReadVersionRef = useRef<string | null>(null);
+  const isDocumentVisible = useDocumentVisibility();
 
   const { data: issue, isLoading, error } = useQuery({
     queryKey: queryKeys.issues.detail(issueId!),
     queryFn: () => issuesApi.get(issueId!),
     enabled: !!issueId,
+    refetchInterval: ({ state }) =>
+      getIssueDetailRefetchInterval({
+        isDocumentVisible,
+        hasLiveRuns: Boolean(state.data?.executionRunId),
+      }),
   });
   const resolvedCompanyId = issue?.companyId ?? selectedCompanyId;
+  const detailRefetchInterval = getIssueDetailRefetchInterval({
+    isDocumentVisible,
+    hasLiveRuns: false,
+  });
 
   const { data: comments } = useQuery({
     queryKey: queryKeys.issues.comments(issueId!),
     queryFn: () => issuesApi.listComments(issueId!),
     enabled: !!issueId,
+    refetchInterval: detailRefetchInterval,
   });
 
   const { data: activity } = useQuery({
     queryKey: queryKeys.issues.activity(issueId!),
     queryFn: () => activityApi.forIssue(issueId!),
     enabled: !!issueId,
+    refetchInterval: detailRefetchInterval,
   });
 
   const { data: linkedRuns } = useQuery({
     queryKey: queryKeys.issues.runs(issueId!),
     queryFn: () => activityApi.runsForIssue(issueId!),
     enabled: !!issueId,
-    refetchInterval: 5000,
+    refetchInterval: detailRefetchInterval,
   });
 
   const { data: linkedApprovals } = useQuery({
     queryKey: queryKeys.issues.approvals(issueId!),
     queryFn: () => issuesApi.listApprovals(issueId!),
     enabled: !!issueId,
+    refetchInterval: detailRefetchInterval,
   });
 
   const { data: attachments } = useQuery({
     queryKey: queryKeys.issues.attachments(issueId!),
     queryFn: () => issuesApi.listAttachments(issueId!),
     enabled: !!issueId,
+    refetchInterval: detailRefetchInterval,
   });
 
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.issues.liveRuns(issueId!),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issueId!),
     enabled: !!issueId,
-    refetchInterval: 3000,
+    refetchInterval: isDocumentVisible ? 3000 : false,
   });
 
   const { data: activeRun } = useQuery({
     queryKey: queryKeys.issues.activeRun(issueId!),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId!),
     enabled: !!issueId,
-    refetchInterval: 3000,
+    refetchInterval: isDocumentVisible ? 3000 : false,
   });
-
   const hasLiveRuns = (liveRuns ?? []).length > 0 || !!activeRun;
   const sourceBreadcrumb = useMemo(
     () => readIssueDetailBreadcrumb(location.state) ?? { label: "Issues", href: "/issues" },
@@ -459,11 +474,16 @@ export function IssueDetail() {
   const markIssueRead = useMutation({
     mutationFn: (id: string) => issuesApi.markRead(id),
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!) });
       if (selectedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId) });
         queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
       }
+    },
+    onError: () => {
+      lastMarkedReadVersionRef.current = null;
     },
   });
 
@@ -572,11 +592,12 @@ export function IssueDetail() {
   }, [issue, issueId, navigate, location.state]);
 
   useEffect(() => {
-    if (!issue?.id) return;
-    if (lastMarkedReadIssueIdRef.current === issue.id) return;
-    lastMarkedReadIssueIdRef.current = issue.id;
+    const unreadVersion = getUnreadIssueReadVersion(issue);
+    if (!issue?.id || !unreadVersion) return;
+    if (lastMarkedReadVersionRef.current === unreadVersion) return;
+    lastMarkedReadVersionRef.current = unreadVersion;
     markIssueRead.mutate(issue.id);
-  }, [issue?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [issue?.id, issue?.isUnreadForMe, issue?.lastExternalCommentAt, markIssueRead.mutate]);
 
   useEffect(() => {
     if (issue) {
