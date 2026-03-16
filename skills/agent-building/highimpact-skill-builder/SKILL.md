@@ -182,5 +182,6 @@ See `references/optimize.md` for: description A/B testing procedure, trigger phr
 | `references/test.md` | Assertion patterns, trigger-testing procedure, output rubric, borderline case handling |
 | `references/improve.md` | Root cause analysis, iteration discipline, rewrite vs. patch, regression prevention |
 | `references/optimize.md` | Description A/B testing, trigger phrase bank, false-positive debugging |
+| `references/schemas.md` | JSON schemas for eval_metadata.json, grading.json, benchmark.json, metrics.json |
 | `references/test-cases.md` | Live test cases for the skill under development (written during Phase 1) |
 | `references/test-log.md` | Iteration history and scores (checkpoint file — survives compression) |
