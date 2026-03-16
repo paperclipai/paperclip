@@ -40,9 +40,7 @@ ontology:
 
 **Ownership rule:** If your skill owns a type, it's the sole writer. Other skills read only. Prevents conflicting updates.
 
-**Example:** A TDD-workflow skill declares `writes: [TestRun]` and `reads: [Task]`. After red-green-refactor completes, it appends a TestRun entity linked to the Task. Any orchestrator can query TestRun entities to see test history.
-
-Full protocol spec, worked example, and conflict prevention rules in `references/04-composability-protocol.md`.
+Full protocol spec, worked example (TDD-workflow + code-review interop), and conflict prevention rules in `references/04-composability-protocol.md`.
 
 ## Anti-Patterns
 
