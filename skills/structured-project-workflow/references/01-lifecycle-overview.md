@@ -48,15 +48,6 @@ Phase 5: Ship
 | Git commits | Immutable history + changelog source | Phase 3-5 | Phase 5 |
 | Hooks config | Quality enforcement | Phase 4 | Phase 3-4 auto |
 
-## Why No External Tools?
-
-The tax of context-switching between Jira/Linear/Notion and Claude Code is real:
-1. Your spec is in Notion. Claude Code doesn't see it.
-2. You paste relevant parts. Stale on day 2.
-3. Claude makes a decision that contradicts the spec. You catch it on review.
-
-When everything lives in the repo, Claude Code always has full context. The AI makes better decisions. You spend less time reviewing.
-
 ## Composition with Other Skills
 
 This skill is the skeleton. Other skills attach:
