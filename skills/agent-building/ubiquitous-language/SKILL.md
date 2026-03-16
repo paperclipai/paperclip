@@ -54,9 +54,7 @@ Adding new terms, deprecating old ones, handling team disagreements — see [04-
 
 ## Composing with Ontology (#012)
 
-GLOSSARY.md = **what we call things**. Ontology knowledge graph = **how things relate**.
-
-Use both together: the ontology defines `Subscriber → hasPlan → Plan`, the glossary enforces that Claude calls it "subscriber" (not "user") and "plan" (not "subscription"). See [05-composability-bridge.md](references/05-composability-bridge.md) for the layered model and derivation workflow.
+GLOSSARY.md = **what we call things**. Ontology (#012) = **how things relate**. Use both: ontology defines the graph structure, glossary enforces the names for every node and edge. See [05-composability-bridge.md](references/05-composability-bridge.md).
 
 ## Anti-Rationalization
 
