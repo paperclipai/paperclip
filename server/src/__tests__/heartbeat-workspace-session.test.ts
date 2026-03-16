@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
+  buildHeartbeatTimerBucket,
+  isHeartbeatTimerWakePending,
   resolveRuntimeSessionParamsForWorkspace,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
@@ -149,5 +151,38 @@ describe("shouldResetTaskSessionForWake", () => {
         wakeTriggerDetail: "callback",
       }),
     ).toBe(false);
+  });
+});
+
+describe("buildHeartbeatTimerBucket", () => {
+  it("builds a stable bucket key for the same elapsed timer window", () => {
+    const baseline = new Date("2026-03-16T10:00:00.000Z");
+    const now = new Date("2026-03-16T10:05:30.000Z");
+
+    const bucket = buildHeartbeatTimerBucket(baseline, now, 60);
+
+    expect(bucket).toMatchObject({
+      bucketKey: "1773655200000:60000:2026-03-16T10:05:00.000Z",
+    });
+    expect(bucket?.bucketStart.toISOString()).toBe("2026-03-16T10:05:00.000Z");
+  });
+
+  it("returns null when the interval has not elapsed yet", () => {
+    const baseline = new Date("2026-03-16T10:00:00.000Z");
+    const now = new Date("2026-03-16T10:00:30.000Z");
+
+    expect(buildHeartbeatTimerBucket(baseline, now, 60)).toBeNull();
+  });
+});
+
+describe("isHeartbeatTimerWakePending", () => {
+  it("treats queued and claimed wakes as in-flight duplicates", () => {
+    expect(isHeartbeatTimerWakePending("queued")).toBe(true);
+    expect(isHeartbeatTimerWakePending("claimed")).toBe(true);
+  });
+
+  it("does not treat completed or coalesced wakes as blocking recovery", () => {
+    expect(isHeartbeatTimerWakePending("completed")).toBe(false);
+    expect(isHeartbeatTimerWakePending("coalesced")).toBe(false);
   });
 });

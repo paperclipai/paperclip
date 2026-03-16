@@ -47,6 +47,8 @@ const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+const HEARTBEAT_TIMER_BUCKET_KEY = "heartbeatTimerBucket";
+const HEARTBEAT_TIMER_PENDING_STATUSES = ["queued", "claimed"] as const;
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const SESSIONED_LOCAL_ADAPTERS = new Set([
@@ -518,6 +520,30 @@ function runTaskKey(run: typeof heartbeatRuns.$inferSelect) {
 
 function isSameTaskScope(left: string | null, right: string | null) {
   return (left ?? null) === (right ?? null);
+}
+
+export function buildHeartbeatTimerBucket(
+  baseline: Date,
+  now: Date,
+  intervalSec: number,
+) {
+  const intervalMs = Math.max(1, Math.floor(intervalSec)) * 1000;
+  const baselineMs = baseline.getTime();
+  const nowMs = now.getTime();
+  const elapsedMs = nowMs - baselineMs;
+
+  if (elapsedMs < intervalMs) return null;
+
+  const bucketOffsetMs = Math.floor(elapsedMs / intervalMs) * intervalMs;
+  const bucketStart = new Date(baselineMs + bucketOffsetMs);
+  return {
+    bucketKey: `${baselineMs}:${intervalMs}:${bucketStart.toISOString()}`,
+    bucketStart,
+  };
+}
+
+export function isHeartbeatTimerWakePending(status: string | null | undefined) {
+  return HEARTBEAT_TIMER_PENDING_STATUSES.includes(status as (typeof HEARTBEAT_TIMER_PENDING_STATUSES)[number]);
 }
 
 function truncateDisplayId(value: string | null | undefined, max = 128) {
@@ -2385,6 +2411,64 @@ export function heartbeatService(db: Db) {
       return null;
     }
 
+    const timerBucketKey =
+      source === "timer"
+        ? readNonEmptyString(
+          parseObject(payload)[HEARTBEAT_TIMER_BUCKET_KEY] ??
+            enrichedContextSnapshot[HEARTBEAT_TIMER_BUCKET_KEY],
+        )
+        : null;
+
+    if (source === "timer" && timerBucketKey) {
+      const existingTimerWake = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, agent.companyId),
+            eq(agentWakeupRequests.agentId, agentId),
+            eq(agentWakeupRequests.source, "timer"),
+            sql`${agentWakeupRequests.payload} ->> ${HEARTBEAT_TIMER_BUCKET_KEY} = ${timerBucketKey}`,
+            inArray(agentWakeupRequests.status, [...HEARTBEAT_TIMER_PENDING_STATUSES]),
+          ),
+        )
+        .orderBy(asc(agentWakeupRequests.requestedAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+
+      if (existingTimerWake) {
+        const existingTimerRun = existingTimerWake.runId
+          ? await db
+            .select()
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, existingTimerWake.runId))
+            .then((rows) => rows[0] ?? null)
+          : null;
+
+        if (existingTimerRun && (existingTimerRun.status === "queued" || existingTimerRun.status === "running")) {
+          await db.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: "heartbeat_timer_duplicate_bucket",
+            payload,
+            status: "coalesced",
+            coalescedCount: 1,
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            runId: existingTimerRun.id,
+            finishedAt: new Date(),
+          });
+          return existingTimerRun;
+        }
+
+        await writeSkippedRequest("heartbeat_timer_duplicate_bucket");
+        return null;
+      }
+    }
+
     const bypassIssueExecutionLock =
       reason === "issue_comment_mentioned" ||
       readNonEmptyString(enrichedContextSnapshot.wakeReason) === "issue_comment_mentioned";
@@ -3132,17 +3216,21 @@ export function heartbeatService(db: Db) {
         if (!policy.enabled || policy.intervalSec <= 0) continue;
 
         checked += 1;
-        const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
-        const elapsedMs = now.getTime() - baseline;
-        if (elapsedMs < policy.intervalSec * 1000) continue;
+        const timerBucket = buildHeartbeatTimerBucket(new Date(agent.lastHeartbeatAt ?? agent.createdAt), now, policy.intervalSec);
+        if (!timerBucket) continue;
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
           triggerDetail: "system",
           reason: "heartbeat_timer",
+          payload: {
+            [HEARTBEAT_TIMER_BUCKET_KEY]: timerBucket.bucketKey,
+            scheduledFor: timerBucket.bucketStart.toISOString(),
+          },
           requestedByActorType: "system",
           requestedByActorId: "heartbeat_scheduler",
           contextSnapshot: {
+            [HEARTBEAT_TIMER_BUCKET_KEY]: timerBucket.bucketKey,
             source: "scheduler",
             reason: "interval_elapsed",
             now: now.toISOString(),
