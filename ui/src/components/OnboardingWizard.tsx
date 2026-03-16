@@ -17,19 +17,14 @@ import {
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 import { cn } from "../lib/utils";
-import {
-  extractModelName,
-  extractProviderIdWithFallback
-} from "../lib/model-utils";
+import { extractModelName, extractProviderIdWithFallback } from "../lib/model-utils";
 import { getUIAdapter } from "../adapters";
 import { defaultCreateValues } from "./agent-config-defaults";
-import { parseOnboardingGoalInput } from "../lib/onboarding-goal";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
-import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { ChoosePathButton } from "./PathInstructionsModal";
 import { HintIcon } from "./agent-config-primitives";
@@ -38,7 +33,6 @@ import {
   Building2,
   Bot,
   Code,
-  Gem,
   ListTodo,
   Rocket,
   ArrowLeft,
@@ -57,7 +51,6 @@ type Step = 1 | 2 | 3 | 4;
 type AdapterType =
   | "claude_local"
   | "codex_local"
-  | "gemini_local"
   | "opencode_local"
   | "pi_local"
   | "cursor"
@@ -65,13 +58,11 @@ type AdapterType =
   | "http"
   | "openclaw_gateway";
 
-const DEFAULT_TASK_DESCRIPTION = `Setup yourself as the CEO. Use the ceo persona found here: 
+const DEFAULT_TASK_DESCRIPTION = `Setup yourself as the CEO. Use the ceo persona found here: [https://github.com/paperclipai/companies/blob/main/default/ceo/AGENTS.md](https://github.com/paperclipai/companies/blob/main/default/ceo/AGENTS.md)
 
-https://github.com/paperclipai/companies/blob/main/default/ceo/AGENTS.md
+Ensure you have a folder agents/ceo and then download this AGENTS.md as well as the sibling HEARTBEAT.md, SOUL.md, and TOOLS.md. and set that AGENTS.md as the path to your agents instruction file
 
-Ensure you have a folder agents/ceo and then download this AGENTS.md, and sibling HEARTBEAT.md, SOUL.md, and TOOLS.md. and set that AGENTS.md as the path to your agents instruction file
-
-After that, hire yourself a Founding Engineer agent and then plan the roadmap and tasks for your new company.`;
+And after you've finished that, hire yourself a Founding Engineer agent`;
 
 export function OnboardingWizard() {
   const { onboardingOpen, onboardingOptions, closeOnboarding } = useDialog();
@@ -107,7 +98,6 @@ export function OnboardingWizard() {
   const [forceUnsetAnthropicApiKey, setForceUnsetAnthropicApiKey] =
     useState(false);
   const [unsetAnthropicLoading, setUnsetAnthropicLoading] = useState(false);
-  const [showMoreAdapters, setShowMoreAdapters] = useState(false);
 
   // Step 3
   const [taskTitle, setTaskTitle] = useState("Create your CEO HEARTBEAT.md");
@@ -165,31 +155,26 @@ export function OnboardingWizard() {
     data: adapterModels,
     error: adapterModelsError,
     isLoading: adapterModelsLoading,
-    isFetching: adapterModelsFetching
+    isFetching: adapterModelsFetching,
   } = useQuery({
-    queryKey: createdCompanyId
-      ? queryKeys.agents.adapterModels(createdCompanyId, adapterType)
-      : ["agents", "none", "adapter-models", adapterType],
+    queryKey:
+      createdCompanyId
+        ? queryKeys.agents.adapterModels(createdCompanyId, adapterType)
+        : ["agents", "none", "adapter-models", adapterType],
     queryFn: () => agentsApi.adapterModels(createdCompanyId!, adapterType),
     enabled: Boolean(createdCompanyId) && onboardingOpen && step === 2
   });
   const isLocalAdapter =
-    adapterType === "claude_local" ||
-    adapterType === "codex_local" ||
-    adapterType === "gemini_local" ||
-    adapterType === "opencode_local" ||
-    adapterType === "cursor";
+    adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "opencode_local" || adapterType === "cursor";
   const effectiveAdapterCommand =
     command.trim() ||
     (adapterType === "codex_local"
       ? "codex"
-      : adapterType === "gemini_local"
-        ? "gemini"
       : adapterType === "cursor"
-      ? "agent"
-      : adapterType === "opencode_local"
-      ? "opencode"
-      : "claude");
+        ? "agent"
+        : adapterType === "opencode_local"
+          ? "opencode"
+          : "claude");
 
   useEffect(() => {
     if (step !== 2) return;
@@ -224,8 +209,8 @@ export function OnboardingWizard() {
       return [
         {
           provider: "models",
-          entries: [...filteredModels].sort((a, b) => a.id.localeCompare(b.id))
-        }
+          entries: [...filteredModels].sort((a, b) => a.id.localeCompare(b.id)),
+        },
       ];
     }
     const groups = new Map<string, Array<{ id: string; label: string }>>();
@@ -239,7 +224,7 @@ export function OnboardingWizard() {
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([provider, entries]) => ({
         provider,
-        entries: [...entries].sort((a, b) => a.id.localeCompare(b.id))
+        entries: [...entries].sort((a, b) => a.id.localeCompare(b.id)),
       }));
   }, [filteredModels, adapterType]);
 
@@ -284,10 +269,8 @@ export function OnboardingWizard() {
       model:
         adapterType === "codex_local"
           ? model || DEFAULT_CODEX_LOCAL_MODEL
-          : adapterType === "gemini_local"
-            ? model || DEFAULT_GEMINI_LOCAL_MODEL
           : adapterType === "cursor"
-          ? model || DEFAULT_CURSOR_LOCAL_MODEL
+            ? model || DEFAULT_CURSOR_LOCAL_MODEL
           : model,
       command,
       args,
@@ -353,12 +336,8 @@ export function OnboardingWizard() {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
 
       if (companyGoal.trim()) {
-        const parsedGoal = parseOnboardingGoalInput(companyGoal);
         await goalsApi.create(company.id, {
-          title: parsedGoal.title,
-          ...(parsedGoal.description
-            ? { description: parsedGoal.description }
-            : {}),
+          title: companyGoal.trim(),
           level: "company",
           status: "active"
         });
@@ -383,23 +362,19 @@ export function OnboardingWizard() {
       if (adapterType === "opencode_local") {
         const selectedModelId = model.trim();
         if (!selectedModelId) {
-          setError(
-            "OpenCode requires an explicit model in provider/model format."
-          );
+          setError("OpenCode requires an explicit model in provider/model format.");
           return;
         }
         if (adapterModelsError) {
           setError(
             adapterModelsError instanceof Error
               ? adapterModelsError.message
-              : "Failed to load OpenCode models."
+              : "Failed to load OpenCode models.",
           );
           return;
         }
         if (adapterModelsLoading || adapterModelsFetching) {
-          setError(
-            "OpenCode models are still loading. Please wait and try again."
-          );
+          setError("OpenCode models are still loading. Please wait and try again.");
           return;
         }
         const discoveredModels = adapterModels ?? [];
@@ -407,7 +382,7 @@ export function OnboardingWizard() {
           setError(
             discoveredModels.length === 0
               ? "No OpenCode models discovered. Run `opencode models` and authenticate providers."
-              : `Configured OpenCode model is unavailable: ${selectedModelId}`
+              : `Configured OpenCode model is unavailable: ${selectedModelId}`,
           );
           return;
         }
@@ -496,45 +471,45 @@ export function OnboardingWizard() {
 
   async function handleStep3Next() {
     if (!createdCompanyId || !createdAgentId) return;
-    setError(null);
-    setStep(4);
-  }
-
-  async function handleLaunch() {
-    if (!createdCompanyId || !createdAgentId) return;
     setLoading(true);
     setError(null);
     try {
-      let issueRef = createdIssueRef;
-      if (!issueRef) {
-        const issue = await issuesApi.create(createdCompanyId, {
-          title: taskTitle.trim(),
-          ...(taskDescription.trim()
-            ? { description: taskDescription.trim() }
-            : {}),
-          assigneeAgentId: createdAgentId,
-          status: "todo"
-        });
-        issueRef = issue.identifier ?? issue.id;
-        setCreatedIssueRef(issueRef);
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.issues.list(createdCompanyId)
-        });
-      }
-
-      setSelectedCompanyId(createdCompanyId);
-      reset();
-      closeOnboarding();
-      navigate(
-        createdCompanyPrefix
-          ? `/${createdCompanyPrefix}/issues/${issueRef}`
-          : `/issues/${issueRef}`
-      );
+      const issue = await issuesApi.create(createdCompanyId, {
+        title: taskTitle.trim(),
+        ...(taskDescription.trim()
+          ? { description: taskDescription.trim() }
+          : {}),
+        assigneeAgentId: createdAgentId,
+        status: "todo"
+      });
+      setCreatedIssueRef(issue.identifier ?? issue.id);
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.issues.list(createdCompanyId)
+      });
+      setStep(4);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create task");
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleLaunch() {
+    if (!createdAgentId) return;
+    setLoading(true);
+    setError(null);
+    setLoading(false);
+    reset();
+    closeOnboarding();
+    if (createdCompanyPrefix && createdIssueRef) {
+      navigate(`/${createdCompanyPrefix}/issues/${createdIssueRef}`);
+      return;
+    }
+    if (createdCompanyPrefix) {
+      navigate(`/${createdCompanyPrefix}/dashboard`);
+      return;
+    }
+    navigate("/dashboard");
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -572,12 +547,7 @@ export function OnboardingWizard() {
           </button>
 
           {/* Left half — form */}
-          <div
-            className={cn(
-              "w-full flex flex-col overflow-y-auto transition-[width] duration-500 ease-in-out",
-              step === 1 ? "md:w-1/2" : "md:w-full"
-            )}
-          >
+          <div className="w-full md:w-1/2 flex flex-col overflow-y-auto">
             <div className="w-full max-w-md mx-auto my-auto px-8 py-12 shrink-0">
               <div className="paperclip-edge-card px-6 py-7 sm:px-8 sm:py-9">
                 {/* Progress indicators */}
@@ -1240,14 +1210,14 @@ function AdapterEnvironmentResult({
     result.status === "pass"
       ? "Passed"
       : result.status === "warn"
-      ? "Warnings"
-      : "Failed";
+        ? "Warnings"
+        : "Failed";
   const statusClass =
     result.status === "pass"
       ? "text-green-700 dark:text-green-300 border-green-300 dark:border-green-500/40 bg-green-50 dark:bg-green-500/10"
       : result.status === "warn"
-      ? "text-amber-700 dark:text-amber-300 border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-500/10"
-      : "text-red-700 dark:text-red-300 border-red-300 dark:border-red-500/40 bg-red-50 dark:bg-red-500/10";
+        ? "text-amber-700 dark:text-amber-300 border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-500/10"
+        : "text-red-700 dark:text-red-300 border-red-300 dark:border-red-500/40 bg-red-50 dark:bg-red-500/10";
 
   return (
     <div className={`rounded-md border px-2.5 py-2 text-[11px] ${statusClass}`}>

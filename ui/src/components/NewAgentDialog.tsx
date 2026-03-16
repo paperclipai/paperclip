@@ -14,7 +14,6 @@ import {
   ArrowLeft,
   Bot,
   Code,
-  Gem,
   MousePointer2,
   Sparkles,
   Terminal,
@@ -25,7 +24,6 @@ import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 type AdvancedAdapterType =
   | "claude_local"
   | "codex_local"
-  | "gemini_local"
   | "opencode_local"
   | "pi_local"
   | "cursor"
@@ -51,12 +49,6 @@ const ADVANCED_ADAPTER_OPTIONS: Array<{
     icon: Code,
     desc: "Local Codex agent",
     recommended: true,
-  },
-  {
-    value: "gemini_local",
-    label: "Gemini CLI",
-    icon: Gem,
-    desc: "Local Gemini agent",
   },
   {
     value: "opencode_local",

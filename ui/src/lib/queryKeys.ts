@@ -29,8 +29,6 @@ export const queryKeys = {
     detail: (id: string) => ["issues", "detail", id] as const,
     comments: (issueId: string) => ["issues", "comments", issueId] as const,
     attachments: (issueId: string) => ["issues", "attachments", issueId] as const,
-    documents: (issueId: string) => ["issues", "documents", issueId] as const,
-    documentRevisions: (issueId: string, key: string) => ["issues", "document-revisions", issueId, key] as const,
     activity: (issueId: string) => ["issues", "activity", issueId] as const,
     runs: (issueId: string) => ["issues", "runs", issueId] as const,
     approvals: (issueId: string) => ["issues", "approvals", issueId] as const,
@@ -80,9 +78,6 @@ export const queryKeys = {
   auth: {
     session: ["auth", "session"] as const,
   },
-  instance: {
-    schedulerHeartbeats: ["instance", "scheduler-heartbeats"] as const,
-  },
   health: ["health"] as const,
   healthSubsystems: (companyId: string) => ["health", "subsystems", companyId] as const,
   secrets: {
@@ -96,18 +91,7 @@ export const queryKeys = {
     ["costs", companyId, from, to] as const,
   heartbeats: (companyId: string, agentId?: string) =>
     ["heartbeats", companyId, agentId] as const,
-  runDetail: (runId: string) => ["heartbeat-run", runId] as const,
   liveRuns: (companyId: string) => ["live-runs", companyId] as const,
   runIssues: (runId: string) => ["run-issues", runId] as const,
   org: (companyId: string) => ["org", companyId] as const,
-  plugins: {
-    all: ["plugins"] as const,
-    examples: ["plugins", "examples"] as const,
-    detail: (pluginId: string) => ["plugins", pluginId] as const,
-    health: (pluginId: string) => ["plugins", pluginId, "health"] as const,
-    uiContributions: ["plugins", "ui-contributions"] as const,
-    config: (pluginId: string) => ["plugins", pluginId, "config"] as const,
-    dashboard: (pluginId: string) => ["plugins", pluginId, "dashboard"] as const,
-    logs: (pluginId: string) => ["plugins", pluginId, "logs"] as const,
-  },
 };

@@ -8,11 +8,9 @@ import {
   createAgentKeySchema,
   createAgentHireSchema,
   createAgentSchema,
-  deriveAgentUrlKey,
   isUuidLike,
   resetAgentSessionSchema,
   testAdapterEnvironmentSchema,
-  type InstanceSchedulerHeartbeatAgent,
   updateAgentPermissionsSchema,
   updateAgentInstructionsPathSchema,
   wakeAgentSchema,
@@ -39,14 +37,12 @@ import {
   DEFAULT_CODEX_LOCAL_MODEL,
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
-import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "@paperclipai/adapter-opencode-local/server";
 
 export function agentRoutes(db: Db) {
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
     claude_local: "instructionsFilePath",
     codex_local: "instructionsFilePath",
-    gemini_local: "instructionsFilePath",
     opencode_local: "instructionsFilePath",
     cursor: "instructionsFilePath",
   };
@@ -203,21 +199,6 @@ export function agentRoutes(db: Db) {
     return null;
   }
 
-  function parseNumberLike(value: unknown): number | null {
-    if (typeof value === "number" && Number.isFinite(value)) return value;
-    if (typeof value !== "string") return null;
-    const parsed = Number(value.trim());
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-
-  function parseSchedulerHeartbeatPolicy(runtimeConfig: unknown) {
-    const heartbeat = asRecord(asRecord(runtimeConfig)?.heartbeat) ?? {};
-    return {
-      enabled: parseBooleanLike(heartbeat.enabled) ?? true,
-      intervalSec: Math.max(0, parseNumberLike(heartbeat.intervalSec) ?? 0),
-    };
-  }
-
   function generateEd25519PrivateKeyPem(): string {
     const { privateKey } = generateKeyPairSync("ed25519");
     return privateKey.export({ type: "pkcs8", format: "pem" }).toString();
@@ -252,10 +233,6 @@ export function agentRoutes(db: Db) {
       if (!hasBypassFlag) {
         next.dangerouslyBypassApprovalsAndSandbox = DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
       }
-      return ensureGatewayDeviceKey(adapterType, next);
-    }
-    if (adapterType === "gemini_local" && !asNonEmptyString(next.model)) {
-      next.model = DEFAULT_GEMINI_LOCAL_MODEL;
       return ensureGatewayDeviceKey(adapterType, next);
     }
     // OpenCode requires explicit model selection — no default
@@ -475,81 +452,6 @@ export function agentRoutes(db: Db) {
     res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
   });
 
-  router.get("/instance/scheduler-heartbeats", async (req, res) => {
-    assertBoard(req);
-
-    const accessConditions = [];
-    if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
-      const allowedCompanyIds = req.actor.companyIds ?? [];
-      if (allowedCompanyIds.length === 0) {
-        res.json([]);
-        return;
-      }
-      accessConditions.push(inArray(agentsTable.companyId, allowedCompanyIds));
-    }
-
-    const rows = await db
-      .select({
-        id: agentsTable.id,
-        companyId: agentsTable.companyId,
-        agentName: agentsTable.name,
-        role: agentsTable.role,
-        title: agentsTable.title,
-        status: agentsTable.status,
-        adapterType: agentsTable.adapterType,
-        runtimeConfig: agentsTable.runtimeConfig,
-        lastHeartbeatAt: agentsTable.lastHeartbeatAt,
-        companyName: companies.name,
-        companyIssuePrefix: companies.issuePrefix,
-      })
-      .from(agentsTable)
-      .innerJoin(companies, eq(agentsTable.companyId, companies.id))
-      .where(accessConditions.length > 0 ? and(...accessConditions) : undefined)
-      .orderBy(companies.name, agentsTable.name);
-
-    const items: InstanceSchedulerHeartbeatAgent[] = rows
-      .map((row) => {
-        const policy = parseSchedulerHeartbeatPolicy(row.runtimeConfig);
-        const statusEligible =
-          row.status !== "paused" &&
-          row.status !== "terminated" &&
-          row.status !== "pending_approval";
-
-        return {
-          id: row.id,
-          companyId: row.companyId,
-          companyName: row.companyName,
-          companyIssuePrefix: row.companyIssuePrefix,
-          agentName: row.agentName,
-          agentUrlKey: deriveAgentUrlKey(row.agentName, row.id),
-          role: row.role as InstanceSchedulerHeartbeatAgent["role"],
-          title: row.title,
-          status: row.status as InstanceSchedulerHeartbeatAgent["status"],
-          adapterType: row.adapterType,
-          intervalSec: policy.intervalSec,
-          heartbeatEnabled: policy.enabled,
-          schedulerActive: statusEligible && policy.enabled && policy.intervalSec > 0,
-          lastHeartbeatAt: row.lastHeartbeatAt,
-        };
-      })
-      .filter((item) =>
-        item.intervalSec > 0 &&
-        item.status !== "paused" &&
-        item.status !== "terminated" &&
-        item.status !== "pending_approval",
-      )
-      .sort((left, right) => {
-        if (left.schedulerActive !== right.schedulerActive) {
-          return left.schedulerActive ? -1 : 1;
-        }
-        const companyOrder = left.companyName.localeCompare(right.companyName);
-        if (companyOrder !== 0) return companyOrder;
-        return left.agentName.localeCompare(right.agentName);
-      });
-
-    res.json(items);
-  });
-
   router.get("/companies/:companyId/org", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -577,34 +479,6 @@ export function agentRoutes(db: Db) {
     }
     const chainOfCommand = await svc.getChainOfCommand(agent.id);
     res.json({ ...agent, chainOfCommand });
-  });
-
-  router.get("/agents/me/inbox-lite", async (req, res) => {
-    if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId) {
-      res.status(401).json({ error: "Agent authentication required" });
-      return;
-    }
-
-    const issuesSvc = issueService(db);
-    const rows = await issuesSvc.list(req.actor.companyId, {
-      assigneeAgentId: req.actor.agentId,
-      status: "todo,in_progress,blocked",
-    });
-
-    res.json(
-      rows.map((issue) => ({
-        id: issue.id,
-        identifier: issue.identifier,
-        title: issue.title,
-        status: issue.status,
-        priority: issue.priority,
-        projectId: issue.projectId,
-        goalId: issue.goalId,
-        parentId: issue.parentId,
-        updatedAt: issue.updatedAt,
-        activeRun: issue.activeRun,
-      })),
-    );
   });
 
   router.get("/agents/:id", async (req, res) => {
@@ -1308,7 +1182,6 @@ export function agentRoutes(db: Db) {
       contextSnapshot: {
         triggeredBy: req.actor.type,
         actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,
-        forceFreshSession: req.body.forceFreshSession === true,
       },
     });
 
@@ -1479,17 +1352,6 @@ export function agentRoutes(db: Db) {
     res.json(liveRuns);
   });
 
-  router.get("/heartbeat-runs/:runId", async (req, res) => {
-    const runId = req.params.runId as string;
-    const run = await heartbeat.getRun(runId);
-    if (!run) {
-      res.status(404).json({ error: "Heartbeat run not found" });
-      return;
-    }
-    assertCompanyAccess(req, run.companyId);
-    res.json(redactCurrentUserValue(run));
-  });
-
   router.post("/heartbeat-runs/:runId/cancel", async (req, res) => {
     assertBoard(req);
     const runId = req.params.runId as string;
@@ -1522,12 +1384,10 @@ export function agentRoutes(db: Db) {
     const afterSeq = Number(req.query.afterSeq ?? 0);
     const limit = Number(req.query.limit ?? 200);
     const events = await heartbeat.listEvents(runId, Number.isFinite(afterSeq) ? afterSeq : 0, Number.isFinite(limit) ? limit : 200);
-    const redactedEvents = events.map((event) =>
-      redactCurrentUserValue({
-        ...event,
-        payload: redactEventPayload(event.payload),
-      }),
-    );
+    const redactedEvents = events.map((event) => ({
+      ...event,
+      payload: redactEventPayload(event.payload),
+    }));
     res.json(redactedEvents);
   });
 
@@ -1628,7 +1488,7 @@ export function agentRoutes(db: Db) {
     }
 
     res.json({
-      ...redactCurrentUserValue(run),
+      ...run,
       agentId: agent.id,
       agentName: agent.name,
       adapterType: agent.adapterType,

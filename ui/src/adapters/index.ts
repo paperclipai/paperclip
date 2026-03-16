@@ -6,4 +6,3 @@ export type {
   UIAdapterModule,
   AdapterConfigFieldsProps,
 } from "./types";
-export type { RunLogChunk } from "./transcript";

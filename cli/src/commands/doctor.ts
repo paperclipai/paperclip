@@ -14,7 +14,6 @@ import {
   storageCheck,
   type CheckResult,
 } from "../checks/index.js";
-import { loadPaperclipEnvFile } from "../config/env.js";
 import { printPaperclipCliBanner } from "../utils/banner.js";
 import { loadPaperclipEnvFile } from "../config/env.js";
 import { readRepoStartupProfile, readRecentLaunchHistory } from "../config/startup-profile.js";

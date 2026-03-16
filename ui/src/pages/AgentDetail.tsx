@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
-import { useParams, useNavigate, Link, Navigate, useBeforeUnload } from "@/lib/router";
+import { useParams, useNavigate, Link, useBeforeUnload } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { agentsApi, type AgentKey, type ClaudeLoginResult } from "../api/agents";
 import { authApi } from "../api/auth";
@@ -16,7 +16,6 @@ import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { AgentConfigForm } from "../components/AgentConfigForm";
-import { PageTabBar } from "../components/PageTabBar";
 import { adapterLabels, roleLabels } from "../components/agent-config-primitives";
 import { getUIAdapter, buildTranscript } from "../adapters";
 import type { TranscriptEntry } from "../adapters";
@@ -28,12 +27,10 @@ import { CopyText } from "../components/CopyText";
 import { EntityRow } from "../components/EntityRow";
 import { Identity } from "../components/Identity";
 import { PageSkeleton } from "../components/PageSkeleton";
-import { ScrollToBottom } from "../components/ScrollToBottom";
 import { formatCents, formatDate, relativeTime, formatTokens } from "../lib/utils";
 import { cn } from "../lib/utils";
 import { buildTranscriptFromRunEvents, hasStructuredTranscriptEvents } from "../lib/run-events";
 import { Button } from "@/components/ui/button";
-import { Tabs } from "@/components/ui/tabs";
 import {
   Popover,
   PopoverContent,
@@ -59,12 +56,12 @@ import {
   ChevronRight,
   ChevronDown,
   ArrowLeft,
+  Settings,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
 import { RunTranscriptView, type TranscriptMode } from "../components/transcript/RunTranscriptView";
 import { isUuidLike, type Agent, type HeartbeatRun, type HeartbeatRunEvent, type AgentRuntimeState, type LiveEvent } from "@paperclipai/shared";
-import { redactHomePathUserSegments, redactHomePathUserSegmentsInValue } from "@paperclipai/adapter-utils";
 import { agentRouteRef } from "../lib/utils";
 
 const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string }> = {
@@ -98,11 +95,11 @@ function redactEnvValue(key: string, value: unknown): string {
   }
   if (shouldRedactSecretValue(key, value)) return REDACTED_ENV_VALUE;
   if (value === null || value === undefined) return "";
-  if (typeof value === "string") return redactHomePathUserSegments(value);
+  if (typeof value === "string") return value;
   try {
-    return JSON.stringify(redactHomePathUserSegmentsInValue(value));
+    return JSON.stringify(value);
   } catch {
-    return redactHomePathUserSegments(String(value));
+    return String(value);
   }
 }
 
@@ -180,12 +177,12 @@ function scrollToContainerBottom(container: ScrollContainer, behavior: ScrollBeh
   container.scrollTo({ top: container.scrollHeight, behavior });
 }
 
-type AgentDetailView = "dashboard" | "configuration" | "runs";
+type AgentDetailView = "overview" | "configure" | "runs";
 
 function parseAgentDetailView(value: string | null): AgentDetailView {
-  if (value === "configure" || value === "configuration") return "configuration";
+  if (value === "configure" || value === "configuration") return "configure";
   if (value === "runs") return value;
-  return "dashboard";
+  return "overview";
 }
 
 function usageNumber(usage: Record<string, unknown> | null, ...keys: string[]) {
@@ -321,23 +318,17 @@ export function AgentDetail() {
 
   useEffect(() => {
     if (!agent) return;
+    if (routeAgentRef === canonicalAgentRef) return;
     if (urlRunId) {
-      if (routeAgentRef !== canonicalAgentRef) {
-        navigate(`/agents/${canonicalAgentRef}/runs/${urlRunId}`, { replace: true });
-      }
+      navigate(`/agents/${canonicalAgentRef}/runs/${urlRunId}`, { replace: true });
       return;
     }
-    const canonicalTab =
-      activeView === "configuration"
-        ? "configuration"
-        : activeView === "runs"
-          ? "runs"
-          : "dashboard";
-    if (routeAgentRef !== canonicalAgentRef || urlTab !== canonicalTab) {
-      navigate(`/agents/${canonicalAgentRef}/${canonicalTab}`, { replace: true });
+    if (urlTab) {
+      navigate(`/agents/${canonicalAgentRef}/${urlTab}`, { replace: true });
       return;
     }
-  }, [agent, routeAgentRef, canonicalAgentRef, urlRunId, urlTab, activeView, navigate]);
+    navigate(`/agents/${canonicalAgentRef}`, { replace: true });
+  }, [agent, routeAgentRef, canonicalAgentRef, urlRunId, urlTab, navigate]);
 
   useEffect(() => {
     if (!agent?.companyId || agent.companyId === selectedCompanyId) return;
@@ -420,19 +411,17 @@ export function AgentDetail() {
       { label: "Agents", href: "/agents" },
     ];
     const agentName = agent?.name ?? routeAgentRef ?? "Agent";
-    if (activeView === "dashboard" && !urlRunId) {
+    if (activeView === "overview" && !urlRunId) {
       crumbs.push({ label: agentName });
     } else {
-      crumbs.push({ label: agentName, href: `/agents/${canonicalAgentRef}/dashboard` });
+      crumbs.push({ label: agentName, href: `/agents/${canonicalAgentRef}` });
       if (urlRunId) {
         crumbs.push({ label: "Runs", href: `/agents/${canonicalAgentRef}/runs` });
         crumbs.push({ label: `Run ${urlRunId.slice(0, 8)}` });
-      } else if (activeView === "configuration") {
-        crumbs.push({ label: "Configuration" });
+      } else if (activeView === "configure") {
+        crumbs.push({ label: "Configure" });
       } else if (activeView === "runs") {
         crumbs.push({ label: "Runs" });
-      } else {
-        crumbs.push({ label: "Dashboard" });
       }
     }
     setBreadcrumbs(crumbs);
@@ -441,7 +430,7 @@ export function AgentDetail() {
   useEffect(() => {
     closePanel();
     return () => closePanel();
-  }, [closePanel]);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useBeforeUnload(
     useCallback((event) => {
@@ -454,11 +443,8 @@ export function AgentDetail() {
   if (isLoading) return <PageSkeleton variant="detail" />;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
   if (!agent) return null;
-  if (!urlRunId && !urlTab) {
-    return <Navigate to={`/agents/${canonicalAgentRef}/dashboard`} replace />;
-  }
   const isPendingApproval = agent.status === "pending_approval";
-  const showConfigActionBar = activeView === "configuration" && (configDirty || configSaving);
+  const showConfigActionBar = activeView === "configure" && configDirty;
 
   return (
     <div className={cn("space-y-6", isMobile && showConfigActionBar && "pb-24")}>
@@ -590,23 +576,6 @@ export function AgentDetail() {
         </div>
       </div>
 
-      {!urlRunId && (
-        <Tabs
-          value={activeView}
-          onValueChange={(value) => navigate(`/agents/${canonicalAgentRef}/${value}`)}
-        >
-          <PageTabBar
-            items={[
-              { value: "dashboard", label: "Dashboard" },
-              { value: "configuration", label: "Configuration" },
-              { value: "runs", label: "Runs" },
-            ]}
-            value={activeView}
-            onValueChange={(value) => navigate(`/agents/${canonicalAgentRef}/${value}`)}
-          />
-        </Tabs>
-      )}
-
       {actionError && <p className="text-sm text-destructive">{actionError}</p>}
       {isPendingApproval && (
         <p className="text-sm text-amber-500">
@@ -671,18 +640,20 @@ export function AgentDetail() {
       )}
 
       {/* View content */}
-      {activeView === "dashboard" && (
+      {activeView === "overview" && (
         <AgentOverview
           agent={agent}
           runs={heartbeats ?? []}
           assignedIssues={assignedIssues}
           runtimeState={runtimeState}
+          reportsToAgent={reportsToAgent ?? null}
+          directReports={directReports}
           agentId={agent.id}
           agentRouteId={canonicalAgentRef}
         />
       )}
 
-      {activeView === "configuration" && (
+      {activeView === "configure" && (
         <AgentConfigurePage
           agent={agent}
           agentId={agent.id}
@@ -742,7 +713,7 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
         <h3 className="flex items-center gap-2 text-sm font-medium">
           {isLive && (
             <span className="relative flex h-2 w-2">
-              <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
               <span className="relative inline-flex rounded-full h-2 w-2 bg-cyan-400" />
             </span>
           )}
@@ -796,6 +767,8 @@ function AgentOverview({
   runs,
   assignedIssues,
   runtimeState,
+  reportsToAgent,
+  directReports,
   agentId,
   agentRouteId,
 }: {
@@ -803,6 +776,8 @@ function AgentOverview({
   runs: HeartbeatRun[];
   assignedIssues: { id: string; title: string; status: string; priority: string; identifier?: string | null; createdAt: Date }[];
   runtimeState?: AgentRuntimeState;
+  reportsToAgent: Agent | null;
+  directReports: Agent[];
   agentId: string;
   agentRouteId: string;
 }) {
@@ -1019,7 +994,7 @@ function CostsSection({
     <div className="space-y-4">
       {runtimeState && (
         <div className="border border-border rounded-lg p-4">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 tabular-nums">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div>
               <span className="text-xs text-muted-foreground block">Input tokens</span>
               <span className="text-lg font-semibold">{formatTokens(runtimeState.totalInputTokens)}</span>
@@ -1213,8 +1188,6 @@ function ConfigurationTab({
   };
 }) {
   const queryClient = useQueryClient();
-  const [awaitingRefreshAfterSave, setAwaitingRefreshAfterSave] = useState(false);
-  const lastAgentRef = useRef(agent);
 
   const { data: adapterModels } = useQuery({
     queryKey:
@@ -1227,31 +1200,16 @@ function ConfigurationTab({
 
   const updateAgent = useMutation({
     mutationFn: (data: Record<string, unknown>) => agentsApi.update(agent.id, data, companyId),
-    onMutate: () => {
-      setAwaitingRefreshAfterSave(true);
-    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.configRevisions(agent.id) });
     },
-    onError: () => {
-      setAwaitingRefreshAfterSave(false);
-    },
   });
 
   useEffect(() => {
-    if (awaitingRefreshAfterSave && agent !== lastAgentRef.current) {
-      setAwaitingRefreshAfterSave(false);
-    }
-    lastAgentRef.current = agent;
-  }, [agent, awaitingRefreshAfterSave]);
-
-  const isConfigSaving = updateAgent.isPending || awaitingRefreshAfterSave;
-
-  useEffect(() => {
-    onSavingChange(isConfigSaving);
-  }, [onSavingChange, isConfigSaving]);
+    onSavingChange(updateAgent.isPending);
+  }, [onSavingChange, updateAgent.isPending]);
 
   return (
     <div className="space-y-6">
@@ -1259,7 +1217,7 @@ function ConfigurationTab({
         mode="edit"
         agent={agent}
         onSave={(patch) => updateAgent.mutate(patch)}
-        isSaving={isConfigSaving}
+        isSaving={updateAgent.isPending}
         adapterModels={adapterModels}
         onDirtyChange={onDirtyChange}
         onSaveActionChange={onSaveActionChange}
@@ -1353,7 +1311,7 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
         </span>
       )}
       {(metrics.totalTokens > 0 || metrics.cost > 0) && (
-        <div className="flex items-center gap-2 pl-5.5 text-[11px] text-muted-foreground tabular-nums">
+        <div className="flex items-center gap-2 pl-5.5 text-[11px] text-muted-foreground">
           {metrics.totalTokens > 0 && <span>{formatTokens(metrics.totalTokens)} tok</span>}
           {metrics.cost > 0 && <span>${metrics.cost.toFixed(3)}</span>}
         </div>
@@ -1444,7 +1402,7 @@ function RunsTab({
 
 /* ---- Run Detail (expanded) ---- */
 
-function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: HeartbeatRun; agentRouteId: string; adapterType: string }) {
+function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRun; agentRouteId: string; adapterType: string }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { data: session } = useQuery({
@@ -1784,7 +1742,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
 
           {/* Right column: metrics */}
           {hasMetrics && (
-            <div className="border-t sm:border-t-0 sm:border-l border-border p-4 grid grid-cols-2 gap-x-4 sm:gap-x-8 gap-y-3 content-center tabular-nums">
+            <div className="border-t sm:border-t-0 sm:border-l border-border p-4 grid grid-cols-2 gap-x-4 sm:gap-x-8 gap-y-3 content-center">
               <div>
                 <div className="text-xs text-muted-foreground">Input</div>
                 <div className="text-sm font-medium font-mono">{formatTokens(metrics.input)}</div>
@@ -2291,7 +2249,7 @@ function LogViewer({
 
   const adapterInvokePayload = useMemo(() => {
     const evt = events.find((e) => e.eventType === "adapter.invoke");
-    return redactHomePathUserSegmentsInValue(asRecord(evt?.payload ?? null));
+    return asRecord(evt?.payload ?? null);
   }, [events]);
   const redactedAdapterInvokePayload = useMemo(
     () => redactOperatorFacingUnknown(adapterInvokePayload, { currentUserId }),
@@ -2328,10 +2286,6 @@ function LogViewer({
   const redactedLogError = logError
     ? redactOperatorFacingText(logError, { currentUserId })
     : null;
-
-  useEffect(() => {
-    setTranscriptMode("nice");
-  }, [run.id]);
 
   if (loading && logLoading) {
     return <p className="text-xs text-muted-foreground">Loading run logs...</p>;
@@ -2460,7 +2414,7 @@ function LogViewer({
           {isLive && (
             <span className="flex items-center gap-1 text-xs text-cyan-400">
               <span className="relative flex h-2 w-2">
-                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-cyan-400" />
               </span>
               Live

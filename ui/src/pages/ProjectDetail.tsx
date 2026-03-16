@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, useRef } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, useLocation, Navigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PROJECT_COLORS, isUuidLike } from "@paperclipai/shared";
@@ -11,16 +11,16 @@ import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
-import { ProjectProperties, type ProjectConfigFieldKey, type ProjectFieldSaveState } from "../components/ProjectProperties";
+import { ProjectProperties } from "../components/ProjectProperties";
 import { InlineEditor } from "../components/InlineEditor";
 import { StatusBadge } from "../components/StatusBadge";
 import { IssuesList } from "../components/IssuesList";
 import { PageSkeleton } from "../components/PageSkeleton";
-import { PageTabBar } from "../components/PageTabBar";
 import { projectRouteRef, cn } from "../lib/utils";
-import { Tabs } from "@/components/ui/tabs";
-import { PluginLauncherOutlet } from "@/plugins/launchers";
-import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
+import { Button } from "@/components/ui/button";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { SlidersHorizontal } from "lucide-react";
 
 /* ── Top-level tab types ── */
 
@@ -199,14 +199,12 @@ export function ProjectDetail() {
     filter?: string;
   }>();
   const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
-  const { closePanel } = usePanel();
+  const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
-  const [fieldSaveStates, setFieldSaveStates] = useState<Partial<Record<ProjectConfigFieldKey, ProjectFieldSaveState>>>({});
-  const fieldSaveRequestIds = useRef<Partial<Record<ProjectConfigFieldKey, number>>>({});
-  const fieldSaveTimers = useRef<Partial<Record<ProjectConfigFieldKey, ReturnType<typeof setTimeout>>>>({});
   const routeProjectRef = projectId ?? "";
   const [projectConfigPatch, setProjectConfigPatch] = useState<Record<string, unknown>>({});
   const routeCompanyId = useMemo(() => {
@@ -216,12 +214,8 @@ export function ProjectDetail() {
   }, [companies, companyPrefix]);
   const lookupCompanyId = routeCompanyId ?? selectedCompanyId ?? undefined;
   const canFetchProject = routeProjectRef.length > 0 && (isUuidLike(routeProjectRef) || Boolean(lookupCompanyId));
-  const activeRouteTab = routeProjectRef ? resolveProjectTab(location.pathname, routeProjectRef) : null;
-  const pluginTabFromSearch = useMemo(() => {
-    const tab = new URLSearchParams(location.search).get("tab");
-    return isProjectPluginTab(tab) ? tab : null;
-  }, [location.search]);
-  const activeTab = activeRouteTab ?? pluginTabFromSearch;
+
+  const activeTab = routeProjectRef ? resolveProjectTab(location.pathname, routeProjectRef) : null;
 
   const { data: project, isLoading, error } = useQuery({
     queryKey: [...queryKeys.projects.detail(routeProjectRef), lookupCompanyId ?? null],
@@ -231,24 +225,6 @@ export function ProjectDetail() {
   const canonicalProjectRef = project ? projectRouteRef(project) : routeProjectRef;
   const projectLookupRef = project?.id ?? routeProjectRef;
   const resolvedCompanyId = project?.companyId ?? selectedCompanyId;
-  const {
-    slots: pluginDetailSlots,
-    isLoading: pluginDetailSlotsLoading,
-  } = usePluginSlots({
-    slotTypes: ["detailTab"],
-    entityType: "project",
-    companyId: resolvedCompanyId,
-    enabled: !!resolvedCompanyId,
-  });
-  const pluginTabItems = useMemo(
-    () => pluginDetailSlots.map((slot) => ({
-      value: `plugin:${slot.pluginKey}:${slot.id}` as ProjectPluginTab,
-      label: slot.displayName,
-      slot,
-    })),
-    [pluginDetailSlots],
-  );
-  const activePluginTab = pluginTabItems.find((item) => item.value === activeTab) ?? null;
 
   useEffect(() => {
     if (!project?.companyId || project.companyId === selectedCompanyId) return;
@@ -289,10 +265,6 @@ export function ProjectDetail() {
   useEffect(() => {
     if (!project) return;
     if (routeProjectRef === canonicalProjectRef) return;
-    if (isProjectPluginTab(activeTab)) {
-      navigate(`/projects/${canonicalProjectRef}?tab=${encodeURIComponent(activeTab)}`, { replace: true });
-      return;
-    }
     if (activeTab === "overview") {
       navigate(`/projects/${canonicalProjectRef}/overview`, { replace: true });
       return;
@@ -336,10 +308,6 @@ export function ProjectDetail() {
   if (!project) return null;
 
   const handleTabChange = (tab: ProjectTab) => {
-    if (isProjectPluginTab(tab)) {
-      navigate(`/projects/${canonicalProjectRef}?tab=${encodeURIComponent(tab)}`);
-      return;
-    }
     if (tab === "overview") {
       navigate(`/projects/${canonicalProjectRef}/overview`);
     } else if (tab === "configuration") {
@@ -444,6 +412,7 @@ export function ProjectDetail() {
         </button>
       </div>
 
+      {/* Tab content */}
       {activeTab === "overview" && (
         <OverviewContent
           project={project}

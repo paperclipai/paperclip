@@ -11,10 +11,9 @@ interface PageTabBarProps {
   items: PageTabItem[];
   value?: string;
   onValueChange?: (value: string) => void;
-  align?: "center" | "start";
 }
 
-export function PageTabBar({ items, value, onValueChange, align = "center" }: PageTabBarProps) {
+export function PageTabBar({ items, value, onValueChange }: PageTabBarProps) {
   const { isMobile } = useSidebar();
 
   if (isMobile && value !== undefined && onValueChange) {

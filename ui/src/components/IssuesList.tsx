@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
+import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { authApi } from "../api/auth";
 import { issuesApi } from "../api/issues";
-import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { groupBy } from "../lib/groupBy";
@@ -17,19 +17,17 @@ import {
   ISSUE_ASSIGNEE_FILTER_UNASSIGNED,
 } from "../lib/issues-list";
 import { formatDate, cn } from "../lib/utils";
-import { timeAgo } from "../lib/timeAgo";
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { EmptyState } from "./EmptyState";
 import { Identity } from "./Identity";
-import { IssueRow } from "./IssueRow";
 import { PageSkeleton } from "./PageSkeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
-import { CircleDot, Plus, Filter, ArrowUpDown, Layers, Check, X, ChevronRight, List, Columns3, User, Search } from "lucide-react";
+import { CircleDot, Plus, Filter, ArrowUpDown, Layers, Check, X, ChevronRight, List, Columns3, User, Search, ArrowDown } from "lucide-react";
 import { KanbanBoard } from "./KanbanBoard";
 import type { Issue } from "@paperclipai/shared";
 
@@ -144,7 +142,6 @@ interface IssuesListProps {
   liveIssueIds?: Set<string>;
   projectId?: string;
   viewStateKey: string;
-  issueLinkState?: unknown;
   initialAssignees?: string[];
   initialSearch?: string;
   onSearchChange?: (search: string) => void;
@@ -159,7 +156,6 @@ export function IssuesList({
   liveIssueIds,
   projectId,
   viewStateKey,
-  issueLinkState,
   initialAssignees,
   initialSearch,
   onSearchChange,
@@ -242,6 +238,24 @@ export function IssuesList({
   });
 
   const activeFilterCount = countActiveFilters(viewState);
+
+  const [showScrollBottom, setShowScrollBottom] = useState(false);
+  useEffect(() => {
+    const el = document.getElementById("main-content");
+    if (!el) return;
+    const check = () => {
+      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      setShowScrollBottom(distanceFromBottom > 300);
+    };
+    check();
+    el.addEventListener("scroll", check, { passive: true });
+    return () => el.removeEventListener("scroll", check);
+  }, [filtered.length]);
+
+  const scrollToBottom = useCallback(() => {
+    const el = document.getElementById("main-content");
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  }, []);
 
   const groupedContent = useMemo(() => {
     if (viewState.groupBy === "none") {
@@ -658,64 +672,17 @@ export function IssuesList({
                       )}
                     </div>
                   )}
-                  desktopMetaLeading={(
-                    <>
-                      <span className="hidden sm:inline-flex">
-                        <PriorityIcon priority={issue.priority} />
-                      </span>
-                      <span
-                        className="hidden shrink-0 sm:inline-flex"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                        }}
-                      >
-                        <StatusIcon
-                          status={issue.status}
-                          onChange={(s) => onUpdateIssue(issue.id, { status: s })}
-                        />
-                      </span>
-                      <span className="shrink-0 font-mono text-xs text-muted-foreground">
-                        {issue.identifier ?? issue.id.slice(0, 8)}
-                      </span>
-                      {liveIssueIds?.has(issue.id) && (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-blue-500/10 px-1.5 py-0.5 sm:gap-1.5 sm:px-2">
-                          <span className="relative flex h-2 w-2">
-                            <span className="absolute inline-flex h-full w-full animate-pulse rounded-full bg-blue-400 opacity-75" />
-                            <span className="relative inline-flex h-2 w-2 rounded-full bg-blue-500" />
-                          </span>
-                          <span className="hidden text-[11px] font-medium text-blue-600 dark:text-blue-400 sm:inline">
-                            Live
-                          </span>
+                  <div className="flex items-center gap-2 sm:gap-3 shrink-0 ml-auto">
+                    {liveIssueIds?.has(issue.id) && (
+                      <span className="inline-flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2 py-0.5 rounded-full bg-blue-500/10">
+                        <span className="relative flex h-2 w-2">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                          <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
                         </span>
-                      )}
-                    </>
-                  )}
-                  mobileMeta={timeAgo(issue.updatedAt)}
-                  desktopTrailing={(
-                    <>
-                      {(issue.labels ?? []).length > 0 && (
-                        <span className="hidden items-center gap-1 overflow-hidden md:flex md:max-w-[240px]">
-                          {(issue.labels ?? []).slice(0, 3).map((label) => (
-                            <span
-                              key={label.id}
-                              className="inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium"
-                              style={{
-                                borderColor: label.color,
-                                color: label.color,
-                                backgroundColor: `${label.color}1f`,
-                              }}
-                            >
-                              {label.name}
-                            </span>
-                          ))}
-                          {(issue.labels ?? []).length > 3 && (
-                            <span className="text-[10px] text-muted-foreground">
-                              +{(issue.labels ?? []).length - 3}
-                            </span>
-                          )}
-                        </span>
-                      )}
+                        <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400 hidden sm:inline">Live</span>
+                      </span>
+                    )}
+                    <div className="hidden sm:block">
                       <Popover
                         open={assigneePickerIssueId === issue.id}
                         onOpenChange={(open) => {
@@ -796,16 +763,14 @@ export function IssuesList({
                             {(agents ?? [])
                               .filter((agent) => {
                                 if (!assigneeSearch.trim()) return true;
-                                return agent.name
-                                  .toLowerCase()
-                                  .includes(assigneeSearch.toLowerCase());
+                                return agent.name.toLowerCase().includes(assigneeSearch.toLowerCase());
                               })
                               .map((agent) => (
                                 <button
                                   key={agent.id}
                                   className={cn(
-                                    "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent/50",
-                                    issue.assigneeAgentId === agent.id && "bg-accent",
+                                    "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-left",
+                                    issue.assigneeAgentId === agent.id && "bg-accent"
                                   )}
                                   onClick={(e) => {
                                     e.preventDefault();
@@ -830,6 +795,15 @@ export function IssuesList({
             </CollapsibleContent>
           </Collapsible>
         ))
+      )}
+      {showScrollBottom && (
+        <button
+          onClick={scrollToBottom}
+          className="fixed bottom-6 right-6 z-40 flex h-9 w-9 items-center justify-center rounded-full border border-border bg-background shadow-md hover:bg-accent transition-colors"
+          aria-label="Scroll to bottom"
+        >
+          <ArrowDown className="h-4 w-4" />
+        </button>
       )}
     </div>
   );

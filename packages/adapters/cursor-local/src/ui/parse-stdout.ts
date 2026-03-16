@@ -142,12 +142,6 @@ function parseAssistantMessage(messageRaw: unknown, ts: string): TranscriptEntry
         kind: "tool_call",
         ts,
         name,
-        toolUseId:
-          asString(part.tool_use_id) ||
-          asString(part.toolUseId) ||
-          asString(part.call_id) ||
-          asString(part.id) ||
-          undefined,
         input,
       });
       continue;
@@ -205,7 +199,6 @@ function parseCursorToolCallEvent(event: Record<string, unknown>, ts: string): T
       kind: "tool_call",
       ts,
       name: toolName,
-      toolUseId: callId,
       input,
     }];
   }

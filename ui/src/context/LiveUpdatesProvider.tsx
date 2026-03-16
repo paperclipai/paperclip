@@ -256,7 +256,7 @@ function buildJoinRequestToast(
     title: `${label} wants to join`,
     body: "A new join request is waiting for approval.",
     tone: "info",
-    action: { label: "View inbox", href: "/inbox/unread" },
+    action: { label: "View inbox", href: "/inbox/new" },
     dedupeKey: `join-request:${entityId}`,
   };
 }
@@ -369,9 +369,6 @@ function invalidateActivityQueries(
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(ref) });
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(ref) });
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(ref) });
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.documents(ref) });
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(ref) });
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.approvals(ref) });
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(ref) });
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(ref) });
       }

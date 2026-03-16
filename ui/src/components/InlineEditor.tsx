@@ -1,11 +1,12 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { cn } from "../lib/utils";
-import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
-import { useAutosaveIndicator } from "../hooks/useAutosaveIndicator";
+import { Button } from "@/components/ui/button";
+import { MarkdownBody } from "./MarkdownBody";
+import { MarkdownEditor, type MentionOption } from "./MarkdownEditor";
 
 interface InlineEditorProps {
   value: string;
-  onSave: (value: string) => void | Promise<unknown>;
+  onSave: (value: string) => void;
   as?: "h1" | "h2" | "p" | "span";
   className?: string;
   placeholder?: string;
@@ -16,8 +17,6 @@ interface InlineEditorProps {
 
 /** Shared padding so display and edit modes occupy the exact same box. */
 const pad = "px-1 -mx-1";
-const markdownPad = "px-1";
-const AUTOSAVE_DEBOUNCE_MS = 900;
 
 export function InlineEditor({
   value,
@@ -30,30 +29,12 @@ export function InlineEditor({
   mentions,
 }: InlineEditorProps) {
   const [editing, setEditing] = useState(false);
-  const [multilineFocused, setMultilineFocused] = useState(false);
   const [draft, setDraft] = useState(value);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const markdownRef = useRef<MarkdownEditorRef>(null);
-  const autosaveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const {
-    state: autosaveState,
-    markDirty,
-    reset,
-    runSave,
-  } = useAutosaveIndicator();
 
   useEffect(() => {
-    if (multiline && multilineFocused) return;
     setDraft(value);
-  }, [value, multiline, multilineFocused]);
-
-  useEffect(() => {
-    return () => {
-      if (autosaveDebounceRef.current) {
-        clearTimeout(autosaveDebounceRef.current);
-      }
-    };
-  }, []);
+  }, [value]);
 
   const autoSize = useCallback((el: HTMLTextAreaElement | null) => {
     if (!el) return;
@@ -71,140 +52,58 @@ export function InlineEditor({
     }
   }, [editing, autoSize]);
 
-  useEffect(() => {
-    if (!editing || !multiline) return;
-    const frame = requestAnimationFrame(() => {
-      markdownRef.current?.focus();
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [editing, multiline]);
-
-  const commit = useCallback(async (nextValue = draft) => {
-    const trimmed = nextValue.trim();
+  function commit() {
+    const trimmed = draft.trim();
     if (trimmed && trimmed !== value) {
-      await Promise.resolve(onSave(trimmed));
+      onSave(trimmed);
     } else {
       setDraft(value);
     }
-    if (!multiline) {
-      setEditing(false);
-    }
-  }, [draft, multiline, onSave, value]);
+    setEditing(false);
+  }
 
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === "Enter" && !multiline) {
       e.preventDefault();
-      void commit();
+      commit();
     }
     if (e.key === "Escape") {
-      if (autosaveDebounceRef.current) {
-        clearTimeout(autosaveDebounceRef.current);
-      }
-      reset();
       setDraft(value);
-      if (multiline) {
-        setMultilineFocused(false);
-        if (document.activeElement instanceof HTMLElement) {
-          document.activeElement.blur();
-        }
-      } else {
-        setEditing(false);
-      }
+      setEditing(false);
     }
-  }
-
-  useEffect(() => {
-    if (!multiline) return;
-    if (!multilineFocused) return;
-    const trimmed = draft.trim();
-    if (!trimmed || trimmed === value) {
-      if (autosaveState !== "saved") {
-        reset();
-      }
-      return;
-    }
-    markDirty();
-    if (autosaveDebounceRef.current) {
-      clearTimeout(autosaveDebounceRef.current);
-    }
-    autosaveDebounceRef.current = setTimeout(() => {
-      void runSave(() => commit(trimmed));
-    }, AUTOSAVE_DEBOUNCE_MS);
-
-    return () => {
-      if (autosaveDebounceRef.current) {
-        clearTimeout(autosaveDebounceRef.current);
-      }
-    };
-  }, [autosaveState, commit, draft, markDirty, multiline, multilineFocused, reset, runSave, value]);
-
-  if (multiline) {
-    return (
-      <div
-        className={cn(
-          markdownPad,
-          "rounded transition-colors",
-          multilineFocused ? "bg-transparent" : "hover:bg-accent/20",
-        )}
-        onFocusCapture={() => setMultilineFocused(true)}
-        onBlurCapture={(event) => {
-          if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
-          if (autosaveDebounceRef.current) {
-            clearTimeout(autosaveDebounceRef.current);
-          }
-          setMultilineFocused(false);
-          const trimmed = draft.trim();
-          if (!trimmed || trimmed === value) {
-            reset();
-            void commit();
-            return;
-          }
-          void runSave(() => commit());
-        }}
-        onKeyDown={handleKeyDown}
-      >
-        <MarkdownEditor
-          ref={markdownRef}
-          value={draft}
-          onChange={setDraft}
-          placeholder={placeholder}
-          bordered={false}
-          className="bg-transparent"
-          contentClassName={cn("paperclip-edit-in-place-content", className)}
-          imageUploadHandler={imageUploadHandler}
-          mentions={mentions}
-          onSubmit={() => {
-            const trimmed = draft.trim();
-            if (!trimmed || trimmed === value) {
-              reset();
-              void commit();
-              return;
-            }
-            void runSave(() => commit());
-          }}
-        />
-        <div className="flex min-h-4 items-center justify-end pr-1">
-          <span
-            className={cn(
-              "text-[11px] transition-opacity duration-150",
-              autosaveState === "error" ? "text-destructive" : "text-muted-foreground",
-              autosaveState === "idle" ? "opacity-0" : "opacity-100",
-            )}
-          >
-            {autosaveState === "saving"
-              ? "Autosaving..."
-              : autosaveState === "saved"
-                ? "Saved"
-                : autosaveState === "error"
-                  ? "Could not save"
-                  : "Idle"}
-          </span>
-        </div>
-      </div>
-    );
   }
 
   if (editing) {
+    if (multiline) {
+      return (
+        <div className={cn("space-y-2", pad)}>
+          <MarkdownEditor
+            value={draft}
+            onChange={setDraft}
+            placeholder={placeholder}
+            contentClassName={className}
+            imageUploadHandler={imageUploadHandler}
+            mentions={mentions}
+            onSubmit={commit}
+          />
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setDraft(value);
+                setEditing(false);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button size="sm" onClick={commit}>
+              Save
+            </Button>
+          </div>
+        </div>
+      );
+    }
 
     return (
       <textarea
@@ -215,9 +114,7 @@ export function InlineEditor({
           setDraft(e.target.value);
           autoSize(e.target);
         }}
-        onBlur={() => {
-          void commit();
-        }}
+        onBlur={commit}
         onKeyDown={handleKeyDown}
         className={cn(
           "w-full bg-transparent rounded outline-none resize-none overflow-hidden",
@@ -235,14 +132,18 @@ export function InlineEditor({
   return (
     <DisplayTag
       className={cn(
-        "cursor-pointer rounded hover:bg-accent/50 transition-colors overflow-hidden",
+        "cursor-pointer rounded hover:bg-accent/50 transition-colors",
         pad,
         !value && "text-muted-foreground italic",
-        className,
+        className
       )}
       onClick={() => setEditing(true)}
     >
-      {value || placeholder}
+      {value && multiline ? (
+        <MarkdownBody>{value}</MarkdownBody>
+      ) : (
+        value || placeholder
+      )}
     </DisplayTag>
   );
 }

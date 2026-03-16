@@ -101,14 +101,6 @@ export const issuesApi = {
         ...(interrupt === undefined ? {} : { interrupt }),
       },
     ),
-  listDocuments: (id: string) => api.get<IssueDocument[]>(`/issues/${id}/documents`),
-  getDocument: (id: string, key: string) => api.get<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}`),
-  upsertDocument: (id: string, key: string, data: UpsertIssueDocument) =>
-    api.put<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}`, data),
-  listDocumentRevisions: (id: string, key: string) =>
-    api.get<DocumentRevision[]>(`/issues/${id}/documents/${encodeURIComponent(key)}/revisions`),
-  deleteDocument: (id: string, key: string) =>
-    api.delete<{ ok: true }>(`/issues/${id}/documents/${encodeURIComponent(key)}`),
   listAttachments: (id: string) => api.get<IssueAttachment[]>(`/issues/${id}/attachments`),
   uploadAttachment: (
     companyId: string,

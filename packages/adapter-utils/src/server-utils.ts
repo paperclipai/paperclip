@@ -32,23 +32,6 @@ export const runningProcesses = new Map<string, RunningProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
 const SENSITIVE_ENV_KEY = /(key|token|secret|password|passwd|authorization|cookie)/i;
-const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
-  "../../skills",
-  "../../../../../skills",
-];
-
-export interface PaperclipSkillEntry {
-  name: string;
-  source: string;
-}
-
-function normalizePathSlashes(value: string): string {
-  return value.replaceAll("\\", "/");
-}
-
-function isMaintainerOnlySkillTarget(candidate: string): boolean {
-  return normalizePathSlashes(candidate).includes("/.agents/skills/");
-}
 
 export function parseObject(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -110,16 +93,6 @@ export function resolvePathValue(obj: Record<string, unknown>, dottedPath: strin
 
 export function renderTemplate(template: string, data: Record<string, unknown>) {
   return template.replace(/{{\s*([a-zA-Z0-9_.-]+)\s*}}/g, (_, path) => resolvePathValue(data, path));
-}
-
-export function joinPromptSections(
-  sections: Array<string | null | undefined>,
-  separator = "\n\n",
-) {
-  return sections
-    .map((value) => (typeof value === "string" ? value.trim() : ""))
-    .filter(Boolean)
-    .join(separator);
 }
 
 export function redactEnvForLogs(env: Record<string, string>): Record<string, string> {

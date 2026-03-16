@@ -12,7 +12,8 @@ import type { Company } from "@paperclipai/shared";
 import { companiesApi } from "../api/companies";
 import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
-import type { CompanySelectionSource } from "../lib/company-selection";
+
+type CompanySelectionSource = "manual" | "route_sync" | "bootstrap";
 type CompanySelectionOptions = { source?: CompanySelectionSource };
 
 interface CompanyContextValue {

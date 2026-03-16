@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { approvalsApi } from "../api/approvals";
@@ -11,13 +11,11 @@ import { heartbeatsApi } from "../api/heartbeats";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
-import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
+import { StatusIcon } from "../components/StatusIcon";
+import { PriorityIcon } from "../components/PriorityIcon";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { ApprovalCard } from "../components/ApprovalCard";
-import { IssueRow } from "../components/IssueRow";
-import { PriorityIcon } from "../components/PriorityIcon";
-import { StatusIcon } from "../components/StatusIcon";
 import { StatusBadge } from "../components/StatusBadge";
 import { timeAgo } from "../lib/timeAgo";
 import { Button } from "@/components/ui/button";
@@ -33,6 +31,7 @@ import {
 import {
   Inbox as InboxIcon,
   AlertTriangle,
+  Clock,
   ArrowUpRight,
   XCircle,
   X,
@@ -41,29 +40,59 @@ import {
 import { Identity } from "../components/Identity";
 import { PageTabBar } from "../components/PageTabBar";
 import type { HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
-import {
-  ACTIONABLE_APPROVAL_STATUSES,
-  getLatestFailedRunsByAgent,
-  getRecentTouchedIssues,
-  type InboxTab,
-  saveLastInboxTab,
-} from "../lib/inbox";
-import { useDismissedInboxItems } from "../hooks/useInboxBadge";
 
+const STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24 hours
+const RECENT_ISSUES_LIMIT = 100;
+const FAILED_RUN_STATUSES = new Set(["failed", "timed_out"]);
+const ACTIONABLE_APPROVAL_STATUSES = new Set(["pending", "revision_requested"]);
+
+type InboxTab = "new" | "all";
 type InboxCategoryFilter =
   | "everything"
   | "issues_i_touched"
   | "join_requests"
   | "approvals"
   | "failed_runs"
-  | "alerts";
+  | "alerts"
+  | "stale_work";
 type InboxApprovalFilter = "all" | "actionable" | "resolved";
 type SectionKey =
   | "issues_i_touched"
   | "join_requests"
   | "approvals"
   | "failed_runs"
-  | "alerts";
+  | "alerts"
+  | "stale_work";
+
+const DISMISSED_KEY = "paperclip:inbox:dismissed";
+
+function loadDismissed(): Set<string> {
+  try {
+    const raw = localStorage.getItem(DISMISSED_KEY);
+    return raw ? new Set(JSON.parse(raw)) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function saveDismissed(ids: Set<string>) {
+  localStorage.setItem(DISMISSED_KEY, JSON.stringify([...ids]));
+}
+
+function useDismissedItems() {
+  const [dismissed, setDismissed] = useState<Set<string>>(loadDismissed);
+
+  const dismiss = useCallback((id: string) => {
+    setDismissed((prev) => {
+      const next = new Set(prev);
+      next.add(id);
+      saveDismissed(next);
+      return next;
+    });
+  }, []);
+
+  return { dismissed, dismiss };
+}
 
 const RUN_SOURCE_LABELS: Record<string, string> = {
   timer: "Scheduled",
@@ -71,6 +100,32 @@ const RUN_SOURCE_LABELS: Record<string, string> = {
   on_demand: "Manual",
   automation: "Automation",
 };
+
+function getStaleIssues(issues: Issue[]): Issue[] {
+  const now = Date.now();
+  return issues
+    .filter(
+      (i) =>
+        ["in_progress", "todo"].includes(i.status) &&
+        now - new Date(i.updatedAt).getTime() > STALE_THRESHOLD_MS,
+    )
+    .sort((a, b) => new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime());
+}
+
+function getLatestFailedRunsByAgent(runs: HeartbeatRun[]): HeartbeatRun[] {
+  const sorted = [...runs].sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+  );
+  const latestByAgent = new Map<string, HeartbeatRun>();
+
+  for (const run of sorted) {
+    if (!latestByAgent.has(run.agentId)) {
+      latestByAgent.set(run.agentId, run);
+    }
+  }
+
+  return Array.from(latestByAgent.values()).filter((run) => FAILED_RUN_STATUSES.has(run.status));
+}
 
 function firstNonEmptyLine(value: string | null | undefined): string | null {
   if (!value) return null;
@@ -80,6 +135,23 @@ function firstNonEmptyLine(value: string | null | undefined): string | null {
 
 function runFailureMessage(run: HeartbeatRun): string {
   return firstNonEmptyLine(run.error) ?? firstNonEmptyLine(run.stderrExcerpt) ?? "Run exited with an error.";
+}
+
+function normalizeTimestamp(value: string | Date | null | undefined): number {
+  if (!value) return 0;
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function issueLastActivityTimestamp(issue: Issue): number {
+  const lastExternalCommentAt = normalizeTimestamp(issue.lastExternalCommentAt);
+  if (lastExternalCommentAt > 0) return lastExternalCommentAt;
+
+  const updatedAt = normalizeTimestamp(issue.updatedAt);
+  const myLastTouchAt = normalizeTimestamp(issue.myLastTouchAt);
+  if (myLastTouchAt > 0 && updatedAt <= myLastTouchAt) return 0;
+
+  return updatedAt;
 }
 
 function readIssueIdFromRun(run: HeartbeatRun): string | null {
@@ -99,13 +171,11 @@ function FailedRunCard({
   run,
   issueById,
   agentName: linkedAgentName,
-  issueLinkState,
   onDismiss,
 }: {
   run: HeartbeatRun;
   issueById: Map<string, Issue>;
   agentName: string | null;
-  issueLinkState: unknown;
   onDismiss: () => void;
 }) {
   const queryClient = useQueryClient();
@@ -241,19 +311,10 @@ export function Inbox() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [allCategoryFilter, setAllCategoryFilter] = useState<InboxCategoryFilter>("everything");
   const [allApprovalFilter, setAllApprovalFilter] = useState<InboxApprovalFilter>("all");
-  const { dismissed, dismiss } = useDismissedInboxItems();
+  const { dismissed, dismiss } = useDismissedItems();
 
-  const pathSegment = location.pathname.split("/").pop() ?? "recent";
-  const tab: InboxTab =
-    pathSegment === "all" || pathSegment === "unread" ? pathSegment : "recent";
-  const issueLinkState = useMemo(
-    () =>
-      createIssueDetailLocationState(
-        "Inbox",
-        `${location.pathname}${location.search}${location.hash}`,
-      ),
-    [location.pathname, location.search, location.hash],
-  );
+  const pathSegment = location.pathname.split("/").pop() ?? "new";
+  const tab: InboxTab = pathSegment === "all" ? "all" : "new";
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -264,10 +325,6 @@ export function Inbox() {
   useEffect(() => {
     setBreadcrumbs([{ label: "Inbox" }]);
   }, [setBreadcrumbs]);
-
-  useEffect(() => {
-    saveLastInboxTab(tab);
-  }, [tab]);
 
   const {
     data: approvals,
@@ -328,10 +385,22 @@ export function Inbox() {
     enabled: !!selectedCompanyId,
   });
 
-  const touchedIssues = useMemo(() => getRecentTouchedIssues(touchedIssuesRaw), [touchedIssuesRaw]);
-  const unreadTouchedIssues = useMemo(
-    () => touchedIssues.filter((issue) => issue.isUnreadForMe),
-    [touchedIssues],
+  const staleIssues = useMemo(
+    () => (issues ? getStaleIssues(issues) : []).filter((i) => !dismissed.has(`stale:${i.id}`)),
+    [issues, dismissed],
+  );
+  const sortByMostRecentActivity = useCallback(
+    (a: Issue, b: Issue) => {
+      const activityDiff = issueLastActivityTimestamp(b) - issueLastActivityTimestamp(a);
+      if (activityDiff !== 0) return activityDiff;
+      return normalizeTimestamp(b.updatedAt) - normalizeTimestamp(a.updatedAt);
+    },
+    [],
+  );
+
+  const touchedIssues = useMemo(
+    () => [...touchedIssuesRaw].sort(sortByMostRecentActivity).slice(0, RECENT_ISSUES_LIMIT),
+    [sortByMostRecentActivity, touchedIssuesRaw],
   );
 
   const agentById = useMemo(() => {
@@ -350,15 +419,6 @@ export function Inbox() {
     () => getLatestFailedRunsByAgent(heartbeatRuns ?? []).filter((r) => !dismissed.has(`run:${r.id}`)),
     [heartbeatRuns, dismissed],
   );
-  const liveIssueIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const run of heartbeatRuns ?? []) {
-      if (run.status !== "running" && run.status !== "queued") continue;
-      const issueId = readIssueIdFromRun(run);
-      if (issueId) ids.add(issueId);
-    }
-    return ids;
-  }, [heartbeatRuns]);
 
   const allApprovals = useMemo(
     () =>
@@ -440,51 +500,23 @@ export function Inbox() {
 
   const [fadingOutIssues, setFadingOutIssues] = useState<Set<string>>(new Set());
 
-  const invalidateInboxIssueQueries = () => {
-    if (!selectedCompanyId) return;
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
-  };
-
   const markReadMutation = useMutation({
     mutationFn: (id: string) => issuesApi.markRead(id),
     onMutate: (id) => {
       setFadingOutIssues((prev) => new Set(prev).add(id));
     },
     onSuccess: () => {
-      invalidateInboxIssueQueries();
+      if (selectedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
+      }
     },
     onSettled: (_data, _error, id) => {
       setTimeout(() => {
         setFadingOutIssues((prev) => {
           const next = new Set(prev);
           next.delete(id);
-          return next;
-        });
-      }, 300);
-    },
-  });
-
-  const markAllReadMutation = useMutation({
-    mutationFn: async (issueIds: string[]) => {
-      await Promise.all(issueIds.map((issueId) => issuesApi.markRead(issueId)));
-    },
-    onMutate: (issueIds) => {
-      setFadingOutIssues((prev) => {
-        const next = new Set(prev);
-        for (const issueId of issueIds) next.add(issueId);
-        return next;
-      });
-    },
-    onSuccess: () => {
-      invalidateInboxIssueQueries();
-    },
-    onSettled: (_data, _error, issueIds) => {
-      setTimeout(() => {
-        setFadingOutIssues((prev) => {
-          const next = new Set(prev);
-          for (const issueId of issueIds) next.delete(issueId);
           return next;
         });
       }, 300);
@@ -503,8 +535,15 @@ export function Inbox() {
     dashboard.costs.monthUtilizationPercent >= 80 &&
     !dismissed.has("alert:budget");
   const hasAlerts = showAggregateAgentError || showBudgetAlert;
+  const hasStale = staleIssues.length > 0;
   const hasJoinRequests = joinRequests.length > 0;
   const hasTouchedIssues = touchedIssues.length > 0;
+
+  const newItemCount =
+    failedRuns.length +
+    staleIssues.length +
+    (showAggregateAgentError ? 1 : 0) +
+    (showBudgetAlert ? 1 : 0);
 
   const showJoinRequestsCategory =
     allCategoryFilter === "everything" || allCategoryFilter === "join_requests";
@@ -514,26 +553,25 @@ export function Inbox() {
   const showFailedRunsCategory =
     allCategoryFilter === "everything" || allCategoryFilter === "failed_runs";
   const showAlertsCategory = allCategoryFilter === "everything" || allCategoryFilter === "alerts";
+  const showStaleCategory = allCategoryFilter === "everything" || allCategoryFilter === "stale_work";
 
-  const approvalsToRender = tab === "all" ? filteredAllApprovals : actionableApprovals;
-  const showTouchedSection =
-    tab === "all"
-      ? showTouchedCategory && hasTouchedIssues
-      : tab === "unread"
-        ? unreadTouchedIssues.length > 0
-        : hasTouchedIssues;
+  const approvalsToRender = tab === "new" ? actionableApprovals : filteredAllApprovals;
+  const showTouchedSection = tab === "new" ? hasTouchedIssues : showTouchedCategory && hasTouchedIssues;
   const showJoinRequestsSection =
-    tab === "all" ? showJoinRequestsCategory && hasJoinRequests : tab === "unread" && hasJoinRequests;
-  const showApprovalsSection = tab === "all"
-    ? showApprovalsCategory && filteredAllApprovals.length > 0
-    : actionableApprovals.length > 0;
+    tab === "new" ? hasJoinRequests : showJoinRequestsCategory && hasJoinRequests;
+  const showApprovalsSection =
+    tab === "new"
+      ? actionableApprovals.length > 0
+      : showApprovalsCategory && filteredAllApprovals.length > 0;
   const showFailedRunsSection =
-    tab === "all" ? showFailedRunsCategory && hasRunFailures : tab === "unread" && hasRunFailures;
-  const showAlertsSection = tab === "all" ? showAlertsCategory && hasAlerts : tab === "unread" && hasAlerts;
+    tab === "new" ? hasRunFailures : showFailedRunsCategory && hasRunFailures;
+  const showAlertsSection = tab === "new" ? hasAlerts : showAlertsCategory && hasAlerts;
+  const showStaleSection = tab === "new" ? hasStale : showStaleCategory && hasStale;
 
   const visibleSections = [
     showFailedRunsSection ? "failed_runs" : null,
     showAlertsSection ? "alerts" : null,
+    showStaleSection ? "stale_work" : null,
     showApprovalsSection ? "approvals" : null,
     showJoinRequestsSection ? "join_requests" : null,
     showTouchedSection ? "issues_i_touched" : null,
@@ -548,10 +586,6 @@ export function Inbox() {
     !isRunsLoading;
 
   const showSeparatorBefore = (key: SectionKey) => visibleSections.indexOf(key) > 0;
-  const unreadIssueIds = unreadTouchedIssues
-    .filter((issue) => !fadingOutIssues.has(issue.id))
-    .map((issue) => issue.id);
-  const canMarkAllRead = unreadIssueIds.length > 0;
 
   return (
     <div className="space-y-6">
@@ -649,11 +683,9 @@ export function Inbox() {
         <EmptyState
           icon={InboxIcon}
           message={
-            tab === "unread"
-              ? "No new inbox items."
-              : tab === "recent"
-                ? "No recent inbox items."
-                : "No inbox items match these filters."
+            tab === "new"
+              ? "No issues you're involved in yet."
+              : "No inbox items match these filters."
           }
         />
       )}
@@ -759,7 +791,6 @@ export function Inbox() {
                   run={run}
                   issueById={issueById}
                   agentName={agentName(run.agentId)}
-                  issueLinkState={issueLinkState}
                   onDismiss={() => dismiss(`run:${run.id}`)}
                 />
               ))}
@@ -895,7 +926,7 @@ export function Inbox() {
                 const isUnread = issue.isUnreadForMe && !fadingOutIssues.has(issue.id);
                 const isFading = fadingOutIssues.has(issue.id);
                 return (
-                  <IssueRow
+                  <div
                     key={issue.id}
                     className="paperclip-monitor-row flex items-center gap-3 px-4 py-3"
                   >

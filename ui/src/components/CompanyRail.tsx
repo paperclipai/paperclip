@@ -22,7 +22,6 @@ import { cn } from "../lib/utils";
 import { queryKeys } from "../lib/queryKeys";
 import { sidebarBadgesApi } from "../api/sidebarBadges";
 import { heartbeatsApi } from "../api/heartbeats";
-import { useLocation, useNavigate } from "@/lib/router";
 import {
   Tooltip,
   TooltipContent,
@@ -133,7 +132,7 @@ function SortableCompanyItem({
               {hasLiveAgents && (
                 <span className="pointer-events-none absolute -right-0.5 -top-0.5 z-10">
                   <span className="relative flex h-2.5 w-2.5">
-                    <span className="absolute inline-flex h-full w-full animate-pulse rounded-full bg-blue-400 opacity-80" />
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue-400 opacity-80" />
                     <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-blue-500 ring-2 ring-background" />
                   </span>
                 </span>
@@ -155,10 +154,6 @@ function SortableCompanyItem({
 export function CompanyRail() {
   const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { openOnboarding } = useDialog();
-  const navigate = useNavigate();
-  const location = useLocation();
-  const isInstanceRoute = location.pathname.startsWith("/instance/");
-  const highlightedCompanyId = isInstanceRoute ? null : selectedCompanyId;
   const sidebarCompanies = useMemo(
     () => companies.filter((company) => company.status !== "archived"),
     [companies],
@@ -289,15 +284,10 @@ export function CompanyRail() {
               <SortableCompanyItem
                 key={company.id}
                 company={company}
-                isSelected={company.id === highlightedCompanyId}
+                isSelected={company.id === selectedCompanyId}
                 hasLiveAgents={hasLiveAgentsByCompanyId.get(company.id) ?? false}
                 hasUnreadInbox={hasUnreadInboxByCompanyId.get(company.id) ?? false}
-                onSelect={() => {
-                  setSelectedCompanyId(company.id);
-                  if (isInstanceRoute) {
-                    navigate(`/${company.issuePrefix}/dashboard`);
-                  }
-                }}
+                onSelect={() => setSelectedCompanyId(company.id)}
               />
             ))}
           </SortableContext>

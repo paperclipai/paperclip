@@ -76,7 +76,6 @@ export type {
   AgentRuntimeState,
   AgentTaskSession,
   AgentWakeupRequest,
-  InstanceSchedulerHeartbeatAgent,
 } from "./heartbeat.js";
 export type { LiveEvent } from "./live.js";
 export type { DashboardSummary } from "./dashboard.js";
@@ -108,25 +107,3 @@ export type {
   CompanyPortabilityImportResult,
   CompanyPortabilityExportRequest,
 } from "./company-portability.js";
-export type {
-  JsonSchema,
-  PluginJobDeclaration,
-  PluginWebhookDeclaration,
-  PluginToolDeclaration,
-  PluginUiSlotDeclaration,
-  PluginLauncherActionDeclaration,
-  PluginLauncherRenderDeclaration,
-  PluginLauncherRenderContextSnapshot,
-  PluginLauncherDeclaration,
-  PluginMinimumHostVersion,
-  PluginUiDeclaration,
-  PaperclipPluginManifestV1,
-  PluginRecord,
-  PluginStateRecord,
-  PluginConfig,
-  PluginEntityRecord,
-  PluginEntityQuery,
-  PluginJobRecord,
-  PluginJobRunRecord,
-  PluginWebhookDeliveryRecord,
-} from "./plugin.js";

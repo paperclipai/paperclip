@@ -103,7 +103,6 @@ describe("opencode_local ui stdout parser", () => {
         kind: "tool_call",
         ts,
         name: "bash",
-        toolUseId: "call_1",
         input: { command: "ls -1" },
       },
       {

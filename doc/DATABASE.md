@@ -25,14 +25,6 @@ Default example when nothing is pinned:
 
 Use the startup banner or `pnpm paperclipai doctor --launch-history` to confirm the actual instance path before deleting local data.
 
-If you need to apply pending migrations manually, run:
-
-```sh
-pnpm db:migrate
-```
-
-When `DATABASE_URL` is unset, this command targets the current embedded PostgreSQL instance for your active Paperclip config/instance.
-
 This mode is ideal for local development and one-command installs.
 
 Docker note: the Docker quickstart image also uses embedded PostgreSQL by default. Persist `/paperclip` to keep DB state across container restarts (see `doc/DOCKER.md`).

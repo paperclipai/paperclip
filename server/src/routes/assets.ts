@@ -43,7 +43,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
   const svc = assetService(db);
   const imageUpload = multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
+    limits: { fileSize: MAX_ASSET_IMAGE_BYTES, files: 1 },
   });
   const fileUpload = multer({
     storage: multer.memoryStorage(),

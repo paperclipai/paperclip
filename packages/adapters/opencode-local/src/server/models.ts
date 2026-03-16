@@ -7,7 +7,6 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 
 const MODELS_CACHE_TTL_MS = 60_000;
-const MODELS_DISCOVERY_TIMEOUT_MS = 20_000;
 
 function resolveOpenCodeCommand(input: unknown): string {
   const envOverride =
@@ -116,14 +115,14 @@ export async function discoverOpenCodeModels(input: {
     {
       cwd,
       env: runtimeEnv,
-      timeoutSec: MODELS_DISCOVERY_TIMEOUT_MS / 1000,
+      timeoutSec: 20,
       graceSec: 3,
       onLog: async () => {},
     },
   );
 
   if (result.timedOut) {
-    throw new Error(`\`opencode models\` timed out after ${MODELS_DISCOVERY_TIMEOUT_MS / 1000}s.`);
+    throw new Error("`opencode models` timed out.");
   }
   if ((result.exitCode ?? 1) !== 0) {
     const detail = firstNonEmptyLine(result.stderr) || firstNonEmptyLine(result.stdout);

@@ -230,10 +230,6 @@ function quickstartDefaultsFromEnv(): {
   return { defaults, usedEnvKeys, ignoredEnvKeys };
 }
 
-function canCreateBootstrapInviteImmediately(config: Pick<PaperclipConfig, "database" | "server">): boolean {
-  return config.server.deploymentMode === "authenticated" && config.database.mode !== "embedded-postgres";
-}
-
 export async function onboard(opts: OnboardOptions): Promise<void> {
   printPaperclipCliBanner();
   p.intro(pc.bgCyan(pc.black(" paperclipai onboard ")));
@@ -455,7 +451,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     "Next commands",
   );
 
-  if (canCreateBootstrapInviteImmediately({ database, server })) {
+  if (server.deploymentMode === "authenticated") {
     p.log.step("Generating bootstrap CEO invite");
     await bootstrapCeoInvite({ config: configPath });
   }
@@ -476,16 +472,6 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     const { runCommand } = await import("./run.js");
     await runCommand({ config: configPath, repair: true, yes: true });
     return;
-  }
-
-  if (server.deploymentMode === "authenticated" && database.mode === "embedded-postgres") {
-    p.log.info(
-      [
-        "Bootstrap CEO invite will be created after the server starts.",
-        `Next: ${pc.cyan("paperclipai run")}`,
-        `Then: ${pc.cyan("paperclipai auth bootstrap-ceo")}`,
-      ].join("\n"),
-    );
   }
 
   p.outro("You're all set!");

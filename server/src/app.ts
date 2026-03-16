@@ -26,24 +26,6 @@ import { assetRoutes } from "./routes/assets.js";
 import { recordRoutes } from "./routes/records.js";
 import { knowledgeRoutes } from "./routes/knowledge.js";
 import { accessRoutes } from "./routes/access.js";
-import { pluginRoutes } from "./routes/plugins.js";
-import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
-import { applyUiBranding } from "./ui-branding.js";
-import { logger } from "./middleware/logger.js";
-import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
-import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
-import { createPluginJobScheduler } from "./services/plugin-job-scheduler.js";
-import { pluginJobStore } from "./services/plugin-job-store.js";
-import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js";
-import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
-import { createPluginJobCoordinator } from "./services/plugin-job-coordinator.js";
-import { buildHostServices, flushPluginLogBuffer } from "./services/plugin-host-services.js";
-import { createPluginEventBus } from "./services/plugin-event-bus.js";
-import { setPluginEventBus } from "./services/activity-log.js";
-import { createPluginDevWatcher } from "./services/plugin-dev-watcher.js";
-import { createPluginHostServiceCleanup } from "./services/plugin-host-service-cleanup.js";
-import { pluginRegistryService } from "./services/plugin-registry.js";
-import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 
 type UiMode = "none" | "static" | "vite-dev";
@@ -52,7 +34,6 @@ export async function createApp(
   db: Db,
   opts: {
     uiMode: UiMode;
-    serverPort: number;
     storageService: StorageService;
     databaseConnectionString?: string | null;
     deploymentMode: DeploymentMode;
@@ -61,20 +42,13 @@ export async function createApp(
     bindHost: string;
     authReady: boolean;
     companyDeletionEnabled: boolean;
-    instanceId?: string;
-    hostVersion?: string;
-    localPluginDir?: string;
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
   },
 ) {
   const app = express();
 
-  app.use(express.json({
-    verify: (req, _res, buf) => {
-      (req as unknown as { rawBody: Buffer }).rawBody = buf;
-    },
-  }));
+  app.use(express.json());
   app.use(httpLogger);
   const privateHostnameGateEnabled =
     opts.deploymentMode === "authenticated" && opts.deploymentExposure === "private";
@@ -156,9 +130,6 @@ export async function createApp(
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "API route not found" });
   });
-  app.use(pluginUiStaticRoutes(db, {
-    localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
-  }));
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   if (opts.uiMode === "static") {
@@ -169,7 +140,7 @@ export async function createApp(
     ];
     const uiDist = candidates.find((p) => fs.existsSync(path.join(p, "index.html")));
     if (uiDist) {
-      const indexHtml = applyUiBranding(fs.readFileSync(path.join(uiDist, "index.html"), "utf-8"));
+      const indexHtml = fs.readFileSync(path.join(uiDist, "index.html"), "utf-8");
       app.use(express.static(uiDist));
       app.get(/.*/, (_req, res) => {
         res.status(200).set("Content-Type", "text/html").end(indexHtml);
@@ -181,18 +152,12 @@ export async function createApp(
 
   if (opts.uiMode === "vite-dev") {
     const uiRoot = path.resolve(__dirname, "../../ui");
-    const hmrPort = opts.serverPort + 10000;
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       root: uiRoot,
       appType: "spa",
       server: {
         middlewareMode: true,
-        hmr: {
-          host: opts.bindHost,
-          port: hmrPort,
-          clientPort: hmrPort,
-        },
         allowedHosts: privateHostnameGateEnabled ? Array.from(privateHostnameAllowSet) : undefined,
       },
     });
@@ -202,7 +167,7 @@ export async function createApp(
       try {
         const templatePath = path.resolve(uiRoot, "index.html");
         const template = fs.readFileSync(templatePath, "utf-8");
-        const html = applyUiBranding(await vite.transformIndexHtml(req.originalUrl, template));
+        const html = await vite.transformIndexHtml(req.originalUrl, template);
         res.status(200).set({ "Content-Type": "text/html" }).end(html);
       } catch (err) {
         next(err);
@@ -211,36 +176,6 @@ export async function createApp(
   }
 
   app.use(errorHandler);
-
-  jobCoordinator.start();
-  scheduler.start();
-  void toolDispatcher.initialize().catch((err) => {
-    logger.error({ err }, "Failed to initialize plugin tool dispatcher");
-  });
-  const devWatcher = opts.uiMode === "vite-dev"
-    ? createPluginDevWatcher(
-      lifecycle,
-      async (pluginId) => (await pluginRegistry.getById(pluginId))?.packagePath ?? null,
-    )
-    : null;
-  void loader.loadAll().then((result) => {
-    if (!result) return;
-    for (const loaded of result.results) {
-      if (devWatcher && loaded.success && loaded.plugin.packagePath) {
-        devWatcher.watch(loaded.plugin.id, loaded.plugin.packagePath);
-      }
-    }
-  }).catch((err) => {
-    logger.error({ err }, "Failed to load ready plugins on startup");
-  });
-  process.once("exit", () => {
-    devWatcher?.close();
-    hostServiceCleanup.disposeAll();
-    hostServiceCleanup.teardown();
-  });
-  process.once("beforeExit", () => {
-    void flushPluginLogBuffer();
-  });
 
   return app;
 }
