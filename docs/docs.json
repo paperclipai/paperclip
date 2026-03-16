@@ -51,7 +51,8 @@
               "guides/board-operator/approvals",
               "guides/board-operator/costs-and-budgets",
               "guides/board-operator/activity-log",
-              "guides/board-operator/importing-and-exporting"
+              "guides/board-operator/importing-and-exporting",
+              "guides/board-operator/copilotkit-assistant"
             ]
           },
           {
