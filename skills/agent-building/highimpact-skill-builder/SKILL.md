@@ -146,7 +146,7 @@ See `references/optimize.md` for: description A/B testing procedure, trigger phr
 4. **Escape hatches** — document how to override defaults
 5. **Checkpoint discipline** — saves state so loops survive compression
 6. **Reference structure** — keeps main file scannable; depth lives in `references/`
-7. **Anti-rationalization table** — every skill with non-trivial workflow MUST include one. Identify the 3-5 ways an agent using this skill will talk itself out of doing the hard parts, and preempt them. Format: "What you'll tell yourself" → "The truth." This is not optional — it's the difference between a skill that gets followed and one that gets skimmed.
+7. **Anti-rationalization table** — REQUIRED for multi-step workflows. Format: "What you'll tell yourself" → "The truth." Preempt the 3-5 shortcuts agents will rationalize.
 
 ### Anti-Patterns
 
