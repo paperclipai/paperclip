@@ -12,16 +12,20 @@ export function copilotKitRoutes(): Router {
     model: process.env.COPILOTKIT_MODEL ?? "gpt-5.4",
   });
 
-  router.use("/copilotkit", (req, res, next) => {
-    const runtime = new CopilotRuntime();
+  const runtime = new CopilotRuntime();
 
-    const handler = copilotRuntimeNodeHttpEndpoint({
-      endpoint: "/copilotkit",
-      runtime,
-      serviceAdapter,
-    });
+  const handler = copilotRuntimeNodeHttpEndpoint({
+    endpoint: "/copilotkit",
+    runtime,
+    serviceAdapter,
+  });
 
-    return handler(req, res, next);
+  router.all("/copilotkit", async (req, res, next) => {
+    try {
+      await handler(req, res);
+    } catch (err) {
+      next(err);
+    }
   });
 
   return router;
