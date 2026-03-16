@@ -52,7 +52,7 @@ function resolveLlmDetails(): { apiKey: string | null; endpoint: string } {
     const configKey = config.llm.apiKey?.trim();
     return {
       apiKey: configKey && configKey.length > 0 ? configKey : null,
-      endpoint: envEndpoint || "https://api.z.ai/api/paas/v4/models",
+      endpoint: "https://api.z.ai/api/paas/v4/models",
     };
   }
 
