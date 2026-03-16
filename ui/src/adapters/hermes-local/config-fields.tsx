@@ -43,12 +43,12 @@ export function HermesLocalConfigFields({
         <DraftInput
           value={
             isCreate
-              ? values?.args ?? ""
-              : eff("adapterConfig", "provider", String(config.args ?? ""))
+              ? values?.provider ?? ""
+              : eff("adapterConfig", "provider", String(config.provider ?? ""))
           }
           onCommit={(v) =>
             isCreate
-              ? set!({ args: v })
+              ? set!({ provider: v })
               : mark("adapterConfig", "provider", v || undefined)
           }
           immediate

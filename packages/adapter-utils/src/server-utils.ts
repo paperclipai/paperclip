@@ -124,8 +124,9 @@ export function joinPromptSections(
 }
 
 /**
- * Expand ~ to the user's home directory.
- * Handles both ~/path and ~user/path (though ~user is less common).
+ * Expand ~ to the current user's home directory.
+ * Handles ~/path (current user's home).
+ * Note: ~user/path syntax falls back to current user's home (not that user's home).
  */
 export function expandHomeDir(inputPath: string): string {
   if (!inputPath.startsWith("~")) return inputPath;
@@ -133,21 +134,10 @@ export function expandHomeDir(inputPath: string): string {
   if (inputPath === "~" || inputPath.startsWith("~/")) {
     return path.join(os.homedir(), inputPath.slice(2));
   }
-  // ~user/path - expand to that user's home (on Unix)
+  // ~user/path - fall back to current user's home
   const slashIndex = inputPath.indexOf("/");
-  const username = slashIndex > 1 ? inputPath.slice(1, slashIndex) : inputPath.slice(1);
   const rest = slashIndex > 0 ? inputPath.slice(slashIndex) : "";
-  // On Windows, os.homedir() returns the current user's home
-  // We don't support ~otheruser on Windows
-  if (process.platform === "win32") {
-    return path.join(os.homedir(), rest);
-  }
-  try {
-    const userHome = os.homedir(); // fallback to current user
-    return path.join(userHome, rest);
-  } catch {
-    return inputPath;
-  }
+  return path.join(os.homedir(), rest);
 }
 
 export function redactEnvForLogs(env: Record<string, string>): Record<string, string> {
