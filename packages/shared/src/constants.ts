@@ -21,6 +21,12 @@ export const AGENT_STATUSES = [
 ] as const;
 export type AgentStatus = (typeof AGENT_STATUSES)[number];
 
+export const AGENT_NON_INVOKABLE_STATUSES = ["paused", "terminated", "pending_approval"] as const satisfies readonly AgentStatus[];
+
+export function isAgentInvokable(status: string): boolean {
+  return !(AGENT_NON_INVOKABLE_STATUSES as readonly string[]).includes(status);
+}
+
 export const AGENT_ADAPTER_TYPES = [
   "process",
   "http",

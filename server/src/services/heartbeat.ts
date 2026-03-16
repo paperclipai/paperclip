@@ -13,6 +13,7 @@ import {
   projects,
   projectWorkspaces,
 } from "@paperclipai/db";
+import { isAgentInvokable } from "@paperclipai/shared";
 import { conflict, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
@@ -1331,6 +1332,7 @@ export function heartbeatService(db: Db) {
     return withAgentStartLock(agentId, async () => {
       const agent = await getAgent(agentId);
       if (!agent) return [];
+      if (!isAgentInvokable(agent.status)) return [];
       const policy = parseHeartbeatPolicy(agent);
       const runningCount = await countRunningRunsForAgent(agentId);
       const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
@@ -2104,9 +2106,7 @@ export function heartbeatService(db: Db) {
         if (
           !deferredAgent ||
           deferredAgent.companyId !== issue.companyId ||
-          deferredAgent.status === "paused" ||
-          deferredAgent.status === "terminated" ||
-          deferredAgent.status === "pending_approval"
+          !isAgentInvokable(deferredAgent.status)
         ) {
           await tx
             .update(agentWakeupRequests)
@@ -2226,11 +2226,7 @@ export function heartbeatService(db: Db) {
     const agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
 
-    if (
-      agent.status === "paused" ||
-      agent.status === "terminated" ||
-      agent.status === "pending_approval"
-    ) {
+    if (!isAgentInvokable(agent.status)) {
       throw conflict("Agent is not invokable in its current state", { status: agent.status });
     }
 
@@ -2803,7 +2799,7 @@ export function heartbeatService(db: Db) {
       let skipped = 0;
 
       for (const agent of allAgents) {
-        if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
+        if (!isAgentInvokable(agent.status)) continue;
         const policy = parseHeartbeatPolicy(agent);
         if (!policy.enabled || policy.intervalSec <= 0) continue;
 
