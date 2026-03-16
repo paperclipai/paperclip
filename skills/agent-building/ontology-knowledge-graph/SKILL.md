@@ -72,8 +72,6 @@ More patterns and recovery examples in `references/05-anti-patterns.md`.
 | "MEMORY.md is simpler, I'll stick with it" | Until you need to query it. Prose can't answer "all open tasks for Alice" without reading everything and hoping. |
 | "I don't need a schema file, I'll keep types in my head" | The schema IS the contract. Skip it and week-2 you write incompatible shapes with no error. |
 | "Overwriting a line is fine for small graphs" | It breaks compaction, audit trail, and concurrent writes. Append invariant isn't a suggestion. |
-| "I'll add the ontology: header to my skill later" | Later means never. It's 4 lines — add it when you write the skill. |
-| "Other skills can just parse my MEMORY.md" | Prose is not a protocol. The `ontology:` header is machine-readable intent. |
 
 ## Reference Files
 
