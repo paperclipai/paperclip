@@ -41,6 +41,11 @@ if (!["patch", "minor", "major"].includes(bumpType) && !explicitVersion) {
   process.exit(1);
 }
 
+if (explicitVersion && !/^\d+\.\d+\.\d+/.test(explicitVersion)) {
+  console.error("--version must be a valid semver string (e.g. 1.2.3)");
+  process.exit(1);
+}
+
 // 1. Read package.json
 const pkgPath = path.join(root, "package.json");
 const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
@@ -63,18 +68,24 @@ if (localDeps.length > 0) {
   if (!dryRun) process.exit(1);
 }
 
-// 3. Bump package.json
+// 3. Guard against private: true
+if (pkg.private) {
+  console.error('\nError: "private": true is set in package.json — remove it before publishing.\n');
+  if (!dryRun) process.exit(1);
+}
+
+// 4. Bump package.json
 pkg.version = nextVersion;
 if (!dryRun) {
   fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
   console.log("Updated package.json");
 }
 
-// 4. Bump src/manifest.ts
+// 5. Bump src/manifest.ts
 const manifestPath = path.join(root, "src", "manifest.ts");
 if (fs.existsSync(manifestPath)) {
   const src = fs.readFileSync(manifestPath, "utf8");
-  const updated = src.replace(/(version\s*:\s*["'])[\d.]+["']/, "$1" + nextVersion + '"');
+  const updated = src.replace(/(version\s*:\s*)(["'])([\d.]+)\2/, "$1$2" + nextVersion + "$2");
   if (updated === src) {
     console.warn("Warning: no version field found in src/manifest.ts — update it manually.");
   } else if (!dryRun) {
@@ -83,10 +94,13 @@ if (fs.existsSync(manifestPath)) {
   }
 }
 
-// 5. Publish (prepublishOnly runs pnpm build automatically)
+// 6. Publish (prepublishOnly runs pnpm build automatically)
 if (dryRun) {
   console.log("\nDry run complete. Re-run without --dry-run to publish.");
 } else {
+  execFileSync("git", ["add", pkgPath, manifestPath], { stdio: "inherit", cwd: root });
+  execFileSync("git", ["commit", "-m", "Release v" + nextVersion], { stdio: "inherit", cwd: root });
+  execFileSync("git", ["tag", "v" + nextVersion], { stdio: "inherit", cwd: root });
   console.log("\nPublishing to npm...");
   execFileSync("npm", ["publish", "--access", "public"], { stdio: "inherit", cwd: root });
   console.log("\nPublished " + (pkg.name ?? "") + "@" + nextVersion);
