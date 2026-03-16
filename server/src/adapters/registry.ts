@@ -60,6 +60,16 @@ import {
   agentConfigurationDoc as hermesAgentConfigurationDoc,
   models as hermesModels,
 } from "hermes-paperclip-adapter";
+import {
+  execute as lmStudioExecute,
+  testEnvironment as lmStudioTestEnvironment,
+  sessionCodec as lmStudioSessionCodec,
+  listLmStudioModels,
+} from "@paperclipai/adapter-lm-studio-local/server";
+import {
+  agentConfigurationDoc as lmStudioAgentConfigurationDoc,
+  models as lmStudioModels,
+} from "@paperclipai/adapter-lm-studio-local";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
 
@@ -146,6 +156,17 @@ const hermesLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: hermesAgentConfigurationDoc,
 };
 
+const lmStudioLocalAdapter: ServerAdapterModule = {
+  type: "lm_studio_local",
+  execute: lmStudioExecute,
+  testEnvironment: lmStudioTestEnvironment,
+  sessionCodec: lmStudioSessionCodec,
+  models: lmStudioModels,
+  listModels: listLmStudioModels,
+  supportsLocalAgentJwt: true,
+  agentConfigurationDoc: lmStudioAgentConfigurationDoc,
+};
+
 const adaptersByType = new Map<string, ServerAdapterModule>(
   [
     claudeLocalAdapter,
@@ -156,6 +177,7 @@ const adaptersByType = new Map<string, ServerAdapterModule>(
     geminiLocalAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,
+    lmStudioLocalAdapter,
     processAdapter,
     httpAdapter,
   ].map((a) => [a.type, a]),

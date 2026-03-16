@@ -7,6 +7,7 @@ import { openCodeLocalUIAdapter } from "./opencode-local";
 import { piLocalUIAdapter } from "./pi-local";
 import { openClawGatewayUIAdapter } from "./openclaw-gateway";
 import { processUIAdapter } from "./process";
+import { lmStudioLocalUIAdapter } from "./lm-studio-local";
 import { httpUIAdapter } from "./http";
 
 const adaptersByType = new Map<string, UIAdapterModule>(
@@ -17,6 +18,7 @@ const adaptersByType = new Map<string, UIAdapterModule>(
     openCodeLocalUIAdapter,
     piLocalUIAdapter,
     cursorLocalUIAdapter,
+    lmStudioLocalUIAdapter,
     openClawGatewayUIAdapter,
     processUIAdapter,
     httpUIAdapter,
