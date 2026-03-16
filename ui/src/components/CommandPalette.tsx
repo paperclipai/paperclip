@@ -16,6 +16,7 @@ import {
   CommandItem,
   CommandList,
   CommandSeparator,
+  CommandShortcut,
 } from "@/components/ui/command";
 import {
   CircleDot,
@@ -28,16 +29,38 @@ import {
   History,
   SquarePen,
   Plus,
+  Network,
+  Settings,
+  Keyboard,
 } from "lucide-react";
+import { formatKeys } from "../lib/keyboard-shortcuts";
 import { Identity } from "./Identity";
 import { agentUrl, projectUrl } from "../lib/utils";
+
+function ShortcutHint({ keys }: { keys: string }) {
+  const parts = formatKeys(keys);
+  return (
+    <CommandShortcut>
+      <span className="flex items-center gap-0.5">
+        {parts.map((part, i) => (
+          <kbd
+            key={i}
+            className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded border border-border bg-muted px-1 font-mono text-[10px] font-medium text-muted-foreground"
+          >
+            {part}
+          </kbd>
+        ))}
+      </span>
+    </CommandShortcut>
+  );
+}
 
 export function CommandPalette() {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const navigate = useNavigate();
   const { selectedCompanyId } = useCompany();
-  const { openNewIssue, openNewAgent } = useDialog();
+  const { openNewIssue, openNewAgent, openNewProject } = useDialog();
   const { isMobile, setSidebarOpen } = useSidebar();
   const searchQuery = query.trim();
 
@@ -118,7 +141,7 @@ export function CommandPalette() {
           >
             <SquarePen className="mr-2 h-4 w-4" />
             Create new issue
-            <span className="ml-auto text-xs text-muted-foreground">C</span>
+            <ShortcutHint keys="c" />
           </CommandItem>
           <CommandItem
             onSelect={() => {
@@ -128,10 +151,17 @@ export function CommandPalette() {
           >
             <Plus className="mr-2 h-4 w-4" />
             Create new agent
+            <ShortcutHint keys="a" />
           </CommandItem>
-          <CommandItem onSelect={() => go("/projects")}>
+          <CommandItem
+            onSelect={() => {
+              setOpen(false);
+              openNewProject();
+            }}
+          >
             <Plus className="mr-2 h-4 w-4" />
             Create new project
+            <ShortcutHint keys="p" />
           </CommandItem>
         </CommandGroup>
 
@@ -141,34 +171,52 @@ export function CommandPalette() {
           <CommandItem onSelect={() => go("/dashboard")}>
             <LayoutDashboard className="mr-2 h-4 w-4" />
             Dashboard
+            <ShortcutHint keys="g,d" />
           </CommandItem>
           <CommandItem onSelect={() => go("/inbox")}>
             <Inbox className="mr-2 h-4 w-4" />
             Inbox
+            <ShortcutHint keys="g,n" />
           </CommandItem>
           <CommandItem onSelect={() => go("/issues")}>
             <CircleDot className="mr-2 h-4 w-4" />
             Issues
+            <ShortcutHint keys="g,i" />
           </CommandItem>
           <CommandItem onSelect={() => go("/projects")}>
             <Hexagon className="mr-2 h-4 w-4" />
             Projects
+            <ShortcutHint keys="g,p" />
           </CommandItem>
           <CommandItem onSelect={() => go("/goals")}>
             <Target className="mr-2 h-4 w-4" />
             Goals
+            <ShortcutHint keys="g,o" />
           </CommandItem>
           <CommandItem onSelect={() => go("/agents")}>
             <Bot className="mr-2 h-4 w-4" />
             Agents
+            <ShortcutHint keys="g,a" />
           </CommandItem>
           <CommandItem onSelect={() => go("/costs")}>
             <DollarSign className="mr-2 h-4 w-4" />
             Costs
+            <ShortcutHint keys="g,c" />
           </CommandItem>
           <CommandItem onSelect={() => go("/activity")}>
             <History className="mr-2 h-4 w-4" />
             Activity
+            <ShortcutHint keys="g,v" />
+          </CommandItem>
+          <CommandItem onSelect={() => go("/org")}>
+            <Network className="mr-2 h-4 w-4" />
+            Org chart
+            <ShortcutHint keys="g,r" />
+          </CommandItem>
+          <CommandItem onSelect={() => go("/company/settings")}>
+            <Settings className="mr-2 h-4 w-4" />
+            Settings
+            <ShortcutHint keys="g,s" />
           </CommandItem>
         </CommandGroup>
 

@@ -22,6 +22,8 @@ import { useSidebar } from "../context/SidebarContext";
 import { useTheme } from "../context/ThemeContext";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
+import { SequenceIndicator } from "./SequenceIndicator";
+import { KeyboardShortcutsDialog } from "./KeyboardShortcutsDialog";
 import { healthApi } from "../api/health";
 import { shouldSyncCompanySelectionFromRoute } from "../lib/company-selection";
 import { queryKeys } from "../lib/queryKeys";
@@ -62,8 +64,9 @@ function readRememberedInstanceSettingsPath(): string {
 
 export function Layout() {
   const { sidebarOpen, setSidebarOpen, toggleSidebar, isMobile } = useSidebar();
-  const { openNewIssue, openOnboarding } = useDialog();
+  const { openNewIssue, openNewProject, openNewAgent, openOnboarding } = useDialog();
   const { togglePanelVisible } = usePanel();
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const {
     companies,
     loading: companiesLoading,
@@ -149,10 +152,14 @@ export function Layout() {
 
   useCompanyPageMemory();
 
-  useKeyboardShortcuts({
+  const { pendingKey } = useKeyboardShortcuts({
+    onNavigate: (path) => navigate(path),
     onNewIssue: () => openNewIssue(),
+    onNewProject: () => openNewProject(),
+    onNewAgent: () => openNewAgent(),
     onToggleSidebar: toggleSidebar,
     onTogglePanel: togglePanel,
+    onShowShortcuts: () => setShortcutsOpen(true),
   });
 
   useEffect(() => {
@@ -428,6 +435,8 @@ export function Layout() {
       <NewGoalDialog />
       <NewAgentDialog />
       <ToastViewport />
+      <SequenceIndicator pendingKey={pendingKey} />
+      <KeyboardShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
     </div>
   );
 }
