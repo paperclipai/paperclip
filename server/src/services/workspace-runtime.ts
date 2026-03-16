@@ -267,15 +267,24 @@ function buildWorkspaceCommandEnv(input: {
   return env;
 }
 
+function resolveShellCommand(command: string, env: NodeJS.ProcessEnv): { shell: string; args: string[] } {
+  if (process.platform === "win32") {
+    const shell = env.ComSpec || process.env.ComSpec || "cmd.exe";
+    return { shell, args: ["/d", "/s", "/c", command] };
+  }
+  const shell = env.SHELL?.trim() || process.env.SHELL?.trim() || "/bin/sh";
+  return { shell, args: ["-lc", command] };
+}
+
 async function runWorkspaceCommand(input: {
   command: string;
   cwd: string;
   env: NodeJS.ProcessEnv;
   label: string;
 }) {
-  const shell = process.env.SHELL?.trim() || "/bin/sh";
+  const shellTarget = resolveShellCommand(input.command, input.env);
   const proc = await new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve, reject) => {
-    const child = spawn(shell, ["-c", input.command], {
+    const child = spawn(shellTarget.shell, shellTarget.args, {
       cwd: input.cwd,
       env: input.env,
       stdio: ["ignore", "pipe", "pipe"],
@@ -693,8 +702,8 @@ async function startLocalRuntimeService(input: {
     const portEnvKey = asString(portConfig.envKey, "PORT");
     env[portEnvKey] = String(port);
   }
-  const shell = process.env.SHELL?.trim() || "/bin/sh";
-  const child = spawn(shell, ["-lc", command], {
+  const shellTarget = resolveShellCommand(command, env);
+  const child = spawn(shellTarget.shell, shellTarget.args, {
     cwd: serviceCwd,
     env,
     detached: false,

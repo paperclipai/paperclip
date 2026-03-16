@@ -27,6 +27,15 @@ const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const CODEX_ROLLOUT_NOISE_RE =
   /^\d{4}-\d{2}-\d{2}T[^\s]+\s+ERROR\s+codex_core::rollout::list:\s+state db missing rollout path for thread\s+[a-z0-9-]+$/i;
 
+async function linkCodexSkill(source: string, target: string): Promise<void> {
+  const stats = await fs.lstat(source);
+  if (process.platform === "win32") {
+    await fs.symlink(source, target, stats.isDirectory() ? "junction" : "file");
+    return;
+  }
+  await fs.symlink(source, target);
+}
+
 function stripCodexRolloutNoise(text: string): string {
   const parts = text.split(/\r?\n/);
   const kept: string[] = [];
@@ -114,7 +123,7 @@ export async function ensureCodexSkillsInjected(
       `[paperclip] Removed maintainer-only Codex skill "${skillName}" from ${skillsHome}\n`,
     );
   }
-  const linkSkill = options.linkSkill;
+  const linkSkill = options.linkSkill ?? linkCodexSkill;
   for (const entry of skillsEntries) {
     const target = path.join(skillsHome, entry.name);
 
@@ -131,11 +140,7 @@ export async function ensureCodexSkillsInjected(
           (await isLikelyPaperclipRuntimeSkillSource(resolvedLinkedPath, entry.name))
         ) {
           await fs.unlink(target);
-          if (linkSkill) {
-            await linkSkill(entry.source, target);
-          } else {
-            await fs.symlink(entry.source, target);
-          }
+          await linkSkill(entry.source, target);
           await onLog(
             "stderr",
             `[paperclip] Repaired Codex skill "${entry.name}" into ${skillsHome}\n`,

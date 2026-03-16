@@ -42,6 +42,15 @@ export interface PaperclipSkillEntry {
   source: string;
 }
 
+async function createPlatformSymlink(source: string, target: string): Promise<void> {
+  const stats = await fs.lstat(source);
+  if (process.platform === "win32") {
+    await fs.symlink(source, target, stats.isDirectory() ? "junction" : "file");
+    return;
+  }
+  await fs.symlink(source, target);
+}
+
 function normalizePathSlashes(value: string): string {
   return value.replaceAll("\\", "/");
 }
@@ -226,6 +235,13 @@ async function resolveSpawnTarget(
     };
   }
 
+  if (/\.(cjs|mjs|js)$/i.test(executable)) {
+    return {
+      command: process.execPath,
+      args: [executable, ...args],
+    };
+  }
+
   return { command: executable, args };
 }
 
@@ -333,8 +349,7 @@ export async function readPaperclipSkillMarkdown(
 export async function ensurePaperclipSkillSymlink(
   source: string,
   target: string,
-  linkSkill: (source: string, target: string) => Promise<void> = (linkSource, linkTarget) =>
-    fs.symlink(linkSource, linkTarget),
+  linkSkill: (source: string, target: string) => Promise<void> = createPlatformSymlink,
 ): Promise<"created" | "repaired" | "skipped"> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {

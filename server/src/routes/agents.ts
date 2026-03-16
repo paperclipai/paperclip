@@ -43,6 +43,57 @@ import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "@paperclipai/adapter-opencode-local/server";
 
+function asNonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function applyCreateDefaultsByAdapterTypeInternal(
+  adapterType: string | null | undefined,
+  adapterConfig: Record<string, unknown>,
+  ensureGatewayDeviceKey: (
+    adapterType: string | null | undefined,
+    adapterConfig: Record<string, unknown>,
+  ) => Record<string, unknown>,
+): Record<string, unknown> {
+  const next = { ...adapterConfig };
+  if (adapterType === "claude_local") {
+    if (typeof next.dangerouslySkipPermissions !== "boolean") {
+      next.dangerouslySkipPermissions = true;
+    }
+    return ensureGatewayDeviceKey(adapterType, next);
+  }
+  if (adapterType === "codex_local") {
+    if (!asNonEmptyString(next.model)) {
+      next.model = DEFAULT_CODEX_LOCAL_MODEL;
+    }
+    const hasBypassFlag =
+      typeof next.dangerouslyBypassApprovalsAndSandbox === "boolean" ||
+      typeof next.dangerouslyBypassSandbox === "boolean";
+    if (!hasBypassFlag) {
+      next.dangerouslyBypassApprovalsAndSandbox = DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
+    }
+    return ensureGatewayDeviceKey(adapterType, next);
+  }
+  if (adapterType === "gemini_local" && !asNonEmptyString(next.model)) {
+    next.model = DEFAULT_GEMINI_LOCAL_MODEL;
+    return ensureGatewayDeviceKey(adapterType, next);
+  }
+  // OpenCode requires explicit model selection — no default
+  if (adapterType === "cursor" && !asNonEmptyString(next.model)) {
+    next.model = DEFAULT_CURSOR_LOCAL_MODEL;
+  }
+  return ensureGatewayDeviceKey(adapterType, next);
+}
+
+export function applyCreateDefaultsByAdapterType(
+  adapterType: string | null | undefined,
+  adapterConfig: Record<string, unknown>,
+): Record<string, unknown> {
+  return applyCreateDefaultsByAdapterTypeInternal(adapterType, adapterConfig, (_adapterType, nextConfig) => nextConfig);
+}
+
 export function agentRoutes(db: Db) {
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
     claude_local: "instructionsFilePath",
@@ -180,12 +231,6 @@ export function agentRoutes(db: Db) {
     return value as Record<string, unknown>;
   }
 
-  function asNonEmptyString(value: unknown): string | null {
-    if (typeof value !== "string") return null;
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : null;
-  }
-
   function parseBooleanLike(value: unknown): boolean | null {
     if (typeof value === "boolean") return value;
     if (typeof value === "number") {
@@ -233,34 +278,6 @@ export function agentRoutes(db: Db) {
     if (disableDeviceAuth) return adapterConfig;
     if (asNonEmptyString(adapterConfig.devicePrivateKeyPem)) return adapterConfig;
     return { ...adapterConfig, devicePrivateKeyPem: generateEd25519PrivateKeyPem() };
-  }
-
-  function applyCreateDefaultsByAdapterType(
-    adapterType: string | null | undefined,
-    adapterConfig: Record<string, unknown>,
-  ): Record<string, unknown> {
-    const next = { ...adapterConfig };
-    if (adapterType === "codex_local") {
-      if (!asNonEmptyString(next.model)) {
-        next.model = DEFAULT_CODEX_LOCAL_MODEL;
-      }
-      const hasBypassFlag =
-        typeof next.dangerouslyBypassApprovalsAndSandbox === "boolean" ||
-        typeof next.dangerouslyBypassSandbox === "boolean";
-      if (!hasBypassFlag) {
-        next.dangerouslyBypassApprovalsAndSandbox = DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
-      }
-      return ensureGatewayDeviceKey(adapterType, next);
-    }
-    if (adapterType === "gemini_local" && !asNonEmptyString(next.model)) {
-      next.model = DEFAULT_GEMINI_LOCAL_MODEL;
-      return ensureGatewayDeviceKey(adapterType, next);
-    }
-    // OpenCode requires explicit model selection — no default
-    if (adapterType === "cursor" && !asNonEmptyString(next.model)) {
-      next.model = DEFAULT_CURSOR_LOCAL_MODEL;
-    }
-    return ensureGatewayDeviceKey(adapterType, next);
   }
 
   async function assertAdapterConfigConstraints(
@@ -341,6 +358,13 @@ export function agentRoutes(db: Db) {
       adapterConfig: {},
       runtimeConfig: {},
     };
+  }
+
+  function applyCreateDefaultsByAdapterType(
+    adapterType: string | null | undefined,
+    adapterConfig: Record<string, unknown>,
+  ): Record<string, unknown> {
+    return applyCreateDefaultsByAdapterTypeInternal(adapterType, adapterConfig, ensureGatewayDeviceKey);
   }
 
   function redactAgentConfiguration(agent: Awaited<ReturnType<typeof svc.getById>>) {

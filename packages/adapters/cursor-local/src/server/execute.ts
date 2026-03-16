@@ -88,6 +88,15 @@ type EnsureCursorSkillsInjectedOptions = {
   linkSkill?: (source: string, target: string) => Promise<void>;
 };
 
+async function linkCursorSkill(source: string, target: string): Promise<void> {
+  const stats = await fs.lstat(source);
+  if (process.platform === "win32") {
+    await fs.symlink(source, target, stats.isDirectory() ? "junction" : "file");
+    return;
+  }
+  await fs.symlink(source, target);
+}
+
 export async function ensureCursorSkillsInjected(
   onLog: AdapterExecutionContext["onLog"],
   options: EnsureCursorSkillsInjectedOptions = {},
@@ -120,7 +129,7 @@ export async function ensureCursorSkillsInjected(
       `[paperclip] Removed maintainer-only Cursor skill "${skillName}" from ${skillsHome}\n`,
     );
   }
-  const linkSkill = options.linkSkill ?? ((source: string, target: string) => fs.symlink(source, target));
+  const linkSkill = options.linkSkill ?? linkCursorSkill;
   for (const entry of skillsEntries) {
     const target = path.join(skillsHome, entry.name);
     try {
