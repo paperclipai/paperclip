@@ -1,0 +1,2 @@
+iteration	trigger_pct	nofire_pct	output_pct	lines	status	description
+0	91.7	100	100	121	baseline	Initial QC-passed skill: 11/12 trigger (T11 borderline), 5/5 no-fire, 31/31 output
