@@ -40,6 +40,14 @@ import {
   agentConfigurationDoc as openclawGatewayAgentConfigurationDoc,
   models as openclawGatewayModels,
 } from "@paperclipai/adapter-openclaw-gateway";
+import {
+  execute as nanobotLocalExecute,
+  testEnvironment as nanobotLocalTestEnvironment,
+} from "@paperclipai/adapter-nanobot-local/server";
+import {
+  agentConfigurationDoc as nanobotLocalAgentConfigurationDoc,
+  models as nanobotLocalModels,
+} from "@paperclipai/adapter-nanobot-local";
 import { listCodexModels } from "./codex-models.js";
 import { listCursorModels } from "./cursor-models.js";
 import {
@@ -136,6 +144,15 @@ const piLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: piAgentConfigurationDoc,
 };
 
+const nanobotLocalAdapter: ServerAdapterModule = {
+  type: "nanobot_local",
+  execute: nanobotLocalExecute,
+  testEnvironment: nanobotLocalTestEnvironment,
+  models: nanobotLocalModels,
+  supportsLocalAgentJwt: false,
+  agentConfigurationDoc: nanobotLocalAgentConfigurationDoc,
+};
+
 const hermesLocalAdapter: ServerAdapterModule = {
   type: "hermes_local",
   execute: hermesExecute,
@@ -155,6 +172,7 @@ const adaptersByType = new Map<string, ServerAdapterModule>(
     cursorLocalAdapter,
     geminiLocalAdapter,
     openclawGatewayAdapter,
+    nanobotLocalAdapter,
     hermesLocalAdapter,
     processAdapter,
     httpAdapter,

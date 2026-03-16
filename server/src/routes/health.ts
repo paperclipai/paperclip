@@ -11,6 +11,7 @@ export function healthRoutes(
     deploymentExposure: DeploymentExposure;
     authReady: boolean;
     companyDeletionEnabled: boolean;
+    googleAuthEnabled?: boolean;
   } = {
     deploymentMode: "local_trusted",
     deploymentExposure: "private",
@@ -63,6 +64,7 @@ export function healthRoutes(
       bootstrapInviteActive,
       features: {
         companyDeletionEnabled: opts.companyDeletionEnabled,
+        googleAuthEnabled: !!opts.googleAuthEnabled,
       },
     });
   });

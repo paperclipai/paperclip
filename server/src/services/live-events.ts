@@ -31,6 +31,7 @@ export function publishLiveEvent(input: {
 }) {
   const event = toLiveEvent(input);
   emitter.emit(input.companyId, event);
+  emitter.emit("*", event);
   return event;
 }
 

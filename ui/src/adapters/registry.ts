@@ -6,6 +6,7 @@ import { geminiLocalUIAdapter } from "./gemini-local";
 import { openCodeLocalUIAdapter } from "./opencode-local";
 import { piLocalUIAdapter } from "./pi-local";
 import { openClawGatewayUIAdapter } from "./openclaw-gateway";
+import { nanobotLocalUIAdapter } from "./nanobot-local";
 import { processUIAdapter } from "./process";
 import { httpUIAdapter } from "./http";
 
@@ -18,6 +19,7 @@ const adaptersByType = new Map<string, UIAdapterModule>(
     piLocalUIAdapter,
     cursorLocalUIAdapter,
     openClawGatewayUIAdapter,
+    nanobotLocalUIAdapter,
     processUIAdapter,
     httpUIAdapter,
   ].map((a) => [a.type, a]),

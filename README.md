@@ -169,6 +169,17 @@ Paperclip handles the hard orchestration details correctly.
 
 <br/>
 
+## Fork Changes (ATECHPCS)
+
+This fork includes the following additions on top of upstream Paperclip:
+
+- **Nanobot-Local Adapter** — A new adapter type that connects persistent [nanobot](https://github.com/ATECHPCS/nanobot) agent instances to Paperclip, with token usage, cost, and model tracking passed through from the agent runtime.
+- **Web Push Notifications** — Browser push notifications for agent lifecycle events (task completion, agent questions, board review items), with VAPID key management, a service worker, subscription API, and per-user preference controls in Company Settings.
+- **Google OAuth Login** — Google SSO authentication with a sign-out button.
+- **UI Improvements** — Paperclip icon navigates to the current company dashboard; added a delete company option; providerMode support for the nanobot-local adapter (sdk/litellm/auto).
+
+<br/>
+
 ## Quickstart
 
 Open source. Self-hosted. No Paperclip account required.

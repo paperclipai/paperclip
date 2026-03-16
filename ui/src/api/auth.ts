@@ -68,6 +68,16 @@ export const authApi = {
     await authPost("/sign-up/email", input);
   },
 
+  signInGoogle: async (callbackURL: string) => {
+    const payload = (await authPost("/sign-in/social", {
+      provider: "google",
+      callbackURL,
+    })) as { url?: string } | null;
+    if (payload?.url) {
+      window.location.href = payload.url;
+    }
+  },
+
   signOut: async () => {
     await authPost("/sign-out", {});
   },

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Paperclip, Plus } from "lucide-react";
 import { useQueries } from "@tanstack/react-query";
 import {
@@ -153,7 +154,7 @@ function SortableCompanyItem({
 }
 
 export function CompanyRail() {
-  const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
+  const { companies, selectedCompany, selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { openOnboarding } = useDialog();
   const navigate = useNavigate();
   const location = useLocation();
@@ -267,10 +268,18 @@ export function CompanyRail() {
 
   return (
     <div className="flex flex-col items-center w-[72px] shrink-0 h-full bg-background border-r border-border">
-      {/* Paperclip icon - aligned with top sections (implied line, no visible border) */}
-      <div className="flex items-center justify-center h-12 w-full shrink-0">
+      {/* Paperclip icon - navigates to current company dashboard */}
+      <button
+        onClick={() => {
+          if (selectedCompany) {
+            navigate(`/${selectedCompany.issuePrefix}/dashboard`);
+          }
+        }}
+        className="flex items-center justify-center h-12 w-full shrink-0 hover:opacity-70 transition-opacity cursor-pointer"
+        aria-label="Go to dashboard"
+      >
         <Paperclip className="h-5 w-5 text-foreground" />
-      </div>
+      </button>
 
       {/* Company list */}
       <div className="flex-1 flex flex-col items-center gap-2 py-3 w-full overflow-y-auto overflow-x-hidden scrollbar-none">
