@@ -409,8 +409,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
     if (resumeSessionId) args.push("--resume", resumeSessionId);
     if (dangerouslySkipPermissions) args.push("--dangerously-skip-permissions");
-    if (!dangerouslySkipPermissions && allowedTools) args.push("--allowedTools", allowedTools);
-    if (!dangerouslySkipPermissions && disallowedTools) args.push("--disallowedTools", disallowedTools);
+    if (!dangerouslySkipPermissions && allowedTools && disallowedTools) {
+  // Log a warning and prefer allowedTools, or throw an error
+  await onLog("stderr", "[paperclip] Warning: both allowedTools and disallowedTools are set; ignoring disallowedTools.\n");
+}
+if (!dangerouslySkipPermissions && allowedTools) args.push("--allowedTools", allowedTools);
+else if (!dangerouslySkipPermissions && disallowedTools) args.push("--disallowedTools", disallowedTools);
     if (chrome) args.push("--chrome");
     if (model) args.push("--model", model);
     if (effort) args.push("--effort", effort);
