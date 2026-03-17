@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .env
+.env.*
 *.tsbuildinfo
 drizzle/meta/
 .vite/

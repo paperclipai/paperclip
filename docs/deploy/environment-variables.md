@@ -48,3 +48,21 @@ These are set automatically by the server when invoking agents:
 |----------|-------------|
 | `ANTHROPIC_API_KEY` | Anthropic API key (for Claude Local adapter) |
 | `OPENAI_API_KEY` | OpenAI API key (for Codex Local adapter) |
+
+### Alibaba Qwen (Claude Code alternative backend)
+
+Claude Code supports custom API backends via `settings.json` in the data directory. The following variables are set inside the `env` block of that file — they are not passed as container environment variables.
+
+| Variable | Description |
+|----------|-------------|
+| `ANTHROPIC_AUTH_TOKEN` | Auth token for custom Claude Code backend |
+| `ANTHROPIC_BASE_URL` | Base URL of the custom backend |
+| `ANTHROPIC_DEFAULT_SONNET_MODEL` | Model ID to use for Sonnet requests |
+| `ANTHROPIC_DEFAULT_OPUS_MODEL` | Model ID to use for Opus requests |
+| `ANTHROPIC_DEFAULT_HAIKU_MODEL` | Model ID to use for Haiku requests |
+
+See [Claude Local adapter](/adapters/claude-local) for setup instructions.
+
+### OpenCode providers
+
+OpenCode credentials are stored in `<PAPERCLIP_DATA_DIR>/.local/share/opencode/auth.json`, not as environment variables. See [OpenCode Local adapter](/adapters/opencode-local) for details.

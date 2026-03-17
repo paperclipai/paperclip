@@ -8,7 +8,7 @@ The `claude_local` adapter runs Anthropic's Claude Code CLI locally. It supports
 ## Prerequisites
 
 - Claude Code CLI installed (`claude` command available)
-- `ANTHROPIC_API_KEY` set in the environment or agent config
+- Authentication configured (see [Auth Methods](#auth-methods) below)
 
 ## Configuration Fields
 
@@ -22,6 +22,38 @@ The `claude_local` adapter runs Anthropic's Claude Code CLI locally. It supports
 | `graceSec` | number | No | Grace period before force-kill |
 | `maxTurnsPerRun` | number | No | Max agentic turns per heartbeat |
 | `dangerouslySkipPermissions` | boolean | No | Skip permission prompts (dev only) |
+
+## Auth Methods
+
+### Standard API key
+
+Set `ANTHROPIC_API_KEY` in the environment or in `adapterConfig.env`:
+
+```json
+{ "env": { "ANTHROPIC_API_KEY": "sk-ant-..." } }
+```
+
+### Alibaba Qwen (alternative backend)
+
+Claude Code supports alternative API backends via `settings.json`. This is useful for running Claude Code against Alibaba's Qwen models (e.g. on self-hosted servers that proxy the Anthropic API).
+
+Create `<PAPERCLIP_DATA_DIR>/.claude/settings.json` (the container HOME is the data directory):
+
+```json
+{
+  "env": {
+    "ANTHROPIC_AUTH_TOKEN": "your-token",
+    "ANTHROPIC_BASE_URL": "https://your-qwen-proxy/anthropic",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "qwen3-coder-next",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "qwen3-max-2026-01-23",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "qwen3.5-plus"
+  },
+  "availableModels": ["sonnet", "opus", "haiku"],
+  "skipDangerousModePermissionPrompt": true
+}
+```
+
+This file persists across container restarts because it lives inside the bind-mounted data directory. No environment variables need to be passed to the container.
 
 ## Prompt Templates
 
