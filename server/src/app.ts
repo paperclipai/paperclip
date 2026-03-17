@@ -27,6 +27,7 @@ import { llmRoutes } from "./routes/llms.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { userRoutes } from "./routes/users.js";
+import { userApiKeyRoutes } from "./routes/user-api-keys.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { applyUiBranding } from "./ui-branding.js";
@@ -226,6 +227,7 @@ export async function createApp(
     }),
   );
   api.use(userRoutes(db, opts.storageService));
+  api.use(userApiKeyRoutes(db));
   app.use("/api", api);
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "API route not found" });

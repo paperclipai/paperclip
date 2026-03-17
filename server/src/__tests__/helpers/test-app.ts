@@ -14,6 +14,7 @@ import { activityRoutes } from "../../routes/activity.js";
 import { dashboardRoutes } from "../../routes/dashboard.js";
 import { sidebarBadgeRoutes } from "../../routes/sidebar-badges.js";
 import { accessRoutes } from "../../routes/access.js";
+import { userApiKeyRoutes } from "../../routes/user-api-keys.js";
 import { errorHandler } from "../../middleware/index.js";
 
 export type MockActor =
@@ -115,6 +116,7 @@ export function createTestApp(db: Db) {
       allowedHostnames: [],
     }),
   );
+  api.use(userApiKeyRoutes(db));
   app.use("/api", api);
   app.use("/api", (_req: Request, res: Response) => {
     res.status(404).json({ error: "API route not found" });
