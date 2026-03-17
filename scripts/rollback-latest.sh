@@ -12,8 +12,8 @@ Usage:
   ./scripts/rollback-latest.sh <stable-version> [--dry-run]
 
 Examples:
-  ./scripts/rollback-latest.sh 1.2.2
-  ./scripts/rollback-latest.sh 1.2.2 --dry-run
+  ./scripts/rollback-latest.sh 2026.3.17
+  ./scripts/rollback-latest.sh 2026.3.17 --dry-run
 
 Notes:
   - This repoints the npm dist-tag "latest" for every public package.
@@ -45,7 +45,7 @@ if [ -z "$version" ]; then
 fi
 
 if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "Error: version must be a stable semver like 1.2.2." >&2
+  echo "Error: version must be a stable calendar version like 2026.3.17." >&2
   exit 1
 fi
 

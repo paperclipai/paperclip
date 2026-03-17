@@ -64,6 +64,11 @@ resolve_release_remote() {
     return
   fi
 
+  if git_remote_exists public; then
+    printf 'public\n'
+    return
+  fi
+
   if git_remote_exists origin; then
     printf 'origin\n'
     return
@@ -74,6 +79,18 @@ resolve_release_remote() {
 
 fetch_release_remote() {
   git -C "$REPO_ROOT" fetch "$1" --prune --tags
+}
+
+git_current_branch() {
+  git -C "$REPO_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || true
+}
+
+git_local_tag_exists() {
+  git -C "$REPO_ROOT" show-ref --verify --quiet "refs/tags/$1"
+}
+
+git_remote_tag_exists() {
+  git -C "$REPO_ROOT" ls-remote --exit-code --tags "$2" "refs/tags/$1" >/dev/null 2>&1
 }
 
 get_last_stable_tag() {
@@ -90,32 +107,27 @@ get_current_stable_version() {
   fi
 }
 
-compute_bumped_version() {
-  node - "$1" "$2" <<'NODE'
-const current = process.argv[2];
-const bump = process.argv[3];
-const match = current.match(/^(\d+)\.(\d+)\.(\d+)$/);
+stable_version_for_date() {
+  node - "${1:-}" <<'NODE'
+const input = process.argv[2];
 
-if (!match) {
-  throw new Error(`invalid semver version: ${current}`);
+const date = input ? new Date(`${input}T00:00:00Z`) : new Date();
+if (Number.isNaN(date.getTime())) {
+  console.error(`invalid date: ${input}`);
+  process.exit(1);
 }
 
-let [major, minor, patch] = match.slice(1).map(Number);
-
-if (bump === 'patch') {
-  patch += 1;
-} else if (bump === 'minor') {
-  minor += 1;
-  patch = 0;
-} else if (bump === 'major') {
-  major += 1;
-  minor = 0;
-  patch = 0;
-} else {
-  throw new Error(`unsupported bump type: ${bump}`);
+process.stdout.write(`${date.getUTCFullYear()}.${date.getUTCMonth() + 1}.${date.getUTCDate()}`);
+NODE
 }
 
-process.stdout.write(`${major}.${minor}.${patch}`);
+utc_date_iso() {
+  node <<'NODE'
+const date = new Date();
+const y = date.getUTCFullYear();
+const m = String(date.getUTCMonth() + 1).padStart(2, '0');
+const d = String(date.getUTCDate()).padStart(2, '0');
+process.stdout.write(`${y}-${m}-${d}`);
 NODE
 }
 
@@ -150,50 +162,16 @@ process.stdout.write(`${stable}-canary.${max + 1}`);
 NODE
 }
 
-release_branch_name() {
-  printf 'release/%s\n' "$1"
-}
-
 release_notes_file() {
   printf '%s/releases/v%s.md\n' "$REPO_ROOT" "$1"
 }
 
-default_release_worktree_path() {
-  local version="$1"
-  local parent_dir
-  local repo_name
-
-  parent_dir="$(cd "$REPO_ROOT/.." && pwd)"
-  repo_name="$(basename "$REPO_ROOT")"
-  printf '%s/%s-release-%s\n' "$parent_dir" "$repo_name" "$version"
+stable_tag_name() {
+  printf 'v%s\n' "$1"
 }
 
-git_current_branch() {
-  git -C "$REPO_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || true
-}
-
-git_local_branch_exists() {
-  git -C "$REPO_ROOT" show-ref --verify --quiet "refs/heads/$1"
-}
-
-git_remote_branch_exists() {
-  git -C "$REPO_ROOT" ls-remote --exit-code --heads "$2" "refs/heads/$1" >/dev/null 2>&1
-}
-
-git_local_tag_exists() {
-  git -C "$REPO_ROOT" show-ref --verify --quiet "refs/tags/$1"
-}
-
-git_remote_tag_exists() {
-  git -C "$REPO_ROOT" ls-remote --exit-code --tags "$2" "refs/tags/$1" >/dev/null 2>&1
-}
-
-npm_version_exists() {
-  local version="$1"
-  local resolved
-
-  resolved="$(npm view "paperclipai@${version}" version 2>/dev/null || true)"
-  [ "$resolved" = "$version" ]
+canary_tag_name() {
+  printf 'canary/v%s\n' "$1"
 }
 
 npm_package_version_exists() {
@@ -232,50 +210,38 @@ require_clean_worktree() {
   fi
 }
 
-git_worktree_path_for_branch() {
-  local branch_ref="refs/heads/$1"
-
-  git -C "$REPO_ROOT" worktree list --porcelain | awk -v branch_ref="$branch_ref" '
-    $1 == "worktree" { path = substr($0, 10) }
-    $1 == "branch" && $2 == branch_ref { print path; exit }
-  '
-}
-
-path_is_worktree_for_branch() {
-  local path="$1"
-  local branch="$2"
+require_on_master_branch() {
   local current_branch
-
-  [ -d "$path" ] || return 1
-  current_branch="$(git -C "$path" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
-  [ "$current_branch" = "$branch" ]
-}
-
-ensure_release_branch_for_version() {
-  local stable_version="$1"
-  local current_branch
-  local expected_branch
-
   current_branch="$(git_current_branch)"
-  expected_branch="$(release_branch_name "$stable_version")"
-
-  if [ -z "$current_branch" ]; then
-    release_fail "release work must run from branch $expected_branch, but HEAD is detached."
-  fi
-
-  if [ "$current_branch" != "$expected_branch" ]; then
-    release_fail "release work must run from branch $expected_branch, but current branch is $current_branch."
+  if [ "$current_branch" != "master" ]; then
+    release_fail "this release step must run from branch master, but current branch is ${current_branch:-<detached>}."
   fi
 }
 
-stable_release_exists_anywhere() {
-  local stable_version="$1"
-  local remote="$2"
-  local tag="v$stable_version"
+require_npm_publish_auth() {
+  local dry_run="$1"
 
-  git_local_tag_exists "$tag" || git_remote_tag_exists "$tag" "$remote" || npm_version_exists "$stable_version"
+  if [ "$dry_run" = true ]; then
+    return
+  fi
+
+  if npm whoami >/dev/null 2>&1; then
+    release_info "  ✓ Logged in to npm as $(npm whoami)"
+    return
+  fi
+
+  if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+    release_info "  ✓ npm publish auth will be provided by GitHub Actions trusted publishing"
+    return
+  fi
+
+  release_fail "npm publish auth is not available. Use 'npm login' locally or run from GitHub Actions with trusted publishing."
 }
 
-release_train_is_frozen() {
-  stable_release_exists_anywhere "$1" "$2"
+list_public_package_info() {
+  node "$REPO_ROOT/scripts/release-package-map.mjs" list
+}
+
+set_public_package_version() {
+  node "$REPO_ROOT/scripts/release-package-map.mjs" set-version "$1"
 }

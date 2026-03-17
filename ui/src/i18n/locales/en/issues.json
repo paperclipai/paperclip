@@ -38,6 +38,8 @@
       "subissues": "Sub-issues"
     },
     "loading": "Loading\u2026",
+    "copyAsMarkdown": "Copy issue as markdown",
+    "copiedToClipboard": "Copied to clipboard",
     "hiddenIssue": "This issue is hidden",
     "hideIssue": "Hide this Issue",
     "properties": "Properties",

@@ -18,13 +18,11 @@
     "db:backup": "./scripts/backup-db.sh",
     "paperclipai": "node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts",
     "build:npm": "./scripts/build-npm.sh",
-    "release:start": "./scripts/release-start.sh",
     "release": "./scripts/release.sh",
-    "release:preflight": "./scripts/release-preflight.sh",
+    "release:canary": "./scripts/release.sh canary",
+    "release:stable": "./scripts/release.sh stable",
     "release:github": "./scripts/create-github-release.sh",
     "release:rollback": "./scripts/rollback-latest.sh",
-    "changeset": "changeset",
-    "version-packages": "changeset version",
     "check:tokens": "node scripts/check-forbidden-tokens.mjs",
     "docs:dev": "cd docs && npx mintlify dev",
     "smoke:openclaw-join": "./scripts/smoke/openclaw-join.sh",
@@ -34,7 +32,6 @@
     "test:e2e:headed": "npx playwright test --config tests/e2e/playwright.config.ts --headed"
   },
   "devDependencies": {
-    "@changesets/cli": "^2.30.0",
     "cross-env": "^10.1.0",
     "@playwright/test": "^1.58.2",
     "esbuild": "^0.27.3",
