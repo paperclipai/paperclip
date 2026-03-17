@@ -34,6 +34,7 @@ import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { ChoosePathButton } from "./PathInstructionsModal";
 import { HintIcon } from "./agent-config-primitives";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
+import { AmpLogoIcon } from "./AmpLogoIcon";
 import {
   Building2,
   Bot,
@@ -55,6 +56,7 @@ import {
 
 type Step = 1 | 2 | 3 | 4;
 type AdapterType =
+  | "amp_local"
   | "claude_local"
   | "codex_local"
   | "gemini_local"
@@ -174,6 +176,7 @@ export function OnboardingWizard() {
     enabled: Boolean(createdCompanyId) && onboardingOpen && step === 2
   });
   const isLocalAdapter =
+    adapterType === "amp_local" ||
     adapterType === "claude_local" ||
     adapterType === "codex_local" ||
     adapterType === "gemini_local" ||
@@ -183,6 +186,8 @@ export function OnboardingWizard() {
     command.trim() ||
     (adapterType === "codex_local"
       ? "codex"
+      : adapterType === "amp_local"
+        ? "amp"
       : adapterType === "gemini_local"
         ? "gemini"
       : adapterType === "cursor"
@@ -693,6 +698,12 @@ export function OnboardingWizard() {
                     <div className="grid grid-cols-2 gap-2">
                       {[
                         {
+                          value: "amp_local" as const,
+                          label: "Amp",
+                          icon: AmpLogoIcon,
+                          desc: "Local Amp agent"
+                        },
+                        {
                           value: "claude_local" as const,
                           label: "Claude Code",
                           icon: Sparkles,
@@ -837,6 +848,7 @@ export function OnboardingWizard() {
 
                   {/* Conditional adapter fields */}
                   {(adapterType === "claude_local" ||
+                    adapterType === "amp_local" ||
                     adapterType === "codex_local" ||
                     adapterType === "gemini_local" ||
                     adapterType === "opencode_local" ||
@@ -1032,6 +1044,8 @@ export function OnboardingWizard() {
                               ? `${effectiveAdapterCommand} -p --mode ask --output-format json \"Respond with hello.\"`
                               : adapterType === "codex_local"
                               ? `${effectiveAdapterCommand} exec --json -`
+                              : adapterType === "amp_local"
+                                ? `printf 'Respond with hello.' | ${effectiveAdapterCommand} --execute --stream-json`
                               : adapterType === "gemini_local"
                                 ? `${effectiveAdapterCommand} --output-format json "Respond with hello."`
                               : adapterType === "opencode_local"
@@ -1043,6 +1057,7 @@ export function OnboardingWizard() {
                             <span className="font-mono">Respond with hello.</span>
                           </p>
                           {adapterType === "cursor" ||
+                          adapterType === "amp_local" ||
                           adapterType === "codex_local" ||
                           adapterType === "gemini_local" ||
                           adapterType === "opencode_local" ? (
@@ -1051,6 +1066,8 @@ export function OnboardingWizard() {
                               <span className="font-mono">
                                 {adapterType === "cursor"
                                   ? "CURSOR_API_KEY"
+                                  : adapterType === "amp_local"
+                                    ? "AMP_API_KEY"
                                   : adapterType === "gemini_local"
                                     ? "GEMINI_API_KEY"
                                     : "OPENAI_API_KEY"}
@@ -1059,6 +1076,8 @@ export function OnboardingWizard() {
                               <span className="font-mono">
                                 {adapterType === "cursor"
                                   ? "agent login"
+                                  : adapterType === "amp_local"
+                                    ? "amp login"
                                   : adapterType === "codex_local"
                                     ? "codex login"
                                     : adapterType === "gemini_local"

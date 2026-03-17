@@ -21,8 +21,10 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
+import { AmpLogoIcon } from "./AmpLogoIcon";
 
 type AdvancedAdapterType =
+  | "amp_local"
   | "claude_local"
   | "codex_local"
   | "gemini_local"
@@ -38,6 +40,12 @@ const ADVANCED_ADAPTER_OPTIONS: Array<{
   icon: ComponentType<{ className?: string }>;
   recommended?: boolean;
 }> = [
+  {
+    value: "amp_local",
+    label: "Amp",
+    icon: AmpLogoIcon,
+    desc: "Local Amp agent",
+  },
   {
     value: "claude_local",
     label: "Claude Code",
