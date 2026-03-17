@@ -65,15 +65,11 @@ Scans project root in order: `package.json` → `bun test`/`jest`/`vitest`, `pyp
 
 ## Pre-commit Stop Hook
 
-Fires before any `git commit` executes. Reads `.claude/test-command.txt`, runs the suite, exits 1 on failure — blocking the commit. Surfaces which tests failed in the hook output.
-
 → Full hook script + settings.json registration + failure output format: `references/pre-commit-stop-hook.md`
 
 ---
 
 ## Pre-push PreToolUse Hook
-
-Intercepts Bash calls containing `git push`. Checks if tests are red (re-runs the suite or reads last exit code from `.claude/last-test-exit.txt`). Exits 1 to block the push if failing.
 
 → Full hook script + push detection pattern + last-exit-code optimization: `references/pre-push-hook.md`
 
