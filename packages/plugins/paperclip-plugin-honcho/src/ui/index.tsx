@@ -66,6 +66,17 @@ const gridStyle: React.CSSProperties = {
   gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
 };
 
+const statusPillStyle: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: "0.4rem",
+  borderRadius: "999px",
+  padding: "0.25rem 0.65rem",
+  fontSize: "0.82rem",
+  border: "1px solid rgba(15, 23, 42, 0.1)",
+  background: "rgba(255, 255, 255, 0.8)",
+};
+
 type SettingsConfig = {
   honchoApiBaseUrl: string;
   honchoApiKeySecretRef: string;
@@ -80,6 +91,13 @@ type SettingsConnectionState = {
   workspaceId: string | null;
   at: string | null;
 } | null;
+
+type SetupProgressState = {
+  settingsSaved: boolean;
+  configValidated: boolean;
+  connectionSucceeded: boolean;
+  backfillCompleted: boolean;
+};
 
 function hostFetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   return fetch(path, {
@@ -200,6 +218,28 @@ function ChecklistItem({ item }: { item: SetupStatusData["checklist"][number] })
   );
 }
 
+function StatusPill({ label, done }: { label: string; done: boolean }) {
+  return (
+    <span style={{
+      ...statusPillStyle,
+      color: done ? "#065f46" : "#92400e",
+      borderColor: done ? "rgba(5, 150, 105, 0.25)" : "rgba(217, 119, 6, 0.25)",
+      background: done ? "rgba(236, 253, 245, 0.9)" : "rgba(255, 251, 235, 0.95)",
+    }}
+    >
+      <span style={{
+        display: "inline-flex",
+        width: "0.55rem",
+        height: "0.55rem",
+        borderRadius: "999px",
+        background: done ? "#059669" : "#d97706",
+      }}
+      />
+      {label}
+    </span>
+  );
+}
+
 function SetupSummaryCard({ data }: { data: SetupStatusData }) {
   const companyStatus = data.companyStatus;
   return (
@@ -252,7 +292,13 @@ export function HonchoSettingsPage({ context }: PluginSettingsPageProps) {
   const backfillCompany = usePluginAction(ACTION_KEYS.backfillCompany);
   const [formMessage, setFormMessage] = useState<{ tone: "success" | "error" | "info"; text: string } | null>(null);
   const [connectionState, setConnectionState] = useState<SettingsConnectionState>(null);
-  const [busyAction, setBusyAction] = useState<"test" | "backfill" | null>(null);
+  const [busyAction, setBusyAction] = useState<"initialize" | "test" | "backfill" | null>(null);
+  const [setupProgress, setSetupProgress] = useState<SetupProgressState>({
+    settingsSaved: false,
+    configValidated: false,
+    connectionSucceeded: false,
+    backfillCompleted: false,
+  });
 
   const nextSteps = useMemo(() => {
     return setupStatus.data?.checklist.filter((item) => !item.done).map((item) => item.label) ?? [];
@@ -265,6 +311,7 @@ export function HonchoSettingsPage({ context }: PluginSettingsPageProps) {
   async function saveSettings() {
     try {
       await save(configJson);
+      setSetupProgress((current) => ({ ...current, settingsSaved: true }));
       setFormMessage({ tone: "success", text: "Settings saved." });
       setupStatus.refresh();
     } catch (nextError) {
@@ -275,6 +322,7 @@ export function HonchoSettingsPage({ context }: PluginSettingsPageProps) {
   async function validateSettings() {
     try {
       const result = await test(configJson);
+      setSetupProgress((current) => ({ ...current, configValidated: Boolean(result.valid) }));
       setFormMessage({
         tone: result.valid ? "success" : "error",
         text: result.message ?? (result.valid ? "Configuration is valid." : "Configuration is invalid."),
@@ -288,6 +336,7 @@ export function HonchoSettingsPage({ context }: PluginSettingsPageProps) {
     setBusyAction("test");
     try {
       const result = await testConnection();
+      setSetupProgress((current) => ({ ...current, connectionSucceeded: Boolean((result as Record<string, unknown>).ok) }));
       setConnectionState({
         ok: Boolean((result as Record<string, unknown>).ok),
         workspaceId: typeof (result as Record<string, unknown>).workspaceId === "string" ? (result as Record<string, unknown>).workspaceId as string : null,
@@ -295,6 +344,7 @@ export function HonchoSettingsPage({ context }: PluginSettingsPageProps) {
       });
       setFormMessage({ tone: "success", text: "Honcho connection succeeded." });
     } catch (nextError) {
+      setSetupProgress((current) => ({ ...current, connectionSucceeded: false }));
       setConnectionState({ ok: false, workspaceId: null, at: null });
       setFormMessage({ tone: "error", text: nextError instanceof Error ? nextError.message : String(nextError) });
     } finally {
@@ -310,7 +360,60 @@ export function HonchoSettingsPage({ context }: PluginSettingsPageProps) {
     setBusyAction("backfill");
     try {
       await backfillCompany({ companyId: context.companyId });
+      setSetupProgress((current) => ({ ...current, backfillCompleted: true }));
       setFormMessage({ tone: "success", text: "Backfill started and completed for the current company." });
+      setupStatus.refresh();
+    } catch (nextError) {
+      setSetupProgress((current) => ({ ...current, backfillCompleted: false }));
+      setFormMessage({ tone: "error", text: nextError instanceof Error ? nextError.message : String(nextError) });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function saveAndInitialize() {
+    if (!context.companyId) {
+      setFormMessage({ tone: "error", text: "Select a company before running setup." });
+      return;
+    }
+    setBusyAction("initialize");
+    try {
+      await save(configJson);
+      const validation = await test(configJson);
+      if (!validation.valid) {
+        setSetupProgress((current) => ({
+          ...current,
+          settingsSaved: true,
+          configValidated: false,
+          connectionSucceeded: false,
+          backfillCompleted: false,
+        }));
+        setFormMessage({
+          tone: "error",
+          text: validation.message ?? "Configuration is invalid.",
+        });
+        return;
+      }
+
+      const connection = await testConnection();
+      await backfillCompany({ companyId: context.companyId });
+
+      setSetupProgress({
+        settingsSaved: true,
+        configValidated: true,
+        connectionSucceeded: Boolean((connection as Record<string, unknown>).ok),
+        backfillCompleted: true,
+      });
+      setConnectionState({
+        ok: Boolean((connection as Record<string, unknown>).ok),
+        workspaceId: typeof (connection as Record<string, unknown>).workspaceId === "string"
+          ? (connection as Record<string, unknown>).workspaceId as string
+          : null,
+        at: typeof (connection as Record<string, unknown>).at === "string"
+          ? (connection as Record<string, unknown>).at as string
+          : null,
+      });
+      setFormMessage({ tone: "success", text: "Honcho setup completed for the current company." });
       setupStatus.refresh();
     } catch (nextError) {
       setFormMessage({ tone: "error", text: nextError instanceof Error ? nextError.message : String(nextError) });
@@ -325,6 +428,12 @@ export function HonchoSettingsPage({ context }: PluginSettingsPageProps) {
         <strong>Honcho Setup</strong>
         <div style={{ color: "#475569", fontSize: "0.92rem", lineHeight: 1.45 }}>
           Configure the Honcho API connection, validate the plugin configuration, and run an initial company backfill without leaving Paperclip.
+        </div>
+        <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+          <StatusPill label="Settings saved" done={setupProgress.settingsSaved} />
+          <StatusPill label="Config valid" done={setupProgress.configValidated} />
+          <StatusPill label="Connection ready" done={setupProgress.connectionSucceeded} />
+          <StatusPill label="Backfill complete" done={setupProgress.backfillCompleted || Boolean(setupStatus.data?.companyStatus?.lastBackfillAt)} />
         </div>
       </div>
 
@@ -404,6 +513,14 @@ export function HonchoSettingsPage({ context }: PluginSettingsPageProps) {
       {error ? <div style={{ ...cardStyle, color: "#991b1b" }}>Config error: {error}</div> : null}
 
       <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+        <button
+          type="button"
+          style={primaryButtonStyle}
+          onClick={() => void saveAndInitialize()}
+          disabled={busyAction === "initialize" || saving}
+        >
+          {busyAction === "initialize" ? "Initializing…" : "Save And Initialize"}
+        </button>
         <button type="button" style={primaryButtonStyle} onClick={() => void saveSettings()} disabled={saving}>
           {saving ? "Saving…" : "Save Settings"}
         </button>
@@ -444,9 +561,8 @@ export function HonchoSettingsPage({ context }: PluginSettingsPageProps) {
         <strong>Suggested Setup Order</strong>
         <ol style={{ margin: 0, paddingLeft: "1.1rem", display: "grid", gap: "0.35rem", color: "#475569" }}>
           <li>Create a Paperclip secret containing the Honcho API key.</li>
-          <li>Save the plugin settings with the Honcho base URL and secret reference.</li>
-          <li>Run Validate Config, then Test Connection.</li>
-          <li>Run Backfill Current Company to populate existing issue memory.</li>
+          <li>Either use Save And Initialize, or run Save Settings, Validate Config, Test Connection, and Backfill Current Company manually.</li>
+          <li>Confirm the readiness checklist shows the company as backfilled.</li>
         </ol>
         {nextSteps.length > 0 ? (
           <div style={{ fontSize: "0.86rem", color: "#475569" }}>

@@ -36,9 +36,8 @@ pnpm paperclipai plugin install ./packages/plugins/paperclip-plugin-honcho
    - `honchoApiKeySecretRef`
    - `workspacePrefix` if you want something other than `paperclip`
 4. Save settings.
-5. Run `Validate Config`.
-6. Run `Test Connection`.
-7. Run `Backfill Current Company` to ingest existing issue history.
+5. Either click `Save And Initialize`, or run `Validate Config`, `Test Connection`, and `Backfill Current Company` manually.
+6. Confirm the readiness checklist shows the company as backfilled.
 
 Recommended starting configuration:
 
