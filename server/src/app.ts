@@ -10,7 +10,6 @@ import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import {
   privateHostnameGuard,
-  resolvePrivateHostnameAllowSet,
   resolveUiAllowedHosts,
 } from "./middleware/private-hostname-guard.js";
 import { healthRoutes } from "./routes/health.js";
@@ -79,10 +78,6 @@ export async function createApp(
   app.use(httpLogger);
   const privateHostnameGateEnabled =
     opts.deploymentMode === "authenticated" && opts.deploymentExposure === "private";
-  const privateHostnameAllowSet = resolvePrivateHostnameAllowSet({
-    allowedHostnames: opts.allowedHostnames,
-    bindHost: opts.bindHost,
-  });
   const uiAllowedHosts = resolveUiAllowedHosts({
     privateHostnameGateEnabled,
     allowedHostnames: opts.allowedHostnames,
