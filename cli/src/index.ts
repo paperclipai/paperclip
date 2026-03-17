@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import { CLI_VERSION } from "./version.js";
 import { onboard } from "./commands/onboard.js";
 import { doctor } from "./commands/doctor.js";
 import { envCommand } from "./commands/env.js";
@@ -27,7 +28,7 @@ const DATA_DIR_OPTION_HELP =
 program
   .name("paperclipai")
   .description("Paperclip CLI — setup, diagnose, and configure your instance")
-  .version("0.2.7");
+  .version(CLI_VERSION);
 
 program.hook("preAction", (_thisCommand, actionCommand) => {
   const options = actionCommand.optsWithGlobals() as DataDirOptionLike;

@@ -191,29 +191,52 @@ for (const [dir, name] of rows) {
 NODE
 }
 
-replace_version_string() {
-  local from_version="$1"
-  local to_version="$2"
+update_version_to() {
+  local target_version="$1"
 
-  node - "$REPO_ROOT" "$from_version" "$to_version" <<'NODE'
+  node - "$REPO_ROOT" "$target_version" <<'NODE'
 const fs = require('fs');
 const path = require('path');
 
 const root = process.argv[2];
-const fromVersion = process.argv[3];
-const toVersion = process.argv[4];
+const targetVersion = process.argv[3];
 
 const roots = ['packages', 'server', 'ui', 'cli'];
-const targets = new Set(['package.json', 'CHANGELOG.md']);
-const extraFiles = [path.join('cli', 'src', 'index.ts')];
 
-function rewriteFile(filePath) {
+// Update package.json files using targeted string replacement to preserve formatting
+function updatePackageJson(filePath) {
   if (!fs.existsSync(filePath)) return;
-  const current = fs.readFileSync(filePath, 'utf8');
-  if (!current.includes(fromVersion)) return;
-  fs.writeFileSync(filePath, current.split(fromVersion).join(toVersion));
+  const content = fs.readFileSync(filePath, 'utf8');
+  const updated = content.replace(
+    /("version"\s*:\s*)"[^"]*"/,
+    `$1"${targetVersion}"`
+  );
+  if (updated !== content) {
+    fs.writeFileSync(filePath, updated);
+  }
 }
 
+// Update CHANGELOG.md: replace version in header lines like "## [1.2.3-canary.0] - 2024-01-01"
+function updateChangelog(filePath) {
+  if (!fs.existsSync(filePath)) return;
+  const content = fs.readFileSync(filePath, 'utf8');
+  const updated = content.replace(/^## \[([0-9]+\.[0-9]+\.[0-9]+(?:-canary\.\d+)?)\]/gm, (match, version) => {
+    if (version.endsWith('-canary.0')) {
+      return `## [${targetVersion}]`;
+    }
+    return match;
+  });
+  if (updated !== content) {
+    fs.writeFileSync(filePath, updated);
+  }
+}
+
+// Update cli/src/version.ts: write the version file with target version
+function updateCliVersion(filePath) {
+  fs.writeFileSync(filePath, `export const CLI_VERSION = "${targetVersion}";\n`);
+}
+
+// Walk directories and update package.json and CHANGELOG.md files
 function walk(relDir) {
   const absDir = path.join(root, relDir);
   if (!fs.existsSync(absDir)) return;
@@ -225,8 +248,10 @@ function walk(relDir) {
       continue;
     }
 
-    if (targets.has(entry.name)) {
-      rewriteFile(path.join(absDir, entry.name));
+    if (entry.name === 'package.json') {
+      updatePackageJson(path.join(absDir, entry.name));
+    } else if (entry.name === 'CHANGELOG.md') {
+      updateChangelog(path.join(absDir, entry.name));
     }
   }
 }
@@ -235,9 +260,8 @@ for (const rel of roots) {
   walk(rel);
 }
 
-for (const relFile of extraFiles) {
-  rewriteFile(path.join(root, relFile));
-}
+// Special handling for cli/src/version.ts
+updateCliVersion(path.join(root, 'cli', 'src', 'version.ts'));
 NODE
 }
 
@@ -350,13 +374,7 @@ if [ "$canary" = true ]; then
   npx changeset pre enter canary
 fi
 npx changeset version
-
-if [ "$canary" = true ]; then
-  BASE_CANARY_VERSION="${TARGET_STABLE_VERSION}-canary.0"
-  if [ "$TARGET_PUBLISH_VERSION" != "$BASE_CANARY_VERSION" ]; then
-    replace_version_string "$BASE_CANARY_VERSION" "$TARGET_PUBLISH_VERSION"
-  fi
-fi
+update_version_to "$TARGET_PUBLISH_VERSION"
 
 VERSIONED_PACKAGE_INFO="$(list_public_package_info)"
 
