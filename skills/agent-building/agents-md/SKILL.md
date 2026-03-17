@@ -66,14 +66,7 @@ Orchestrator composition patterns → `references/05-composability.md`
 
 ## Templates Gallery
 
-| Template | Use For |
-|---|---|
-| Researcher | Web search, synthesis, brief writing |
-| Builder | Implementation, code generation, testing |
-| Reviewer | QC, PASS/FAIL decisions, structured feedback |
-| Orchestrator | Delegation, coordination, pipeline management |
-
-All four templates → `references/06-templates.md`
+Four ready-to-copy templates (Researcher, Builder, Reviewer, Orchestrator) → `references/06-templates.md`
 
 ## Anti-Patterns and Maintenance
 
