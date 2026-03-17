@@ -215,10 +215,6 @@
     {
       "idx": 30,
       "version": "7",
-<<<<<<< HEAD
-      "when": 1773449429560,
-      "tag": "0030_company_image",
-=======
       "when": 1773670925214,
       "tag": "0030_rich_magneto",
       "breakpoints": true
@@ -249,7 +245,20 @@
       "version": "7",
       "when": 1773697572188,
       "tag": "0034_fat_dormammu",
->>>>>>> upstream/master
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1773449429560,
+      "tag": "0035_owner_permission_backfill",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1773449430000,
+      "tag": "0036_company_image",
       "breakpoints": true
     }
   ]
