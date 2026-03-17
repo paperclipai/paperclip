@@ -503,7 +503,12 @@ export function issueService(db: Db) {
         conditions.push(statuses.length === 1 ? eq(issues.status, statuses[0]) : inArray(issues.status, statuses));
       }
       if (filters?.assigneeAgentId) {
-        conditions.push(eq(issues.assigneeAgentId, filters.assigneeAgentId));
+        const agentIds = filters.assigneeAgentId.split(",").map((s) => s.trim());
+        conditions.push(
+          agentIds.length === 1
+            ? eq(issues.assigneeAgentId, agentIds[0])
+            : inArray(issues.assigneeAgentId, agentIds),
+        );
       }
       if (filters?.assigneeUserId) {
         conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
