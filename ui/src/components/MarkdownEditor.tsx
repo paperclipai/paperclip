@@ -219,6 +219,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   // Mention state (ref kept in sync so callbacks always see the latest value)
   const [mentionState, setMentionState] = useState<MentionState | null>(null);
   const mentionStateRef = useRef<MentionState | null>(null);
+  const pendingClearRef = useRef<number | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
   const mentionActive = mentionState !== null && mentions && mentions.length > 0;
   const projectColorById = useMemo(() => {
@@ -344,17 +345,35 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   // Mention detection: listen for selection changes and input events
   const checkMention = useCallback(() => {
     if (!mentions || mentions.length === 0 || !containerRef.current) {
+      if (pendingClearRef.current !== null) {
+        cancelAnimationFrame(pendingClearRef.current);
+        pendingClearRef.current = null;
+      }
       mentionStateRef.current = null;
       setMentionState(null);
       return;
     }
+
     const result = detectMention(containerRef.current);
-    mentionStateRef.current = result;
+
+    // Cancel any previously scheduled deferred clear.
+    if (pendingClearRef.current !== null) {
+      cancelAnimationFrame(pendingClearRef.current);
+      pendingClearRef.current = null;
+    }
+
     if (result) {
+      mentionStateRef.current = result;
       setMentionState(result);
       setMentionIndex(0);
     } else {
-      setMentionState(null);
+      // Browsers fire selectionchange before mousedown. If we clear synchronously,
+      // click/Enter/Tab handlers can read a null mention state and fail to select.
+      pendingClearRef.current = requestAnimationFrame(() => {
+        pendingClearRef.current = null;
+        mentionStateRef.current = null;
+        setMentionState(null);
+      });
     }
   }, [mentions]);
 
@@ -375,6 +394,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   }, [checkMention, mentions]);
 
   useEffect(() => {
+    return () => {
+      if (pendingClearRef.current !== null) {
+        cancelAnimationFrame(pendingClearRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     const editable = containerRef.current?.querySelector('[contenteditable="true"]');
     if (!editable) return;
     decorateProjectMentions();
@@ -391,6 +418,12 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
 
   const selectMention = useCallback(
     (option: MentionOption) => {
+      // Cancel pending dismiss (selectionchange) before reading mention state.
+      if (pendingClearRef.current !== null) {
+        cancelAnimationFrame(pendingClearRef.current);
+        pendingClearRef.current = null;
+      }
+
       // Read from ref to avoid stale-closure issues (selectionchange can
       // update state between the last render and this callback firing).
       const state = mentionStateRef.current;
@@ -519,6 +552,10 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         if (mentionActive) {
           // Space dismisses the popup (let the character be typed normally)
           if (e.key === " ") {
+            if (pendingClearRef.current !== null) {
+              cancelAnimationFrame(pendingClearRef.current);
+              pendingClearRef.current = null;
+            }
             mentionStateRef.current = null;
             setMentionState(null);
             return;
@@ -527,6 +564,10 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           if (e.key === "Escape") {
             e.preventDefault();
             e.stopPropagation();
+            if (pendingClearRef.current !== null) {
+              cancelAnimationFrame(pendingClearRef.current);
+              pendingClearRef.current = null;
+            }
             mentionStateRef.current = null;
             setMentionState(null);
             return;
