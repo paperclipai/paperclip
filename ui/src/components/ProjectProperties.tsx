@@ -171,6 +171,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
   const [goalOpen, setGoalOpen] = useState(false);
   const [executionWorkspaceAdvancedOpen, setExecutionWorkspaceAdvancedOpen] = useState(false);
   const [workspaceMode, setWorkspaceMode] = useState<"local" | "repo" | null>(null);
+  const [workspaceTargetId, setWorkspaceTargetId] = useState<string | null>(null);
   const [workspaceCwd, setWorkspaceCwd] = useState("");
   const [workspaceRepoUrl, setWorkspaceRepoUrl] = useState("");
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
@@ -229,6 +230,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
       setWorkspaceCwd("");
       setWorkspaceRepoUrl("");
       setWorkspaceMode(null);
+      setWorkspaceTargetId(null);
       setWorkspaceError(null);
       invalidateProject();
     },
@@ -241,7 +243,14 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
   const updateWorkspace = useMutation({
     mutationFn: ({ workspaceId, data }: { workspaceId: string; data: Record<string, unknown> }) =>
       projectsApi.updateWorkspace(project.id, workspaceId, data),
-    onSuccess: invalidateProject,
+    onSuccess: () => {
+      setWorkspaceCwd("");
+      setWorkspaceRepoUrl("");
+      setWorkspaceMode(null);
+      setWorkspaceTargetId(null);
+      setWorkspaceError(null);
+      invalidateProject();
+    },
   });
 
   const removeGoal = (goalId: string) => {
@@ -320,6 +329,13 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
       return;
     }
     setWorkspaceError(null);
+    if (workspaceTargetId) {
+      updateWorkspace.mutate({
+        workspaceId: workspaceTargetId,
+        data: { cwd },
+      });
+      return;
+    }
     createWorkspace.mutate({
       name: deriveWorkspaceNameFromPath(cwd),
       cwd,
@@ -333,12 +349,37 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
       return;
     }
     setWorkspaceError(null);
+    if (workspaceTargetId) {
+      updateWorkspace.mutate({
+        workspaceId: workspaceTargetId,
+        data: { repoUrl },
+      });
+      return;
+    }
     createWorkspace.mutate({
       name: deriveWorkspaceNameFromRepo(repoUrl),
       cwd: REPO_ONLY_CWD_SENTINEL,
       repoUrl,
     });
   };
+
+  const beginWorkspaceAction = (mode: "local" | "repo", workspaceId: string | null = null) => {
+    setWorkspaceMode(mode);
+    setWorkspaceTargetId(workspaceId);
+    setWorkspaceError(null);
+    setWorkspaceCwd("");
+    setWorkspaceRepoUrl("");
+  };
+
+  const cancelWorkspaceAction = () => {
+    setWorkspaceMode(null);
+    setWorkspaceTargetId(null);
+    setWorkspaceCwd("");
+    setWorkspaceRepoUrl("");
+    setWorkspaceError(null);
+  };
+
+  const workspaceMutationPending = createWorkspace.isPending || updateWorkspace.isPending;
 
   const clearLocalWorkspace = (workspace: Project["workspaces"][number]) => {
     const confirmed = window.confirm(
@@ -675,6 +716,93 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                         Repo reference only. It will not be used as the primary local execution target.
                       </p>
                     ) : null}
+                    {!hasWorkspaceLocalFolder(workspace) ? (
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="outline"
+                          size="xs"
+                          className="h-6 px-2"
+                          disabled={workspaceMutationPending}
+                          onClick={() => beginWorkspaceAction("local", workspace.id)}
+                        >
+                          Attach local folder
+                        </Button>
+                      </div>
+                    ) : null}
+                    {!workspace.repoUrl ? (
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="outline"
+                          size="xs"
+                          className="h-6 px-2"
+                          disabled={workspaceMutationPending}
+                          onClick={() => beginWorkspaceAction("repo", workspace.id)}
+                        >
+                          Attach GitHub repo
+                        </Button>
+                      </div>
+                    ) : null}
+                    {workspaceMode === "local" && workspaceTargetId === workspace.id ? (
+                      <div className="space-y-1.5 rounded-md border border-border p-2">
+                        <div className="flex items-center gap-2">
+                          <input
+                            className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
+                            value={workspaceCwd}
+                            onChange={(e) => setWorkspaceCwd(e.target.value)}
+                            placeholder="/absolute/path/to/workspace"
+                          />
+                          <ChoosePathButton />
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            variant="outline"
+                            size="xs"
+                            className="h-6 px-2"
+                            disabled={!workspaceCwd.trim() || workspaceMutationPending}
+                            onClick={submitLocalWorkspace}
+                          >
+                            Attach
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="xs"
+                            className="h-6 px-2"
+                            onClick={cancelWorkspaceAction}
+                          >
+                            Cancel
+                          </Button>
+                        </div>
+                      </div>
+                    ) : null}
+                    {workspaceMode === "repo" && workspaceTargetId === workspace.id ? (
+                      <div className="space-y-1.5 rounded-md border border-border p-2">
+                        <input
+                          className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs outline-none"
+                          value={workspaceRepoUrl}
+                          onChange={(e) => setWorkspaceRepoUrl(e.target.value)}
+                          placeholder="https://github.com/org/repo"
+                        />
+                        <div className="flex items-center gap-2">
+                          <Button
+                            variant="outline"
+                            size="xs"
+                            className="h-6 px-2"
+                            disabled={!workspaceRepoUrl.trim() || workspaceMutationPending}
+                            onClick={submitRepoWorkspace}
+                          >
+                            Attach
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="xs"
+                            className="h-6 px-2"
+                            onClick={cancelWorkspaceAction}
+                          >
+                            Cancel
+                          </Button>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 );
               })}
@@ -685,10 +813,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
               variant="outline"
               size="xs"
               className="h-7 px-2.5"
-              onClick={() => {
-                setWorkspaceMode("local");
-                setWorkspaceError(null);
-              }}
+              onClick={() => beginWorkspaceAction("local")}
             >
               Add workspace local folder
             </Button>
@@ -696,15 +821,12 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
               variant="outline"
               size="xs"
               className="h-7 px-2.5"
-              onClick={() => {
-                setWorkspaceMode("repo");
-                setWorkspaceError(null);
-              }}
+              onClick={() => beginWorkspaceAction("repo")}
             >
               Add workspace repo
             </Button>
           </div>
-          {workspaceMode === "local" && (
+          {workspaceMode === "local" && workspaceTargetId === null && (
             <div className="space-y-1.5 rounded-md border border-border p-2">
               <div className="flex items-center gap-2">
                 <input
@@ -720,7 +842,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                   variant="outline"
                   size="xs"
                   className="h-6 px-2"
-                  disabled={!workspaceCwd.trim() || createWorkspace.isPending}
+                  disabled={!workspaceCwd.trim() || workspaceMutationPending}
                   onClick={submitLocalWorkspace}
                 >
                   Save
@@ -729,18 +851,14 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                   variant="ghost"
                   size="xs"
                   className="h-6 px-2"
-                  onClick={() => {
-                    setWorkspaceMode(null);
-                    setWorkspaceCwd("");
-                    setWorkspaceError(null);
-                  }}
+                  onClick={cancelWorkspaceAction}
                 >
                   Cancel
                 </Button>
               </div>
             </div>
           )}
-          {workspaceMode === "repo" && (
+          {workspaceMode === "repo" && workspaceTargetId === null && (
             <div className="space-y-1.5 rounded-md border border-border p-2">
               <input
                 className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs outline-none"
@@ -753,7 +871,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                   variant="outline"
                   size="xs"
                   className="h-6 px-2"
-                  disabled={!workspaceRepoUrl.trim() || createWorkspace.isPending}
+                  disabled={!workspaceRepoUrl.trim() || workspaceMutationPending}
                   onClick={submitRepoWorkspace}
                 >
                   Save
@@ -762,11 +880,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                   variant="ghost"
                   size="xs"
                   className="h-6 px-2"
-                  onClick={() => {
-                    setWorkspaceMode(null);
-                    setWorkspaceRepoUrl("");
-                    setWorkspaceError(null);
-                  }}
+                  onClick={cancelWorkspaceAction}
                 >
                   Cancel
                 </Button>
