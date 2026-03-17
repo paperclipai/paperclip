@@ -186,6 +186,25 @@ export async function testEnvironment(
             ? `Run \`claude login\` and complete sign-in at ${loginMeta.loginUrl}, then retry.`
             : "Run `claude login` in this environment, then retry the probe.",
         });
+      } else if (parsed && asString(parsed.subtype, "") === "success") {
+        // Claude responded successfully — trust the result even if exit code
+        // is non-zero (e.g. an MCP server failed to connect but the response
+        // itself completed fine).
+        const summary = parsedStream.summary.trim();
+        const hasHello = /\bhello\b/i.test(summary);
+        checks.push({
+          code: hasHello ? "claude_hello_probe_passed" : "claude_hello_probe_unexpected_output",
+          level: hasHello ? "info" : "warn",
+          message: hasHello
+            ? "Claude hello probe succeeded."
+            : "Claude probe ran but did not return `hello` as expected.",
+          ...(summary ? { detail: summary.replace(/\s+/g, " ").trim().slice(0, 240) } : {}),
+          ...(hasHello
+            ? {}
+            : {
+                hint: "Try the probe manually (`claude --print - --output-format stream-json --verbose`) and prompt `Respond with hello`.",
+              }),
+        });
       } else if ((probe.exitCode ?? 1) === 0) {
         const summary = parsedStream.summary.trim();
         const hasHello = /\bhello\b/i.test(summary);
