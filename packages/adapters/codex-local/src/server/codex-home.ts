@@ -94,7 +94,7 @@ export async function prepareWorktreeCodexHome(
   }
 
   await onLog(
-    "stderr",
+    "stdout",
     `[paperclip] Using worktree-isolated Codex home "${targetHome}" (seeded from "${sourceHome}").\n`,
   );
   return targetHome;

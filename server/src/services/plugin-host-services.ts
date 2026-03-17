@@ -718,17 +718,16 @@ export function buildHostServices(
         const project = await projects.getById(params.projectId);
         if (!inCompany(project, companyId)) return null;
         const row = project.primaryWorkspace;
-        if (!row) return null;
-        const path = sanitizeWorkspacePath(row.cwd);
-        const name = sanitizeWorkspaceName(row.name, path);
+        const path = sanitizeWorkspacePath(project.codebase.effectiveLocalFolder);
+        const name = sanitizeWorkspaceName(row?.name ?? project.name, path);
         return {
-          id: row.id,
-          projectId: row.projectId,
+          id: row?.id ?? `${project.id}:managed`,
+          projectId: project.id,
           name,
           path,
-          isPrimary: row.isPrimary,
-          createdAt: row.createdAt.toISOString(),
-          updatedAt: row.updatedAt.toISOString(),
+          isPrimary: true,
+          createdAt: (row?.createdAt ?? project.createdAt).toISOString(),
+          updatedAt: (row?.updatedAt ?? project.updatedAt).toISOString(),
         };
       },
 
@@ -742,17 +741,16 @@ export function buildHostServices(
         const project = await projects.getById(projectId);
         if (!inCompany(project, companyId)) return null;
         const row = project.primaryWorkspace;
-        if (!row) return null;
-        const path = sanitizeWorkspacePath(row.cwd);
-        const name = sanitizeWorkspaceName(row.name, path);
+        const path = sanitizeWorkspacePath(project.codebase.effectiveLocalFolder);
+        const name = sanitizeWorkspaceName(row?.name ?? project.name, path);
         return {
-          id: row.id,
-          projectId: row.projectId,
+          id: row?.id ?? `${project.id}:managed`,
+          projectId: project.id,
           name,
           path,
-          isPrimary: row.isPrimary,
-          createdAt: row.createdAt.toISOString(),
-          updatedAt: row.updatedAt.toISOString(),
+          isPrimary: true,
+          createdAt: (row?.createdAt ?? project.createdAt).toISOString(),
+          updatedAt: (row?.updatedAt ?? project.updatedAt).toISOString(),
         };
       },
     },

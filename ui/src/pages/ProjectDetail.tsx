@@ -296,6 +296,12 @@ export function ProjectDetail() {
         pushToast({ title: `"${name}" has been unarchived`, tone: "success" });
       }
     },
+    onError: (_, archived) => {
+      pushToast({
+        title: archived ? "Failed to archive project" : "Failed to unarchive project",
+        tone: "error",
+      });
+    },
   });
 
   const uploadImage = useMutation({

@@ -1,4 +1,11 @@
 export {
+  instanceExperimentalSettingsSchema,
+  patchInstanceExperimentalSettingsSchema,
+  type InstanceExperimentalSettings,
+  type PatchInstanceExperimentalSettings,
+} from "./instance.js";
+
+export {
   upsertBudgetPolicySchema,
   resolveBudgetIncidentSchema,
   type UpsertBudgetPolicy,
@@ -87,6 +94,22 @@ export {
   type IssueDocumentFormat,
   type UpsertIssueDocument,
 } from "./issue.js";
+
+export {
+  createIssueWorkProductSchema,
+  updateIssueWorkProductSchema,
+  issueWorkProductTypeSchema,
+  issueWorkProductStatusSchema,
+  issueWorkProductReviewStateSchema,
+  type CreateIssueWorkProduct,
+  type UpdateIssueWorkProduct,
+} from "./work-product.js";
+
+export {
+  updateExecutionWorkspaceSchema,
+  executionWorkspaceStatusSchema,
+  type UpdateExecutionWorkspace,
+} from "./execution-workspace.js";
 
 export {
   createGoalSchema,

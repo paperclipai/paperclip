@@ -6,6 +6,7 @@ import type {
   IssueComment,
   IssueDocument,
   IssueLabel,
+  IssueWorkProduct,
   UpsertIssueDocument,
 } from "@paperclipai/shared";
 import { api } from "./client";
@@ -90,4 +91,10 @@ export const issuesApi = {
     api.post<Approval[]>(`/issues/${id}/approvals`, { approvalId }),
   unlinkApproval: (id: string, approvalId: string) =>
     api.delete<{ ok: true }>(`/issues/${id}/approvals/${approvalId}`),
+  listWorkProducts: (id: string) => api.get<IssueWorkProduct[]>(`/issues/${id}/work-products`),
+  createWorkProduct: (id: string, data: Record<string, unknown>) =>
+    api.post<IssueWorkProduct>(`/issues/${id}/work-products`, data),
+  updateWorkProduct: (id: string, data: Record<string, unknown>) =>
+    api.patch<IssueWorkProduct>(`/work-products/${id}`, data),
+  deleteWorkProduct: (id: string) => api.delete<IssueWorkProduct>(`/work-products/${id}`),
 };

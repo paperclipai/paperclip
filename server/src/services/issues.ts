@@ -10,6 +10,7 @@ import {
   documents,
   goals,
   heartbeatRuns,
+  executionWorkspaces,
   issueAttachments,
   issueLabels,
   issueComments,
@@ -27,8 +28,10 @@ import { logger } from "../middleware/logger.js";
 import type { EmailService } from "./email.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
+  gateProjectExecutionWorkspacePolicy,
   parseProjectExecutionWorkspacePolicy,
 } from "./execution-workspace-policy.js";
+import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getDefaultCompanyGoal } from "./goals.js";
@@ -396,6 +399,8 @@ function withActiveRuns(
 }
 
 export function issueService(db: Db) {
+  const instanceSettings = instanceSettingsService(db);
+
   async function assertAssignableAgent(companyId: string, agentId: string) {
     const assignee = await db
       .select({
@@ -434,6 +439,40 @@ export function issueService(db: Db) {
       .then((rows) => rows[0] ?? null);
     if (!membership) {
       throw notFound("Assignee user not found");
+    }
+  }
+
+  async function assertValidProjectWorkspace(companyId: string, projectId: string | null | undefined, projectWorkspaceId: string) {
+    const workspace = await db
+      .select({
+        id: projectWorkspaces.id,
+        companyId: projectWorkspaces.companyId,
+        projectId: projectWorkspaces.projectId,
+      })
+      .from(projectWorkspaces)
+      .where(eq(projectWorkspaces.id, projectWorkspaceId))
+      .then((rows) => rows[0] ?? null);
+    if (!workspace) throw notFound("Project workspace not found");
+    if (workspace.companyId !== companyId) throw unprocessable("Project workspace must belong to same company");
+    if (projectId && workspace.projectId !== projectId) {
+      throw unprocessable("Project workspace must belong to the selected project");
+    }
+  }
+
+  async function assertValidExecutionWorkspace(companyId: string, projectId: string | null | undefined, executionWorkspaceId: string) {
+    const workspace = await db
+      .select({
+        id: executionWorkspaces.id,
+        companyId: executionWorkspaces.companyId,
+        projectId: executionWorkspaces.projectId,
+      })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, executionWorkspaceId))
+      .then((rows) => rows[0] ?? null);
+    if (!workspace) throw notFound("Execution workspace not found");
+    if (workspace.companyId !== companyId) throw unprocessable("Execution workspace must belong to same company");
+    if (projectId && workspace.projectId !== projectId) {
+      throw unprocessable("Execution workspace must belong to the selected project");
     }
   }
 
@@ -795,6 +834,12 @@ export function issueService(db: Db) {
       data: Omit<typeof issues.$inferInsert, "companyId"> & { labelIds?: string[] },
     ) => {
       const { labelIds: inputLabelIds, ...issueData } = data;
+      const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
+      if (!isolatedWorkspacesEnabled) {
+        delete issueData.executionWorkspaceId;
+        delete issueData.executionWorkspacePreference;
+        delete issueData.executionWorkspaceSettings;
+      }
       if (data.assigneeAgentId && data.assigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
       }
@@ -803,6 +848,12 @@ export function issueService(db: Db) {
       }
       if (data.assigneeUserId) {
         await assertAssignableUser(companyId, data.assigneeUserId);
+      }
+      if (data.projectWorkspaceId) {
+        await assertValidProjectWorkspace(companyId, data.projectId, data.projectWorkspaceId);
+      }
+      if (data.executionWorkspaceId) {
+        await assertValidExecutionWorkspace(companyId, data.projectId, data.executionWorkspaceId);
       }
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
@@ -819,8 +870,31 @@ export function issueService(db: Db) {
             .then((rows) => rows[0] ?? null);
           executionWorkspaceSettings =
             defaultIssueExecutionWorkspaceSettingsForProject(
-              parseProjectExecutionWorkspacePolicy(project?.executionWorkspacePolicy),
+              gateProjectExecutionWorkspacePolicy(
+                parseProjectExecutionWorkspacePolicy(project?.executionWorkspacePolicy),
+                isolatedWorkspacesEnabled,
+              ),
             ) as Record<string, unknown> | null;
+        }
+        let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
+        if (!projectWorkspaceId && issueData.projectId) {
+          const project = await tx
+            .select({
+              executionWorkspacePolicy: projects.executionWorkspacePolicy,
+            })
+            .from(projects)
+            .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, companyId)))
+            .then((rows) => rows[0] ?? null);
+          const projectPolicy = parseProjectExecutionWorkspacePolicy(project?.executionWorkspacePolicy);
+          projectWorkspaceId = projectPolicy?.defaultProjectWorkspaceId ?? null;
+          if (!projectWorkspaceId) {
+            projectWorkspaceId = await tx
+              .select({ id: projectWorkspaces.id })
+              .from(projectWorkspaces)
+              .where(and(eq(projectWorkspaces.projectId, issueData.projectId), eq(projectWorkspaces.companyId, companyId)))
+              .orderBy(desc(projectWorkspaces.isPrimary), asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id))
+              .then((rows) => rows[0]?.id ?? null);
+          }
         }
         const [company] = await tx
           .update(companies)
@@ -838,6 +912,7 @@ export function issueService(db: Db) {
             goalId: issueData.goalId,
             defaultGoalId: defaultCompanyGoal?.id ?? null,
           }),
+          ...(projectWorkspaceId ? { projectWorkspaceId } : {}),
           ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
           companyId,
           issueNumber,
@@ -871,6 +946,12 @@ export function issueService(db: Db) {
       if (!existing) return null;
 
       const { labelIds: nextLabelIds, ...issueData } = data;
+      const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
+      if (!isolatedWorkspacesEnabled) {
+        delete issueData.executionWorkspaceId;
+        delete issueData.executionWorkspacePreference;
+        delete issueData.executionWorkspaceSettings;
+      }
 
       if (issueData.status) {
         assertTransition(existing.status, issueData.status);
@@ -897,6 +978,17 @@ export function issueService(db: Db) {
       }
       if (issueData.assigneeUserId) {
         await assertAssignableUser(existing.companyId, issueData.assigneeUserId);
+      }
+      const nextProjectId = issueData.projectId !== undefined ? issueData.projectId : existing.projectId;
+      const nextProjectWorkspaceId =
+        issueData.projectWorkspaceId !== undefined ? issueData.projectWorkspaceId : existing.projectWorkspaceId;
+      const nextExecutionWorkspaceId =
+        issueData.executionWorkspaceId !== undefined ? issueData.executionWorkspaceId : existing.executionWorkspaceId;
+      if (nextProjectWorkspaceId) {
+        await assertValidProjectWorkspace(existing.companyId, nextProjectId, nextProjectWorkspaceId);
+      }
+      if (nextExecutionWorkspaceId) {
+        await assertValidExecutionWorkspace(existing.companyId, nextProjectId, nextExecutionWorkspaceId);
       }
 
       applyStatusSideEffects(issueData.status, patch);

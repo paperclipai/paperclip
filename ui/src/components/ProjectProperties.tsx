@@ -5,6 +5,7 @@ import type { Project } from "@paperclipai/shared";
 import { StatusBadge } from "./StatusBadge";
 import { cn, formatDate } from "../lib/utils";
 import { goalsApi } from "../api/goals";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -25,9 +26,6 @@ const PROJECT_STATUSES = [
   { value: "completed", label: "Completed" },
   { value: "cancelled", label: "Cancelled" },
 ];
-
-// TODO(issue-worktree-support): re-enable this UI once the workflow is ready to ship.
-const SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI = false;
 
 interface ProjectPropertiesProps {
   project: Project;
@@ -51,8 +49,6 @@ export type ProjectConfigFieldKey =
   | "execution_workspace_worktree_parent_dir"
   | "execution_workspace_provision_command"
   | "execution_workspace_teardown_command";
-
-const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 
 function SaveIndicator({ state }: { state: ProjectFieldSaveState }) {
   if (state === "saving") {
@@ -243,6 +239,10 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     queryFn: () => goalsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+  });
 
   const linkedGoalIds = project.goalIds.length > 0
     ? project.goalIds
@@ -259,10 +259,14 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
 
   const availableGoals = (allGoals ?? []).filter((g) => !linkedGoalIds.includes(g.id));
   const workspaces = project.workspaces ?? [];
+  const codebase = project.codebase;
+  const primaryCodebaseWorkspace = project.primaryWorkspace ?? null;
+  const hasAdditionalLegacyWorkspaces = workspaces.some((workspace) => workspace.id !== primaryCodebaseWorkspace?.id);
   const executionWorkspacePolicy = project.executionWorkspacePolicy ?? null;
   const executionWorkspacesEnabled = executionWorkspacePolicy?.enabled === true;
+  const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true;
   const executionWorkspaceDefaultMode =
-    executionWorkspacePolicy?.defaultMode === "isolated" ? "isolated" : "project_primary";
+    executionWorkspacePolicy?.defaultMode === "isolated_workspace" ? "isolated_workspace" : "shared_workspace";
   const executionWorkspaceStrategy = executionWorkspacePolicy?.workspaceStrategy ?? {
     type: "git_worktree",
     baseRef: "",
@@ -272,6 +276,9 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
 
   const invalidateProject = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(project.id) });
+    if (project.urlKey !== project.id) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(project.urlKey) });
+    }
     if (selectedCompanyId) {
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(selectedCompanyId) });
     }
@@ -290,12 +297,24 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
 
   const removeWorkspace = useMutation({
     mutationFn: (workspaceId: string) => projectsApi.removeWorkspace(project.id, workspaceId),
-    onSuccess: invalidateProject,
+    onSuccess: () => {
+      setWorkspaceCwd("");
+      setWorkspaceRepoUrl("");
+      setWorkspaceMode(null);
+      setWorkspaceError(null);
+      invalidateProject();
+    },
   });
   const updateWorkspace = useMutation({
     mutationFn: ({ workspaceId, data }: { workspaceId: string; data: Record<string, unknown> }) =>
       projectsApi.updateWorkspace(project.id, workspaceId, data),
-    onSuccess: invalidateProject,
+    onSuccess: () => {
+      setWorkspaceCwd("");
+      setWorkspaceRepoUrl("");
+      setWorkspaceMode(null);
+      setWorkspaceError(null);
+      invalidateProject();
+    },
   });
 
   const removeGoal = (goalId: string) => {
@@ -336,97 +355,117 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     }
   };
 
-  const deriveWorkspaceNameFromPath = (value: string) => {
-    const normalized = value.trim().replace(/[\\/]+$/, "");
-    const segments = normalized.split(/[\\/]/).filter(Boolean);
-    return segments[segments.length - 1] ?? "Local folder";
-  };
-
-  const deriveWorkspaceNameFromRepo = (value: string) => {
+  const isSafeExternalUrl = (value: string | null | undefined) => {
+    if (!value) return false;
     try {
       const parsed = new URL(value);
-      const segments = parsed.pathname.split("/").filter(Boolean);
-      const repo = segments[segments.length - 1]?.replace(/\.git$/i, "") ?? "";
-      return repo || "GitHub repo";
+      return parsed.protocol === "http:" || parsed.protocol === "https:";
     } catch {
-      return "GitHub repo";
+      return false;
     }
   };
 
-  const formatGitHubRepo = (value: string) => {
+  const formatRepoUrl = (value: string) => {
     try {
       const parsed = new URL(value);
       const segments = parsed.pathname.split("/").filter(Boolean);
-      if (segments.length < 2) return value;
+      if (segments.length < 2) return parsed.host;
       const owner = segments[0];
       const repo = segments[1]?.replace(/\.git$/i, "");
-      if (!owner || !repo) return value;
-      return `${owner}/${repo}`;
+      if (!owner || !repo) return parsed.host;
+      return `${parsed.host}/${owner}/${repo}`;
     } catch {
       return value;
     }
   };
 
+  const deriveSourceType = (cwd: string | null, repoUrl: string | null) => {
+    if (repoUrl) return "git_repo";
+    if (cwd) return "local_path";
+    return undefined;
+  };
+
+  const persistCodebase = (patch: { cwd?: string | null; repoUrl?: string | null }) => {
+    const nextCwd = patch.cwd !== undefined ? patch.cwd : codebase.localFolder;
+    const nextRepoUrl = patch.repoUrl !== undefined ? patch.repoUrl : codebase.repoUrl;
+    if (!nextCwd && !nextRepoUrl) {
+      if (primaryCodebaseWorkspace) {
+        removeWorkspace.mutate(primaryCodebaseWorkspace.id);
+      }
+      return;
+    }
+
+    const data: Record<string, unknown> = {
+      ...(patch.cwd !== undefined ? { cwd: patch.cwd } : {}),
+      ...(patch.repoUrl !== undefined ? { repoUrl: patch.repoUrl } : {}),
+      ...(deriveSourceType(nextCwd, nextRepoUrl) ? { sourceType: deriveSourceType(nextCwd, nextRepoUrl) } : {}),
+      isPrimary: true,
+    };
+
+    if (primaryCodebaseWorkspace) {
+      updateWorkspace.mutate({ workspaceId: primaryCodebaseWorkspace.id, data });
+      return;
+    }
+
+    createWorkspace.mutate(data);
+  };
+
   const submitLocalWorkspace = () => {
     const cwd = workspaceCwd.trim();
+    if (!cwd) {
+      setWorkspaceError(null);
+      persistCodebase({ cwd: null });
+      return;
+    }
     if (!isAbsolutePath(cwd)) {
       setWorkspaceError("Local folder must be a full absolute path.");
       return;
     }
     setWorkspaceError(null);
-    createWorkspace.mutate({
-      name: deriveWorkspaceNameFromPath(cwd),
-      cwd,
-    });
+    persistCodebase({ cwd });
   };
 
   const submitRepoWorkspace = () => {
     const repoUrl = workspaceRepoUrl.trim();
+    if (!repoUrl) {
+      setWorkspaceError(null);
+      persistCodebase({ repoUrl: null });
+      return;
+    }
     if (!isGitHubRepoUrl(repoUrl)) {
-      setWorkspaceError("Repo workspace must use a valid GitHub repo URL.");
+      setWorkspaceError("Repo must use a valid GitHub repo URL.");
       return;
     }
     setWorkspaceError(null);
-    createWorkspace.mutate({
-      name: deriveWorkspaceNameFromRepo(repoUrl),
-      cwd: REPO_ONLY_CWD_SENTINEL,
-      repoUrl,
-    });
+    persistCodebase({ repoUrl });
   };
 
-  const clearLocalWorkspace = (workspace: Project["workspaces"][number]) => {
+  const clearLocalWorkspace = () => {
     const confirmed = window.confirm(
-      workspace.repoUrl
+      codebase.repoUrl
         ? "Clear local folder from this workspace?"
         : "Delete this workspace local folder?",
     );
     if (!confirmed) return;
-    if (workspace.repoUrl) {
-      updateWorkspace.mutate({
-        workspaceId: workspace.id,
-        data: { cwd: null },
-      });
-      return;
-    }
-    removeWorkspace.mutate(workspace.id);
+    persistCodebase({ cwd: null });
   };
 
-  const clearRepoWorkspace = (workspace: Project["workspaces"][number]) => {
-    const hasLocalFolder = Boolean(workspace.cwd && workspace.cwd !== REPO_ONLY_CWD_SENTINEL);
+  const clearRepoWorkspace = () => {
+    const hasLocalFolder = Boolean(codebase.localFolder);
     const confirmed = window.confirm(
       hasLocalFolder
-        ? "Clear GitHub repo from this workspace?"
+        ? "Clear repo from this workspace?"
         : "Delete this workspace repo?",
     );
     if (!confirmed) return;
-    if (hasLocalFolder) {
+    if (primaryCodebaseWorkspace && hasLocalFolder) {
       updateWorkspace.mutate({
-        workspaceId: workspace.id,
-        data: { repoUrl: null, repoRef: null },
+        workspaceId: primaryCodebaseWorkspace.id,
+        data: { repoUrl: null, repoRef: null, defaultRef: null, sourceType: deriveSourceType(codebase.localFolder, null) },
       });
       return;
     }
-    removeWorkspace.mutate(workspace.id);
+    persistCodebase({ repoUrl: null });
   };
 
   return (
@@ -560,137 +599,175 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
       <div className="space-y-1 py-4">
         <div className="space-y-2">
           <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <span>Workspaces</span>
+            <span>Codebase</span>
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
                   type="button"
                   className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-border text-[10px] text-muted-foreground hover:text-foreground"
-                  aria-label="Workspaces help"
+                  aria-label="Codebase help"
                 >
                   ?
                 </button>
               </TooltipTrigger>
               <TooltipContent side="top">
-                Workspaces give your agents hints about where the work is
+                Repo identifies the source of truth. Local folder is the default place agents write code.
               </TooltipContent>
             </Tooltip>
           </div>
-          {workspaces.length === 0 ? (
-            <p className="rounded-md border border-dashed border-border px-3 py-2 text-sm text-muted-foreground">
-              No workspace configured.
-            </p>
-          ) : (
+          <div className="space-y-2 rounded-md border border-border/70 p-3">
             <div className="space-y-1">
-              {workspaces.map((workspace) => (
-                <div key={workspace.id} className="space-y-1">
-                  {workspace.cwd && workspace.cwd !== REPO_ONLY_CWD_SENTINEL ? (
-                    <div className="flex items-center justify-between gap-2 py-1">
-                      <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">{workspace.cwd}</span>
-                      <Button
-                        variant="ghost"
-                        size="icon-xs"
-                        onClick={() => clearLocalWorkspace(workspace)}
-                        aria-label="Delete local folder"
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </Button>
+              <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Repo</div>
+              {codebase.repoUrl ? (
+                <div className="flex items-center justify-between gap-2">
+                  {isSafeExternalUrl(codebase.repoUrl) ? (
+                    <a
+                      href={codebase.repoUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground hover:underline"
+                    >
+                      <Github className="h-3 w-3 shrink-0" />
+                      <span className="truncate">{formatRepoUrl(codebase.repoUrl)}</span>
+                      <ExternalLink className="h-3 w-3 shrink-0" />
+                    </a>
+                  ) : (
+                    <div className="inline-flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+                      <Github className="h-3 w-3 shrink-0" />
+                      <span className="truncate">{codebase.repoUrl}</span>
                     </div>
-                  ) : null}
-                  {workspace.repoUrl ? (
-                    <div className="flex items-center justify-between gap-2 py-1">
-                      <a
-                        href={workspace.repoUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground hover:underline"
-                      >
-                        <Github className="h-3 w-3 shrink-0" />
-                        <span className="truncate">{formatGitHubRepo(workspace.repoUrl)}</span>
-                        <ExternalLink className="h-3 w-3 shrink-0" />
-                      </a>
-                      <Button
-                        variant="ghost"
-                        size="icon-xs"
-                        onClick={() => clearRepoWorkspace(workspace)}
-                        aria-label="Delete workspace repo"
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </Button>
-                    </div>
-                  ) : null}
-                  {workspace.runtimeServices && workspace.runtimeServices.length > 0 ? (
-                    <div className="space-y-1 pl-2">
-                      {workspace.runtimeServices.map((service) => (
-                        <div
-                          key={service.id}
-                          className="flex items-center justify-between gap-2 rounded-md border border-border/60 px-2 py-1"
-                        >
-                          <div className="min-w-0 space-y-0.5">
-                            <div className="flex items-center gap-2">
-                              <span className="text-[11px] font-medium">{service.serviceName}</span>
-                              <span
-                                className={cn(
-                                  "rounded-full px-1.5 py-0.5 text-[10px] uppercase tracking-wide",
-                                  service.status === "running"
-                                    ? "bg-green-500/15 text-green-700 dark:text-green-300"
-                                    : service.status === "failed"
-                                      ? "bg-red-500/15 text-red-700 dark:text-red-300"
-                                      : "bg-muted text-muted-foreground",
-                                )}
-                              >
-                                {service.status}
-                              </span>
-                            </div>
-                            <div className="text-[11px] text-muted-foreground">
-                              {service.url ? (
-                                <a
-                                  href={service.url}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="hover:text-foreground hover:underline"
-                                >
-                                  {service.url}
-                                </a>
-                              ) : (
-                                service.command ?? "No URL"
-                              )}
-                            </div>
-                          </div>
-                          <div className="text-[10px] text-muted-foreground whitespace-nowrap">
-                            {service.lifecycle}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
+                  )}
+                  <div className="flex items-center gap-1">
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      className="h-6 px-2"
+                      onClick={() => {
+                        setWorkspaceMode("repo");
+                        setWorkspaceRepoUrl(codebase.repoUrl ?? "");
+                        setWorkspaceError(null);
+                      }}
+                    >
+                      Change repo
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      onClick={clearRepoWorkspace}
+                      aria-label="Clear repo"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-xs text-muted-foreground">Not set.</div>
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    className="h-6 px-2"
+                    onClick={() => {
+                      setWorkspaceMode("repo");
+                      setWorkspaceRepoUrl(codebase.repoUrl ?? "");
+                      setWorkspaceError(null);
+                    }}
+                  >
+                    Set repo
+                  </Button>
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-1">
+              <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Local folder</div>
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0 space-y-1">
+                  <div className="min-w-0 truncate font-mono text-xs text-muted-foreground">
+                    {codebase.effectiveLocalFolder}
+                  </div>
+                  {codebase.origin === "managed_checkout" && (
+                    <div className="text-[11px] text-muted-foreground">Paperclip-managed folder.</div>
+                  )}
+                </div>
+                <div className="flex items-center gap-1">
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    className="h-6 px-2"
+                    onClick={() => {
+                      setWorkspaceMode("local");
+                      setWorkspaceCwd(codebase.localFolder ?? "");
+                      setWorkspaceError(null);
+                    }}
+                  >
+                    {codebase.localFolder ? "Change local folder" : "Set local folder"}
+                  </Button>
+                  {codebase.localFolder ? (
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      onClick={clearLocalWorkspace}
+                      aria-label="Clear local folder"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </Button>
                   ) : null}
                 </div>
-              ))}
+              </div>
             </div>
-          )}
-          <div className="flex flex-col items-start gap-2">
-            <Button
-              variant="outline"
-              size="xs"
-              className="h-7 px-2.5"
-              onClick={() => {
-                setWorkspaceMode("local");
-                setWorkspaceError(null);
-              }}
-            >
-              Add workspace local folder
-            </Button>
-            <Button
-              variant="outline"
-              size="xs"
-              className="h-7 px-2.5"
-              onClick={() => {
-                setWorkspaceMode("repo");
-                setWorkspaceError(null);
-              }}
-            >
-              Add workspace repo
-            </Button>
+
+            {hasAdditionalLegacyWorkspaces && (
+              <div className="text-[11px] text-muted-foreground">
+                Additional legacy workspace records exist on this project. Paperclip is using the primary workspace as the codebase view.
+              </div>
+            )}
+
+            {primaryCodebaseWorkspace?.runtimeServices && primaryCodebaseWorkspace.runtimeServices.length > 0 ? (
+              <div className="space-y-1">
+                {primaryCodebaseWorkspace.runtimeServices.map((service) => (
+                  <div
+                    key={service.id}
+                    className="flex items-center justify-between gap-2 rounded-md border border-border/60 px-2 py-1"
+                  >
+                    <div className="min-w-0 space-y-0.5">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] font-medium">{service.serviceName}</span>
+                        <span
+                          className={cn(
+                            "rounded-full px-1.5 py-0.5 text-[10px] uppercase tracking-wide",
+                            service.status === "running"
+                              ? "bg-green-500/15 text-green-700 dark:text-green-300"
+                              : service.status === "failed"
+                                ? "bg-red-500/15 text-red-700 dark:text-red-300"
+                                : "bg-muted text-muted-foreground",
+                          )}
+                        >
+                          {service.status}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-muted-foreground">
+                        {service.url ? (
+                          <a
+                            href={service.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="hover:text-foreground hover:underline"
+                          >
+                            {service.url}
+                          </a>
+                        ) : (
+                          service.command ?? "No URL"
+                        )}
+                      </div>
+                    </div>
+                    <div className="text-[10px] text-muted-foreground whitespace-nowrap">
+                      {service.lifecycle}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
           </div>
           {workspaceMode === "local" && (
             <div className="space-y-1.5 rounded-md border border-border p-2">
@@ -708,7 +785,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                   variant="outline"
                   size="xs"
                   className="h-6 px-2"
-                  disabled={!workspaceCwd.trim() || createWorkspace.isPending}
+                  disabled={(!workspaceCwd.trim() && !primaryCodebaseWorkspace) || createWorkspace.isPending || updateWorkspace.isPending}
                   onClick={submitLocalWorkspace}
                 >
                   Save
@@ -741,7 +818,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                   variant="outline"
                   size="xs"
                   className="h-6 px-2"
-                  disabled={!workspaceRepoUrl.trim() || createWorkspace.isPending}
+                  disabled={(!workspaceRepoUrl.trim() && !primaryCodebaseWorkspace) || createWorkspace.isPending || updateWorkspace.isPending}
                   onClick={submitRepoWorkspace}
                 >
                   Save
@@ -775,248 +852,255 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
           )}
         </div>
 
-        {SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI && (
+        {isolatedWorkspacesEnabled ? (
           <>
-        <Separator className="my-4" />
+            <Separator className="my-4" />
 
-        <div className="py-1.5 space-y-2">
-          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <span>Execution Workspaces</span>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-border text-[10px] text-muted-foreground hover:text-foreground"
-                  aria-label="Execution workspaces help"
-                >
-                  ?
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="top">
-                Project-owned defaults for isolated issue checkouts and execution workspace behavior.
-              </TooltipContent>
-            </Tooltip>
-          </div>
-          <div className="space-y-3">
-            <div className="flex items-center justify-between gap-3">
-              <div className="space-y-0.5">
-                <div className="flex items-center gap-2 text-sm font-medium">
-                  <span>Enable isolated issue checkouts</span>
-                  <SaveIndicator state={fieldState("execution_workspace_enabled")} />
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  Let issues choose between the project’s primary checkout and an isolated execution workspace.
-                </div>
+            <div className="py-1.5 space-y-2">
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <span>Execution Workspaces</span>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-border text-[10px] text-muted-foreground hover:text-foreground"
+                      aria-label="Execution workspaces help"
+                    >
+                      ?
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">
+                    Project-owned defaults for isolated issue checkouts and execution workspace behavior.
+                  </TooltipContent>
+                </Tooltip>
               </div>
-              {onUpdate || onFieldUpdate ? (
-                <button
-                  className={cn(
-                    "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-                    executionWorkspacesEnabled ? "bg-green-600" : "bg-muted",
-                  )}
-                  type="button"
-                  onClick={() =>
-                    commitField(
-                      "execution_workspace_enabled",
-                      updateExecutionWorkspacePolicy({ enabled: !executionWorkspacesEnabled })!,
-                    )}
-                >
-                  <span
-                    className={cn(
-                      "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-                      executionWorkspacesEnabled ? "translate-x-4.5" : "translate-x-0.5",
-                    )}
-                  />
-                </button>
-              ) : (
-                <span className="text-xs text-muted-foreground">
-                  {executionWorkspacesEnabled ? "Enabled" : "Disabled"}
-                </span>
-              )}
-            </div>
-
-            {executionWorkspacesEnabled && (
-              <>
+              <div className="space-y-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="space-y-0.5">
-                    <div className="flex items-center gap-2 text-sm">
-                      <span>New issues default to isolated checkout</span>
-                      <SaveIndicator state={fieldState("execution_workspace_default_mode")} />
+                    <div className="flex items-center gap-2 text-sm font-medium">
+                      <span>Enable isolated issue checkouts</span>
+                      <SaveIndicator state={fieldState("execution_workspace_enabled")} />
                     </div>
-                    <div className="text-[11px] text-muted-foreground">
-                      If disabled, new issues stay on the project’s primary checkout unless someone opts in.
-                    </div>
-                  </div>
-                  <button
-                    className={cn(
-                      "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-                      executionWorkspaceDefaultMode === "isolated" ? "bg-green-600" : "bg-muted",
-                    )}
-                    type="button"
-                    onClick={() =>
-                      commitField(
-                        "execution_workspace_default_mode",
-                        updateExecutionWorkspacePolicy({
-                          defaultMode: executionWorkspaceDefaultMode === "isolated" ? "project_primary" : "isolated",
-                        })!,
-                      )}
-                  >
-                    <span
-                      className={cn(
-                        "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-                        executionWorkspaceDefaultMode === "isolated" ? "translate-x-4.5" : "translate-x-0.5",
-                      )}
-                    />
-                  </button>
-                </div>
-
-                <div className="border-t border-border/60 pt-2">
-                  <button
-                    type="button"
-                    className="flex items-center gap-2 w-full py-1 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
-                    onClick={() => setExecutionWorkspaceAdvancedOpen((open) => !open)}
-                  >
-                    {executionWorkspaceAdvancedOpen ? "Hide advanced checkout settings" : "Show advanced checkout settings"}
-                  </button>
-                </div>
-
-                {executionWorkspaceAdvancedOpen && (
-                  <div className="space-y-3">
                     <div className="text-xs text-muted-foreground">
-                      Host-managed implementation: <span className="text-foreground">Git worktree</span>
+                      Let issues choose between the project's primary checkout and an isolated execution workspace.
                     </div>
-                    <div>
-                      <div className="mb-1 flex items-center gap-1.5">
-                        <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                          <span>Base ref</span>
-                          <SaveIndicator state={fieldState("execution_workspace_base_ref")} />
-                        </label>
-                      </div>
-                      <DraftInput
-                        value={executionWorkspaceStrategy.baseRef ?? ""}
-                        onCommit={(value) =>
-                          commitField("execution_workspace_base_ref", {
-                            ...updateExecutionWorkspacePolicy({
-                              workspaceStrategy: {
-                                ...executionWorkspaceStrategy,
-                                type: "git_worktree",
-                                baseRef: value || null,
-                              },
-                            })!,
-                          })}
-                        immediate
-                        className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
-                        placeholder="origin/main"
-                      />
-                    </div>
-                    <div>
-                      <div className="mb-1 flex items-center gap-1.5">
-                        <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                          <span>Branch template</span>
-                          <SaveIndicator state={fieldState("execution_workspace_branch_template")} />
-                        </label>
-                      </div>
-                      <DraftInput
-                        value={executionWorkspaceStrategy.branchTemplate ?? ""}
-                        onCommit={(value) =>
-                          commitField("execution_workspace_branch_template", {
-                            ...updateExecutionWorkspacePolicy({
-                              workspaceStrategy: {
-                                ...executionWorkspaceStrategy,
-                                type: "git_worktree",
-                                branchTemplate: value || null,
-                              },
-                            })!,
-                          })}
-                        immediate
-                        className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
-                        placeholder="{{issue.identifier}}-{{slug}}"
-                      />
-                    </div>
-                    <div>
-                      <div className="mb-1 flex items-center gap-1.5">
-                        <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                          <span>Worktree parent dir</span>
-                          <SaveIndicator state={fieldState("execution_workspace_worktree_parent_dir")} />
-                        </label>
-                      </div>
-                      <DraftInput
-                        value={executionWorkspaceStrategy.worktreeParentDir ?? ""}
-                        onCommit={(value) =>
-                          commitField("execution_workspace_worktree_parent_dir", {
-                            ...updateExecutionWorkspacePolicy({
-                              workspaceStrategy: {
-                                ...executionWorkspaceStrategy,
-                                type: "git_worktree",
-                                worktreeParentDir: value || null,
-                              },
-                            })!,
-                          })}
-                        immediate
-                        className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
-                        placeholder=".paperclip/worktrees"
-                      />
-                    </div>
-                    <div>
-                      <div className="mb-1 flex items-center gap-1.5">
-                        <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                          <span>Provision command</span>
-                          <SaveIndicator state={fieldState("execution_workspace_provision_command")} />
-                        </label>
-                      </div>
-                      <DraftInput
-                        value={executionWorkspaceStrategy.provisionCommand ?? ""}
-                        onCommit={(value) =>
-                          commitField("execution_workspace_provision_command", {
-                            ...updateExecutionWorkspacePolicy({
-                              workspaceStrategy: {
-                                ...executionWorkspaceStrategy,
-                                type: "git_worktree",
-                                provisionCommand: value || null,
-                              },
-                            })!,
-                          })}
-                        immediate
-                        className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
-                        placeholder="bash ./scripts/provision-worktree.sh"
-                      />
-                    </div>
-                    <div>
-                      <div className="mb-1 flex items-center gap-1.5">
-                        <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                          <span>Teardown command</span>
-                          <SaveIndicator state={fieldState("execution_workspace_teardown_command")} />
-                        </label>
-                      </div>
-                      <DraftInput
-                        value={executionWorkspaceStrategy.teardownCommand ?? ""}
-                        onCommit={(value) =>
-                          commitField("execution_workspace_teardown_command", {
-                            ...updateExecutionWorkspacePolicy({
-                              workspaceStrategy: {
-                                ...executionWorkspaceStrategy,
-                                type: "git_worktree",
-                                teardownCommand: value || null,
-                              },
-                            })!,
-                          })}
-                        immediate
-                        className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
-                        placeholder="bash ./scripts/teardown-worktree.sh"
-                      />
-                    </div>
-                    <p className="text-[11px] text-muted-foreground">
-                      Provision runs inside the derived worktree before agent execution. Teardown is stored here for
-                      future cleanup flows.
-                    </p>
                   </div>
-                )}
-              </>
-            )}
-          </div>
-        </div>
+                  {onUpdate || onFieldUpdate ? (
+                    <button
+                      className={cn(
+                        "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
+                        executionWorkspacesEnabled ? "bg-green-600" : "bg-muted",
+                      )}
+                      type="button"
+                      onClick={() =>
+                        commitField(
+                          "execution_workspace_enabled",
+                          updateExecutionWorkspacePolicy({ enabled: !executionWorkspacesEnabled })!,
+                        )}
+                    >
+                      <span
+                        className={cn(
+                          "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
+                          executionWorkspacesEnabled ? "translate-x-4.5" : "translate-x-0.5",
+                        )}
+                      />
+                    </button>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">
+                      {executionWorkspacesEnabled ? "Enabled" : "Disabled"}
+                    </span>
+                  )}
+                </div>
+
+                {executionWorkspacesEnabled ? (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="space-y-0.5">
+                        <div className="flex items-center gap-2 text-sm">
+                          <span>New issues default to isolated checkout</span>
+                          <SaveIndicator state={fieldState("execution_workspace_default_mode")} />
+                        </div>
+                        <div className="text-[11px] text-muted-foreground">
+                          If disabled, new issues stay on the project's primary checkout unless someone opts in.
+                        </div>
+                      </div>
+                      <button
+                        className={cn(
+                          "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
+                          executionWorkspaceDefaultMode === "isolated_workspace" ? "bg-green-600" : "bg-muted",
+                        )}
+                        type="button"
+                        onClick={() =>
+                          commitField(
+                            "execution_workspace_default_mode",
+                            updateExecutionWorkspacePolicy({
+                              defaultMode:
+                                executionWorkspaceDefaultMode === "isolated_workspace"
+                                  ? "shared_workspace"
+                                  : "isolated_workspace",
+                            })!,
+                          )}
+                      >
+                        <span
+                          className={cn(
+                            "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
+                            executionWorkspaceDefaultMode === "isolated_workspace"
+                              ? "translate-x-4.5"
+                              : "translate-x-0.5",
+                          )}
+                        />
+                      </button>
+                    </div>
+
+                    <div className="border-t border-border/60 pt-2">
+                      <button
+                        type="button"
+                        className="flex w-full items-center gap-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+                        onClick={() => setExecutionWorkspaceAdvancedOpen((open) => !open)}
+                      >
+                        {executionWorkspaceAdvancedOpen
+                          ? "Hide advanced checkout settings"
+                          : "Show advanced checkout settings"}
+                      </button>
+                    </div>
+
+                    {executionWorkspaceAdvancedOpen ? (
+                      <div className="space-y-3">
+                        <div className="text-xs text-muted-foreground">
+                          Host-managed implementation: <span className="text-foreground">Git worktree</span>
+                        </div>
+                        <div>
+                          <div className="mb-1 flex items-center gap-1.5">
+                            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                              <span>Base ref</span>
+                              <SaveIndicator state={fieldState("execution_workspace_base_ref")} />
+                            </label>
+                          </div>
+                          <DraftInput
+                            value={executionWorkspaceStrategy.baseRef ?? ""}
+                            onCommit={(value) =>
+                              commitField("execution_workspace_base_ref", {
+                                ...updateExecutionWorkspacePolicy({
+                                  workspaceStrategy: {
+                                    ...executionWorkspaceStrategy,
+                                    type: "git_worktree",
+                                    baseRef: value || null,
+                                  },
+                                })!,
+                              })}
+                            immediate
+                            className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
+                            placeholder="origin/main"
+                          />
+                        </div>
+                        <div>
+                          <div className="mb-1 flex items-center gap-1.5">
+                            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                              <span>Branch template</span>
+                              <SaveIndicator state={fieldState("execution_workspace_branch_template")} />
+                            </label>
+                          </div>
+                          <DraftInput
+                            value={executionWorkspaceStrategy.branchTemplate ?? ""}
+                            onCommit={(value) =>
+                              commitField("execution_workspace_branch_template", {
+                                ...updateExecutionWorkspacePolicy({
+                                  workspaceStrategy: {
+                                    ...executionWorkspaceStrategy,
+                                    type: "git_worktree",
+                                    branchTemplate: value || null,
+                                  },
+                                })!,
+                              })}
+                            immediate
+                            className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
+                            placeholder="{{issue.identifier}}-{{slug}}"
+                          />
+                        </div>
+                        <div>
+                          <div className="mb-1 flex items-center gap-1.5">
+                            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                              <span>Worktree parent dir</span>
+                              <SaveIndicator state={fieldState("execution_workspace_worktree_parent_dir")} />
+                            </label>
+                          </div>
+                          <DraftInput
+                            value={executionWorkspaceStrategy.worktreeParentDir ?? ""}
+                            onCommit={(value) =>
+                              commitField("execution_workspace_worktree_parent_dir", {
+                                ...updateExecutionWorkspacePolicy({
+                                  workspaceStrategy: {
+                                    ...executionWorkspaceStrategy,
+                                    type: "git_worktree",
+                                    worktreeParentDir: value || null,
+                                  },
+                                })!,
+                              })}
+                            immediate
+                            className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
+                            placeholder=".paperclip/worktrees"
+                          />
+                        </div>
+                        <div>
+                          <div className="mb-1 flex items-center gap-1.5">
+                            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                              <span>Provision command</span>
+                              <SaveIndicator state={fieldState("execution_workspace_provision_command")} />
+                            </label>
+                          </div>
+                          <DraftInput
+                            value={executionWorkspaceStrategy.provisionCommand ?? ""}
+                            onCommit={(value) =>
+                              commitField("execution_workspace_provision_command", {
+                                ...updateExecutionWorkspacePolicy({
+                                  workspaceStrategy: {
+                                    ...executionWorkspaceStrategy,
+                                    type: "git_worktree",
+                                    provisionCommand: value || null,
+                                  },
+                                })!,
+                              })}
+                            immediate
+                            className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
+                            placeholder="bash ./scripts/provision-worktree.sh"
+                          />
+                        </div>
+                        <div>
+                          <div className="mb-1 flex items-center gap-1.5">
+                            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                              <span>Teardown command</span>
+                              <SaveIndicator state={fieldState("execution_workspace_teardown_command")} />
+                            </label>
+                          </div>
+                          <DraftInput
+                            value={executionWorkspaceStrategy.teardownCommand ?? ""}
+                            onCommit={(value) =>
+                              commitField("execution_workspace_teardown_command", {
+                                ...updateExecutionWorkspacePolicy({
+                                  workspaceStrategy: {
+                                    ...executionWorkspaceStrategy,
+                                    type: "git_worktree",
+                                    teardownCommand: value || null,
+                                  },
+                                })!,
+                              })}
+                            immediate
+                            className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
+                            placeholder="bash ./scripts/teardown-worktree.sh"
+                          />
+                        </div>
+                        <p className="text-[11px] text-muted-foreground">
+                          Provision runs inside the derived worktree before agent execution. Teardown is stored here for
+                          future cleanup flows.
+                        </p>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            </div>
           </>
-        )}
+        ) : null}
 
       </div>
 

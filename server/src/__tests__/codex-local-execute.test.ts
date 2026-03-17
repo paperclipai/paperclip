@@ -35,6 +35,11 @@ type CapturePayload = {
   paperclipEnvKeys: string[];
 };
 
+type LogEntry = {
+  stream: "stdout" | "stderr";
+  chunk: string;
+};
+
 describe("codex execute", () => {
   it("uses a worktree-isolated CODEX_HOME while preserving shared auth and config", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-"));
@@ -62,6 +67,7 @@ describe("codex execute", () => {
     process.env.CODEX_HOME = sharedCodexHome;
 
     try {
+      const logs: LogEntry[] = [];
       const result = await execute({
         runId: "run-1",
         agent: {
@@ -87,7 +93,9 @@ describe("codex execute", () => {
         },
         context: {},
         authToken: "run-jwt-token",
-        onLog: async () => {},
+        onLog: async (stream, chunk) => {
+          logs.push({ stream, chunk });
+        },
       });
 
       expect(result.exitCode).toBe(0);
@@ -116,6 +124,18 @@ describe("codex execute", () => {
       expect((await fs.lstat(isolatedConfig)).isFile()).toBe(true);
       expect(await fs.readFile(isolatedConfig, "utf8")).toBe('model = "codex-mini-latest"\n');
       expect((await fs.lstat(isolatedSkill)).isSymbolicLink()).toBe(true);
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          stream: "stdout",
+          chunk: expect.stringContaining("Using worktree-isolated Codex home"),
+        }),
+      );
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          stream: "stdout",
+          chunk: expect.stringContaining('Injected Codex skill "paperclip"'),
+        }),
+      );
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;

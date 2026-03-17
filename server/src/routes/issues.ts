@@ -6,11 +6,13 @@ import { authUsers } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
   createIssueAttachmentMetadataSchema,
+  createIssueWorkProductSchema,
   createIssueLabelSchema,
   checkoutIssueSchema,
   createIssueSchema,
   linkIssueApprovalSchema,
   issueDocumentKeySchema,
+  updateIssueWorkProductSchema,
   upsertIssueDocumentSchema,
   updateIssueSchema,
 } from "@paperclipai/shared";
@@ -19,6 +21,7 @@ import { validate } from "../middleware/validate.js";
 import {
   accessService,
   agentService,
+  executionWorkspaceService,
   goalService,
   heartbeatService,
   issueApprovalService,
@@ -26,6 +29,7 @@ import {
   documentService,
   logActivity,
   projectService,
+  workProductService,
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
 import type { EmailService } from "../services/email.js";
@@ -45,6 +49,8 @@ export function issueRoutes(db: Db, storage: StorageService) {
   const projectsSvc = projectService(db);
   const goalsSvc = goalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
+  const executionWorkspacesSvc = executionWorkspaceService(db);
+  const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
   const upload = multer({
     storage: multer.memoryStorage(),
@@ -368,6 +374,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const mentionedProjects = mentionedProjectIds.length > 0
       ? await projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
       : [];
+    const currentExecutionWorkspace = issue.executionWorkspaceId
+      ? await executionWorkspacesSvc.getById(issue.executionWorkspaceId)
+      : null;
+    const workProducts = await workProductsSvc.listForIssue(issue.id);
     const userMap = await resolveUserNames([issue.createdByUserId, issue.assigneeUserId]);
     res.json({
       ...enrichIssueWithUserNames(issue, userMap),
@@ -377,6 +387,8 @@ export function issueRoutes(db: Db, storage: StorageService) {
       project: project ?? null,
       goal: goal ?? null,
       mentionedProjects,
+      currentExecutionWorkspace,
+      workProducts,
     });
   });
 
@@ -451,6 +463,18 @@ export function issueRoutes(db: Db, storage: StorageService) {
           ? wakeComment
           : null,
     });
+  });
+
+  router.get("/issues/:id/work-products", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const workProducts = await workProductsSvc.listForIssue(issue.id);
+    res.json(workProducts);
   });
 
   router.get("/issues/:id/documents", async (req, res) => {
@@ -591,6 +615,93 @@ export function issueRoutes(db: Db, storage: StorageService) {
       },
     });
     res.json({ ok: true });
+  });
+
+  router.post("/issues/:id/work-products", validate(createIssueWorkProductSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const product = await workProductsSvc.createForIssue(issue.id, issue.companyId, {
+      ...req.body,
+      projectId: req.body.projectId ?? issue.projectId ?? null,
+    });
+    if (!product) {
+      res.status(422).json({ error: "Invalid work product payload" });
+      return;
+    }
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.work_product_created",
+      entityType: "issue",
+      entityId: issue.id,
+      details: { workProductId: product.id, type: product.type, provider: product.provider },
+    });
+    res.status(201).json(product);
+  });
+
+  router.patch("/work-products/:id", validate(updateIssueWorkProductSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await workProductsSvc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Work product not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    const product = await workProductsSvc.update(id, req.body);
+    if (!product) {
+      res.status(404).json({ error: "Work product not found" });
+      return;
+    }
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.work_product_updated",
+      entityType: "issue",
+      entityId: existing.issueId,
+      details: { workProductId: product.id, changedKeys: Object.keys(req.body).sort() },
+    });
+    res.json(product);
+  });
+
+  router.delete("/work-products/:id", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await workProductsSvc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Work product not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    const removed = await workProductsSvc.remove(id);
+    if (!removed) {
+      res.status(404).json({ error: "Work product not found" });
+      return;
+    }
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.work_product_deleted",
+      entityType: "issue",
+      entityId: existing.issueId,
+      details: { workProductId: removed.id, type: removed.type },
+    });
+    res.json(removed);
   });
 
   router.post("/issues/:id/read", async (req, res) => {
