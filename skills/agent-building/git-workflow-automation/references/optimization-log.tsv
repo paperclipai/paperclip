@@ -3,3 +3,4 @@ iteration	trigger_pct	nofire_pct	output_pct	lines	status	description
 1	100	100	100	73	kept	Remove Minimum Viable Setup section (11 lines) — duplicates Core Pattern, no test coverage
 2	100	100	100	58	kept	Remove inline Stop hook (15 lines) — 05-hooks.md has full coverage, Quick Entry points there
 3	100	100	100	53	kept	Remove Prerequisites section (5 lines) — already in 03-gh-cli-loop.md, no test validates in SKILL.md
+4	100	100	100	51	kept	Remove 2 comment pseudo-code lines in Core Pattern — commands convey the pattern directly

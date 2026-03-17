@@ -38,14 +38,3 @@ gh pr create --title "feat: task-a" --body "..." --base main
 git worktree remove /tmp/worktree-agent-a
 ```
 
-## Anti-Rationalization
-
-| What you'll tell yourself | The truth |
-|---|---|
-| "I'll just pull and retry — it'll clear up" | Same working tree = same collision. `git pull` doesn't fix contention. Worktrees do. |
-| "Worktrees are complex setup — I'll manage branches manually" | `git worktree add /tmp/wt feat/task` — that's it. 10 seconds. Manual branch sharing takes infinite debugging. |
-| "I'll open GitHub to create the PR" | `gh pr create` runs in 15 seconds from within Claude Code. Browser handoff breaks the automation loop. |
-| "I can resolve this conflict manually later" | In an automated loop, unresolved conflicts block everything. Escalate immediately or auto-resolve with the stash-rebase pattern. |
-| "I don't need a Stop hook — I'll commit at the end" | Sessions end without warning. A Stop hook is insurance. Without it, half-built work lives only in an open terminal. |
-| "I'll clean up the worktree and branch later" | Later never comes. Cleanup is step 8 of the loop, not a separate todo. |
-
