@@ -12,9 +12,6 @@ data/
 tmp-*
 cli/tmp/
 
-# User workspaces - NEVER commit these
-workspace/
-
 # Scratch/seed scripts (but not scripts/ dir)
 check-*.mjs
 !scripts/check-*.mjs
@@ -40,7 +37,13 @@ tmp/
 .vscode/
 .claude/settings.local.json
 .paperclip-local/
+/.idea/
+/.agents/
+
+# Doc maintenance cursor
+.doc-review-cursor
 
 # Playwright
 tests/e2e/test-results/
 tests/e2e/playwright-report/
+.superset/
