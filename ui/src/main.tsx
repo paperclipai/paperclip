@@ -15,11 +15,16 @@ import { ToastProvider } from "./context/ToastContext";
 import { ThemeProvider } from "./context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { initPluginBridge } from "./plugins/bridge-init";
+import { initEmbedAuth, isEmbedded } from "./lib/embed-auth";
 import { PluginLauncherProvider } from "./plugins/launchers";
 import "@mdxeditor/editor/style.css";
 import "./index.css";
 
 initPluginBridge(React, ReactDOM);
+
+if (isEmbedded()) {
+  initEmbedAuth();
+}
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {

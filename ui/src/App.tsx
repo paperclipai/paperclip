@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Navigate, Outlet, Route, Routes, useLocation, useParams } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
@@ -38,6 +38,7 @@ import { queryKeys } from "./lib/queryKeys";
 import { useCompany } from "./context/CompanyContext";
 import { useDialog } from "./context/DialogContext";
 import { loadLastInboxTab } from "./lib/inbox";
+import { isEmbedded, getEmbedAuthState, onEmbedAuthChange, setTrustedParentOrigin } from "./lib/embed-auth";
 
 function BootstrapPendingPage({ hasActiveInvite = false }: { hasActiveInvite?: boolean }) {
   return (
@@ -59,6 +60,14 @@ function BootstrapPendingPage({ hasActiveInvite = false }: { hasActiveInvite?: b
 
 function CloudAccessGate() {
   const location = useLocation();
+  const [embedAuth, setEmbedAuth] = useState(getEmbedAuthState);
+  const embedded = isEmbedded();
+
+  useEffect(() => {
+    if (!embedded) return;
+    return onEmbedAuthChange(setEmbedAuth);
+  }, [embedded]);
+
   const healthQuery = useQuery({
     queryKey: queryKeys.health,
     queryFn: () => healthApi.get(),
@@ -75,14 +84,27 @@ function CloudAccessGate() {
   });
 
   const isAuthenticatedMode = healthQuery.data?.deploymentMode === "authenticated";
+  const embedAuthEnabled = healthQuery.data?.embedAuthEnabled === true;
+
+  // Set trusted parent origin from health response
+  useEffect(() => {
+    const origin = healthQuery.data?.embedParentOrigin;
+    if (origin) {
+      setTrustedParentOrigin(origin);
+    }
+  }, [healthQuery.data?.embedParentOrigin]);
+
+  // In embed mode with embed auth enabled, skip session query
+  const useEmbedAuth = embedded && embedAuthEnabled;
+
   const sessionQuery = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
-    enabled: isAuthenticatedMode,
+    enabled: isAuthenticatedMode && !useEmbedAuth,
     retry: false,
   });
 
-  if (healthQuery.isLoading || (isAuthenticatedMode && sessionQuery.isLoading)) {
+  if (healthQuery.isLoading || (isAuthenticatedMode && !useEmbedAuth && sessionQuery.isLoading)) {
     return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
   }
 
@@ -98,6 +120,19 @@ function CloudAccessGate() {
     return <BootstrapPendingPage hasActiveInvite={healthQuery.data.bootstrapInviteActive} />;
   }
 
+  // Embed auth: wait for postMessage token
+  if (useEmbedAuth) {
+    if (!embedAuth.authenticated) {
+      return (
+        <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">
+          Waiting for authentication...
+        </div>
+      );
+    }
+    return <Outlet />;
+  }
+
+  // Standard auth: redirect to login if no session
   if (isAuthenticatedMode && !sessionQuery.data) {
     const next = encodeURIComponent(`${location.pathname}${location.search}`);
     return <Navigate to={`/auth?next=${next}`} replace />;
