@@ -321,18 +321,41 @@ function buildWorkspaceCommandEnv(input: {
   return env;
 }
 
+/**
+ * Sanitize environment variable values to prevent secondary shell injection
+ * when referenced by workspace commands (e.g. $PAPERCLIP_ISSUE_TITLE).
+ * Strips shell metacharacters that could escape variable boundaries.
+ */
+function sanitizeEnvValue(value: string): string {
+  return value.replace(/[`$\\!;"'|&<>(){}[\]\n\r]/g, "");
+}
+
+const WORKSPACE_ENV_KEYS_TO_SANITIZE = [
+  "PAPERCLIP_ISSUE_TITLE",
+  "PAPERCLIP_ISSUE_IDENTIFIER",
+  "PAPERCLIP_AGENT_NAME",
+];
+
 async function runWorkspaceCommand(input: {
   command: string;
   cwd: string;
   env: NodeJS.ProcessEnv;
   label: string;
 }) {
-  const shell = process.env.SHELL?.trim() || "/bin/sh";
+  const sanitizedEnv = { ...input.env };
+  for (const key of WORKSPACE_ENV_KEYS_TO_SANITIZE) {
+    if (typeof sanitizedEnv[key] === "string") {
+      sanitizedEnv[key] = sanitizeEnvValue(sanitizedEnv[key] as string);
+    }
+  }
+
+  const shell = process.platform === "win32" ? "cmd.exe" : (process.env.SHELL?.trim() || "/bin/sh");
+  const shellArgs = process.platform === "win32" ? ["/c", input.command] : ["-c", input.command];
   const proc = await executeProcess({
     command: shell,
-    args: ["-c", input.command],
+    args: shellArgs,
     cwd: input.cwd,
-    env: input.env,
+    env: sanitizedEnv,
   });
   if (proc.code === 0) return;
 
@@ -1122,8 +1145,9 @@ async function startLocalRuntimeService(input: {
     const portEnvKey = asString(portConfig.envKey, "PORT");
     env[portEnvKey] = String(port);
   }
-  const shell = process.env.SHELL?.trim() || "/bin/sh";
-  const child = spawn(shell, ["-lc", command], {
+  const shell = process.platform === "win32" ? "cmd.exe" : (process.env.SHELL?.trim() || "/bin/sh");
+  const shellArgs = process.platform === "win32" ? ["/c", command] : ["-lc", command];
+  const child = spawn(shell, shellArgs, {
     cwd: serviceCwd,
     env,
     detached: process.platform !== "win32",
