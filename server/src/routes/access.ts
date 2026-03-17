@@ -1376,36 +1376,45 @@ async function resolveActorEmail(db: Db, req: Request): Promise<string | null> {
   return user?.email ?? null;
 }
 
-function grantsFromDefaults(
+export function grantsFromDefaults(
   defaultsPayload: Record<string, unknown> | null | undefined,
   key: "human" | "agent"
 ): Array<{
   permissionKey: (typeof PERMISSION_KEYS)[number];
   scope: Record<string, unknown> | null;
 }> {
-  if (!defaultsPayload || typeof defaultsPayload !== "object") return [];
-  const scoped = defaultsPayload[key];
-  if (!scoped || typeof scoped !== "object") return [];
-  const grants = (scoped as Record<string, unknown>).grants;
-  if (!Array.isArray(grants)) return [];
   const validPermissionKeys = new Set<string>(PERMISSION_KEYS);
   const result: Array<{
     permissionKey: (typeof PERMISSION_KEYS)[number];
     scope: Record<string, unknown> | null;
   }> = [];
-  for (const item of grants) {
-    if (!item || typeof item !== "object") continue;
-    const record = item as Record<string, unknown>;
-    if (typeof record.permissionKey !== "string") continue;
-    if (!validPermissionKeys.has(record.permissionKey)) continue;
+  if (defaultsPayload && typeof defaultsPayload === "object") {
+    const scoped = defaultsPayload[key];
+    if (scoped && typeof scoped === "object") {
+      const grants = (scoped as Record<string, unknown>).grants;
+      if (Array.isArray(grants)) {
+        for (const item of grants) {
+          if (!item || typeof item !== "object") continue;
+          const record = item as Record<string, unknown>;
+          if (typeof record.permissionKey !== "string") continue;
+          if (!validPermissionKeys.has(record.permissionKey)) continue;
+          result.push({
+            permissionKey: record.permissionKey as (typeof PERMISSION_KEYS)[number],
+            scope:
+              record.scope &&
+              typeof record.scope === "object" &&
+              !Array.isArray(record.scope)
+                ? (record.scope as Record<string, unknown>)
+                : null
+          });
+        }
+      }
+    }
+  }
+  if (key === "agent" && !result.some((grant) => grant.permissionKey === "tasks:assign")) {
     result.push({
-      permissionKey: record.permissionKey as (typeof PERMISSION_KEYS)[number],
-      scope:
-        record.scope &&
-        typeof record.scope === "object" &&
-        !Array.isArray(record.scope)
-          ? (record.scope as Record<string, unknown>)
-          : null
+      permissionKey: "tasks:assign",
+      scope: null,
     });
   }
   return result;
