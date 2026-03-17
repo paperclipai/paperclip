@@ -1,9 +1,12 @@
 import { Router } from "express";
+import { timingSafeEqual } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import { and, count, eq, gt, isNull, sql } from "drizzle-orm";
-import { instanceUserRoles, invites } from "@paperclipai/db";
+import { agents, heartbeatRuns, instanceUserRoles, invites } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import { serverVersion } from "../version.js";
+
+const startedAt = Date.now();
 
 export function healthRoutes(
   db?: Db,
@@ -12,6 +15,7 @@ export function healthRoutes(
     deploymentExposure: DeploymentExposure;
     authReady: boolean;
     companyDeletionEnabled: boolean;
+    managedSecret?: string;
   } = {
     deploymentMode: "local_trusted",
     deploymentExposure: "private",
@@ -67,6 +71,19 @@ export function healthRoutes(
         companyDeletionEnabled: opts.companyDeletionEnabled,
       },
     });
+  });
+
+  router.get("/detailed", async (req, res) => {
+    if (!db || !opts.managedSecret) { res.status(404).json({ error: "not_found" }); return; }
+    const incoming = req.header("x-paperclip-management-secret") ?? "";
+    const a = Buffer.from(incoming);
+    const b = Buffer.from(opts.managedSecret);
+    if (a.length !== b.length || !timingSafeEqual(a, b)) { res.status(404).json({ error: "not_found" }); return; }
+    const [agentCount, runningCount] = await Promise.all([
+      db.select({ count: count() }).from(agents).where(eq(agents.status, "active")).then((r) => Number(r[0]?.count ?? 0)),
+      db.select({ count: count() }).from(heartbeatRuns).where(eq(heartbeatRuns.status, "running")).then((r) => Number(r[0]?.count ?? 0)),
+    ]);
+    res.json({ status: "ok", uptimeMs: Date.now() - startedAt, activeAgents: agentCount, runningRuns: runningCount });
   });
 
   return router;

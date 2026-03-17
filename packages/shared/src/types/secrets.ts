@@ -2,7 +2,8 @@ export type SecretProvider =
   | "local_encrypted"
   | "aws_secrets_manager"
   | "gcp_secret_manager"
-  | "vault";
+  | "vault"
+  | "external_api";
 
 export type SecretVersionSelector = number | "latest";
 

@@ -1,0 +1,33 @@
+import type { Db } from "@paperclipai/db";
+import { count, eq, sql } from "drizzle-orm";
+import { agents, costEvents, heartbeatRuns } from "@paperclipai/db";
+import { logger } from "../middleware/logger.js";
+
+export function startUsageReporter(
+  db: Db,
+  opts: { url: string; instanceId: string; secret: string; intervalMs?: number },
+) {
+  const intervalMs = opts.intervalMs ?? 5 * 60_000;
+
+  const report = async () => {
+    try {
+      const [agentCount, runCount, tokenUsage] = await Promise.all([
+        db.select({ count: count() }).from(agents).where(eq(agents.status, "active")).then((r) => Number(r[0]?.count ?? 0)),
+        db.select({ count: count() }).from(heartbeatRuns).where(eq(heartbeatRuns.status, "running")).then((r) => Number(r[0]?.count ?? 0)),
+        db.select({ total: sql<number>`coalesce(sum(${costEvents.inputTokens}) + sum(${costEvents.outputTokens}), 0)` }).from(costEvents).then((r) => Number(r[0]?.total ?? 0)),
+      ]);
+      await fetch(opts.url, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-paperclip-instance-id": opts.instanceId, "x-paperclip-management-secret": opts.secret },
+        body: JSON.stringify({ instanceId: opts.instanceId, activeAgents: agentCount, runningRuns: runCount, totalTokens: tokenUsage, reportedAt: new Date().toISOString() }),
+        signal: AbortSignal.timeout(10_000),
+      });
+    } catch (err) {
+      logger.warn({ err }, "Usage report failed");
+    }
+  };
+
+  const timer = setInterval(() => void report(), intervalMs);
+  void report();
+  return { stop: () => clearInterval(timer) };
+}

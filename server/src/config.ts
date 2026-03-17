@@ -1,5 +1,5 @@
 import { readConfigFile } from "./config-file.js";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { config as loadDotenv } from "dotenv";
 import { resolvePaperclipEnvPath } from "./paths.js";
@@ -70,9 +70,29 @@ export interface Config {
   heartbeatSchedulerEnabled: boolean;
   heartbeatSchedulerIntervalMs: number;
   companyDeletionEnabled: boolean;
+  managedInstanceId: string | undefined;
+  managedSecret: string | undefined;
+  managedUsageReportUrl: string | undefined;
+  managedLifecycleUrl: string | undefined;
 }
 
 export function loadConfig(): Config {
+  const managedConfigPath = process.env.PAPERCLIP_MANAGED_CONFIG_PATH;
+  const managedOverrides: Record<string, string> = {};
+  if (managedConfigPath && existsSync(managedConfigPath)) {
+    try {
+      const raw = JSON.parse(readFileSync(managedConfigPath, "utf-8")) as Record<string, unknown>;
+      for (const [k, v] of Object.entries(raw)) {
+        if (typeof v === "string") managedOverrides[k] = v;
+      }
+    } catch { /* ignore malformed managed config */ }
+  }
+  // Write managed overrides into process.env so all code (not just config.ts) sees them
+  for (const [k, v] of Object.entries(managedOverrides)) {
+    process.env[k] = v;
+  }
+  const env = (key: string) => process.env[key];
+
   const fileConfig = readConfigFile();
   const fileDatabaseMode =
     (fileConfig?.database.mode === "postgres" ? "postgres" : "embedded-postgres") as DatabaseMode;
@@ -84,13 +104,13 @@ export function loadConfig(): Config {
   const fileDatabaseBackup = fileConfig?.database.backup;
   const fileSecrets = fileConfig?.secrets;
   const fileStorage = fileConfig?.storage;
-  const strictModeFromEnv = process.env.PAPERCLIP_SECRETS_STRICT_MODE;
+  const strictModeFromEnv = env("PAPERCLIP_SECRETS_STRICT_MODE");
   const secretsStrictMode =
     strictModeFromEnv !== undefined
       ? strictModeFromEnv === "true"
       : (fileSecrets?.strictMode ?? false);
 
-  const providerFromEnvRaw = process.env.PAPERCLIP_SECRETS_PROVIDER;
+  const providerFromEnvRaw = env("PAPERCLIP_SECRETS_PROVIDER");
   const providerFromEnv =
     providerFromEnvRaw && SECRET_PROVIDERS.includes(providerFromEnvRaw as SecretProvider)
       ? (providerFromEnvRaw as SecretProvider)
@@ -98,33 +118,33 @@ export function loadConfig(): Config {
   const providerFromFile = fileSecrets?.provider;
   const secretsProvider: SecretProvider = providerFromEnv ?? providerFromFile ?? "local_encrypted";
 
-  const storageProviderFromEnvRaw = process.env.PAPERCLIP_STORAGE_PROVIDER;
+  const storageProviderFromEnvRaw = env("PAPERCLIP_STORAGE_PROVIDER");
   const storageProviderFromEnv =
     storageProviderFromEnvRaw && STORAGE_PROVIDERS.includes(storageProviderFromEnvRaw as StorageProvider)
       ? (storageProviderFromEnvRaw as StorageProvider)
       : null;
   const storageProvider: StorageProvider = storageProviderFromEnv ?? fileStorage?.provider ?? "local_disk";
   const storageLocalDiskBaseDir = resolveHomeAwarePath(
-    process.env.PAPERCLIP_STORAGE_LOCAL_DIR ??
+    env("PAPERCLIP_STORAGE_LOCAL_DIR") ??
       fileStorage?.localDisk?.baseDir ??
       resolveDefaultStorageDir(),
   );
-  const storageS3Bucket = process.env.PAPERCLIP_STORAGE_S3_BUCKET ?? fileStorage?.s3?.bucket ?? "paperclip";
-  const storageS3Region = process.env.PAPERCLIP_STORAGE_S3_REGION ?? fileStorage?.s3?.region ?? "us-east-1";
-  const storageS3Endpoint = process.env.PAPERCLIP_STORAGE_S3_ENDPOINT ?? fileStorage?.s3?.endpoint ?? undefined;
-  const storageS3Prefix = process.env.PAPERCLIP_STORAGE_S3_PREFIX ?? fileStorage?.s3?.prefix ?? "";
+  const storageS3Bucket = env("PAPERCLIP_STORAGE_S3_BUCKET") ?? fileStorage?.s3?.bucket ?? "paperclip";
+  const storageS3Region = env("PAPERCLIP_STORAGE_S3_REGION") ?? fileStorage?.s3?.region ?? "us-east-1";
+  const storageS3Endpoint = env("PAPERCLIP_STORAGE_S3_ENDPOINT") ?? fileStorage?.s3?.endpoint ?? undefined;
+  const storageS3Prefix = env("PAPERCLIP_STORAGE_S3_PREFIX") ?? fileStorage?.s3?.prefix ?? "";
   const storageS3ForcePathStyle =
-    process.env.PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE !== undefined
-      ? process.env.PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE === "true"
+    env("PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE") !== undefined
+      ? env("PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE") === "true"
       : (fileStorage?.s3?.forcePathStyle ?? false);
 
-  const deploymentModeFromEnvRaw = process.env.PAPERCLIP_DEPLOYMENT_MODE;
+  const deploymentModeFromEnvRaw = env("PAPERCLIP_DEPLOYMENT_MODE");
   const deploymentModeFromEnv =
     deploymentModeFromEnvRaw && DEPLOYMENT_MODES.includes(deploymentModeFromEnvRaw as DeploymentMode)
       ? (deploymentModeFromEnvRaw as DeploymentMode)
       : null;
   const deploymentMode: DeploymentMode = deploymentModeFromEnv ?? fileConfig?.server.deploymentMode ?? "local_trusted";
-  const deploymentExposureFromEnvRaw = process.env.PAPERCLIP_DEPLOYMENT_EXPOSURE;
+  const deploymentExposureFromEnvRaw = env("PAPERCLIP_DEPLOYMENT_EXPOSURE");
   const deploymentExposureFromEnv =
     deploymentExposureFromEnvRaw &&
     DEPLOYMENT_EXPOSURES.includes(deploymentExposureFromEnvRaw as DeploymentExposure)
@@ -134,17 +154,17 @@ export function loadConfig(): Config {
     deploymentMode === "local_trusted"
       ? "private"
       : (deploymentExposureFromEnv ?? fileConfig?.server.exposure ?? "private");
-  const authBaseUrlModeFromEnvRaw = process.env.PAPERCLIP_AUTH_BASE_URL_MODE;
+  const authBaseUrlModeFromEnvRaw = env("PAPERCLIP_AUTH_BASE_URL_MODE");
   const authBaseUrlModeFromEnv =
     authBaseUrlModeFromEnvRaw &&
     AUTH_BASE_URL_MODES.includes(authBaseUrlModeFromEnvRaw as AuthBaseUrlMode)
       ? (authBaseUrlModeFromEnvRaw as AuthBaseUrlMode)
       : null;
-  const publicUrlFromEnv = process.env.PAPERCLIP_PUBLIC_URL;
+  const publicUrlFromEnv = env("PAPERCLIP_PUBLIC_URL");
   const authPublicBaseUrlRaw =
-    process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL ??
-    process.env.BETTER_AUTH_URL ??
-    process.env.BETTER_AUTH_BASE_URL ??
+    env("PAPERCLIP_AUTH_PUBLIC_BASE_URL") ??
+    env("BETTER_AUTH_URL") ??
+    env("BETTER_AUTH_BASE_URL") ??
     publicUrlFromEnv ??
     fileConfig?.auth?.publicBaseUrl;
   const authPublicBaseUrl = authPublicBaseUrlRaw?.trim() || undefined;
@@ -252,5 +272,9 @@ export function loadConfig(): Config {
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
+    managedInstanceId: env("PAPERCLIP_MANAGED_INSTANCE_ID") ?? undefined,
+    managedSecret: env("PAPERCLIP_MANAGEMENT_SECRET") ?? undefined,
+    managedUsageReportUrl: env("PAPERCLIP_USAGE_REPORT_URL") ?? undefined,
+    managedLifecycleUrl: env("PAPERCLIP_LIFECYCLE_URL") ?? undefined,
   };
 }

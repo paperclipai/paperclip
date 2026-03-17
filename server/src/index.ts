@@ -488,6 +488,7 @@ export async function startServer(): Promise<StartedServer> {
     bindHost: config.host,
     authReady,
     companyDeletionEnabled: config.companyDeletionEnabled,
+    managedSecret: config.managedSecret,
     betterAuthHandler,
     resolveSession,
   });
@@ -665,7 +666,29 @@ export async function startServer(): Promise<StartedServer> {
       resolveListen();
     });
   });
-  
+
+  // Managed-mode lifecycle & usage reporting
+  const lifecycleOpts = config.managedLifecycleUrl && config.managedInstanceId && config.managedSecret
+    ? { url: config.managedLifecycleUrl, instanceId: config.managedInstanceId, secret: config.managedSecret }
+    : null;
+  let usageStop: (() => void) | undefined;
+  if (lifecycleOpts) {
+    const { notifyReady, notifyShutdown } = await import("./services/lifecycle-hooks.js");
+    void notifyReady(lifecycleOpts);
+    const onShutdown = async () => { usageStop?.(); await notifyShutdown(lifecycleOpts); };
+    process.once("SIGINT", () => void onShutdown());
+    process.once("SIGTERM", () => void onShutdown());
+  }
+  if (config.managedUsageReportUrl && config.managedInstanceId && config.managedSecret) {
+    const { startUsageReporter } = await import("./services/usage-reporter.js");
+    const reporter = startUsageReporter(db, {
+      url: config.managedUsageReportUrl,
+      instanceId: config.managedInstanceId,
+      secret: config.managedSecret,
+    });
+    usageStop = reporter.stop;
+  }
+
   if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
       logger.info({ signal }, "Stopping embedded PostgreSQL");
