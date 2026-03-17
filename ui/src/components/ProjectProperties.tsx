@@ -638,7 +638,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                   onChange={(e) => setWorkspaceCwd(e.target.value)}
                   placeholder="/absolute/path/to/workspace"
                 />
-                <ChoosePathButton />
+                <ChoosePathButton onSelect={setWorkspaceCwd} currentPath={workspaceCwd || undefined} />
               </div>
               <div className="flex items-center gap-2">
                 <Button

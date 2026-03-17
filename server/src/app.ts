@@ -42,6 +42,7 @@ import { createPluginDevWatcher } from "./services/plugin-dev-watcher.js";
 import { createPluginHostServiceCleanup } from "./services/plugin-host-service-cleanup.js";
 import { pluginRegistryService } from "./services/plugin-registry.js";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
+import { fsRoutes } from "./routes/fs.js";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 
 type UiMode = "none" | "static" | "vite-dev";
@@ -201,6 +202,7 @@ export async function createApp(
       { workerManager },
     ),
   );
+  api.use(fsRoutes());
   api.use(
     accessRoutes(db, {
       deploymentMode: opts.deploymentMode,

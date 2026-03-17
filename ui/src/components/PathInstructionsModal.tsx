@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Apple, Monitor, Terminal } from "lucide-react";
+import { FolderPickerDialog } from "./FolderPickerDialog";
 import {
   Dialog,
   DialogContent,
@@ -120,11 +121,43 @@ export function PathInstructionsModal({
 }
 
 /**
- * Small "Choose" button that opens the PathInstructionsModal.
- * Drop-in replacement for the old showDirectoryPicker buttons.
+ * "Choose" button that opens a native folder picker dialog.
+ * Falls back to path instructions modal when no onSelect callback is provided.
  */
-export function ChoosePathButton({ className }: { className?: string }) {
+export function ChoosePathButton({
+  className,
+  onSelect,
+  currentPath,
+}: {
+  className?: string;
+  onSelect?: (path: string) => void;
+  currentPath?: string;
+}) {
   const [open, setOpen] = useState(false);
+
+  if (onSelect) {
+    return (
+      <>
+        <button
+          type="button"
+          className={cn(
+            "inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 transition-colors shrink-0",
+            className,
+          )}
+          onClick={() => setOpen(true)}
+        >
+          Browse
+        </button>
+        <FolderPickerDialog
+          open={open}
+          onOpenChange={setOpen}
+          onSelect={onSelect}
+          initialPath={currentPath}
+        />
+      </>
+    );
+  }
+
   return (
     <>
       <button
