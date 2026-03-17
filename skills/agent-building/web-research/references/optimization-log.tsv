@@ -1,0 +1,2 @@
+iteration	trigger_pct	nofire_pct	output_pct	lines	status	description
+0	100	100	100	168	baseline	Initial build from AIS-80
