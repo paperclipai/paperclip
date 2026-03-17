@@ -15,7 +15,7 @@ import {
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "../index.js";
-import { detectGeminiAuthRequired, parseGeminiJsonl } from "./parse.js";
+import { detectGeminiAuthRequired } from "./parse.js";
 import { firstNonEmptyLine } from "./utils.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
@@ -140,7 +140,7 @@ export async function testEnvironment(
         return asStringArray(config.args);
       })();
 
-      const args = ["--output-format", "stream-json"];
+      const args = [];
       if (model && model !== DEFAULT_GEMINI_LOCAL_MODEL) args.push("--model", model);
       if (approvalMode !== "default") args.push("--approval-mode", approvalMode);
       if (sandbox) {
@@ -163,10 +163,9 @@ export async function testEnvironment(
           onLog: async () => { },
         },
       );
-      const parsed = parseGeminiJsonl(probe.stdout);
-      const detail = summarizeProbeDetail(probe.stdout, probe.stderr, parsed.errorMessage);
+      const detail = summarizeProbeDetail(probe.stdout, probe.stderr, null);
       const authMeta = detectGeminiAuthRequired({
-        parsed: parsed.resultEvent,
+        parsed: null,
         stdout: probe.stdout,
         stderr: probe.stderr,
       });
@@ -179,7 +178,7 @@ export async function testEnvironment(
           hint: "Retry the probe. If this persists, verify Gemini can run `Respond with hello.` from this directory manually.",
         });
       } else if ((probe.exitCode ?? 1) === 0) {
-        const summary = parsed.summary.trim();
+        const summary = probe.stdout.trim();
         const hasHello = /\bhello\b/i.test(summary);
         checks.push({
           code: hasHello ? "gemini_hello_probe_passed" : "gemini_hello_probe_unexpected_output",
@@ -191,7 +190,7 @@ export async function testEnvironment(
           ...(hasHello
             ? {}
             : {
-              hint: "Try `gemini --output-format json \"Respond with hello.\"` manually to inspect full output.",
+              hint: "Try `gemini \"Respond with hello.\"` manually to inspect full output.",
             }),
         });
       } else if (authMeta.requiresAuth) {
@@ -208,7 +207,7 @@ export async function testEnvironment(
           level: "error",
           message: "Gemini hello probe failed.",
           ...(detail ? { detail } : {}),
-          hint: "Run `gemini --output-format json \"Respond with hello.\"` manually in this working directory to debug.",
+          hint: "Run `gemini \"Respond with hello.\"` manually in this working directory to debug.",
         });
       }
     }
