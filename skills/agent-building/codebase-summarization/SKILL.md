@@ -17,9 +17,7 @@ Work normally. `.claude/summaries/` auto-populates. Stop hook regenerates `CODEB
 
 ## Map Format
 
-`CODEBASE.md` loads 10-line summaries instead of full file content — 90%+ context savings on familiar codebases.
-
-Full format spec, real example, and token/value breakdown at `references/codebase-md-format.md`.
+10-line summaries per file — 90%+ context savings. Full format spec at `references/codebase-md-format.md`.
 
 ## On-Demand Summarization
 
