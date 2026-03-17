@@ -7,28 +7,18 @@ const METRIC_FAILED = "email_notification_failures";
 // Known event types for allowlist validation
 // ---------------------------------------------------------------------------
 
+/** Only event types that the plugin actually subscribes to in setup(). */
 const KNOWN_EVENT_TYPES = new Set([
-  "company.created",
-  "company.updated",
-  "project.created",
-  "project.updated",
-  "project.workspace_created",
-  "project.workspace_updated",
-  "project.workspace_deleted",
-  "issue.created",
-  "issue.updated",
-  "issue.comment.created",
-  "agent.created",
-  "agent.updated",
-  "agent.status_changed",
   "agent.run.started",
   "agent.run.finished",
   "agent.run.failed",
   "agent.run.cancelled",
+  "agent.status_changed",
+  "issue.created",
+  "issue.comment.created",
   "approval.created",
   "approval.decided",
   "cost_event.created",
-  "activity.logged",
 ]);
 
 // ---------------------------------------------------------------------------
@@ -111,12 +101,16 @@ function buildResendRequest(
 
 function buildSendGridRequest(
   apiKey: string,
-  from: string,
+  fromAddress: string,
+  fromName: string | undefined,
   to: string[],
   subject: string,
   html: string,
   text: string,
 ): EmailRequest {
+  const fromObj: { email: string; name?: string } = { email: fromAddress };
+  if (fromName) fromObj.name = fromName;
+
   return {
     url: "https://api.sendgrid.com/v3/mail/send",
     headers: {
@@ -125,7 +119,7 @@ function buildSendGridRequest(
     },
     body: JSON.stringify({
       personalizations: [{ to: to.map((email) => ({ email })) }],
-      from: { email: from },
+      from: fromObj,
       subject,
       content: [
         { type: "text/plain", value: text },
@@ -233,20 +227,28 @@ function isValidEmail(email: string): boolean {
 // Plugin definition
 // ---------------------------------------------------------------------------
 
+// Module-level config cache — invalidated by onConfigChanged hook
+let _cachedConfig: PluginConfig | null = null;
+
 const plugin = definePlugin({
   async setup(ctx) {
-    const getParsedConfig = async (): Promise<PluginConfig> => {
-      const config = await ctx.config.get();
-      const provider = asString(config.provider);
+    const parseRawConfig = (raw: Record<string, unknown>): PluginConfig => {
+      const provider = asString(raw.provider);
       return {
         provider: provider === "sendgrid" ? "sendgrid" : "resend",
-        apiKeySecretRef: asString(config.apiKeySecretRef),
-        fromAddress: asString(config.fromAddress),
-        fromName: asString(config.fromName) || "Paperclip",
-        toAddresses: asStringArray(config.toAddresses),
-        subjectPrefix: asString(config.subjectPrefix) || "[Paperclip]",
-        allowlist: asStringArray(config.eventAllowlist),
+        apiKeySecretRef: asString(raw.apiKeySecretRef),
+        fromAddress: asString(raw.fromAddress),
+        fromName: asString(raw.fromName) || "Paperclip",
+        toAddresses: asStringArray(raw.toAddresses),
+        subjectPrefix: asString(raw.subjectPrefix) || "[Paperclip]",
+        allowlist: asStringArray(raw.eventAllowlist),
       };
+    };
+
+    const getParsedConfig = async (): Promise<PluginConfig> => {
+      if (_cachedConfig) return _cachedConfig;
+      _cachedConfig = parseRawConfig(await ctx.config.get());
+      return _cachedConfig;
     };
 
     const sendEmail = async (
@@ -275,7 +277,7 @@ const plugin = definePlugin({
 
         const request =
           config.provider === "sendgrid"
-            ? buildSendGridRequest(apiKey, config.fromAddress, config.toAddresses, safeSubject, html, text)
+            ? buildSendGridRequest(apiKey, config.fromAddress, config.fromName, config.toAddresses, safeSubject, html, text)
             : buildResendRequest(apiKey, from, config.toAddresses, safeSubject, html, text);
 
         const response = await ctx.http.fetch(request.url, {
@@ -351,6 +353,10 @@ const plugin = definePlugin({
     handleEvent("approval.created");
     handleEvent("approval.decided");
     handleEvent("cost_event.created");
+  },
+
+  async onConfigChanged() {
+    _cachedConfig = null;
   },
 
   async onValidateConfig(config) {
