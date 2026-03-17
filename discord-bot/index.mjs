@@ -1,4 +1,4 @@
-import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder } from "discord.js";
+import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder, ChannelType } from "discord.js";
 
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const PAPERCLIP_URL = process.env.PAPERCLIP_URL || "http://localhost:3100";
@@ -24,27 +24,66 @@ async function api(method, path, body) {
     const text = await res.text().catch(() => "");
     throw new Error(`Paperclip ${res.status}: ${text.slice(0, 200)}`);
   }
-  const contentType = res.headers.get("content-type") || "";
-  if (contentType.includes("json")) return res.json();
+  const ct = res.headers.get("content-type") || "";
+  if (ct.includes("json")) return res.json();
   return null;
 }
 
-// Cache company + CEO agent info
-let ceoAgent = null;
-let defaultCompanyId = null;
+// --- Company/Agent discovery ---
 
-async function findCEO() {
-  if (ceoAgent) return ceoAgent;
+// Maps: channelName → { companyId, companyName, ceoAgent }
+const companyMap = new Map();
+// Maps: companyId → { companyName, ceoAgent, agents }
+const companyData = new Map();
+
+async function discoverCompanies() {
   const companies = await api("GET", "/companies");
-  if (!companies?.length) throw new Error("No companies found");
-  defaultCompanyId = companies[0].id;
+  const active = companies.filter(c => c.status === "active");
 
-  const agents = await api("GET", `/companies/${defaultCompanyId}/agents`);
-  const ceo = agents.find(a => a.name.toLowerCase().includes("ceo") && a.status !== "terminated");
-  if (!ceo) throw new Error("No active CEO agent found");
-  ceoAgent = ceo;
-  console.log(`[bot] Found CEO: ${ceo.name} (${ceo.id}) in company ${defaultCompanyId}`);
-  return ceo;
+  for (const company of active) {
+    const agents = await api("GET", `/companies/${company.id}/agents`);
+    const ceo = agents.find(a => a.name.toLowerCase().includes("ceo") && a.status !== "terminated");
+
+    const data = {
+      companyId: company.id,
+      companyName: company.name,
+      prefix: company.issuePrefix,
+      ceoAgent: ceo || null,
+      agents,
+    };
+
+    companyData.set(company.id, data);
+
+    // Map channel names to companies
+    // Channels: #moqcai-ceo, #palantir-ceo, #morenada-ceo, etc.
+    const slug = company.name.toLowerCase().replace(/[^a-z0-9]/g, "");
+    companyMap.set(`${slug}-ceo`, data);
+    companyMap.set(`${slug}`, data);
+
+    if (ceo) {
+      console.log(`[bot] ${company.name} → CEO: ${ceo.name} (${ceo.id}) | channel: #${slug}-ceo`);
+    } else {
+      console.log(`[bot] ${company.name} → no CEO agent`);
+    }
+  }
+
+  console.log(`[bot] Discovered ${active.length} companies, ${[...companyData.values()].filter(d => d.ceoAgent).length} with CEO agents`);
+}
+
+function resolveCompany(channel) {
+  if (!channel) return null;
+  const name = channel.name?.toLowerCase() || "";
+  // Try exact match first: #moqcai-ceo → moqcai
+  if (companyMap.has(name)) return companyMap.get(name);
+  // Try prefix match: #moqcai-ceo → moqcai-ceo
+  for (const [key, data] of companyMap) {
+    if (name.startsWith(key) || name.includes(key)) return data;
+  }
+  // Fallback: first company with a CEO
+  for (const data of companyData.values()) {
+    if (data.ceoAgent) return data;
+  }
+  return null;
 }
 
 async function wakeAgent(agentId, message, discordContext) {
@@ -66,22 +105,10 @@ async function getRunResult(runId, timeoutMs = 300000) {
   while (Date.now() - start < timeoutMs) {
     try {
       const run = await api("GET", `/heartbeat-runs/${runId}`);
-      if (run.status === "completed" || run.status === "failed" || run.status === "error") {
-        return run;
-      }
-    } catch { /* run not found yet, keep polling */ }
+      if (["completed", "failed", "error"].includes(run.status)) return run;
+    } catch { /* keep polling */ }
     await new Promise(r => setTimeout(r, 3000));
   }
-  return null;
-}
-
-async function getLatestComment(issueId) {
-  try {
-    const comments = await api("GET", `/issues/${issueId}/comments`);
-    if (comments?.length) {
-      return comments[comments.length - 1];
-    }
-  } catch { /* no comments */ }
   return null;
 }
 
@@ -97,13 +124,20 @@ const commands = [
   new SlashCommandBuilder()
     .setName("ceo")
     .setDescription("Send a message to the CEO agent")
-    .addStringOption(opt => opt.setName("message").setDescription("What to tell the CEO").setRequired(true)),
+    .addStringOption(opt => opt.setName("message").setDescription("What to tell the CEO").setRequired(true))
+    .addStringOption(opt => opt.setName("company").setDescription("Company name (auto-detected from channel if omitted)").setRequired(false)),
   new SlashCommandBuilder()
     .setName("status")
     .setDescription("Get the CEO agent's current status"),
   new SlashCommandBuilder()
     .setName("agents")
-    .setDescription("List all agents and their status"),
+    .setDescription("List all agents in the company"),
+  new SlashCommandBuilder()
+    .setName("companies")
+    .setDescription("List all companies and their CEO channels"),
+  new SlashCommandBuilder()
+    .setName("setup")
+    .setDescription("Create CEO channels for all companies in this server"),
 ].map(cmd => cmd.toJSON());
 
 // --- Discord client ---
@@ -120,7 +154,6 @@ const client = new Client({
 client.once("ready", async () => {
   console.log(`[bot] Logged in as ${client.user.tag}`);
 
-  // Register slash commands
   const rest = new REST().setToken(DISCORD_TOKEN);
   try {
     await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
@@ -129,8 +162,7 @@ client.once("ready", async () => {
     console.error("[bot] Failed to register commands:", err.message);
   }
 
-  // Prefetch CEO
-  try { await findCEO(); } catch (err) { console.warn("[bot] CEO not found yet:", err.message); }
+  try { await discoverCompanies(); } catch (err) { console.warn("[bot] Discovery failed:", err.message); }
 });
 
 // Handle slash commands
@@ -139,37 +171,43 @@ client.on("interactionCreate", async (interaction) => {
 
   if (interaction.commandName === "ceo") {
     const message = interaction.options.getString("message");
+    const companyHint = interaction.options.getString("company");
     await interaction.deferReply();
 
     try {
-      const ceo = await findCEO();
-      const result = await wakeAgent(ceo.id, message, {
+      let data;
+      if (companyHint) {
+        const slug = companyHint.toLowerCase().replace(/[^a-z0-9]/g, "");
+        data = companyMap.get(slug) || companyMap.get(`${slug}-ceo`);
+      }
+      if (!data) data = resolveCompany(interaction.channel);
+      if (!data?.ceoAgent) {
+        await interaction.editReply("No CEO agent found for this channel. Use `/companies` to see available companies, or `/setup` to create channels.");
+        return;
+      }
+
+      const result = await wakeAgent(data.ceoAgent.id, message, {
         channelId: interaction.channelId,
         userId: interaction.user.id,
       });
 
       if (result?.status === "skipped") {
-        await interaction.editReply("CEO is currently paused or unavailable.");
+        await interaction.editReply(`${data.companyName} CEO is paused or unavailable.`);
         return;
       }
 
       const runId = result?.id || result?.runId;
-      if (!runId) {
-        await interaction.editReply(`Message sent to ${ceo.name}. Waiting for response...`);
-        return;
-      }
+      await interaction.editReply(`📨 Sent to **${data.companyName} ${data.ceoAgent.name}**. ${runId ? `Run \`${runId.slice(0, 8)}\` started.` : ""} Waiting...`);
 
-      await interaction.editReply(`📨 Message sent to **${ceo.name}**. Run \`${runId.slice(0, 8)}\` started. Waiting for response...`);
-
-      // Poll for completion in background
-      const run = await getRunResult(runId);
-      if (run) {
-        const summary = run.resultSummary || run.summary || "Run completed (no summary).";
-        const status = run.status === "completed" ? "✅" : "❌";
-        const reply = `${status} **${ceo.name}** responded:\n\n${summary.slice(0, 1900)}`;
-        await interaction.followUp(reply);
-      } else {
-        await interaction.followUp(`⏱️ CEO is still working on this (run ${runId.slice(0, 8)}). Check Paperclip for the full response.`);
+      if (runId) {
+        const run = await getRunResult(runId);
+        if (run) {
+          const summary = run.resultSummary || run.summary || "Run completed.";
+          const icon = run.status === "completed" ? "✅" : "❌";
+          await interaction.followUp(`${icon} **${data.ceoAgent.name}** (${data.companyName}):\n\n${summary.slice(0, 1900)}`);
+        } else {
+          await interaction.followUp(`⏱️ Still working. Check Paperclip for the full response.`);
+        }
       }
     } catch (err) {
       await interaction.editReply(`❌ Error: ${err.message}`);
@@ -179,19 +217,18 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.commandName === "status") {
     await interaction.deferReply();
     try {
-      const ceo = await findCEO();
-      const { agent, state } = await getAgentStatus(ceo.id);
+      const data = resolveCompany(interaction.channel);
+      if (!data?.ceoAgent) { await interaction.editReply("No CEO agent for this channel."); return; }
+
+      const { agent, state } = await getAgentStatus(data.ceoAgent.id);
       const embed = new EmbedBuilder()
-        .setTitle(`${agent.name}`)
-        .setColor(agent.status === "active" ? 0x22c55e : 0xef4444)
+        .setTitle(`${data.companyName} — ${agent.name}`)
+        .setColor(agent.status === "active" || agent.status === "idle" ? 0x22c55e : 0xef4444)
         .addFields(
           { name: "Status", value: agent.status, inline: true },
-          { name: "Adapter", value: agent.adapterType || "unknown", inline: true },
+          { name: "Adapter", value: agent.adapterType || "?", inline: true },
           { name: "Last Run", value: state?.lastRunStatus || "none", inline: true },
         );
-      if (state?.totalTokens) {
-        embed.addFields({ name: "Total Tokens", value: state.totalTokens.toLocaleString(), inline: true });
-      }
       await interaction.editReply({ embeds: [embed] });
     } catch (err) {
       await interaction.editReply(`❌ Error: ${err.message}`);
@@ -201,54 +238,98 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.commandName === "agents") {
     await interaction.deferReply();
     try {
-      if (!defaultCompanyId) await findCEO();
-      const agents = await api("GET", `/companies/${defaultCompanyId}/agents`);
-      const lines = agents.map(a => {
-        const icon = a.status === "active" ? "🟢" : a.status === "paused" ? "🟡" : "🔴";
+      const data = resolveCompany(interaction.channel);
+      if (!data) { await interaction.editReply("No company mapped to this channel."); return; }
+
+      const lines = data.agents.map(a => {
+        const icon = a.status === "idle" || a.status === "active" ? "🟢" : a.status === "paused" ? "🟡" : "🔴";
         return `${icon} **${a.name}** — ${a.status} (${a.adapterType || "?"})`;
       });
-      await interaction.editReply(lines.join("\n") || "No agents found.");
+      await interaction.editReply(`**${data.companyName} agents:**\n${lines.join("\n") || "None"}`);
+    } catch (err) {
+      await interaction.editReply(`❌ Error: ${err.message}`);
+    }
+  }
+
+  if (interaction.commandName === "companies") {
+    await interaction.deferReply();
+    try {
+      if (companyData.size === 0) await discoverCompanies();
+      const lines = [...companyData.values()].map(d => {
+        const ceo = d.ceoAgent ? `CEO: ${d.ceoAgent.name}` : "no CEO";
+        const slug = d.companyName.toLowerCase().replace(/[^a-z0-9]/g, "");
+        return `• **${d.companyName}** — ${ceo} | channel: \`#${slug}-ceo\``;
+      });
+      await interaction.editReply(`**Companies:**\n${lines.join("\n")}`);
+    } catch (err) {
+      await interaction.editReply(`❌ Error: ${err.message}`);
+    }
+  }
+
+  if (interaction.commandName === "setup") {
+    await interaction.deferReply();
+    try {
+      if (companyData.size === 0) await discoverCompanies();
+      const guild = interaction.guild;
+      if (!guild) { await interaction.editReply("This command only works in a server."); return; }
+
+      const created = [];
+      for (const data of companyData.values()) {
+        if (!data.ceoAgent) continue;
+        const slug = data.companyName.toLowerCase().replace(/[^a-z0-9]/g, "");
+        const channelName = `${slug}-ceo`;
+
+        const existing = guild.channels.cache.find(c => c.name === channelName);
+        if (existing) {
+          created.push(`#${channelName} (already exists)`);
+          continue;
+        }
+
+        await guild.channels.create({
+          name: channelName,
+          type: ChannelType.GuildText,
+          topic: `Talk to ${data.companyName}'s CEO agent (${data.ceoAgent.name})`,
+        });
+        created.push(`#${channelName} ✅`);
+      }
+      await interaction.editReply(`**Channels created:**\n${created.join("\n") || "No companies with CEO agents found."}`);
     } catch (err) {
       await interaction.editReply(`❌ Error: ${err.message}`);
     }
   }
 });
 
-// Handle @mentions in messages (e.g. "@MoqcAI CEO check the leads")
+// Handle @mentions
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
   if (!message.mentions.has(client.user)) return;
 
-  // Strip the bot mention from the message
   const content = message.content.replace(/<@!?\d+>/g, "").trim();
-  if (!content) {
-    await message.reply("What would you like me to tell the CEO?");
-    return;
-  }
+  if (!content) { await message.reply("What would you like me to tell the CEO?"); return; }
 
   try {
-    const ceo = await findCEO();
-    await message.react("📨");
+    const data = resolveCompany(message.channel);
+    if (!data?.ceoAgent) {
+      await message.reply("No CEO agent mapped to this channel. Use `/setup` to create company channels.");
+      return;
+    }
 
-    const result = await wakeAgent(ceo.id, content, {
+    await message.react("📨");
+    const result = await wakeAgent(data.ceoAgent.id, content, {
       channelId: message.channelId,
       userId: message.author.id,
     });
 
     const runId = result?.id || result?.runId;
-    if (!runId) {
-      await message.reply(`Sent to **${ceo.name}** but couldn't track the run.`);
-      return;
-    }
+    if (!runId) { await message.reply(`Sent to **${data.companyName} CEO**. Couldn't track the run.`); return; }
 
-    // Poll for completion
-    const run = await getRunResult(runId, 180000); // 3 min timeout for @mentions
+    const run = await getRunResult(runId, 180000);
     if (run) {
-      const summary = run.resultSummary || run.summary || "Done (no summary).";
-      const status = run.status === "completed" ? "✅" : "❌";
-      await message.reply(`${status} **${ceo.name}**: ${summary.slice(0, 1900)}`);
+      const summary = run.resultSummary || run.summary || "Done.";
+      const icon = run.status === "completed" ? "✅" : "❌";
+      await message.reply(`${icon} **${data.ceoAgent.name}** (${data.companyName}): ${summary.slice(0, 1900)}`);
     } else {
-      await message.reply(`⏱️ CEO is still working. Check Paperclip for the full response.`);
+      await message.reply(`⏱️ ${data.companyName} CEO is still working. Check Paperclip.`);
     }
   } catch (err) {
     await message.reply(`❌ Error: ${err.message}`);
