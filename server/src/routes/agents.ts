@@ -94,7 +94,20 @@ export function agentRoutes(db: Db) {
   }
 
   async function assertCanReadConfigurations(req: Request, companyId: string) {
-    return assertCanCreateAgentsForCompany(req, companyId);
+    assertCompanyAccess(req, companyId);
+    // Board users: check agents:create (existing behavior)
+    if (req.actor.type === "board") {
+      return assertCanCreateAgentsForCompany(req, companyId);
+    }
+    // Agents: allow read access if same company (agents can see peers for delegation)
+    if (req.actor.agentId) {
+      const actorAgent = await svc.getById(req.actor.agentId);
+      if (!actorAgent || actorAgent.companyId !== companyId) {
+        throw forbidden("Agent key cannot access another company");
+      }
+      return actorAgent;
+    }
+    throw forbidden("Authentication required");
   }
 
   async function actorCanReadConfigurationsForCompany(req: Request, companyId: string) {
@@ -106,8 +119,7 @@ export function agentRoutes(db: Db) {
     if (!req.actor.agentId) return false;
     const actorAgent = await svc.getById(req.actor.agentId);
     if (!actorAgent || actorAgent.companyId !== companyId) return false;
-    const allowedByGrant = await access.hasPermission(companyId, "agent", actorAgent.id, "agents:create");
-    return allowedByGrant || canCreateAgents(actorAgent);
+    return true; // Agents can read peer info within same company
   }
 
   async function assertCanUpdateAgent(req: Request, targetAgent: { id: string; companyId: string }) {
@@ -468,8 +480,14 @@ export function agentRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     const result = await svc.list(companyId);
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
-    if (canReadConfigs || req.actor.type === "board") {
+    if (req.actor.type === "board") {
       res.json(result);
+      return;
+    }
+    // Agents can read peer configs (type, role, capabilities) but credentials
+    // in adapterConfig/runtimeConfig are always redacted for non-board actors.
+    if (canReadConfigs) {
+      res.json(result.map((agent) => redactAgentConfiguration(agent)));
       return;
     }
     res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
@@ -617,11 +635,14 @@ export function agentRoutes(db: Db) {
     assertCompanyAccess(req, agent.companyId);
     if (req.actor.type === "agent" && req.actor.agentId !== id) {
       const canRead = await actorCanReadConfigurationsForCompany(req, agent.companyId);
+      const chainOfCommand = await svc.getChainOfCommand(agent.id);
       if (!canRead) {
-        const chainOfCommand = await svc.getChainOfCommand(agent.id);
         res.json({ ...redactForRestrictedAgentView(agent), chainOfCommand });
         return;
       }
+      // Agents can see peer config structure but not raw credentials
+      res.json({ ...redactAgentConfiguration(agent), chainOfCommand });
+      return;
     }
     const chainOfCommand = await svc.getChainOfCommand(agent.id);
     res.json({ ...agent, chainOfCommand });
