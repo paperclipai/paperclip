@@ -1,2 +1,10 @@
 iteration	trigger_pct	nofire_pct	output_pct	lines	status	description
 0	100	100	100	102	baseline	Initial state
+1	100	100	100	89	KEPT	Remove Reference Index section (-13 lines)
+2	100	100	100	72	KEPT	Remove 8 section separators (---) cosmetic only (-17 lines)
+3	100	100	100	64	KEPT	Remove Phase Detection table — not tested, Quick Setup is self-navigating (-8 lines)
+4	100	100	100	58	KEPT	Collapse On-Demand to pointer-only — O7 covered by reference file (-6 lines)
+5	100	100	100	56	KEPT	Merge intro paragraphs into one sentence — no info lost (-2 lines)
+6	100	100	100	52	KEPT	Collapse Composability bullets to single sentence — O9 still passes (-4 lines)
+7	100	100	100	48	KEPT	Tighten Stale Detection + Large Repos to one-liners (-4 lines)
+8	100	100	100	46	KEPT	Collapse Map Format to one-liner (-2 lines)
