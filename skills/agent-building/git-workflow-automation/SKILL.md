@@ -19,7 +19,6 @@ The fix is two commands: `git worktree add` and `gh pr create`. The pattern is a
 | Create and merge PRs from Claude Code | [03-gh-cli-loop.md](references/03-gh-cli-loop.md) |
 | Branch naming and lifecycle strategy | [04-branch-strategy.md](references/04-branch-strategy.md) |
 | Auto-commit hooks (PreToolUse, Stop) | [05-hooks.md](references/05-hooks.md) |
-| Conflict resolution without human eyes | [06-conflict-resolution.md](references/06-conflict-resolution.md) |
 | Complete end-to-end loop walkthrough | [07-full-loop.md](references/07-full-loop.md) |
 
 ## The Core Pattern (30-Second Version)
@@ -30,11 +29,9 @@ git worktree add /tmp/worktree-agent-a feat/task-a
 git worktree add /tmp/worktree-agent-b feat/task-b
 
 # 2. Each agent works in its own directory — zero contention
-
 # 3. Both create PRs with gh CLI
 gh pr create --title "feat: task-a" --body "..." --base main
 
 # 4. Cleanup
 git worktree remove /tmp/worktree-agent-a
 ```
-
