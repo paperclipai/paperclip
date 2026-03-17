@@ -38,7 +38,9 @@
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "probe:quota": "pnpm exec tsx src/cli/quota-probe.ts --json",
+    "probe:quota:raw": "pnpm exec tsx src/cli/quota-probe.ts --json --raw-cli"
   },
   "dependencies": {
     "@paperclipai/adapter-utils": "workspace:*",

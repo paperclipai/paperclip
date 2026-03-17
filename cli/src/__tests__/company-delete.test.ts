@@ -8,6 +8,8 @@ function makeCompany(overrides: Partial<Company>): Company {
     name: "Alpha",
     description: null,
     status: "active",
+    pauseReason: null,
+    pausedAt: null,
     issuePrefix: "ALP",
     issueCounter: 1,
     budgetMonthlyCents: 0,

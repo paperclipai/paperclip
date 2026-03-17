@@ -83,8 +83,7 @@ export async function startServer(): Promise<StartedServer> {
     | "skipped"
     | "already applied"
     | "applied (empty database)"
-    | "applied (pending migrations)"
-    | "pending migrations skipped";
+    | "applied (pending migrations)";
   
   function formatPendingMigrationSummary(migrations: string[]): string {
     if (migrations.length === 0) return "none";
@@ -139,11 +138,10 @@ export async function startServer(): Promise<StartedServer> {
       );
       const apply = autoApply ? true : await promptApplyMigrations(state.pendingMigrations);
       if (!apply) {
-        logger.warn(
-          { pendingMigrations: state.pendingMigrations },
-          `${label} has pending migrations; continuing without applying. Run pnpm db:migrate to apply before startup.`,
+        throw new Error(
+          `${label} has pending migrations (${formatPendingMigrationSummary(state.pendingMigrations)}). ` +
+            "Refusing to start against a stale schema. Run pnpm db:migrate or set PAPERCLIP_MIGRATION_AUTO_APPLY=true.",
         );
-        return "pending migrations skipped";
       }
   
       logger.info({ pendingMigrations: state.pendingMigrations }, `Applying ${state.pendingMigrations.length} pending migrations for ${label}`);
@@ -153,11 +151,10 @@ export async function startServer(): Promise<StartedServer> {
   
     const apply = autoApply ? true : await promptApplyMigrations(state.pendingMigrations);
     if (!apply) {
-      logger.warn(
-        { pendingMigrations: state.pendingMigrations },
-        `${label} has pending migrations; continuing without applying. Run pnpm db:migrate to apply before startup.`,
+      throw new Error(
+        `${label} has pending migrations (${formatPendingMigrationSummary(state.pendingMigrations)}). ` +
+          "Refusing to start against a stale schema. Run pnpm db:migrate or set PAPERCLIP_MIGRATION_AUTO_APPLY=true.",
       );
-      return "pending migrations skipped";
     }
   
     logger.info({ pendingMigrations: state.pendingMigrations }, `Applying ${state.pendingMigrations.length} pending migrations for ${label}`);
