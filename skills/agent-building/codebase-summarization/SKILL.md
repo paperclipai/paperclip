@@ -9,14 +9,6 @@ Claude Code auto-generates a navigable codebase map using PostToolUse hooks — 
 
 **Problem:** Without a persistent map, agents re-read the same files every session. A 30-file project burns 40% of context on content already seen last week.
 
-## Phase Detection
-
-| Signal | Action |
-|---|---|
-| "install" / "set up" / "how do I use" | Setup: follow Quick Setup |
-| "map this codebase" / "summarize" + active session | On-Demand: follow On-Demand Summarization |
-| Summaries look wrong / source files changed | Stale: see `references/stale-detection.md` |
-
 ## Quick Setup (3 steps)
 
 1. **Install hook scripts** to `~/.claude/hooks/` — PostToolUse captures summaries, Stop rebuilds the index. Full scripts at `references/hooks.md`.
