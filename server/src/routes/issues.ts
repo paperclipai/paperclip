@@ -214,6 +214,24 @@ export function issueRoutes(db: Db, storage: StorageService) {
     );
   }
 
+  function getManagedAgentIdForTaskControl(options: {
+    currentAssigneeAgentId: string | null;
+    actorAgentId: string | null | undefined;
+    requestedStatus?: string;
+    currentStatus: string;
+    nextAssigneeAgentId: string | null;
+  }) {
+    const assigneeChanges = options.currentAssigneeAgentId !== options.nextAssigneeAgentId;
+    const terminatesTask = isManagedTerminalStatusTransition(options.requestedStatus, options.currentStatus);
+    return (
+      options.currentAssigneeAgentId &&
+      options.currentAssigneeAgentId !== options.actorAgentId &&
+      (assigneeChanges || terminatesTask)
+    )
+      ? options.currentAssigneeAgentId
+      : null;
+  }
+
   async function assertAgentCanManageTaskControl(
     req: Request,
     issue: {
@@ -234,16 +252,15 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const actorAgentId = req.actor.agentId;
     if (!actorAgentId) throw forbidden("Agent authentication required");
 
-    const currentAssigneeAgentId = issue.assigneeAgentId;
     const nextAssigneeAgentId = options.nextAssigneeAgentId;
     const nextAssigneeUserId = options.nextAssigneeUserId;
-    const assigneeChanges = currentAssigneeAgentId !== nextAssigneeAgentId;
-    const terminatesTask = isManagedTerminalStatusTransition(options.requestedStatus, issue.status);
-
-    const managedAgentId =
-      currentAssigneeAgentId && currentAssigneeAgentId !== actorAgentId && (assigneeChanges || terminatesTask)
-        ? currentAssigneeAgentId
-        : null;
+    const managedAgentId = getManagedAgentIdForTaskControl({
+      currentAssigneeAgentId: issue.assigneeAgentId,
+      actorAgentId,
+      requestedStatus: options.requestedStatus,
+      currentStatus: issue.status,
+      nextAssigneeAgentId,
+    });
 
     if (!managedAgentId) return;
 
@@ -957,10 +974,14 @@ export function issueRoutes(db: Db, storage: StorageService) {
       },
     });
 
-    const shouldInterruptManagedRun =
-      !!existing.assigneeAgentId &&
-      existing.assigneeAgentId !== actor.agentId &&
-      (isManagedTerminalStatusTransition(req.body.status, existing.status) || assigneeAgentWillChange);
+    const managedAgentId = getManagedAgentIdForTaskControl({
+      currentAssigneeAgentId: existing.assigneeAgentId,
+      actorAgentId: actor.agentId,
+      requestedStatus: req.body.status,
+      currentStatus: existing.status,
+      nextAssigneeAgentId: updateFields.assigneeAgentId ?? existing.assigneeAgentId,
+    });
+    const shouldInterruptManagedRun = managedAgentId !== null;
     let interruptedRunId: string | null = null;
     if (shouldInterruptManagedRun) {
       try {
