@@ -106,3 +106,14 @@ export const priorityColor: Record<string, string> = {
 };
 
 export const priorityColorDefault = "text-yellow-600 dark:text-yellow-400";
+
+// ---------------------------------------------------------------------------
+// Budget status colors
+// ---------------------------------------------------------------------------
+
+export const budgetStatusBadge: Record<string, string> = {
+  warning: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/50 dark:text-yellow-300",
+  limit_reached: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
+};
+
+export const budgetStatusBadgeDefault = "bg-muted text-muted-foreground";

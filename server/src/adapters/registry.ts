@@ -62,6 +62,15 @@ import {
   agentConfigurationDoc as hermesAgentConfigurationDoc,
   models as hermesModels,
 } from "hermes-paperclip-adapter";
+import {
+  execute as sandboxExecute,
+  testEnvironment as sandboxTestEnvironment,
+  sessionCodec as sandboxSessionCodec,
+} from "@paperclipai/adapter-sandbox/server";
+import {
+  agentConfigurationDoc as sandboxAgentConfigurationDoc,
+  models as sandboxModels,
+} from "@paperclipai/adapter-sandbox";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
 
@@ -150,6 +159,16 @@ const hermesLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: hermesAgentConfigurationDoc,
 };
 
+const sandboxAdapter: ServerAdapterModule = {
+  type: "sandbox",
+  execute: sandboxExecute,
+  testEnvironment: sandboxTestEnvironment,
+  sessionCodec: sandboxSessionCodec,
+  models: sandboxModels,
+  supportsLocalAgentJwt: true,
+  agentConfigurationDoc: sandboxAgentConfigurationDoc,
+};
+
 const adaptersByType = new Map<string, ServerAdapterModule>(
   [
     claudeLocalAdapter,
@@ -158,6 +177,7 @@ const adaptersByType = new Map<string, ServerAdapterModule>(
     piLocalAdapter,
     cursorLocalAdapter,
     geminiLocalAdapter,
+    sandboxAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,
     processAdapter,

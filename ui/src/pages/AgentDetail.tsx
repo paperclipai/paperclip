@@ -19,7 +19,7 @@ import { PageTabBar } from "../components/PageTabBar";
 import { adapterLabels, roleLabels } from "../components/agent-config-primitives";
 import { getUIAdapter, buildTranscript } from "../adapters";
 import { StatusBadge } from "../components/StatusBadge";
-import { agentStatusDot, agentStatusDotDefault } from "../lib/status-colors";
+import { agentStatusDot, agentStatusDotDefault, budgetStatusBadge } from "../lib/status-colors";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { CopyText } from "../components/CopyText";
 import { EntityRow } from "../components/EntityRow";
@@ -132,6 +132,34 @@ const sourceLabels: Record<string, string> = {
 };
 
 const LIVE_SCROLL_BOTTOM_TOLERANCE_PX = 32;
+
+function getBudgetStatus(spentCents: number, budgetCents: number): "warning" | "limit_reached" | null {
+  if (budgetCents <= 0) return null;
+  const warningThreshold = budgetCents * 0.8;
+  if (spentCents >= budgetCents) return "limit_reached";
+  if (spentCents >= warningThreshold) return "warning";
+  return null;
+}
+
+function BudgetBadge({ spentCents, budgetCents }: { spentCents: number; budgetCents: number }) {
+  const status = getBudgetStatus(spentCents, budgetCents);
+  if (!status) return null;
+
+  const utilizationPercent = ((spentCents / budgetCents) * 100).toFixed(0);
+  const label = status === "warning" ? `${utilizationPercent}% budget` : "Budget limit";
+  const colorClass = budgetStatusBadge[status];
+
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium whitespace-nowrap shrink-0",
+        colorClass
+      )}
+    >
+      {label}
+    </span>
+  );
+}
 type ScrollContainer = Window | HTMLElement;
 
 function isWindowContainer(container: ScrollContainer): container is Window {
@@ -577,6 +605,9 @@ export function AgentDetail() {
             </Button>
           )}
           <span className="hidden sm:inline"><StatusBadge status={agent.status} /></span>
+          <span className="hidden sm:inline">
+            <BudgetBadge spentCents={agent.spentMonthlyCents} budgetCents={agent.budgetMonthlyCents} />
+          </span>
           {mobileLiveRun && (
             <Link
               to={`/agents/${canonicalAgentRef}/runs/${mobileLiveRun.id}`}
@@ -915,7 +946,7 @@ function AgentOverview({
       {/* Costs */}
       <div className="space-y-3">
         <h3 className="text-sm font-medium">Costs</h3>
-        <CostsSection runtimeState={runtimeState} runs={runs} />
+        <CostsSection agent={agent} runtimeState={runtimeState} runs={runs} />
       </div>
     </div>
   );
@@ -924,9 +955,11 @@ function AgentOverview({
 /* ---- Costs Section (inline) ---- */
 
 function CostsSection({
+  agent,
   runtimeState,
   runs,
 }: {
+  agent?: Agent;
   runtimeState?: AgentRuntimeState;
   runs: HeartbeatRun[];
 }) {
@@ -939,6 +972,40 @@ function CostsSection({
 
   return (
     <div className="space-y-4">
+      {agent && agent.budgetMonthlyCents > 0 && (
+        <div className="border border-border rounded-lg p-4">
+          <div className="grid grid-cols-2 gap-4 tabular-nums">
+            <div>
+              <span className="text-xs text-muted-foreground block">Monthly spend</span>
+              <span className="text-lg font-semibold">{formatCents(agent.spentMonthlyCents)}</span>
+            </div>
+            <div>
+              <span className="text-xs text-muted-foreground block">Monthly budget</span>
+              <span className="text-lg font-semibold">{formatCents(agent.budgetMonthlyCents)}</span>
+            </div>
+          </div>
+          <div className="mt-3">
+            <div className="w-full bg-secondary h-2 rounded-full overflow-hidden">
+              <div
+                className={cn(
+                  "h-full rounded-full transition-all",
+                  agent.spentMonthlyCents >= agent.budgetMonthlyCents
+                    ? "bg-red-500"
+                    : agent.spentMonthlyCents >= agent.budgetMonthlyCents * 0.8
+                      ? "bg-yellow-500"
+                      : "bg-green-500"
+                )}
+                style={{
+                  width: `${Math.min((agent.spentMonthlyCents / agent.budgetMonthlyCents) * 100, 100)}%`,
+                }}
+              />
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              {((agent.spentMonthlyCents / agent.budgetMonthlyCents) * 100).toFixed(1)}% of budget
+            </p>
+          </div>
+        </div>
+      )}
       {runtimeState && (
         <div className="border border-border rounded-lg p-4">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 tabular-nums">

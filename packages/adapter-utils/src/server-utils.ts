@@ -122,6 +122,10 @@ export function joinPromptSections(
     .join(separator);
 }
 
+export function shellEscape(value: string) {
+  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
+}
+
 export function redactEnvForLogs(env: Record<string, string>): Record<string, string> {
   const redacted: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {

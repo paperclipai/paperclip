@@ -25,6 +25,7 @@ import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } fr
 import { costService } from "./costs.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
+import { circuitBreakerService } from "./circuitBreaker.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import { summarizeHeartbeatRunResultJson } from "./heartbeat-run-summary.js";
 import {
@@ -1346,6 +1347,13 @@ export function heartbeatService(db: Db) {
         await releaseIssueExecutionAndPromote(updatedRun);
       }
       await finalizeAgentStatus(run.agentId, "failed");
+
+      const cbService1 = circuitBreakerService(db);
+      const cbResult1 = await cbService1.checkAgentRunHealth(run.agentId, run.companyId);
+      if (cbResult1.shouldPause) {
+        logger.info({ agentId: run.agentId, reason: cbResult1.reason }, "Circuit breaker tripped");
+      }
+
       await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
@@ -2056,6 +2064,12 @@ export function heartbeatService(db: Db) {
         }
       }
       await finalizeAgentStatus(agent.id, outcome);
+
+      const cbService = circuitBreakerService(db);
+      const cbResult = await cbService.checkAgentRunHealth(agent.id, agent.companyId);
+      if (cbResult.shouldPause) {
+        logger.info({ agentId: agent.id, reason: cbResult.reason }, "Circuit breaker tripped");
+      }
     } catch (err) {
       const message = redactCurrentUserText(err instanceof Error ? err.message : "Unknown adapter failure");
       logger.error({ err, runId }, "heartbeat execution failed");
@@ -2117,6 +2131,12 @@ export function heartbeatService(db: Db) {
       }
 
       await finalizeAgentStatus(agent.id, "failed");
+
+      const cbService2 = circuitBreakerService(db);
+      const cbResult2 = await cbService2.checkAgentRunHealth(agent.id, agent.companyId);
+      if (cbResult2.shouldPause) {
+        logger.info({ agentId: agent.id, reason: cbResult2.reason }, "Circuit breaker tripped");
+      }
     }
     } catch (outerErr) {
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
@@ -2147,6 +2167,16 @@ export function heartbeatService(db: Db) {
           // Ensure the agent is not left stuck in "running" if the inner catch handler's
           // DB calls threw (e.g. a transient DB error in finalizeAgentStatus).
           await finalizeAgentStatus(run.agentId, "failed").catch(() => undefined);
+
+          const cbService3 = circuitBreakerService(db);
+          try {
+            const cbResult3 = await cbService3.checkAgentRunHealth(run.agentId, run.companyId);
+            if (cbResult3.shouldPause) {
+              logger.info({ agentId: run.agentId, reason: cbResult3.reason }, "Circuit breaker tripped");
+            }
+          } catch (cbErr) {
+            logger.warn({ err: cbErr, agentId: run.agentId }, "Failed to check circuit breaker");
+          }
         } finally {
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
           activeRunExecutions.delete(run.id);
