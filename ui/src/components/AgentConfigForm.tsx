@@ -1047,8 +1047,9 @@ function AdapterTypeDropdown({
   value: string;
   onChange: (type: string) => void;
 }) {
+  const [open, setOpen] = useState(false);
   return (
-    <Popover>
+    <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
           <span className="inline-flex items-center gap-1.5">
@@ -1071,7 +1072,10 @@ function AdapterTypeDropdown({
               item.value === value && !item.comingSoon && "bg-accent",
             )}
             onClick={() => {
-              if (!item.comingSoon) onChange(item.value);
+              if (!item.comingSoon) {
+                onChange(item.value);
+                setOpen(false);
+              }
             }}
           >
             <span className="inline-flex items-center gap-1.5">
