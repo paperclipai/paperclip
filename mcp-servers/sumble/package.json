@@ -1,0 +1,9 @@
+{
+  "name": "sumble-mcp",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}
