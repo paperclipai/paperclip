@@ -348,6 +348,36 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const billingType = resolveClaudeBillingType(effectiveEnv);
   const skillsDir = await buildSkillsDir();
 
+  // Write a sourceable env file so agents can access Paperclip env vars in bash.
+  // Claude Code does not export parent-process env vars as shell variables —
+  // they are only accessible via `printenv`, not `$VAR` expansion. Writing them
+  // to a file that agents `source` is the reliable workaround.
+  const paperclipEnvEntries = Object.entries(env)
+    .filter(([key]) => key.startsWith("PAPERCLIP_") || key === "AGENT_HOME")
+    .map(([key, value]) => `export ${key}=${JSON.stringify(value)}`)
+    .join("\n");
+  const envFilePath = path.join(skillsDir, "paperclip-env.sh");
+  await fs.writeFile(envFilePath, paperclipEnvEntries + "\n", "utf-8");
+
+  const envBootstrapNote = [
+    "",
+    "## Paperclip Environment Bootstrap",
+    "",
+    "Claude Code does not expose parent-process environment variables as shell",
+    "variables. Before running any `curl` or shell command that references",
+    "`$PAPERCLIP_API_KEY` or other `PAPERCLIP_*` variables, **source the env file**:",
+    "",
+    "```bash",
+    `source ${envFilePath}`,
+    "```",
+    "",
+    "Run this once at the start of your heartbeat (or in any bash command that",
+    "needs Paperclip credentials). After sourcing, `$PAPERCLIP_API_KEY` and all",
+    "other `PAPERCLIP_*` variables will be available for the rest of that shell",
+    "command.",
+    "",
+  ].join("\n");
+
   // When instructionsFilePath is configured, create a combined temp file that
   // includes both the file content and the path directive, so we only need
   // --append-system-prompt-file (Claude CLI forbids using both flags together).
@@ -356,7 +386,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const instructionsContent = await fs.readFile(instructionsFilePath, "utf-8");
     const pathDirective = `\nThe above agent instructions were loaded from ${instructionsFilePath}. Resolve any relative file references from ${instructionsFileDir}.`;
     const combinedPath = path.join(skillsDir, "agent-instructions.md");
-    await fs.writeFile(combinedPath, instructionsContent + pathDirective, "utf-8");
+    await fs.writeFile(combinedPath, instructionsContent + pathDirective + envBootstrapNote, "utf-8");
+    effectiveInstructionsFilePath = combinedPath;
+  } else {
+    // Even without custom instructions, ensure env bootstrap is available.
+    const combinedPath = path.join(skillsDir, "agent-instructions.md");
+    await fs.writeFile(combinedPath, envBootstrapNote, "utf-8");
     effectiveInstructionsFilePath = combinedPath;
   }
 
