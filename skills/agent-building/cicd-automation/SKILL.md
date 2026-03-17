@@ -95,13 +95,11 @@ gh run view <run-id> --log-failed              # Pull failure log into context
 
 ## PR Gate Integration
 
-Before merging, verify all checks pass:
-
 ```bash
 gh pr checks <pr-number> --watch
 ```
 
-Wire this as a required step in any spec loop or structured workflow — `gh pr checks` exits non-zero if any check fails.
+Exits non-zero if any check fails — wire as a required merge step.
 
 → Integration with structured-project-workflow (#008) + merge block pattern: `references/pr-gate.md`
 
