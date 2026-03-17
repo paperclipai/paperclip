@@ -4,6 +4,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentApiKeys, agents, companyMemberships, instanceUserRoles } from "@paperclipai/db";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
+import { verifyEmbedToken } from "../embed-auth.js";
 import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
@@ -88,36 +89,72 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       .then((rows) => rows[0] ?? null);
 
     if (!key) {
-      const claims = verifyLocalAgentJwt(token);
-      if (!claims) {
+      // Try agent JWT first
+      const agentClaims = verifyLocalAgentJwt(token);
+      if (agentClaims) {
+        const agentRecord = await db
+          .select()
+          .from(agents)
+          .where(eq(agents.id, agentClaims.sub))
+          .then((rows) => rows[0] ?? null);
+
+        if (
+          agentRecord &&
+          agentRecord.companyId === agentClaims.company_id &&
+          agentRecord.status !== "terminated" &&
+          agentRecord.status !== "pending_approval"
+        ) {
+          req.actor = {
+            type: "agent",
+            agentId: agentClaims.sub,
+            companyId: agentClaims.company_id,
+            keyId: undefined,
+            runId: runIdHeader || agentClaims.run_id || undefined,
+            source: "agent_jwt",
+          };
+          next();
+          return;
+        }
+      }
+
+      // Try embed token
+      const embedClaims = verifyEmbedToken(token);
+      if (embedClaims) {
+        // Resolve company memberships
+        const membershipRows = await db
+          .select({ companyId: companyMemberships.companyId })
+          .from(companyMemberships)
+          .where(
+            and(
+              eq(companyMemberships.principalType, "user"),
+              eq(companyMemberships.principalId, embedClaims.sub),
+              eq(companyMemberships.status, "active"),
+            ),
+          );
+
+        // Check instance admin
+        const adminRole = await db
+          .select({ id: instanceUserRoles.id })
+          .from(instanceUserRoles)
+          .where(
+            and(
+              eq(instanceUserRoles.userId, embedClaims.sub),
+              eq(instanceUserRoles.role, "instance_admin"),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+
+        req.actor = {
+          type: "board",
+          userId: embedClaims.sub,
+          companyIds: membershipRows.map((r) => r.companyId),
+          isInstanceAdmin: Boolean(adminRole),
+          source: "embed_jwt",
+        };
         next();
         return;
       }
 
-      const agentRecord = await db
-        .select()
-        .from(agents)
-        .where(eq(agents.id, claims.sub))
-        .then((rows) => rows[0] ?? null);
-
-      if (!agentRecord || agentRecord.companyId !== claims.company_id) {
-        next();
-        return;
-      }
-
-      if (agentRecord.status === "terminated" || agentRecord.status === "pending_approval") {
-        next();
-        return;
-      }
-
-      req.actor = {
-        type: "agent",
-        agentId: claims.sub,
-        companyId: claims.company_id,
-        keyId: undefined,
-        runId: runIdHeader || claims.run_id || undefined,
-        source: "agent_jwt",
-      };
       next();
       return;
     }
