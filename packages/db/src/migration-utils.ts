@@ -8,7 +8,10 @@ export function normalizeMigrationContent(content: string): string {
   return content.replace(/\r\n/g, "\n");
 }
 
-/** Compute a SHA-256 hex digest for migration content. */
+/**
+ * Compute a SHA-256 hex digest for migration content.
+ * @param content Must already be normalized (CRLF → LF) via {@link normalizeMigrationContent}.
+ */
 export function computeMigrationHash(content: string): string {
   return createHash("sha256").update(content).digest("hex");
 }
