@@ -11,28 +11,7 @@ One-shot WebFetch fills gaps with training data — silently, confidently, wrong
 
 ## Quick Setup
 
-Install the source-log hook in `~/.claude/settings.json`:
-
-```json
-{
-  "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "WebFetch",
-        "hooks": [{"type": "command", "command": "bash ~/.claude/hooks/source-log.sh"}]
-      }
-    ],
-    "SessionStart": [
-      {
-        "matcher": "",
-        "hooks": [{"type": "command", "command": "bash ~/.claude/hooks/load-research.sh"}]
-      }
-    ]
-  }
-}
-```
-
-Full hook scripts: `references/anti-hallucination-hooks.md`
+Add PostToolUse (WebFetch) and SessionStart hooks to `~/.claude/settings.json` → full scripts: `references/anti-hallucination-hooks.md`
 
 ---
 
