@@ -103,15 +103,16 @@ async function wakeAgent(agentId, message, discordContext) {
   });
 }
 
+const TERMINAL_STATUSES = new Set(["completed", "succeeded", "failed", "error"]);
+
 async function getRunResult(companyId, agentId, startTime, timeoutMs = 300000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
       const runs = await api("GET", `/companies/${companyId}/heartbeat-runs?agentId=${agentId}&limit=3`);
       if (Array.isArray(runs)) {
-        // Find the most recent completed run that started after our request
         const run = runs.find(r =>
-          ["completed", "failed", "error"].includes(r.status) &&
+          TERMINAL_STATUSES.has(r.status) &&
           new Date(r.createdAt).getTime() >= startTime - 5000
         );
         if (run) return run;
@@ -123,11 +124,32 @@ async function getRunResult(companyId, agentId, startTime, timeoutMs = 300000) {
 }
 
 function extractRunResponse(run) {
-  // Try multiple places where the agent response might be
+  // Check for summary field first
   if (run.resultJson?.summary) return run.resultJson.summary;
-  if (run.resultJson?.resultJson?.stdout) return run.resultJson.resultJson.stdout.slice(0, 1900);
   if (run.summary) return run.summary;
-  if (run.errorMessage) return `Error: ${run.errorMessage}`;
+
+  // OpenCode/Claude output is JSONL in stdout — extract text parts
+  const stdout = run.resultJson?.stdout || run.resultJson?.resultJson?.stdout || "";
+  if (stdout) {
+    const textParts = [];
+    for (const line of stdout.split("\n")) {
+      try {
+        const obj = JSON.parse(line);
+        if (obj.type === "text" && obj.part?.text) {
+          textParts.push(obj.part.text);
+        }
+        // Also check for assistant message content
+        if (obj.type === "assistant" && obj.part?.text) {
+          textParts.push(obj.part.text);
+        }
+      } catch { /* not JSON, skip */ }
+    }
+    if (textParts.length > 0) return textParts.join("");
+  }
+
+  // Fallback: stdoutExcerpt
+  if (run.stdoutExcerpt) return run.stdoutExcerpt;
+  if (run.error) return `Error: ${run.error}`;
   return "Run completed but no response text found.";
 }
 
