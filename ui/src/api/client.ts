@@ -12,6 +12,18 @@ export class ApiError extends Error {
   }
 }
 
+// Embed auth token store.
+// When set, all API requests use Authorization: Bearer instead of cookies.
+let embedToken: string | null = null;
+
+export function setEmbedToken(token: string | null) {
+  embedToken = token;
+}
+
+export function getEmbedToken(): string | null {
+  return embedToken;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers ?? undefined);
   const body = init?.body;
@@ -19,10 +31,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers.set("Content-Type", "application/json");
   }
 
+  // Inject embed auth token if available
+  if (embedToken && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${embedToken}`);
+  }
+
+  // Use credentials: "omit" in embed mode (no cookies), "include" for standard auth
+  const credentials: RequestCredentials = embedToken ? "omit" : "include";
+
   const res = await fetch(`${BASE}${path}`, {
-    headers,
-    credentials: "include",
     ...init,
+    headers,
+    credentials,
   });
   if (!res.ok) {
     const errorBody = await res.json().catch(() => null);
