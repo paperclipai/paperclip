@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { Agent, Issue, LiveEvent } from "@paperclipai/shared";
 import { authApi } from "../api/auth";
@@ -6,6 +6,18 @@ import { useCompany } from "./CompanyContext";
 import type { ToastInput } from "./ToastContext";
 import { useToast } from "./ToastContext";
 import { queryKeys } from "../lib/queryKeys";
+
+interface LiveUpdatesContextValue {
+  isConnected: boolean;
+}
+
+const LiveUpdatesContext = createContext<LiveUpdatesContextValue>({
+  isConnected: false,
+});
+
+export function useLiveUpdates() {
+  return useContext(LiveUpdatesContext);
+}
 
 const TOAST_COOLDOWN_WINDOW_MS = 10_000;
 const TOAST_COOLDOWN_MAX = 3;
@@ -515,6 +527,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const gateRef = useRef<ToastGate>({ cooldownHits: new Map(), suppressUntil: 0 });
+  const [wsConnected, setWsConnected] = useState(false);
   const { data: session, status: sessionStatus } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -528,6 +541,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     userId: currentUserId,
     agentId: null,
   });
+
 
   useEffect(() => {
     currentActorRef.current = {
@@ -607,6 +621,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
           gateRef.current.suppressUntil = Date.now() + RECONNECT_SUPPRESS_MS;
         }
         reconnectAttempt = 0;
+        setWsConnected(true);
       };
 
       nextSocket.onmessage = (message) => {
@@ -632,6 +647,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       nextSocket.onclose = () => {
         if (socket !== nextSocket) return;
         socket = null;
+        setWsConnected(false);
         if (closed) return;
         scheduleReconnect();
       };
@@ -645,6 +661,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     return () => {
       closed = true;
       window.clearTimeout(connectTimer);
+      setWsConnected(false);
       clearReconnect();
       const activeSocket = socket;
       socket = null;
@@ -652,5 +669,14 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     };
   }, [queryClient, liveCompanyId, pushToast, canConnectSocket, socketAuthKey]);
 
-  return <>{children}</>;
+  const contextValue = useMemo<LiveUpdatesContextValue>(
+    () => ({ isConnected: wsConnected }),
+    [wsConnected],
+  );
+
+  return (
+    <LiveUpdatesContext.Provider value={contextValue}>
+      {children}
+    </LiveUpdatesContext.Provider>
+  );
 }
