@@ -256,6 +256,6 @@ describe("honcho sync", () => {
       companyId: "co_1",
     });
 
-    expect(requests.filter((request) => request.url.endsWith("/v2/workspaces"))).toHaveLength(2);
+    expect(requests.filter((request) => request.url.endsWith("/v3/workspaces"))).toHaveLength(2);
   });
 });

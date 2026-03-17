@@ -98,7 +98,7 @@ describe("honcho actions and UI data", () => {
       ok: true,
       workspaceId: "ws_default",
     });
-    const workspaceRequest = requests.find((request) => request.url.endsWith("/v2/workspaces"));
+    const workspaceRequest = requests.find((request) => request.url.endsWith("/v3/workspaces"));
     expect(workspaceRequest?.body).toEqual({});
   });
 

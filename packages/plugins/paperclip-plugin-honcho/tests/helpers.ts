@@ -72,7 +72,7 @@ export function installFetchMock(options: FetchMockOptions = {}) {
       }
     }
 
-    if (url.endsWith("/v2/workspaces")) {
+    if (url.endsWith("/v3/workspaces")) {
       return new Response(JSON.stringify(options.workspaceResponse ?? { ok: true }), { status: 200 });
     }
     if (url.includes("/representation")) {

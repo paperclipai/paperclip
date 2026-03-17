@@ -85,7 +85,7 @@ export class HonchoClient {
 
   async ensureWorkspace(companyId: string): Promise<string> {
     const workspaceId = this.workspaceId(companyId);
-    await requestJson(this.ctx, this.config, this.apiKey, `${HONCHO_V2_PATH}/workspaces`, {
+    await requestJson(this.ctx, this.config, this.apiKey, `${HONCHO_V3_PATH}/workspaces`, {
       method: "POST",
       body: JSON.stringify({
         id: workspaceId,
@@ -113,7 +113,7 @@ export class HonchoClient {
 
   async ensurePeer(companyId: string, peerId: string, metadata?: Record<string, unknown>): Promise<string> {
     const workspaceId = await this.ensureWorkspace(companyId);
-    await requestJson(this.ctx, this.config, this.apiKey, `${HONCHO_V2_PATH}/workspaces/${encodeURIComponent(workspaceId)}/peers`, {
+    await requestJson(this.ctx, this.config, this.apiKey, `${HONCHO_V3_PATH}/workspaces/${encodeURIComponent(workspaceId)}/peers`, {
       method: "POST",
       body: JSON.stringify({
         id: peerId,
@@ -129,7 +129,7 @@ export class HonchoClient {
   async ensureSession(companyId: string, issueId: string, metadata?: Record<string, unknown>): Promise<string> {
     const workspaceId = await this.ensureWorkspace(companyId);
     const sessionId = this.sessionId(issueId);
-    await requestJson(this.ctx, this.config, this.apiKey, `${HONCHO_V2_PATH}/workspaces/${encodeURIComponent(workspaceId)}/sessions`, {
+    await requestJson(this.ctx, this.config, this.apiKey, `${HONCHO_V3_PATH}/workspaces/${encodeURIComponent(workspaceId)}/sessions`, {
       method: "POST",
       body: JSON.stringify({
         id: sessionId,
@@ -152,7 +152,7 @@ export class HonchoClient {
       this.ctx,
       this.config,
       this.apiKey,
-      `${HONCHO_V2_PATH}/workspaces/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(sessionId)}/messages`,
+      `${HONCHO_V3_PATH}/workspaces/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(sessionId)}/messages`,
       {
         method: "POST",
         body: JSON.stringify({
