@@ -1320,6 +1320,11 @@ export function heartbeatService(db: Db) {
     for (const run of activeRuns) {
       if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
 
+      // Queued runs are legitimately waiting for a concurrency slot, not orphaned
+      // processes. Only reap "running" runs that have lost their process.
+      // See: https://github.com/paperclipai/paperclip/issues/634
+      if (run.status === "queued") continue;
+
       // Apply staleness threshold to avoid false positives
       if (staleThresholdMs > 0) {
         const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
