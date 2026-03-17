@@ -57,16 +57,7 @@ CLAUDE.md rules and task checklists live inside the reasoning loop — under age
 
 ## Test Command Discovery
 
-Auto-detects the test command by scanning project root files in order:
-
-1. `package.json` → `bun test` / `jest` / `vitest`
-2. `pyproject.toml` → `pytest`
-3. `Cargo.toml` → `cargo test`
-4. `go.mod` → `go test ./...`
-5. `mix.exs` → `mix test`
-6. `Makefile` → `make test`
-
-Result cached in `.claude/test-command.txt`. The hook reads this file — no re-detection on every commit.
+Scans project root in order: `package.json` → `bun test`/`jest`/`vitest`, `pyproject.toml` → `pytest`, `Cargo.toml` → `cargo test`, `go.mod` → `go test ./...`, `mix.exs` → `mix test`, `Makefile` → `make test`. Result cached in `.claude/test-command.txt`.
 
 → Full detection script + override instructions: `references/test-command-discovery.md`
 
