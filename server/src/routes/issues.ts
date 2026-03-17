@@ -198,6 +198,19 @@ export function issueRoutes(db: Db, storage: StorageService) {
     return { project, goal: null };
   }
 
+  function routeIssueId(req: Request): string {
+    return (req.params.id as string | undefined) ?? (req.params.issueId as string | undefined) ?? "";
+  }
+
+  function assertIssueCompanyPathMatches(req: Request, res: Response, companyId: string) {
+    const pathCompanyId = typeof req.params.companyId === "string" ? req.params.companyId : "";
+    if (pathCompanyId && pathCompanyId !== companyId) {
+      res.status(422).json({ error: "Issue does not belong to company" });
+      return false;
+    }
+    return true;
+  }
+
   // Resolve issue identifiers (e.g. "PAP-39") to UUIDs for all /issues/:id routes
   router.param("id", async (req, res, next, rawId) => {
     try {
@@ -330,13 +343,14 @@ export function issueRoutes(db: Db, storage: StorageService) {
     res.json(removed);
   });
 
-  router.get("/issues/:id", async (req, res) => {
-    const id = req.params.id as string;
+  router.get(["/issues/:id", "/companies/:companyId/issues/:issueId"], async (req, res) => {
+    const id = routeIssueId(req);
     const issue = await svc.getById(id);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
+    if (!assertIssueCompanyPathMatches(req, res, issue.companyId)) return;
     assertCompanyAccess(req, issue.companyId);
     const [{ project, goal }, ancestors, mentionedProjectIds, documentPayload] = await Promise.all([
       resolveIssueProjectAndGoal(issue),
@@ -813,13 +827,14 @@ export function issueRoutes(db: Db, storage: StorageService) {
     res.status(201).json(issue);
   });
 
-  router.patch("/issues/:id", validate(updateIssueSchema), async (req, res) => {
-    const id = req.params.id as string;
+  router.patch(["/issues/:id", "/companies/:companyId/issues/:issueId"], validate(updateIssueSchema), async (req, res) => {
+    const id = routeIssueId(req);
     const existing = await svc.getById(id);
     if (!existing) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
+    if (!assertIssueCompanyPathMatches(req, res, existing.companyId)) return;
     assertCompanyAccess(req, existing.companyId);
     const assigneeWillChange =
       (req.body.assigneeAgentId !== undefined && req.body.assigneeAgentId !== existing.assigneeAgentId) ||
@@ -1063,13 +1078,14 @@ export function issueRoutes(db: Db, storage: StorageService) {
     res.json(issue);
   });
 
-  router.post("/issues/:id/checkout", validate(checkoutIssueSchema), async (req, res) => {
-    const id = req.params.id as string;
+  router.post(["/issues/:id/checkout", "/companies/:companyId/issues/:issueId/checkout"], validate(checkoutIssueSchema), async (req, res) => {
+    const id = routeIssueId(req);
     const issue = await svc.getById(id);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
+    if (!assertIssueCompanyPathMatches(req, res, issue.companyId)) return;
     assertCompanyAccess(req, issue.companyId);
 
     if (issue.projectId) {
@@ -1131,13 +1147,14 @@ export function issueRoutes(db: Db, storage: StorageService) {
     res.json(updated);
   });
 
-  router.post("/issues/:id/release", async (req, res) => {
-    const id = req.params.id as string;
+  router.post(["/issues/:id/release", "/companies/:companyId/issues/:issueId/release"], async (req, res) => {
+    const id = routeIssueId(req);
     const existing = await svc.getById(id);
     if (!existing) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
+    if (!assertIssueCompanyPathMatches(req, res, existing.companyId)) return;
     assertCompanyAccess(req, existing.companyId);
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
     const actorRunId = requireAgentRunId(req, res);
@@ -1168,13 +1185,14 @@ export function issueRoutes(db: Db, storage: StorageService) {
     res.json(released);
   });
 
-  router.get("/issues/:id/comments", async (req, res) => {
-    const id = req.params.id as string;
+  router.get(["/issues/:id/comments", "/companies/:companyId/issues/:issueId/comments"], async (req, res) => {
+    const id = routeIssueId(req);
     const issue = await svc.getById(id);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
+    if (!assertIssueCompanyPathMatches(req, res, issue.companyId)) return;
     assertCompanyAccess(req, issue.companyId);
     const afterCommentId =
       typeof req.query.after === "string" && req.query.after.trim().length > 0
@@ -1202,14 +1220,15 @@ export function issueRoutes(db: Db, storage: StorageService) {
     res.json(comments);
   });
 
-  router.get("/issues/:id/comments/:commentId", async (req, res) => {
-    const id = req.params.id as string;
+  router.get(["/issues/:id/comments/:commentId", "/companies/:companyId/issues/:issueId/comments/:commentId"], async (req, res) => {
+    const id = routeIssueId(req);
     const commentId = req.params.commentId as string;
     const issue = await svc.getById(id);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
+    if (!assertIssueCompanyPathMatches(req, res, issue.companyId)) return;
     assertCompanyAccess(req, issue.companyId);
     const comment = await svc.getComment(commentId);
     if (!comment || comment.issueId !== id) {
@@ -1219,13 +1238,14 @@ export function issueRoutes(db: Db, storage: StorageService) {
     res.json(comment);
   });
 
-  router.post("/issues/:id/comments", validate(addIssueCommentSchema), async (req, res) => {
-    const id = req.params.id as string;
+  router.post(["/issues/:id/comments", "/companies/:companyId/issues/:issueId/comments"], validate(addIssueCommentSchema), async (req, res) => {
+    const id = routeIssueId(req);
     const issue = await svc.getById(id);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
+    if (!assertIssueCompanyPathMatches(req, res, issue.companyId)) return;
     assertCompanyAccess(req, issue.companyId);
     if (!(await assertAgentRunCheckoutOwnership(req, res, issue))) return;
 
