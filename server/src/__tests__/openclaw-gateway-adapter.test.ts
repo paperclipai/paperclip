@@ -463,6 +463,49 @@ describe("openclaw gateway adapter execute", () => {
     }
   });
 
+  it("uses a run-scoped session key when issue strategy has no issue context", async () => {
+    const gateway = await createMockGatewayServer({
+      waitPayload: {
+        runId: "run-123",
+        status: "ok",
+        startedAt: 1,
+        endedAt: 2,
+        summary: "ok",
+      },
+    });
+
+    try {
+      const result = await execute(
+        buildContext(
+          {
+            url: gateway.url,
+            headers: {
+              "x-openclaw-token": "gateway-token",
+            },
+            payloadTemplate: {
+              message: "wake now",
+            },
+            waitTimeoutMs: 2000,
+          },
+          {
+            context: {
+              taskId: null,
+              issueId: null,
+              wakeReason: "manual",
+              issueIds: [],
+            },
+          },
+        ),
+      );
+
+      expect(result.exitCode).toBe(0);
+      const payload = gateway.getAgentPayload();
+      expect(payload?.sessionKey).toBe("paperclip:run:run-123");
+    } finally {
+      await gateway.close();
+    }
+  });
+
   it("fails fast when url is missing", async () => {
     const result = await execute(buildContext({}));
     expect(result.exitCode).toBe(1);

@@ -132,10 +132,12 @@ function resolveSessionKey(input: {
   runId: string;
   issueId: string | null;
 }): string {
-  const fallback = input.configuredSessionKey ?? "paperclip";
   if (input.strategy === "run") return `paperclip:run:${input.runId}`;
-  if (input.strategy === "issue" && input.issueId) return `paperclip:issue:${input.issueId}`;
-  return fallback;
+  if (input.strategy === "issue") {
+    if (input.issueId) return `paperclip:issue:${input.issueId}`;
+    if (!input.configuredSessionKey) return `paperclip:run:${input.runId}`;
+  }
+  return input.configuredSessionKey ?? "paperclip";
 }
 
 function isLoopbackHost(hostname: string): boolean {
@@ -336,7 +338,7 @@ function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: Wak
 }
 
 function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string>): string {
-  const claimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
+  const claimedApiKeyPath = "$OPENCLAW_STATE_DIR/workspace/paperclip-claimed-api-key.json (fallback ~/.openclaw/workspace/paperclip-claimed-api-key.json)";
   const orderedKeys = [
     "PAPERCLIP_RUN_ID",
     "PAPERCLIP_AGENT_ID",

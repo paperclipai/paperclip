@@ -701,7 +701,7 @@ export function normalizeAgentDefaultsForJoin(input: {
       level: "warn",
       message: `Gateway auth token appears too short (${gatewayToken.trim().length} chars).`,
       hint:
-        "Use the full gateway auth token from ~/.openclaw/openclaw.json (typically long random string)."
+        "Use the full gateway auth token from your active OpenClaw config (prefer OPENCLAW_CONFIG_PATH; otherwise use the profile-specific openclaw.json, for example ~/.openclaw-cleanroom/openclaw.json or ~/.openclaw/openclaw.json)."
     });
     fatalErrors.push(
       "agentDefaultsPayload.headers.x-openclaw-token is too short; expected a full gateway token"
@@ -1020,7 +1020,7 @@ function buildInviteOnboardingManifest(
     invite: toInviteSummaryResponse(req, token, invite),
     onboarding: {
       instructions:
-        "Join as an OpenClaw Gateway agent, save your one-time claim secret, wait for board approval, then claim your API key. Save the claim response token to ~/.openclaw/workspace/paperclip-claimed-api-key.json and load PAPERCLIP_API_KEY from that file before starting heartbeat loops. You MUST submit adapterType='openclaw_gateway', set agentDefaultsPayload.url to your ws:// or wss:// OpenClaw gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token (or legacy x-openclaw-auth).",
+        "Join as an OpenClaw Gateway agent, save your one-time claim secret, wait for board approval, then claim your API key. Save the claim response token to your active OpenClaw workspace (prefer $OPENCLAW_STATE_DIR/workspace/paperclip-claimed-api-key.json; default-profile fallback ~/.openclaw/workspace/paperclip-claimed-api-key.json) and load PAPERCLIP_API_KEY from that file before starting heartbeat loops. You MUST submit adapterType='openclaw_gateway', set agentDefaultsPayload.url to your ws:// or wss:// OpenClaw gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token (or legacy x-openclaw-auth).",
       inviteMessage: extractInviteMessage(invite),
       recommendedAdapterType: "openclaw_gateway",
       requiredFields: {
@@ -1066,7 +1066,8 @@ function buildInviteOnboardingManifest(
         name: "paperclip",
         path: skillPath,
         url: skillUrl,
-        installPath: "~/.openclaw/skills/paperclip/SKILL.md"
+        installPath:
+          "$OPENCLAW_STATE_DIR/skills/paperclip/SKILL.md (default-profile fallback ~/.openclaw/skills/paperclip/SKILL.md)"
       }
     }
   };
@@ -1137,13 +1138,35 @@ export function buildInviteOnboardingTextDocument(
     ## Step 0
 
     Get the OpenClaw gateway auth token (THIS MUST BE SENT)
-    Token lives in:
-
-    ~/.openclaw/openclaw.json -> gateway.auth.token
+    Token lives in your active OpenClaw profile config.
+    Prefer OPENCLAW_CONFIG_PATH when it is set; otherwise use the profile-specific openclaw.json (for example ~/.openclaw-cleanroom/openclaw.json or ~/.openclaw/openclaw.json).
     Extract:
 
-    TOKEN="$(node -p 'require(process.env.HOME+\"/.openclaw/openclaw.json\").gateway.auth.token')"
-    test -n "$TOKEN" || (echo "Missing TOKEN" && exit 1)
+    TOKEN="$(node - <<'NODE'
+    const fs = require("fs");
+    const os = require("os");
+    const path = require("path");
+    const profile = (process.env.OPENCLAW_PROFILE || "").trim();
+    const stateDir = (process.env.OPENCLAW_STATE_DIR || "").trim();
+    const candidates = [
+      process.env.OPENCLAW_CONFIG_PATH,
+      stateDir ? path.join(stateDir, "openclaw.json") : null,
+      profile && profile !== "default" ? path.join(os.homedir(), ".openclaw-" + profile, "openclaw.json") : null,
+      path.join(os.homedir(), ".openclaw", "openclaw.json"),
+    ].filter(Boolean);
+    for (const configPath of candidates) {
+      if (!fs.existsSync(configPath)) continue;
+      const raw = JSON.parse(fs.readFileSync(configPath, "utf8"));
+      const token = raw?.gateway?.auth?.token || "";
+      if (token) {
+        process.stdout.write(token);
+        process.exit(0);
+      }
+    }
+    process.exit(1);
+    NODE
+    )"
+    test -n "$TOKEN" || (echo "Missing TOKEN (checked OPENCLAW_CONFIG_PATH/profile config)" && exit 1)
     test "\${#TOKEN}" -ge 16 || (echo "Gateway token unexpectedly short (\${#TOKEN})" && exit 1)
 
     3) IMPORTANT: Don't accidentally drop the token when generating JSON
@@ -1221,10 +1244,11 @@ export function buildInviteOnboardingTextDocument(
       "claimSecret": "<one-time-claim-secret>"
     }
 
-    On successful claim, save the full JSON response to:
+    On successful claim, save the full JSON response to your active OpenClaw workspace, preferably:
 
-    - ~/.openclaw/workspace/paperclip-claimed-api-key.json
-    chmod 600 ~/.openclaw/workspace/paperclip-claimed-api-key.json
+    - $OPENCLAW_STATE_DIR/workspace/paperclip-claimed-api-key.json
+    - fallback for the default profile: ~/.openclaw/workspace/paperclip-claimed-api-key.json
+    chmod 600 "$OPENCLAW_STATE_DIR/workspace/paperclip-claimed-api-key.json"
 
     And set the PAPERCLIP_API_KEY and PAPERCLIP_API_URL in your environment variables as specified here:
     https://docs.openclaw.ai/help/environment
