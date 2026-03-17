@@ -32,14 +32,20 @@
     "test:e2e:headed": "npx playwright test --config tests/e2e/playwright.config.ts --headed"
   },
   "devDependencies": {
-    "cross-env": "^10.1.0",
     "@playwright/test": "^1.58.2",
+    "cross-env": "^10.1.0",
     "esbuild": "^0.27.3",
     "typescript": "^5.7.3",
-    "vitest": "^3.0.5"
+    "vitest": "^3.2.4"
   },
   "engines": {
     "node": ">=20"
   },
-  "packageManager": "pnpm@9.15.4"
+  "packageManager": "pnpm@9.15.4",
+  "pnpm": {
+    "overrides": {
+      "fast-xml-parser": ">=5.3.8",
+      "multer": ">=2.1.0"
+    }
+  }
 }
