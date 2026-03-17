@@ -41,9 +41,12 @@ describe("normalizeMigrationContent", () => {
 });
 
 describe("computeMigrationHash", () => {
-  it("returns a 64-character hex SHA-256 hash", () => {
-    const hash = computeMigrationHash("CREATE TABLE foo (id INT);");
+  it("returns a 64-character hex SHA-256 hash matching a known value", () => {
+    const input = "CREATE TABLE foo (id INT);";
+    const hash = computeMigrationHash(input);
     expect(hash).toMatch(/^[a-f0-9]{64}$/);
+    // Pre-computed: echo -n "CREATE TABLE foo (id INT);" | sha256sum
+    expect(hash).toBe("a0c053539a01b396f7bc0b6ca0617aa6fff7e6bf16a751d101cf7fa77ed37a9e");
   });
 
   it("returns the same hash for identical content", () => {
