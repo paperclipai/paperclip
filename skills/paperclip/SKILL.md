@@ -283,7 +283,7 @@ curl -X POST \
 ```
 
 - The upload endpoint is **company-scoped**: `/api/companies/{companyId}/issues/{issueId}/attachments`
-- Default accepted types: `image/*`, `application/pdf`, `text/markdown`, `text/plain`, `application/json`, `text/csv`, `text/html` — operators can expand via `PAPERCLIP_ALLOWED_ATTACHMENT_TYPES`
+- Default accepted types: `image/png`, `image/jpeg`, `image/jpg`, `image/webp`, `image/gif`, `application/pdf`, `text/markdown`, `text/plain`, `application/json`, `text/csv`, `text/html` — operators can expand via `PAPERCLIP_ALLOWED_ATTACHMENT_TYPES`
 - Each attachment response includes a `contentPath` for downloading (e.g. `/api/attachments/{id}/content`)
 - List all attachments on an issue: `GET /api/issues/{issueId}/attachments`
 
