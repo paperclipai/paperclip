@@ -13,6 +13,7 @@ import {
   sessionCodec as opencodeSessionCodec,
   isOpenCodeUnknownSessionError,
 } from "@paperclipai/adapter-opencode-local/server";
+import { sessionCodec as ampSessionCodec } from "@paperclipai/adapter-amp-local/server";
 
 describe("adapter session codecs", () => {
   it("normalizes claude session params with cwd", () => {
@@ -103,6 +104,34 @@ describe("adapter session codecs", () => {
       cwd: "/tmp/gemini",
     });
     expect(geminiSessionCodec.getDisplayId?.(serialized ?? null)).toBe("gemini-session-1");
+  });
+
+  it("normalizes amp session params with cwd", () => {
+    const parsed = ampSessionCodec.deserialize({
+      thread_id: "T-amp-thread-1",
+      folder: "/tmp/workspace",
+    });
+    expect(parsed).toEqual({
+      threadId: "T-amp-thread-1",
+      cwd: "/tmp/workspace",
+    });
+
+    const serialized = ampSessionCodec.serialize(parsed);
+    expect(serialized).toEqual({
+      threadId: "T-amp-thread-1",
+      cwd: "/tmp/workspace",
+    });
+    expect(ampSessionCodec.getDisplayId?.(serialized ?? null)).toBe("T-amp-thread-1");
+  });
+
+  it("returns null for amp session with missing thread id", () => {
+    const parsed = ampSessionCodec.deserialize({ cwd: "/tmp" });
+    expect(parsed).toBeNull();
+  });
+
+  it("returns null for amp session with null input", () => {
+    const parsed = ampSessionCodec.deserialize(null);
+    expect(parsed).toBeNull();
   });
 });
 

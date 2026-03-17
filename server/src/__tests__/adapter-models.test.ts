@@ -101,4 +101,10 @@ describe("adapter model listing", () => {
     const models = await listAdapterModels("opencode_local");
     expect(models).toEqual([]);
   });
+
+  it("returns amp static models list", async () => {
+    const models = await listAdapterModels("amp_local");
+    expect(models.length).toBeGreaterThan(0);
+    expect(models.some((model) => model.id === "auto")).toBe(true);
+  });
 });
