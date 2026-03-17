@@ -35,11 +35,7 @@ Never skip Phase 4. Uncorroborated claims are opinions, not findings.
 
 ## Progressive Deepening Protocol
 
-1. Keyword search → identify the source landscape (which domains cover this topic?)
-2. Authority source drilling → fetch primary sources, not aggregators
-3. Gap detection → what questions remain unanswered after 3+ sources?
-
-**Stop signal:** When the 3rd source adds no new claims not already in sources 1 and 2 — stop digging.
+Keyword search → authority source drilling → gap detection. Stop when the 3rd source adds no new claims beyond sources 1 and 2.
 
 → Paywall handling, domain authority ranking, stop signals: `references/progressive-deepening.md`
 
