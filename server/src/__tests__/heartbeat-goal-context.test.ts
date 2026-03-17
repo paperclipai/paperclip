@@ -24,10 +24,10 @@ interface GoalRow {
  *
  *   if (issueGoal) {
  *     context.goalId = issueGoal.id;
- *     context.goalTitle = issueGoal.title;
- *     context.goalDescription = issueGoal.description ?? null;
- *     context.goalLevel = issueGoal.level;
- *     context.goalStatus = issueGoal.status;
+ *     ...
+ *   } else {
+ *     delete context.goalId;
+ *     ...
  *   }
  */
 function injectGoalContext(
@@ -40,6 +40,12 @@ function injectGoalContext(
     context.goalDescription = issueGoal.description ?? null;
     context.goalLevel = issueGoal.level;
     context.goalStatus = issueGoal.status;
+  } else {
+    delete context.goalId;
+    delete context.goalTitle;
+    delete context.goalDescription;
+    delete context.goalLevel;
+    delete context.goalStatus;
   }
 }
 
@@ -143,6 +149,59 @@ describe("heartbeat goal context injection", () => {
       });
       expect(context.goalLevel).toBe(level);
     }
+  });
+
+  it("clears stale goal fields when goal is removed from issue", () => {
+    // Simulate a context that had goal fields from a previous run
+    const context: Record<string, unknown> = {
+      issueId: "issue-1",
+      taskId: "issue-1",
+      goalId: "old-goal-1",
+      goalTitle: "Old goal title",
+      goalDescription: "Old description",
+      goalLevel: "company",
+      goalStatus: "active",
+    };
+
+    // Goal has been unlinked from the issue
+    injectGoalContext(context, null);
+
+    expect(context.goalId).toBeUndefined();
+    expect(context.goalTitle).toBeUndefined();
+    expect(context.goalDescription).toBeUndefined();
+    expect(context.goalLevel).toBeUndefined();
+    expect(context.goalStatus).toBeUndefined();
+
+    // Non-goal fields are preserved
+    expect(context.issueId).toBe("issue-1");
+    expect(context.taskId).toBe("issue-1");
+  });
+
+  it("replaces goal fields when issue is reassigned to a different goal", () => {
+    // Context has goal fields from a previous run
+    const context: Record<string, unknown> = {
+      issueId: "issue-1",
+      goalId: "old-goal",
+      goalTitle: "Old goal",
+      goalDescription: "Old description",
+      goalLevel: "company",
+      goalStatus: "planned",
+    };
+
+    // Issue is now linked to a different goal
+    injectGoalContext(context, {
+      id: "new-goal",
+      title: "New goal",
+      description: "New description",
+      level: "task",
+      status: "active",
+    });
+
+    expect(context.goalId).toBe("new-goal");
+    expect(context.goalTitle).toBe("New goal");
+    expect(context.goalDescription).toBe("New description");
+    expect(context.goalLevel).toBe("task");
+    expect(context.goalStatus).toBe("active");
   });
 
   it("handles all goal statuses correctly", () => {

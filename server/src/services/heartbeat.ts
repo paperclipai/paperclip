@@ -2705,13 +2705,21 @@ export function heartbeatService(db: Db) {
     }
 
     // Inject goal context so adapters (and prompt templates) can reference
-    // the strategic goal this issue is aligned to.
+    // the strategic goal this issue is aligned to.  When no goal is linked,
+    // explicitly clear any stale fields that may have been persisted in a
+    // previous run's contextSnapshot.
     if (issueGoal) {
       context.goalId = issueGoal.id;
       context.goalTitle = issueGoal.title;
       context.goalDescription = issueGoal.description ?? null;
       context.goalLevel = issueGoal.level;
       context.goalStatus = issueGoal.status;
+    } else {
+      delete context.goalId;
+      delete context.goalTitle;
+      delete context.goalDescription;
+      delete context.goalLevel;
+      delete context.goalStatus;
     }
     const runtimeSessionFallback = taskKey || resetTaskSession ? null : runtime.sessionId;
     let previousSessionDisplayId = truncateDisplayId(
