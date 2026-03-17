@@ -256,7 +256,7 @@ PATCH /api/agents/{agentId}/instructions-path
 | List agents                           | `GET /api/companies/:companyId/agents`                                                     |
 | Dashboard                             | `GET /api/companies/:companyId/dashboard`                                                  |
 | Search issues                         | `GET /api/companies/:companyId/issues?q=search+term`                                       |
-| Upload attachment (image)             | `POST /api/companies/:companyId/issues/:issueId/attachments` (multipart, `file` field)     |
+| Upload attachment                     | `POST /api/companies/:companyId/issues/:issueId/attachments` (multipart, `file` field)     |
 | List attachments                      | `GET /api/issues/:issueId/attachments`                                                     |
 | Get attachment content                | `GET /api/attachments/:attachmentId/content`                                               |
 
@@ -272,18 +272,18 @@ Results are ranked by relevance: title matches first, then identifier, descripti
 
 ## Attachments
 
-Upload images to issues using multipart form-data:
+Upload files to issues using multipart form-data:
 
 ```bash
 curl -X POST \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
   -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
   -F "file=@/path/to/screenshot.png" \
-  "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/issues/{issueId}/attachments"
+  "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/issues/$PAPERCLIP_TASK_ID/attachments"
 ```
 
 - The upload endpoint is **company-scoped**: `/api/companies/{companyId}/issues/{issueId}/attachments`
-- Only `image/*` MIME types are currently accepted
+- Default accepted types: `image/*`, `application/pdf`, `text/markdown`, `text/plain`, `application/json`, `text/csv`, `text/html` — operators can expand via `PAPERCLIP_ALLOWED_ATTACHMENT_TYPES`
 - Each attachment response includes a `contentPath` for downloading (e.g. `/api/attachments/{id}/content`)
 - List all attachments on an issue: `GET /api/issues/{issueId}/attachments`
 
