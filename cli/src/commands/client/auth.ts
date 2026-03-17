@@ -16,7 +16,7 @@ import {
 } from "./common.js";
 
 interface AuthLoginOptions extends BaseClientOptions {
-  email: string;
+  email?: string;
   password?: string;
 }
 
@@ -73,6 +73,20 @@ function promptPassword(prompt: string): Promise<string> {
   });
 }
 
+function promptInput(prompt: string): Promise<string> {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stderr,
+      terminal: true,
+    });
+    rl.question(prompt, (answer) => {
+      rl.close();
+      resolve(answer.trim());
+    });
+  });
+}
+
 function resolveApiBase(options: BaseClientOptions): string {
   const context = readContext(options.context);
   const { profile } = resolveProfile(context, options.profile);
@@ -91,10 +105,15 @@ export function registerAuthClientCommands(auth: Command): void {
     auth
       .command("login")
       .description("Authenticate with email and password")
-      .requiredOption("--email <email>", "Account email address")
+      .option("--email <email>", "Account email address (omit to be prompted)")
       .option("--password <password>", "Account password (omit to be prompted)")
       .action(async (opts: AuthLoginOptions) => {
         try {
+          const email = opts.email || (await promptInput("Email: "));
+          if (!email) {
+            throw new Error("Email is required");
+          }
+
           const password = opts.password || (await promptPassword("Password: "));
           if (!password) {
             throw new Error("Password is required");
@@ -103,7 +122,7 @@ export function registerAuthClientCommands(auth: Command): void {
           const apiBase = resolveApiBase(opts);
           const client = new PaperclipApiClient({ apiBase });
           const response = await client.rawPost("/api/auth/sign-in/email", {
-            email: opts.email,
+            email,
             password,
           });
 
@@ -116,6 +135,9 @@ export function registerAuthClientCommands(auth: Command): void {
               else if (body?.error) message = body.error;
             } catch {
               // use default message
+            }
+            if (response.status === 404 || (response.status === 401 && /not found|no user|does not exist/i.test(message))) {
+              throw new Error("User not found \u2014 sign up via the Paperclip UI first, then use `auth login`.");
             }
             throw new Error(message);
           }
@@ -153,8 +175,8 @@ export function registerAuthClientCommands(auth: Command): void {
           const { name: profileName } = resolveProfile(context, opts.profile);
           upsertProfile(profileName, { sessionToken, apiBase }, opts.context);
 
-          const displayName = userInfo?.name || opts.email;
-          const displayEmail = userInfo?.email || opts.email;
+          const displayName = userInfo?.name || email;
+          const displayEmail = userInfo?.email || email;
           console.log(pc.green(`Logged in as ${displayName} (${displayEmail})`));
         } catch (err) {
           handleCommandError(err);
@@ -188,6 +210,7 @@ export function registerAuthClientCommands(auth: Command): void {
           } else {
             console.log(pc.green(`Created API key: ${result.key}`));
             console.log(pc.dim(`Key stored in profile '${ctx.profileName}'. This key will not be shown again.`));
+            console.log(pc.yellow(`\u26A0  Context file contains secrets \u2014 keep chmod 600 and do not commit to git.`));
           }
         } catch (err) {
           handleCommandError(err);
