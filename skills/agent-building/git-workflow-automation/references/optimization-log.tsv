@@ -7,3 +7,4 @@ iteration	trigger_pct	nofire_pct	output_pct	lines	status	description
 5	100	100	100	40	kept	Remove Anti-Rationalization table (11 lines) — T5 assertions fully covered by 01-why-it-breaks.md
 6	100	100	100	37	kept	3 cleanups: remove 06 Quick Entry row (untested), blank between code comments, trailing blank
 7	100	100	100	35	kept	Merge 2 intro paragraphs into 1 (2 lines) — same facts preserved
+8	100	100	100	32	kept	Tighten Core Pattern header + collapse 4 numbered steps to 2 comments (3 lines)
