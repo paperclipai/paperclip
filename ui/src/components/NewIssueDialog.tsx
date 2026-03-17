@@ -34,7 +34,9 @@ import {
   Tag,
   Calendar,
   Paperclip,
+  Repeat,
 } from "lucide-react";
+import { parseScheduleToCron, describeCron } from "@paperclipai/shared";
 import { cn } from "../lib/utils";
 import { extractProviderIdWithFallback } from "../lib/model-utils";
 import { issueStatusText, issueStatusTextDefault, priorityColor, priorityColorDefault } from "../lib/status-colors";
@@ -183,6 +185,8 @@ export function NewIssueDialog() {
   const [assigneeUseProjectWorkspace, setAssigneeUseProjectWorkspace] = useState(true);
   const [expanded, setExpanded] = useState(false);
   const [dialogCompanyId, setDialogCompanyId] = useState<string | null>(null);
+  const [recurrenceOpen, setRecurrenceOpen] = useState(false);
+  const [recurrenceInput, setRecurrenceInput] = useState("");
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const effectiveCompanyId = dialogCompanyId ?? selectedCompanyId;
@@ -400,6 +404,8 @@ export function NewIssueDialog() {
     setExpanded(false);
     setDialogCompanyId(null);
     setCompanyOpen(false);
+    setRecurrenceInput("");
+    setRecurrenceOpen(false);
   }
 
   function handleCompanyChange(companyId: string) {
@@ -428,6 +434,7 @@ export function NewIssueDialog() {
       chrome: assigneeChrome,
       useProjectWorkspace: assigneeUseProjectWorkspace,
     });
+    const cronExpr = recurrenceInput.trim() ? parseScheduleToCron(recurrenceInput.trim()) : null;
     createIssue.mutate({
       companyId: effectiveCompanyId,
       title: title.trim(),
@@ -437,6 +444,7 @@ export function NewIssueDialog() {
       ...(assigneeId ? { assigneeAgentId: assigneeId } : {}),
       ...(projectId ? { projectId } : {}),
       ...(assigneeAdapterOverrides ? { assigneeAdapterOverrides } : {}),
+      ...(cronExpr ? { recurrence: { cronExpr, text: describeCron(cronExpr), enabled: true } } : {}),
     });
   }
 
@@ -905,6 +913,54 @@ export function NewIssueDialog() {
             <Tag className="h-3 w-3" />
             Labels
           </button>
+
+          {/* Recurrence chip */}
+          <Popover open={recurrenceOpen} onOpenChange={setRecurrenceOpen}>
+            <PopoverTrigger asChild>
+              <button className={cn(
+                "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs hover:bg-accent/50 transition-colors",
+                recurrenceInput.trim() && parseScheduleToCron(recurrenceInput.trim())
+                  ? "border-purple-500/40 text-purple-600 dark:text-purple-400"
+                  : "border-border text-muted-foreground",
+              )}>
+                <Repeat className="h-3 w-3" />
+                {recurrenceInput.trim() && parseScheduleToCron(recurrenceInput.trim())
+                  ? describeCron(parseScheduleToCron(recurrenceInput.trim())!)
+                  : "Recurrence"}
+              </button>
+            </PopoverTrigger>
+            <PopoverContent className="w-64 p-3" align="start">
+              <div className="space-y-2">
+                <label className="text-xs text-muted-foreground">Schedule</label>
+                <input
+                  className="w-full px-2 py-1.5 text-xs bg-transparent outline-none rounded border border-border placeholder:text-muted-foreground/50"
+                  placeholder="e.g. every weekday at 9am"
+                  value={recurrenceInput}
+                  onChange={(e) => setRecurrenceInput(e.target.value)}
+                  autoFocus
+                />
+                {recurrenceInput.trim() && (() => {
+                  const cron = parseScheduleToCron(recurrenceInput.trim());
+                  return cron ? (
+                    <p className="text-[11px] text-muted-foreground">
+                      <code className="font-mono text-foreground">{cron}</code>
+                      {" \u2014 "}{describeCron(cron)}
+                    </p>
+                  ) : (
+                    <p className="text-[11px] text-destructive">Could not parse schedule</p>
+                  );
+                })()}
+                {recurrenceInput.trim() && (
+                  <button
+                    className="text-[11px] text-destructive hover:underline"
+                    onClick={() => { setRecurrenceInput(""); setRecurrenceOpen(false); }}
+                  >
+                    Clear recurrence
+                  </button>
+                )}
+              </div>
+            </PopoverContent>
+          </Popover>
 
           {/* Attach image chip */}
           <input
