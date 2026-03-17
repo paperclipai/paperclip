@@ -7,6 +7,17 @@ Guidance for human and AI contributors working in this repository.
 Paperclip is a control plane for AI-agent companies.
 The current implementation target is V1 and is defined in `doc/SPEC-implementation.md`.
 
+### Fork Context
+
+This repo (`namastexlabs/paperclip`) is a fork of `paperclipai/paperclip`.
+We maintain multiuser features (permissions, auth, mentions, avatars) ahead of upstream.
+
+Remotes:
+- `origin` — `namastexlabs/paperclip` (our fork)
+- `upstream` — `paperclipai/paperclip` (upstream)
+
+PRs for upstream contribution target `upstream/master` via branches pushed to `origin`.
+
 ## 2. Read This First
 
 Before making changes, read in this order:
@@ -82,6 +93,26 @@ Prefer additive updates. Keep `doc/SPEC.md` and `doc/SPEC-implementation.md` ali
 New plan documents belong in `doc/plans/` and should use `YYYY-MM-DD-slug.md` filenames.
 
 ## 6. Database Change Workflow
+
+### Fork Migration Numbering
+
+Our fork carries migrations that don't exist upstream yet. When syncing with upstream:
+
+1. **Check upstream's latest index:** `git show upstream/master:packages/db/src/migrations/meta/_journal.json | python3 -c "import json,sys; j=json.load(sys.stdin); print(j['entries'][-1]['idx'], j['entries'][-1]['tag'])"`
+2. **Our fork migrations must always come AFTER upstream's latest.** If upstream is at 0034, our migrations start at 0035.
+3. **After merging upstream:** renumber our fork-only SQL files, snapshots, and journal entries. Steps:
+   - Rename `NNNN_<name>.sql` to new index
+   - Rename `meta/NNNN_snapshot.json` to match
+   - Update `meta/_journal.json` entries (idx + tag)
+   - For data-only migrations (INSERTs), copy the previous snapshot (schema unchanged)
+   - For schema migrations (ALTER TABLE), add the new column to the snapshot JSON
+4. **Never** leave orphan `.sql` files outside the journal — drizzle ignores them but they confuse contributors.
+5. **Current fork-only migrations:**
+   - `0035_owner_permission_backfill` — grants all permission keys to existing owners (data-only)
+   - `0036_company_image` — adds `image` column to companies table
+   - These numbers will change on next upstream sync if upstream adds migrations past 0034.
+
+### Schema Changes
 
 When changing data model:
 

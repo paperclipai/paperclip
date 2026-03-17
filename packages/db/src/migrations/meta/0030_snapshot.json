@@ -1,9 +1,5 @@
 {
-<<<<<<< HEAD
-  "id": "98a7c42a-c3a3-4f28-9831-d512fd22eb9f",
-=======
   "id": "ff007d90-e1a0-4df3-beab-a5be4a47273c",
->>>>>>> upstream/master
   "prevId": "fdb36f4e-6463-497d-b704-22d33be9b450",
   "version": "7",
   "dialect": "postgresql",
@@ -2144,15 +2140,6 @@
           "primaryKey": false,
           "notNull": false
         },
-<<<<<<< HEAD
-        "image": {
-          "name": "image",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-=======
->>>>>>> upstream/master
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -2192,8 +2179,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-<<<<<<< HEAD
-=======
     "public.company_logos": {
       "name": "company_logos",
       "schema": "",
@@ -2298,7 +2283,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
->>>>>>> upstream/master
     "public.company_memberships": {
       "name": "company_memberships",
       "schema": "",

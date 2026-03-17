@@ -13,12 +13,9 @@ export interface Company {
   spentMonthlyCents: number;
   requireBoardApprovalForNewAgents: boolean;
   brandColor: string | null;
-<<<<<<< HEAD
-  image: string | null;
-=======
   logoAssetId: string | null;
   logoUrl: string | null;
->>>>>>> upstream/master
+  image: string | null;
   createdAt: Date;
   updatedAt: Date;
 }

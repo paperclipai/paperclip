@@ -14,10 +14,6 @@ import {
 } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
-<<<<<<< HEAD
-import { accessService, companyPortabilityService, companyService, logActivity } from "../services/index.js";
-import type { StorageService } from "../storage/types.js";
-=======
 import {
   accessService,
   budgetService,
@@ -25,7 +21,7 @@ import {
   companyService,
   logActivity,
 } from "../services/index.js";
->>>>>>> upstream/master
+import type { StorageService } from "../storage/types.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 
 const MAX_LOGO_BYTES = 2 * 1024 * 1024; // 2MB

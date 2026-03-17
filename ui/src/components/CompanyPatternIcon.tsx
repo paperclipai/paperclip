@@ -161,25 +161,23 @@ function makeCompanyPatternDataUrl(seed: string, brandColor?: string | null, log
   return canvas.toDataURL("image/png");
 }
 
-<<<<<<< HEAD
-export function CompanyPatternIcon({ companyName, brandColor, imageUrl, className }: CompanyPatternIconProps) {
-=======
 export function CompanyPatternIcon({
   companyName,
   logoUrl,
   brandColor,
+  imageUrl,
   className,
 }: CompanyPatternIconProps) {
->>>>>>> upstream/master
   const initial = companyName.trim().charAt(0).toUpperCase() || "?";
   const [imageError, setImageError] = useState(false);
-  const logo = !imageError && typeof logoUrl === "string" && logoUrl.trim().length > 0 ? logoUrl : null;
+  const effectiveLogo = logoUrl || imageUrl || null;
+  const logo = !imageError && typeof effectiveLogo === "string" && effectiveLogo.trim().length > 0 ? effectiveLogo : null;
   useEffect(() => {
     setImageError(false);
-  }, [logoUrl]);
+  }, [effectiveLogo]);
   const patternDataUrl = useMemo(
-    () => (imageUrl ? "" : makeCompanyPatternDataUrl(companyName.trim().toLowerCase(), brandColor)),
-    [companyName, brandColor, imageUrl],
+    () => (logo ? "" : makeCompanyPatternDataUrl(companyName.trim().toLowerCase(), brandColor)),
+    [companyName, brandColor, logo],
   );
 
   if (imageUrl) {
