@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "paperclip.fullname" . }}
+  labels:
+    {{- include "paperclip.labels" . | nindent 4 }}
+data:
+  PORT: {{ .Values.paperclip.port | quote }}
+  HOST: {{ .Values.paperclip.host | quote }}
+  NODE_ENV: "production"
+  SERVE_UI: {{ .Values.paperclip.serveUi | quote }}
+  PAPERCLIP_DEPLOYMENT_MODE: {{ .Values.paperclip.deploymentMode | quote }}
+  PAPERCLIP_DEPLOYMENT_EXPOSURE: {{ .Values.paperclip.deploymentExposure | quote }}
+  {{- if .Values.paperclip.publicUrl }}
+  PAPERCLIP_PUBLIC_URL: {{ .Values.paperclip.publicUrl | quote }}
+  {{- end }}
+  PAPERCLIP_AUTH_DISABLE_SIGN_UP: {{ .Values.paperclip.authDisableSignUp | quote }}
+  PAPERCLIP_STORAGE_PROVIDER: {{ .Values.paperclip.storage.provider | quote }}
+  {{- if .Values.paperclip.storage.localDir }}
+  PAPERCLIP_STORAGE_LOCAL_DIR: {{ .Values.paperclip.storage.localDir | quote }}
+  {{- end }}
+  {{- if eq .Values.paperclip.storage.provider "s3" }}
+  PAPERCLIP_STORAGE_S3_BUCKET: {{ .Values.paperclip.storage.s3.bucket | quote }}
+  PAPERCLIP_STORAGE_S3_REGION: {{ .Values.paperclip.storage.s3.region | quote }}
+  {{- if .Values.paperclip.storage.s3.endpoint }}
+  PAPERCLIP_STORAGE_S3_ENDPOINT: {{ .Values.paperclip.storage.s3.endpoint | quote }}
+  {{- end }}
+  PAPERCLIP_STORAGE_S3_PREFIX: {{ .Values.paperclip.storage.s3.prefix | quote }}
+  PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE: {{ .Values.paperclip.storage.s3.forcePathStyle | quote }}
+  {{- end }}
+  PAPERCLIP_SECRETS_PROVIDER: {{ .Values.paperclip.secrets.provider | quote }}
+  PAPERCLIP_SECRETS_STRICT_MODE: {{ .Values.paperclip.secrets.strictMode | quote }}
+  HEARTBEAT_SCHEDULER_ENABLED: {{ .Values.paperclip.heartbeat.enabled | quote }}
+  HEARTBEAT_SCHEDULER_INTERVAL_MS: {{ .Values.paperclip.heartbeat.intervalMs | quote }}
+  PAPERCLIP_MIGRATION_AUTO_APPLY: {{ .Values.paperclip.migrationAutoApply | quote }}
+  PAPERCLIP_MIGRATION_PROMPT: "never"

@@ -1,0 +1,236 @@
+# -- Number of replicas (ignored if autoscaling is enabled)
+replicaCount: 1
+
+image:
+  # -- Container image repository
+  repository: ghcr.io/paperclipai/paperclip
+  # -- Image pull policy
+  pullPolicy: IfNotPresent
+  # -- Overrides the image tag (default: Chart.appVersion)
+  tag: ""
+
+# -- Image pull secrets for private registries
+imagePullSecrets: []
+# -- Override the chart name
+nameOverride: ""
+# -- Override the full release name
+fullnameOverride: ""
+
+# ---------------------------------------------------------------------------
+# Paperclip application configuration (non-secret)
+# ---------------------------------------------------------------------------
+paperclip:
+  # -- Server listen port
+  port: 3100
+  # -- Server listen host
+  host: "0.0.0.0"
+  # -- Deployment mode: local_trusted | authenticated
+  deploymentMode: "authenticated"
+  # -- Deployment exposure: private | public
+  deploymentExposure: "private"
+  # -- Public URL for the instance (used for auth callbacks, etc.)
+  publicUrl: ""
+  # -- Serve the built-in UI
+  serveUi: true
+  # -- Disable sign-up (authenticated mode)
+  authDisableSignUp: false
+
+  storage:
+    # -- Storage provider: local_disk | s3
+    provider: "local_disk"
+    # -- Local storage directory (inside the container)
+    localDir: ""
+    s3:
+      # -- S3 bucket name
+      bucket: "paperclip"
+      # -- S3 region
+      region: "us-east-1"
+      # -- S3-compatible endpoint (e.g. MinIO)
+      endpoint: ""
+      # -- Key prefix inside the bucket
+      prefix: ""
+      # -- Force path-style access (required for MinIO)
+      forcePathStyle: false
+
+  secrets:
+    # -- Secrets provider: local_encrypted | env
+    provider: "local_encrypted"
+    # -- Enable strict mode for secrets
+    strictMode: false
+
+  heartbeat:
+    # -- Enable the heartbeat scheduler
+    enabled: true
+    # -- Heartbeat interval in milliseconds (minimum 10000)
+    intervalMs: 30000
+
+  # -- Auto-apply database migrations on startup
+  migrationAutoApply: true
+
+# ---------------------------------------------------------------------------
+# Secrets
+# ---------------------------------------------------------------------------
+secrets:
+  # -- Create a Kubernetes Secret with the values below
+  create: true
+  # -- Use an existing Secret instead (secrets.create is ignored when set)
+  existingSecret: ""
+  # -- PostgreSQL connection string (overridden by postgresql.enabled or externalDatabase)
+  databaseUrl: ""
+  # -- BetterAuth secret (required for authenticated mode)
+  betterAuthSecret: ""
+  # -- Master encryption key for the secrets vault
+  secretsMasterKey: ""
+  # -- Anthropic API key (optional)
+  anthropicApiKey: ""
+  # -- OpenAI API key (optional)
+  openaiApiKey: ""
+
+# ---------------------------------------------------------------------------
+# External database (when not using the PostgreSQL subchart)
+# ---------------------------------------------------------------------------
+externalDatabase:
+  # -- Database host
+  host: ""
+  # -- Database port
+  port: 5432
+  # -- Database name
+  database: "paperclip"
+  # -- Database user
+  user: "paperclip"
+  # -- Database password (plain text — prefer secrets.existingSecret in production)
+  password: ""
+
+# ---------------------------------------------------------------------------
+# PostgreSQL subchart (Bitnami)
+# ---------------------------------------------------------------------------
+postgresql:
+  # -- Deploy a PostgreSQL instance via the Bitnami subchart
+  enabled: false
+  auth:
+    username: "paperclip"
+    password: "paperclip"
+    database: "paperclip"
+
+# ---------------------------------------------------------------------------
+# Persistence
+# ---------------------------------------------------------------------------
+persistence:
+  # -- Enable persistent storage for /paperclip
+  enabled: true
+  # -- Use an existing PVC
+  existingClaim: ""
+  # -- Storage class (empty = cluster default)
+  storageClass: ""
+  # -- Access modes
+  accessModes:
+    - ReadWriteOnce
+  # -- Volume size
+  size: 10Gi
+  # -- Annotations for the PVC
+  annotations: {}
+
+# ---------------------------------------------------------------------------
+# Service account
+# ---------------------------------------------------------------------------
+serviceAccount:
+  # -- Create a service account
+  create: true
+  # -- Annotations (e.g. for IRSA / Workload Identity)
+  annotations: {}
+  # -- Override the service account name
+  name: ""
+
+# ---------------------------------------------------------------------------
+# Service
+# ---------------------------------------------------------------------------
+service:
+  # -- Service type
+  type: ClusterIP
+  # -- Service port
+  port: 3100
+
+# ---------------------------------------------------------------------------
+# Ingress
+# ---------------------------------------------------------------------------
+ingress:
+  # -- Enable ingress
+  enabled: false
+  # -- Ingress class name
+  className: ""
+  # -- Annotations (e.g. for cert-manager, nginx WebSocket support)
+  # Example for nginx WebSocket support:
+  #   nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+  #   nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  #   nginx.org/websocket-services: "paperclip"
+  annotations: {}
+  hosts:
+    - host: paperclip.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: paperclip-tls
+  #    hosts:
+  #      - paperclip.local
+
+# ---------------------------------------------------------------------------
+# Autoscaling
+# ---------------------------------------------------------------------------
+autoscaling:
+  # -- Enable Horizontal Pod Autoscaler
+  enabled: false
+  # -- Minimum replicas
+  minReplicas: 1
+  # -- Maximum replicas
+  maxReplicas: 5
+  # -- Target CPU utilization (%)
+  targetCPUUtilizationPercentage: 80
+  # -- Target memory utilization (%)
+  targetMemoryUtilizationPercentage: ""
+
+# ---------------------------------------------------------------------------
+# Network policy
+# ---------------------------------------------------------------------------
+networkPolicy:
+  # -- Enable network policy
+  enabled: false
+
+# ---------------------------------------------------------------------------
+# Pod configuration
+# ---------------------------------------------------------------------------
+resources: {}
+  # limits:
+  #   cpu: 1000m
+  #   memory: 1Gi
+  # requests:
+  #   cpu: 250m
+  #   memory: 512Mi
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsUser: 1000
+  runAsNonRoot: true
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# -- Extra environment variables (list of name/value pairs)
+extraEnv: []
+# -- Extra envFrom sources
+extraEnvFrom: []
+# -- Extra volumes
+extraVolumes: []
+# -- Extra volume mounts
+extraVolumeMounts: []
