@@ -169,6 +169,25 @@ export function OrgChart() {
   const allNodes = useMemo(() => flattenLayout(layout), [layout]);
   const edges = useMemo(() => collectEdges(layout), [layout]);
 
+  // Secondary edges: non-primary manager relationships (managerIds[1+])
+  const secondaryEdges = useMemo(() => {
+    if (!orgTree) return [];
+    const nodeMap = new Map<string, LayoutNode>();
+    for (const n of allNodes) nodeMap.set(n.id, n);
+    const result: Array<{ parent: LayoutNode; child: LayoutNode }> = [];
+    function walk(org: OrgNode) {
+      const ids = org.managerIds ?? [];
+      for (let i = 1; i < ids.length; i++) {
+        const parent = nodeMap.get(ids[i]!);
+        const child = nodeMap.get(org.id);
+        if (parent && child) result.push({ parent, child });
+      }
+      for (const r of org.reports) walk(r);
+    }
+    for (const root of orgTree) walk(root);
+    return result;
+  }, [orgTree, allNodes]);
+
   // Compute SVG bounds
   const bounds = useMemo(() => {
     if (allNodes.length === 0) return { width: 800, height: 600 };
@@ -356,6 +375,31 @@ export function OrgChart() {
                 fill="none"
                 stroke="var(--border)"
                 strokeWidth={1.5}
+              />
+            );
+          })}
+          {secondaryEdges.map(({ parent, child }) => {
+            // Always draw from the higher node (bottom edge) to the lower node (top edge)
+            // so the curve flows downward even when the secondary manager is below the child.
+            const parentBelow = parent.y > child.y;
+            const top = parentBelow ? child : parent;
+            const bot = parentBelow ? parent : child;
+            const x1 = top.x + CARD_W / 2;
+            const y1 = top.y + CARD_H;
+            const x2 = bot.x + CARD_W / 2;
+            const y2 = bot.y;
+            const midY = (y1 + y2) / 2;
+            const dx = (x2 - x1) * 0.3;
+
+            return (
+              <path
+                key={`secondary-${parent.id}-${child.id}`}
+                d={`M ${x1} ${y1} C ${x1 + dx} ${midY}, ${x2 - dx} ${midY}, ${x2} ${y2}`}
+                fill="none"
+                stroke="var(--border)"
+                strokeWidth={1.5}
+                strokeDasharray="6 4"
+                opacity={0.6}
               />
             );
           })}

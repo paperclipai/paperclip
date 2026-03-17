@@ -60,7 +60,7 @@ curl -sS "$PAPERCLIP_API_URL/llms/agent-icons.txt" \
 6. Draft the new hire config:
 - role/title/name
 - icon (required in practice; use one from `/llms/agent-icons.txt`)
-- reporting line (`reportsTo`)
+- reporting line (`managerIds`)
 - adapter type
 - adapter and runtime config aligned to this environment
 - capabilities
@@ -78,7 +78,7 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-h
     "role": "cto",
     "title": "Chief Technology Officer",
     "icon": "crown",
-    "reportsTo": "<ceo-agent-id>",
+    "managerIds": ["<ceo-agent-id>"],
     "capabilities": "Owns technical roadmap, architecture, staffing, execution",
     "adapterType": "codex_local",
     "adapterConfig": {"cwd": "/abs/path/to/repo", "model": "o4-mini"},

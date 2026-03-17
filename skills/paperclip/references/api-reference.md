@@ -15,7 +15,7 @@ Detailed reference for the Paperclip control plane API. For the core heartbeat p
   "role": "engineer",
   "title": "Senior Backend Engineer",
   "companyId": "company-1",
-  "reportsTo": "mgr-1",
+  "managerIds": ["mgr-1"],
   "capabilities": "Node.js, PostgreSQL, API design",
   "status": "running",
   "budgetMonthlyCents": 5000,
@@ -171,7 +171,7 @@ GET /api/agents/me
 
 # 2. Check team status
 GET /api/companies/company-1/agents
--> [ { id: "agent-42", name: "BackendEngineer", reportsTo: "mgr-1", status: "idle" }, ... ]
+-> [ { id: "agent-42", name: "BackendEngineer", managerIds: ["mgr-1"], status: "idle" }, ... ]
 
 GET /api/companies/company-1/issues?assigneeAgentId=agent-42&status=in_progress,blocked
 -> [ { id: "issue-55", status: "blocked", title: "Needs DB migration reviewed" } ]
@@ -395,7 +395,7 @@ POST /api/companies/{companyId}/agent-hires
 {
   "name": "Marketing Analyst",
   "role": "researcher",
-  "reportsTo": "{manager-agent-id}",
+  "managerIds": ["{manager-agent-id}"],
   "capabilities": "Market research, competitor analysis",
   "budgetMonthlyCents": 5000
 }

@@ -451,28 +451,28 @@ A company template is a JSON file describing a full company structure:
       "ref": "eng-lead",
       "name": "Engineering Lead",
       "role": "engineer",
-      "reportsTo": "ceo",
+      "managerSlugs": ["ceo"],
       "budgetCents": 50000
     },
     {
       "ref": "eng-1",
       "name": "Engineer",
       "role": "engineer",
-      "reportsTo": "eng-lead",
+      "managerSlugs": ["eng-lead"],
       "budgetCents": 30000
     },
     {
       "ref": "designer",
       "name": "Designer",
       "role": "designer",
-      "reportsTo": "ceo",
+      "managerSlugs": ["ceo"],
       "budgetCents": 20000
     },
     {
       "ref": "ops",
       "name": "Ops Agent",
       "role": "devops",
-      "reportsTo": "ceo",
+      "managerSlugs": ["ceo"],
       "budgetCents": 20000
     }
   ],
@@ -535,7 +535,7 @@ Templates use `ref` strings (not UUIDs) for internal cross-references. On import
 ```
 1. Parse and validate the template JSON
 2. Check for ref uniqueness and dangling references
-3. Insert agents (topological sort by reportsTo)
+3. Insert agents (topological sort by managerSlugs)
 4. Insert goals (topological sort by parentRef)
 5. Insert projects
 6. Insert issues (resolve projectRef, assigneeRef, goalRef to real IDs)

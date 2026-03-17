@@ -26,7 +26,7 @@ export interface CompanyPortabilityAgentManifestEntry {
   title: string | null;
   icon: string | null;
   capabilities: string | null;
-  reportsToSlug: string | null;
+  managerSlugs: string[];
   adapterType: string;
   adapterConfig: Record<string, unknown>;
   runtimeConfig: Record<string, unknown>;

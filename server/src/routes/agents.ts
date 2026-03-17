@@ -340,7 +340,7 @@ export function agentRoutes(db: Db) {
       role: agent.role,
       title: agent.title,
       status: agent.status,
-      reportsTo: agent.reportsTo,
+      managerIds: agent.managerIds,
       adapterType: agent.adapterType,
       adapterConfig: redactEventPayload(agent.adapterConfig),
       runtimeConfig: redactEventPayload(agent.runtimeConfig),
@@ -390,6 +390,7 @@ export function agentRoutes(db: Db) {
       name: String(node.name),
       role: String(node.role),
       status: String(node.status),
+      managerIds: Array.isArray(node.managerIds) ? node.managerIds : [],
       reports,
     };
   }
@@ -715,7 +716,7 @@ export function agentRoutes(db: Db) {
           role: normalizedHireInput.role,
           title: normalizedHireInput.title ?? null,
           icon: normalizedHireInput.icon ?? null,
-          reportsTo: normalizedHireInput.reportsTo ?? null,
+          managerIds: normalizedHireInput.managerIds ?? [],
           capabilities: normalizedHireInput.capabilities ?? null,
           adapterType: requestedAdapterType,
           adapterConfig: requestedAdapterConfig,

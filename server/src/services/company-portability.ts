@@ -639,7 +639,9 @@ export function companyPortabilityService(db: Db) {
             .slice(secretStart)
             .filter((requirement) => requirement.agentSlug === slug),
         );
-        const reportsToSlug = agent.reportsTo ? (idToSlug.get(agent.reportsTo) ?? null) : null;
+        const managerSlugs = (agent.managerIds ?? [])
+          .map((mid: string) => idToSlug.get(mid))
+          .filter((s): s is string => !!s);
 
         files[agentPath] = buildMarkdown(
           {
@@ -650,7 +652,7 @@ export function companyPortabilityService(db: Db) {
             kind: "agent",
             icon: agent.icon ?? null,
             capabilities: agent.capabilities ?? null,
-            reportsTo: reportsToSlug,
+            managerSlugs,
             runtimeConfig: portableRuntimeConfig,
             permissions: portablePermissions,
             adapterConfig: portableAdapterConfig,
@@ -667,7 +669,7 @@ export function companyPortabilityService(db: Db) {
           title: agent.title ?? null,
           icon: agent.icon ?? null,
           capabilities: agent.capabilities ?? null,
-          reportsToSlug,
+          managerSlugs,
           adapterType: agent.adapterType,
           adapterConfig: portableAdapterConfig,
           runtimeConfig: portableRuntimeConfig,
@@ -890,6 +892,9 @@ export function companyPortabilityService(db: Db) {
         const manifestAgent = plan.selectedAgents.find((agent) => agent.slug === planAgent.slug);
         if (!manifestAgent) continue;
         if (planAgent.action === "skip") {
+          if (planAgent.existingAgentId) {
+            importedSlugToAgentId.set(planAgent.slug, planAgent.existingAgentId);
+          }
           resultAgents.push({
             slug: planAgent.slug,
             id: planAgent.existingAgentId,
@@ -916,7 +921,7 @@ export function companyPortabilityService(db: Db) {
           title: manifestAgent.title,
           icon: manifestAgent.icon,
           capabilities: manifestAgent.capabilities,
-          reportsTo: null,
+          managerIds: [] as string[],
           adapterType: manifestAgent.adapterType,
           adapterConfig,
           runtimeConfig: manifestAgent.runtimeConfig,
@@ -966,14 +971,16 @@ export function companyPortabilityService(db: Db) {
       for (const manifestAgent of plan.selectedAgents) {
         const agentId = importedSlugToAgentId.get(manifestAgent.slug);
         if (!agentId) continue;
-        const managerSlug = manifestAgent.reportsToSlug;
-        if (!managerSlug) continue;
-        const managerId = importedSlugToAgentId.get(managerSlug) ?? existingSlugToAgentId.get(managerSlug) ?? null;
-        if (!managerId || managerId === agentId) continue;
+        const managerSlugs = manifestAgent.managerSlugs ?? [];
+        if (managerSlugs.length === 0) continue;
+        const resolvedManagerIds = managerSlugs
+          .map((slug: string) => importedSlugToAgentId.get(slug) ?? existingSlugToAgentId.get(slug) ?? null)
+          .filter((id): id is string => !!id && id !== agentId);
+        if (resolvedManagerIds.length === 0) continue;
         try {
-          await agents.update(agentId, { reportsTo: managerId });
+          await agents.update(agentId, { managerIds: resolvedManagerIds } as Record<string, unknown>);
         } catch {
-          warnings.push(`Could not assign manager ${managerSlug} for imported agent ${manifestAgent.slug}.`);
+          warnings.push(`Could not assign managers for imported agent ${manifestAgent.slug}.`);
         }
       }
     }

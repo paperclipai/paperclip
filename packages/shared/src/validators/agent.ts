@@ -29,7 +29,7 @@ export const createAgentSchema = z.object({
   role: z.enum(AGENT_ROLES).optional().default("general"),
   title: z.string().optional().nullable(),
   icon: z.enum(AGENT_ICON_NAMES).optional().nullable(),
-  reportsTo: z.string().uuid().optional().nullable(),
+  managerIds: z.array(z.string().uuid()).optional().default([]),
   capabilities: z.string().optional().nullable(),
   adapterType: z.enum(AGENT_ADAPTER_TYPES).optional().default("process"),
   adapterConfig: adapterConfigSchema.optional().default({}),

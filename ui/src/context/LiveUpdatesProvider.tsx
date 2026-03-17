@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { Agent, Issue, LiveEvent } from "@paperclipai/shared";
 import { authApi } from "../api/auth";
@@ -7,15 +7,21 @@ import type { ToastInput } from "./ToastContext";
 import { useToast } from "./ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 
+export type LiveEventFilter = (event: LiveEvent) => boolean;
+export type LiveEventHandler = (event: LiveEvent) => void;
+
 interface LiveUpdatesContextValue {
   isConnected: boolean;
   /** Suppress WS-driven invalidations briefly after a local mutation fires. */
   suppressInvalidations: () => void;
+  /** Subscribe to raw WS events. Returns an unsubscribe function. */
+  subscribe: (filter: LiveEventFilter, handler: LiveEventHandler) => () => void;
 }
 
 const LiveUpdatesContext = createContext<LiveUpdatesContextValue>({
   isConnected: false,
   suppressInvalidations: () => {},
+  subscribe: () => () => {},
 });
 
 export function useLiveUpdates() {
@@ -527,12 +533,21 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const gateRef = useRef<ToastGate>({ cooldownHits: new Map(), suppressUntil: 0 });
   const [wsConnected, setWsConnected] = useState(false);
   const invalidationSuppressUntilRef = useRef(0);
+  const subscribersRef = useRef(new Set<{ filter: LiveEventFilter; handler: LiveEventHandler }>());
+
+  const subscribe = useCallback((filter: LiveEventFilter, handler: LiveEventHandler) => {
+    const entry = { filter, handler };
+    subscribersRef.current.add(entry);
+    return () => { subscribersRef.current.delete(entry); };
+  }, []);
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
     retry: false,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  const currentUserIdRef = useRef(currentUserId);
+  currentUserIdRef.current = currentUserId;
 
   const suppressInvalidations = useRef(() => {
     invalidationSuppressUntilRef.current = Date.now() + MUTATION_SUPPRESS_MS;
@@ -581,18 +596,27 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
         const raw = typeof message.data === "string" ? message.data : "";
         if (!raw) return;
 
+        let parsed: LiveEvent;
+        try {
+          parsed = JSON.parse(raw) as LiveEvent;
+        } catch {
+          return; // Ignore non-JSON payloads.
+        }
+
+        // Dispatch to subscribers before any suppression check
+        for (const sub of subscribersRef.current) {
+          try {
+            if (sub.filter(parsed)) sub.handler(parsed);
+          } catch { /* subscriber errors must not break the provider */ }
+        }
+
         // Skip WS-driven invalidations while a local mutation is in flight
         if (Date.now() < invalidationSuppressUntilRef.current) return;
 
-        try {
-          const parsed = JSON.parse(raw) as LiveEvent;
-          handleLiveEvent(queryClient, selectedCompanyId, parsed, pushToast, gateRef.current, {
-            userId: currentUserId,
-            agentId: null,
-          });
-        } catch {
-          // Ignore non-JSON payloads.
-        }
+        handleLiveEvent(queryClient, selectedCompanyId, parsed, pushToast, gateRef.current, {
+          userId: currentUserIdRef.current,
+          agentId: null,
+        });
       };
 
       socket.onerror = () => {
@@ -620,13 +644,15 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
         socket.close(1000, "provider_unmount");
       }
     };
-  }, [queryClient, selectedCompanyId, pushToast, currentUserId]);
+  }, [queryClient, selectedCompanyId, pushToast]);
 
-  const contextValue = useRef<LiveUpdatesContextValue>({ isConnected: false, suppressInvalidations });
-  contextValue.current.isConnected = wsConnected;
+  const contextValue = useMemo<LiveUpdatesContextValue>(
+    () => ({ isConnected: wsConnected, suppressInvalidations, subscribe }),
+    [wsConnected, suppressInvalidations, subscribe],
+  );
 
   return (
-    <LiveUpdatesContext.Provider value={contextValue.current}>
+    <LiveUpdatesContext.Provider value={contextValue}>
       {children}
     </LiveUpdatesContext.Provider>
   );

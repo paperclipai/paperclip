@@ -134,7 +134,7 @@ interface TeamBlueprint {
 
   // Org structure
   agents: AgentBlueprint[];
-  reportingChain: { agentSlug: string; reportsTo: string | null }[];
+  reportingChain: { agentSlug: string; managerIds: string[] }[];
 
   // Governance
   governance: {

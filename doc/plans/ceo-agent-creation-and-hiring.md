@@ -255,7 +255,7 @@ In Agent Detail (board/CEO context):
 
 Add "Hire Agent" flow (for CEO/authorized agents):
 
-- choose role/name/title/reportsTo
+- choose role/name/title/managerIds
 - compose initial prompt/capabilities
 - inspect adapter reflection docs
 - inspect existing related agent configurations

@@ -2,6 +2,7 @@ export { companies } from "./companies.js";
 export { authUsers, authSessions, authAccounts, authVerifications } from "./auth.js";
 export { instanceUserRoles } from "./instance_user_roles.js";
 export { agents } from "./agents.js";
+export { agentManagers } from "./agent_managers.js";
 export { companyMemberships } from "./company_memberships.js";
 export { principalPermissionGrants } from "./principal_permission_grants.js";
 export { invites } from "./invites.js";

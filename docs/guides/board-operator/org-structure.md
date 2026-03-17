@@ -8,7 +8,7 @@ Paperclip enforces a strict organizational hierarchy. Every agent reports to exa
 ## How It Works
 
 - The **CEO** has no manager (reports to the board/human operator)
-- Every other agent has a `reportsTo` field pointing to their manager
+- Every other agent has a `managerIds` field listing their managers
 - Managers can create subtasks and delegate to their reports
 - Agents escalate blockers up the chain of command
 

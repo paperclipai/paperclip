@@ -294,8 +294,8 @@ export function AgentDetail() {
   const assignedIssues = (allIssues ?? [])
     .filter((i) => i.assigneeAgentId === agent?.id)
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-  const reportsToAgent = (allAgents ?? []).find((a) => a.id === agent?.reportsTo);
-  const directReports = (allAgents ?? []).filter((a) => a.reportsTo === agent?.id && a.status !== "terminated");
+  const managerAgents = (allAgents ?? []).filter((a) => agent?.managerIds?.includes(a.id));
+  const directReports = (allAgents ?? []).filter((a) => a.managerIds?.includes(agent?.id ?? "") && a.status !== "terminated");
   const mobileLiveRun = useMemo(
     () => (heartbeats ?? []).find((r) => r.status === "running" || r.status === "queued") ?? null,
     [heartbeats],
@@ -628,7 +628,7 @@ export function AgentDetail() {
           runs={heartbeats ?? []}
           assignedIssues={assignedIssues}
           runtimeState={runtimeState}
-          reportsToAgent={reportsToAgent ?? null}
+          managerAgents={managerAgents}
           directReports={directReports}
           agentId={agent.id}
           agentRouteId={canonicalAgentRef}
@@ -749,7 +749,7 @@ function AgentOverview({
   runs,
   assignedIssues,
   runtimeState,
-  reportsToAgent,
+  managerAgents,
   directReports,
   agentId,
   agentRouteId,
@@ -758,7 +758,7 @@ function AgentOverview({
   runs: HeartbeatRun[];
   assignedIssues: { id: string; title: string; status: string; priority: string; identifier?: string | null; createdAt: Date }[];
   runtimeState?: AgentRuntimeState;
-  reportsToAgent: Agent | null;
+  managerAgents: Agent[];
   directReports: Agent[];
   agentId: string;
   agentRouteId: string;
@@ -824,7 +824,7 @@ function AgentOverview({
       <ConfigSummary
         agent={agent}
         agentRouteId={agentRouteId}
-        reportsToAgent={reportsToAgent}
+        managerAgents={managerAgents}
         directReports={directReports}
       />
     </div>
@@ -838,12 +838,12 @@ function AgentOverview({
 function ConfigSummary({
   agent,
   agentRouteId,
-  reportsToAgent,
+  managerAgents,
   directReports,
 }: {
   agent: Agent;
   agentRouteId: string;
-  reportsToAgent: Agent | null;
+  managerAgents: Agent[];
   directReports: Agent[];
 }) {
   const config = agent.adapterConfig as Record<string, unknown>;
@@ -898,13 +898,18 @@ function ConfigSummary({
               }
             </SummaryRow>
             <SummaryRow label="Reports to">
-              {reportsToAgent ? (
-                <Link
-                  to={`/agents/${agentRouteRef(reportsToAgent)}`}
-                  className="text-blue-600 hover:underline dark:text-blue-400"
-                >
-                  <Identity name={reportsToAgent.name} size="sm" />
-                </Link>
+              {managerAgents.length > 0 ? (
+                <div className="flex flex-col gap-1">
+                  {managerAgents.map((mgr) => (
+                    <Link
+                      key={mgr.id}
+                      to={`/agents/${agentRouteRef(mgr)}`}
+                      className="text-blue-600 hover:underline dark:text-blue-400"
+                    >
+                      <Identity name={mgr.name} size="sm" />
+                    </Link>
+                  ))}
+                </div>
               ) : (
                 <span className="text-muted-foreground">Nobody (top-level)</span>
               )}

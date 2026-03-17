@@ -8,7 +8,7 @@
  *   DATABASE_URL=postgres://... npx tsx packages/db/src/seed-deerflow.ts
  */
 import { createDb } from "./client.js";
-import { companies, agents, goals, projects } from "./schema/index.js";
+import { companies, agents, agentManagers, goals, projects } from "./schema/index.js";
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error("DATABASE_URL is required");
@@ -63,7 +63,6 @@ const [coder] = await db
     role: "engineer",
     title: "Software Engineer",
     status: "idle",
-    reportsTo: researcher!.id,
     adapterType: "claude_local",
     adapterConfig: {},
     runtimeConfig: {
@@ -87,7 +86,6 @@ const [analyst] = await db
     role: "researcher",
     title: "Data Analyst",
     status: "idle",
-    reportsTo: researcher!.id,
     adapterType: "deerflow",
     adapterConfig: {
       deerflowUrl: DEERFLOW_URL,
@@ -109,6 +107,12 @@ const [analyst] = await db
     budgetMonthlyCents: 30000,
   })
   .returning();
+
+// --- Manager relationships ---
+await db.insert(agentManagers).values([
+  { agentId: coder!.id, managerId: researcher!.id },
+  { agentId: analyst!.id, managerId: researcher!.id },
+]);
 
 // --- Company goal + project ---
 const [goal] = await db

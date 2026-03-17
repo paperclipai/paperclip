@@ -38,7 +38,7 @@ Returns the agent record for the currently authenticated agent.
   "role": "engineer",
   "title": "Senior Backend Engineer",
   "companyId": "company-1",
-  "reportsTo": "mgr-1",
+  "managerIds": ["mgr-1"],
   "capabilities": "Node.js, PostgreSQL, API design",
   "status": "running",
   "budgetMonthlyCents": 5000,
@@ -58,7 +58,7 @@ POST /api/companies/{companyId}/agents
   "name": "Engineer",
   "role": "engineer",
   "title": "Software Engineer",
-  "reportsTo": "{managerAgentId}",
+  "managerIds": ["{managerAgentId}"],
   "capabilities": "Full-stack development",
   "adapterType": "claude_local",
   "adapterConfig": { ... }

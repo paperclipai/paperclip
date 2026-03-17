@@ -148,7 +148,7 @@ export function registerAgentCommands(program: Command): void {
                 name: row.name,
                 role: row.role,
                 status: row.status,
-                reportsTo: row.reportsTo,
+                managerIds: row.managerIds,
                 budgetMonthlyCents: row.budgetMonthlyCents,
                 spentMonthlyCents: row.spentMonthlyCents,
               }),

@@ -62,10 +62,10 @@ export function NewAgent() {
   const [name, setName] = useState("");
   const [title, setTitle] = useState("");
   const [role, setRole] = useState("general");
-  const [reportsTo, setReportsTo] = useState("");
+  const [managerIds, setManagerIds] = useState<string[]>([]);
   const [configValues, setConfigValues] = useState<CreateConfigValues>(defaultCreateValues);
   const [roleOpen, setRoleOpen] = useState(false);
-  const [reportsToOpen, setReportsToOpen] = useState(false);
+  const [managersOpen, setManagersOpen] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
   const { data: agents } = useQuery({
@@ -169,7 +169,7 @@ export function NewAgent() {
       name: name.trim(),
       role: effectiveRole,
       ...(title.trim() ? { title: title.trim() } : {}),
-      ...(reportsTo ? { reportsTo } : {}),
+      ...(managerIds.length > 0 ? { managerIds } : {}),
       adapterType: configValues.adapterType,
       adapterConfig: buildAdapterConfig(),
       runtimeConfig: {
@@ -185,7 +185,7 @@ export function NewAgent() {
     });
   }
 
-  const currentReportsTo = (agents ?? []).find((a) => a.id === reportsTo);
+  const selectedManagers = (agents ?? []).filter((a) => managerIds.includes(a.id));
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
@@ -249,7 +249,7 @@ export function NewAgent() {
             </PopoverContent>
           </Popover>
 
-          <Popover open={reportsToOpen} onOpenChange={setReportsToOpen}>
+          <Popover open={managersOpen} onOpenChange={setManagersOpen}>
             <PopoverTrigger asChild>
               <button
                 className={cn(
@@ -258,10 +258,12 @@ export function NewAgent() {
                 )}
                 disabled={isFirstAgent}
               >
-                {currentReportsTo ? (
+                {selectedManagers.length > 0 ? (
                   <>
-                    <AgentIcon icon={currentReportsTo.icon} className="h-3 w-3 text-muted-foreground" />
-                    {`Reports to ${currentReportsTo.name}`}
+                    <AgentIcon icon={selectedManagers[0]!.icon} className="h-3 w-3 text-muted-foreground" />
+                    {selectedManagers.length === 1
+                      ? `Reports to ${selectedManagers[0]!.name}`
+                      : `Reports to ${selectedManagers.length} managers`}
                   </>
                 ) : (
                   <>
@@ -275,26 +277,39 @@ export function NewAgent() {
               <button
                 className={cn(
                   "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-                  !reportsTo && "bg-accent"
+                  managerIds.length === 0 && "bg-accent"
                 )}
-                onClick={() => { setReportsTo(""); setReportsToOpen(false); }}
+                onClick={() => { setManagerIds([]); }}
               >
                 No manager
               </button>
-              {(agents ?? []).map((a) => (
-                <button
-                  key={a.id}
-                  className={cn(
-                    "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 truncate",
-                    a.id === reportsTo && "bg-accent"
-                  )}
-                  onClick={() => { setReportsTo(a.id); setReportsToOpen(false); }}
-                >
-                  <AgentIcon icon={a.icon} className="shrink-0 h-3 w-3 text-muted-foreground" />
-                  {a.name}
-                  <span className="text-muted-foreground ml-auto">{roleLabels[a.role] ?? a.role}</span>
-                </button>
-              ))}
+              {(agents ?? []).map((a) => {
+                const checked = managerIds.includes(a.id);
+                return (
+                  <button
+                    key={a.id}
+                    className={cn(
+                      "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 truncate",
+                      checked && "bg-accent"
+                    )}
+                    onClick={() => {
+                      setManagerIds((prev) =>
+                        checked ? prev.filter((id) => id !== a.id) : [...prev, a.id]
+                      );
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      readOnly
+                      className="h-3 w-3 rounded border-border pointer-events-none"
+                    />
+                    <AgentIcon icon={a.icon} className="shrink-0 h-3 w-3 text-muted-foreground" />
+                    {a.name}
+                    <span className="text-muted-foreground ml-auto">{roleLabels[a.role] ?? a.role}</span>
+                  </button>
+                );
+              })}
             </PopoverContent>
           </Popover>
         </div>

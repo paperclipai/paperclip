@@ -32,7 +32,7 @@ Request body matches agent create shape:
   "role": "cto",
   "title": "Chief Technology Officer",
   "icon": "crown",
-  "reportsTo": "uuid-or-null",
+  "managerIds": ["uuid"],
   "capabilities": "Owns architecture and engineering execution",
   "adapterType": "claude_local",
   "adapterConfig": {

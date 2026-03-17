@@ -189,7 +189,7 @@ All self-registration requires approval. This is non-negotiable for security.
 
 On approval, the approver sets:
 
-- `reportsTo` -- who the new agent reports to in the chain of command
+- `managerIds` -- who the new agent reports to in the chain of command
 - `role` -- the agent's role within the company
 - `budget` -- initial budget allocation
 

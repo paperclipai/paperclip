@@ -41,10 +41,12 @@ export function AgentProperties({ agent, runtimeState }: AgentPropertiesProps) {
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId && !!agent.reportsTo,
+    enabled: !!selectedCompanyId && agent.managerIds.length > 0,
   });
 
-  const reportsToAgent = agent.reportsTo ? agents?.find((a) => a.id === agent.reportsTo) : null;
+  const managerAgents = agent.managerIds.length > 0
+    ? (agents ?? []).filter((a) => agent.managerIds.includes(a.id))
+    : [];
 
   return (
     <div className="space-y-4">
@@ -85,15 +87,15 @@ export function AgentProperties({ agent, runtimeState }: AgentPropertiesProps) {
             <span className="text-sm">{formatDate(agent.lastHeartbeatAt)}</span>
           </PropertyRow>
         )}
-        {agent.reportsTo && (
+        {managerAgents.length > 0 && (
           <PropertyRow label="Reports To">
-            {reportsToAgent ? (
-              <Link to={agentUrl(reportsToAgent)} className="hover:underline">
-                <Identity name={reportsToAgent.name} size="sm" />
-              </Link>
-            ) : (
-              <span className="text-sm font-mono">{agent.reportsTo.slice(0, 8)}</span>
-            )}
+            <div className="flex flex-col gap-1">
+              {managerAgents.map((mgr) => (
+                <Link key={mgr.id} to={agentUrl(mgr)} className="hover:underline">
+                  <Identity name={mgr.name} size="sm" />
+                </Link>
+              ))}
+            </div>
           </PropertyRow>
         )}
         <PropertyRow label="Created">

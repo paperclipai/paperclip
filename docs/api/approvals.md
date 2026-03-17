@@ -43,7 +43,7 @@ POST /api/companies/{companyId}/agent-hires
 {
   "name": "Marketing Analyst",
   "role": "researcher",
-  "reportsTo": "{managerAgentId}",
+  "managerIds": ["{managerAgentId}"],
   "capabilities": "Market research",
   "budgetMonthlyCents": 5000
 }

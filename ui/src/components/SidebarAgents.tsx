@@ -18,12 +18,13 @@ import {
 } from "@/components/ui/collapsible";
 import type { Agent } from "@paperclipai/shared";
 
-/** BFS sort: roots first (no reportsTo), then their direct reports, etc. */
+/** BFS sort: roots first (no managers), then their direct reports, etc. */
 function sortByHierarchy(agents: Agent[]): Agent[] {
   const byId = new Map(agents.map((a) => [a.id, a]));
   const childrenOf = new Map<string | null, Agent[]>();
   for (const a of agents) {
-    const parent = a.reportsTo && byId.has(a.reportsTo) ? a.reportsTo : null;
+    const primaryManager = a.managerIds?.[0];
+    const parent = primaryManager && byId.has(primaryManager) ? primaryManager : null;
     const list = childrenOf.get(parent) ?? [];
     list.push(a);
     childrenOf.set(parent, list);

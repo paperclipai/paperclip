@@ -33,7 +33,7 @@ These decisions close open questions from `SPEC.md` for V1.
 | Tenancy | Single-tenant deployment, multi-company data model |
 | Company model | Company is first-order; all business entities are company-scoped |
 | Board | Single human board operator per deployment |
-| Org graph | Strict tree (`reports_to` nullable root); no multi-manager reporting |
+| Org graph | DAG via `agent_managers` junction table; many-to-many manager relationships |
 | Visibility | Full visibility to board and all agents in same company |
 | Communication | Tasks + comments only (no separate chat system) |
 | Task ownership | Single assignee; atomic checkout required for `in_progress` transition |
@@ -135,7 +135,7 @@ Invariant: every business record belongs to exactly one company.
 - `role` text not null
 - `title` text null
 - `status` enum: `active | paused | idle | running | error | terminated`
-- `reports_to` uuid fk `agents.id` null
+- (managers stored in `agent_managers` junction table)
 - `capabilities` text null
 - `adapter_type` enum: `process | http`
 - `adapter_config` jsonb not null
@@ -295,7 +295,9 @@ Operational policy:
 ## 7.13 Required Indexes
 
 - `agents(company_id, status)`
-- `agents(company_id, reports_to)`
+- `agent_managers(agent_id, manager_id)` (unique)
+- `agent_managers(agent_id)`
+- `agent_managers(manager_id)`
 - `issues(company_id, status)`
 - `issues(company_id, assignee_agent_id, status)`
 - `issues(company_id, parent_id)`
