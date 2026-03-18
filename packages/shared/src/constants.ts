@@ -146,6 +146,9 @@ export const APPROVAL_STATUSES = [
 ] as const;
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
 
+export const CREDENTIAL_TYPES = ["claude_oauth", "qwen_api_key"] as const;
+export type CredentialType = (typeof CREDENTIAL_TYPES)[number];
+
 export const SECRET_PROVIDERS = [
   "local_encrypted",
   "aws_secrets_manager",

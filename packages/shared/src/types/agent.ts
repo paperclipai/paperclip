@@ -24,6 +24,7 @@ export interface Agent {
   runtimeConfig: Record<string, unknown>;
   budgetMonthlyCents: number;
   spentMonthlyCents: number;
+  credentialId: string | null;
   permissions: AgentPermissions;
   lastHeartbeatAt: Date | null;
   metadata: Record<string, unknown> | null;

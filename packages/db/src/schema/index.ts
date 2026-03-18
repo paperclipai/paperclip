@@ -32,3 +32,4 @@ export { activityLog } from "./activity_log.js";
 export { companySecrets } from "./company_secrets.js";
 export { companySecretVersions } from "./company_secret_versions.js";
 export { telegramThreadMappings } from "./telegram_thread_mappings.js";
+export { providerCredentials } from "./provider_credentials.js";

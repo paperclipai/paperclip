@@ -1,19 +1,20 @@
 import { useEffect, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
+import { credentialsApi } from "../api/credentials";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { Settings, Check, Send } from "lucide-react";
+import { Settings, Check, Send, KeyRound, Trash2, Star, Pencil, X } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
   ToggleField,
   HintIcon
 } from "../components/agent-config-primitives";
-import type { CompanySettings as CompanySettingsType } from "@paperclipai/shared";
+import type { CompanySettings as CompanySettingsType, CredentialType, ProviderCredential } from "@paperclipai/shared";
 
 type AgentSnippetInput = {
   onboardingTextUrl: string;
@@ -321,6 +322,9 @@ export function CompanySettings() {
         savedChatId={(selectedCompany.settings as CompanySettingsType | undefined)?.telegram?.chatId ?? ""}
       />
 
+      {/* Credentials */}
+      <CredentialsSection companyId={selectedCompanyId!} />
+
       {/* Invites */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
@@ -444,6 +448,351 @@ export function CompanySettings() {
             )}
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+const CREDENTIAL_TYPE_LABELS: Record<CredentialType, string> = {
+  claude_oauth: "Claude OAuth",
+  qwen_api_key: "Qwen API Key",
+};
+
+const CREDENTIAL_TYPE_OPTIONS: CredentialType[] = ["claude_oauth", "qwen_api_key"];
+
+function credentialPlaceholder(type: CredentialType): string {
+  return type === "claude_oauth"
+    ? "Paste OAuth access token..."
+    : "Paste DashScope API key...";
+}
+
+function buildCredentialPayload(
+  type: CredentialType,
+  token: string,
+): Record<string, unknown> {
+  return type === "claude_oauth"
+    ? { accessToken: token }
+    : { apiKey: token };
+}
+
+function CredentialsSection({ companyId }: { companyId: string }) {
+  const queryClient = useQueryClient();
+
+  // Fetch credentials
+  const { data: credentials = [], isLoading } = useQuery({
+    queryKey: queryKeys.credentials.list(companyId),
+    queryFn: () => credentialsApi.list(companyId),
+  });
+
+  // Add form state
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [addName, setAddName] = useState("");
+  const [addType, setAddType] = useState<CredentialType>("claude_oauth");
+  const [addToken, setAddToken] = useState("");
+  const [addIsDefault, setAddIsDefault] = useState(false);
+
+  // Edit state
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editToken, setEditToken] = useState("");
+  const [editIsDefault, setEditIsDefault] = useState(false);
+
+  // Delete confirmation
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+
+  const resetAddForm = () => {
+    setShowAddForm(false);
+    setAddName("");
+    setAddType("claude_oauth");
+    setAddToken("");
+    setAddIsDefault(false);
+  };
+
+  const startEdit = (cred: ProviderCredential) => {
+    setEditingId(cred.id);
+    setEditName(cred.name);
+    setEditToken("");
+    setEditIsDefault(cred.isDefault);
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditName("");
+    setEditToken("");
+    setEditIsDefault(false);
+  };
+
+  const invalidate = () =>
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.credentials.list(companyId),
+    });
+
+  const createMutation = useMutation({
+    mutationFn: () =>
+      credentialsApi.create(companyId, {
+        name: addName.trim(),
+        type: addType,
+        credential: buildCredentialPayload(addType, addToken.trim()),
+        isDefault: addIsDefault,
+      }),
+    onSuccess: () => {
+      invalidate();
+      resetAddForm();
+    },
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: ({
+      id,
+      data,
+    }: {
+      id: string;
+      data: Parameters<typeof credentialsApi.update>[1];
+    }) => credentialsApi.update(id, data),
+    onSuccess: () => {
+      invalidate();
+      cancelEdit();
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => credentialsApi.remove(id),
+    onSuccess: () => {
+      invalidate();
+      setConfirmDeleteId(null);
+    },
+  });
+
+  function handleSaveEdit(cred: ProviderCredential) {
+    const data: Parameters<typeof credentialsApi.update>[1] = {};
+    if (editName.trim() && editName.trim() !== cred.name)
+      data.name = editName.trim();
+    if (editToken.trim())
+      data.credential = buildCredentialPayload(cred.type, editToken.trim());
+    if (editIsDefault !== cred.isDefault) data.isDefault = editIsDefault;
+    if (Object.keys(data).length === 0) {
+      cancelEdit();
+      return;
+    }
+    updateMutation.mutate({ id: cred.id, data });
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        Credentials
+      </div>
+      <div className="space-y-3 rounded-md border border-border px-4 py-4">
+        <div className="flex items-center gap-1.5">
+          <KeyRound className="h-4 w-4 text-muted-foreground" />
+          <span className="text-xs text-muted-foreground">
+            Provider credentials used by agents for LLM access.
+          </span>
+          <HintIcon text="Credentials are encrypted at rest. Tokens are never displayed after creation." />
+        </div>
+
+        {/* Credential list */}
+        {isLoading ? (
+          <p className="text-xs text-muted-foreground">Loading...</p>
+        ) : credentials.length === 0 ? (
+          <p className="text-xs text-muted-foreground">
+            No credentials configured yet.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {credentials.map((cred) => (
+              <div key={cred.id}>
+                {editingId === cred.id ? (
+                  /* Inline edit form */
+                  <div className="space-y-2 rounded-md border border-border bg-muted/30 px-3 py-3">
+                    <Field label="Name">
+                      <input
+                        className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                        type="text"
+                        value={editName}
+                        onChange={(e) => setEditName(e.target.value)}
+                      />
+                    </Field>
+                    <Field
+                      label="Replace token"
+                      hint="Leave empty to keep the existing token."
+                    >
+                      <input
+                        className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
+                        type="password"
+                        value={editToken}
+                        placeholder={credentialPlaceholder(cred.type)}
+                        onChange={(e) => setEditToken(e.target.value)}
+                      />
+                    </Field>
+                    <ToggleField
+                      label="Default credential"
+                      hint="If set, agents without an explicit credential will use this one."
+                      checked={editIsDefault}
+                      onChange={setEditIsDefault}
+                    />
+                    <div className="flex items-center gap-2 pt-1">
+                      <Button
+                        size="sm"
+                        onClick={() => handleSaveEdit(cred)}
+                        disabled={updateMutation.isPending}
+                      >
+                        {updateMutation.isPending ? "Saving..." : "Save"}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={cancelEdit}
+                      >
+                        Cancel
+                      </Button>
+                      {updateMutation.isError && (
+                        <span className="text-xs text-destructive">
+                          {updateMutation.error instanceof Error
+                            ? updateMutation.error.message
+                            : "Failed to save"}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  /* Display row */
+                  <div className="flex items-center justify-between gap-2 rounded-md border border-border px-3 py-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="text-sm font-medium truncate">
+                        {cred.name}
+                      </span>
+                      <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                        {CREDENTIAL_TYPE_LABELS[cred.type] ?? cred.type}
+                      </span>
+                      {cred.isDefault && (
+                        <span className="shrink-0 flex items-center gap-0.5 rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600">
+                          <Star className="h-2.5 w-2.5" />
+                          default
+                        </span>
+                      )}
+                      <span className="shrink-0 text-[10px] text-muted-foreground">
+                        {new Date(cred.createdAt).toLocaleDateString()}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 w-7 p-0"
+                        onClick={() => startEdit(cred)}
+                        title="Edit credential"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </Button>
+                      {confirmDeleteId === cred.id ? (
+                        <div className="flex items-center gap-1">
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            className="h-7 text-xs px-2"
+                            onClick={() => deleteMutation.mutate(cred.id)}
+                            disabled={deleteMutation.isPending}
+                          >
+                            {deleteMutation.isPending ? "..." : "Delete"}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 w-7 p-0"
+                            onClick={() => setConfirmDeleteId(null)}
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
+                          onClick={() => setConfirmDeleteId(cred.id)}
+                          title="Delete credential"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Add credential form */}
+        {showAddForm ? (
+          <div className="space-y-2 rounded-md border border-border bg-muted/30 px-3 py-3">
+            <Field label="Name" hint="A human-readable label for this credential.">
+              <input
+                className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                type="text"
+                value={addName}
+                placeholder="e.g. Production Claude Key"
+                onChange={(e) => setAddName(e.target.value)}
+              />
+            </Field>
+            <Field label="Type">
+              <select
+                className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                value={addType}
+                onChange={(e) => setAddType(e.target.value as CredentialType)}
+              >
+                {CREDENTIAL_TYPE_OPTIONS.map((t) => (
+                  <option key={t} value={t}>
+                    {CREDENTIAL_TYPE_LABELS[t]}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Token / Key">
+              <input
+                className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
+                type="password"
+                value={addToken}
+                placeholder={credentialPlaceholder(addType)}
+                onChange={(e) => setAddToken(e.target.value)}
+              />
+            </Field>
+            <ToggleField
+              label="Set as default"
+              hint="If set, agents without an explicit credential will use this one."
+              checked={addIsDefault}
+              onChange={setAddIsDefault}
+            />
+            <div className="flex items-center gap-2 pt-1">
+              <Button
+                size="sm"
+                onClick={() => createMutation.mutate()}
+                disabled={
+                  createMutation.isPending ||
+                  !addName.trim() ||
+                  !addToken.trim()
+                }
+              >
+                {createMutation.isPending ? "Saving..." : "Save"}
+              </Button>
+              <Button size="sm" variant="ghost" onClick={resetAddForm}>
+                Cancel
+              </Button>
+              {createMutation.isError && (
+                <span className="text-xs text-destructive">
+                  {createMutation.error instanceof Error
+                    ? createMutation.error.message
+                    : "Failed to create credential"}
+                </span>
+              )}
+            </div>
+          </div>
+        ) : (
+          <Button size="sm" variant="outline" onClick={() => setShowAddForm(true)}>
+            Add Credential
+          </Button>
+        )}
       </div>
     </div>
   );

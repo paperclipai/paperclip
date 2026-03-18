@@ -22,6 +22,7 @@ import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { secretService } from "./secrets.js";
+import { resolveCredentialEnv } from "./credentials.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
@@ -1244,6 +1245,27 @@ export function heartbeatService(db: Db) {
         agent.companyId,
         mergedConfig,
       );
+
+      // Resolve provider credential env (e.g. claude_oauth HOME, qwen_api_key proxy)
+      // and merge into the resolved config env, overriding any existing values.
+      if (agent.credentialId) {
+        try {
+          const credResult = await resolveCredentialEnv(db, agent.id, agent.credentialId);
+          if (Object.keys(credResult.env).length > 0) {
+            const existingEnv =
+              typeof resolvedConfig.env === "object" && resolvedConfig.env !== null
+                ? (resolvedConfig.env as Record<string, string>)
+                : {};
+            resolvedConfig.env = { ...existingEnv, ...credResult.env };
+          }
+        } catch (credErr) {
+          logger.error(
+            { agentId: agent.id, credentialId: agent.credentialId, err: credErr },
+            "failed to resolve credential env; continuing without credential",
+          );
+        }
+      }
+
       const onAdapterMeta = async (meta: AdapterInvocationMeta) => {
         await appendRunEvent(currentRun, seq++, {
           eventType: "adapter.invoke",

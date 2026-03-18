@@ -118,6 +118,13 @@ export {
 } from "./asset.js";
 
 export {
+  createProviderCredentialSchema,
+  updateProviderCredentialSchema,
+  type CreateProviderCredential,
+  type UpdateProviderCredential,
+} from "./provider-credential.js";
+
+export {
   createCompanyInviteSchema,
   acceptInviteSchema,
   listJoinRequestsQuerySchema,

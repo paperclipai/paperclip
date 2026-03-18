@@ -146,6 +146,7 @@ export function NewAgentDialog() {
       role: effectiveRole,
       ...(title.trim() ? { title: title.trim() } : {}),
       ...(reportsTo ? { reportsTo } : {}),
+      credentialId: configValues.credentialId || null,
       adapterType: configValues.adapterType,
       adapterConfig: buildAdapterConfig(),
       runtimeConfig: {

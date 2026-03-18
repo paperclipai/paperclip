@@ -36,6 +36,7 @@ export const createAgentSchema = z.object({
   runtimeConfig: z.record(z.unknown()).optional().default({}),
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   permissions: agentPermissionsSchema.optional(),
+  credentialId: z.string().uuid().optional().nullable(),
   metadata: z.record(z.unknown()).optional().nullable(),
 });
 
