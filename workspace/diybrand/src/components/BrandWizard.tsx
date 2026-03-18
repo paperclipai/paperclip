@@ -10,6 +10,7 @@ import { StepReview } from "./steps/StepReview";
 import { StepPalette } from "./steps/StepPalette";
 import { StepTypography } from "./steps/StepTypography";
 import { StepLogo } from "./steps/StepLogo";
+import { StepExport } from "./steps/StepExport";
 
 export type QuestionnaireData = {
   id?: string;
@@ -41,13 +42,13 @@ const STEP_LABELS = [
   "Colors",
   "Typography",
   "Logo",
+  "Export",
 ];
 
 export function BrandWizard() {
   const [step, setStep] = useState(1);
   const [data, setData] = useState<QuestionnaireData>(INITIAL_DATA);
   const [saving, setSaving] = useState(false);
-  const [submitted, setSubmitted] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   const updateData = useCallback((partial: Partial<QuestionnaireData>) => {
@@ -141,29 +142,6 @@ export function BrandWizard() {
     setStep(6);
   }, [step, validateStep, saveProgress]);
 
-  if (submitted) {
-    return (
-      <div className="rounded-xl bg-white p-8 text-center shadow-sm ring-1 ring-gray-200 sm:p-12">
-        <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-emerald-100">
-          <svg className="h-8 w-8 text-emerald-600" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
-          </svg>
-        </div>
-        <h2 className="mt-6 text-2xl font-bold">You&apos;re all set!</h2>
-        <p className="mt-3 text-gray-600">
-          We&apos;ve saved your brand questionnaire. We&apos;ll use your answers to generate
-          your complete brand identity. Stay tuned!
-        </p>
-        <a
-          href="/"
-          className="mt-8 inline-block rounded-lg bg-violet-600 px-6 py-3 text-sm font-semibold text-white hover:bg-violet-700"
-        >
-          Back to home
-        </a>
-      </div>
-    );
-  }
-
   return (
     <div className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200 sm:p-8">
       <StepProgress currentStep={step} labels={STEP_LABELS} />
@@ -204,9 +182,15 @@ export function BrandWizard() {
           <StepLogo
             questionnaireId={data.id}
             onComplete={() => {
-              saveProgress(8, true);
-              setSubmitted(true);
+              saveProgress(9);
+              setStep(9);
             }}
+          />
+        )}
+        {step === 9 && data.id && (
+          <StepExport
+            questionnaireId={data.id}
+            brandName={data.businessName || "Brand"}
           />
         )}
       </div>

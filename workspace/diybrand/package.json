@@ -15,6 +15,7 @@
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
     "drizzle-orm": "^0.45.1",
+    "jszip": "^3.10.1",
     "next": "^16.1.7",
     "postgres": "^3.4.8",
     "react": "^19.2.4",
