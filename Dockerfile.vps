@@ -14,6 +14,7 @@ COPY packages/shared/package.json packages/shared/
 COPY packages/db/package.json packages/db/
 COPY packages/adapter-utils/package.json packages/adapter-utils/
 COPY packages/plugins/sdk/package.json packages/plugins/sdk/
+COPY packages/plugins/github-integration/package.json packages/plugins/github-integration/
 COPY packages/adapters/claude-local/package.json packages/adapters/claude-local/
 COPY packages/adapters/codex-local/package.json packages/adapters/codex-local/
 COPY packages/adapters/cursor-local/package.json packages/adapters/cursor-local/
@@ -29,7 +30,9 @@ WORKDIR /app
 COPY --from=deps /app /app
 COPY . .
 RUN test -f ui/dist/index.html || (echo "ERROR: ui/dist missing. Build UI before the VPS image." && exit 1)
-RUN pnpm --filter @paperclipai/plugin-sdk build && pnpm --filter @paperclipai/server build
+RUN pnpm --filter @paperclipai/plugin-sdk build && \
+    pnpm --filter @paperclipai/plugin-github build && \
+    pnpm --filter @paperclipai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 
 FROM base AS production
