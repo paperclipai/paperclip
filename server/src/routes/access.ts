@@ -13,6 +13,7 @@ import { and, eq, isNull, desc } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentApiKeys,
+  agents as agentsTable,
   authUsers,
   companyMemberships,
   invites,
@@ -2677,6 +2678,36 @@ export function accessRoutes(
       supervisorAgentId?: string | null;
       hourlyRateCents?: number | null;
     };
+
+    if (supervisorUserId != null && supervisorUserId === userId) {
+      throw badRequest("A user cannot be their own supervisor");
+    }
+
+    if (supervisorUserId != null) {
+      const supervisorMembership = await db
+        .select({ id: companyMemberships.id })
+        .from(companyMemberships)
+        .where(
+          and(
+            eq(companyMemberships.companyId, companyId),
+            eq(companyMemberships.principalType, "user"),
+            eq(companyMemberships.principalId, supervisorUserId),
+            eq(companyMemberships.status, "active"),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+      if (!supervisorMembership) throw badRequest("Supervisor user is not an active member of this company");
+    }
+
+    if (supervisorAgentId != null) {
+      const supervisorAgent = await db
+        .select({ id: agentsTable.id })
+        .from(agentsTable)
+        .where(and(eq(agentsTable.id, supervisorAgentId), eq(agentsTable.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!supervisorAgent) throw badRequest("Supervisor agent does not belong to this company");
+    }
+
     const updated = await db
       .update(companyMemberships)
       .set({

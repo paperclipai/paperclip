@@ -29,7 +29,7 @@ services:
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
     volumes:
       - paperclip-data:/paperclip
-      - ~/paperclip-projects:/paperclip/projects
+      - ${HOME}/paperclip-projects:/paperclip/projects
     command: ["pnpm", "paperclipai", "run"]
     depends_on:
       db:

@@ -802,6 +802,7 @@ export function agentRoutes(db: Db) {
     // If no manager is specified and this is the first agent for the company,
     // auto-assign it to the company owner so it appears under them in the org chart.
     const explicitManager = normalizedHireInput.reportsTo || normalizedHireInput.reportsToUserId;
+    let autoAssignedManagerId: string | null = null;
     if (!explicitManager) {
       const existingAgents = await db
         .select({ id: agentsTable.id })
@@ -821,6 +822,7 @@ export function agentRoutes(db: Db) {
           )
           .then((rows) => rows[0] ?? null);
         if (owner) {
+          autoAssignedManagerId = owner.principalId;
           normalizedHireInput = { ...normalizedHireInput, reportsToUserId: owner.principalId };
         }
       }
@@ -926,7 +928,7 @@ export function agentRoutes(db: Db) {
       });
     }
 
-    res.status(201).json({ agent, approval });
+    res.status(201).json({ agent, approval, autoAssignedManagerId });
   });
 
   router.post("/companies/:companyId/agents", validate(createAgentSchema), async (req, res) => {

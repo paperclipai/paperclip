@@ -293,11 +293,9 @@ export function Inbox() {
     retry: false,
   });
 
-  // 403/401 on join requests = regular human member, not a board-level admin
-  const isAdminUser = !(
-    joinRequestsError instanceof ApiError &&
-    (joinRequestsError.status === 403 || joinRequestsError.status === 401)
-  );
+  // Any error fetching join requests means the user lacks access or the call failed;
+  // only treat a successful response (no error) as proof of admin rights.
+  const isAdminUser = joinRequestsError == null;
 
   const { data: dashboard, isLoading: isDashboardLoading } = useQuery({
     queryKey: queryKeys.dashboard(selectedCompanyId!),

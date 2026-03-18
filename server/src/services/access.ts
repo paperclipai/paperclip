@@ -280,8 +280,9 @@ export function accessService(db: Db) {
     let currentId = assigneeId;
 
     for (let hop = 0; hop < MAX_HOPS; hop++) {
-      if (visited.has(currentId)) break;
-      visited.add(currentId);
+      const visitedKey = `${assigneeType}:${currentId}`;
+      if (visited.has(visitedKey)) break;
+      visited.add(visitedKey);
 
       if (assigneeType === "agent") {
         const row = await db
