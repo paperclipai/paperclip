@@ -35,10 +35,10 @@ RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" &
 FROM base AS production
 WORKDIR /app
 COPY --chown=node:node --from=build /app /app
-ARG CLAUDE_CODE_VERSION=1.0.31
-ARG GEMINI_CLI_VERSION=0.1.12
-ARG CODEX_VERSION=0.1.2504221644
-ARG OPENCODE_VERSION=0.1.117
+ARG CLAUDE_CODE_VERSION=2.1.78
+ARG GEMINI_CLI_VERSION=0.34.0
+ARG CODEX_VERSION=0.115.0
+ARG OPENCODE_VERSION=1.2.27
 ARG COMMIT_SHA=unknown
 LABEL org.opencontainers.image.revision=$COMMIT_SHA
 RUN apt-get update \
