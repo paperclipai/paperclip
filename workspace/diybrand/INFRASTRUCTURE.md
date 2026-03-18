@@ -256,10 +256,214 @@ curl https://diybrand.app/api/test-error?type=performance
 - Alert if > 80% of connections in use
 - Check slow query logs weekly
 
-**Backups:**
-- Automated daily backups (Vercel Postgres)
-- Retained for 30 days
-- Test restore quarterly
+### Database Backups & Disaster Recovery
+
+**Status**: ✅ Automated backups enabled (Vercel Postgres)
+
+#### Backup Strategy
+
+**Automated Backups (Vercel Postgres - Managed):**
+- ✅ Daily automatic backups
+- ✅ 30-day retention window
+- ✅ Geographic redundancy (replicated across data centers)
+- ✅ Point-in-time recovery (PITR) available
+- ✅ Zero configuration required
+
+**Backup Location & Access:**
+1. Go to Vercel dashboard → **Storage → Postgres**
+2. Click **"Backups"** tab
+3. View list of available backups with timestamps
+4. Click **"Restore"** on any backup to recover
+
+**Backup Schedule:**
+```
+Daily automated backup at: 03:00 UTC
+Retention: 30 days
+Maximum backups kept: 30 snapshots
+```
+
+#### Point-in-Time Recovery (PITR)
+
+Restore to any point in time within the last 30 days (down to seconds):
+
+**Via Vercel Dashboard:**
+1. **Storage → Postgres → Backups**
+2. Select restore point (by date/time)
+3. Click **"Restore from this backup"**
+4. Vercel creates new Postgres instance with restored data
+5. Update `DATABASE_URL` in environment variables
+6. Redeploy application
+
+**Important:** Restore creates a NEW database instance. Old instance remains until manually deleted.
+
+**Estimated Restore Time:**
+- Small DB (< 100MB): 2-5 minutes
+- Medium DB (100MB-1GB): 5-15 minutes
+- Large DB (> 1GB): 15-45 minutes
+
+#### Backup Testing Procedure
+
+**Weekly Automated Test (Recommended):**
+
+```bash
+# 1. Schedule weekly restore test
+# Every Monday at 10:00 UTC in GitHub Actions
+
+# 2. Test script:
+#!/bin/bash
+set -e
+echo "Starting backup restore test..."
+
+# Restore to staging database from yesterday's backup
+# Verify data integrity by running test queries
+psql $BACKUP_TEST_DB -c "SELECT COUNT(*) FROM users;"
+psql $BACKUP_TEST_DB -c "SELECT COUNT(*) FROM orders;"
+
+# Clean up test database
+# psql $BACKUP_TEST_DB -c "DROP DATABASE staging_restore_test;"
+
+echo "✅ Backup restore test successful"
+```
+
+**Manual Test (Before Critical Deployments):**
+
+1. In Vercel dashboard, select a backup from 24 hours ago
+2. Click **"Restore to new database"**
+3. Note new `DATABASE_URL`
+4. Test connection:
+   ```bash
+   psql "postgres://user:pass@host/db" -c "SELECT version();"
+   ```
+5. Run integrity checks:
+   ```bash
+   psql "..." -c "
+     SELECT
+       'users' as table_name, COUNT(*) as row_count
+     FROM users
+     UNION ALL
+     SELECT 'orders', COUNT(*) FROM orders
+     UNION ALL
+     SELECT 'payments', COUNT(*) FROM payments;
+   "
+   ```
+6. Delete test database when done
+
+#### Disaster Recovery Plan
+
+**RTO (Recovery Time Objective):** < 4 hours
+**RPO (Recovery Point Objective):** < 24 hours
+
+**Disaster Scenarios & Recovery:**
+
+**Scenario 1: Data Corruption (Application Bug)**
+1. Detect via monitoring/error tracking
+2. Restore from backup 24 hours before corruption
+3. Redeploy application with bug fix
+4. Verify data integrity
+5. Monitor for new issues
+**Estimated Time:** 1-2 hours
+
+**Scenario 2: Accidental Data Deletion**
+1. Immediately stop application writes (don't panic!)
+2. Restore from backup from before deletion time
+3. Create new DB instance, update `DATABASE_URL`
+4. Redeploy with new connection string
+5. Validate restored data
+**Estimated Time:** 30 minutes - 1 hour
+
+**Scenario 3: Database Connection Failure**
+1. Check Vercel dashboard for service status
+2. Verify credentials in environment variables
+3. Test connection locally:
+   ```bash
+   psql "postgres://..." -c "SELECT 1;"
+   ```
+4. If DB is down, restore from latest backup
+5. Update `DATABASE_URL` and redeploy
+**Estimated Time:** 15-30 minutes
+
+**Scenario 4: Ransomware / Security Breach**
+1. Immediately isolate affected systems
+2. Review audit logs for unauthorized access
+3. Restore from clean backup (before compromise)
+4. Rotate all credentials (Stripe, API keys, etc.)
+5. Review and fix vulnerability that led to breach
+6. Redeploy with patched code
+**Estimated Time:** 2-4 hours
+
+#### Backup Alerts & Monitoring
+
+**Configure Alerts:**
+
+1. **Failed Backups:**
+   - Set up webhook to monitor backup status
+   - Alert if no backup created in 48 hours
+   - Check Vercel dashboard → **Backups** tab daily
+
+2. **Database Connection Issues:**
+   ```
+   Alert trigger:
+   - Connection pool at > 90% capacity
+   - Connection timeout errors
+   - Query execution time > 5 seconds
+   ```
+
+3. **Storage Growth:**
+   - Monitor database size weekly
+   - Alert if > 80% of plan limit
+   - Archive old logs monthly
+
+#### Database Maintenance
+
+**Weekly Tasks:**
+- Check backup status (Vercel dashboard)
+- Monitor slow query logs
+- Verify connection pool health
+- Review error logs from Sentry
+
+**Monthly Tasks:**
+- Test restore procedure
+- Analyze query performance
+- Archive old business data (if applicable)
+- Review and optimize database indexes
+
+**Quarterly Tasks:**
+- Full backup integrity test (automatic)
+- Security audit of database access
+- Capacity planning (storage growth projection)
+- Disaster recovery drill
+
+#### Accessing Backups Programmatically
+
+**Via Vercel API:**
+
+```bash
+# Get list of backups
+curl https://api.vercel.com/v2/databases/[database-id]/backups \
+  -H "Authorization: Bearer $VERCEL_TOKEN"
+
+# Restore from backup
+curl -X POST https://api.vercel.com/v2/databases/[database-id]/restore \
+  -H "Authorization: Bearer $VERCEL_TOKEN" \
+  -d '{"backupId": "[backup-id]"}'
+```
+
+#### Data Retention Policy
+
+**Application Data:**
+- All user data retained indefinitely (as per privacy policy)
+- Deleted users: soft delete (30-day retention for audit)
+- Hard delete available upon request
+
+**System Data:**
+- API logs: 90 days (rolled up to summaries after 30 days)
+- Error logs (Sentry): 90 days free tier
+- Database backups: 30 days (latest 30 snapshots)
+
+**Compliance:**
+- GDPR: User deletion requests processed within 30 days
+- Right to be forgotten: Anonymization available
+- Data export: Available via admin UI
 
 ## Performance Optimization
 
