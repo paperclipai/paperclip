@@ -3,13 +3,14 @@ export const MISTRAL_LOCAL_ADAPTER_TYPE = "mistral_local" as const;
 export const DEFAULT_MISTRAL_MODEL = "mistral-medium-latest";
 
 export const models = [
-  { id: "mistral-medium-latest", label: "Mistral Medium (latest) — Pool 3: no monthly cap, 375K tok/min" },
-  { id: "devstral-latest", label: "Devstral (latest) — Pool 7: 1M tok/min, 1B/month, best for coding" },
-  { id: "mistral-large-2411", label: "Mistral Large 2411 — Pool 2: ~unlimited monthly" },
-  { id: "magistral-medium-latest", label: "Magistral Medium — Pool 6: chain-of-thought reasoning" },
-  { id: "magistral-small-latest", label: "Magistral Small — Pool 5: lightweight reasoning" },
-  { id: "mistral-small-latest", label: "Mistral Small (latest) — Pool 1: 4M tok/month shared, use sparingly" },
-  { id: "mistral-large-latest", label: "Mistral Large (latest) — Pool 1: 4M tok/month shared, use sparingly" },
+  { id: "mistral-medium-latest", label: "Mistral Medium 2508 — 375K tok/min, no monthly cap (recommended)" },
+  { id: "mistral-large-2411", label: "Mistral Large 2411 — 600K tok/min, 200B tok/month" },
+  { id: "labs-leanstral-2603", label: "Leanstral 2603 (labs) — 1M tok/min, no monthly cap" },
+  { id: "magistral-medium-latest", label: "Magistral Medium — 75K tok/min, 1B tok/month, chain-of-thought" },
+  { id: "magistral-small-latest", label: "Magistral Small — 75K tok/min, 1B tok/month" },
+  { id: "devstral-latest", label: "Devstral (latest) — 50K tok/min, 4M tok/month" },
+  { id: "mistral-small-latest", label: "Mistral Small (latest) — 50K tok/min, 4M tok/month" },
+  { id: "mistral-large-latest", label: "Mistral Large (latest) — 50K tok/min, 4M tok/month" },
 ];
 
 export const agentConfigurationDoc = `# mistral_local agent configuration
@@ -25,23 +26,23 @@ Don't use when:
 - You need a full local agentic loop with file edits and tool use (use claude_local or opencode_local)
 - You need webhook-style external invocation (use openclaw_gateway or http)
 
-## Model Selection Guide (Free Tier Quota Pools)
+## Model Selection Guide (Free Tier — verified against live dashboard)
 
-Mistral's free tier organizes models into independent quota pools. Choosing the wrong model can burn
-your monthly budget quickly. Recommended choices:
+| Model | Tokens/min | Tokens/month | Best for |
+|-------|-----------|--------------|----------|
+| mistral-medium-latest | 375,000 | No cap | General tasks (recommended default) |
+| mistral-large-2411 | 600,000 | ~200B (unlimited) | High-volume, legacy |
+| labs-leanstral-2603 | 1,000,000 | No cap | Highest throughput available |
+| magistral-medium-latest | 75,000 | 1B | Complex reasoning / planning |
+| magistral-small-latest | 75,000 | 1B | Lightweight reasoning |
+| devstral-latest | 50,000 | 4M | Coding (same pool as standard) |
+| mistral-small-latest | 50,000 | 4M | Use sparingly |
+| mistral-large-latest | 50,000 | 4M | Use sparingly |
 
-| Use Case | Model | Pool | Monthly Limit |
-|----------|-------|------|---------------|
-| General tasks (recommended default) | mistral-medium-latest | 3 | No monthly cap |
-| Coding & agentic dev | devstral-latest | 7 | 1B tokens |
-| Complex reasoning / planning | magistral-medium-latest | 6 | 1B tokens |
-| Lightweight reasoning | magistral-small-latest | 5 | 1B tokens |
-| Legacy / high volume | mistral-large-2411 | 2 | ~unlimited |
-| Avoid unless necessary | mistral-small-latest, mistral-large-latest | 1 | 4M tokens shared |
+⚠️ Note: devstral-latest shares the standard 4M tokens/month pool. For sustained agent workloads,
+prefer mistral-medium-latest (no monthly cap) or mistral-large-2411 (effectively unlimited).
 
-⚠️ Pool 1 (mistral-small-latest, mistral-large-latest, codestral-latest) shares only 4 million
-tokens per month across 11+ models. It's the easiest pool to exhaust accidentally. Prefer
-mistral-medium-latest or devstral-latest for sustained workloads.
+The global free tier limit is 1 request per second per API key regardless of model.
 
 ## Core fields:
 - model (string, optional): Mistral model id. Defaults to mistral-medium-latest.
@@ -53,6 +54,5 @@ mistral-medium-latest or devstral-latest for sustained workloads.
 ## Notes:
 - MISTRAL_API_KEY must be set in the environment or in the env config field.
 - Mistral's API endpoint is OpenAI-compatible: https://api.mistral.ai/v1
-- The free tier enforces a hard global limit of 1 request per second per API key.
 - Each heartbeat sends a fresh request; sessions are not resumed across heartbeats.
 `;
