@@ -7,6 +7,7 @@ import { StepTargetAudience } from "./steps/StepTargetAudience";
 import { StepBrandPersonality } from "./steps/StepBrandPersonality";
 import { StepInspiration } from "./steps/StepInspiration";
 import { StepReview } from "./steps/StepReview";
+import { StepPalette } from "./steps/StepPalette";
 
 export type QuestionnaireData = {
   id?: string;
@@ -35,6 +36,7 @@ const STEP_LABELS = [
   "Personality",
   "Inspiration",
   "Review",
+  "Colors",
 ];
 
 export function BrandWizard() {
@@ -131,8 +133,8 @@ export function BrandWizard() {
 
   const handleSubmit = useCallback(async () => {
     if (!validateStep(step)) return;
-    await saveProgress(5, true);
-    setSubmitted(true);
+    await saveProgress(6, true);
+    setStep(6);
   }, [step, validateStep, saveProgress]);
 
   if (submitted) {
@@ -176,41 +178,49 @@ export function BrandWizard() {
           <StepInspiration data={data} updateData={updateData} />
         )}
         {step === 5 && <StepReview data={data} />}
-      </div>
-
-      <div className="mt-8 flex items-center justify-between border-t border-gray-100 pt-6">
-        {step > 1 ? (
-          <button
-            type="button"
-            onClick={goBack}
-            className="rounded-lg border border-gray-300 px-5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
-          >
-            Back
-          </button>
-        ) : (
-          <div />
-        )}
-
-        {step < 5 ? (
-          <button
-            type="button"
-            onClick={goNext}
-            disabled={saving}
-            className="rounded-lg bg-violet-600 px-6 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 disabled:opacity-50"
-          >
-            {saving ? "Saving..." : "Continue"}
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={handleSubmit}
-            disabled={saving}
-            className="rounded-lg bg-violet-600 px-6 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 disabled:opacity-50"
-          >
-            {saving ? "Submitting..." : "Submit"}
-          </button>
+        {step === 6 && data.id && (
+          <StepPalette
+            questionnaireId={data.id}
+            onComplete={() => setSubmitted(true)}
+          />
         )}
       </div>
+
+      {step <= 5 && (
+        <div className="mt-8 flex items-center justify-between border-t border-gray-100 pt-6">
+          {step > 1 ? (
+            <button
+              type="button"
+              onClick={goBack}
+              className="rounded-lg border border-gray-300 px-5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            >
+              Back
+            </button>
+          ) : (
+            <div />
+          )}
+
+          {step < 5 ? (
+            <button
+              type="button"
+              onClick={goNext}
+              disabled={saving}
+              className="rounded-lg bg-violet-600 px-6 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 disabled:opacity-50"
+            >
+              {saving ? "Saving..." : "Continue"}
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={handleSubmit}
+              disabled={saving}
+              className="rounded-lg bg-violet-600 px-6 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 disabled:opacity-50"
+            >
+              {saving ? "Submitting..." : "Generate palettes"}
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

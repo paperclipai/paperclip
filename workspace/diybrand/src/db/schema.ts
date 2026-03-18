@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, timestamp, text, jsonb, integer } from "drizzle-orm/pg-core";
+import { pgTable, uuid, varchar, timestamp, text, jsonb, integer, boolean } from "drizzle-orm/pg-core";
 
 export const waitlist = pgTable("waitlist", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -24,4 +24,19 @@ export const brandQuestionnaire = pgTable("brand_questionnaire", {
   completedAt: timestamp("completed_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const brandPalette = pgTable("brand_palette", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  questionnaireId: uuid("questionnaire_id")
+    .notNull()
+    .references(() => brandQuestionnaire.id),
+  name: varchar("name", { length: 100 }).notNull(),
+  colors: jsonb("colors")
+    .$type<
+      { role: string; hex: string; hsl: { h: number; s: number; l: number } }[]
+    >()
+    .notNull(),
+  selected: boolean("selected").default(false).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
