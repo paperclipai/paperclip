@@ -4,11 +4,14 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { Approval, DashboardSummary, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
 import {
   computeInboxBadgeData,
+  getApprovalsForTab,
+  getInboxWorkItems,
   getRecentTouchedIssues,
   getUnreadTouchedIssues,
   loadLastInboxTab,
   RECENT_ISSUES_LIMIT,
   saveLastInboxTab,
+  shouldShowInboxSection,
 } from "./inbox";
 
 const storage = new Map<string, string>();
@@ -43,6 +46,19 @@ function makeApproval(status: Approval["status"]): Approval {
     decidedAt: null,
     createdAt: new Date("2026-03-11T00:00:00.000Z"),
     updatedAt: new Date("2026-03-11T00:00:00.000Z"),
+  };
+}
+
+function makeApprovalWithTimestamps(
+  id: string,
+  status: Approval["status"],
+  updatedAt: string,
+): Approval {
+  return {
+    ...makeApproval(status),
+    id,
+    createdAt: new Date(updatedAt),
+    updatedAt: new Date(updatedAt),
   };
 }
 
@@ -229,6 +245,77 @@ describe("inbox helpers", () => {
 
     expect(getUnreadTouchedIssues(issues).map((issue) => issue.id)).toEqual(["1"]);
     expect(issues).toHaveLength(2);
+  });
+
+  it("shows recent approvals in updated order and unread approvals as actionable only", () => {
+    const approvals = [
+      makeApprovalWithTimestamps("approval-approved", "approved", "2026-03-11T02:00:00.000Z"),
+      makeApprovalWithTimestamps("approval-pending", "pending", "2026-03-11T01:00:00.000Z"),
+      makeApprovalWithTimestamps(
+        "approval-revision",
+        "revision_requested",
+        "2026-03-11T03:00:00.000Z",
+      ),
+    ];
+
+    expect(getApprovalsForTab(approvals, "recent", "all").map((approval) => approval.id)).toEqual([
+      "approval-revision",
+      "approval-approved",
+      "approval-pending",
+    ]);
+    expect(getApprovalsForTab(approvals, "unread", "all").map((approval) => approval.id)).toEqual([
+      "approval-revision",
+      "approval-pending",
+    ]);
+    expect(getApprovalsForTab(approvals, "all", "resolved").map((approval) => approval.id)).toEqual([
+      "approval-approved",
+    ]);
+  });
+
+  it("mixes approvals into the inbox feed by most recent activity", () => {
+    const newerIssue = makeIssue("1", true);
+    newerIssue.lastExternalCommentAt = new Date("2026-03-11T04:00:00.000Z");
+
+    const olderIssue = makeIssue("2", false);
+    olderIssue.lastExternalCommentAt = new Date("2026-03-11T02:00:00.000Z");
+
+    const approval = makeApprovalWithTimestamps(
+      "approval-between",
+      "pending",
+      "2026-03-11T03:00:00.000Z",
+    );
+
+    expect(
+      getInboxWorkItems({
+        issues: [olderIssue, newerIssue],
+        approvals: [approval],
+      }).map((item) => item.kind === "issue" ? `issue:${item.issue.id}` : `approval:${item.approval.id}`),
+    ).toEqual([
+      "issue:1",
+      "approval:approval-between",
+      "issue:2",
+    ]);
+  });
+
+  it("can include sections on recent without forcing them to be unread", () => {
+    expect(
+      shouldShowInboxSection({
+        tab: "recent",
+        hasItems: true,
+        showOnRecent: true,
+        showOnUnread: false,
+        showOnAll: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldShowInboxSection({
+        tab: "unread",
+        hasItems: true,
+        showOnRecent: true,
+        showOnUnread: false,
+        showOnAll: false,
+      }),
+    ).toBe(false);
   });
 
   it("limits recent touched issues before unread badge counting", () => {

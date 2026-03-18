@@ -2,11 +2,6 @@ import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { AGENT_ADAPTER_TYPES } from "@paperclipai/shared";
-import {
-  hasSessionCompactionThresholds,
-  resolveSessionCompactionPolicy,
-  type ResolvedSessionCompactionPolicy,
-} from "@paperclipai/adapter-utils";
 import type {
   Agent,
   AdapterEnvironmentTestResult,
@@ -410,12 +405,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       heartbeat: mergedHeartbeat,
     };
   }, [isCreate, overlay.heartbeat, runtimeConfig, val]);
-  const sessionCompaction = useMemo(
-    () => resolveSessionCompactionPolicy(adapterType, effectiveRuntimeConfig),
-    [adapterType, effectiveRuntimeConfig],
-  );
-  const showSessionCompactionCard = Boolean(sessionCompaction.adapterSessionManagement);
-
   return (
     <div className={cn("relative", cards && "space-y-6")}>
       {/* ---- Floating Save button (edit mode, when dirty) ---- */}
@@ -719,36 +708,32 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     )}
                 </>
               )}
-              <Field label={t("configForm.bootstrapPrompt")} hint={help.bootstrapPrompt}>
-                <MarkdownEditor
-                  value={
-                    isCreate
-                      ? val!.bootstrapPrompt
-                      : eff(
-                          "adapterConfig",
-                          "bootstrapPromptTemplate",
-                          String(config.bootstrapPromptTemplate ?? ""),
-                        )
-                  }
-                  onChange={(v) =>
-                    isCreate
-                      ? set!({ bootstrapPrompt: v })
-                      : mark("adapterConfig", "bootstrapPromptTemplate", v || undefined)
-                  }
-                  placeholder={t("configForm.bootstrapPromptPlaceholder")}
-                  contentClassName="min-h-[44px] text-sm font-mono"
-                  imageUploadHandler={async (file) => {
-                    const namespace = isCreate
-                      ? "agents/drafts/bootstrap-prompt"
-                      : `agents/${props.agent.id}/bootstrap-prompt`;
-                    const asset = await uploadMarkdownImage.mutateAsync({ file, namespace });
-                    return asset.contentPath;
-                  }}
-                />
-              </Field>
-              <div className="rounded-md border border-sky-500/25 bg-sky-500/10 px-3 py-2 text-xs text-sky-100">
-                {t("configForm.bootstrapPromptInfo")}
-              </div>
+              {!isCreate && typeof config.bootstrapPromptTemplate === "string" && config.bootstrapPromptTemplate && (
+                <>
+                  <Field label={t("configForm.bootstrapPromptLegacy")} hint={help.bootstrapPrompt}>
+                    <MarkdownEditor
+                      value={eff(
+                        "adapterConfig",
+                        "bootstrapPromptTemplate",
+                        String(config.bootstrapPromptTemplate ?? ""),
+                      )}
+                      onChange={(v) =>
+                        mark("adapterConfig", "bootstrapPromptTemplate", v || undefined)
+                      }
+                      placeholder={t("configForm.bootstrapPromptPlaceholder")}
+                      contentClassName="min-h-[44px] text-sm font-mono"
+                      imageUploadHandler={async (file) => {
+                        const namespace = `agents/${props.agent.id}/bootstrap-prompt`;
+                        const asset = await uploadMarkdownImage.mutateAsync({ file, namespace });
+                        return asset.contentPath;
+                      }}
+                    />
+                  </Field>
+                  <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                    {t("configForm.bootstrapPromptLegacyWarning")}
+                  </div>
+                </>
+              )}
               {adapterType === "claude_local" && (
                 <ClaudeLocalAdvancedFields {...adapterFieldProps} />
               )}
@@ -845,12 +830,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               numberHint={help.intervalSec}
               showNumber={val!.heartbeatEnabled}
             />
-            {showSessionCompactionCard && (
-              <SessionCompactionPolicyCard
-                adapterType={adapterType}
-                resolution={sessionCompaction}
-              />
-            )}
           </div>
         </div>
       ) : (
@@ -873,12 +852,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 numberHint={help.intervalSec}
                 showNumber={eff("heartbeat", "enabled", heartbeat.enabled !== false)}
               />
-              {showSessionCompactionCard && (
-                <SessionCompactionPolicyCard
-                  adapterType={adapterType}
-                  resolution={sessionCompaction}
-                />
-              )}
             </div>
             <CollapsibleSection
               title={t("configForm.advancedRunPolicy")}
@@ -963,70 +936,6 @@ function AdapterEnvironmentResult({ result }: { result: AdapterEnvironmentTestRe
           </div>
         ))}
       </div>
-    </div>
-  );
-}
-
-function formatSessionThreshold(value: number, suffix: string) {
-  if (value <= 0) return "Off";
-  return `${value.toLocaleString("en-US")} ${suffix}`;
-}
-
-function SessionCompactionPolicyCard({
-  adapterType,
-  resolution,
-}: {
-  adapterType: string;
-  resolution: ResolvedSessionCompactionPolicy;
-}) {
-  const { t } = useTranslation("agents");
-  const { adapterSessionManagement, policy, source } = resolution;
-  if (!adapterSessionManagement) return null;
-
-  const adapterLabel = adapterLabels[adapterType] ?? adapterType;
-  const sourceLabel = source === "agent_override" ? t("configForm.agentOverride") : t("configForm.adapterDefault");
-  const rotationDisabled = !policy.enabled || !hasSessionCompactionThresholds(policy);
-  const nativeSummary =
-    adapterSessionManagement.nativeContextManagement === "confirmed"
-      ? t("configForm.nativeSummaryConfirmed", { adapterLabel })
-      : adapterSessionManagement.nativeContextManagement === "likely"
-        ? t("configForm.nativeSummaryLikely", { adapterLabel })
-        : t("configForm.nativeSummaryUnknown", { adapterLabel });
-
-  return (
-    <div className="rounded-md border border-sky-500/25 bg-sky-500/10 px-3 py-3 space-y-2">
-      <div className="flex items-center justify-between gap-3">
-        <div className="text-xs font-medium text-sky-50">{t("configForm.sessionCompaction")}</div>
-        <span className="rounded-full border border-sky-400/30 px-2 py-0.5 text-[11px] text-sky-100">
-          {sourceLabel}
-        </span>
-      </div>
-      <p className="text-xs text-sky-100/90">
-        {nativeSummary}
-      </p>
-      <p className="text-xs text-sky-100/80">
-        {rotationDisabled
-          ? t("configForm.noThresholdsActive")
-          : t("configForm.thresholdsActive")}
-      </p>
-      <div className="grid grid-cols-3 gap-2 text-[11px] text-sky-100/85 tabular-nums">
-        <div>
-          <div className="text-sky-100/60">{t("configForm.runs")}</div>
-          <div>{formatSessionThreshold(policy.maxSessionRuns, "runs")}</div>
-        </div>
-        <div>
-          <div className="text-sky-100/60">{t("configForm.rawInput")}</div>
-          <div>{formatSessionThreshold(policy.maxRawInputTokens, "tokens")}</div>
-        </div>
-        <div>
-          <div className="text-sky-100/60">{t("configForm.age")}</div>
-          <div>{formatSessionThreshold(policy.maxSessionAgeHours, "hours")}</div>
-        </div>
-      </div>
-      <p className="text-[11px] text-sky-100/75">
-        {t("configForm.sessionCompactionInfo")}
-        {source === "agent_override" && ` ${t("configForm.sessionCompactionAgentOverride")}`}
-      </p>
     </div>
   );
 }

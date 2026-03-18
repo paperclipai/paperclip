@@ -94,6 +94,7 @@ const publishPkg = {
   license: cliPkg.license,
   repository: cliPkg.repository,
   homepage: cliPkg.homepage,
+  bugs: cliPkg.bugs,
   files: cliPkg.files,
   engines: { node: ">=20" },
   dependencies: sortedDeps,
