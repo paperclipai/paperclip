@@ -110,6 +110,7 @@ function makeIssue(id: string, isUnreadForMe: boolean): Issue {
     id,
     companyId: "company-1",
     projectId: null,
+    projectWorkspaceId: null,
     goalId: null,
     parentId: null,
     title: `Issue ${id}`,
@@ -125,6 +126,8 @@ function makeIssue(id: string, isUnreadForMe: boolean): Issue {
     requestDepth: 0,
     billingCode: null,
     assigneeAdapterOverrides: null,
+    executionWorkspaceId: null,
+    executionWorkspacePreference: null,
     executionWorkspaceSettings: null,
     checkoutRunId: null,
     executionRunId: null,
@@ -164,6 +167,12 @@ const dashboard: DashboardSummary = {
     monthUtilizationPercent: 90,
   },
   pendingApprovals: 1,
+  budgets: {
+    activeIncidents: 0,
+    pendingApprovals: 0,
+    pausedAgents: 0,
+    pausedProjects: 0,
+  },
 };
 
 describe("inbox helpers", () => {

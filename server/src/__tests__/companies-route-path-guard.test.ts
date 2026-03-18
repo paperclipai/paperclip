@@ -22,6 +22,9 @@ vi.mock("../services/index.js", () => ({
     canUser: vi.fn(),
     ensureMembership: vi.fn(),
   }),
+  budgetService: () => ({
+    upsertPolicy: vi.fn(),
+  }),
   logActivity: vi.fn(),
 }));
 

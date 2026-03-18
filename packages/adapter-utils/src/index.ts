@@ -17,14 +17,31 @@ export type {
   HireApprovedPayload,
   HireApprovedHookResult,
   ServerAdapterModule,
+  QuotaWindow,
+  ProviderQuotaResult,
   TranscriptEntry,
   StdoutLineParser,
   CLIAdapterModule,
   CreateConfigValues,
 } from "./types.js";
+export type {
+  SessionCompactionPolicy,
+  NativeContextManagement,
+  AdapterSessionManagement,
+  ResolvedSessionCompactionPolicy,
+} from "./session-compaction.js";
+export {
+  ADAPTER_SESSION_MANAGEMENT,
+  LEGACY_SESSIONED_ADAPTER_TYPES,
+  getAdapterSessionManagement,
+  readSessionCompactionOverride,
+  resolveSessionCompactionPolicy,
+  hasSessionCompactionThresholds,
+} from "./session-compaction.js";
 export {
   REDACTED_HOME_PATH_USER,
   redactHomePathUserSegments,
   redactHomePathUserSegmentsInValue,
   redactTranscriptEntryPaths,
 } from "./log-redaction.js";
+export { inferOpenAiCompatibleBiller } from "./billing.js";

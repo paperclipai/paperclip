@@ -353,6 +353,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           id: randomUUID(),
           companyId: input.companyId,
           projectId: input.projectId ?? null,
+          projectWorkspaceId: null,
           goalId: input.goalId ?? null,
           parentId: input.parentId ?? null,
           title: input.title,
@@ -372,6 +373,8 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           requestDepth: 0,
           billingCode: null,
           assigneeAdapterOverrides: null,
+          executionWorkspaceId: null,
+          executionWorkspacePreference: null,
           executionWorkspaceSettings: null,
           startedAt: null,
           completedAt: null,
@@ -421,6 +424,33 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         current.push(comment);
         issueComments.set(issueId, current);
         return comment;
+      },
+      documents: {
+        async list(issueId, companyId) {
+          requireCapability(manifest, capabilitySet, "issue.documents.read");
+          if (!isInCompany(issues.get(issueId), companyId)) return [];
+          return [];
+        },
+        async get(issueId, _key, companyId) {
+          requireCapability(manifest, capabilitySet, "issue.documents.read");
+          if (!isInCompany(issues.get(issueId), companyId)) return null;
+          return null;
+        },
+        async upsert(input) {
+          requireCapability(manifest, capabilitySet, "issue.documents.write");
+          const parentIssue = issues.get(input.issueId);
+          if (!isInCompany(parentIssue, input.companyId)) {
+            throw new Error(`Issue not found: ${input.issueId}`);
+          }
+          throw new Error("documents.upsert is not implemented in test context");
+        },
+        async delete(issueId, _key, companyId) {
+          requireCapability(manifest, capabilitySet, "issue.documents.write");
+          const parentIssue = issues.get(issueId);
+          if (!isInCompany(parentIssue, companyId)) {
+            throw new Error(`Issue not found: ${issueId}`);
+          }
+        },
       },
     },
     agents: {

@@ -14,11 +14,11 @@ Usage:
   ./scripts/create-github-release.sh <version> [--dry-run]
 
 Examples:
-  ./scripts/create-github-release.sh 1.2.3
-  ./scripts/create-github-release.sh 1.2.3 --dry-run
+  ./scripts/create-github-release.sh 2026.3.17
+  ./scripts/create-github-release.sh 2026.3.17 --dry-run
 
 Notes:
-  - Run this after pushing the stable release branch and tag.
+  - Run this after pushing the stable tag.
   - Defaults to git remote public-gh.
   - If the release already exists, this script updates its title and notes.
 EOF
@@ -48,7 +48,7 @@ if [ -z "$version" ]; then
 fi
 
 if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "Error: version must be a stable semver like 1.2.3." >&2
+  echo "Error: version must be a stable calendar version like 2026.3.17." >&2
   exit 1
 fi
 

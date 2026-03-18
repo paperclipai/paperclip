@@ -144,4 +144,12 @@ export const agentsApi = {
   ) => api.post<HeartbeatRun | { status: "skipped" }>(agentPath(id, companyId, "/wakeup"), data),
   loginWithClaude: (id: string, companyId?: string) =>
     api.post<ClaudeLoginResult>(agentPath(id, companyId, "/claude-login"), {}),
+  availableSkills: () =>
+    api.get<{ skills: AvailableSkill[] }>("/skills/available"),
 };
+
+export interface AvailableSkill {
+  name: string;
+  description: string;
+  isPaperclipManaged: boolean;
+}

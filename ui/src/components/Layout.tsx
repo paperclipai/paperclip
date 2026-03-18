@@ -24,32 +24,16 @@ import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
 import { healthApi } from "../api/health";
 import { shouldSyncCompanySelectionFromRoute } from "../lib/company-selection";
+import {
+  DEFAULT_INSTANCE_SETTINGS_PATH,
+  normalizeRememberedInstanceSettingsPath,
+} from "../lib/instance-settings";
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
 import { NotFoundPage } from "../pages/NotFound";
 import { Button } from "@/components/ui/button";
 
 const INSTANCE_SETTINGS_MEMORY_KEY = "paperclip.lastInstanceSettingsPath";
-const DEFAULT_INSTANCE_SETTINGS_PATH = "/instance/settings/heartbeats";
-
-function normalizeRememberedInstanceSettingsPath(rawPath: string | null): string {
-  if (!rawPath) return DEFAULT_INSTANCE_SETTINGS_PATH;
-
-  const match = rawPath.match(/^([^?#]*)(\?[^#]*)?(#.*)?$/);
-  const pathname = match?.[1] ?? rawPath;
-  const search = match?.[2] ?? "";
-  const hash = match?.[3] ?? "";
-
-  if (pathname === "/instance/settings/heartbeats" || pathname === "/instance/settings/plugins") {
-    return `${pathname}${search}${hash}`;
-  }
-
-  if (/^\/instance\/settings\/plugins\/[^/?#]+$/.test(pathname)) {
-    return `${pathname}${search}${hash}`;
-  }
-
-  return DEFAULT_INSTANCE_SETTINGS_PATH;
-}
 
 function readRememberedInstanceSettingsPath(): string {
   if (typeof window === "undefined") return DEFAULT_INSTANCE_SETTINGS_PATH;
@@ -313,6 +297,9 @@ export function Layout() {
                   <BookOpen className="h-4 w-4 shrink-0" />
                   <span className="truncate">Documentation</span>
                 </a>
+                {health?.version && (
+                  <span className="px-2 text-xs text-muted-foreground shrink-0">v{health.version}</span>
+                )}
                 <Button variant="ghost" size="icon-sm" className="text-muted-foreground shrink-0" asChild>
                   <Link
                     to={instanceSettingsTarget}
@@ -363,6 +350,9 @@ export function Layout() {
                   <BookOpen className="h-4 w-4 shrink-0" />
                   <span className="truncate">Documentation</span>
                 </a>
+                {health?.version && (
+                  <span className="px-2 text-xs text-muted-foreground shrink-0">v{health.version}</span>
+                )}
                 <Button variant="ghost" size="icon-sm" className="text-muted-foreground shrink-0" asChild>
                   <Link
                     to={instanceSettingsTarget}

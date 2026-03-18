@@ -1,0 +1,33 @@
+services:
+  review:
+    build:
+      context: .
+      dockerfile: docker/untrusted-review/Dockerfile
+    init: true
+    tty: true
+    stdin_open: true
+    working_dir: /work
+    environment:
+      HOME: "/home/reviewer"
+      CODEX_HOME: "/home/reviewer/.codex"
+      CLAUDE_HOME: "/home/reviewer/.claude"
+      PAPERCLIP_HOME: "/home/reviewer/.paperclip-review"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
+    ports:
+      - "${REVIEW_PAPERCLIP_PORT:-3100}:3100"
+      - "${REVIEW_VITE_PORT:-5173}:5173"
+    volumes:
+      - review-home:/home/reviewer
+      - review-work:/work
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,size=1g
+
+volumes:
+  review-home:
+  review-work:

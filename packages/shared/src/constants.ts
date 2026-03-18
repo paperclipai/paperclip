@@ -137,6 +137,9 @@ export const PROJECT_STATUSES = [
 ] as const;
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
 
+export const PAUSE_REASONS = ["manual", "budget", "system"] as const;
+export type PauseReason = (typeof PAUSE_REASONS)[number];
+
 export const PROJECT_COLORS = [
   "#6366f1", // indigo
   "#8b5cf6", // violet
@@ -150,7 +153,7 @@ export const PROJECT_COLORS = [
   "#3b82f6", // blue
 ] as const;
 
-export const APPROVAL_TYPES = ["hire_agent", "approve_ceo_strategy"] as const;
+export const APPROVAL_TYPES = ["hire_agent", "approve_ceo_strategy", "budget_override_required"] as const;
 export type ApprovalType = (typeof APPROVAL_TYPES)[number];
 
 export const APPROVAL_STATUSES = [
@@ -172,6 +175,73 @@ export type SecretProvider = (typeof SECRET_PROVIDERS)[number];
 
 export const STORAGE_PROVIDERS = ["local_disk", "s3"] as const;
 export type StorageProvider = (typeof STORAGE_PROVIDERS)[number];
+
+export const BILLING_TYPES = [
+  "metered_api",
+  "subscription_included",
+  "subscription_overage",
+  "credits",
+  "fixed",
+  "unknown",
+] as const;
+export type BillingType = (typeof BILLING_TYPES)[number];
+
+export const FINANCE_EVENT_KINDS = [
+  "inference_charge",
+  "platform_fee",
+  "credit_purchase",
+  "credit_refund",
+  "credit_expiry",
+  "byok_fee",
+  "gateway_overhead",
+  "log_storage_charge",
+  "logpush_charge",
+  "provisioned_capacity_charge",
+  "training_charge",
+  "custom_model_import_charge",
+  "custom_model_storage_charge",
+  "manual_adjustment",
+] as const;
+export type FinanceEventKind = (typeof FINANCE_EVENT_KINDS)[number];
+
+export const FINANCE_DIRECTIONS = ["debit", "credit"] as const;
+export type FinanceDirection = (typeof FINANCE_DIRECTIONS)[number];
+
+export const FINANCE_UNITS = [
+  "input_token",
+  "output_token",
+  "cached_input_token",
+  "request",
+  "credit_usd",
+  "credit_unit",
+  "model_unit_minute",
+  "model_unit_hour",
+  "gb_month",
+  "train_token",
+  "unknown",
+] as const;
+export type FinanceUnit = (typeof FINANCE_UNITS)[number];
+
+export const BUDGET_SCOPE_TYPES = ["company", "agent", "project"] as const;
+export type BudgetScopeType = (typeof BUDGET_SCOPE_TYPES)[number];
+
+export const BUDGET_METRICS = ["billed_cents"] as const;
+export type BudgetMetric = (typeof BUDGET_METRICS)[number];
+
+export const BUDGET_WINDOW_KINDS = ["calendar_month_utc", "lifetime"] as const;
+export type BudgetWindowKind = (typeof BUDGET_WINDOW_KINDS)[number];
+
+export const BUDGET_THRESHOLD_TYPES = ["soft", "hard"] as const;
+export type BudgetThresholdType = (typeof BUDGET_THRESHOLD_TYPES)[number];
+
+export const BUDGET_INCIDENT_STATUSES = ["open", "resolved", "dismissed"] as const;
+export type BudgetIncidentStatus = (typeof BUDGET_INCIDENT_STATUSES)[number];
+
+export const BUDGET_INCIDENT_RESOLUTION_ACTIONS = [
+  "keep_paused",
+  "raise_budget_and_resume",
+] as const;
+export type BudgetIncidentResolutionAction = (typeof BUDGET_INCIDENT_RESOLUTION_ACTIONS)[number];
 
 export const HEARTBEAT_INVOCATION_SOURCES = [
   "timer",
@@ -315,6 +385,7 @@ export const PLUGIN_CAPABILITIES = [
   "project.workspaces.read",
   "issues.read",
   "issue.comments.read",
+  "issue.documents.read",
   "agents.read",
   "goals.read",
   "goals.create",
@@ -325,6 +396,7 @@ export const PLUGIN_CAPABILITIES = [
   "issues.create",
   "issues.update",
   "issue.comments.create",
+  "issue.documents.write",
   "agents.pause",
   "agents.resume",
   "agents.invoke",

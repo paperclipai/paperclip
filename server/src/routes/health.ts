@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { and, count, eq, gt, isNull, sql } from "drizzle-orm";
 import { instanceUserRoles, invites } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import { serverVersion } from "../version.js";
 
 export function healthRoutes(
   db?: Db,
@@ -22,7 +23,7 @@ export function healthRoutes(
 
   router.get("/", async (_req, res) => {
     if (!db) {
-      res.json({ status: "ok" });
+      res.json({ status: "ok", version: serverVersion });
       return;
     }
 
@@ -56,6 +57,7 @@ export function healthRoutes(
 
     res.json({
       status: "ok",
+      version: serverVersion,
       deploymentMode: opts.deploymentMode,
       deploymentExposure: opts.deploymentExposure,
       authReady: opts.authReady,

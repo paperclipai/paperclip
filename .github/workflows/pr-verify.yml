@@ -26,7 +26,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: pnpm
 
       - name: Install dependencies
@@ -40,3 +40,9 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      - name: Release canary dry run
+        run: |
+          git checkout -B master HEAD
+          git checkout -- pnpm-lock.yaml
+          ./scripts/release.sh canary --skip-verify --dry-run

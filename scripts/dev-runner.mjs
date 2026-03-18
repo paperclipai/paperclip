@@ -34,6 +34,11 @@ const env = {
   PAPERCLIP_UI_DEV_MIDDLEWARE: "true",
 };
 
+if (mode === "watch") {
+  env.PAPERCLIP_MIGRATION_PROMPT ??= "never";
+  env.PAPERCLIP_MIGRATION_AUTO_APPLY ??= "true";
+}
+
 if (tailscaleAuth) {
   env.PAPERCLIP_DEPLOYMENT_MODE = "authenticated";
   env.PAPERCLIP_DEPLOYMENT_EXPOSURE = "private";
@@ -45,6 +50,30 @@ if (tailscaleAuth) {
 }
 
 const pnpmBin = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+
+function toError(error, context = "Dev runner command failed") {
+  if (error instanceof Error) return error;
+  if (error === undefined) return new Error(context);
+  if (typeof error === "string") return new Error(`${context}: ${error}`);
+
+  try {
+    return new Error(`${context}: ${JSON.stringify(error)}`);
+  } catch {
+    return new Error(`${context}: ${String(error)}`);
+  }
+}
+
+process.on("uncaughtException", (error) => {
+  const err = toError(error, "Uncaught exception in dev runner");
+  process.stderr.write(`${err.stack ?? err.message}\n`);
+  process.exit(1);
+});
+
+process.on("unhandledRejection", (reason) => {
+  const err = toError(reason, "Unhandled promise rejection in dev runner");
+  process.stderr.write(`${err.stack ?? err.message}\n`);
+  process.exit(1);
+});
 
 function formatPendingMigrationSummary(migrations) {
   if (migrations.length === 0) return "none";
@@ -89,14 +118,17 @@ async function runPnpm(args, options = {}) {
 
 async function maybePreflightMigrations() {
   if (mode !== "watch") return;
-  if (process.env.PAPERCLIP_MIGRATION_PROMPT === "never") return;
 
   const status = await runPnpm(
     ["--filter", "@paperclipai/db", "exec", "tsx", "src/migration-status.ts", "--json"],
     { env },
   );
   if (status.code !== 0) {
-    process.stderr.write(status.stderr || status.stdout);
+    process.stderr.write(
+      status.stderr ||
+        status.stdout ||
+        `[paperclip] Command failed with code ${status.code}: pnpm --filter @paperclipai/db exec tsx src/migration-status.ts --json\n`,
+    );
     process.exit(status.code);
   }
 
@@ -104,15 +136,19 @@ async function maybePreflightMigrations() {
   try {
     payload = JSON.parse(status.stdout.trim());
   } catch (error) {
-    process.stderr.write(status.stderr || status.stdout);
-    throw error;
+    process.stderr.write(
+      status.stderr ||
+        status.stdout ||
+        "[paperclip] migration-status returned invalid JSON payload\n",
+    );
+    throw toError(error, "Unable to parse migration-status JSON output");
   }
 
   if (payload.status !== "needsMigrations" || payload.pendingMigrations.length === 0) {
     return;
   }
 
-  const autoApply = process.env.PAPERCLIP_MIGRATION_AUTO_APPLY === "true";
+  const autoApply = env.PAPERCLIP_MIGRATION_AUTO_APPLY === "true";
   let shouldApply = autoApply;
 
   if (!autoApply) {
@@ -135,7 +171,13 @@ async function maybePreflightMigrations() {
     }
   }
 
-  if (!shouldApply) return;
+  if (!shouldApply) {
+    process.stderr.write(
+      `[paperclip] Pending migrations detected (${formatPendingMigrationSummary(payload.pendingMigrations)}). ` +
+        "Refusing to start watch mode against a stale schema.\n",
+    );
+    process.exit(1);
+  }
 
   const migrate = spawn(pnpmBin, ["db:migrate"], {
     stdio: "inherit",
@@ -173,10 +215,6 @@ async function buildPluginSdk() {
 }
 
 await buildPluginSdk();
-
-if (mode === "watch") {
-  env.PAPERCLIP_MIGRATION_PROMPT = "never";
-}
 
 const serverScript = mode === "watch" ? "dev:watch" : "dev";
 const child = spawn(

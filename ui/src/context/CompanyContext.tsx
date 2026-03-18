@@ -85,7 +85,11 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
   }, [queryClient]);
 
   const createMutation = useMutation({
-    mutationFn: (data: { name: string; description?: string | null; budgetMonthlyCents?: number }) =>
+    mutationFn: (data: {
+      name: string;
+      description?: string | null;
+      budgetMonthlyCents?: number;
+    }) =>
       companiesApi.create(data),
     onSuccess: (company) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
@@ -94,7 +98,11 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
   });
 
   const createCompany = useCallback(
-    async (data: { name: string; description?: string | null; budgetMonthlyCents?: number }) => {
+    async (data: {
+      name: string;
+      description?: string | null;
+      budgetMonthlyCents?: number;
+    }) => {
       return createMutation.mutateAsync(data);
     },
     [createMutation],
