@@ -16,6 +16,7 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  const queryStartTime = performance.now();
 
   // Verify payment
   const sessionId = req.nextUrl.searchParams.get("session_id");
@@ -44,12 +45,45 @@ export async function GET(
     );
   }
 
-  // Fetch questionnaire
-  const [questionnaire] = await db
-    .select()
-    .from(brandQuestionnaire)
-    .where(eq(brandQuestionnaire.id, id))
-    .limit(1);
+  // Fetch all brand data in parallel
+  const [
+    [questionnaire],
+    [palette],
+    [typography],
+    selectedLogos
+  ] = await Promise.all([
+    db
+      .select()
+      .from(brandQuestionnaire)
+      .where(eq(brandQuestionnaire.id, id))
+      .limit(1),
+    db
+      .select()
+      .from(brandPalette)
+      .where(
+        and(eq(brandPalette.questionnaireId, id), eq(brandPalette.selected, true))
+      )
+      .limit(1),
+    db
+      .select()
+      .from(brandTypography)
+      .where(
+        and(
+          eq(brandTypography.questionnaireId, id),
+          eq(brandTypography.selected, true)
+        )
+      )
+      .limit(1),
+    db
+      .select()
+      .from(brandLogos)
+      .where(
+        and(eq(brandLogos.questionnaireId, id), eq(brandLogos.selected, true))
+      )
+  ]);
+
+  const queryEndTime = performance.now();
+  const queryDuration = queryEndTime - queryStartTime;
 
   if (!questionnaire) {
     return NextResponse.json(
@@ -57,33 +91,6 @@ export async function GET(
       { status: 404 }
     );
   }
-
-  // Fetch selected assets
-  const [palette] = await db
-    .select()
-    .from(brandPalette)
-    .where(
-      and(eq(brandPalette.questionnaireId, id), eq(brandPalette.selected, true))
-    )
-    .limit(1);
-
-  const [typography] = await db
-    .select()
-    .from(brandTypography)
-    .where(
-      and(
-        eq(brandTypography.questionnaireId, id),
-        eq(brandTypography.selected, true)
-      )
-    )
-    .limit(1);
-
-  const selectedLogos = await db
-    .select()
-    .from(brandLogos)
-    .where(
-      and(eq(brandLogos.questionnaireId, id), eq(brandLogos.selected, true))
-    );
 
   if (!palette && !typography && selectedLogos.length === 0) {
     return NextResponse.json(
@@ -338,6 +345,7 @@ body, p, li, span {
       "Content-Type": "application/zip",
       "Content-Disposition": `attachment; filename="${safeFilename}-brand-kit.zip"`,
       "Content-Length": String(zipBuffer.length),
+      "Server-Timing": `db;dur=${queryDuration.toFixed(2)};desc="Database queries"`,
     },
   });
 }
