@@ -1,6 +1,6 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
-import { agents, companies, telegramThreadMappings, issues } from "@paperclipai/db";
+import { agents, companies, projects, telegramThreadMappings, issues } from "@paperclipai/db";
 import { eq, and, or, sql } from "drizzle-orm";
 import { issueService, heartbeatService, logActivity } from "../services/index.js";
 import { createForumTopic, sendMessageToThread } from "../services/telegram.js";
@@ -424,6 +424,98 @@ async function handleThreadReply(
 }
 
 // ---------------------------------------------------------------------------
+// /agents — list available agents
+// ---------------------------------------------------------------------------
+
+async function handleAgentsCommand(db: Db, msg: TelegramMessage): Promise<void> {
+  const chatId = String(msg.chat.id);
+  const company = await resolveCompanyFromChat(db, chatId);
+  if (!company) {
+    await replyToChat(chatId, "This chat is not linked to a company.\nUse /register CompanyName first.", msg.message_thread_id);
+    return;
+  }
+
+  const telegramSettings = (company.settings as Record<string, unknown>)?.telegram as
+    | { defaultAssigneeAgentId?: string } | undefined;
+  const defaultId = telegramSettings?.defaultAssigneeAgentId;
+
+  const rows = await db
+    .select({ id: agents.id, name: agents.name, role: agents.role, status: agents.status })
+    .from(agents)
+    .where(eq(agents.companyId, company.id));
+
+  if (rows.length === 0) {
+    await replyToChat(chatId, "No agents found for this company.", msg.message_thread_id);
+    return;
+  }
+
+  const lines = [`<b>Agents (${company.issuePrefix})</b>\n`];
+  for (const a of rows) {
+    const isDefault = a.id === defaultId ? " (default)" : "";
+    const statusIcon = a.status === "idle" ? "🟢" : a.status === "paused" ? "⏸" : "⚪";
+    lines.push(`${statusIcon} <b>${a.name}</b>${isDefault} — ${a.role ?? "no role"}`);
+  }
+  lines.push(`\nUse: /issue @AgentName Title`);
+  await replyToChat(chatId, lines.join("\n"), msg.message_thread_id);
+}
+
+// ---------------------------------------------------------------------------
+// /projects — list available projects
+// ---------------------------------------------------------------------------
+
+async function handleProjectsCommand(db: Db, msg: TelegramMessage): Promise<void> {
+  const chatId = String(msg.chat.id);
+  const company = await resolveCompanyFromChat(db, chatId);
+  if (!company) {
+    await replyToChat(chatId, "This chat is not linked to a company.\nUse /register CompanyName first.", msg.message_thread_id);
+    return;
+  }
+
+  const rows = await db
+    .select({ id: projects.id, name: projects.name, status: projects.status })
+    .from(projects)
+    .where(eq(projects.companyId, company.id));
+
+  if (rows.length === 0) {
+    await replyToChat(chatId, "No projects found for this company.", msg.message_thread_id);
+    return;
+  }
+
+  const lines = [`<b>Projects (${company.issuePrefix})</b>\n`];
+  for (const p of rows) {
+    const icon = p.status === "active" ? "📁" : "📦";
+    lines.push(`${icon} <b>${p.name}</b> — ${p.status}`);
+  }
+  await replyToChat(chatId, lines.join("\n"), msg.message_thread_id);
+}
+
+// ---------------------------------------------------------------------------
+// /issue with no args — show help with agent list
+// ---------------------------------------------------------------------------
+
+async function handleIssueHelp(db: Db, msg: TelegramMessage): Promise<void> {
+  const chatId = String(msg.chat.id);
+  const company = await resolveCompanyFromChat(db, chatId);
+
+  let agentList = "";
+  if (company) {
+    const rows = await db
+      .select({ name: agents.name, status: agents.status })
+      .from(agents)
+      .where(and(eq(agents.companyId, company.id), eq(agents.status, "idle")));
+    if (rows.length > 0) {
+      agentList = "\n\n<b>Available agents:</b>\n" + rows.map((a) => `• ${a.name}`).join("\n");
+    }
+  }
+
+  await replyToChat(
+    chatId,
+    `<b>Usage:</b>\n/issue Fix the login bug\n/issue @FoundingEngineer Fix the login bug${agentList}`,
+    msg.message_thread_id,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Route
 // ---------------------------------------------------------------------------
 
@@ -474,6 +566,27 @@ export function telegramWebhookRoutes(db: Db) {
       const issueMatch = msg.text.match(/^\/issue(?:@\S+)?\s+(.+)$/s);
       if (issueMatch) {
         await handleIssueCommand(db, msg, issueMatch[1]);
+        res.status(200).json({ ok: true });
+        return;
+      }
+
+      // /issue with no args — show help
+      if (msg.text.match(/^\/issue(?:@\S+)?\s*$/)) {
+        await handleIssueHelp(db, msg);
+        res.status(200).json({ ok: true });
+        return;
+      }
+
+      // /agents — list agents
+      if (msg.text.match(/^\/agents(?:@\S+)?\s*$/)) {
+        await handleAgentsCommand(db, msg);
+        res.status(200).json({ ok: true });
+        return;
+      }
+
+      // /projects — list projects
+      if (msg.text.match(/^\/projects(?:@\S+)?\s*$/)) {
+        await handleProjectsCommand(db, msg);
         res.status(200).json({ ok: true });
         return;
       }
