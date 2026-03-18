@@ -11,13 +11,15 @@ import { eq, and } from "drizzle-orm";
 import JSZip from "jszip";
 import { readLogo } from "@/lib/storage";
 import crypto from "crypto";
+import { withTiming, measureAsync } from "@/lib/timing";
 
-export async function GET(
+export const GET = withTiming(async (
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
-) {
+) => {
   const { id } = await params;
-  const queryStartTime = performance.now();
+  let dbTime = 0;
+  let storageTime = 0;
 
   // Verify payment
   const sessionId = req.nextUrl.searchParams.get("session_id");
@@ -28,16 +30,19 @@ export async function GET(
     );
   }
 
-  const [order] = await db
-    .select()
-    .from(orders)
-    .where(
-      and(
-        eq(orders.stripeSessionId, sessionId),
-        eq(orders.questionnaireId, id)
+  const [[order], orderTime] = await measureAsync(() =>
+    db
+      .select()
+      .from(orders)
+      .where(
+        and(
+          eq(orders.stripeSessionId, sessionId),
+          eq(orders.questionnaireId, id)
+        )
       )
-    )
-    .limit(1);
+      .limit(1)
+  );
+  dbTime += orderTime;
 
   if (!order || !order.paidAt) {
     return NextResponse.json(
@@ -48,43 +53,46 @@ export async function GET(
 
   // Fetch all brand data in parallel
   const [
-    [questionnaire],
-    [palette],
-    [typography],
-    selectedLogos
-  ] = await Promise.all([
-    db
-      .select()
-      .from(brandQuestionnaire)
-      .where(eq(brandQuestionnaire.id, id))
-      .limit(1),
-    db
-      .select()
-      .from(brandPalette)
-      .where(
-        and(eq(brandPalette.questionnaireId, id), eq(brandPalette.selected, true))
-      )
-      .limit(1),
-    db
-      .select()
-      .from(brandTypography)
-      .where(
-        and(
-          eq(brandTypography.questionnaireId, id),
-          eq(brandTypography.selected, true)
+    [
+      [questionnaire],
+      [palette],
+      [typography],
+      selectedLogos
+    ],
+    parallelQueryTime
+  ] = await measureAsync(() =>
+    Promise.all([
+      db
+        .select()
+        .from(brandQuestionnaire)
+        .where(eq(brandQuestionnaire.id, id))
+        .limit(1),
+      db
+        .select()
+        .from(brandPalette)
+        .where(
+          and(eq(brandPalette.questionnaireId, id), eq(brandPalette.selected, true))
         )
-      )
-      .limit(1),
-    db
-      .select()
-      .from(brandLogos)
-      .where(
-        and(eq(brandLogos.questionnaireId, id), eq(brandLogos.selected, true))
-      )
-  ]);
-
-  const queryEndTime = performance.now();
-  const queryDuration = queryEndTime - queryStartTime;
+        .limit(1),
+      db
+        .select()
+        .from(brandTypography)
+        .where(
+          and(
+            eq(brandTypography.questionnaireId, id),
+            eq(brandTypography.selected, true)
+          )
+        )
+        .limit(1),
+      db
+        .select()
+        .from(brandLogos)
+        .where(
+          and(eq(brandLogos.questionnaireId, id), eq(brandLogos.selected, true))
+        )
+    ])
+  );
+  dbTime += parallelQueryTime;
 
   if (!questionnaire) {
     return NextResponse.json(
@@ -136,7 +144,8 @@ export async function GET(
 
       // Prefer file-based storage
       if (logo.imagePath) {
-        const buffer = await readLogo(logo.imagePath);
+        const [buffer, readTime] = await measureAsync(() => readLogo(logo.imagePath));
+        storageTime += readTime;
         if (buffer) {
           logoFolder.file(filename, buffer);
           continue;
@@ -357,14 +366,16 @@ body, p, li, span {
   zip.file("README.md", readmeLines.join("\n") + "\n");
 
   // Generate ZIP
-  const zipBuffer = await zip.generateAsync({ type: "nodebuffer" });
+  const [zipBuffer, zipTime] = await measureAsync(() =>
+    zip.generateAsync({ type: "nodebuffer" })
+  );
 
   const safeFilename = brandName
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/(^-|-$)/g, "");
 
-  return new NextResponse(new Uint8Array(zipBuffer), {
+  const response = new NextResponse(new Uint8Array(zipBuffer), {
     status: 200,
     headers: {
       "Content-Type": "application/zip",
@@ -372,7 +383,15 @@ body, p, li, span {
       "Content-Length": String(zipBuffer.length),
       "Cache-Control": "private, no-cache",
       ETag: etag,
-      "Server-Timing": `db;dur=${queryDuration.toFixed(2)};desc="Database queries"`,
     },
   });
-}
+
+  // Add timing metrics
+  (response as any)._timings = [
+    { name: "db", duration: dbTime, description: "Database queries" },
+    { name: "storage", duration: storageTime, description: "File reads" },
+    { name: "zip", duration: zipTime, description: "ZIP generation" },
+  ];
+
+  return response;
+});

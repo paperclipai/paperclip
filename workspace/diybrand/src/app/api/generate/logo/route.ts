@@ -4,8 +4,9 @@ import { brandQuestionnaire, brandPalette, brandLogos } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
 import { generateLogos } from "@/lib/logo";
 import { saveLogo, deleteLogo } from "@/lib/storage";
+import { withTiming, measureAsync, jsonWithTimings } from "@/lib/timing";
 
-export async function POST(request: NextRequest) {
+export const POST = withTiming(async (request: NextRequest) => {
   try {
     const body = await request.json();
     const { questionnaireId } = body;
@@ -17,12 +18,18 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    let dbTime = 0;
+    let storageTime = 0;
+
     // Load questionnaire
-    const [questionnaire] = await db
-      .select()
-      .from(brandQuestionnaire)
-      .where(eq(brandQuestionnaire.id, questionnaireId))
-      .limit(1);
+    const [[questionnaire], loadTime] = await measureAsync(() =>
+      db
+        .select()
+        .from(brandQuestionnaire)
+        .where(eq(brandQuestionnaire.id, questionnaireId))
+        .limit(1)
+    );
+    dbTime += loadTime;
 
     if (!questionnaire) {
       return NextResponse.json(
@@ -32,16 +39,19 @@ export async function POST(request: NextRequest) {
     }
 
     // Load selected palette
-    const [palette] = await db
-      .select()
-      .from(brandPalette)
-      .where(
-        and(
-          eq(brandPalette.questionnaireId, questionnaireId),
-          eq(brandPalette.selected, true)
+    const [[palette], paletteTime] = await measureAsync(() =>
+      db
+        .select()
+        .from(brandPalette)
+        .where(
+          and(
+            eq(brandPalette.questionnaireId, questionnaireId),
+            eq(brandPalette.selected, true)
+          )
         )
-      )
-      .limit(1);
+        .limit(1)
+    );
+    dbTime += paletteTime;
 
     const colors = palette?.colors ?? [
       { role: "primary", hex: "#6d28d9" },
@@ -54,30 +64,42 @@ export async function POST(request: NextRequest) {
     const personality = (questionnaire.brandPersonality as string[]) ?? [];
 
     // Generate logos via Gemini
-    const concepts = await generateLogos(businessName, industry, personality, colors);
+    const [concepts, aiTime] = await measureAsync(() =>
+      generateLogos(businessName, industry, personality, colors)
+    );
 
     // Delete previously generated logo files and DB rows
-    const oldLogos = await db
-      .select({ imagePath: brandLogos.imagePath })
-      .from(brandLogos)
-      .where(eq(brandLogos.questionnaireId, questionnaireId));
+    const [oldLogos, selectOldTime] = await measureAsync(() =>
+      db
+        .select({ imagePath: brandLogos.imagePath })
+        .from(brandLogos)
+        .where(eq(brandLogos.questionnaireId, questionnaireId))
+    );
+    dbTime += selectOldTime;
 
     for (const old of oldLogos) {
       if (old.imagePath) {
-        await deleteLogo(old.imagePath);
+        const [, deleteTime] = await measureAsync(() => deleteLogo(old.imagePath));
+        storageTime += deleteTime;
       }
     }
 
-    await db
-      .delete(brandLogos)
-      .where(eq(brandLogos.questionnaireId, questionnaireId));
+    const [, deleteDbTime] = await measureAsync(() =>
+      db
+        .delete(brandLogos)
+        .where(eq(brandLogos.questionnaireId, questionnaireId))
+    );
+    dbTime += deleteDbTime;
 
     // Persist new logos: save files first, then insert DB rows
     const insertValues = [];
     for (const c of concepts) {
       // Generate a temporary ID for the filename
       const tempId = crypto.randomUUID();
-      const imagePath = await saveLogo(tempId, c.imageBuffer, c.mimeType);
+      const [imagePath, saveTime] = await measureAsync(() =>
+        saveLogo(tempId, c.imageBuffer, c.mimeType)
+      );
+      storageTime += saveTime;
 
       insertValues.push({
         id: tempId,
@@ -91,23 +113,35 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    const rows = await db
-      .insert(brandLogos)
-      .values(insertValues)
-      .returning();
+    const [rows, insertTime] = await measureAsync(() =>
+      db
+        .insert(brandLogos)
+        .values(insertValues)
+        .returning()
+    );
+    dbTime += insertTime;
 
-    return NextResponse.json({
-      logos: rows.map((r) => ({
-        id: r.id,
-        name: r.name,
-        variant: r.variant,
-        imageUrl: `/api/logos/${r.id}/image`,
-      })),
-    });
+    return jsonWithTimings(
+      {
+        logos: rows.map((r) => ({
+          id: r.id,
+          name: r.name,
+          variant: r.variant,
+          imageUrl: `/api/logos/${r.id}/image`,
+        })),
+      },
+      {
+        timings: [
+          { name: "db", duration: dbTime, description: "Database queries" },
+          { name: "ai", duration: aiTime, description: "AI logo generation" },
+          { name: "storage", duration: storageTime, description: "File operations" },
+        ],
+      }
+    );
   } catch (err) {
     console.error("Logo generation error:", err);
     const message =
       err instanceof Error ? err.message : "Something went wrong";
     return NextResponse.json({ error: message }, { status: 500 });
   }
-}
+});
