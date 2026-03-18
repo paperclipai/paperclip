@@ -166,11 +166,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (workspaceRepoRef) env.PAPERCLIP_WORKSPACE_REPO_REF = workspaceRepoRef;
   if (agentHome) env.AGENT_HOME = agentHome;
   if (workspaceHints.length > 0) env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(workspaceHints);
-  const agentHome = deriveAgentHomeFromInstructionsFilePath(
+  const derivedAgentHome = deriveAgentHomeFromInstructionsFilePath(
     asString(config.instructionsFilePath, ""),
     cwd,
   );
-  if (agentHome) env.AGENT_HOME = agentHome;
+  if (derivedAgentHome && !env.AGENT_HOME) env.AGENT_HOME = derivedAgentHome;
 
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;

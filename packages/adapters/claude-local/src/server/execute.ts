@@ -226,12 +226,12 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   if (runtimePrimaryUrl) {
     env.PAPERCLIP_RUNTIME_PRIMARY_URL = runtimePrimaryUrl;
   }
-  const agentHome = deriveAgentHomeFromInstructionsFilePath(
+  const derivedAgentHome = deriveAgentHomeFromInstructionsFilePath(
     asString(config.instructionsFilePath, ""),
     cwd,
   );
-  if (agentHome) {
-    env.AGENT_HOME = agentHome;
+  if (derivedAgentHome && !env.AGENT_HOME) {
+    env.AGENT_HOME = derivedAgentHome;
   }
 
   for (const [key, value] of Object.entries(envConfig)) {
