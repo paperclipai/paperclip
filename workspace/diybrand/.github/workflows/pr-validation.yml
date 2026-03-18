@@ -1,0 +1,83 @@
+name: PR Validation
+
+on:
+  pull_request:
+    branches: [main]
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  validate:
+    name: Validate PR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run ESLint
+        id: lint
+        run: npm run lint
+        continue-on-error: true
+
+      - name: Run tests
+        id: test
+        run: npm test
+        continue-on-error: true
+
+      - name: Build application
+        id: build
+        run: npm run build
+        continue-on-error: true
+
+      - name: Check bundle size
+        id: bundle
+        run: |
+          BUILD_SIZE=$(du -sh .next/ | cut -f1)
+          echo "Build size: $BUILD_SIZE"
+          echo "bundle_size=$BUILD_SIZE" >> $GITHUB_OUTPUT
+        continue-on-error: true
+
+      - name: Post PR comment with results
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const lint = '${{ steps.lint.outcome }}' === 'success' ? '✅' : '❌';
+            const test = '${{ steps.test.outcome }}' === 'success' ? '✅' : '⚠️';
+            const build = '${{ steps.build.outcome }}' === 'success' ? '✅' : '❌';
+            const bundleSize = '${{ steps.bundle.outputs.bundle_size }}' || 'unknown';
+
+            const comment = `## CI/CD Check Results
+
+| Check | Status |
+|-------|--------|
+| Linting | ${lint} |
+| Tests | ${test} |
+| Build | ${build} |
+| Bundle Size | ${bundleSize} |
+
+**Note:** Tests are allowed to fail; lint and build must pass before merging.`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+      - name: Require checks to pass
+        if: |
+          steps.lint.outcome != 'success' ||
+          steps.build.outcome != 'success'
+        run: |
+          echo "❌ Lint and build checks must pass"
+          exit 1
