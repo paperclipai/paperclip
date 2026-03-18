@@ -530,6 +530,46 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     let reconnectTimer: number | null = null;
     let socket: WebSocket | null = null;
 
+    // --- Event batching to prevent query invalidation storms ---
+    const BATCH_WINDOW_MS = 100;
+    let pendingEvents: LiveEvent[] = [];
+    let flushTimer: number | null = null;
+
+    const dedupeKey = (event: LiveEvent): string => {
+      const p = event.payload ?? {};
+      const runId = readString(p.runId);
+      const agentId = readString(p.agentId);
+      const entityId = readString(p.entityId);
+      const action = readString(p.action);
+      // Build a key from event type + the most specific identifier available
+      return `${event.type}:${runId ?? entityId ?? agentId ?? ""}:${action ?? ""}`;
+    };
+
+    const flushEvents = () => {
+      flushTimer = null;
+      if (pendingEvents.length === 0) return;
+
+      // Deduplicate: for each key, keep only the LAST event (most recent state)
+      const seen = new Map<string, LiveEvent>();
+      for (const event of pendingEvents) {
+        seen.set(dedupeKey(event), event);
+      }
+      pendingEvents = [];
+
+      for (const event of seen.values()) {
+        handleLiveEvent(queryClient, selectedCompanyId, event, pushToast, gateRef.current, {
+          userId: currentUserId,
+          agentId: null,
+        });
+      }
+    };
+
+    const scheduleFlush = () => {
+      if (flushTimer === null) {
+        flushTimer = window.setTimeout(flushEvents, BATCH_WINDOW_MS);
+      }
+    };
+
     const clearReconnect = () => {
       if (reconnectTimer !== null) {
         window.clearTimeout(reconnectTimer);
@@ -566,10 +606,8 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
 
         try {
           const parsed = JSON.parse(raw) as LiveEvent;
-          handleLiveEvent(queryClient, selectedCompanyId, parsed, pushToast, gateRef.current, {
-            userId: currentUserId,
-            agentId: null,
-          });
+          pendingEvents.push(parsed);
+          scheduleFlush();
         } catch {
           // Ignore non-JSON payloads.
         }
@@ -590,6 +628,11 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     return () => {
       closed = true;
       clearReconnect();
+      if (flushTimer !== null) {
+        window.clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+      pendingEvents = [];
       if (socket) {
         socket.onopen = null;
         socket.onmessage = null;

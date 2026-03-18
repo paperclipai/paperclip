@@ -72,6 +72,7 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "opencode_local",
   "pi_local",
 ]);
+const lastWorkspaceWarningsByAgent = new Map<string, Set<string>>();
 
 function deriveRepoNameFromRepoUrl(repoUrl: string | null): string | null {
   const trimmed = repoUrl?.trim() ?? "";
@@ -2055,6 +2056,10 @@ export function heartbeatService(db: Db) {
         });
       };
       for (const warning of runtimeWorkspaceWarnings) {
+        const seen = lastWorkspaceWarningsByAgent.get(run.agentId);
+        if (seen?.has(warning)) continue;
+        if (!seen) lastWorkspaceWarningsByAgent.set(run.agentId, new Set([warning]));
+        else seen.add(warning);
         await onLog("stderr", `[paperclip] ${warning}\n`);
       }
       const adapterEnv = Object.fromEntries(

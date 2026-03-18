@@ -32,6 +32,20 @@ const queryClient = new QueryClient({
     queries: {
       staleTime: 30_000,
       refetchOnWindowFocus: true,
+      retry: (failureCount, error) => {
+        // Don't retry network errors — server is unreachable
+        if (
+          error instanceof TypeError &&
+          (error.message.includes("Failed to fetch") || error.message.includes("NetworkError"))
+        ) {
+          return false;
+        }
+        // Max 2 retries for transient server errors
+        if (failureCount >= 2) return false;
+        return true;
+      },
+      retryDelay: (failureCount) =>
+        Math.min(5000, 1000 * 2 ** failureCount),
     },
   },
 });
