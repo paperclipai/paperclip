@@ -1,0 +1,42 @@
+@import "tailwindcss";
+
+@theme {
+  /* Construction industry color palette */
+  --color-primary-50: #eff6ff;
+  --color-primary-100: #dbeafe;
+  --color-primary-200: #bfdbfe;
+  --color-primary-300: #93c5fd;
+  --color-primary-400: #60a5fa;
+  --color-primary-500: #1e56a0;
+  --color-primary-600: #1a4b8c;
+  --color-primary-700: #153d73;
+  --color-primary-800: #0f2e59;
+  --color-primary-900: #0a1f40;
+  --color-primary-950: #061326;
+
+  /* Steel grays */
+  --color-steel-50: #f8f9fa;
+  --color-steel-100: #f1f3f5;
+  --color-steel-200: #e9ecef;
+  --color-steel-300: #dee2e6;
+  --color-steel-400: #adb5bd;
+  --color-steel-500: #6c757d;
+  --color-steel-600: #495057;
+  --color-steel-700: #343a40;
+  --color-steel-800: #212529;
+  --color-steel-900: #191c1f;
+
+  /* Safety orange accents */
+  --color-accent-50: #fff7ed;
+  --color-accent-100: #ffedd5;
+  --color-accent-200: #fed7aa;
+  --color-accent-300: #fdba74;
+  --color-accent-400: #fb923c;
+  --color-accent-500: #f97316;
+  --color-accent-600: #ea580c;
+  --color-accent-700: #c2410c;
+  --color-accent-800: #9a3412;
+  --color-accent-900: #7c2d12;
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+}
