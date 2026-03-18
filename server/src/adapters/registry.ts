@@ -55,6 +55,14 @@ import {
   agentConfigurationDoc as piAgentConfigurationDoc,
 } from "@paperclipai/adapter-pi-local";
 import {
+  execute as mistralExecute,
+  testEnvironment as mistralTestEnvironment,
+} from "@paperclipai/adapter-mistral-local/server";
+import {
+  agentConfigurationDoc as mistralAgentConfigurationDoc,
+  models as mistralModels,
+} from "@paperclipai/adapter-mistral-local";
+import {
   execute as hermesExecute,
   testEnvironment as hermesTestEnvironment,
   sessionCodec as hermesSessionCodec,
@@ -157,6 +165,15 @@ const hermesLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: hermesAgentConfigurationDoc,
 };
 
+const mistralLocalAdapter: ServerAdapterModule = {
+  type: "mistral_local",
+  execute: mistralExecute,
+  testEnvironment: mistralTestEnvironment,
+  models: mistralModels,
+  supportsLocalAgentJwt: false,
+  agentConfigurationDoc: mistralAgentConfigurationDoc,
+};
+
 const adaptersByType = new Map<string, ServerAdapterModule>(
   [
     claudeLocalAdapter,
@@ -167,6 +184,7 @@ const adaptersByType = new Map<string, ServerAdapterModule>(
     geminiLocalAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,
+    mistralLocalAdapter,
     processAdapter,
     httpAdapter,
   ].map((a) => [a.type, a]),

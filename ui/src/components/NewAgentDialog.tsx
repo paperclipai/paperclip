@@ -26,6 +26,7 @@ type AdvancedAdapterType =
   | "claude_local"
   | "codex_local"
   | "gemini_local"
+  | "mistral_local"
   | "opencode_local"
   | "pi_local"
   | "cursor"
@@ -57,6 +58,12 @@ const ADVANCED_ADAPTER_OPTIONS: Array<{
     label: "Gemini CLI",
     icon: Gem,
     desc: "Local Gemini agent",
+  },
+  {
+    value: "mistral_local",
+    label: "Mistral",
+    icon: Gem,
+    desc: "Mistral API agent",
   },
   {
     value: "opencode_local",
