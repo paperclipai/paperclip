@@ -141,7 +141,9 @@ function resolveSessionKey(input: {
   const agentId = nonEmpty(input.agentId) ?? "main";
   if (input.strategy === "run") return `agent:${agentId}:paperclip:run:${input.runId}`;
   if (input.strategy === "issue" && input.issueId) return `agent:${agentId}:paperclip:issue:${input.issueId}`;
-  return fallback;
+  // Apply agent prefix to fallback path ("fixed" strategy or "issue" with no
+  // issueId) so multi-agent gateway routing works in all cases.
+  return `agent:${agentId}:${fallback}`;
 }
 
 function isLoopbackHost(hostname: string): boolean {
@@ -631,15 +633,12 @@ class GatewayWsClient {
     ws.on("close", (code, reason) => {
       const reasonText = rawDataToString(reason);
       const err = new Error(`gateway closed (${code}): ${reasonText}`);
-      try {
-        this.failPending(err);
-        this.rejectChallenge(err);
-      } catch (closeErr) {
-        // Swallow errors from failPending/rejectChallenge to prevent unhandled
-        // rejections from crashing the process when the close event fires after
-        // execution completes.
-        void this.opts.onLog("stderr", `[openclaw-gateway] close handler error (suppressed): ${closeErr instanceof Error ? closeErr.message : String(closeErr)}\n`);
-      }
+      // failPending/rejectChallenge call Promise reject callbacks which
+      // schedule microtasks — they don't throw synchronously.  Unhandled
+      // rejections from orphaned promises are caught by the global
+      // process.on("unhandledRejection") handler in server/src/index.ts.
+      this.failPending(err);
+      this.rejectChallenge(err);
     });
 
     ws.on("error", (err) => {
