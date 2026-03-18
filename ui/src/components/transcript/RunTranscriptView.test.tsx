@@ -58,6 +58,32 @@ describe("RunTranscriptView", () => {
     expect(html).toContain("<li>second</li>");
   });
 
+  it("renders [paperclip] workspace fallback message as neutral notice, not error", () => {
+    const entries: TranscriptEntry[] = [
+      {
+        kind: "stderr",
+        ts: "2026-03-12T00:00:00.000Z",
+        text: '[paperclip] No project or prior session workspace was available. Using fallback workspace "/home/dave/.paperclip/agents/ceo" for this run.',
+      },
+      {
+        kind: "assistant",
+        ts: "2026-03-12T00:00:01.000Z",
+        text: "Working on the task.",
+      },
+    ];
+
+    const blocks = normalizeTranscript(entries, false);
+
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0]).toMatchObject({
+      type: "event",
+      label: "notice",
+      tone: "neutral",
+      text: 'No project or prior session workspace was available. Using fallback workspace "/home/dave/.paperclip/agents/ceo" for this run.',
+    });
+    expect(blocks[1]).toMatchObject({ type: "message", role: "assistant" });
+  });
+
   it("hides saved-session resume skip stderr from nice mode normalization", () => {
     const entries: TranscriptEntry[] = [
       {

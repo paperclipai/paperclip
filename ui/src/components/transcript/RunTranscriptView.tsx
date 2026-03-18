@@ -281,6 +281,10 @@ function shouldHideNiceModeStderr(text: string): boolean {
   return normalized.startsWith("[paperclip] skipping saved session resume");
 }
 
+function isPaperclipNotice(text: string): boolean {
+  return compactWhitespace(text).toLowerCase().startsWith("[paperclip]");
+}
+
 function groupCommandBlocks(blocks: TranscriptBlock[]): TranscriptBlock[] {
   const grouped: TranscriptBlock[] = [];
   let pending: Array<Extract<TranscriptBlock, { type: "command_group" }>["items"][number]> = [];
@@ -435,6 +439,16 @@ export function normalizeTranscript(entries: TranscriptEntry[], streaming: boole
 
     if (entry.kind === "stderr") {
       if (shouldHideNiceModeStderr(entry.text)) {
+        continue;
+      }
+      if (isPaperclipNotice(entry.text)) {
+        blocks.push({
+          type: "event",
+          ts: entry.ts,
+          label: "notice",
+          tone: "neutral",
+          text: entry.text.replace(/^\[paperclip\]\s*/i, ""),
+        });
         continue;
       }
       blocks.push({
