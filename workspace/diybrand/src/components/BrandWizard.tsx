@@ -219,9 +219,41 @@ export function BrandWizard() {
 
   const handleSubmit = useCallback(async () => {
     if (!validateStep(step)) return;
-    await saveProgress(6);
-    setStep(6);
-  }, [step, validateStep, saveProgress]);
+    setSaving(true);
+    try {
+      const method = data.id ? "PUT" : "POST";
+      const body = {
+        ...(data.id ? { id: data.id } : {}),
+        businessName: data.businessName || null,
+        industry: data.industry || null,
+        businessDescription: data.businessDescription || null,
+        targetAudience: data.targetAudience || null,
+        brandPersonality: data.brandPersonality.length > 0 ? data.brandPersonality : null,
+        competitors: data.competitors || null,
+        visualPreferences: data.visualPreferences || null,
+        currentStep: 6,
+      };
+
+      const res = await fetch("/api/questionnaire", {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+      if (!res.ok) throw new Error("Save failed");
+
+      const saved = await res.json();
+      if (!data.id && saved.id) {
+        setData((prev) => ({ ...prev, id: saved.id }));
+        saveSessionId(saved.id);
+      }
+      setStep(6);
+    } catch {
+      setErrors({ submit: "Could not save your answers. Please try again." });
+    } finally {
+      setSaving(false);
+    }
+  }, [step, validateStep, data]);
 
   if (recovering) {
     return (
@@ -252,6 +284,20 @@ export function BrandWizard() {
           <StepInspiration data={data} updateData={updateData} />
         )}
         {step === 5 && <StepReview data={data} />}
+        {step >= 6 && !data.id && (
+          <div className="rounded-lg bg-red-500/10 border border-red-500/20 p-6 text-center" role="alert">
+            <p className="text-sm text-red-400">
+              {errors.submit || "Something went wrong saving your answers."}
+            </p>
+            <button
+              type="button"
+              onClick={() => setStep(5)}
+              className="cta-glow mt-4 rounded-lg bg-[var(--primary)] px-5 py-2 text-sm font-semibold text-white hover:brightness-110"
+            >
+              Go back and retry
+            </button>
+          </div>
+        )}
         {step === 6 && data.id && (
           <StepPalette
             questionnaireId={data.id}
@@ -287,6 +333,7 @@ export function BrandWizard() {
         )}
       </div>
 
+      {/* Navigation for questionnaire steps 1-5 */}
       {step <= 5 && (
         <div className="mt-8 flex items-center justify-between border-t border-white/10 pt-6">
           {step > 1 ? (
@@ -320,6 +367,20 @@ export function BrandWizard() {
               {saving ? "Submitting..." : "Generate palettes"}
             </button>
           )}
+        </div>
+      )}
+
+      {/* Back button for generation steps 6-9 */}
+      {step >= 6 && (
+        <div className="mt-8 flex items-center justify-between border-t border-white/10 pt-6">
+          <button
+            type="button"
+            onClick={goBack}
+            className="rounded-lg border border-white/20 px-5 py-2.5 text-sm font-medium text-[var(--text-primary)] hover:border-white/40 hover:bg-white/5 transition-all"
+          >
+            Back
+          </button>
+          <div />
         </div>
       )}
     </div>
