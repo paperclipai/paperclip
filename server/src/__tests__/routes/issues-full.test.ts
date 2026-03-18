@@ -68,6 +68,18 @@ const mockDocumentService = vi.hoisted(() => ({
   deleteIssueDocument: vi.fn(),
 }));
 
+const mockExecutionWorkspaceService = vi.hoisted(() => ({
+  getById: vi.fn(),
+}));
+
+const mockWorkProductService = vi.hoisted(() => ({
+  listForIssue: vi.fn(),
+  getById: vi.fn(),
+  createForIssue: vi.fn(),
+  update: vi.fn(),
+  remove: vi.fn(),
+}));
+
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
 vi.mock("../../services/index.js", () => ({
@@ -80,6 +92,8 @@ vi.mock("../../services/index.js", () => ({
   issueApprovalService: () => mockIssueApprovalService,
   documentService: () => mockDocumentService,
   logActivity: mockLogActivity,
+  executionWorkspaceService: () => mockExecutionWorkspaceService,
+  workProductService: () => mockWorkProductService,
 }));
 
 vi.mock("../../middleware/logger.js", () => ({
@@ -128,6 +142,8 @@ describe("issueRoutes", () => {
     mockIssueService.findMentionedProjectIds.mockResolvedValue([]);
     mockIssueService.processMentionNotifications.mockResolvedValue(undefined);
     mockHeartbeatService.wakeup.mockResolvedValue({ id: "wake-1" });
+    mockExecutionWorkspaceService.getById.mockResolvedValue(null);
+    mockWorkProductService.listForIssue.mockResolvedValue([]);
   });
 
   describe("GET /companies/:companyId/issues", () => {

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest";
 import { getTestDb, cleanDb, type TestDb } from "../helpers/test-db.js";
 import { costService } from "../../services/costs.js";
-import { companies, agents } from "@paperclipai/db";
+import { companies, agents, budgetPolicies } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 
@@ -116,6 +116,19 @@ describe("costService", () => {
 
   describe("createEvent: budget auto-pause", () => {
     it("pauses agent when budget exceeded", async () => {
+      // Create a budget policy so evaluateCostEvent triggers auto-pause
+      await testDb.db.insert(budgetPolicies).values({
+        companyId,
+        scopeType: "agent",
+        scopeId: agentId,
+        metric: "billed_cents",
+        windowKind: "calendar_month_utc",
+        amount: 50000,
+        warnPercent: 80,
+        hardStopEnabled: true,
+        notifyEnabled: false,
+        isActive: true,
+      });
       // Agent has budgetMonthlyCents=50000, so spending 50000 should trigger pause
       await svc().createEvent(companyId, {
         agentId,

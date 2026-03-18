@@ -84,6 +84,7 @@ vi.mock("../../services/index.js", () => ({
   issueService: () => mockIssueService,
   logActivity: mockLogActivity,
   secretService: () => mockSecretService,
+  workspaceOperationService: () => ({}),
 }));
 
 vi.mock("../../adapters/index.js", () => ({
@@ -108,8 +109,16 @@ vi.mock("@paperclipai/adapter-cursor-local", () => ({
   DEFAULT_CURSOR_LOCAL_MODEL: "claude-3.5-sonnet",
 }));
 
+vi.mock("@paperclipai/adapter-gemini-local", () => ({
+  DEFAULT_GEMINI_LOCAL_MODEL: "gemini-2.0-flash",
+}));
+
 vi.mock("@paperclipai/adapter-opencode-local/server", () => ({
   ensureOpenCodeModelConfiguredAndAvailable: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("../../log-redaction.js", () => ({
+  redactCurrentUserValue: (v: unknown) => v,
 }));
 
 function createApp(actorOverrides: Record<string, unknown> = {}) {
