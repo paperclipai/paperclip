@@ -1,8 +1,4 @@
 import { spawn, type ChildProcess } from "node:child_process";
-
-function getDefaultShell(): string {
-  return process.platform === "win32" ? "sh" : "/bin/sh";
-}
 import fs from "node:fs/promises";
 import net from "node:net";
 import { createHash, randomUUID } from "node:crypto";
@@ -15,6 +11,10 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import { asNumber, asString, parseObject, renderTemplate } from "../adapters/utils.js";
 import { resolveHomeAwarePath } from "../home-paths.js";
 import type { WorkspaceOperationRecorder } from "./workspace-operations.js";
+
+function getDefaultShell(): string {
+  return process.platform === "win32" ? "sh" : "/bin/sh";
+}
 
 export interface ExecutionWorkspaceInput {
   baseCwd: string;
