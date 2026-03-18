@@ -735,6 +735,20 @@ export function telegramWebhookRoutes(db: Db) {
       if (text.match(/^\/projects(?:@\S+)?\s*$/)) { await cmdProjects(db, msg); res.status(200).json({ ok: true }); return; }
       if (text.match(/^\/debug(?:@\S+)?\s*$/)) { await cmdDebug(db, msg); res.status(200).json({ ok: true }); return; }
 
+      // @bot mention — treat as /ask naturally
+      const botMention = msg.entities?.find(
+        (e) => e.type === "mention" && text.slice(e.offset, e.offset + e.length).toLowerCase() === "@sixzenith_ai_bot",
+      );
+      if (botMention) {
+        const question = text
+          .slice(0, botMention.offset) + text.slice(botMention.offset + botMention.length)
+        const trimmed = question.replace(/^\s+|\s+$/g, "");
+        if (trimmed) {
+          await cmdAsk(db, msg, trimmed);
+          res.status(200).json({ ok: true }); return;
+        }
+      }
+
       // Thread reply
       if (msg.message_thread_id) { await handleThreadReply(db, msg); }
 
