@@ -269,7 +269,7 @@ export function OrgChart() {
   return (
     <div
       ref={containerRef}
-      className="w-full h-[calc(100vh-4rem)] overflow-hidden relative bg-muted/20 border border-border rounded-lg"
+      className="w-full h-[calc(100dvh-6rem)] overflow-hidden relative bg-muted/20 border border-border rounded-lg"
       style={{ cursor: dragging ? "grabbing" : "grab" }}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, useLocation, Navigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { PROJECT_COLORS, isUuidLike } from "@paperclipai/shared";
+import { PROJECT_COLORS, isUuidLike, type BudgetPolicySummary } from "@paperclipai/shared";
+import { budgetsApi } from "../api/budgets";
 import { projectsApi } from "../api/projects";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
@@ -9,11 +10,13 @@ import { heartbeatsApi } from "../api/heartbeats";
 import { assetsApi } from "../api/assets";
 import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
+import { useToast } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { ProjectProperties, type ProjectConfigFieldKey, type ProjectFieldSaveState } from "../components/ProjectProperties";
 import { InlineEditor } from "../components/InlineEditor";
 import { StatusBadge } from "../components/StatusBadge";
+import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
 import { IssuesList } from "../components/IssuesList";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
@@ -24,7 +27,7 @@ import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slo
 
 /* ── Top-level tab types ── */
 
-type ProjectBaseTab = "overview" | "list" | "configuration";
+type ProjectBaseTab = "overview" | "list" | "configuration" | "budget";
 type ProjectPluginTab = `plugin:${string}`;
 type ProjectTab = ProjectBaseTab | ProjectPluginTab;
 
@@ -39,6 +42,7 @@ function resolveProjectTab(pathname: string, projectId: string): ProjectTab | nu
   const tab = segments[projectsIdx + 2];
   if (tab === "overview") return "overview";
   if (tab === "configuration") return "configuration";
+  if (tab === "budget") return "budget";
   if (tab === "issues") return "list";
   return null;
 }
@@ -207,6 +211,7 @@ export function ProjectDetail() {
   const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { closePanel } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { pushToast } = useToast();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
@@ -274,11 +279,44 @@ export function ProjectDetail() {
     onSuccess: invalidateProject,
   });
 
+  const archiveProject = useMutation({
+    mutationFn: (archived: boolean) =>
+      projectsApi.update(
+        projectLookupRef,
+        { archivedAt: archived ? new Date().toISOString() : null },
+        resolvedCompanyId ?? lookupCompanyId,
+      ),
+    onSuccess: (updatedProject, archived) => {
+      invalidateProject();
+      const name = updatedProject?.name ?? project?.name ?? "Project";
+      if (archived) {
+        pushToast({ title: `"${name}" has been archived`, tone: "success" });
+        navigate("/dashboard");
+      } else {
+        pushToast({ title: `"${name}" has been unarchived`, tone: "success" });
+      }
+    },
+    onError: (_, archived) => {
+      pushToast({
+        title: archived ? "Failed to archive project" : "Failed to unarchive project",
+        tone: "error",
+      });
+    },
+  });
+
   const uploadImage = useMutation({
     mutationFn: async (file: File) => {
       if (!resolvedCompanyId) throw new Error("No company selected");
       return assetsApi.uploadImage(resolvedCompanyId, file, `projects/${projectLookupRef || "draft"}`);
     },
+  });
+
+  const { data: budgetOverview } = useQuery({
+    queryKey: queryKeys.budgets.overview(resolvedCompanyId ?? "__none__"),
+    queryFn: () => budgetsApi.overview(resolvedCompanyId!),
+    enabled: !!resolvedCompanyId,
+    refetchInterval: 30_000,
+    staleTime: 5_000,
   });
 
   useEffect(() => {
@@ -301,6 +339,10 @@ export function ProjectDetail() {
     }
     if (activeTab === "configuration") {
       navigate(`/projects/${canonicalProjectRef}/configuration`, { replace: true });
+      return;
+    }
+    if (activeTab === "budget") {
+      navigate(`/projects/${canonicalProjectRef}/budget`, { replace: true });
       return;
     }
     if (activeTab === "list") {
@@ -362,12 +404,75 @@ export function ProjectDetail() {
     }
   }, [invalidateProject, lookupCompanyId, projectLookupRef, resolvedCompanyId, scheduleFieldReset, setFieldState]);
 
+  const projectBudgetSummary = useMemo(() => {
+    const matched = budgetOverview?.policies.find(
+      (policy) => policy.scopeType === "project" && policy.scopeId === (project?.id ?? routeProjectRef),
+    );
+    if (matched) return matched;
+    return {
+      policyId: "",
+      companyId: resolvedCompanyId ?? "",
+      scopeType: "project",
+      scopeId: project?.id ?? routeProjectRef,
+      scopeName: project?.name ?? "Project",
+      metric: "billed_cents",
+      windowKind: "lifetime",
+      amount: 0,
+      observedAmount: 0,
+      remainingAmount: 0,
+      utilizationPercent: 0,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: true,
+      isActive: false,
+      status: "ok",
+      paused: Boolean(project?.pausedAt),
+      pauseReason: project?.pauseReason ?? null,
+      windowStart: new Date(),
+      windowEnd: new Date(),
+    } satisfies BudgetPolicySummary;
+  }, [budgetOverview?.policies, project, resolvedCompanyId, routeProjectRef]);
+
+  const budgetMutation = useMutation({
+    mutationFn: (amount: number) =>
+      budgetsApi.upsertPolicy(resolvedCompanyId!, {
+        scopeType: "project",
+        scopeId: project?.id ?? routeProjectRef,
+        amount,
+        windowKind: "lifetime",
+      }),
+    onSuccess: () => {
+      if (!resolvedCompanyId) return;
+      queryClient.invalidateQueries({ queryKey: queryKeys.budgets.overview(resolvedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(routeProjectRef) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(projectLookupRef) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(resolvedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(resolvedCompanyId) });
+    },
+  });
+
   if (pluginTabFromSearch && !pluginDetailSlotsLoading && !activePluginTab) {
     return <Navigate to={`/projects/${canonicalProjectRef}/issues`} replace />;
   }
 
-  // Redirect bare /projects/:id to /projects/:id/issues
+  // Redirect bare /projects/:id to cached tab or default /issues
   if (routeProjectRef && activeTab === null) {
+    let cachedTab: string | null = null;
+    if (project?.id) {
+      try { cachedTab = localStorage.getItem(`paperclip:project-tab:${project.id}`); } catch {}
+    }
+    if (cachedTab === "overview") {
+      return <Navigate to={`/projects/${canonicalProjectRef}/overview`} replace />;
+    }
+    if (cachedTab === "configuration") {
+      return <Navigate to={`/projects/${canonicalProjectRef}/configuration`} replace />;
+    }
+    if (cachedTab === "budget") {
+      return <Navigate to={`/projects/${canonicalProjectRef}/budget`} replace />;
+    }
+    if (isProjectPluginTab(cachedTab)) {
+      return <Navigate to={`/projects/${canonicalProjectRef}?tab=${encodeURIComponent(cachedTab)}`} replace />;
+    }
     return <Navigate to={`/projects/${canonicalProjectRef}/issues`} replace />;
   }
 
@@ -376,12 +481,18 @@ export function ProjectDetail() {
   if (!project) return null;
 
   const handleTabChange = (tab: ProjectTab) => {
+    // Cache the active tab per project
+    if (project?.id) {
+      try { localStorage.setItem(`paperclip:project-tab:${project.id}`, tab); } catch {}
+    }
     if (isProjectPluginTab(tab)) {
       navigate(`/projects/${canonicalProjectRef}?tab=${encodeURIComponent(tab)}`);
       return;
     }
     if (tab === "overview") {
       navigate(`/projects/${canonicalProjectRef}/overview`);
+    } else if (tab === "budget") {
+      navigate(`/projects/${canonicalProjectRef}/budget`);
     } else if (tab === "configuration") {
       navigate(`/projects/${canonicalProjectRef}/configuration`);
     } else {
@@ -398,12 +509,20 @@ export function ProjectDetail() {
             onSelect={(color) => updateProject.mutate({ color })}
           />
         </div>
-        <InlineEditor
-          value={project.name}
-          onSave={(name) => updateProject.mutate({ name })}
-          as="h2"
-          className="text-xl font-bold"
-        />
+        <div className="min-w-0 space-y-2">
+          <InlineEditor
+            value={project.name}
+            onSave={(name) => updateProject.mutate({ name })}
+            as="h2"
+            className="text-xl font-bold"
+          />
+          {project.pauseReason === "budget" ? (
+            <div className="inline-flex items-center gap-2 rounded-full border border-red-500/30 bg-red-500/10 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-red-200">
+              <span className="h-2 w-2 rounded-full bg-red-400" />
+              Paused by budget hard stop
+            </div>
+          ) : null}
+        </div>
       </div>
 
       <PluginSlotOutlet
@@ -440,9 +559,10 @@ export function ProjectDetail() {
       <Tabs value={activeTab ?? "list"} onValueChange={(value) => handleTabChange(value as ProjectTab)}>
         <PageTabBar
           items={[
+            { value: "list", label: "Issues" },
             { value: "overview", label: "Overview" },
-            { value: "list", label: "List" },
             { value: "configuration", label: "Configuration" },
+            { value: "budget", label: "Budget" },
             ...pluginTabItems.map((item) => ({
               value: item.value,
               label: item.label,
@@ -476,9 +596,22 @@ export function ProjectDetail() {
             onUpdate={(data) => updateProject.mutate(data)}
             onFieldUpdate={updateProjectField}
             getFieldSaveState={(field) => fieldSaveStates[field] ?? "idle"}
+            onArchive={(archived) => archiveProject.mutate(archived)}
+            archivePending={archiveProject.isPending}
           />
         </div>
       )}
+
+      {activeTab === "budget" && resolvedCompanyId ? (
+        <div className="max-w-3xl">
+          <BudgetPolicyCard
+            summary={projectBudgetSummary}
+            variant="plain"
+            isSaving={budgetMutation.isPending}
+            onSave={(amount) => budgetMutation.mutate(amount)}
+          />
+        </div>
+      ) : null}
 
       {activePluginTab && (
         <PluginSlotMount

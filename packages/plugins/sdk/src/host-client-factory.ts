@@ -165,6 +165,14 @@ export interface HostServices {
     createComment(params: WorkerToHostMethods["issues.createComment"][0]): Promise<WorkerToHostMethods["issues.createComment"][1]>;
   };
 
+  /** Provides `issues.documents.list`, `issues.documents.get`, `issues.documents.upsert`, `issues.documents.delete`. */
+  issueDocuments: {
+    list(params: WorkerToHostMethods["issues.documents.list"][0]): Promise<WorkerToHostMethods["issues.documents.list"][1]>;
+    get(params: WorkerToHostMethods["issues.documents.get"][0]): Promise<WorkerToHostMethods["issues.documents.get"][1]>;
+    upsert(params: WorkerToHostMethods["issues.documents.upsert"][0]): Promise<WorkerToHostMethods["issues.documents.upsert"][1]>;
+    delete(params: WorkerToHostMethods["issues.documents.delete"][0]): Promise<WorkerToHostMethods["issues.documents.delete"][1]>;
+  };
+
   /** Provides `agents.list`, `agents.get`, `agents.pause`, `agents.resume`, `agents.invoke`. */
   agents: {
     list(params: WorkerToHostMethods["agents.list"][0]): Promise<WorkerToHostMethods["agents.list"][1]>;
@@ -297,6 +305,12 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "issues.update": "issues.update",
   "issues.listComments": "issue.comments.read",
   "issues.createComment": "issue.comments.create",
+
+  // Issue Documents
+  "issues.documents.list": "issue.documents.read",
+  "issues.documents.get": "issue.documents.read",
+  "issues.documents.upsert": "issue.documents.write",
+  "issues.documents.delete": "issue.documents.write",
 
   // Agents
   "agents.list": "agents.read",
@@ -481,6 +495,20 @@ export function createHostClientHandlers(
     }),
     "issues.createComment": gated("issues.createComment", async (params) => {
       return services.issues.createComment(params);
+    }),
+
+    // Issue Documents
+    "issues.documents.list": gated("issues.documents.list", async (params) => {
+      return services.issueDocuments.list(params);
+    }),
+    "issues.documents.get": gated("issues.documents.get", async (params) => {
+      return services.issueDocuments.get(params);
+    }),
+    "issues.documents.upsert": gated("issues.documents.upsert", async (params) => {
+      return services.issueDocuments.upsert(params);
+    }),
+    "issues.documents.delete": gated("issues.documents.delete", async (params) => {
+      return services.issueDocuments.delete(params);
     }),
 
     // Agents

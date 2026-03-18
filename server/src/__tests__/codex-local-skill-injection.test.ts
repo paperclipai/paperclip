@@ -50,10 +50,10 @@ describe("codex local adapter skill injection", () => {
     await createPaperclipRepoSkill(oldRepo, "paperclip");
     await fs.symlink(path.join(oldRepo, "skills", "paperclip"), path.join(skillsHome, "paperclip"));
 
-    const logs: string[] = [];
+    const logs: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
     await ensureCodexSkillsInjected(
-      async (_stream, chunk) => {
-        logs.push(chunk);
+      async (stream, chunk) => {
+        logs.push({ stream, chunk });
       },
       {
         skillsHome,
@@ -64,7 +64,12 @@ describe("codex local adapter skill injection", () => {
     expect(await fs.realpath(path.join(skillsHome, "paperclip"))).toBe(
       await fs.realpath(path.join(currentRepo, "skills", "paperclip")),
     );
-    expect(logs.some((line) => line.includes('Repaired Codex skill "paperclip"'))).toBe(true);
+    expect(logs).toContainEqual(
+      expect.objectContaining({
+        stream: "stdout",
+        chunk: expect.stringContaining('Repaired Codex skill "paperclip"'),
+      }),
+    );
   });
 
   it("preserves a custom Codex skill symlink outside Paperclip repo checkouts", async () => {

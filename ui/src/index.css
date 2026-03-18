@@ -178,12 +178,13 @@
   background: oklch(0.5 0 0);
 }
 
-/* Auto-hide scrollbar: fully transparent by default, visible on container hover */
+/* Auto-hide scrollbar: fully invisible by default, visible on container hover */
 .scrollbar-auto-hide::-webkit-scrollbar-track {
   background: transparent !important;
 }
 .scrollbar-auto-hide::-webkit-scrollbar-thumb {
   background: transparent !important;
+  transition: background 150ms ease;
 }
 .scrollbar-auto-hide:hover::-webkit-scrollbar-track {
   background: oklch(0.205 0 0) !important;
@@ -376,21 +377,21 @@
 }
 
 .paperclip-mdxeditor-content h1 {
-  margin: 0 0 0.9em;
+  margin: 1.4em 0 0.9em;
   font-size: 1.75em;
   font-weight: 700;
   line-height: 1.2;
 }
 
 .paperclip-mdxeditor-content h2 {
-  margin: 0 0 0.85em;
+  margin: 1.3em 0 0.85em;
   font-size: 1.35em;
   font-weight: 700;
   line-height: 1.3;
 }
 
 .paperclip-mdxeditor-content h3 {
-  margin: 0 0 0.8em;
+  margin: 1.2em 0 0.8em;
   font-size: 1.15em;
   font-weight: 600;
   line-height: 1.35;
@@ -411,30 +412,118 @@
 
 .paperclip-mdxeditor-content code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-  font-size: 0.84em;
+  font-size: 0.78em;
 }
 
 .paperclip-mdxeditor-content pre {
-  margin: 0.5rem 0;
-  padding: 0.45rem 0.55rem;
-  border: 1px solid var(--border);
+  margin: 0.4rem 0;
+  padding: 0;
+  border: 1px solid color-mix(in oklab, var(--foreground) 12%, transparent);
   border-radius: calc(var(--radius) - 3px);
-  background: color-mix(in oklab, var(--accent) 50%, transparent);
+  background: #1e1e2e;
+  color: #cdd6f4;
   overflow-x: auto;
 }
 
-/* Rendered markdown code blocks & inline code (prose/MarkdownBody context).
-   Matches the editor theme so rendered code looks consistent. */
-.prose pre {
-  border: 1px solid var(--border);
-  border-radius: calc(var(--radius) - 3px);
-  background-color: color-mix(in oklab, var(--accent) 50%, transparent);
-  color: var(--foreground);
+/* Dark theme for CodeMirror code blocks inside the MDXEditor.
+   Overrides the default cm6-theme-basic-light that MDXEditor bundles. */
+.paperclip-mdxeditor .cm-editor {
+  background-color: #1e1e2e !important;
+  color: #cdd6f4 !important;
+  font-size: 0.78em;
 }
 
-.prose code {
+.paperclip-mdxeditor .cm-gutters {
+  background-color: #181825 !important;
+  color: #585b70 !important;
+  border-right: 1px solid #313244 !important;
+}
+
+.paperclip-mdxeditor .cm-activeLineGutter {
+  background-color: #1e1e2e !important;
+}
+
+.paperclip-mdxeditor .cm-activeLine {
+  background-color: color-mix(in oklab, #cdd6f4 5%, transparent) !important;
+}
+
+.paperclip-mdxeditor .cm-cursor,
+.paperclip-mdxeditor .cm-dropCursor {
+  border-left-color: #cdd6f4 !important;
+}
+
+.paperclip-mdxeditor .cm-selectionBackground {
+  background-color: color-mix(in oklab, #89b4fa 25%, transparent) !important;
+}
+
+.paperclip-mdxeditor .cm-focused .cm-selectionBackground {
+  background-color: color-mix(in oklab, #89b4fa 30%, transparent) !important;
+}
+
+.paperclip-mdxeditor .cm-content {
+  caret-color: #cdd6f4;
+}
+
+/* MDXEditor code block language selector – show on hover only */
+.paperclip-mdxeditor-content [class*="_codeMirrorWrapper_"] {
+  position: relative;
+}
+
+.paperclip-mdxeditor-content [class*="_codeMirrorToolbar_"],
+.paperclip-mdxeditor-content [class*="_codeBlockToolbar_"] {
+  position: absolute;
+  top: 0.25rem;
+  right: 0.25rem;
+  z-index: 2;
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+
+.paperclip-mdxeditor-content [class*="_codeMirrorToolbar_"] select,
+.paperclip-mdxeditor-content [class*="_codeBlockToolbar_"] select {
+  background-color: #313244;
+  color: #cdd6f4;
+  border-color: #45475a;
+}
+
+.paperclip-mdxeditor-content [class*="_codeMirrorWrapper_"]:hover [class*="_codeMirrorToolbar_"],
+.paperclip-mdxeditor-content [class*="_codeMirrorWrapper_"]:hover [class*="_codeBlockToolbar_"],
+.paperclip-mdxeditor-content [class*="_codeMirrorWrapper_"]:focus-within [class*="_codeMirrorToolbar_"],
+.paperclip-mdxeditor-content [class*="_codeMirrorWrapper_"]:focus-within [class*="_codeBlockToolbar_"] {
+  opacity: 1;
+}
+
+/* Rendered markdown code blocks & inline code (prose/MarkdownBody context).
+   Dark theme code blocks with compact sizing.
+   Override prose CSS variables so prose-invert can't revert to defaults. */
+.paperclip-markdown {
+  --tw-prose-pre-bg: #1e1e2e;
+  --tw-prose-pre-code: #cdd6f4;
+  --tw-prose-invert-pre-bg: #1e1e2e;
+  --tw-prose-invert-pre-code: #cdd6f4;
+}
+
+.paperclip-markdown pre {
+  border: 1px solid color-mix(in oklab, var(--foreground) 12%, transparent) !important;
+  border-radius: calc(var(--radius) - 3px) !important;
+  background-color: #1e1e2e !important;
+  color: #cdd6f4 !important;
+  padding: 0.5rem 0.65rem !important;
+  margin: 0.4rem 0 !important;
+  font-size: 0.78em !important;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.paperclip-markdown code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-  font-size: 0.84em;
+  font-size: 0.78em;
+}
+
+.paperclip-markdown pre code {
+  font-size: inherit;
+  color: inherit;
+  background: none;
 }
 
 /* Remove backtick pseudo-elements from inline code (prose default adds them) */
@@ -496,8 +585,11 @@
   color: var(--muted-foreground);
 }
 
-.paperclip-markdown :where(h1, h2, h3, h4) {
-  margin-top: 1.15rem;
+.paperclip-markdown h1,
+.paperclip-markdown h2,
+.paperclip-markdown h3,
+.paperclip-markdown h4 {
+  margin-top: 1.75rem;
   margin-bottom: 0.45rem;
   color: var(--foreground);
   font-weight: 600;

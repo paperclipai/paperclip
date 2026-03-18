@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
   asString,
   asNumber,
@@ -62,6 +62,12 @@ function resolveCodexBillingType(env: Record<string, string>): "api" | "subscrip
   return hasNonEmptyEnvValue(env, "OPENAI_API_KEY") ? "api" : "subscription";
 }
 
+function resolveCodexBiller(env: Record<string, string>, billingType: "api" | "subscription"): string {
+  const openAiCompatibleBiller = inferOpenAiCompatibleBiller(env, "openai");
+  if (openAiCompatibleBiller === "openrouter") return "openrouter";
+  return billingType === "subscription" ? "chatgpt" : openAiCompatibleBiller ?? "openai";
+}
+
 async function isLikelyPaperclipRepoRoot(candidate: string): Promise<boolean> {
   const [hasWorkspace, hasPackageJson, hasServerDir, hasAdapterUtilsDir] = await Promise.all([
     pathExists(path.join(candidate, "pnpm-workspace.yaml")),
@@ -111,7 +117,7 @@ export async function ensureCodexSkillsInjected(
   );
   for (const skillName of removedSkills) {
     await onLog(
-      "stderr",
+      "stdout",
       `[paperclip] Removed maintainer-only Codex skill "${skillName}" from ${skillsHome}\n`,
     );
   }
@@ -138,7 +144,7 @@ export async function ensureCodexSkillsInjected(
             await fs.symlink(entry.source, target);
           }
           await onLog(
-            "stderr",
+            "stdout",
             `[paperclip] Repaired Codex skill "${entry.name}" into ${skillsHome}\n`,
           );
           continue;
@@ -149,7 +155,7 @@ export async function ensureCodexSkillsInjected(
       if (result === "skipped") continue;
 
       await onLog(
-        "stderr",
+        "stdout",
         `[paperclip] ${result === "repaired" ? "Repaired" : "Injected"} Codex skill "${entry.name}" into ${skillsHome}\n`,
       );
     } catch (err) {
@@ -317,8 +323,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
-  const billingType = resolveCodexBillingType(env);
-  const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  const effectiveEnv = Object.fromEntries(
+    Object.entries({ ...process.env, ...env }).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
+  const billingType = resolveCodexBillingType(effectiveEnv);
+  const runtimeEnv = ensurePathInEnv(effectiveEnv);
   await ensureCommandResolvable(command, cwd, runtimeEnv);
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
@@ -355,7 +366,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `Resolve any relative file references from ${instructionsDir}.\n\n`;
       instructionsChars = instructionsPrefix.length;
       await onLog(
-        "stderr",
+        "stdout",
         `[paperclip] Loaded agent instructions file: ${instructionsFilePath}\n`,
       );
     } catch (err) {
@@ -510,6 +521,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       sessionParams: resolvedSessionParams,
       sessionDisplayId: resolvedSessionId,
       provider: "openai",
+      biller: resolveCodexBiller(effectiveEnv, billingType),
       model,
       billingType,
       costUsd: null,

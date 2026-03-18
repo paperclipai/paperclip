@@ -14,14 +14,18 @@ export const companiesApi = {
   list: () => api.get<Company[]>("/companies"),
   get: (companyId: string) => api.get<Company>(`/companies/${companyId}`),
   stats: () => api.get<CompanyStats>("/companies/stats"),
-  create: (data: { name: string; description?: string | null; budgetMonthlyCents?: number }) =>
+  create: (data: {
+    name: string;
+    description?: string | null;
+    budgetMonthlyCents?: number;
+  }) =>
     api.post<Company>("/companies", data),
   update: (
     companyId: string,
     data: Partial<
       Pick<
         Company,
-        "name" | "description" | "status" | "budgetMonthlyCents" | "requireBoardApprovalForNewAgents" | "brandColor"
+        "name" | "description" | "status" | "budgetMonthlyCents" | "requireBoardApprovalForNewAgents" | "brandColor" | "logoAssetId"
       >
     >,
   ) => api.patch<Company>(`/companies/${companyId}`, data),

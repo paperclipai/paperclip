@@ -3,6 +3,7 @@
 // imports (process/, http/, heartbeat.ts) don't need rewriting.
 export type {
   AdapterAgent,
+  AdapterSessionManagement,
   AdapterRuntime,
   UsageSummary,
   AdapterExecutionResult,
@@ -15,5 +16,8 @@ export type {
   AdapterEnvironmentTestContext,
   AdapterSessionCodec,
   AdapterModel,
+  NativeContextManagement,
+  ResolvedSessionCompactionPolicy,
+  SessionCompactionPolicy,
   ServerAdapterModule,
 } from "@paperclipai/adapter-utils";

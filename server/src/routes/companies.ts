@@ -9,7 +9,13 @@ import {
 } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
-import { accessService, companyPortabilityService, companyService, logActivity } from "../services/index.js";
+import {
+  accessService,
+  budgetService,
+  companyPortabilityService,
+  companyService,
+  logActivity,
+} from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 
 export function companyRoutes(db: Db) {
@@ -17,6 +23,7 @@ export function companyRoutes(db: Db) {
   const svc = companyService(db);
   const portability = companyPortabilityService(db);
   const access = accessService(db);
+  const budgets = budgetService(db);
 
   router.get("/", async (req, res) => {
     assertBoard(req);
@@ -122,6 +129,18 @@ export function companyRoutes(db: Db) {
       entityId: company.id,
       details: { name: company.name },
     });
+    if (company.budgetMonthlyCents > 0) {
+      await budgets.upsertPolicy(
+        company.id,
+        {
+          scopeType: "company",
+          scopeId: company.id,
+          amount: company.budgetMonthlyCents,
+          windowKind: "calendar_month_utc",
+        },
+        req.actor.userId ?? "board",
+      );
+    }
     res.status(201).json(company);
   });
 

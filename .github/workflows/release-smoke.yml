@@ -1,0 +1,118 @@
+name: Release Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      paperclip_version:
+        description: Published Paperclip dist-tag to test
+        required: true
+        default: canary
+        type: choice
+        options:
+          - canary
+          - latest
+      host_port:
+        description: Host port for the Docker smoke container
+        required: false
+        default: "3232"
+        type: string
+      artifact_name:
+        description: Artifact name for uploaded diagnostics
+        required: false
+        default: release-smoke
+        type: string
+  workflow_call:
+    inputs:
+      paperclip_version:
+        required: true
+        type: string
+      host_port:
+        required: false
+        default: "3232"
+        type: string
+      artifact_name:
+        required: false
+        default: release-smoke
+        type: string
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Launch Docker smoke harness
+        run: |
+          metadata_file="$RUNNER_TEMP/release-smoke.env"
+          HOST_PORT="${{ inputs.host_port }}" \
+          DATA_DIR="$RUNNER_TEMP/release-smoke-data" \
+          PAPERCLIPAI_VERSION="${{ inputs.paperclip_version }}" \
+          SMOKE_DETACH=true \
+          SMOKE_METADATA_FILE="$metadata_file" \
+          ./scripts/docker-onboard-smoke.sh
+          set -a
+          source "$metadata_file"
+          set +a
+          {
+            echo "SMOKE_BASE_URL=$SMOKE_BASE_URL"
+            echo "SMOKE_ADMIN_EMAIL=$SMOKE_ADMIN_EMAIL"
+            echo "SMOKE_ADMIN_PASSWORD=$SMOKE_ADMIN_PASSWORD"
+            echo "SMOKE_CONTAINER_NAME=$SMOKE_CONTAINER_NAME"
+            echo "SMOKE_DATA_DIR=$SMOKE_DATA_DIR"
+            echo "SMOKE_IMAGE_NAME=$SMOKE_IMAGE_NAME"
+            echo "SMOKE_PAPERCLIPAI_VERSION=$SMOKE_PAPERCLIPAI_VERSION"
+            echo "SMOKE_METADATA_FILE=$metadata_file"
+          } >> "$GITHUB_ENV"
+
+      - name: Run release smoke Playwright suite
+        env:
+          PAPERCLIP_RELEASE_SMOKE_BASE_URL: ${{ env.SMOKE_BASE_URL }}
+          PAPERCLIP_RELEASE_SMOKE_EMAIL: ${{ env.SMOKE_ADMIN_EMAIL }}
+          PAPERCLIP_RELEASE_SMOKE_PASSWORD: ${{ env.SMOKE_ADMIN_PASSWORD }}
+        run: pnpm run test:release-smoke
+
+      - name: Capture Docker logs
+        if: always()
+        run: |
+          if [[ -n "${SMOKE_CONTAINER_NAME:-}" ]]; then
+            docker logs "$SMOKE_CONTAINER_NAME" >"$RUNNER_TEMP/docker-onboard-smoke.log" 2>&1 || true
+          fi
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: |
+            ${{ runner.temp }}/docker-onboard-smoke.log
+            ${{ env.SMOKE_METADATA_FILE }}
+            tests/release-smoke/playwright-report/
+            tests/release-smoke/test-results/
+          retention-days: 14
+
+      - name: Stop Docker smoke container
+        if: always()
+        run: |
+          if [[ -n "${SMOKE_CONTAINER_NAME:-}" ]]; then
+            docker rm -f "$SMOKE_CONTAINER_NAME" >/dev/null 2>&1 || true
+          fi

@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
   asString,
   asNumber,
@@ -41,6 +41,10 @@ function parseModelProvider(model: string | null): string | null {
   const trimmed = model.trim();
   if (!trimmed.includes("/")) return null;
   return trimmed.slice(0, trimmed.indexOf("/")).trim() || null;
+}
+
+function resolveOpenCodeBiller(env: Record<string, string>, provider: string | null): string {
+  return inferOpenAiCompatibleBiller(env, null) ?? provider ?? "unknown";
 }
 
 function claudeSkillsHome(): string {
@@ -363,6 +367,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       sessionParams: resolvedSessionParams,
       sessionDisplayId: resolvedSessionId,
       provider: parseModelProvider(modelId),
+      biller: resolveOpenCodeBiller(runtimeEnv, parseModelProvider(modelId)),
       model: modelId,
       billingType: "unknown",
       costUsd: attempt.parsed.costUsd,

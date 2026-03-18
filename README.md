@@ -239,7 +239,7 @@ See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
 - ⚪ ClipMart - buy and sell entire agent companies
 - ⚪ Easy agent configurations / easier to understand
 - ⚪ Better support for harness engineering
-- ⚪ Plugin system (e.g. if you want to add a knowledgebase, custom tracing, queues, etc)
+- 🟢 Plugin system (e.g. if you want to add a knowledgebase, custom tracing, queues, etc)
 - ⚪ Better docs
 
 <br/>
