@@ -1239,6 +1239,17 @@ export function issueRoutes(
       issue.status !== "backlog" &&
       req.body.status !== undefined;
 
+    // Wake agent when status transitions to an actionable state from a
+    // non-actionable one (e.g. in_review → todo, done → todo).  The backlog
+    // case is already covered above, so we exclude it here.
+    const NON_ACTIONABLE = new Set(["in_review", "done", "cancelled", "blocked"]);
+    const ACTIONABLE = new Set(["todo"]);
+    const statusBecameActionable =
+      req.body.status !== undefined &&
+      existing.status !== issue.status &&
+      NON_ACTIONABLE.has(existing.status) &&
+      ACTIONABLE.has(issue.status);
+
     // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
     void (async () => {
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
@@ -1263,7 +1274,7 @@ export function issueRoutes(
         });
       }
 
-      if (!assigneeChanged && statusChangedFromBacklog && issue.assigneeAgentId) {
+      if (!assigneeChanged && (statusChangedFromBacklog || statusBecameActionable) && issue.assigneeAgentId) {
         wakeups.set(issue.assigneeAgentId, {
           source: "automation",
           triggerDetail: "system",

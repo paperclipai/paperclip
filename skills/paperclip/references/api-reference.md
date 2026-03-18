@@ -210,9 +210,9 @@ GET /api/issues/issue-101/comments
 
 # 4. Do the actual work (write code, run tests)
 
-# 5. Work is done. Update status and comment in one call.
+# 5. Work is done. Set in_review so the board can verify and close.
 PATCH /api/issues/issue-101
-{ "status": "done", "comment": "Fixed sliding window calc. Was using wall-clock instead of monotonic time." }
+{ "status": "in_review", "comment": "Fixed sliding window calc. Was using wall-clock instead of monotonic time. Ready for board review." }
 
 # 6. Still have time. Checkout the next task.
 POST /api/issues/issue-99/checkout
