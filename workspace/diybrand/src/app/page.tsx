@@ -348,10 +348,10 @@ export default function Home() {
       <section className="relative z-10 bg-[var(--bg-surface)] px-6 py-24 sm:py-32">
         <ScrollReveal className="mx-auto max-w-4xl text-center">
           <h2 className="font-[var(--font-space)] text-3xl font-bold sm:text-4xl">
-            One price. Forever. No monthly surprises.
+            Early access pricing — lock in before we raise.
           </h2>
           <p className="mt-4 text-lg text-[var(--text-muted)]">
-            All files are yours to keep forever — no subscriptions, no license restrictions, no surprise bills.
+            All files are yours to keep — no subscriptions, no license restrictions. Today&apos;s price won&apos;t last.
           </p>
         </ScrollReveal>
         <div className="mx-auto mt-16 grid max-w-2xl gap-6 sm:grid-cols-2">
@@ -508,8 +508,8 @@ export default function Home() {
             Stop looking for a designer. Start your brand today.
           </h2>
           <p className="mx-auto mt-4 max-w-lg text-lg text-[var(--text-muted)]">
-            Answer a questionnaire, pick your favorites, download forever. One
-            price, all yours. No design skills needed.
+            Answer a questionnaire, pick your favorites, download and keep. Early
+            access pricing, all yours. No design skills needed.
           </p>
           <div className="mt-10 flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
             <Link
