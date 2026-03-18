@@ -497,22 +497,54 @@ async function handleIssueHelp(db: Db, msg: TelegramMessage): Promise<void> {
   const chatId = String(msg.chat.id);
   const company = await resolveCompanyFromChat(db, chatId);
 
-  let agentList = "";
-  if (company) {
-    const rows = await db
-      .select({ name: agents.name, status: agents.status })
-      .from(agents)
-      .where(and(eq(agents.companyId, company.id), eq(agents.status, "idle")));
-    if (rows.length > 0) {
-      agentList = "\n\n<b>Available agents:</b>\n" + rows.map((a) => `• ${a.name}`).join("\n");
+  if (!company) {
+    await replyToChat(chatId, "This chat is not linked to a company.\nUse /register CompanyName first.", msg.message_thread_id);
+    return;
+  }
+
+  const telegramSettings = (company.settings as Record<string, unknown>)?.telegram as
+    | { defaultAssigneeAgentId?: string } | undefined;
+  const defaultId = telegramSettings?.defaultAssigneeAgentId;
+
+  // Get agents
+  const agentRows = await db
+    .select({ id: agents.id, name: agents.name, role: agents.role, status: agents.status })
+    .from(agents)
+    .where(eq(agents.companyId, company.id));
+
+  // Build help
+  const lines: string[] = [];
+  lines.push(`<b>Create issues for ${company.issuePrefix}</b>\n`);
+  lines.push(`<b>Quick create:</b>`);
+  lines.push(`<code>/issue Fix the login bug</code>`);
+  if (defaultId) {
+    const def = agentRows.find((a) => a.id === defaultId);
+    if (def) lines.push(`↳ auto-assigned to <b>${def.name}</b>`);
+  }
+  lines.push(``);
+  lines.push(`<b>Assign to specific agent:</b>`);
+  if (agentRows.length > 0) {
+    const example = agentRows[0].name.replace(/\s+/g, "");
+    lines.push(`<code>/issue @${example} Fix the login bug</code>`);
+  }
+
+  if (agentRows.length > 0) {
+    lines.push(``);
+    lines.push(`<b>Agents:</b>`);
+    for (const a of agentRows) {
+      const isDefault = a.id === defaultId ? " ★" : "";
+      const statusIcon = a.status === "idle" ? "🟢" : a.status === "paused" ? "⏸" : "⚪";
+      lines.push(`${statusIcon} <b>${a.name}</b>${isDefault} — ${a.role ?? "no role"}`);
     }
   }
 
-  await replyToChat(
-    chatId,
-    `<b>Usage:</b>\n/issue Fix the login bug\n/issue @FoundingEngineer Fix the login bug${agentList}`,
-    msg.message_thread_id,
-  );
+  lines.push(``);
+  lines.push(`<b>Other commands:</b>`);
+  lines.push(`/agents — list agents`);
+  lines.push(`/projects — list projects`);
+  lines.push(`/setdefault AgentName — change default`);
+
+  await replyToChat(chatId, lines.join("\n"), msg.message_thread_id);
 }
 
 // ---------------------------------------------------------------------------
