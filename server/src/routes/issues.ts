@@ -1242,7 +1242,7 @@ export function issueRoutes(
     // Wake agent when status transitions to an actionable state from a
     // non-actionable one (e.g. in_review → todo, done → todo).  The backlog
     // case is already covered above, so we exclude it here.
-    const NON_ACTIONABLE = new Set(["in_review", "done", "cancelled", "blocked"]);
+    const NON_ACTIONABLE = new Set(["in_progress", "in_review", "done", "cancelled", "blocked"]);
     const ACTIONABLE = new Set(["todo"]);
     const statusBecameActionable =
       req.body.status !== undefined &&
