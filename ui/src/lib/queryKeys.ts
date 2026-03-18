@@ -65,10 +65,14 @@ export const queryKeys = {
   sidebarBadges: (companyId: string) => ["sidebar-badges", companyId] as const,
   activity: (companyId: string) => ["activity", companyId] as const,
   costs: (companyId: string, from?: string, to?: string) =>
-    ["costs", companyId, from, to] as const,
+    ["costs", companyId, from ?? "", to ?? ""] as const,
+  costsDaily: (companyId: string, from?: string, to?: string) =>
+    ["costs-daily", companyId, from ?? "", to ?? ""] as const,
+  costsVelocity: (companyId: string) =>
+    ["costs-velocity", companyId] as const,
   systemStatus: (companyId: string) => ["system-status", companyId] as const,
   heartbeats: (companyId: string, agentId?: string) =>
-    ["heartbeats", companyId, agentId] as const,
+    ["heartbeats", companyId, agentId ?? ""] as const,
   liveRuns: (companyId: string) => ["live-runs", companyId] as const,
   runIssues: (runId: string) => ["run-issues", runId] as const,
   org: (companyId: string) => ["org", companyId] as const,

@@ -153,6 +153,70 @@ export function costService(db: Db) {
       });
     },
 
+    daily: async (
+      companyId: string,
+      range?: CostDateRange,
+      granularity: "day" | "hour" = "day",
+    ) => {
+      const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
+      if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
+      if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
+
+      const dateTrunc =
+        granularity === "hour"
+          ? sql<string>`to_char(date_trunc('hour', ${costEvents.occurredAt}) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:00:00"Z"')`
+          : sql<string>`to_char(date_trunc('day', ${costEvents.occurredAt}), 'YYYY-MM-DD')`;
+
+      return db
+        .select({
+          date: dateTrunc,
+          costCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+          heartbeats: sql<number>`count(*)::int`,
+          inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::int`,
+          outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::int`,
+        })
+        .from(costEvents)
+        .where(and(...conditions))
+        .groupBy(dateTrunc)
+        .orderBy(dateTrunc);
+    },
+
+    velocity: async (companyId: string, windowMinutes: number = 60) => {
+      const windowStart = new Date(Date.now() - windowMinutes * 60 * 1000);
+
+      const conditions = [
+        eq(costEvents.companyId, companyId),
+        gte(costEvents.occurredAt, windowStart),
+      ];
+
+      const [totals] = await db
+        .select({
+          totalCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+          totalHeartbeats: sql<number>`count(*)::int`,
+        })
+        .from(costEvents)
+        .where(and(...conditions));
+
+      const [topAgent] = await db
+        .select({
+          agentId: costEvents.agentId,
+          agentCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+        })
+        .from(costEvents)
+        .where(and(...conditions))
+        .groupBy(costEvents.agentId)
+        .orderBy(desc(sql`coalesce(sum(${costEvents.costCents}), 0)::int`))
+        .limit(1);
+
+      return {
+        centsPerHour: totals.totalCents,
+        heartbeatsPerHour: totals.totalHeartbeats,
+        topAgentId: topAgent?.agentId ?? "",
+        topAgentCents: topAgent?.agentCents ?? 0,
+        windowMinutes,
+      };
+    },
+
     byProject: async (companyId: string, range?: CostDateRange) => {
       const issueIdAsText = sql<string>`${issues.id}::text`;
       const runProjectLinks = db

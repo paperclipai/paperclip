@@ -10,14 +10,14 @@ export function getLast14Days(): string[] {
   });
 }
 
-function formatDayLabel(dateStr: string): string {
+export function formatDayLabel(dateStr: string): string {
   const d = new Date(dateStr + "T12:00:00");
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
 /* ---- Sub-components ---- */
 
-function DateLabels({ days }: { days: string[] }) {
+export function DateLabels({ days }: { days: string[] }) {
   return (
     <div className="flex gap-[3px] mt-1.5">
       {days.map((day, i) => (
@@ -31,7 +31,7 @@ function DateLabels({ days }: { days: string[] }) {
   );
 }
 
-function ChartLegend({ items }: { items: { color: string; label: string }[] }) {
+export function ChartLegend({ items }: { items: { color: string; label: string }[] }) {
   return (
     <div className="flex flex-wrap gap-x-2.5 gap-y-0.5 mt-2">
       {items.map(item => (

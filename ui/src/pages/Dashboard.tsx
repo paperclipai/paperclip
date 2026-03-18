@@ -22,6 +22,8 @@ import { cn, formatCents } from "../lib/utils";
 import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
+import { SpendingVelocityChart, HeartbeatFrequencyChart } from "../components/SpendingCharts";
+import { costsApi } from "../api/costs";
 import { PageSkeleton } from "../components/PageSkeleton";
 import type { Agent, Issue } from "@paperclipai/shared";
 
@@ -76,6 +78,18 @@ export function Dashboard() {
   const { data: runs } = useQuery({
     queryKey: queryKeys.heartbeats(selectedCompanyId!),
     queryFn: () => heartbeatsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const fourteenDaysAgo = useMemo(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 14);
+    return d.toISOString().slice(0, 10);
+  }, []);
+
+  const { data: dailyCosts } = useQuery({
+    queryKey: queryKeys.costsDaily(selectedCompanyId!, fourteenDaysAgo),
+    queryFn: () => costsApi.daily(selectedCompanyId!, fourteenDaysAgo, undefined, "day"),
     enabled: !!selectedCompanyId,
   });
 
@@ -273,6 +287,15 @@ export function Dashboard() {
             </ChartCard>
             <ChartCard title="Success Rate" subtitle="Last 14 days">
               <SuccessRateChart runs={runs ?? []} />
+            </ChartCard>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <ChartCard title="Daily Spend" subtitle="Last 14 days">
+              <SpendingVelocityChart data={dailyCosts ?? []} />
+            </ChartCard>
+            <ChartCard title="Heartbeat Activity" subtitle="Last 14 days">
+              <HeartbeatFrequencyChart data={dailyCosts ?? []} />
             </ChartCard>
           </div>
 

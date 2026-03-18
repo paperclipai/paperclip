@@ -11,7 +11,9 @@ import { Identity } from "../components/Identity";
 import { StatusBadge } from "../components/StatusBadge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { DollarSign } from "lucide-react";
+import { DollarSign, TrendingUp } from "lucide-react";
+import { SpendingVelocityChart } from "../components/SpendingCharts";
+import type { CostDaily, CostVelocity } from "../api/costs";
 
 type DatePreset = "mtd" | "7d" | "30d" | "ytd" | "all" | "custom";
 
@@ -86,6 +88,18 @@ export function Costs() {
     enabled: !!selectedCompanyId,
   });
 
+  const { data: velocity } = useQuery({
+    queryKey: queryKeys.costsVelocity(selectedCompanyId!),
+    queryFn: () => costsApi.velocity(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const { data: dailyCosts } = useQuery({
+    queryKey: queryKeys.costsDaily(selectedCompanyId!, from || undefined, to || undefined),
+    queryFn: () => costsApi.daily(selectedCompanyId!, from || undefined, to || undefined, "day"),
+    enabled: !!selectedCompanyId,
+  });
+
   if (!selectedCompanyId) {
     return <EmptyState icon={DollarSign} message="Select a company to view costs." />;
   }
@@ -138,11 +152,19 @@ export function Costs() {
             <CardContent className="p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <p className="text-sm text-muted-foreground">{PRESET_LABELS[preset]}</p>
-                {data.summary.budgetCents > 0 && (
-                  <p className="text-sm text-muted-foreground">
-                    {data.summary.utilizationPercent}% utilized
-                  </p>
-                )}
+                <div className="flex items-center gap-3">
+                  {velocity && (
+                    <span className="flex items-center gap-1 text-sm text-muted-foreground">
+                      <TrendingUp className="h-3.5 w-3.5" />
+                      {formatCents(velocity.centsPerHour)}/hr
+                    </span>
+                  )}
+                  {data.summary.budgetCents > 0 && (
+                    <p className="text-sm text-muted-foreground">
+                      {data.summary.utilizationPercent}% utilized
+                    </p>
+                  )}
+                </div>
               </div>
               <p className="text-2xl font-bold">
                 {formatCents(data.summary.spendCents)}{" "}
@@ -169,6 +191,16 @@ export function Costs() {
             </CardContent>
           </Card>
 
+          {/* Daily Spending Chart */}
+          {dailyCosts && dailyCosts.length > 0 && (
+            <Card>
+              <CardContent className="p-4">
+                <h3 className="text-sm font-semibold mb-3">Daily Spending</h3>
+                <SpendingVelocityChart data={dailyCosts} />
+              </CardContent>
+            </Card>
+          )}
+
           {/* By Agent / By Project */}
           <div className="grid md:grid-cols-2 gap-4">
             <Card>
@@ -178,37 +210,46 @@ export function Costs() {
                   <p className="text-sm text-muted-foreground">No cost events yet.</p>
                 ) : (
                   <div className="space-y-2">
-                    {data.byAgent.map((row) => (
-                      <div
-                        key={row.agentId}
-                        className="flex items-start justify-between text-sm"
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <Identity
-                            name={row.agentName ?? row.agentId}
-                            size="sm"
-                          />
-                          {row.agentStatus === "terminated" && (
-                            <StatusBadge status="terminated" />
-                          )}
+                    {data.byAgent.map((row) => {
+                      const maxAgentCost = Math.max(...data.byAgent.map(r => r.costCents), 1);
+                      const barPct = (row.costCents / maxAgentCost) * 100;
+                      return (
+                        <div key={row.agentId}>
+                          <div className="flex items-start justify-between text-sm">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <Identity
+                                name={row.agentName ?? row.agentId}
+                                size="sm"
+                              />
+                              {row.agentStatus === "terminated" && (
+                                <StatusBadge status="terminated" />
+                              )}
+                            </div>
+                            <div className="text-right shrink-0 ml-2">
+                              <span className="font-medium block">{formatCents(row.costCents)}</span>
+                              <span className="text-xs text-muted-foreground block">
+                                in {formatTokens(row.inputTokens)} / out {formatTokens(row.outputTokens)} tok
+                              </span>
+                              {(row.apiRunCount > 0 || row.subscriptionRunCount > 0) && (
+                                <span className="text-xs text-muted-foreground block">
+                                  {row.apiRunCount > 0 ? `api runs: ${row.apiRunCount}` : null}
+                                  {row.apiRunCount > 0 && row.subscriptionRunCount > 0 ? " | " : null}
+                                  {row.subscriptionRunCount > 0
+                                    ? `subscription runs: ${row.subscriptionRunCount} (${formatTokens(row.subscriptionInputTokens)} in / ${formatTokens(row.subscriptionOutputTokens)} out tok)`
+                                    : null}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <div className="w-full h-1 bg-muted rounded-full mt-1 overflow-hidden">
+                            <div
+                              className="h-full rounded-full bg-emerald-500"
+                              style={{ width: `${Math.min(100, barPct)}%` }}
+                            />
+                          </div>
                         </div>
-                        <div className="text-right shrink-0 ml-2">
-                          <span className="font-medium block">{formatCents(row.costCents)}</span>
-                          <span className="text-xs text-muted-foreground block">
-                            in {formatTokens(row.inputTokens)} / out {formatTokens(row.outputTokens)} tok
-                          </span>
-                          {(row.apiRunCount > 0 || row.subscriptionRunCount > 0) && (
-                            <span className="text-xs text-muted-foreground block">
-                              {row.apiRunCount > 0 ? `api runs: ${row.apiRunCount}` : null}
-                              {row.apiRunCount > 0 && row.subscriptionRunCount > 0 ? " | " : null}
-                              {row.subscriptionRunCount > 0
-                                ? `subscription runs: ${row.subscriptionRunCount} (${formatTokens(row.subscriptionInputTokens)} in / ${formatTokens(row.subscriptionOutputTokens)} out tok)`
-                                : null}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </CardContent>
