@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, timestamp, text, jsonb, integer, boolean } from "drizzle-orm/pg-core";
+import { pgTable, uuid, varchar, timestamp, text, jsonb, integer, boolean, index } from "drizzle-orm/pg-core";
 
 export const waitlist = pgTable("waitlist", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -39,7 +39,9 @@ export const brandPalette = pgTable("brand_palette", {
     .notNull(),
   selected: boolean("selected").default(false).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-});
+}, (table) => ({
+  questionnaireSelectedIdx: index("brand_palette_questionnaire_selected_idx").on(table.questionnaireId, table.selected),
+}));
 
 export const brandTypography = pgTable("brand_typography", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -55,7 +57,9 @@ export const brandTypography = pgTable("brand_typography", {
   bodyCategory: varchar("body_category", { length: 50 }).notNull(),
   selected: boolean("selected").default(false).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-});
+}, (table) => ({
+  questionnaireSelectedIdx: index("brand_typography_questionnaire_selected_idx").on(table.questionnaireId, table.selected),
+}));
 
 export const brandLogos = pgTable("brand_logos", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -70,7 +74,9 @@ export const brandLogos = pgTable("brand_logos", {
   prompt: text("prompt").notNull(),
   selected: boolean("selected").default(false).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-});
+}, (table) => ({
+  questionnaireSelectedIdx: index("brand_logos_questionnaire_selected_idx").on(table.questionnaireId, table.selected),
+}));
 
 export const orders = pgTable("orders", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -82,4 +88,6 @@ export const orders = pgTable("orders", {
     .notNull()
     .references(() => brandQuestionnaire.id),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-});
+}, (table) => ({
+  questionnaireIdx: index("orders_questionnaire_idx").on(table.questionnaireId),
+}));
