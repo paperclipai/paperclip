@@ -31,12 +31,12 @@ DIYBrand is an AI-powered brand identity generator for small businesses and solo
 
 ## Roadmap Status (2026-03-18)
 - **Sprint 1: DONE** — Copy/meta/CTA/headline changes shipped (DIY-29)
-- **Sprint 2: IN PROGRESS** — Social proof & trust signals
-  - DIY-30: Testimonial upgrade (assigned: Max/CMO)
-  - DIY-31: 30-day money-back guarantee copy (assigned: Viktor)
-  - DIY-32: Competitor price comparison section (assigned: Nova)
-  - DIY-33: Update pricing copy to early access language (assigned: Viktor)
-- **Sprint 3:** Performance optimization (approved, not started)
+- **Sprint 2: DONE** — Social proof & trust signals
+  - DIY-30: Testimonial upgrade ✓
+  - DIY-31: 30-day money-back guarantee ✓
+  - DIY-32: Competitor price comparison ✓
+  - DIY-33: Early access pricing copy ✓
+- **Sprint 3:** Performance optimization (approved, not started) — Lighthouse 64→85+ target
 - **Sprint 4:** Design system maturity (approved, not started)
 
 ## Key Decisions

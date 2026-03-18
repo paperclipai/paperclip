@@ -2,6 +2,7 @@
 
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import { FeedbackForm } from "@/components/FeedbackForm";
 
 export default function SuccessPage() {
   return (
@@ -205,6 +206,7 @@ function SuccessContent() {
           </a>
         </div>
       </div>
+      <FeedbackForm />
     </main>
   );
 }
