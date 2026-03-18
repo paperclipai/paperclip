@@ -997,8 +997,12 @@ describe("buildSafeDirectoryEnv (safe.directory injection)", () => {
 
   it("does not mutate process.env", () => {
     delete process.env.GIT_CONFIG_COUNT;
+    delete process.env.GIT_CONFIG_KEY_0;
+    delete process.env.GIT_CONFIG_VALUE_0;
     buildSafeDirectoryEnv("/tmp/test");
     expect(process.env.GIT_CONFIG_COUNT).toBeUndefined();
+    expect(process.env.GIT_CONFIG_KEY_0).toBeUndefined();
+    expect(process.env.GIT_CONFIG_VALUE_0).toBeUndefined();
   });
 });
 
