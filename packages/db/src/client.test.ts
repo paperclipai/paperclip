@@ -101,6 +101,82 @@ afterEach(async () => {
   }
 });
 
+describe("applyPendingMigrations — no-migration-journal-non-empty-db", () => {
+  it(
+    "reconciles a fully migrated database that lost its journal table",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      // Apply all migrations normally first
+      await applyPendingMigrations(connectionString);
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        // Drop the entire journal schema to simulate a journal-less database
+        await sql.unsafe(`DROP SCHEMA "drizzle" CASCADE`);
+      } finally {
+        await sql.end();
+      }
+
+      // Verify state is detected correctly
+      const state = await inspectMigrations(connectionString);
+      expect(state).toMatchObject({
+        status: "needsMigrations",
+        reason: "no-migration-journal-non-empty-db",
+      });
+
+      // Reconciliation should bootstrap the journal and record all migrations
+      await applyPendingMigrations(connectionString);
+
+      const finalState = await inspectMigrations(connectionString);
+      expect(finalState.status).toBe("upToDate");
+
+      // Verify journal was recreated with entries
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const rows = await verifySql.unsafe<{ count: string }[]>(
+          `SELECT count(*)::text AS count FROM "drizzle"."__drizzle_migrations"`,
+        );
+        expect(Number(rows[0].count)).toBeGreaterThan(0);
+      } finally {
+        await verifySql.end();
+      }
+    },
+    30_000,
+  );
+
+  it(
+    "stops reconciliation at the first unconfirmed migration and reports remaining",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      // Apply all migrations, then drop journal and one table so one migration
+      // can't be confirmed as applied
+      await applyPendingMigrations(connectionString);
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        await sql.unsafe(`DROP SCHEMA "drizzle" CASCADE`);
+        // Drop a table created by 0030_rich_magneto.sql so that migration
+        // won't pass the migrationContentAlreadyApplied check
+        await sql.unsafe(`DROP TABLE IF EXISTS "company_logos"`);
+      } finally {
+        await sql.end();
+      }
+
+      const state = await inspectMigrations(connectionString);
+      expect(state.reason).toBe("no-migration-journal-non-empty-db");
+
+      // Should throw because it can't fully reconcile (stopped at the
+      // migration whose table was dropped)
+      await expect(applyPendingMigrations(connectionString)).rejects.toThrow(
+        /Failed to reconcile migrations/,
+      );
+    },
+    30_000,
+  );
+});
+
 describe("applyPendingMigrations", () => {
   it(
     "applies an inserted earlier migration without replaying later legacy migrations",
