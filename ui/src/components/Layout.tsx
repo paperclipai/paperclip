@@ -4,7 +4,6 @@ import { BookOpen, Moon, Sun } from "lucide-react";
 import { Outlet, useLocation, useNavigate, useParams } from "@/lib/router";
 import { CompanyRail } from "./CompanyRail";
 import { Sidebar } from "./Sidebar";
-import { SidebarNavItem } from "./SidebarNavItem";
 import { BreadcrumbBar } from "./BreadcrumbBar";
 import { PropertiesPanel } from "./PropertiesPanel";
 import { CommandPalette } from "./CommandPalette";
@@ -219,6 +218,7 @@ export function Layout() {
                 href="https://github.com/paperclipai/paperclip#readme"
                 target="_blank"
                 rel="noopener noreferrer"
+                onClick={() => setSidebarOpen(false)}
                 className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors text-foreground/80 hover:bg-accent/50 hover:text-foreground flex-1 min-w-0"
               >
                 <BookOpen className="h-4 w-4 shrink-0" />
