@@ -1,7 +1,7 @@
 ---
 name: release-changelog
 description: >
-  Generate the stable Paperclip release changelog at releases/v{version}.md by
+  Generate the stable Paperclip release changelog at releases/vYYYY.M.D.md by
   reading commits, changesets, and merged PR context since the last stable tag.
 ---
 
@@ -9,20 +9,33 @@ description: >
 
 Generate the user-facing changelog for the **stable** Paperclip release.
 
+## Versioning Model
+
+Paperclip uses **calendar versioning (calver)**:
+
+- Stable releases: `YYYY.M.D` (e.g. `2026.3.17`)
+- Canary releases: `YYYY.M.D-canary.N` (e.g. `2026.3.17-canary.0`)
+- Git tags: `vYYYY.M.D` for stable, `canary/vYYYY.M.D-canary.N` for canary
+
+There are no major/minor/patch bumps. The stable version is derived from the
+intended release date (UTC).
+
 Output:
 
-- `releases/v{version}.md`
+- `releases/vYYYY.M.D.md`
 
-Important rule:
+Important rules:
 
-- even if there are canary releases such as `1.2.3-canary.0`, the changelog file stays `releases/v1.2.3.md`
+- even if there are canary releases such as `2026.3.17-canary.0`, the changelog file stays `releases/v2026.3.17.md`
+- do not derive versions from semver bump types
+- do not create canary changelog files
 
 ## Step 0 — Idempotency Check
 
 Before generating anything, check whether the file already exists:
 
 ```bash
-ls releases/v{version}.md 2>/dev/null
+ls releases/vYYYY.M.D.md 2>/dev/null
 ```
 
 If it exists:
@@ -41,13 +54,14 @@ git tag --list 'v*' --sort=-version:refname | head -1
 git log v{last}..HEAD --oneline --no-merges
 ```
 
-The planned stable version comes from one of:
+The stable version comes from one of:
 
 - an explicit maintainer request
-- the chosen bump type applied to the last stable tag
+- the intended release date (UTC) — default is today's date
 - the release plan already agreed in `doc/RELEASING.md`
 
 Do not derive the changelog version from a canary tag or prerelease suffix.
+Do not derive major/minor/patch bumps — calver uses the date.
 
 ## Step 2 — Gather the Raw Inputs
 
@@ -73,7 +87,6 @@ Look for:
 - destructive migrations
 - removed or changed API fields/endpoints
 - renamed or removed config keys
-- `major` changesets
 - `BREAKING:` or `BREAKING CHANGE:` commit signals
 
 Key commands:
@@ -85,7 +98,8 @@ git diff v{last}..HEAD -- server/src/routes/ server/src/api/
 git log v{last}..HEAD --format="%s" | rg -n 'BREAKING CHANGE|BREAKING:|^[a-z]+!:' || true
 ```
 
-If the requested bump is lower than the minimum required bump, flag that before the release proceeds.
+If breaking changes are detected, flag them prominently — they must appear in the
+Breaking Changes section with an upgrade path.
 
 ## Step 4 — Categorize for Users
 
@@ -130,9 +144,9 @@ Rules:
 Template:
 
 ```markdown
-# v{version}
+# vYYYY.M.D
 
-> Released: {YYYY-MM-DD}
+> Released: YYYY-MM-DD
 
 ## Breaking Changes
 

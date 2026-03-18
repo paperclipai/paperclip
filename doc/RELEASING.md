@@ -66,6 +66,8 @@ Users install canaries with:
 
 ```bash
 npx paperclipai@canary onboard
+# or
+npx paperclipai@canary onboard --data-dir "$(mktemp -d /tmp/paperclip-canary.XXXXXX)"
 ```
 
 ### Stable
@@ -160,13 +162,22 @@ HOST_PORT=3232 DATA_DIR=./data/release-smoke-canary PAPERCLIPAI_VERSION=canary .
 HOST_PORT=3233 DATA_DIR=./data/release-smoke-stable PAPERCLIPAI_VERSION=latest ./scripts/docker-onboard-smoke.sh
 ```
 
+Automated browser smoke is also available:
+
+```bash
+gh workflow run release-smoke.yml -f paperclip_version=canary
+gh workflow run release-smoke.yml -f paperclip_version=latest
+```
+
 Minimum checks:
 
 - `npx paperclipai@canary onboard` installs
 - onboarding completes without crashes
-- the server boots
-- the UI loads
-- basic company creation and dashboard load work
+- authenticated login works with the smoke credentials
+- the browser lands in onboarding on a fresh instance
+- company creation succeeds
+- the first CEO agent is created
+- the first CEO heartbeat run is triggered
 
 ## Rollback
 

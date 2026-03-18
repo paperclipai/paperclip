@@ -701,8 +701,8 @@ export function AgentDetail() {
         crumbs.push({ label: `Run ${urlRunId.slice(0, 8)}` });
       } else if (activeView === "configuration") {
         crumbs.push({ label: "Configuration" });
-      } else if (activeView === "skills") {
-        crumbs.push({ label: "Skills" });
+      // } else if (activeView === "skills") { // TODO: bring back later
+      //   crumbs.push({ label: "Skills" });
       } else if (activeView === "runs") {
         crumbs.push({ label: "Runs" });
       } else if (activeView === "budget") {
@@ -862,7 +862,7 @@ export function AgentDetail() {
             items={[
               { value: "dashboard", label: "Dashboard" },
               { value: "configuration", label: "Configuration" },
-              { value: "skills", label: "Skills" },
+              // { value: "skills", label: "Skills" }, // TODO: bring back later
               { value: "runs", label: "Runs" },
               { value: "budget", label: "Budget" },
             ]}
@@ -955,11 +955,11 @@ export function AgentDetail() {
         />
       )}
 
-      {activeView === "skills" && (
+      {/* {activeView === "skills" && (
         <SkillsTab
           agent={agent}
         />
-      )}
+      )} */}{/* TODO: bring back later */}
 
       {activeView === "runs" && (
         <RunsTab
