@@ -17,7 +17,7 @@ import { formatDate, cn, projectUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { User, Hexagon, ArrowUpRight, Tag, Plus, Trash2 } from "lucide-react";
+import { User, Hexagon, ArrowUpRight, Tag, Plus, Trash2, Calendar } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 
 interface IssuePropertiesProps {
@@ -107,6 +107,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
   const [projectSearch, setProjectSearch] = useState("");
   const [labelsOpen, setLabelsOpen] = useState(false);
   const [labelSearch, setLabelSearch] = useState("");
+  const [dueOpen, setDueOpen] = useState(false);
   const [newLabelName, setNewLabelName] = useState("");
   const [newLabelColor, setNewLabelColor] = useState("#6366f1");
 
@@ -502,6 +503,60 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
           ) : undefined}
         >
           {projectContent}
+        </PropertyPicker>
+
+        <PropertyPicker
+          inline={inline}
+          label="Due date"
+          open={dueOpen}
+          onOpenChange={setDueOpen}
+          triggerContent={
+            issue.dueAt ? (
+              <>
+                <Calendar className={cn(
+                  "h-3.5 w-3.5",
+                  new Date(issue.dueAt) < new Date() && !["done", "cancelled"].includes(issue.status)
+                    ? "text-red-500"
+                    : "text-orange-500",
+                )} />
+                <span className={cn(
+                  "text-sm",
+                  new Date(issue.dueAt) < new Date() && !["done", "cancelled"].includes(issue.status)
+                    ? "text-red-500"
+                    : "text-foreground",
+                )}>
+                  {new Date(issue.dueAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
+                </span>
+              </>
+            ) : (
+              <>
+                <Calendar className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className="text-sm text-muted-foreground">No due date</span>
+              </>
+            )
+          }
+          popoverClassName="w-56"
+        >
+          <div className="space-y-2 p-1">
+            <input
+              type="datetime-local"
+              className="w-full px-2 py-1.5 text-xs bg-transparent outline-none rounded border border-border"
+              value={issue.dueAt ? new Date(new Date(issue.dueAt).getTime() - new Date(issue.dueAt).getTimezoneOffset() * 60000).toISOString().slice(0, 16) : ""}
+              onChange={(e) => {
+                onUpdate({ dueAt: e.target.value ? new Date(e.target.value).toISOString() : null });
+                setDueOpen(false);
+              }}
+              autoFocus={!inline}
+            />
+            {issue.dueAt && (
+              <button
+                className="text-[11px] text-destructive hover:underline"
+                onClick={() => { onUpdate({ dueAt: null }); setDueOpen(false); }}
+              >
+                Clear due date
+              </button>
+            )}
+          </div>
         </PropertyPicker>
 
         {issue.parentId && (
