@@ -293,7 +293,7 @@ async function cmdIssueHelp(db: Db, msg: TelegramMessage): Promise<void> {
     lines.push("");
   }
 
-  lines.push("📎 /agents  /projects  /setdefault  /debug");
+  lines.push("📎 /agents  /projects  /status  /close  /debug");
 
   await reply(chatId, lines.join("\n"), msg.message_thread_id);
 }
@@ -542,6 +542,97 @@ async function cmdDebug(db: Db, msg: TelegramMessage): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// /status IDENTIFIER newstatus — change issue status
+// ---------------------------------------------------------------------------
+
+const VALID_STATUSES = ["backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled"] as const;
+const STATUS_ICONS: Record<string, string> = {
+  backlog: "📋", todo: "📌", in_progress: "🔄", in_review: "👀", done: "✅", blocked: "🚫", cancelled: "❌",
+};
+
+async function cmdStatus(db: Db, msg: TelegramMessage, input: string): Promise<void> {
+  const chatId = String(msg.chat.id);
+  const company = await requireCompany(db, chatId, msg.message_thread_id);
+  if (!company) return;
+
+  const parts = input.trim().split(/\s+/);
+  if (parts.length < 2 || !parts[0]) {
+    const lines = [
+      `🔄 <b>Change Issue Status</b>\n`,
+      `<b>Usage:</b> <code>/status IDENTIFIER newstatus</code>`,
+      `<b>Example:</b> <code>/status ${esc(company.issuePrefix)}-1 done</code>\n`,
+      `<b>Statuses:</b>`,
+      ...VALID_STATUSES.map((s) => `  ${STATUS_ICONS[s] ?? "•"} <code>${s}</code>`),
+      `\n<b>Shortcut:</b> <code>/close ${esc(company.issuePrefix)}-1</code>`,
+    ];
+    await reply(chatId, lines.join("\n"), msg.message_thread_id);
+    return;
+  }
+
+  const identifier = parts[0].toUpperCase();
+  const newStatus = parts[1].toLowerCase();
+
+  if (!VALID_STATUSES.includes(newStatus as (typeof VALID_STATUSES)[number])) {
+    await reply(chatId, `❌ Invalid status "<b>${esc(newStatus)}</b>"\n\nValid: ${VALID_STATUSES.join(", ")}`, msg.message_thread_id);
+    return;
+  }
+
+  const issueRows = await db
+    .select({ id: issues.id, identifier: issues.identifier, title: issues.title, status: issues.status })
+    .from(issues)
+    .where(and(eq(issues.companyId, company.id), sql`upper(${issues.identifier}) = ${identifier}`))
+    .limit(1);
+
+  const issue = issueRows[0];
+  if (!issue) {
+    await reply(chatId, `❌ Issue <b>${esc(identifier)}</b> not found.`, msg.message_thread_id);
+    return;
+  }
+
+  if (issue.status === newStatus) {
+    await reply(chatId, `${STATUS_ICONS[newStatus] ?? "•"} <b>${esc(issue.identifier ?? identifier)}</b> is already <b>${esc(newStatus)}</b>.`, msg.message_thread_id);
+    return;
+  }
+
+  try {
+    const svc = issueService(db);
+    await svc.update(issue.id, { status: newStatus });
+
+    await logActivity(db, {
+      companyId: company.id,
+      actorType: "user",
+      actorId: `telegram:${msg.from?.id ?? "unknown"}`,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issue.id,
+      details: { status: newStatus, previousStatus: issue.status, identifier: issue.identifier, source: "telegram" },
+    });
+
+    const icon = STATUS_ICONS[newStatus] ?? "•";
+    await reply(chatId, `${icon} <b>${esc(issue.identifier ?? identifier)}</b> → <b>${esc(newStatus)}</b>\n<i>${esc((issue.title ?? "").slice(0, 100))}</i>`, msg.message_thread_id);
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : "Unknown error";
+    await reply(chatId, `❌ Failed to update: ${esc(errMsg)}`, msg.message_thread_id);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// /close IDENTIFIER — shortcut for /status X done
+// ---------------------------------------------------------------------------
+
+async function cmdClose(db: Db, msg: TelegramMessage, input: string): Promise<void> {
+  const identifier = input.trim().split(/\s+/)[0];
+  if (!identifier) {
+    const chatId = String(msg.chat.id);
+    const company = await requireCompany(db, chatId, msg.message_thread_id);
+    if (!company) return;
+    await reply(chatId, `✅ <b>Close an issue</b>\n\n<b>Usage:</b> <code>/close ${esc(company.issuePrefix)}-1</code>`, msg.message_thread_id);
+    return;
+  }
+  await cmdStatus(db, msg, `${identifier} done`);
+}
+
+// ---------------------------------------------------------------------------
 // Thread reply — add comment + wake agent
 // ---------------------------------------------------------------------------
 
@@ -633,6 +724,12 @@ export function telegramWebhookRoutes(db: Db) {
 
       const askMatch = text.match(/^\/ask(?:@\S+)?(?:\s+(.*))?$/s);
       if (askMatch) { await cmdAsk(db, msg, askMatch[1] ?? ""); res.status(200).json({ ok: true }); return; }
+
+      const statusMatch = text.match(/^\/status(?:@\S+)?(?:\s+(.*))?$/s);
+      if (statusMatch) { await cmdStatus(db, msg, statusMatch[1] ?? ""); res.status(200).json({ ok: true }); return; }
+
+      const closeMatch = text.match(/^\/close(?:@\S+)?(?:\s+(.*))?$/s);
+      if (closeMatch) { await cmdClose(db, msg, closeMatch[1] ?? ""); res.status(200).json({ ok: true }); return; }
 
       if (text.match(/^\/agents(?:@\S+)?\s*$/)) { await cmdAgents(db, msg); res.status(200).json({ ok: true }); return; }
       if (text.match(/^\/projects(?:@\S+)?\s*$/)) { await cmdProjects(db, msg); res.status(200).json({ ok: true }); return; }
