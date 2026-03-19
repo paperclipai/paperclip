@@ -244,11 +244,12 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     ),
   );
 
+  let existingConfig: PaperclipConfig | null = null;
   if (configExists(opts.config)) {
     p.log.message(pc.dim(`${configPath} exists, updating config`));
 
     try {
-      readConfig(opts.config);
+      existingConfig = readConfig(opts.config);
     } catch (err) {
       p.log.message(
         pc.yellow(
@@ -406,20 +407,27 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     p.log.info(`Using existing ${pc.cyan("PAPERCLIP_AGENT_JWT_SECRET")} in ${pc.dim(envFilePath)}`);
   }
 
-  const config: PaperclipConfig = {
+  // When --yes and existing config present, merge: preserve user overrides,
+  // only fill in missing fields from quickstart defaults.
+  const mergedConfig: PaperclipConfig = {
     $meta: {
       version: 1,
       updatedAt: new Date().toISOString(),
       source: "onboard",
     },
     ...(llm && { llm }),
-    database,
-    logging,
-    server,
-    auth,
-    storage,
-    secrets,
+    database: existingConfig?.database ? { ...database, ...existingConfig.database } : database,
+    logging: existingConfig?.logging ? { ...logging, ...existingConfig.logging } : logging,
+    server: existingConfig?.server ? { ...server, ...existingConfig.server } : server,
+    auth: existingConfig?.auth ? { ...auth, ...existingConfig.auth } : auth,
+    storage: existingConfig?.storage ? { ...storage, ...existingConfig.storage } : storage,
+    secrets: existingConfig?.secrets ? { ...secrets, ...existingConfig.secrets } : secrets,
   };
+  // Preserve existing LLM config if not set by env/prompts
+  if (!llm && existingConfig?.llm) {
+    mergedConfig.llm = existingConfig.llm;
+  }
+  const config = mergedConfig;
 
   const keyResult = ensureLocalSecretsKeyFile(config, configPath);
   if (keyResult.status === "created") {

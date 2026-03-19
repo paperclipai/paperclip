@@ -304,7 +304,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
 
   useEffect(() => {
     if (value !== latestValueRef.current) {
-      ref.current?.setMarkdown(value);
+      ref.current?.setMarkdown(value ?? "");
       latestValueRef.current = value;
     }
   }, [value]);

@@ -603,7 +603,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             <>
               <Field label="Prompt Template" hint={help.promptTemplate}>
                 <MarkdownEditor
-                  value={val!.promptTemplate}
+                  value={val!.promptTemplate ?? ""}
                   onChange={(v) => set!({ promptTemplate: v })}
                   placeholder="You are agent {{ agent.name }}. Your role is {{ agent.role }}..."
                   contentClassName="min-h-[88px] text-sm font-mono"
