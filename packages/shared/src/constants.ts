@@ -231,5 +231,11 @@ export const PERMISSION_KEYS = [
   "tasks:assign",
   "tasks:assign_scope",
   "joins:approve",
+  "projects:manage",
+  "goals:manage",
+  "secrets:manage",
+  "credentials:manage",
+  "company:settings",
+  "approvals:review",
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];

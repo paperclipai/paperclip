@@ -1517,6 +1517,40 @@ export function accessRoutes(
     if (!allowed) throw forbidden("Instance admin required");
   }
 
+  // Current user info + permissions
+  router.get("/me", async (req, res) => {
+    if (req.actor.type === "none") {
+      res.json({ authenticated: false });
+      return;
+    }
+    if (req.actor.type === "board") {
+      const userId = req.actor.userId ?? null;
+      const isAdmin =
+        req.actor.isInstanceAdmin ||
+        (userId ? await access.isInstanceAdmin(userId) : false);
+      const memberships = userId
+        ? await access.listUserCompanyAccess(userId)
+        : [];
+      res.json({
+        authenticated: true,
+        type: "board",
+        userId,
+        isInstanceAdmin: isAdmin,
+        source: req.actor.source,
+        companies: memberships.map((m) => m.companyId),
+      });
+      return;
+    }
+    // agent
+    res.json({
+      authenticated: true,
+      type: "agent",
+      agentId: req.actor.agentId ?? null,
+      companyId: req.actor.companyId ?? null,
+      source: req.actor.source,
+    });
+  });
+
   router.get("/board-claim/:token", async (req, res) => {
     const token = (req.params.token as string).trim();
     const code =
@@ -2549,7 +2583,7 @@ export function accessRoutes(
   router.get("/companies/:companyId/members", async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCompanyPermission(req, companyId, "users:manage_permissions");
-    const members = await access.listMembers(companyId);
+    const members = await access.listMembersWithGrants(companyId);
     res.json(members);
   });
 
