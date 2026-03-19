@@ -654,7 +654,6 @@ export function issueService(db: Db) {
     },
 
     markAllRead: async (companyId: string, userId: string, issueIds?: string[]) => {
-      const now = new Date();
       const touchedCondition = touchedByUserCondition(companyId, userId);
       const unreadCondition = unreadForUserCondition(companyId, userId);
       const conditions = [
@@ -672,6 +671,9 @@ export function issueService(db: Db) {
         .where(and(...conditions));
       if (unreadIssues.length === 0) return { markedCount: 0 };
       const ids = unreadIssues.map((r) => r.id);
+      // Capture timestamp just before writes to minimize the window where an agent
+      // comment could slip in between timestamp capture and the actual upsert.
+      const now = new Date();
       await Promise.all(
         ids.map((issueId) =>
           db
