@@ -163,6 +163,8 @@ jobs:
       - name: Publish stable
         env:
           GITHUB_ACTIONS: "true"
+          NPM_PUBLISH_VERIFY_ATTEMPTS: "36"
+          NPM_PUBLISH_VERIFY_DELAY_SECONDS: "10"
         run: |
           args=(stable --skip-verify)
           if [ -n "${{ inputs.stable_date }}" ]; then
@@ -276,6 +278,8 @@ jobs:
       - name: Publish canary
         env:
           GITHUB_ACTIONS: "true"
+          NPM_PUBLISH_VERIFY_ATTEMPTS: "36"
+          NPM_PUBLISH_VERIFY_DELAY_SECONDS: "10"
         run: ./scripts/release.sh canary --skip-verify
 
       - name: Push canary tag
