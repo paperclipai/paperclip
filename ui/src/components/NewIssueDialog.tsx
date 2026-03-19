@@ -19,6 +19,13 @@ import {
   parseAssigneeValue,
 } from "../lib/assignees";
 import {
+  clearIssueDraft,
+  ISSUE_DRAFT_DEBOUNCE_MS,
+  loadIssueDraft,
+  saveIssueDraft,
+  type StoredIssueDraft,
+} from "../lib/issue-draft";
+import {
   Dialog,
   DialogContent,
 } from "@/components/ui/dialog";
@@ -151,24 +158,6 @@ function buildAssigneeAdapterOverrides(input: {
     overrides.adapterConfig = adapterConfig;
   }
   return Object.keys(overrides).length > 0 ? overrides : null;
-}
-
-function loadDraft(): IssueDraft | null {
-  try {
-    const raw = localStorage.getItem(DRAFT_KEY);
-    if (!raw) return null;
-    return JSON.parse(raw) as IssueDraft;
-  } catch {
-    return null;
-  }
-}
-
-function saveDraft(draft: IssueDraft) {
-  localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
-}
-
-function clearDraft() {
-  localStorage.removeItem(DRAFT_KEY);
 }
 
 function isTextDocumentFile(file: File) {
@@ -443,7 +432,7 @@ export function NewIssueDialog() {
             : undefined,
         });
       }
-      clearDraft();
+      clearIssueDraft(companyId);
       reset();
       closeNewIssue();
     },
@@ -458,10 +447,10 @@ export function NewIssueDialog() {
 
   // Debounced draft saving
   const scheduleSave = useCallback(
-    (draft: IssueDraft) => {
+    (companyId: string | null | undefined, draft: StoredIssueDraft) => {
       if (draftTimer.current) clearTimeout(draftTimer.current);
       draftTimer.current = setTimeout(() => {
-        if (draft.title.trim()) saveDraft(draft);
+        if (draft.title.trim()) saveIssueDraft(companyId, draft);
       }, DEBOUNCE_MS);
     },
     [],
@@ -470,7 +459,7 @@ export function NewIssueDialog() {
   // Save draft on meaningful changes
   useEffect(() => {
     if (!newIssueOpen) return;
-    scheduleSave({
+    scheduleSave(effectiveCompanyId, {
       title,
       description,
       status,
@@ -485,6 +474,7 @@ export function NewIssueDialog() {
       selectedExecutionWorkspaceId,
     });
   }, [
+    effectiveCompanyId,
     title,
     description,
     status,
@@ -507,7 +497,7 @@ export function NewIssueDialog() {
     setDialogCompanyId(selectedCompanyId);
     executionWorkspaceDefaultProjectId.current = null;
 
-    const draft = loadDraft();
+    const draft = loadIssueDraft(selectedCompanyId);
     if (newIssueDefaults.title) {
       setTitle(newIssueDefaults.title);
       setDescription(newIssueDefaults.description ?? "");
@@ -627,7 +617,7 @@ export function NewIssueDialog() {
   }
 
   function discardDraft() {
-    clearDraft();
+    clearIssueDraft(effectiveCompanyId);
     reset();
     closeNewIssue();
   }
@@ -786,7 +776,10 @@ export function NewIssueDialog() {
       : assigneeAdapterType === "opencode_local"
         ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
       : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
-  const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [newIssueOpen]);
+  const recentAssigneeIds = useMemo(
+    () => getRecentAssigneeIds(effectiveCompanyId),
+    [effectiveCompanyId, newIssueOpen],
+  );
   const assigneeOptions = useMemo<InlineEntityOption[]>(
     () => [
       ...currentUserAssigneeOption(currentUserId),
@@ -810,7 +803,7 @@ export function NewIssueDialog() {
       })),
     [orderedProjects],
   );
-  const savedDraft = loadDraft();
+  const savedDraft = loadIssueDraft(effectiveCompanyId);
   const hasSavedDraft = Boolean(savedDraft?.title.trim() || savedDraft?.description.trim());
   const canDiscardDraft = hasDraft || hasSavedDraft;
   const createIssueErrorMessage =
@@ -1034,7 +1027,7 @@ export function NewIssueDialog() {
                 onChange={(value) => {
                   const nextAssignee = parseAssigneeValue(value);
                   if (nextAssignee.assigneeAgentId) {
-                    trackRecentAssignee(nextAssignee.assigneeAgentId);
+                    trackRecentAssignee(nextAssignee.assigneeAgentId, effectiveCompanyId);
                   }
                   setAssigneeValue(value);
                 }}

@@ -21,6 +21,10 @@ function uniqueNonEmpty(values) {
   return Array.from(new Set(values.map((value) => value?.trim() ?? "").filter(Boolean)));
 }
 
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 export function resolveDynamicForbiddenTokens(env = process.env, osModule = os) {
   const candidates = [env.USER, env.LOGNAME, env.USERNAME];
 
@@ -31,6 +35,14 @@ export function resolveDynamicForbiddenTokens(env = process.env, osModule = os) 
   }
 
   return uniqueNonEmpty(candidates);
+}
+
+export function buildGitGrepPattern(token, mode = "literal") {
+  if (mode === "dynamic_username") {
+    const escaped = escapeRegex(token);
+    return `(^|[^A-Za-z0-9_])${escaped}([^A-Za-z0-9_]|$)`;
+  }
+  return token;
 }
 
 export function readForbiddenTokensFile(tokensFile) {
@@ -52,6 +64,7 @@ export function resolveForbiddenTokens(tokensFile, env = process.env, osModule =
 export function runForbiddenTokenCheck({
   repoRoot,
   tokens,
+  dynamicTokens = [],
   exec = execSync,
   log = console.log,
   error = console.error,
@@ -63,10 +76,15 @@ export function runForbiddenTokenCheck({
 
   let found = false;
 
+  const dynamicTokenSet = new Set(dynamicTokens);
+
   for (const token of tokens) {
+    const isDynamicToken = dynamicTokenSet.has(token);
+    const pattern = buildGitGrepPattern(token, isDynamicToken ? "dynamic_username" : "literal");
+    const grepFlags = isDynamicToken ? "-inE" : "-in";
     try {
       const result = exec(
-        `git grep -in --no-color -- ${JSON.stringify(token)} -- ':!pnpm-lock.yaml' ':!.git'`,
+        `git grep ${grepFlags} --no-color -- ${JSON.stringify(pattern)} -- ':!pnpm-lock.yaml' ':!.git' ':!*.log'`,
         { encoding: "utf8", cwd: repoRoot, stdio: ["pipe", "pipe", "pipe"] },
       );
       if (result.trim()) {
@@ -104,8 +122,9 @@ function resolveRepoPaths(exec = execSync) {
 
 function main() {
   const { repoRoot, tokensFile } = resolveRepoPaths();
+  const dynamicTokens = resolveDynamicForbiddenTokens();
   const tokens = resolveForbiddenTokens(tokensFile);
-  process.exit(runForbiddenTokenCheck({ repoRoot, tokens }));
+  process.exit(runForbiddenTokenCheck({ repoRoot, tokens, dynamicTokens }));
 }
 
 const isMainModule = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);

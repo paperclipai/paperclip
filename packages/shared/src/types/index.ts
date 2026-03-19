@@ -83,7 +83,7 @@ export type {
 } from "./heartbeat.js";
 export type { LiveEvent } from "./live.js";
 export type { DashboardSummary } from "./dashboard.js";
-export type { ActivityEvent } from "./activity.js";
+export type { ActivityEvent, ActivityListFilters } from "./activity.js";
 export type { SidebarBadges } from "./sidebar-badges.js";
 export type {
   CompanyMembership,

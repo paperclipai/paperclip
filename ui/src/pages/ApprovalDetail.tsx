@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { approvalsApi } from "../api/approvals";
@@ -15,6 +15,41 @@ import { Textarea } from "@/components/ui/textarea";
 import { CheckCircle2, ChevronRight, Sparkles } from "lucide-react";
 import type { ApprovalComment } from "@paperclipai/shared";
 import { MarkdownBody } from "../components/MarkdownBody";
+import {
+  APPROVAL_DRAFT_DEBOUNCE_MS,
+  buildApprovalDraftStorageKey,
+  normalizeDecisionNote,
+  normalizeDraftValue,
+} from "../lib/approval-detail";
+
+function loadDraft(draftKey: string): string {
+  try {
+    return window.localStorage.getItem(draftKey) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function saveDraft(draftKey: string, value: string) {
+  try {
+    const normalized = normalizeDraftValue(value);
+    if (normalized) {
+      window.localStorage.setItem(draftKey, normalized);
+    } else {
+      window.localStorage.removeItem(draftKey);
+    }
+  } catch {
+    // Ignore localStorage failures in read-only/private browsing contexts.
+  }
+}
+
+function clearDraft(draftKey: string) {
+  try {
+    window.localStorage.removeItem(draftKey);
+  } catch {
+    // Ignore localStorage failures in read-only/private browsing contexts.
+  }
+}
 
 export function ApprovalDetail() {
   const { approvalId } = useParams<{ approvalId: string }>();
@@ -24,8 +59,11 @@ export function ApprovalDetail() {
   const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const [commentBody, setCommentBody] = useState("");
+  const [decisionNote, setDecisionNote] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [showRawPayload, setShowRawPayload] = useState(false);
+  const commentDraftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const decisionDraftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const { data: approval, isLoading } = useQuery({
     queryKey: queryKeys.approvals.detail(approvalId!),
@@ -33,6 +71,14 @@ export function ApprovalDetail() {
     enabled: !!approvalId,
   });
   const resolvedCompanyId = approval?.companyId ?? selectedCompanyId;
+  const commentDraftKey = useMemo(
+    () => (resolvedCompanyId && approvalId ? buildApprovalDraftStorageKey("comment", resolvedCompanyId, approvalId) : null),
+    [approvalId, resolvedCompanyId],
+  );
+  const decisionDraftKey = useMemo(
+    () => (resolvedCompanyId && approvalId ? buildApprovalDraftStorageKey("decision", resolvedCompanyId, approvalId) : null),
+    [approvalId, resolvedCompanyId],
+  );
 
   const { data: comments } = useQuery({
     queryKey: queryKeys.approvals.comments(approvalId!),
@@ -56,6 +102,39 @@ export function ApprovalDetail() {
     if (!approval?.companyId || approval.companyId === selectedCompanyId) return;
     setSelectedCompanyId(approval.companyId, { source: "route_sync" });
   }, [approval?.companyId, selectedCompanyId, setSelectedCompanyId]);
+
+  useEffect(() => {
+    if (!commentDraftKey) return;
+    setCommentBody(loadDraft(commentDraftKey));
+  }, [commentDraftKey]);
+
+  useEffect(() => {
+    if (!decisionDraftKey) return;
+    setDecisionNote(loadDraft(decisionDraftKey));
+  }, [decisionDraftKey]);
+
+  useEffect(() => {
+    if (!commentDraftKey) return;
+    if (commentDraftTimer.current) clearTimeout(commentDraftTimer.current);
+    commentDraftTimer.current = setTimeout(() => {
+      saveDraft(commentDraftKey, commentBody);
+    }, APPROVAL_DRAFT_DEBOUNCE_MS);
+  }, [commentBody, commentDraftKey]);
+
+  useEffect(() => {
+    if (!decisionDraftKey) return;
+    if (decisionDraftTimer.current) clearTimeout(decisionDraftTimer.current);
+    decisionDraftTimer.current = setTimeout(() => {
+      saveDraft(decisionDraftKey, decisionNote);
+    }, APPROVAL_DRAFT_DEBOUNCE_MS);
+  }, [decisionDraftKey, decisionNote]);
+
+  useEffect(() => {
+    return () => {
+      if (commentDraftTimer.current) clearTimeout(commentDraftTimer.current);
+      if (decisionDraftTimer.current) clearTimeout(decisionDraftTimer.current);
+    };
+  }, []);
 
   const agentNameById = useMemo(() => {
     const map = new Map<string, string>();
@@ -85,9 +164,11 @@ export function ApprovalDetail() {
   };
 
   const approveMutation = useMutation({
-    mutationFn: () => approvalsApi.approve(approvalId!),
+    mutationFn: () => approvalsApi.approve(approvalId!, normalizeDecisionNote(decisionNote)),
     onSuccess: () => {
       setError(null);
+      setDecisionNote("");
+      if (decisionDraftKey) clearDraft(decisionDraftKey);
       refresh();
       navigate(`/approvals/${approvalId}?resolved=approved`, { replace: true });
     },
@@ -95,18 +176,22 @@ export function ApprovalDetail() {
   });
 
   const rejectMutation = useMutation({
-    mutationFn: () => approvalsApi.reject(approvalId!),
+    mutationFn: () => approvalsApi.reject(approvalId!, normalizeDecisionNote(decisionNote)),
     onSuccess: () => {
       setError(null);
+      setDecisionNote("");
+      if (decisionDraftKey) clearDraft(decisionDraftKey);
       refresh();
     },
     onError: (err) => setError(err instanceof Error ? err.message : "Reject failed"),
   });
 
   const revisionMutation = useMutation({
-    mutationFn: () => approvalsApi.requestRevision(approvalId!),
+    mutationFn: () => approvalsApi.requestRevision(approvalId!, normalizeDecisionNote(decisionNote)),
     onSuccess: () => {
       setError(null);
+      setDecisionNote("");
+      if (decisionDraftKey) clearDraft(decisionDraftKey);
       refresh();
     },
     onError: (err) => setError(err instanceof Error ? err.message : "Revision request failed"),
@@ -126,6 +211,7 @@ export function ApprovalDetail() {
     onSuccess: () => {
       setCommentBody("");
       setError(null);
+      if (commentDraftKey) clearDraft(commentDraftKey);
       refresh();
     },
     onError: (err) => setError(err instanceof Error ? err.message : "Comment failed"),
@@ -260,6 +346,24 @@ export function ApprovalDetail() {
             </p>
           </div>
         )}
+        {isActionable && (
+          <div className="space-y-2 rounded-md border border-border/60 bg-muted/20 p-3">
+            <div>
+              <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                Board response
+              </p>
+              <p className="text-xs text-muted-foreground mt-1">
+                This note is saved locally until you approve, reject, or request revision.
+              </p>
+            </div>
+            <Textarea
+              value={decisionNote}
+              onChange={(e) => setDecisionNote(e.target.value)}
+              placeholder="Explain the decision or request the exact follow-up you want from the agent."
+              rows={4}
+            />
+          </div>
+        )}
         <div className="flex flex-wrap items-center gap-2">
           {isActionable && !isBudgetApproval && (
             <>
@@ -350,7 +454,7 @@ export function ApprovalDetail() {
         <Textarea
           value={commentBody}
           onChange={(e) => setCommentBody(e.target.value)}
-          placeholder="Add a comment..."
+          placeholder="Add a comment... Draft saves locally."
           rows={3}
         />
         <div className="flex justify-end">

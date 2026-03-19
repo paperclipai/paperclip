@@ -233,11 +233,18 @@ async function isPortAvailable(port: number): Promise<boolean> {
 }
 
 async function findAvailablePort(preferredPort: number, reserved = new Set<number>()): Promise<number> {
-  let port = Math.max(1, Math.trunc(preferredPort));
-  while (reserved.has(port) || !(await isPortAvailable(port))) {
-    port += 1;
-  }
-  return port;
+  const maxPort = 65_535;
+  let port = Math.min(maxPort, Math.max(1, Math.trunc(preferredPort)));
+  const startPort = port;
+
+  do {
+    if (!reserved.has(port) && (await isPortAvailable(port))) {
+      return port;
+    }
+    port = port >= maxPort ? 1 : port + 1;
+  } while (port !== startPort);
+
+  throw new Error("No available TCP ports found");
 }
 
 function detectGitBranchName(cwd: string): string | null {

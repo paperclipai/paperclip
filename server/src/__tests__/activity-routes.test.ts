@@ -48,6 +48,23 @@ describe("activity routes", () => {
     vi.clearAllMocks();
   });
 
+  it("forwards company activity filters to the service", async () => {
+    mockActivityService.list.mockResolvedValue([]);
+
+    const res = await request(createApp()).get(
+      "/api/companies/company-1/activity?agentId=agent-1&entityType=issue&entityId=issue-1&action=issue.updated",
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockActivityService.list).toHaveBeenCalledWith({
+      companyId: "company-1",
+      agentId: "agent-1",
+      entityType: "issue",
+      entityId: "issue-1",
+      action: "issue.updated",
+    });
+  });
+
   it("resolves issue identifiers before loading runs", async () => {
     mockIssueService.getByIdentifier.mockResolvedValue({
       id: "issue-uuid-1",

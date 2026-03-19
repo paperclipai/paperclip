@@ -67,6 +67,19 @@ pnpm paperclipai run
 2. `paperclipai doctor` with repair enabled
 3. starts the server when checks pass
 
+## Verification
+
+Run the standard repo verification from the root:
+
+```sh
+pnpm lint
+pnpm -r typecheck
+pnpm test:run
+pnpm build
+```
+
+`pnpm lint` is a policy check that currently runs the existing workspace typechecks plus forbidden-token validation.
+
 ## Docker Quickstart (No local Node install)
 
 Build and run Paperclip in Docker:

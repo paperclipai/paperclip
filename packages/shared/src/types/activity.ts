@@ -11,3 +11,10 @@ export interface ActivityEvent {
   details: Record<string, unknown> | null;
   createdAt: Date;
 }
+
+export interface ActivityListFilters {
+  agentId?: string;
+  entityType?: string;
+  entityId?: string;
+  action?: string;
+}
