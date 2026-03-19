@@ -70,7 +70,17 @@ export function healthRoutes(
       .select({ id: companies.id, name: companies.name })
       .from(companies);
 
-    res.json({ agents: rows, credentials: creds, companies: comps });
+    // Check qwen proxy health
+    let proxyHealth: unknown = null;
+    try {
+      const proxyPort = process.env.QWEN_PROXY_PORT || "3199";
+      const resp = await fetch(`http://127.0.0.1:${proxyPort}/health`);
+      proxyHealth = await resp.json();
+    } catch (e: any) {
+      proxyHealth = { error: e.message };
+    }
+
+    res.json({ agents: rows, credentials: creds, companies: comps, proxyHealth });
   });
 
   return router;
