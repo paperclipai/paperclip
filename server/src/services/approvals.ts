@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { approvalComments, approvals } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { redactCurrentUserText } from "../log-redaction.js";
+import { accessService } from "./access.js";
 import { agentService } from "./agents.js";
 import { budgetService } from "./budgets.js";
 import { notifyHireApproved } from "./hire-hook.js";
@@ -15,12 +16,28 @@ function redactApprovalComment<T extends { body: string }>(comment: T): T {
 }
 
 export function approvalService(db: Db) {
+  const access = accessService(db);
   const agentsSvc = agentService(db);
   const budgets = budgetService(db);
   const canResolveStatuses = new Set(["pending", "revision_requested"]);
   const resolvableStatuses = Array.from(canResolveStatuses);
   type ApprovalRecord = typeof approvals.$inferSelect;
   type ResolutionResult = { approval: ApprovalRecord; applied: boolean };
+
+  async function ensureAgentCompanyAccessDefaults(
+    companyId: string,
+    agentId: string,
+    grantedByUserId: string | null,
+  ) {
+    await access.ensureMembership(companyId, "agent", agentId, "member", "active");
+    await access.setPrincipalGrants(
+      companyId,
+      "agent",
+      agentId,
+      [{ permissionKey: "tasks:assign", scope: null }],
+      grantedByUserId,
+    );
+  }
 
   async function getExistingApproval(id: string) {
     const existing = await db
@@ -112,6 +129,11 @@ export function approvalService(db: Db) {
         const payloadAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
         if (payloadAgentId) {
           await agentsSvc.activatePendingApproval(payloadAgentId);
+          await ensureAgentCompanyAccessDefaults(
+            updated.companyId,
+            payloadAgentId,
+            decidedByUserId,
+          );
           hireApprovedAgentId = payloadAgentId;
         } else {
           const created = await agentsSvc.create(updated.companyId, {
@@ -136,6 +158,7 @@ export function approvalService(db: Db) {
             permissions: undefined,
             lastHeartbeatAt: null,
           });
+          await ensureAgentCompanyAccessDefaults(updated.companyId, created.id, decidedByUserId);
           hireApprovedAgentId = created?.id ?? null;
         }
         if (hireApprovedAgentId) {

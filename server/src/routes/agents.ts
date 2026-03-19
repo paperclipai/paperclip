@@ -71,6 +71,21 @@ export function agentRoutes(db: Db) {
     return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
   }
 
+  async function ensureAgentCompanyAccessDefaults(
+    companyId: string,
+    agentId: string,
+    grantedByUserId: string | null,
+  ) {
+    await access.ensureMembership(companyId, "agent", agentId, "member", "active");
+    await access.setPrincipalGrants(
+      companyId,
+      "agent",
+      agentId,
+      [{ permissionKey: "tasks:assign", scope: null }],
+      grantedByUserId,
+    );
+  }
+
   async function assertCanCreateAgentsForCompany(req: Request, companyId: string) {
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "board") {
@@ -809,6 +824,11 @@ export function agentRoutes(db: Db) {
 
     let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
     const actor = getActorInfo(req);
+    await ensureAgentCompanyAccessDefaults(
+      companyId,
+      agent.id,
+      actor.actorType === "user" ? actor.actorId : null,
+    );
 
     if (requiresApproval) {
       const requestedAdapterType = normalizedHireInput.adapterType ?? agent.adapterType;
@@ -933,6 +953,11 @@ export function agentRoutes(db: Db) {
     });
 
     const actor = getActorInfo(req);
+    await ensureAgentCompanyAccessDefaults(
+      companyId,
+      agent.id,
+      actor.actorType === "user" ? actor.actorId : null,
+    );
     await logActivity(db, {
       companyId,
       actorType: actor.actorType,

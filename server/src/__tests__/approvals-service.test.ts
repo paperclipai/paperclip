@@ -7,10 +7,19 @@ const mockAgentService = vi.hoisted(() => ({
   terminate: vi.fn(),
 }));
 
+const mockAccessService = vi.hoisted(() => ({
+  ensureMembership: vi.fn(),
+  setPrincipalGrants: vi.fn(),
+}));
+
 const mockNotifyHireApproved = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/agents.js", () => ({
   agentService: vi.fn(() => mockAgentService),
+}));
+
+vi.mock("../services/access.js", () => ({
+  accessService: vi.fn(() => mockAccessService),
 }));
 
 vi.mock("../services/hire-hook.js", () => ({
@@ -61,6 +70,8 @@ describe("approvalService resolution idempotency", () => {
     mockAgentService.activatePendingApproval.mockResolvedValue(undefined);
     mockAgentService.create.mockResolvedValue({ id: "agent-1" });
     mockAgentService.terminate.mockResolvedValue(undefined);
+    mockAccessService.ensureMembership.mockResolvedValue(undefined);
+    mockAccessService.setPrincipalGrants.mockResolvedValue(undefined);
     mockNotifyHireApproved.mockResolvedValue(undefined);
   });
 
@@ -102,6 +113,20 @@ describe("approvalService resolution idempotency", () => {
 
     expect(result.applied).toBe(true);
     expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith("agent-1");
+    expect(mockAccessService.ensureMembership).toHaveBeenCalledWith(
+      "company-1",
+      "agent",
+      "agent-1",
+      "member",
+      "active",
+    );
+    expect(mockAccessService.setPrincipalGrants).toHaveBeenCalledWith(
+      "company-1",
+      "agent",
+      "agent-1",
+      [{ permissionKey: "tasks:assign", scope: null }],
+      "board",
+    );
     expect(mockNotifyHireApproved).toHaveBeenCalledTimes(1);
   });
 });

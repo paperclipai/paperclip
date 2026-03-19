@@ -483,6 +483,17 @@ export function companyPortabilityService(db: Db) {
   const agents = agentService(db);
   const access = accessService(db);
 
+  async function ensureAgentCompanyAccessDefaults(companyId: string, agentId: string) {
+    await access.ensureMembership(companyId, "agent", agentId, "member", "active");
+    await access.setPrincipalGrants(
+      companyId,
+      "agent",
+      agentId,
+      [{ permissionKey: "tasks:assign", scope: null }],
+      null,
+    );
+  }
+
   async function resolveSource(source: CompanyPortabilityPreview["source"]): Promise<ResolvedSource> {
     if (source.type === "inline") {
       return {
@@ -942,6 +953,7 @@ export function companyPortabilityService(db: Db) {
             });
             continue;
           }
+          await ensureAgentCompanyAccessDefaults(targetCompany.id, updated.id);
           importedSlugToAgentId.set(planAgent.slug, updated.id);
           existingSlugToAgentId.set(normalizeAgentUrlKey(updated.name) ?? updated.id, updated.id);
           resultAgents.push({
@@ -955,6 +967,7 @@ export function companyPortabilityService(db: Db) {
         }
 
         const created = await agents.create(targetCompany.id, patch);
+        await ensureAgentCompanyAccessDefaults(targetCompany.id, created.id);
         importedSlugToAgentId.set(planAgent.slug, created.id);
         existingSlugToAgentId.set(normalizeAgentUrlKey(created.name) ?? created.id, created.id);
         resultAgents.push({
