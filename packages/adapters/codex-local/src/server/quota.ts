@@ -434,6 +434,7 @@ class CodexRpcClient {
       this.stderr += chunk;
     });
     this.proc.on("error", (err) => {
+      this.spawnError = err;
       this.stderr += err.message + "\n";
       for (const request of this.pending.values()) {
         clearTimeout(request.timer);
