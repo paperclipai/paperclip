@@ -1,4 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local";
 import { models as cursorFallbackModels } from "@paperclipai/adapter-cursor-local";
 import { resetOpenCodeModelsCacheForTests } from "@paperclipai/adapter-opencode-local/server";
@@ -6,15 +8,29 @@ import { listAdapterModels } from "../adapters/index.js";
 import { resetCodexModelsCacheForTests } from "../adapters/codex-models.js";
 import { resetCursorModelsCacheForTests, setCursorModelsRunnerForTests } from "../adapters/cursor-models.js";
 
+const ORIGINAL_PAPERCLIP_CONFIG = process.env.PAPERCLIP_CONFIG;
+
 describe("adapter model listing", () => {
   beforeEach(() => {
     delete process.env.OPENAI_API_KEY;
+    process.env.PAPERCLIP_CONFIG = path.join(
+      os.tmpdir(),
+      "__paperclip_adapter_models_no_config__.json",
+    );
     delete process.env.PAPERCLIP_OPENCODE_COMMAND;
     resetCodexModelsCacheForTests();
     resetCursorModelsCacheForTests();
     setCursorModelsRunnerForTests(null);
     resetOpenCodeModelsCacheForTests();
     vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    if (ORIGINAL_PAPERCLIP_CONFIG === undefined) {
+      delete process.env.PAPERCLIP_CONFIG;
+      return;
+    }
+    process.env.PAPERCLIP_CONFIG = ORIGINAL_PAPERCLIP_CONFIG;
   });
 
   it("returns an empty list for unknown adapters", async () => {
