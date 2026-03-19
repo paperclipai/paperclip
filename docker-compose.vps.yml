@@ -19,6 +19,8 @@ services:
     init: true
     restart: unless-stopped
     stop_grace_period: 30s
+    mem_limit: 2800m
+    memswap_limit: 3200m
     ports:
       - "${PAPERCLIP_PORT:-3100}:3100"
     environment:

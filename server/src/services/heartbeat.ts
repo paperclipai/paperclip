@@ -20,7 +20,7 @@ import { conflict, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
-import { getServerAdapter, runningProcesses } from "../adapters/index.js";
+import { getServerAdapter, runningProcesses, finishedWorkspacePaths } from "../adapters/index.js";
 import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec, UsageSummary } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
@@ -59,6 +59,8 @@ import {
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
+const HEARTBEAT_MAX_QUEUED_RUNS_DEFAULT = 5;
+const HEARTBEAT_MAX_QUEUED_RUNS_MAX = 50;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
@@ -176,6 +178,25 @@ function normalizeMaxConcurrentRuns(value: unknown) {
   const parsed = Math.floor(asNumber(value, HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT));
   if (!Number.isFinite(parsed)) return HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT;
   return Math.max(HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT, Math.min(HEARTBEAT_MAX_CONCURRENT_RUNS_MAX, parsed));
+}
+
+export function normalizeMaxQueuedRuns(value: unknown) {
+  const parsed = Math.floor(asNumber(value, HEARTBEAT_MAX_QUEUED_RUNS_DEFAULT));
+  if (!Number.isFinite(parsed)) return HEARTBEAT_MAX_QUEUED_RUNS_DEFAULT;
+  return Math.max(1, Math.min(HEARTBEAT_MAX_QUEUED_RUNS_MAX, parsed));
+}
+
+export function parseHeartbeatPolicy(agent: typeof agents.$inferSelect) {
+  const runtimeConfig = parseObject(agent.runtimeConfig);
+  const heartbeat = parseObject(runtimeConfig.heartbeat);
+  return {
+    enabled: asBoolean(heartbeat.enabled, true),
+    intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
+    wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
+    maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
+    maxQueuedRuns: normalizeMaxQueuedRuns(heartbeat.maxQueuedRuns),
+    skipTimerWhenNoAssignedOpenIssue: heartbeat.skipTimerWhenNoAssignedOpenIssue === true,
+  };
 }
 
 async function withAgentStartLock<T>(agentId: string, fn: () => Promise<T>) {
@@ -1348,25 +1369,26 @@ export function heartbeatService(db: Db) {
     });
   }
 
-  function parseHeartbeatPolicy(agent: typeof agents.$inferSelect) {
-    const runtimeConfig = parseObject(agent.runtimeConfig);
-    const heartbeat = parseObject(runtimeConfig.heartbeat);
-
-    return {
-      enabled: asBoolean(heartbeat.enabled, true),
-      intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
-      wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
-      maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
-      skipTimerWhenNoAssignedOpenIssue: heartbeat.skipTimerWhenNoAssignedOpenIssue === true,
-    };
-  }
-
   async function countRunningRunsForAgent(agentId: string) {
     const [{ count }] = await db
       .select({ count: sql<number>`count(*)` })
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "running")));
     return Number(count ?? 0);
+  }
+
+  async function canEnqueueRun(agent: typeof agents.$inferSelect) {
+    const policy = parseHeartbeatPolicy(agent);
+    const [result] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.agentId, agent.id), eq(heartbeatRuns.status, "queued")));
+    const queuedCount = Number(result?.count ?? 0);
+    return {
+      policy,
+      queuedCount,
+      allowed: queuedCount < policy.maxQueuedRuns,
+    };
   }
 
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
@@ -1520,6 +1542,62 @@ export function heartbeatService(db: Db) {
       logger.warn({ reapedCount: reaped.length, runIds: reaped }, "reaped orphaned heartbeat runs");
     }
     return { reaped: reaped.length, runIds: reaped };
+  }
+
+  /**
+   * Scan procfs on Linux for processes whose cmdline references a
+   * workspace path belonging to a recently finished run and kill them.
+   *
+   * This catches grandchild processes (e.g. vitest workers, language servers)
+   * that were reparented to PID 1 after cursor-agent exited naturally.
+   * Guard: only active on Linux, no-op elsewhere.
+   */
+  async function reapOrphanedWorkspaceProcesses() {
+    if (process.platform !== "linux") return { killed: 0 };
+
+    const candidates = Array.from(finishedWorkspacePaths.entries()).filter(
+      ([, v]) => Date.now() - v.finishedAt.getTime() < 30 * 60 * 1000,
+    );
+    if (candidates.length === 0) return { killed: 0 };
+
+    let killed = 0;
+    let procEntries: string[] = [];
+    try {
+      procEntries = await fs.readdir("/proc");
+    } catch {
+      return { killed: 0 };
+    }
+
+    for (const entry of procEntries) {
+      if (!/^\d+$/.test(entry)) continue;
+      const pid = Number(entry);
+      let cmdline = "";
+      try {
+        const raw = await fs.readFile(`/proc/${entry}/cmdline`, "utf8");
+        cmdline = raw.replace(/\0/g, " ").trim();
+      } catch {
+        continue;
+      }
+      for (const [runId, { workspacePath }] of candidates) {
+        if (!cmdline.includes(workspacePath)) continue;
+        // Skip if this PID is still in runningProcesses (still active run)
+        const isActiveRun = Array.from(runningProcesses.values()).some((rp) => rp.pid === pid);
+        if (isActiveRun) continue;
+        logger.warn({ pid, workspacePath, runId }, "killing orphaned workspace process");
+        try {
+          process.kill(pid, "SIGTERM");
+          killed++;
+        } catch {
+          // ESRCH: process already gone
+        }
+        break;
+      }
+    }
+
+    if (killed > 0) {
+      logger.warn({ killed }, "reaped orphaned workspace processes");
+    }
+    return { killed };
   }
 
   /**
@@ -2598,6 +2676,11 @@ export function heartbeatService(db: Db) {
           payload: promotedPayload,
         });
 
+        const promotionAdmission = await canEnqueueRun(deferredAgent);
+        if (!promotionAdmission.allowed) {
+          return null;
+        }
+
         const sessionBefore = await resolveSessionBeforeForWakeup(deferredAgent, promotedTaskKey);
         const now = new Date();
         const newRun = await tx
@@ -2953,6 +3036,24 @@ export function heartbeatService(db: Db) {
           return { kind: "deferred" as const };
         }
 
+        const admission = await canEnqueueRun(agent);
+        if (!admission.allowed) {
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: "heartbeat.maxQueuedRuns.exceeded",
+            payload,
+            status: "skipped",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            finishedAt: new Date(),
+          });
+          return { kind: "capped" as const };
+        }
+
         const wakeupRequest = await tx
           .insert(agentWakeupRequests)
           .values({
@@ -3006,7 +3107,7 @@ export function heartbeatService(db: Db) {
         return { kind: "queued" as const, run: newRun };
       });
 
-      if (outcome.kind === "deferred" || outcome.kind === "skipped") return null;
+      if (outcome.kind === "deferred" || outcome.kind === "skipped" || outcome.kind === "capped") return null;
       if (outcome.kind === "coalesced") return outcome.run;
 
       const newRun = outcome.run;
@@ -3076,6 +3177,12 @@ export function heartbeatService(db: Db) {
         finishedAt: new Date(),
       });
       return mergedRun;
+    }
+
+    const admission = await canEnqueueRun(agent);
+    if (!admission.allowed) {
+      await writeSkippedRequest("heartbeat.maxQueuedRuns.exceeded");
+      return null;
     }
 
     const wakeupRequest = await db
@@ -3243,12 +3350,10 @@ export function heartbeatService(db: Db) {
 
     const running = runningProcesses.get(run.id);
     if (running) {
-      running.child.kill("SIGTERM");
+      try { process.kill(-running.pid, "SIGTERM"); } catch { /* process group already gone */ }
       const graceMs = Math.max(1, running.graceSec) * 1000;
       setTimeout(() => {
-        if (!running.child.killed) {
-          running.child.kill("SIGKILL");
-        }
+        try { process.kill(-running.pid, "SIGKILL"); } catch { /* process group already gone */ }
       }, graceMs);
     }
 
@@ -3299,7 +3404,7 @@ export function heartbeatService(db: Db) {
 
       const running = runningProcesses.get(run.id);
       if (running) {
-        running.child.kill("SIGTERM");
+        try { process.kill(-running.pid, "SIGTERM"); } catch { /* process group already gone */ }
         runningProcesses.delete(run.id);
       }
       await releaseIssueExecutionAndPromote(run);
@@ -3470,6 +3575,7 @@ export function heartbeatService(db: Db) {
     wakeup: enqueueWakeup,
 
     reapOrphanedRuns,
+    reapOrphanedWorkspaceProcesses,
 
     expireTerminatedRunLocks,
     resumeQueuedRuns,

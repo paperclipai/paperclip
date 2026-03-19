@@ -567,6 +567,11 @@ export async function startServer(): Promise<StartedServer> {
       void heartbeat.expireTerminatedRunLocks().catch((err) => {
         logger.error({ err }, "periodic expiry of terminated-run locks failed");
       });
+
+      // Reap orphaned workspace processes (grandchildren that survived run completion)
+      void heartbeat.reapOrphanedWorkspaceProcesses().catch((err) => {
+        logger.error({ err }, "periodic orphan workspace process reap failed");
+      });
     }, config.heartbeatSchedulerIntervalMs);
   }
   

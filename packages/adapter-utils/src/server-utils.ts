@@ -13,8 +13,18 @@ export interface RunProcessResult {
 
 interface RunningProcess {
   child: ChildProcess;
+  pid: number;
   graceSec: number;
+  workspacePath: string;
 }
+
+interface FinishedWorkspacePath {
+  workspacePath: string;
+  finishedAt: Date;
+}
+
+export const finishedWorkspacePaths = new Map<string, FinishedWorkspacePath>();
+const FINISHED_WORKSPACE_PATH_RETENTION_MS = 30 * 60 * 1000;
 
 interface SpawnTarget {
   command: string;
@@ -497,14 +507,17 @@ export async function runChildProcess(
           env: mergedEnv,
           shell: false,
           stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
+          detached: true,
         }) as ChildProcessWithEvents;
+        child.unref();
 
         if (opts.stdin != null && child.stdin) {
           child.stdin.write(opts.stdin);
           child.stdin.end();
         }
 
-        runningProcesses.set(runId, { child, graceSec: opts.graceSec });
+        const childPid = child.pid!;
+        runningProcesses.set(runId, { child, pid: childPid, graceSec: opts.graceSec, workspacePath: opts.cwd });
 
         let timedOut = false;
         let stdout = "";
@@ -515,11 +528,9 @@ export async function runChildProcess(
           opts.timeoutSec > 0
             ? setTimeout(() => {
                 timedOut = true;
-                child.kill("SIGTERM");
+                try { process.kill(-childPid, "SIGTERM"); } catch { /* process group already gone */ }
                 setTimeout(() => {
-                  if (!child.killed) {
-                    child.kill("SIGKILL");
-                  }
+                  try { process.kill(-childPid, "SIGKILL"); } catch { /* process group already gone */ }
                 }, Math.max(1, opts.graceSec) * 1000);
               }, opts.timeoutSec * 1000)
             : null;
@@ -554,6 +565,13 @@ export async function runChildProcess(
 
         child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
           if (timeout) clearTimeout(timeout);
+          finishedWorkspacePaths.set(runId, { workspacePath: opts.cwd, finishedAt: new Date() });
+          const now = Date.now();
+          for (const [key, entry] of finishedWorkspacePaths) {
+            if (now - entry.finishedAt.getTime() > FINISHED_WORKSPACE_PATH_RETENTION_MS) {
+              finishedWorkspacePaths.delete(key);
+            }
+          }
           runningProcesses.delete(runId);
           void logChain.finally(() => {
             resolve({
