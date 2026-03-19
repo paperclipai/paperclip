@@ -28,9 +28,6 @@ import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
-import { webhookRoutes } from "./routes/webhooks.js";
-import { docsRoutes } from "./routes/docs.js";
-import { knowledgeRoutes } from "./routes/knowledge.js";
 import { sprintPlannerProxyRoutes } from "./routes/sprint-planner.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
@@ -52,7 +49,6 @@ import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 import { sprintPlannerService } from "./services/sprint-planner.js";
 import { teamsOutboundService } from "./services/teams-outbound.js";
 import { integrationsService } from "./services/integrations.js";
-import { sprintPlannerSyncService } from "./services/sprint-planner-sync.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 
@@ -148,16 +144,6 @@ export async function createApp(
   const integrations = (sp || teams)
     ? integrationsService({ sprintPlanner: sp, teamsOutbound: teams })
     : null;
-
-  // Start sprint planner sync cron (if configured + a company ID is known)
-  const spSyncCompanyId = process.env.PAPERCLIP_SPRINT_PLANNER_SYNC_COMPANY_ID;
-  if (sp && spSyncCompanyId) {
-    const syncSvc = sprintPlannerSyncService(db, sp, spSyncCompanyId);
-    syncSvc.start();
-    const stopSync = () => syncSvc.stop();
-    process.once("SIGTERM", stopSync);
-    process.once("SIGINT", stopSync);
-  }
 
   // Mount API routes
   const api = Router();
@@ -256,9 +242,6 @@ export async function createApp(
       allowedHostnames: opts.allowedHostnames,
     }),
   );
-  api.use(webhookRoutes(db));
-  api.use(docsRoutes(db));
-  api.use(knowledgeRoutes(db));
   if (sp) api.use(sprintPlannerProxyRoutes(sp));
   app.use("/api", api);
   app.use("/api", (_req, res) => {

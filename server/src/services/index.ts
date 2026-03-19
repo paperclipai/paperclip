@@ -6,7 +6,6 @@ export { projectService } from "./projects.js";
 export { issueService, type IssueFilters } from "./issues.js";
 export { issueApprovalService } from "./issue-approvals.js";
 export { goalService } from "./goals.js";
-export { knowledgeService } from "./knowledge.js";
 export { activityService, type ActivityFilters } from "./activity.js";
 export { approvalService } from "./approvals.js";
 export { budgetService } from "./budgets.js";
@@ -30,4 +29,5 @@ export { createStorageServiceFromConfig, getStorageService } from "../storage/in
 export { sprintPlannerService, type SprintPlannerService } from "./sprint-planner.js";
 export { teamsOutboundService, type TeamsOutboundService } from "./teams-outbound.js";
 export { integrationsService, type IntegrationsService } from "./integrations.js";
-export { sprintPlannerSyncService, type SprintPlannerSyncService } from "./sprint-planner-sync.js";
+// Sprint planner sync depends on knowledge service — wire when knowledge hub PR lands
+// export { sprintPlannerSyncService, type SprintPlannerSyncService } from "./sprint-planner-sync.js";

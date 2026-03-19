@@ -119,15 +119,6 @@ export {
 } from "./goal.js";
 
 export {
-  createKnowledgeDocSchema,
-  updateKnowledgeDocSchema,
-  searchKnowledgeDocsSchema,
-  type CreateKnowledgeDoc,
-  type UpdateKnowledgeDoc,
-  type SearchKnowledgeDocs,
-} from "./knowledge.js";
-
-export {
   createApprovalSchema,
   resolveApprovalSchema,
   requestApprovalRevisionSchema,
