@@ -1,7 +1,7 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
-import { count, sql } from "drizzle-orm";
-import { instanceUserRoles } from "@paperclipai/db";
+import { count, eq, sql } from "drizzle-orm";
+import { agents, companies, instanceUserRoles, providerCredentials } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 
 export function healthRoutes(
@@ -46,6 +46,31 @@ export function healthRoutes(
         companyDeletionEnabled: opts.companyDeletionEnabled,
       },
     });
+  });
+
+  // Temporary debug endpoint — remove after diagnosing agent config
+  router.get("/debug-agents", async (_req, res) => {
+    if (!db) { res.json([]); return; }
+    const rows = await db
+      .select({
+        id: agents.id,
+        name: agents.name,
+        companyId: agents.companyId,
+        adapterType: agents.adapterType,
+        credentialId: agents.credentialId,
+        status: agents.status,
+      })
+      .from(agents);
+
+    const creds = await db
+      .select({ id: providerCredentials.id, name: providerCredentials.name, type: providerCredentials.type, companyId: providerCredentials.companyId })
+      .from(providerCredentials);
+
+    const comps = await db
+      .select({ id: companies.id, name: companies.name })
+      .from(companies);
+
+    res.json({ agents: rows, credentials: creds, companies: comps });
   });
 
   return router;
