@@ -15,6 +15,11 @@ function parseJsonObject(text: string): Record<string, unknown> | null {
 export function buildOpenClawGatewayConfig(v: CreateConfigValues): Record<string, unknown> {
   const ac: Record<string, unknown> = {};
   if (v.url) ac.url = v.url;
+  // Token: stored as form value during create
+  const token = (v as unknown as Record<string, unknown>).token;
+  if (typeof token === "string" && token.trim()) {
+    ac.token = token.trim();
+  }
   ac.timeoutSec = 120;
   ac.waitTimeoutMs = 120000;
   ac.sessionKeyStrategy = "project";
