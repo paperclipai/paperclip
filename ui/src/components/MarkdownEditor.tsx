@@ -415,56 +415,76 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
 
       const replacement = mentionMarkdown(option);
 
-      // Replace @query directly via DOM selection so the cursor naturally
-      // lands after the inserted text. Lexical picks up the change through
-      // its normal input-event handling.
+      // Replace @query directly via DOM manipulation so the cursor naturally
+      // lands after the inserted text. We avoid document.execCommand("insertText")
+      // because it is deprecated and silently fails in Chrome/Chromium and Electron.
+      // Instead we delete the range, insert a text node, and dispatch an InputEvent
+      // so Lexical picks up the change through its normal input-event handling.
       const sel = window.getSelection();
       if (sel && state.textNode.isConnected) {
         const range = document.createRange();
         range.setStart(state.textNode, state.atPos);
         range.setEnd(state.textNode, state.endPos);
-        sel.removeAllRanges();
-        sel.addRange(range);
-        document.execCommand("insertText", false, replacement);
+        range.deleteContents();
+        const textNode = document.createTextNode(replacement);
+        range.insertNode(textNode);
 
-        // After Lexical reconciles the DOM, the cursor position set by
-        // execCommand may be lost. Explicitly reposition it after the
-        // inserted mention text.
-        const cursorTarget = state.atPos + replacement.length;
+        // Place cursor immediately after the inserted text
+        const cursorRange = document.createRange();
+        cursorRange.setStartAfter(textNode);
+        cursorRange.collapse(true);
+        sel.removeAllRanges();
+        sel.addRange(cursorRange);
+
+        // Notify Lexical of the DOM mutation via an InputEvent
+        const editable = containerRef.current?.querySelector('[contenteditable="true"]');
+        if (editable) {
+          editable.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: replacement }));
+        }
+
+        // After Lexical reconciles the DOM, the cursor position may shift.
+        // Explicitly reposition it and sync the markdown state.
         requestAnimationFrame(() => {
           const newSel = window.getSelection();
-          if (!newSel) return;
-          // Try the original text node first (it may still be valid)
-          if (state.textNode.isConnected) {
-            const len = state.textNode.textContent?.length ?? 0;
-            if (cursorTarget <= len) {
+          if (newSel) {
+            // Try the original inserted text node first
+            if (textNode.isConnected) {
               const r = document.createRange();
-              r.setStart(state.textNode, cursorTarget);
+              r.setStartAfter(textNode);
               r.collapse(true);
               newSel.removeAllRanges();
               newSel.addRange(r);
-              return;
-            }
-          }
-          // Fallback: search for the replacement in text nodes
-          const editable = containerRef.current?.querySelector('[contenteditable="true"]');
-          if (!editable) return;
-          const walker = document.createTreeWalker(editable, NodeFilter.SHOW_TEXT);
-          let node: Text | null;
-          while ((node = walker.nextNode() as Text | null)) {
-            const text = node.textContent ?? "";
-            const idx = text.indexOf(replacement);
-            if (idx !== -1) {
-              const pos = idx + replacement.length;
-              if (pos <= text.length) {
-                const r = document.createRange();
-                r.setStart(node, pos);
-                r.collapse(true);
-                newSel.removeAllRanges();
-                newSel.addRange(r);
-                return;
+            } else {
+              // Fallback: search for the replacement in text nodes
+              const editableEl = containerRef.current?.querySelector('[contenteditable="true"]');
+              if (editableEl) {
+                const walker = document.createTreeWalker(editableEl, NodeFilter.SHOW_TEXT);
+                let node: Text | null;
+                while ((node = walker.nextNode() as Text | null)) {
+                  const text = node.textContent ?? "";
+                  const idx = text.indexOf(replacement);
+                  if (idx !== -1) {
+                    const pos = idx + replacement.length;
+                    if (pos <= text.length) {
+                      const r = document.createRange();
+                      r.setStart(node, pos);
+                      r.collapse(true);
+                      newSel.removeAllRanges();
+                      newSel.addRange(r);
+                      break;
+                    }
+                  }
+                }
               }
             }
+          }
+          // Defensive sync: if the InputEvent did not propagate through
+          // Lexical/MDXEditor (e.g. synthetic events ignored), read the
+          // current markdown from the editor and call onChange ourselves.
+          const current = ref.current?.getMarkdown?.();
+          if (current != null && current !== latestValueRef.current) {
+            latestValueRef.current = current;
+            onChange(current);
           }
         });
       } else {
