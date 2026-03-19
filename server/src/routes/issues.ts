@@ -974,6 +974,30 @@ export function issueRoutes(db: Db, storage: StorageService) {
         }
       }
 
+      // Wake parent's agent when a child issue transitions to done/cancelled
+      const statusBecameTerminal =
+        existing.status !== "done" &&
+        existing.status !== "cancelled" &&
+        (issue.status === "done" || issue.status === "cancelled");
+      if (statusBecameTerminal && issue.parentId) {
+        try {
+          const parent = await svc.getById(issue.parentId);
+          if (parent?.assigneeAgentId && !wakeups.has(parent.assigneeAgentId)) {
+            wakeups.set(parent.assigneeAgentId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "child_issue_completed",
+              payload: { issueId: issue.id, parentId: parent.id },
+              requestedByActorType: actor.actorType,
+              requestedByActorId: actor.actorId,
+              contextSnapshot: { issueId: parent.id, taskId: parent.id, source: "issue.child_completed" },
+            });
+          }
+        } catch (err) {
+          logger.warn({ err, issueId: issue.id, parentId: issue.parentId }, "failed to look up parent for child-completion wake");
+        }
+      }
+
       for (const [agentId, wakeup] of wakeups.entries()) {
         heartbeat
           .wakeup(agentId, wakeup)
