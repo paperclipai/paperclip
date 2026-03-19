@@ -646,6 +646,34 @@ export function issueRoutes(db: Db, storage: StorageService) {
     res.json(removed);
   });
 
+  router.post("/companies/:companyId/issues/mark-all-read", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Board authentication required" });
+      return;
+    }
+    if (!req.actor.userId) {
+      res.status(403).json({ error: "Board user context required" });
+      return;
+    }
+    const issueIds = Array.isArray(req.body.issueIds) ? req.body.issueIds as string[] : undefined;
+    const result = await svc.markAllRead(companyId, req.actor.userId, issueIds);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.all_read_marked",
+      entityType: "company",
+      entityId: companyId,
+      details: { userId: req.actor.userId, markedCount: result.markedCount },
+    });
+    res.json(result);
+  });
+
   router.post("/issues/:id/read", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);

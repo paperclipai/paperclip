@@ -568,7 +568,7 @@ export function Inbox() {
 
   const markAllReadMutation = useMutation({
     mutationFn: async (issueIds: string[]) => {
-      await Promise.all(issueIds.map((issueId) => issuesApi.markRead(issueId)));
+      await issuesApi.markAllRead(selectedCompanyId!, issueIds);
     },
     onMutate: (issueIds) => {
       setFadingOutIssues((prev) => {

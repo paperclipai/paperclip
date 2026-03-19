@@ -653,6 +653,39 @@ export function issueService(db: Db) {
       return row;
     },
 
+    markAllRead: async (companyId: string, userId: string, issueIds?: string[]) => {
+      const now = new Date();
+      const touchedCondition = touchedByUserCondition(companyId, userId);
+      const unreadCondition = unreadForUserCondition(companyId, userId);
+      const conditions = [
+        eq(issues.companyId, companyId),
+        isNull(issues.hiddenAt),
+        touchedCondition,
+        unreadCondition,
+      ];
+      if (issueIds && issueIds.length > 0) {
+        conditions.push(inArray(issues.id, issueIds));
+      }
+      const unreadIssues = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(...conditions));
+      if (unreadIssues.length === 0) return { markedCount: 0 };
+      const ids = unreadIssues.map((r) => r.id);
+      await Promise.all(
+        ids.map((issueId) =>
+          db
+            .insert(issueReadStates)
+            .values({ companyId, issueId, userId, lastReadAt: now, updatedAt: now })
+            .onConflictDoUpdate({
+              target: [issueReadStates.companyId, issueReadStates.issueId, issueReadStates.userId],
+              set: { lastReadAt: now, updatedAt: now },
+            }),
+        ),
+      );
+      return { markedCount: ids.length };
+    },
+
     getById: async (id: string) => {
       const row = await db
         .select()
