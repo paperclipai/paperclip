@@ -45,14 +45,20 @@ import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "@paperclipai/adapter-opencode-local/server";
 
+const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
+  claude_local: "instructionsFilePath",
+  codex_local: "instructionsFilePath",
+  gemini_local: "instructionsFilePath",
+  opencode_local: "instructionsFilePath",
+  pi_local: "instructionsFilePath",
+  cursor: "instructionsFilePath",
+};
+
+export function defaultInstructionsPathKeyForAdapter(adapterType: string): string | null {
+  return DEFAULT_INSTRUCTIONS_PATH_KEYS[adapterType] ?? null;
+}
+
 export function agentRoutes(db: Db) {
-  const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
-    claude_local: "instructionsFilePath",
-    codex_local: "instructionsFilePath",
-    gemini_local: "instructionsFilePath",
-    opencode_local: "instructionsFilePath",
-    cursor: "instructionsFilePath",
-  };
   const KNOWN_INSTRUCTIONS_PATH_KEYS = new Set(["instructionsFilePath", "agentsMdPath"]);
 
   const router = Router();
@@ -1016,7 +1022,7 @@ export function agentRoutes(db: Db) {
 
     const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
     const explicitKey = asNonEmptyString(req.body.adapterConfigKey);
-    const defaultKey = DEFAULT_INSTRUCTIONS_PATH_KEYS[existing.adapterType] ?? null;
+    const defaultKey = defaultInstructionsPathKeyForAdapter(existing.adapterType);
     const adapterConfigKey = explicitKey ?? defaultKey;
     if (!adapterConfigKey) {
       res.status(422).json({

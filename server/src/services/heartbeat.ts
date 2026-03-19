@@ -27,6 +27,7 @@ import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } fr
 import { costService } from "./costs.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
+import { ensureAgentHomeScaffold } from "../agent-home-scaffold.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import { summarizeHeartbeatRunResultJson } from "./heartbeat-run-summary.js";
 import {
@@ -1124,6 +1125,7 @@ export function heartbeatService(db: Db) {
 
     const cwd = resolveDefaultAgentWorkspaceDir(agent.id);
     await fs.mkdir(cwd, { recursive: true });
+    await ensureAgentHomeScaffold(cwd);
     const warnings: string[] = [];
     if (sessionCwd) {
       warnings.push(
