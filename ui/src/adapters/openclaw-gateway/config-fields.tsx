@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Eye, EyeOff, RefreshCw } from "lucide-react";
 import type { AdapterConfigFieldsProps } from "../types";
 import {
@@ -47,6 +47,16 @@ function modelLabel(m: GatewayModel): string {
   return `${m.provider}/${m.name}${ctx}${reasoning}`;
 }
 
+/** Debounce a value by delayMs */
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delayMs);
+    return () => clearTimeout(timer);
+  }, [value, delayMs]);
+  return debounced;
+}
+
 function useGatewayModels(
   wsUrl: string,
   token: string,
@@ -55,11 +65,12 @@ function useGatewayModels(
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const debouncedUrl = useDebouncedValue(wsUrl, 600);
 
   const refresh = useCallback(() => setRefreshKey((k) => k + 1), []);
 
   useEffect(() => {
-    if (!wsUrl) return;
+    if (!debouncedUrl) return;
 
     let cancelled = false;
     let ws: WebSocket | null = null;
@@ -70,7 +81,7 @@ function useGatewayModels(
     setLoading(true);
     setError(null);
 
-    try { ws = new WebSocket(wsUrl); } catch (e) {
+    try { ws = new WebSocket(debouncedUrl); } catch (e) {
       setError(e instanceof Error ? e.message : "Invalid WebSocket URL");
       setLoading(false); clearTimeout(timer); return;
     }
@@ -109,7 +120,7 @@ function useGatewayModels(
     ws.onerror = () => { if (!cancelled) { setError("WebSocket connection error"); setLoading(false); clearTimeout(timer); } };
     ws.onclose = () => { clearTimeout(timer); };
     return () => { cancelled = true; clearTimeout(timer); ws?.close(); };
-  }, [wsUrl, token, refreshKey]);
+  }, [debouncedUrl, token, refreshKey]);
 
   return { models, loading, error, refresh };
 }
@@ -123,11 +134,12 @@ function useGatewayAgents(
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const debouncedAgentUrl = useDebouncedValue(wsUrl, 600);
 
   const refresh = useCallback(() => setRefreshKey((k) => k + 1), []);
 
   useEffect(() => {
-    if (!wsUrl) return;
+    if (!debouncedAgentUrl) return;
 
     let cancelled = false;
     let ws: WebSocket | null = null;
@@ -143,7 +155,7 @@ function useGatewayAgents(
     setError(null);
 
     try {
-      ws = new WebSocket(wsUrl);
+      ws = new WebSocket(debouncedAgentUrl);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Invalid WebSocket URL");
       setLoading(false);
@@ -222,7 +234,7 @@ function useGatewayAgents(
       clearTimeout(timer);
       ws?.close();
     };
-  }, [wsUrl, token, refreshKey]);
+  }, [debouncedAgentUrl, token, refreshKey]);
 
   return { agents, defaultId, loading, error, refresh };
 }

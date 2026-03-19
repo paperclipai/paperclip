@@ -1268,7 +1268,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
 
       // Apply model override via sessions.patch before sending the agent message
-      if (modelOverride && sessionKey) {
+      if (modelOverride) {
         try {
           await client.request("sessions.patch", { key: sessionKey, model: modelOverride }, {
             timeoutMs: 5_000,
