@@ -262,16 +262,7 @@ export function createPluginSecretsHandler(
       const { secretRef } = params;
 
       // ---------------------------------------------------------------
-      // 0. Rate limiting — prevent brute-force UUID enumeration
-      // ---------------------------------------------------------------
-      if (!rateLimiter.check(pluginId)) {
-        const err = new Error("Rate limit exceeded for secret resolution");
-        err.name = "RateLimitExceededError";
-        throw err;
-      }
-
-      // ---------------------------------------------------------------
-      // 1. Validate the ref format
+      // 0. Validate the ref format
       // ---------------------------------------------------------------
       if (!secretRef || typeof secretRef !== "string" || secretRef.trim().length === 0) {
         throw invalidSecretRef(secretRef ?? "<empty>");
@@ -304,6 +295,16 @@ export function createPluginSecretsHandler(
       }
 
       if (!cachedAllowedRefs.has(trimmedRef)) {
+        // ---------------------------------------------------------------
+        // 1c. Rate limiting — prevent brute-force UUID enumeration
+        // while allowing normal repeated access to configured secrets.
+        // ---------------------------------------------------------------
+        if (!rateLimiter.check(pluginId)) {
+          const err = new Error("Rate limit exceeded for secret resolution");
+          err.name = "RateLimitExceededError";
+          throw err;
+        }
+
         // Return "not found" to avoid leaking whether the secret exists
         throw secretNotFound(trimmedRef);
       }
