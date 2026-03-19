@@ -20,6 +20,7 @@ import { StatusIcon } from "../components/StatusIcon";
 import { StatusBadge } from "../components/StatusBadge";
 import { defaultTypeIcon, typeIcon, typeLabel } from "../components/ApprovalPayload";
 import { timeAgo } from "../lib/timeAgo";
+import { getRunErrorCodeLabel } from "../lib/runErrors";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Tabs } from "@/components/ui/tabs";
@@ -173,7 +174,7 @@ function FailedRunCard({
           </Link>
         ) : (
           <span className="block text-sm text-muted-foreground">
-            {run.errorCode ? `Error code: ${run.errorCode}` : "No linked issue"}
+            {run.errorCode ? (getRunErrorCodeLabel(run.errorCode) ?? `Error code: ${run.errorCode}`) : "No linked issue"}
           </span>
         )}
 
