@@ -65,8 +65,15 @@ describe("opencode_local environment diagnostics", () => {
     const fakeOpencode = path.join(binDir, "opencode");
     const script = [
       "#!/bin/sh",
-      "echo 'ProviderModelNotFoundError: ProviderModelNotFoundError' 1>&2",
-      "echo 'data: { providerID: \"openai\", modelID: \"gpt-5.3-codex\", suggestions: [] }' 1>&2",
+      "if [ \"$1\" = \"models\" ]; then",
+      "  echo 'openai/gpt-5.3-codex'",
+      "  exit 0",
+      "fi",
+      "if [ \"$1\" = \"run\" ]; then",
+      "  echo 'ProviderModelNotFoundError: ProviderModelNotFoundError' 1>&2",
+      "  echo 'data: { providerID: \"openai\", modelID: \"gpt-5.3-codex\", suggestions: [] }' 1>&2",
+      "  exit 1",
+      "fi",
       "exit 1",
       "",
     ].join("\n");
@@ -81,6 +88,7 @@ describe("opencode_local environment diagnostics", () => {
         config: {
           command: fakeOpencode,
           cwd,
+          model: "openai/gpt-5.3-codex",
         },
       });
 
@@ -88,6 +96,65 @@ describe("opencode_local environment diagnostics", () => {
       expect(modelCheck).toBeTruthy();
       expect(modelCheck?.level).toBe("warn");
       expect(result.status).toBe("warn");
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+      await fs.rm(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it("validates configured OpenCode agent profiles and probes with --agent", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-env-agent-cwd-"));
+    const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-env-agent-bin-"));
+    const fakeOpencode = path.join(binDir, "opencode");
+    const script = [
+      "#!/bin/sh",
+      "if [ \"$1\" = \"agent\" ] && [ \"$2\" = \"list\" ]; then",
+      "  echo 'Available Agents:'",
+      "  echo '- plan (Planning agent)'",
+      "  exit 0",
+      "fi",
+      "if [ \"$1\" = \"models\" ]; then",
+      "  echo 'litellm/qwen3.5-35b-a3b'",
+      "  exit 0",
+      "fi",
+      "if [ \"$1\" = \"run\" ]; then",
+      "  agent_flag=''",
+      "  while [ $# -gt 0 ]; do",
+      "    if [ \"$1\" = \"--agent\" ]; then",
+      "      shift",
+      "      agent_flag=\"$1\"",
+      "    fi",
+      "    shift",
+      "  done",
+      "  if [ \"$agent_flag\" != 'plan' ]; then",
+      "    echo 'missing expected --agent plan' 1>&2",
+      "    exit 1",
+      "  fi",
+      "  printf '%s\n' '{\"type\":\"text\",\"sessionID\":\"ses_agent\",\"part\":{\"text\":\"hello\"}}'",
+      "  printf '%s\n' '{\"type\":\"step_finish\",\"sessionID\":\"ses_agent\",\"part\":{\"cost\":0,\"tokens\":{\"input\":1,\"output\":1,\"reasoning\":0,\"cache\":{\"read\":0}}}}'",
+      "  exit 0",
+      "fi",
+      "exit 1",
+      "",
+    ].join("\n");
+
+    try {
+      await fs.writeFile(fakeOpencode, script, "utf8");
+      await fs.chmod(fakeOpencode, 0o755);
+
+      const result = await testEnvironment({
+        companyId: "company-1",
+        adapterType: "opencode_local",
+        config: {
+          command: fakeOpencode,
+          cwd,
+          agent: "plan",
+        },
+      });
+
+      expect(result.checks.some((check) => check.code === "opencode_agent_configured")).toBe(true);
+      expect(result.checks.some((check) => check.code === "opencode_hello_probe_passed")).toBe(true);
+      expect(result.status).toBe("pass");
     } finally {
       await fs.rm(cwd, { recursive: true, force: true });
       await fs.rm(binDir, { recursive: true, force: true });

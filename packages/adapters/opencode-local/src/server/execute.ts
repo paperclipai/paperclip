@@ -18,7 +18,13 @@ import {
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
-import { ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
+import {
+  ensureOpenCodeAgentConfiguredAndAvailable,
+  ensureOpenCodeModelConfiguredAndAvailable,
+  resolveConfiguredOpenCodeAgentModel,
+  resolveOpenCodeCommand,
+} from "./models.js";
+import { hydrateLiteLlmApiKey, isLiteLlmModel, parseModelProvider } from "./auth.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const PAPERCLIP_SKILLS_CANDIDATES = [
@@ -35,17 +41,9 @@ function firstNonEmptyLine(text: string): string {
   );
 }
 
-function parseModelProvider(model: string | null): string | null {
-  if (!model) return null;
-  const trimmed = model.trim();
-  if (!trimmed.includes("/")) return null;
-  return trimmed.slice(0, trimmed.indexOf("/")).trim() || null;
-}
-
 function resolveOpenCodeBiller(env: Record<string, string>, provider: string | null): string {
   return inferOpenAiCompatibleBiller(env, null) ?? provider ?? "unknown";
 }
-
 function claudeSkillsHome(): string {
   return path.join(os.homedir(), ".claude", "skills");
 }
@@ -94,7 +92,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     config.promptTemplate,
     "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
   );
-  const command = asString(config.command, "opencode");
+  const command = resolveOpenCodeCommand(config.command);
+  const agentProfile = asString(config.agent, "").trim();
   const model = asString(config.model, "").trim();
   const variant = asString(config.variant, "").trim();
 
@@ -120,6 +119,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
     typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
+  const configuredAgentModel = agentProfile
+    ? await resolveConfiguredOpenCodeAgentModel({ agent: agentProfile })
+    : null;
+  const effectiveModelId = model || configuredAgentModel || "";
   const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
   env.PAPERCLIP_RUN_ID = runId;
   const wakeTaskId =
@@ -165,19 +168,42 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
-  const runtimeEnv = Object.fromEntries(
+  let runtimeEnv = Object.fromEntries(
     Object.entries(ensurePathInEnv({ ...process.env, ...env })).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
+  if (isLiteLlmModel(effectiveModelId)) {
+    const hydrated = await hydrateLiteLlmApiKey(runtimeEnv);
+    runtimeEnv = hydrated.env;
+    if (hydrated.source === "openai_env" || hydrated.source === "opencode_auth") {
+      await onLog(
+        "stderr",
+        `[paperclip] Prepared LITELLM_API_KEY for OpenCode (${hydrated.source === "openai_env" ? "from OPENAI_API_KEY" : `from ${hydrated.detail}`}).\n`,
+      );
+    }
+  }
   await ensureCommandResolvable(command, cwd, runtimeEnv);
 
-  await ensureOpenCodeModelConfiguredAndAvailable({
-    model,
-    command,
-    cwd,
-    env: runtimeEnv,
-  });
+  if (!model && !agentProfile) {
+    throw new Error("OpenCode requires `adapterConfig.model` or `adapterConfig.agent`.");
+  }
+  if (model) {
+    await ensureOpenCodeModelConfiguredAndAvailable({
+      model,
+      command,
+      cwd,
+      env: runtimeEnv,
+    });
+  }
+  if (agentProfile) {
+    await ensureOpenCodeAgentConfiguredAndAvailable({
+      agent: agentProfile,
+      command,
+      cwd,
+      env: runtimeEnv,
+    });
+  }
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 20);
@@ -273,6 +299,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const buildArgs = (resumeSessionId: string | null) => {
     const args = ["run", "--format", "json"];
     if (resumeSessionId) args.push("--session", resumeSessionId);
+    if (agentProfile) args.push("--agent", agentProfile);
     if (model) args.push("--model", model);
     if (variant) args.push("--variant", variant);
     if (extraArgs.length > 0) args.push(...extraArgs);
@@ -349,7 +376,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       parsedError ||
       stderrLine ||
       `OpenCode exited with code ${synthesizedExitCode ?? -1}`;
-    const modelId = model || null;
+    const modelId = effectiveModelId || null;
 
     return {
       exitCode: synthesizedExitCode,

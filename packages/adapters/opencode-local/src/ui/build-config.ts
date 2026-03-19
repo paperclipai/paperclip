@@ -53,6 +53,7 @@ function parseEnvBindings(bindings: unknown): Record<string, unknown> {
 export function buildOpenCodeLocalConfig(v: CreateConfigValues): Record<string, unknown> {
   const ac: Record<string, unknown> = {};
   if (v.cwd) ac.cwd = v.cwd;
+  if (v.agent?.trim()) ac.agent = v.agent.trim();
   if (v.instructionsFilePath) ac.instructionsFilePath = v.instructionsFilePath;
   if (v.promptTemplate) ac.promptTemplate = v.promptTemplate;
   if (v.bootstrapPrompt) ac.bootstrapPromptTemplate = v.bootstrapPrompt;

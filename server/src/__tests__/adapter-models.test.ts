@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local";
 import { models as cursorFallbackModels } from "@paperclipai/adapter-cursor-local";
 import { resetOpenCodeModelsCacheForTests } from "@paperclipai/adapter-opencode-local/server";
@@ -7,14 +10,23 @@ import { resetCodexModelsCacheForTests } from "../adapters/codex-models.js";
 import { resetCursorModelsCacheForTests, setCursorModelsRunnerForTests } from "../adapters/cursor-models.js";
 
 describe("adapter model listing", () => {
-  beforeEach(() => {
+  let tempHome: string;
+
+  beforeEach(async () => {
+    vi.restoreAllMocks();
+    tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-adapter-models-home-"));
+    vi.spyOn(os, "homedir").mockReturnValue(tempHome);
     delete process.env.OPENAI_API_KEY;
     delete process.env.PAPERCLIP_OPENCODE_COMMAND;
     resetCodexModelsCacheForTests();
     resetCursorModelsCacheForTests();
     setCursorModelsRunnerForTests(null);
     resetOpenCodeModelsCacheForTests();
+  });
+
+  afterEach(async () => {
     vi.restoreAllMocks();
+    await fs.rm(tempHome, { recursive: true, force: true });
   });
 
   it("returns an empty list for unknown adapters", async () => {

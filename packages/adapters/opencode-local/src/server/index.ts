@@ -64,8 +64,13 @@ export { execute } from "./execute.js";
 export { testEnvironment } from "./test.js";
 export {
   listOpenCodeModels,
+  listOpenCodeAgents,
   discoverOpenCodeModels,
+  discoverOpenCodeAgents,
   ensureOpenCodeModelConfiguredAndAvailable,
+  ensureOpenCodeAgentConfiguredAndAvailable,
+  resolveConfiguredOpenCodeAgentModel,
+  resolveOpenCodeCommand,
   resetOpenCodeModelsCacheForTests,
 } from "./models.js";
 export { parseOpenCodeJsonl, isOpenCodeUnknownSessionError } from "./parse.js";

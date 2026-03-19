@@ -43,7 +43,10 @@ import {
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
-import { ensureOpenCodeModelConfiguredAndAvailable } from "@paperclipai/adapter-opencode-local/server";
+import {
+  ensureOpenCodeAgentConfiguredAndAvailable,
+  ensureOpenCodeModelConfiguredAndAvailable,
+} from "@paperclipai/adapter-opencode-local/server";
 
 export function agentRoutes(db: Db) {
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
@@ -260,7 +263,7 @@ export function agentRoutes(db: Db) {
       next.model = DEFAULT_GEMINI_LOCAL_MODEL;
       return ensureGatewayDeviceKey(adapterType, next);
     }
-    // OpenCode requires explicit model selection — no default
+    // OpenCode has no Paperclip-side default target — configure either model or agent.
     if (adapterType === "cursor" && !asNonEmptyString(next.model)) {
       next.model = DEFAULT_CURSOR_LOCAL_MODEL;
     }
@@ -275,13 +278,30 @@ export function agentRoutes(db: Db) {
     if (adapterType !== "opencode_local") return;
     const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(companyId, adapterConfig);
     const runtimeEnv = asRecord(runtimeConfig.env) ?? {};
+    const configuredModel = asNonEmptyString(runtimeConfig.model);
+    const configuredAgent = asNonEmptyString(runtimeConfig.agent);
+    if (!configuredModel && !configuredAgent) {
+      throw unprocessable(
+        "Invalid opencode_local adapterConfig: OpenCode requires adapterConfig.model or adapterConfig.agent",
+      );
+    }
     try {
-      await ensureOpenCodeModelConfiguredAndAvailable({
-        model: runtimeConfig.model,
-        command: runtimeConfig.command,
-        cwd: runtimeConfig.cwd,
-        env: runtimeEnv,
-      });
+      if (configuredModel) {
+        await ensureOpenCodeModelConfiguredAndAvailable({
+          model: configuredModel,
+          command: runtimeConfig.command,
+          cwd: runtimeConfig.cwd,
+          env: runtimeEnv,
+        });
+      }
+      if (configuredAgent) {
+        await ensureOpenCodeAgentConfiguredAndAvailable({
+          agent: configuredAgent,
+          command: runtimeConfig.command,
+          cwd: runtimeConfig.cwd,
+          env: runtimeEnv,
+        });
+      }
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       throw unprocessable(`Invalid opencode_local adapterConfig: ${reason}`);

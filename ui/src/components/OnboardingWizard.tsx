@@ -114,6 +114,7 @@ export function OnboardingWizard() {
   const [agentName, setAgentName] = useState("CEO");
   const [adapterType, setAdapterType] = useState<AdapterType>("claude_local");
   const [cwd, setCwd] = useState("");
+  const [openCodeAgent, setOpenCodeAgent] = useState("");
   const [model, setModel] = useState("");
   const [command, setCommand] = useState("");
   const [args, setArgs] = useState("");
@@ -217,7 +218,7 @@ export function OnboardingWizard() {
     if (step !== 2) return;
     setAdapterEnvResult(null);
     setAdapterEnvError(null);
-  }, [step, adapterType, cwd, model, command, args, url]);
+  }, [step, adapterType, cwd, openCodeAgent, model, command, args, url]);
 
   const selectedModel = (adapterModels ?? []).find((m) => m.id === model);
   const hasAnthropicApiKeyOverrideCheck =
@@ -274,6 +275,7 @@ export function OnboardingWizard() {
     setAgentName("CEO");
     setAdapterType("claude_local");
     setCwd("");
+    setOpenCodeAgent("");
     setModel("");
     setCommand("");
     setArgs("");
@@ -302,6 +304,7 @@ export function OnboardingWizard() {
       ...defaultCreateValues,
       adapterType,
       cwd,
+      agent: adapterType === "opencode_local" ? openCodeAgent : "",
       model:
         adapterType === "codex_local"
           ? model || DEFAULT_CODEX_LOCAL_MODEL
@@ -402,35 +405,36 @@ export function OnboardingWizard() {
     setError(null);
     try {
       if (adapterType === "opencode_local") {
+        const selectedAgentProfile = openCodeAgent.trim();
         const selectedModelId = model.trim();
-        if (!selectedModelId) {
-          setError(
-            "OpenCode requires an explicit model in provider/model format."
-          );
+        if (!selectedModelId && !selectedAgentProfile) {
+          setError("OpenCode requires either a model or an agent profile.");
           return;
         }
-        if (adapterModelsError) {
-          setError(
-            adapterModelsError instanceof Error
-              ? adapterModelsError.message
-              : "Failed to load OpenCode models."
-          );
-          return;
-        }
-        if (adapterModelsLoading || adapterModelsFetching) {
-          setError(
-            "OpenCode models are still loading. Please wait and try again."
-          );
-          return;
-        }
-        const discoveredModels = adapterModels ?? [];
-        if (!discoveredModels.some((entry) => entry.id === selectedModelId)) {
-          setError(
-            discoveredModels.length === 0
-              ? "No OpenCode models discovered. Run `opencode models` and authenticate providers."
-              : `Configured OpenCode model is unavailable: ${selectedModelId}`
-          );
-          return;
+        if (selectedModelId) {
+          if (adapterModelsError) {
+            setError(
+              adapterModelsError instanceof Error
+                ? adapterModelsError.message
+                : "Failed to load OpenCode models."
+            );
+            return;
+          }
+          if (adapterModelsLoading || adapterModelsFetching) {
+            setError(
+              "OpenCode models are still loading. Please wait and try again."
+            );
+            return;
+          }
+          const discoveredModels = adapterModels ?? [];
+          if (!discoveredModels.some((entry) => entry.id === selectedModelId)) {
+            setError(
+              discoveredModels.length === 0
+                ? "No OpenCode models discovered. Run `opencode models` and authenticate providers."
+                : `Configured OpenCode model is unavailable: ${selectedModelId}`
+            );
+            return;
+          }
         }
       }
 
@@ -743,6 +747,7 @@ export function OnboardingWizard() {
                           onClick={() => {
                             const nextType = opt.value as AdapterType;
                             setAdapterType(nextType);
+                            setOpenCodeAgent("");
                             if (nextType === "codex_local" && !model) {
                               setModel(DEFAULT_CODEX_LOCAL_MODEL);
                             }
@@ -835,6 +840,7 @@ export function OnboardingWizard() {
                               if (opt.comingSoon) return;
                               const nextType = opt.value as AdapterType;
                               setAdapterType(nextType);
+                              setOpenCodeAgent("");
                               if (nextType === "gemini_local" && !model) {
                                 setModel(DEFAULT_GEMINI_LOCAL_MODEL);
                                 return;
@@ -892,6 +898,22 @@ export function OnboardingWizard() {
                           <ChoosePathButton />
                         </div>
                       </div>
+                      {adapterType === "opencode_local" && (
+                        <div>
+                          <div className="flex items-center gap-1.5 mb-1">
+                            <label className="text-xs text-muted-foreground">
+                              OpenCode agent profile
+                            </label>
+                            <HintIcon text="Optional OpenCode agent profile name from agent.<name> in opencode.json. Paperclip passes --agent <name>. Use this when OpenCode handles model selection via agent/harness config." />
+                          </div>
+                          <input
+                            className="w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/50"
+                            placeholder="plan"
+                            value={openCodeAgent}
+                            onChange={(e) => setOpenCodeAgent(e.target.value)}
+                          />
+                        </div>
+                      )}
                       <div>
                         <label className="text-xs text-muted-foreground mb-1 block">
                           Model
@@ -914,7 +936,9 @@ export function OnboardingWizard() {
                                   ? selectedModel.label
                                   : model ||
                                     (adapterType === "opencode_local"
-                                      ? "Select model (required)"
+                                      ? openCodeAgent.trim()
+                                        ? "Default from agent profile"
+                                        : "Select model (or use agent profile)"
                                       : "Default")}
                               </span>
                               <ChevronDown className="h-3 w-3 text-muted-foreground" />
@@ -983,7 +1007,10 @@ export function OnboardingWizard() {
                             </div>
                             {filteredModels.length === 0 && (
                               <p className="px-2 py-1.5 text-xs text-muted-foreground">
-                                No models discovered.
+                                {adapterType === "opencode_local" &&
+                                openCodeAgent.trim()
+                                  ? "No models discovered. You can still continue if the agent profile resolves a model in OpenCode."
+                                  : "No models discovered."}
                               </p>
                             )}
                           </PopoverContent>
@@ -1066,7 +1093,7 @@ export function OnboardingWizard() {
                               : adapterType === "gemini_local"
                                 ? `${effectiveAdapterCommand} --output-format json "Respond with hello."`
                               : adapterType === "opencode_local"
-                                ? `${effectiveAdapterCommand} run --format json "Respond with hello."`
+                                ? `${effectiveAdapterCommand} run --format json${openCodeAgent.trim() ? ` --agent ${openCodeAgent.trim()}` : ""}${model.trim() ? ` --model ${model.trim()}` : ""} "Respond with hello."`
                               : `${effectiveAdapterCommand} --print - --output-format stream-json --verbose`}
                           </p>
                           <p className="text-muted-foreground">
@@ -1084,7 +1111,9 @@ export function OnboardingWizard() {
                                   ? "CURSOR_API_KEY"
                                   : adapterType === "gemini_local"
                                     ? "GEMINI_API_KEY"
-                                    : "OPENAI_API_KEY"}
+                                    : adapterType === "opencode_local"
+                                      ? "LITELLM_API_KEY"
+                                      : "OPENAI_API_KEY"}
                               </span>{" "}
                               in env or run{" "}
                               <span className="font-mono">

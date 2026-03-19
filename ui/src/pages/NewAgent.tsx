@@ -50,6 +50,7 @@ function createValuesForAdapterType(
   } else if (adapterType === "cursor") {
     nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
   } else if (adapterType === "opencode_local") {
+    nextValues.agent = "";
     nextValues.model = "";
   }
   return nextValues;
@@ -142,31 +143,34 @@ export function NewAgent() {
     if (!selectedCompanyId || !name.trim()) return;
     setFormError(null);
     if (configValues.adapterType === "opencode_local") {
+      const selectedAgent = (configValues.agent ?? "").trim();
       const selectedModel = configValues.model.trim();
-      if (!selectedModel) {
-        setFormError("OpenCode requires an explicit model in provider/model format.");
+      if (!selectedModel && !selectedAgent) {
+        setFormError("OpenCode requires either a model or an agent profile.");
         return;
       }
-      if (adapterModelsError) {
-        setFormError(
-          adapterModelsError instanceof Error
-            ? adapterModelsError.message
-            : "Failed to load OpenCode models.",
-        );
-        return;
-      }
-      if (adapterModelsLoading || adapterModelsFetching) {
-        setFormError("OpenCode models are still loading. Please wait and try again.");
-        return;
-      }
-      const discovered = adapterModels ?? [];
-      if (!discovered.some((entry) => entry.id === selectedModel)) {
-        setFormError(
-          discovered.length === 0
-            ? "No OpenCode models discovered. Run `opencode models` and authenticate providers."
-            : `Configured OpenCode model is unavailable: ${selectedModel}`,
-        );
-        return;
+      if (selectedModel) {
+        if (adapterModelsError) {
+          setFormError(
+            adapterModelsError instanceof Error
+              ? adapterModelsError.message
+              : "Failed to load OpenCode models.",
+          );
+          return;
+        }
+        if (adapterModelsLoading || adapterModelsFetching) {
+          setFormError("OpenCode models are still loading. Please wait and try again.");
+          return;
+        }
+        const discovered = adapterModels ?? [];
+        if (!discovered.some((entry) => entry.id === selectedModel)) {
+          setFormError(
+            discovered.length === 0
+              ? "No OpenCode models discovered. Run `opencode models` and authenticate providers."
+              : `Configured OpenCode model is unavailable: ${selectedModel}`,
+          );
+          return;
+        }
       }
     }
     createAgent.mutate({

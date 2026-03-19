@@ -349,6 +349,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const currentModelId = isCreate
     ? val!.model
     : eff("adapterConfig", "model", String(config.model ?? ""));
+  const currentOpenCodeAgent =
+    adapterType === "opencode_local"
+      ? (
+          isCreate
+            ? val!.agent ?? ""
+            : eff("adapterConfig", "agent", String(config.agent ?? ""))
+        ).trim()
+      : "";
 
   const thinkingEffortKey =
     adapterType === "codex_local"
@@ -526,6 +534,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   } else if (t === "cursor") {
                     nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
                   } else if (t === "opencode_local") {
+                    nextValues.agent = "";
                     nextValues.model = "";
                   }
                   set!(nextValues);
@@ -544,6 +553,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                           : t === "cursor"
                             ? DEFAULT_CURSOR_LOCAL_MODEL
                           : "",
+                      agent: "",
                       effort: "",
                       modelReasoningEffort: "",
                       variant: "",
@@ -672,8 +682,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 }
                 open={modelOpen}
                 onOpenChange={setModelOpen}
-                allowDefault={adapterType !== "opencode_local"}
-                required={adapterType === "opencode_local"}
+                allowDefault={adapterType !== "opencode_local" || Boolean(currentOpenCodeAgent)}
+                required={adapterType === "opencode_local" && !currentOpenCodeAgent}
                 groupByProvider={adapterType === "opencode_local"}
               />
               {fetchedModelsError && (

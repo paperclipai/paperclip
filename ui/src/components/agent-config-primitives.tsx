@@ -27,7 +27,7 @@ export const help: Record<string, string> = {
   adapterType: "How this agent runs: local CLI (Claude/Codex/OpenCode), OpenClaw Gateway, spawned process, or generic HTTP webhook.",
   cwd: "Default working directory fallback for local adapters. Use an absolute path on the machine running Paperclip.",
   promptTemplate: "Sent on every heartbeat. Keep this small and dynamic. Use it for current-task framing, not large static instructions. Supports {{ agent.id }}, {{ agent.name }}, {{ agent.role }} and other template variables.",
-  model: "Override the default model used by the adapter.",
+  model: "Override the default model used by the adapter. For OpenCode, this becomes optional when an agent profile is configured.",
   thinkingEffort: "Control model reasoning depth. Supported values vary by adapter/model.",
   chrome: "Enable Claude's Chrome integration by passing --chrome.",
   dangerouslySkipPermissions: "Run Claude without permission prompts. Required for unattended operation.",
