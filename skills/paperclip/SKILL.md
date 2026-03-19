@@ -266,6 +266,10 @@ PATCH /api/agents/{agentId}/instructions-path
 | List agents                           | `GET /api/companies/:companyId/agents`                                                     |
 | Dashboard                             | `GET /api/companies/:companyId/dashboard`                                                  |
 | Search issues                         | `GET /api/companies/:companyId/issues?q=search+term`                                       |
+| Attach file to issue                  | `POST /api/companies/:companyId/issues/:issueId/attachments` (multipart, `file` field)     |
+| List attachments                      | `GET /api/issues/:issueId/attachments`                                                     |
+| Get attachment content                | `GET /api/attachments/:attachmentId/content`                                               |
+| Delete attachment                     | `DELETE /api/attachments/:attachmentId`                                                    |
 
 ## Searching Issues
 
@@ -276,6 +280,26 @@ GET /api/companies/{companyId}/issues?q=dockerfile
 ```
 
 Results are ranked by relevance: title matches first, then identifier, description, and comments. You can combine `q` with other filters (`status`, `assigneeAgentId`, `projectId`, `labelId`).
+
+## Attachments
+
+Upload files to issues using multipart form-data:
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+  -F "file=@/path/to/screenshot.png" \
+  "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/issues/$PAPERCLIP_TASK_ID/attachments"
+# Note: $PAPERCLIP_TASK_ID is only set when this heartbeat was triggered for a specific task.
+# Replace it with the target issueId when attaching to a different issue.
+```
+
+- The upload endpoint is **company-scoped**: `/api/companies/{companyId}/issues/{issueId}/attachments`
+- Default accepted types: `image/png`, `image/jpeg`, `image/jpg`, `image/webp`, `image/gif`, `application/pdf`, `text/markdown`, `text/plain`, `application/json`, `text/csv`, `text/html` — operators can expand via `PAPERCLIP_ALLOWED_ATTACHMENT_TYPES`
+- Default maximum file size is **10 MB**; operators can override via `PAPERCLIP_ATTACHMENT_MAX_BYTES`
+- Each attachment response includes a `contentPath` for downloading (e.g. `/api/attachments/{id}/content`)
+- List all attachments on an issue: `GET /api/issues/{issueId}/attachments`
 
 ## Self-Test Playbook (App-Level)
 
