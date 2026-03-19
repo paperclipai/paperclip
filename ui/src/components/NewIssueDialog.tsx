@@ -1282,6 +1282,14 @@ export function NewIssueDialog() {
                         </option>
                       ))}
                     </select>
+                    {assigneeSessionStrategy && (
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {assigneeSessionStrategy === "project" && "Shared context across project issues. Runs serialize."}
+                        {assigneeSessionStrategy === "issue" && "Isolated session per issue. Parallel execution."}
+                        {assigneeSessionStrategy === "fixed" && "Single shared session. Fully serialized."}
+                        {assigneeSessionStrategy === "run" && "Fresh session each run. No shared context."}
+                      </p>
+                    )}
                   </div>
                 )}
                 {assigneeAdapterType === "claude_local" && (

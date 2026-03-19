@@ -591,6 +591,12 @@ export function OpenClawGatewayConfigFields({
               <option value="fixed">Fixed</option>
               <option value="run">Per run</option>
             </select>
+            <p className="text-xs text-muted-foreground mt-1.5">
+              {sessionStrategy === "project" && "Issues in the same project share one session. Agent builds context across tasks but runs are serialized — concurrent issues queue up."}
+              {sessionStrategy === "issue" && "Each issue gets its own session. Parallel execution with isolated context per task."}
+              {sessionStrategy === "fixed" && "All issues share a single session. Maximum context retention but fully serialized execution. Best for single-purpose agents."}
+              {sessionStrategy === "run" && "Fresh session for every run. No shared context, maximum parallelism. Best for stateless one-shot tasks."}
+            </p>
           </Field>
 
           {sessionStrategy === "fixed" && (
