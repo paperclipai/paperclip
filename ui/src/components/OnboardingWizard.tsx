@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
-import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
+import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { companiesApi } from "../api/companies";
@@ -30,6 +30,7 @@ import {
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
+import { resolveRouteOnboardingOptions } from "../lib/onboarding-route";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { ChoosePathButton } from "./PathInstructionsModal";
 import { HintIcon } from "./agent-config-primitives";
@@ -75,12 +76,29 @@ After that, hire yourself a Founding Engineer agent and then plan the roadmap an
 
 export function OnboardingWizard() {
   const { onboardingOpen, onboardingOptions, closeOnboarding } = useDialog();
-  const { selectedCompanyId, companies, setSelectedCompanyId } = useCompany();
+  const { companies, setSelectedCompanyId, loading: companiesLoading } = useCompany();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const location = useLocation();
+  const { companyPrefix } = useParams<{ companyPrefix?: string }>();
+  const [routeDismissed, setRouteDismissed] = useState(false);
 
-  const initialStep = onboardingOptions.initialStep ?? 1;
-  const existingCompanyId = onboardingOptions.companyId;
+  const routeOnboardingOptions =
+    companyPrefix && companiesLoading
+      ? null
+      : resolveRouteOnboardingOptions({
+          pathname: location.pathname,
+          companyPrefix,
+          companies,
+        });
+  const effectiveOnboardingOpen =
+    onboardingOpen || (routeOnboardingOptions !== null && !routeDismissed);
+  const effectiveOnboardingOptions = onboardingOpen
+    ? onboardingOptions
+    : routeOnboardingOptions ?? {};
+
+  const initialStep = effectiveOnboardingOptions.initialStep ?? 1;
+  const existingCompanyId = effectiveOnboardingOptions.companyId;
 
   const [step, setStep] = useState<Step>(initialStep);
   const [loading, setLoading] = useState(false);
@@ -134,27 +152,31 @@ export function OnboardingWizard() {
   const [createdAgentId, setCreatedAgentId] = useState<string | null>(null);
   const [createdIssueRef, setCreatedIssueRef] = useState<string | null>(null);
 
+  useEffect(() => {
+    setRouteDismissed(false);
+  }, [location.pathname]);
+
   // Sync step and company when onboarding opens with options.
   // Keep this independent from company-list refreshes so Step 1 completion
   // doesn't get reset after creating a company.
   useEffect(() => {
-    if (!onboardingOpen) return;
-    const cId = onboardingOptions.companyId ?? null;
-    setStep(onboardingOptions.initialStep ?? 1);
+    if (!effectiveOnboardingOpen) return;
+    const cId = effectiveOnboardingOptions.companyId ?? null;
+    setStep(effectiveOnboardingOptions.initialStep ?? 1);
     setCreatedCompanyId(cId);
     setCreatedCompanyPrefix(null);
   }, [
-    onboardingOpen,
-    onboardingOptions.companyId,
-    onboardingOptions.initialStep
+    effectiveOnboardingOpen,
+    effectiveOnboardingOptions.companyId,
+    effectiveOnboardingOptions.initialStep
   ]);
 
   // Backfill issue prefix for an existing company once companies are loaded.
   useEffect(() => {
-    if (!onboardingOpen || !createdCompanyId || createdCompanyPrefix) return;
+    if (!effectiveOnboardingOpen || !createdCompanyId || createdCompanyPrefix) return;
     const company = companies.find((c) => c.id === createdCompanyId);
     if (company) setCreatedCompanyPrefix(company.issuePrefix);
-  }, [onboardingOpen, createdCompanyId, createdCompanyPrefix, companies]);
+  }, [effectiveOnboardingOpen, createdCompanyId, createdCompanyPrefix, companies]);
 
   // Resize textarea when step 3 is shown or description changes
   useEffect(() => {
@@ -171,7 +193,7 @@ export function OnboardingWizard() {
       ? queryKeys.agents.adapterModels(createdCompanyId, adapterType)
       : ["agents", "none", "adapter-models", adapterType],
     queryFn: () => agentsApi.adapterModels(createdCompanyId!, adapterType),
-    enabled: Boolean(createdCompanyId) && onboardingOpen && step === 2
+    enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 2
   });
   const isLocalAdapter =
     adapterType === "claude_local" ||
@@ -546,13 +568,16 @@ export function OnboardingWizard() {
     }
   }
 
-  if (!onboardingOpen) return null;
+  if (!effectiveOnboardingOpen) return null;
 
   return (
     <Dialog
-      open={onboardingOpen}
+      open={effectiveOnboardingOpen}
       onOpenChange={(open) => {
-        if (!open) handleClose();
+        if (!open) {
+          setRouteDismissed(true);
+          handleClose();
+        }
       }}
     >
       <DialogPortal>
@@ -761,6 +786,12 @@ export function OnboardingWizard() {
                             label: "Gemini CLI",
                             icon: Gem,
                             desc: "Local Gemini agent"
+                          },
+                          {
+                            value: "process" as const,
+                            label: "Process",
+                            icon: Terminal,
+                            desc: "Run a local command"
                           },
                           {
                             value: "opencode_local" as const,

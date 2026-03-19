@@ -10,6 +10,7 @@ channel=""
 release_date=""
 dry_run=false
 skip_verify=false
+print_version_only=false
 tag_name=""
 
 cleanup_on_exit=false
@@ -17,20 +18,23 @@ cleanup_on_exit=false
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/release.sh <canary|stable> [--date YYYY-MM-DD] [--dry-run] [--skip-verify]
+  ./scripts/release.sh <canary|stable> [--date YYYY-MM-DD] [--dry-run] [--skip-verify] [--print-version]
 
 Examples:
   ./scripts/release.sh canary
   ./scripts/release.sh canary --date 2026-03-17 --dry-run
   ./scripts/release.sh stable
   ./scripts/release.sh stable --date 2026-03-17 --dry-run
+  ./scripts/release.sh stable --date 2026-03-18 --print-version
 
 Notes:
-  - Canary releases publish YYYY.M.D-canary.N under the npm dist-tag "canary"
-    and create the git tag canary/vYYYY.M.D-canary.N.
-  - Stable releases publish YYYY.M.D under the npm dist-tag "latest" and create
-    the git tag vYYYY.M.D.
-  - Stable release notes must already exist at releases/vYYYY.M.D.md.
+  - Stable versions use YYYY.MDD.P, where M is the UTC month, DD is the
+    zero-padded UTC day, and P is the same-day stable patch slot.
+  - Canary releases publish YYYY.MDD.P-canary.N under the npm dist-tag
+    "canary" and create the git tag canary/vYYYY.MDD.P-canary.N.
+  - Stable releases publish YYYY.MDD.P under the npm dist-tag "latest" and
+    create the git tag vYYYY.MDD.P.
+  - Stable release notes must already exist at releases/vYYYY.MDD.P.md.
   - The script rewrites versions temporarily and restores the working tree on
     exit. Tags always point at the original source commit, not a generated
     release commit.
@@ -94,6 +98,7 @@ while [ $# -gt 0 ]; do
       ;;
     --dry-run) dry_run=true ;;
     --skip-verify) skip_verify=true ;;
+    --print-version) print_version_only=true ;;
     -h|--help)
       usage
       exit 0
@@ -118,14 +123,19 @@ CURRENT_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 LAST_STABLE_TAG="$(get_last_stable_tag)"
 CURRENT_STABLE_VERSION="$(get_current_stable_version)"
 RELEASE_DATE="${release_date:-$(utc_date_iso)}"
-TARGET_STABLE_VERSION="$(stable_version_for_date "$RELEASE_DATE")"
-TARGET_PUBLISH_VERSION="$TARGET_STABLE_VERSION"
-DIST_TAG="latest"
 
 PUBLIC_PACKAGE_INFO="$(list_public_package_info)"
-mapfile -t PUBLIC_PACKAGE_NAMES < <(printf '%s\n' "$PUBLIC_PACKAGE_INFO" | cut -f2)
+PUBLIC_PACKAGE_NAMES=()
+while IFS= read -r package_name; do
+  [ -n "$package_name" ] || continue
+  PUBLIC_PACKAGE_NAMES+=("$package_name")
+done < <(printf '%s\n' "$PUBLIC_PACKAGE_INFO" | cut -f2)
 
 [ -n "$PUBLIC_PACKAGE_INFO" ] || release_fail "no public packages were found in the workspace."
+
+TARGET_STABLE_VERSION="$(next_stable_version "$RELEASE_DATE" "${PUBLIC_PACKAGE_NAMES[@]}")"
+TARGET_PUBLISH_VERSION="$TARGET_STABLE_VERSION"
+DIST_TAG="latest"
 
 if [ "$channel" = "canary" ]; then
   require_on_master_branch
@@ -134,6 +144,11 @@ if [ "$channel" = "canary" ]; then
   tag_name="$(canary_tag_name "$TARGET_PUBLISH_VERSION")"
 else
   tag_name="$(stable_tag_name "$TARGET_STABLE_VERSION")"
+fi
+
+if [ "$print_version_only" = true ]; then
+  printf '%s\n' "$TARGET_PUBLISH_VERSION"
+  exit 0
 fi
 
 NOTES_FILE="$(release_notes_file "$TARGET_STABLE_VERSION")"

@@ -71,6 +71,8 @@ Read enough ancestor/comment context to understand _why_ the task exists and wha
 **Step 8 — Update status and communicate.** Always include the run ID header.
 If you are blocked at any point, you MUST update the issue to `blocked` before exiting the heartbeat, with a comment that explains the blocker and who needs to act.
 
+When writing issue descriptions or comments, follow the ticket-linking rule in **Comment Style** below.
+
 ```json
 PATCH /api/issues/{issueId}
 Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
@@ -144,11 +146,18 @@ Access control:
 
 ## Comment Style (Required)
 
-When posting issue comments, use concise markdown with:
+When posting issue comments or writing issue descriptions, use concise markdown with:
 
 - a short status line
 - bullets for what changed / what is blocked
 - links to related entities when available
+
+**Ticket references are links (required):** If you mention another issue identifier such as `PAP-224`, `ZED-24`, or any `{PREFIX}-{NUMBER}` ticket id inside a comment body or issue description, wrap it in a Markdown link:
+
+- `[PAP-224](/PAP/issues/PAP-224)`
+- `[ZED-24](/ZED/issues/ZED-24)`
+
+Never leave bare ticket ids in issue descriptions or comments when a clickable internal link can be provided.
 
 **Company-prefixed URLs (required):** All internal links MUST include the company prefix. Derive the prefix from any issue identifier you have (e.g., `PAP-315` → prefix is `PAP`). Use this prefix in all UI links:
 
@@ -171,7 +180,8 @@ Submitted CTO hire request and linked it for board review.
 
 - Approval: [ca6ba09d](/PAP/approvals/ca6ba09d-b558-4a53-a552-e7ef87e54a1b)
 - Pending agent: [CTO draft](/PAP/agents/cto)
-- Source issue: [PC-142](/PAP/issues/PC-142)
+- Source issue: [PAP-142](/PAP/issues/PAP-142)
+- Depends on: [PAP-224](/PAP/issues/PAP-224)
 ```
 
 ## Planning (Required when planning requested)

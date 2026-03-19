@@ -49,13 +49,13 @@ The repo and npm tooling still assume semver-shaped version strings in many plac
 
 Recommended format:
 
-- stable: `YYYY.M.D`
-- canary: `YYYY.M.D-canary.N`
+- stable: `YYYY.MDD.P`
+- canary: `YYYY.MDD.P-canary.N`
 
 Examples:
 
-- stable on March 17, 2026: `2026.3.17`
-- third canary on March 17, 2026: `2026.3.17-canary.2`
+- first stable on March 17, 2026: `2026.317.0`
+- third canary on the `2026.317.0` line: `2026.317.0-canary.2`
 
 Why this shape:
 
@@ -66,11 +66,12 @@ Why this shape:
 
 Important constraints:
 
+- the middle numeric slot should be `MDD`, where `M` is the month and `DD` is the zero-padded day
 - `2026.03.17` is not the format to use
   - numeric semver identifiers do not allow leading zeroes
-- `2026.03.16.8` is not the format to use
+- `2026.3.17.1` is not the format to use
   - semver has three numeric components, not four
-- the practical semver-safe equivalent of your example is `2026.3.16-canary.8`
+- the practical semver-safe equivalent is `2026.317.0-canary.8`
 
 This is effectively CalVer on semver rails.
 
@@ -109,7 +110,7 @@ This is the most important mechanical constraint.
 npm can move dist-tags, but it does not let you rename an already-published version. That means:
 
 - you can move `latest` to `paperclipai@1.2.3`
-- you cannot turn `paperclipai@2026.3.16-canary.8` into `paperclipai@2026.3.17`
+- you cannot turn `paperclipai@2026.317.0-canary.8` into `paperclipai@2026.317.0`
 
 So "promote canary to stable" really means:
 
@@ -123,7 +124,7 @@ Recommended stable input:
 
 - `source_ref`
   - commit SHA, or
-  - a canary git tag such as `canary/v2026.3.16-canary.8`
+  - a canary git tag such as `canary/v2026.317.1-canary.8`
 
 ### 5. Only stable releases get release notes, tags, and GitHub Releases
 
@@ -137,9 +138,9 @@ Canaries should stay lightweight:
 
 Stable releases should remain the public narrative surface:
 
-- git tag `v2026.3.17`
-- GitHub Release `v2026.3.17`
-- stable changelog file `releases/v2026.3.17.md`
+- git tag `v2026.317.0`
+- GitHub Release `v2026.317.0`
+- stable changelog file `releases/v2026.317.0.md`
 
 ## Security Model
 
@@ -233,14 +234,14 @@ Recommended stable path:
 
 1. pick a canary commit or tag
 2. run changelog generation locally from a trusted machine
-3. commit `releases/vYYYY.M.D.md`
+3. commit `releases/vYYYY.MDD.P.md`
 4. run stable promotion
 
 If the notes are not ready yet, a fallback is acceptable:
 
 - publish stable
 - create a minimal GitHub Release
-- update `releases/vYYYY.M.D.md` immediately afterward
+- update `releases/vYYYY.MDD.P.md` immediately afterward
 
 But the better steady-state is to have the stable notes committed before stable publish.
 
@@ -268,13 +269,13 @@ Steps:
 1. checkout the merged `master` commit
 2. run verification on that exact commit
 3. compute canary version for current UTC date
-4. version public packages to `YYYY.M.D-canary.N`
+4. version public packages to `YYYY.MDD.P-canary.N`
 5. publish to npm with dist-tag `canary`
 6. create a canary git tag for traceability
 
 Recommended canary tag format:
 
-- `canary/v2026.3.17-canary.4`
+- `canary/v2026.317.1-canary.4`
 
 Outputs:
 
@@ -299,14 +300,14 @@ Steps:
 
 1. checkout `source_ref`
 2. run verification on that exact commit
-3. compute stable version from UTC date or provided override
-4. fail if `vYYYY.M.D` already exists
-5. require `releases/vYYYY.M.D.md`
-6. version public packages to `YYYY.M.D`
+3. compute the next stable patch slot for the UTC date or provided override
+4. fail if `vYYYY.MDD.P` already exists
+5. require `releases/vYYYY.MDD.P.md`
+6. version public packages to `YYYY.MDD.P`
 7. publish to npm under `latest`
-8. create git tag `vYYYY.M.D`
+8. create git tag `vYYYY.MDD.P`
 9. push tag
-10. create GitHub Release from `releases/vYYYY.M.D.md`
+10. create GitHub Release from `releases/vYYYY.MDD.P.md`
 
 Outputs:
 
@@ -332,8 +333,8 @@ That logic should be replaced with:
 
 For example:
 
-- `stable_version_for_utc_date(2026-03-17) -> 2026.3.17`
-- `next_canary_for_utc_date(2026-03-17) -> 2026.3.17-canary.0`
+- `next_stable_version(2026-03-17) -> 2026.317.0`
+- `next_canary_for_utc_date(2026-03-17) -> 2026.317.0-canary.0`
 
 ### 2. Stop requiring `release/X.Y.Z`
 
@@ -392,19 +393,15 @@ It should continue to:
 
 ## Tradeoffs and Risks
 
-### 1. One stable per UTC day
+### 1. The stable patch slot is now part of the version contract
 
-With plain `YYYY.M.D`, you get one stable release per UTC day.
+With `YYYY.MDD.P`, same-day hotfixes are supported, but the stable patch slot is now part of the visible version format.
 
-That is probably fine, but it is a real product rule.
+That is the right tradeoff because:
 
-If you need multiple same-day stables later, you have three options:
-
-1. accept a less pretty stable format
-2. go back to a serial patch component
-3. keep daily stable cadence and use canaries for same-day fixes
-
-My recommendation is to accept one stable per UTC day unless reality proves otherwise.
+1. npm still gets semver-valid versions
+2. same-day hotfixes stay possible
+3. chronological ordering still works as long as the day is zero-padded inside `MDD`
 
 ### 2. Public package consumers lose semver intent signaling
 
@@ -469,8 +466,8 @@ That is acceptable if canaries stay clearly separate:
 
 Paperclip should adopt this model:
 
-- stable versions: `YYYY.M.D`
-- canary versions: `YYYY.M.D-canary.N`
+- stable versions: `YYYY.MDD.P`
+- canary versions: `YYYY.MDD.P-canary.N`
 - canaries auto-published on every push to `master`
 - stables manually promoted from a chosen tested commit or canary tag
 - no release branches in the default path
