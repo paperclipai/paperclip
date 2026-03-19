@@ -20,6 +20,7 @@ import {
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
+import { PrBadge } from "./PrBadge";
 import type { Issue } from "@paperclipai/shared";
 
 const boardStatuses = [
@@ -158,6 +159,7 @@ function KanbanCard({
               <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
             </span>
           )}
+          <PrBadge workProducts={issue.workProducts} />
         </div>
         <p className="text-sm leading-snug line-clamp-2 mb-2">{issue.title}</p>
         <div className="flex items-center gap-2">
