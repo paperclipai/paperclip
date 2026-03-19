@@ -59,7 +59,7 @@ export function NotFoundPage({ scope = "global", requestedPrefix }: NotFoundPage
             </Link>
           </Button>
           <Button variant="outline" asChild>
-            <Link to="/">{t("common.goToDashboard")}</Link>
+            <Link to="/">{t("common.goHome")}</Link>
           </Button>
         </div>
       </div>

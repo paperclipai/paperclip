@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -38,6 +39,7 @@ export function Companies() {
   } = useCompany();
   const { openOnboarding } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
 
   const { data: stats } = useQuery({
@@ -69,8 +71,8 @@ export function Companies() {
   });
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Companies" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("pages.companies.title") }]);
+  }, [setBreadcrumbs, t]);
 
   function startEdit(companyId: string, currentName: string) {
     setEditingId(companyId);

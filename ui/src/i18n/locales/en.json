@@ -59,7 +59,8 @@
     "showTerminated": "Show terminated",
     "newIssue": "New Issue",
     "noCompanySelected": "Select a company to continue.",
-    "goToDashboard": "Go to dashboard"
+    "goToDashboard": "Go to dashboard",
+    "goHome": "Go home"
   },
   "nav": {
     "dashboard": "Dashboard",

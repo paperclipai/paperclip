@@ -59,7 +59,8 @@
     "showTerminated": "Exibir encerrados",
     "newIssue": "Nova tarefa",
     "noCompanySelected": "Selecione uma empresa para continuar.",
-    "goToDashboard": "Ir para o painel"
+    "goToDashboard": "Ir para o painel",
+    "goHome": "Ir para o início"
   },
   "nav": {
     "dashboard": "Painel",

@@ -3,9 +3,14 @@ import { initReactI18next } from "react-i18next";
 import en from "./locales/en.json";
 import ptBR from "./locales/pt-BR.json";
 
-const LANGUAGE_STORAGE_KEY = "paperclip.language";
+export const LANGUAGE_STORAGE_KEY = "paperclip.language";
+export type SupportedLanguage = "en" | "pt-BR";
+export const SUPPORTED_LANGUAGES: { value: SupportedLanguage; label: string }[] = [
+  { value: "en", label: "English" },
+  { value: "pt-BR", label: "Português (Brasil)" },
+];
 
-function detectLanguage(): string {
+function detectLanguage(): SupportedLanguage {
   try {
     const stored = localStorage.getItem(LANGUAGE_STORAGE_KEY);
     if (stored === "en" || stored === "pt-BR") return stored;
@@ -29,9 +34,4 @@ i18n.use(initReactI18next).init({
   },
 });
 
-export { i18n, LANGUAGE_STORAGE_KEY };
-export type SupportedLanguage = "en" | "pt-BR";
-export const SUPPORTED_LANGUAGES: { value: SupportedLanguage; label: string }[] = [
-  { value: "en", label: "English" },
-  { value: "pt-BR", label: "Português (Brasil)" },
-];
+export { i18n };
