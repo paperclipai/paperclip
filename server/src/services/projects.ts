@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, isNotNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { projects, projectGoals, goals, projectWorkspaces } from "@paperclipai/db";
 import {
@@ -224,8 +224,17 @@ async function ensureSinglePrimaryWorkspace(
 
 export function projectService(db: Db) {
   return {
-    list: async (companyId: string): Promise<ProjectWithGoals[]> => {
-      const rows = await db.select().from(projects).where(eq(projects.companyId, companyId));
+    list: async (
+      companyId: string,
+      opts?: { includeArchived?: boolean; archivedOnly?: boolean },
+    ): Promise<ProjectWithGoals[]> => {
+      const conditions = [eq(projects.companyId, companyId)];
+      if (opts?.archivedOnly) {
+        conditions.push(isNotNull(projects.archivedAt));
+      } else if (!opts?.includeArchived) {
+        conditions.push(isNull(projects.archivedAt));
+      }
+      const rows = await db.select().from(projects).where(and(...conditions));
       const withGoals = await attachGoals(db, rows);
       return attachWorkspaces(db, withGoals);
     },
@@ -317,6 +326,32 @@ export function projectService(db: Db) {
         await syncGoalLinks(db, id, row.companyId, ids);
       }
 
+      const [withGoals] = await attachGoals(db, [row]);
+      const [enriched] = withGoals ? await attachWorkspaces(db, [withGoals]) : [];
+      return enriched ?? null;
+    },
+
+    archive: async (id: string): Promise<ProjectWithGoals | null> => {
+      const row = await db
+        .update(projects)
+        .set({ archivedAt: new Date(), updatedAt: new Date() })
+        .where(eq(projects.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!row) return null;
+      const [withGoals] = await attachGoals(db, [row]);
+      const [enriched] = withGoals ? await attachWorkspaces(db, [withGoals]) : [];
+      return enriched ?? null;
+    },
+
+    unarchive: async (id: string): Promise<ProjectWithGoals | null> => {
+      const row = await db
+        .update(projects)
+        .set({ archivedAt: null, updatedAt: new Date() })
+        .where(eq(projects.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!row) return null;
       const [withGoals] = await attachGoals(db, [row]);
       const [enriched] = withGoals ? await attachWorkspaces(db, [withGoals]) : [];
       return enriched ?? null;

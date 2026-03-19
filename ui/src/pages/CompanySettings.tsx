@@ -7,14 +7,15 @@ import { accessApi } from "../api/access";
 import { credentialsApi } from "../api/credentials";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { Settings, Check, Send, KeyRound, Trash2, Star, Pencil, X } from "lucide-react";
+import { Settings, Check, Send, KeyRound, Trash2, Star, Pencil, X, Users, Shield, UserPlus, Copy, Clock, ChevronDown, ChevronRight } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
   ToggleField,
   HintIcon
 } from "../components/agent-config-primitives";
-import type { CompanySettings as CompanySettingsType, CredentialType, ProviderCredential } from "@paperclipai/shared";
+import type { CompanySettings as CompanySettingsType, CompanyMembership, CredentialType, JoinRequest, PermissionKey, ProviderCredential } from "@paperclipai/shared";
+import { PERMISSION_KEYS } from "@paperclipai/shared";
 
 type AgentSnippetInput = {
   onboardingTextUrl: string;
@@ -325,6 +326,9 @@ export function CompanySettings() {
       {/* Credentials */}
       <CredentialsSection companyId={selectedCompanyId!} />
 
+      {/* Members & Permissions */}
+      <MembersSection companyId={selectedCompanyId!} />
+
       {/* Invites */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
@@ -448,6 +452,447 @@ export function CompanySettings() {
             )}
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ---- Permission display helpers ----
+
+const PERMISSION_LABELS: Record<PermissionKey, string> = {
+  "agents:create": "Create agents",
+  "users:invite": "Invite people",
+  "users:manage_permissions": "Manage permissions",
+  "tasks:assign": "Assign issues",
+  "tasks:assign_scope": "Assign (scoped)",
+  "joins:approve": "Approve joins",
+};
+
+const PERMISSION_DESCRIPTIONS: Record<PermissionKey, string> = {
+  "agents:create": "Create new agents in the company.",
+  "users:invite": "Invite people (humans or agents) to the company.",
+  "users:manage_permissions": "Grant and revoke permissions for members.",
+  "tasks:assign": "Assign issues to agents.",
+  "tasks:assign_scope": "Assign issues with scope restrictions.",
+  "joins:approve": "Approve or reject join requests.",
+};
+
+// ---- Members & Permissions Section ----
+
+function MembersSection({ companyId }: { companyId: string }) {
+  const queryClient = useQueryClient();
+
+  // State
+  const [expandedMemberId, setExpandedMemberId] = useState<string | null>(null);
+  const [editingGrants, setEditingGrants] = useState<Record<PermissionKey, boolean>>({} as Record<PermissionKey, boolean>);
+  const [showHumanInvite, setShowHumanInvite] = useState(false);
+  const [humanInviteUrl, setHumanInviteUrl] = useState<string | null>(null);
+  const [humanInviteCopied, setHumanInviteCopied] = useState(false);
+
+  // Fetch members
+  const {
+    data: members = [],
+    isLoading: membersLoading,
+    isError: membersError,
+  } = useQuery({
+    queryKey: queryKeys.access.members(companyId),
+    queryFn: () => accessApi.listMembers(companyId),
+    retry: false,
+  });
+
+  // Fetch join requests (pending)
+  const {
+    data: pendingJoinRequests = [],
+    isLoading: joinRequestsLoading,
+  } = useQuery({
+    queryKey: queryKeys.access.joinRequests(companyId),
+    queryFn: () => accessApi.listJoinRequests(companyId, "pending_approval"),
+    retry: false,
+  });
+
+  // Update permissions mutation
+  const permissionsMutation = useMutation({
+    mutationFn: ({
+      memberId,
+      grants,
+    }: {
+      memberId: string;
+      grants: Array<{ permissionKey: PermissionKey }>;
+    }) => accessApi.updateMemberPermissions(companyId, memberId, grants),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.access.members(companyId) });
+      setExpandedMemberId(null);
+    },
+  });
+
+  // Approve/reject join request mutations
+  const approveMutation = useMutation({
+    mutationFn: (requestId: string) =>
+      accessApi.approveJoinRequest(companyId, requestId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.access.joinRequests(companyId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.access.members(companyId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.sidebarBadges(companyId),
+      });
+    },
+  });
+
+  const rejectMutation = useMutation({
+    mutationFn: (requestId: string) =>
+      accessApi.rejectJoinRequest(companyId, requestId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.access.joinRequests(companyId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.sidebarBadges(companyId),
+      });
+    },
+  });
+
+  // Human invite mutation
+  const humanInviteMutation = useMutation({
+    mutationFn: () =>
+      accessApi.createHumanInvite(companyId, { allowedJoinTypes: "human" }),
+    onSuccess: (invite) => {
+      const base = window.location.origin.replace(/\/+$/, "");
+      const url = `${base}/invite/${invite.token}`;
+      setHumanInviteUrl(url);
+      setHumanInviteCopied(false);
+    },
+  });
+
+  function startEditPermissions(member: CompanyMembership) {
+    if (expandedMemberId === member.id) {
+      setExpandedMemberId(null);
+      return;
+    }
+    // Initialize all permissions to false (since we don't have current grants from the API)
+    const initial = {} as Record<PermissionKey, boolean>;
+    for (const key of PERMISSION_KEYS) {
+      initial[key] = false;
+    }
+    setEditingGrants(initial);
+    setExpandedMemberId(member.id);
+  }
+
+  function handleSavePermissions(memberId: string) {
+    const grants: Array<{ permissionKey: PermissionKey }> = [];
+    for (const key of PERMISSION_KEYS) {
+      if (editingGrants[key]) {
+        grants.push({ permissionKey: key });
+      }
+    }
+    permissionsMutation.mutate({ memberId, grants });
+  }
+
+  function memberStatusColor(status: string) {
+    switch (status) {
+      case "active":
+        return "bg-green-500/10 text-green-600";
+      case "pending":
+        return "bg-yellow-500/10 text-yellow-600";
+      case "suspended":
+        return "bg-red-500/10 text-red-600";
+      default:
+        return "bg-muted text-muted-foreground";
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        Members & Permissions
+      </div>
+      <div className="space-y-3 rounded-md border border-border px-4 py-4">
+        <div className="flex items-center gap-1.5">
+          <Users className="h-4 w-4 text-muted-foreground" />
+          <span className="text-xs text-muted-foreground">
+            Manage company members and their permissions.
+          </span>
+          <HintIcon text="Members include both human users and agents. Permissions control what actions they can perform." />
+        </div>
+
+        {/* Member list */}
+        {membersLoading ? (
+          <p className="text-xs text-muted-foreground">Loading members...</p>
+        ) : membersError ? (
+          <p className="text-xs text-muted-foreground">
+            Unable to load members. You may not have the required permission.
+          </p>
+        ) : members.length === 0 ? (
+          <p className="text-xs text-muted-foreground">
+            No members found.
+          </p>
+        ) : (
+          <div className="space-y-1">
+            {members.map((member) => (
+              <div key={member.id}>
+                {/* Member row */}
+                <div
+                  className="flex items-center justify-between gap-2 rounded-md border border-border px-3 py-2 cursor-pointer hover:bg-accent/50 transition-colors"
+                  onClick={() => startEditPermissions(member)}
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-sm font-medium truncate">
+                      {member.principalId}
+                    </span>
+                    <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                      {member.principalType}
+                    </span>
+                    <span
+                      className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${memberStatusColor(
+                        member.status
+                      )}`}
+                    >
+                      {member.status}
+                    </span>
+                    {member.membershipRole && (
+                      <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                        {member.membershipRole}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <Shield className="h-3.5 w-3.5 text-muted-foreground" />
+                    {expandedMemberId === member.id ? (
+                      <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+                    ) : (
+                      <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+                    )}
+                  </div>
+                </div>
+
+                {/* Permission editor (expanded) */}
+                {expandedMemberId === member.id && (
+                  <div className="mt-1 space-y-2 rounded-md border border-border bg-muted/30 px-3 py-3">
+                    <div className="text-xs font-medium text-muted-foreground">
+                      Permissions
+                    </div>
+                    <div className="space-y-1">
+                      {PERMISSION_KEYS.map((key) => (
+                        <ToggleField
+                          key={key}
+                          label={PERMISSION_LABELS[key]}
+                          hint={PERMISSION_DESCRIPTIONS[key]}
+                          checked={!!editingGrants[key]}
+                          onChange={(v) =>
+                            setEditingGrants((prev) => ({
+                              ...prev,
+                              [key]: v,
+                            }))
+                          }
+                        />
+                      ))}
+                    </div>
+                    <div className="flex items-center gap-2 pt-1">
+                      <Button
+                        size="sm"
+                        onClick={() => handleSavePermissions(member.id)}
+                        disabled={permissionsMutation.isPending}
+                      >
+                        {permissionsMutation.isPending
+                          ? "Saving..."
+                          : "Save permissions"}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => setExpandedMemberId(null)}
+                      >
+                        Cancel
+                      </Button>
+                      {permissionsMutation.isError && (
+                        <span className="text-xs text-destructive">
+                          {permissionsMutation.error instanceof Error
+                            ? permissionsMutation.error.message
+                            : "Failed to save permissions"}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Invite Human Members */}
+        <div className="border-t border-border pt-3 mt-3">
+          <div className="flex items-center gap-1.5 mb-2">
+            <UserPlus className="h-4 w-4 text-muted-foreground" />
+            <span className="text-xs text-muted-foreground">
+              Invite a human member to join this company.
+            </span>
+          </div>
+
+          {showHumanInvite ? (
+            <div className="space-y-2">
+              {humanInviteUrl ? (
+                <div className="rounded-md border border-border bg-muted/30 p-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-xs text-muted-foreground">
+                      Invite link (expires in 10 minutes)
+                    </div>
+                    {humanInviteCopied && (
+                      <span className="flex items-center gap-1 text-xs text-green-600 animate-pulse">
+                        <Check className="h-3 w-3" />
+                        Copied
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-1 flex items-center gap-2">
+                    <input
+                      className="flex-1 rounded-md border border-border bg-background px-2 py-1.5 font-mono text-xs outline-none"
+                      value={humanInviteUrl}
+                      readOnly
+                    />
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="shrink-0"
+                      onClick={async () => {
+                        try {
+                          await navigator.clipboard.writeText(humanInviteUrl);
+                          setHumanInviteCopied(true);
+                          setTimeout(() => setHumanInviteCopied(false), 2000);
+                        } catch {
+                          /* clipboard may not be available */
+                        }
+                      }}
+                    >
+                      <Copy className="h-3.5 w-3.5 mr-1" />
+                      Copy
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    onClick={() => humanInviteMutation.mutate()}
+                    disabled={humanInviteMutation.isPending}
+                  >
+                    {humanInviteMutation.isPending
+                      ? "Generating..."
+                      : "Generate invite link"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setShowHumanInvite(false)}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              )}
+              {humanInviteMutation.isError && (
+                <p className="text-xs text-destructive">
+                  {humanInviteMutation.error instanceof Error
+                    ? humanInviteMutation.error.message
+                    : "Failed to create invite"}
+                </p>
+              )}
+            </div>
+          ) : (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                setShowHumanInvite(true);
+                setHumanInviteUrl(null);
+                setHumanInviteCopied(false);
+              }}
+            >
+              <UserPlus className="h-3.5 w-3.5 mr-1" />
+              Invite human member
+            </Button>
+          )}
+        </div>
+
+        {/* Pending Join Requests */}
+        {!joinRequestsLoading && pendingJoinRequests.length > 0 && (
+          <div className="border-t border-border pt-3 mt-3">
+            <div className="flex items-center gap-1.5 mb-2">
+              <Clock className="h-4 w-4 text-muted-foreground" />
+              <span className="text-xs font-medium text-muted-foreground">
+                Pending join requests
+              </span>
+              <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600">
+                {pendingJoinRequests.length}
+              </span>
+            </div>
+            <div className="space-y-1">
+              {pendingJoinRequests.map((jr: JoinRequest) => (
+                <div
+                  key={jr.id}
+                  className="flex items-center justify-between gap-2 rounded-md border border-border px-3 py-2"
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-sm font-medium truncate">
+                      {jr.requestType === "agent"
+                        ? jr.agentName ?? "Unnamed agent"
+                        : jr.requestEmailSnapshot ?? "Unknown user"}
+                    </span>
+                    <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                      {jr.requestType}
+                    </span>
+                    {jr.adapterType && (
+                      <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                        {jr.adapterType}
+                      </span>
+                    )}
+                    <span className="shrink-0 text-[10px] text-muted-foreground">
+                      {new Date(jr.createdAt).toLocaleDateString()}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <Button
+                      size="sm"
+                      className="h-7 text-xs px-2"
+                      onClick={() => approveMutation.mutate(jr.id)}
+                      disabled={
+                        approveMutation.isPending || rejectMutation.isPending
+                      }
+                    >
+                      Approve
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 text-xs px-2 text-muted-foreground hover:text-destructive"
+                      onClick={() => rejectMutation.mutate(jr.id)}
+                      disabled={
+                        approveMutation.isPending || rejectMutation.isPending
+                      }
+                    >
+                      Reject
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+            {(approveMutation.isError || rejectMutation.isError) && (
+              <p className="text-xs text-destructive mt-1">
+                {(approveMutation.error ?? rejectMutation.error) instanceof Error
+                  ? ((approveMutation.error ?? rejectMutation.error) as Error).message
+                  : "Action failed"}
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Loading state for join requests */}
+        {joinRequestsLoading && (
+          <div className="border-t border-border pt-3 mt-3">
+            <p className="text-xs text-muted-foreground">Loading join requests...</p>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -1,4 +1,4 @@
-import type { AgentAdapterType, JoinRequest } from "@paperclipai/shared";
+import type { AgentAdapterType, CompanyMembership, JoinRequest, PermissionKey } from "@paperclipai/shared";
 import { api } from "./client";
 
 type InviteSummary = {
@@ -114,4 +114,37 @@ export const accessApi = {
 
   claimBoard: (token: string, code: string) =>
     api.post<{ claimed: true; userId: string }>(`/board-claim/${token}/claim`, { code }),
+
+  // Members & Permissions
+  listMembers: (companyId: string) =>
+    api.get<CompanyMembership[]>(`/companies/${companyId}/members`),
+
+  updateMemberPermissions: (
+    companyId: string,
+    memberId: string,
+    grants: Array<{ permissionKey: PermissionKey; scope?: Record<string, unknown> | null }>,
+  ) =>
+    api.patch<CompanyMembership>(
+      `/companies/${companyId}/members/${memberId}/permissions`,
+      { grants },
+    ),
+
+  revokeInvite: (inviteId: string) =>
+    api.post<{ id: string; revokedAt: string }>(`/invites/${inviteId}/revoke`, {}),
+
+  createHumanInvite: (
+    companyId: string,
+    input: {
+      allowedJoinTypes?: "human" | "agent" | "both";
+    } = {},
+  ) =>
+    api.post<{
+      id: string;
+      token: string;
+      inviteUrl: string;
+      expiresAt: string;
+      allowedJoinTypes: "human" | "agent" | "both";
+    }>(`/companies/${companyId}/invites`, {
+      allowedJoinTypes: input.allowedJoinTypes ?? "human",
+    }),
 };

@@ -12,7 +12,13 @@ function projectPath(id: string, companyId?: string, suffix = "") {
 }
 
 export const projectsApi = {
-  list: (companyId: string) => api.get<Project[]>(`/companies/${companyId}/projects`),
+  list: (companyId: string, opts?: { includeArchived?: boolean; archived?: boolean }) => {
+    const params = new URLSearchParams();
+    if (opts?.includeArchived) params.set("includeArchived", "true");
+    if (opts?.archived) params.set("archived", "true");
+    const qs = params.toString();
+    return api.get<Project[]>(`/companies/${companyId}/projects${qs ? `?${qs}` : ""}`);
+  },
   get: (id: string, companyId?: string) => api.get<Project>(projectPath(id, companyId)),
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<Project>(`/companies/${companyId}/projects`, data),
@@ -30,4 +36,8 @@ export const projectsApi = {
   removeWorkspace: (projectId: string, workspaceId: string, companyId?: string) =>
     api.delete<ProjectWorkspace>(projectPath(projectId, companyId, `/workspaces/${encodeURIComponent(workspaceId)}`)),
   remove: (id: string, companyId?: string) => api.delete<Project>(projectPath(id, companyId)),
+  archive: (id: string, companyId?: string) =>
+    api.post<Project>(projectPath(id, companyId, "/archive"), {}),
+  unarchive: (id: string, companyId?: string) =>
+    api.post<Project>(projectPath(id, companyId, "/unarchive"), {}),
 };

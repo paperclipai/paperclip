@@ -13,7 +13,7 @@ import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { ExternalLink, Github, Plus, Trash2, X } from "lucide-react";
+import { Archive, ArchiveRestore, ExternalLink, Github, Plus, Trash2, X } from "lucide-react";
 import { ChoosePathButton } from "./PathInstructionsModal";
 
 const PROJECT_STATUSES = [
@@ -134,6 +134,26 @@ export function ProjectProperties({ project, onUpdate }: ProjectPropertiesProps)
       projectsApi.updateWorkspace(project.id, workspaceId, data),
     onSuccess: invalidateProject,
   });
+
+  const archiveProject = useMutation({
+    mutationFn: () => projectsApi.archive(project.id),
+    onSuccess: invalidateProject,
+  });
+
+  const unarchiveProject = useMutation({
+    mutationFn: () => projectsApi.unarchive(project.id),
+    onSuccess: invalidateProject,
+  });
+
+  const handleArchiveToggle = () => {
+    if (project.archivedAt) {
+      unarchiveProject.mutate();
+    } else {
+      const confirmed = window.confirm(`Archive project "${project.name}"? It will be hidden from the default list.`);
+      if (!confirmed) return;
+      archiveProject.mutate();
+    }
+  };
 
   const removeGoal = (goalId: string) => {
     if (!onUpdate) return;
@@ -526,6 +546,44 @@ export function ProjectProperties({ project, onUpdate }: ProjectPropertiesProps)
         <PropertyRow label="Updated">
           <span className="text-sm">{formatDate(project.updatedAt)}</span>
         </PropertyRow>
+        {project.archivedAt && (
+          <PropertyRow label="Archived">
+            <span className="text-sm">{formatDate(project.archivedAt)}</span>
+          </PropertyRow>
+        )}
+
+        {onUpdate && (
+          <>
+            <Separator />
+            <div className="py-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-full justify-start gap-2 text-xs"
+                onClick={handleArchiveToggle}
+                disabled={archiveProject.isPending || unarchiveProject.isPending}
+              >
+                {project.archivedAt ? (
+                  <>
+                    <ArchiveRestore className="h-3.5 w-3.5" />
+                    Unarchive Project
+                  </>
+                ) : (
+                  <>
+                    <Archive className="h-3.5 w-3.5" />
+                    Archive Project
+                  </>
+                )}
+              </Button>
+              {archiveProject.isError && (
+                <p className="text-xs text-destructive mt-1">Failed to archive project.</p>
+              )}
+              {unarchiveProject.isError && (
+                <p className="text-xs text-destructive mt-1">Failed to unarchive project.</p>
+              )}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

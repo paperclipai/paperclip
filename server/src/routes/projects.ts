@@ -55,7 +55,9 @@ export function projectRoutes(db: Db) {
   router.get("/companies/:companyId/projects", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const result = await svc.list(companyId);
+    const includeArchived = req.query.includeArchived === "true";
+    const archivedOnly = req.query.archived === "true";
+    const result = await svc.list(companyId, { includeArchived, archivedOnly });
     res.json(result);
   });
 
@@ -256,6 +258,72 @@ export function projectRoutes(db: Db) {
     });
 
     res.json(workspace);
+  });
+
+  router.post("/projects/:id/archive", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    if (existing.archivedAt) {
+      res.json(existing);
+      return;
+    }
+    const project = await svc.archive(id);
+    if (!project) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: project.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "project.archived",
+      entityType: "project",
+      entityId: project.id,
+      details: { name: project.name },
+    });
+
+    res.json(project);
+  });
+
+  router.post("/projects/:id/unarchive", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    if (!existing.archivedAt) {
+      res.json(existing);
+      return;
+    }
+    const project = await svc.unarchive(id);
+    if (!project) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: project.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "project.unarchived",
+      entityType: "project",
+      entityId: project.id,
+      details: { name: project.name },
+    });
+
+    res.json(project);
   });
 
   router.delete("/projects/:id", async (req, res) => {
