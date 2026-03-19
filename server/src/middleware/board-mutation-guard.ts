@@ -52,7 +52,7 @@ export function boardMutationGuard(): RequestHandler {
     // Local-trusted mode uses an implicit board actor for localhost-only development.
     // In this mode, origin/referer headers can be omitted by some clients for multipart
     // uploads; do not block those mutations.
-    if (req.actor.source === "local_implicit") {
+    if (req.actor.source === "local_implicit" || req.actor.source === "managed") {
       next();
       return;
     }

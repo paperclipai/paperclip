@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import type { Request, RequestHandler } from "express";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -14,11 +14,25 @@ function hashToken(token: string) {
 
 interface ActorMiddlewareOptions {
   deploymentMode: DeploymentMode;
+  managedSecret?: string;
   resolveSession?: (req: Request) => Promise<BetterAuthSessionResult | null>;
 }
 
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   return async (req, _res, next) => {
+    // Managed-mode: trust instance identity from management proxy
+    const instanceIdHeader = req.header("x-paperclip-instance-id");
+    if (opts.deploymentMode === "managed" && instanceIdHeader && opts.managedSecret) {
+      const incoming = req.header("x-paperclip-management-secret") ?? "";
+      const a = Buffer.from(incoming);
+      const b = Buffer.from(opts.managedSecret);
+      if (a.length === b.length && timingSafeEqual(a, b)) {
+        req.actor = { type: "board", userId: "managed", isInstanceAdmin: true, source: "managed" };
+        next();
+        return;
+      }
+    }
+
     req.actor =
       opts.deploymentMode === "local_trusted"
         ? { type: "board", userId: "local-board", isInstanceAdmin: true, source: "local_implicit" }

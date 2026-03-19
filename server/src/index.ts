@@ -30,6 +30,7 @@ import { heartbeatService, reconcilePersistedRuntimeServicesOnStartup } from "./
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
+import { setStartedAt } from "./routes/health.js";
 
 type BetterAuthSessionUser = {
   id: string;
@@ -422,6 +423,10 @@ export async function startServer(): Promise<StartedServer> {
       }
     }
   }
+
+  if (config.deploymentMode === "managed" && !config.managedSecret) {
+    throw new Error("managed mode requires PAPERCLIP_MANAGEMENT_SECRET to be set");
+  }
   
   let authReady = config.deploymentMode === "local_trusted";
   let betterAuthHandler: RequestHandler | undefined;
@@ -488,6 +493,7 @@ export async function startServer(): Promise<StartedServer> {
     bindHost: config.host,
     authReady,
     companyDeletionEnabled: config.companyDeletionEnabled,
+    managedSecret: config.managedSecret,
     betterAuthHandler,
     resolveSession,
   });
@@ -615,6 +621,7 @@ export async function startServer(): Promise<StartedServer> {
     server.once("error", onError);
     server.listen(listenPort, config.host, () => {
       server.off("error", onError);
+      setStartedAt(Date.now());
       logger.info(`Server listening on ${config.host}:${listenPort}`);
       if (process.env.PAPERCLIP_OPEN_ON_LISTEN === "true") {
         const openHost = config.host === "0.0.0.0" || config.host === "::" ? "127.0.0.1" : config.host;
@@ -665,25 +672,46 @@ export async function startServer(): Promise<StartedServer> {
       resolveListen();
     });
   });
-  
-  if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
-    const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+
+  // Managed-mode lifecycle & usage reporting
+  const lifecycleOpts = config.managedLifecycleUrl && config.managedInstanceId && config.managedSecret
+    ? { url: config.managedLifecycleUrl, instanceId: config.managedInstanceId, secret: config.managedSecret }
+    : null;
+  let usageStop: (() => void) | undefined;
+  let notifyShutdownFn: ((opts: NonNullable<typeof lifecycleOpts>) => Promise<void>) | undefined;
+  if (lifecycleOpts) {
+    const { notifyReady, notifyShutdown } = await import("./services/lifecycle-hooks.js");
+    void notifyReady(lifecycleOpts);
+    notifyShutdownFn = notifyShutdown;
+  }
+  if (config.managedUsageReportUrl && config.managedInstanceId && config.managedSecret) {
+    const { startUsageReporter } = await import("./services/usage-reporter.js");
+    const reporter = startUsageReporter(db, {
+      url: config.managedUsageReportUrl,
+      instanceId: config.managedInstanceId,
+      secret: config.managedSecret,
+    });
+    usageStop = reporter.stop;
+  }
+
+  const gracefulShutdown = async (signal: "SIGINT" | "SIGTERM") => {
+    usageStop?.();
+    if (lifecycleOpts && notifyShutdownFn) {
+      await notifyShutdownFn(lifecycleOpts);
+    }
+    if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
       logger.info({ signal }, "Stopping embedded PostgreSQL");
-      try {
-        await embeddedPostgres?.stop();
-      } catch (err) {
+      try { await embeddedPostgres.stop(); } catch (err) {
         logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
-      } finally {
-        process.exit(0);
       }
-    };
-  
-    process.once("SIGINT", () => {
-      void shutdown("SIGINT");
-    });
-    process.once("SIGTERM", () => {
-      void shutdown("SIGTERM");
-    });
+    }
+    process.exit(0);
+  };
+
+  const needsGracefulShutdown = (embeddedPostgres && embeddedPostgresStartedByThisProcess) || !!lifecycleOpts || !!usageStop;
+  if (needsGracefulShutdown) {
+    process.once("SIGINT", () => void gracefulShutdown("SIGINT"));
+    process.once("SIGTERM", () => void gracefulShutdown("SIGTERM"));
   }
 
   return {
