@@ -417,8 +417,13 @@ class CodexRpcClient {
   private buffer = "";
   private pending = new Map<number, PendingRequest>();
   private stderr = "";
+  private startupError: Error | null = null;
 
   constructor() {
+    this.proc.on("error", (error) => {
+      this.startupError = error;
+      this.rejectPending(error);
+    });
     this.proc.stdout.setEncoding("utf8");
     this.proc.stderr.setEncoding("utf8");
     this.proc.stdout.on("data", (chunk: string) => this.onStdout(chunk));
@@ -426,12 +431,16 @@ class CodexRpcClient {
       this.stderr += chunk;
     });
     this.proc.on("exit", () => {
-      for (const request of this.pending.values()) {
-        clearTimeout(request.timer);
-        request.reject(new Error(this.stderr.trim() || "codex app-server closed unexpectedly"));
-      }
-      this.pending.clear();
+      this.rejectPending(new Error(this.stderr.trim() || "codex app-server closed unexpectedly"));
     });
+  }
+
+  private rejectPending(error: Error) {
+    for (const request of this.pending.values()) {
+      clearTimeout(request.timer);
+      request.reject(error);
+    }
+    this.pending.clear();
   }
 
   private onStdout(chunk: string) {
@@ -459,6 +468,7 @@ class CodexRpcClient {
   }
 
   private request(method: string, params: Record<string, unknown> = {}, timeoutMs = 6_000): Promise<Record<string, unknown>> {
+    if (this.startupError) return Promise.reject(this.startupError);
     const id = this.nextId++;
     const payload = JSON.stringify({ id, method, params }) + "\n";
     return new Promise<Record<string, unknown>>((resolve, reject) => {
