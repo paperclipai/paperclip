@@ -1,0 +1,45 @@
+{
+  "title": "Approvals",
+  "selectCompany": "Select a company first.",
+  "tabs": {
+    "pending": "Pending",
+    "all": "All"
+  },
+  "empty": {
+    "noPending": "No pending approvals.",
+    "noApprovals": "No approvals yet."
+  },
+  "detail": {
+    "notFound": "Approval not found.",
+    "approvedBannerTitle": "Approval confirmed",
+    "approvedBannerDescription": "Requesting agent was notified to review this approval and linked issues.",
+    "reviewLinkedIssues": "Review linked issues",
+    "reviewLinkedIssue": "Review linked issue",
+    "openHiredAgent": "Open hired agent",
+    "backToApprovals": "Back to approvals",
+    "requestedBy": "Requested by",
+    "seeFullRequest": "See full request",
+    "decisionNote": "Decision note: {{note}}",
+    "linkedIssues": "Linked Issues",
+    "linkedIssuesFootnote": "Linked issues remain open until the requesting agent follows up and closes them.",
+    "approve": "Approve",
+    "reject": "Reject",
+    "budgetResolve": "Resolve this budget stop from the budget controls on",
+    "requestRevision": "Request revision",
+    "markResubmitted": "Mark resubmitted",
+    "deleteDisapprovedAgent": "Delete disapproved agent",
+    "deleteDisapprovedAgentConfirm": "Delete this disapproved agent? This cannot be undone.",
+    "comments": "Comments ({{count}})",
+    "commentPlaceholder": "Add a comment...",
+    "posting": "Posting\u2026",
+    "postComment": "Post comment",
+    "board": "Board"
+  },
+  "card": {
+    "requestedBy": "requested by",
+    "viewDetails": "View details",
+    "approve": "Approve",
+    "reject": "Reject",
+    "note": "Note: {{note}}"
+  }
+}

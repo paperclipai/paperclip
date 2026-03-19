@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -33,17 +34,10 @@ import { MarkdownEditor, type MarkdownEditorRef } from "./MarkdownEditor";
 import { StatusBadge } from "./StatusBadge";
 import { ChoosePathButton } from "./PathInstructionsModal";
 
-const projectStatuses = [
-  { value: "backlog", label: "Backlog" },
-  { value: "planned", label: "Planned" },
-  { value: "in_progress", label: "In Progress" },
-  { value: "completed", label: "Completed" },
-  { value: "cancelled", label: "Cancelled" },
-];
-
 type WorkspaceSetup = "none" | "local" | "repo" | "both";
 
 export function NewProjectDialog() {
+  const { t } = useTranslation("projects");
   const { newProjectOpen, closeNewProject } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
@@ -137,11 +131,11 @@ export function NewProjectDialog() {
     const repoUrl = workspaceRepoUrl.trim();
 
     if (localRequired && !isAbsolutePath(localPath)) {
-      setWorkspaceError("Local folder must be a full absolute path.");
+      setWorkspaceError(t("properties.localFolderAbsolutePathError"));
       return;
     }
     if (repoRequired && !isGitHubRepoUrl(repoUrl)) {
-      setWorkspaceError("Repo must use a valid GitHub repo URL.");
+      setWorkspaceError(t("properties.repoUrlInvalidError"));
       return;
     }
 
@@ -224,7 +218,7 @@ export function NewProjectDialog() {
               </span>
             )}
             <span className="text-muted-foreground/60">&rsaquo;</span>
-            <span>New project</span>
+            <span>{t("newProjectDialog.newProject")}</span>
           </div>
           <div className="flex items-center gap-1">
             <Button
@@ -269,7 +263,7 @@ export function NewProjectDialog() {
             ref={descriptionEditorRef}
             value={description}
             onChange={setDescription}
-            placeholder="Add description..."
+            placeholder={t("newProjectDialog.descriptionPlaceholder")}
             bordered={false}
             contentClassName={cn("text-sm text-muted-foreground", expanded ? "min-h-[220px]" : "min-h-[120px]")}
             imageUploadHandler={async (file) => {
@@ -282,7 +276,7 @@ export function NewProjectDialog() {
         <div className="px-4 pb-3 space-y-3 border-t border-border">
           <div className="pt-3">
             <p className="text-sm font-medium">Where will work be done on this project?</p>
-            <p className="text-xs text-muted-foreground">Add a repo and/or local folder for this project.</p>
+            <p className="text-xs text-muted-foreground">{t("newProjectDialog.codebaseHint")}</p>
           </div>
           <div className="grid gap-2 sm:grid-cols-3">
             <button
@@ -325,7 +319,7 @@ export function NewProjectDialog() {
                 <GitBranch className="h-4 w-4" />
                 Both
               </div>
-              <p className="mt-1 text-xs text-muted-foreground">Configure both repo and local folder.</p>
+              <p className="mt-1 text-xs text-muted-foreground">{t("newProjectDialog.codebaseBothHint")}</p>
             </button>
           </div>
 
@@ -345,7 +339,7 @@ export function NewProjectDialog() {
           )}
           {(workspaceSetup === "repo" || workspaceSetup === "both") && (
             <div className="rounded-md border border-border p-2">
-              <label className="mb-1 block text-xs text-muted-foreground">Repo URL</label>
+              <label className="mb-1 block text-xs text-muted-foreground">{t("newProjectDialog.repoUrlLabel")}</label>
               <input
                 className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs outline-none"
                 value={workspaceRepoUrl}
@@ -369,7 +363,13 @@ export function NewProjectDialog() {
               </button>
             </PopoverTrigger>
             <PopoverContent className="w-40 p-1" align="start">
-              {projectStatuses.map((s) => (
+              {([
+                { value: "backlog", labelKey: "newProjectDialog.statuses.backlog" },
+                { value: "planned", labelKey: "newProjectDialog.statuses.planned" },
+                { value: "in_progress", labelKey: "newProjectDialog.statuses.inProgress" },
+                { value: "completed", labelKey: "newProjectDialog.statuses.completed" },
+                { value: "cancelled", labelKey: "newProjectDialog.statuses.cancelled" },
+              ] as const).map((s) => (
                 <button
                   key={s.value}
                   className={cn(
@@ -378,7 +378,7 @@ export function NewProjectDialog() {
                   )}
                   onClick={() => { setStatus(s.value); setStatusOpen(false); }}
                 >
-                  {s.label}
+                  {t(s.labelKey)}
                 </button>
               ))}
             </PopoverContent>
@@ -466,7 +466,7 @@ export function NewProjectDialog() {
             disabled={!name.trim() || createProject.isPending}
             onClick={handleSubmit}
           >
-            {createProject.isPending ? "Creating…" : "Create project"}
+            {createProject.isPending ? t("newProjectDialog.creating") : t("newProjectDialog.createProject")}
           </Button>
         </div>
       </DialogContent>

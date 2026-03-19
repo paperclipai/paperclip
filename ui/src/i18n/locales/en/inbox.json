@@ -1,0 +1,74 @@
+{
+  "title": "Inbox",
+  "selectCompany": "Select a company to view inbox.",
+  "tabs": {
+    "recent": "Recent",
+    "unread": "Unread",
+    "all": "All"
+  },
+  "empty": {
+    "noUnread": "No new inbox items.",
+    "noRecent": "No recent inbox items.",
+    "noMatch": "No inbox items match these filters."
+  },
+  "categories": {
+    "allCategories": "All categories",
+    "myRecentIssues": "My recent issues",
+    "joinRequests": "Join requests",
+    "approvals": "Approvals",
+    "failedRuns": "Failed runs",
+    "alerts": "Alerts"
+  },
+  "approvalFilters": {
+    "allStatuses": "All approval statuses",
+    "needsAction": "Needs action",
+    "resolved": "Resolved"
+  },
+  "sections": {
+    "approvalsNeedingAction": "Approvals Needing Action",
+    "approvals": "Approvals",
+    "joinRequests": "Join Requests",
+    "failedRuns": "Failed Runs",
+    "alerts": "Alerts"
+  },
+  "runSources": {
+    "timer": "Scheduled",
+    "assignment": "Assignment",
+    "on_demand": "Manual",
+    "automation": "Automation"
+  },
+  "failedRun": {
+    "errorCode": "Error code: {{code}}",
+    "noLinkedIssue": "No linked issue",
+    "runFailed": "{{source}} run failed {{timeAgo}}",
+    "openRun": "Open run",
+    "runExitedWithError": "Run exited with an error.",
+    "dismiss": "Dismiss",
+    "agentFallback": "Agent {{id}}"
+  },
+  "approval": {
+    "requestedBy": "requested by {{name}}",
+    "updatedTimeAgo": "updated {{timeAgo}}"
+  },
+  "issue": {
+    "commentedTimeAgo": "commented {{timeAgo}}",
+    "updatedTimeAgo": "updated {{timeAgo}}"
+  },
+  "placeholders": {
+    "category": "Category",
+    "approvalStatus": "Approval status"
+  },
+  "joinRequest": {
+    "humanJoinRequest": "Human join request",
+    "agentJoinRequest": "Agent join request",
+    "agentJoinRequestNamed": "Agent join request: {{name}}",
+    "requestedTimeAgo": "requested {{timeAgo}} from IP {{ip}}",
+    "email": "email: {{email}}",
+    "adapter": "adapter: {{adapter}}"
+  },
+  "alerts": {
+    "agentErrors_one": "{{count}} agent has errors",
+    "agentErrors_other": "{{count}} agents have errors",
+    "budgetUtilization": "Budget at {{percent}}% utilization this month"
+  }
+}

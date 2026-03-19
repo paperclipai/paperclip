@@ -1,0 +1,106 @@
+{
+  "buttons": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "create": "Create",
+    "close": "Close",
+    "back": "Back",
+    "clear": "Clear",
+    "approve": "Approve",
+    "reject": "Reject",
+    "retry": "Retry",
+    "retrying": "Retrying\u2026",
+    "copy": "Copy",
+    "copySnippet": "Copy snippet",
+    "copiedSnippet": "Copied snippet",
+    "copied": "Copied",
+    "submit": "Submit",
+    "addProject": "Add Project",
+    "newAgent": "New Agent",
+    "newGoal": "New Goal",
+    "newIssue": "New Issue",
+    "getStarted": "Get Started",
+    "openDashboard": "Open dashboard",
+    "goHome": "Go home",
+    "saveChanges": "Save changes",
+    "saving": "Saving\u2026",
+    "saved": "Saved",
+    "markAllAsRead": "Mark all as read",
+    "marking": "Marking\u2026"
+  },
+  "labels": {
+    "name": "Name",
+    "email": "Email",
+    "password": "Password",
+    "description": "Description",
+    "status": "Status",
+    "targetDate": "Target Date",
+    "loading": "Loading\u2026",
+    "working": "Working\u2026",
+    "recommended": "Recommended",
+    "live": "Live",
+    "requestedPath": "Requested path"
+  },
+  "empty": {
+    "noResults": "No results found.",
+    "noDataYet": "No data yet.",
+    "selectCompany": "Select a company first.",
+    "noTasks": "No tasks yet."
+  },
+  "errors": {
+    "failedToSave": "Failed to save",
+    "failedToApprove": "Failed to approve",
+    "failedToReject": "Failed to reject",
+    "failedToArchive": "Failed to archive company",
+    "authenticationFailed": "Authentication failed",
+    "logoUploadFailed": "Logo upload failed",
+    "failedToRetryRun": "Failed to retry run",
+    "failedToApproveJoinRequest": "Failed to approve join request",
+    "failedToRejectJoinRequest": "Failed to reject join request"
+  },
+  "status": {
+    "all": "All",
+    "active": "Active",
+    "paused": "Paused",
+    "error": "Error",
+    "pending": "Pending",
+    "running": "Running",
+    "terminated": "Terminated"
+  },
+  "filters": {
+    "filters": "Filters",
+    "filterByType": "Filter by type",
+    "allTypes": "All types",
+    "showTerminated": "Show terminated",
+    "clearAll": "Clear all"
+  },
+  "time": {
+    "last14Days": "Last 14 days"
+  },
+  "plurals": {
+    "agent_one": "{{count}} agent",
+    "agent_other": "{{count}} agents"
+  },
+  "commentThread": {
+    "commentsAndRuns": "Comments & Runs ({{count}})",
+    "noCommentsOrRuns": "No comments or runs yet.",
+    "leaveComment": "Leave a comment...",
+    "posting": "Posting\u2026",
+    "comment": "Comment",
+    "reOpen": "Re-open",
+    "run": "Run",
+    "attachImage": "Attach image",
+    "copyAsMarkdown": "Copy as markdown",
+    "assignee": "Assignee",
+    "noAssignee": "No assignee",
+    "searchAssignees": "Search assignees...",
+    "noAssigneesFound": "No assignees found."
+  },
+  "filterBar": {
+    "clearAll": "Clear all"
+  },
+  "worktreeBanner": {
+    "worktree": "Worktree"
+  }
+}

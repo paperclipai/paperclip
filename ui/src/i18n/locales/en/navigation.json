@@ -1,0 +1,54 @@
+{
+  "sidebar": {
+    "selectCompany": "Select company",
+    "newIssue": "New Issue",
+    "dashboard": "Dashboard",
+    "inbox": "Inbox",
+    "issues": "Issues",
+    "goals": "Goals",
+    "org": "Org",
+    "costs": "Costs",
+    "activity": "Activity",
+    "settings": "Settings",
+    "projects": "Projects",
+    "agents": "Agents",
+    "work": "Work",
+    "company": "Company",
+    "experimental": "Experimental",
+    "instanceSettings": "Instance Settings",
+    "heartbeats": "Heartbeats",
+    "plugins": "Plugins"
+  },
+  "commandPalette": {
+    "searchPlaceholder": "Search issues, agents, projects...",
+    "noResults": "No results found.",
+    "actions": "Actions",
+    "createNewIssue": "Create new issue",
+    "createNewAgent": "Create new agent",
+    "createNewProject": "Create new project",
+    "pages": "Pages",
+    "issues": "Issues",
+    "agents": "Agents",
+    "projects": "Projects"
+  },
+  "mobile": {
+    "home": "Home",
+    "issues": "Issues",
+    "create": "Create",
+    "agents": "Agents",
+    "inbox": "Inbox"
+  },
+  "breadcrumbs": {
+    "dashboard": "Dashboard",
+    "agents": "Agents",
+    "issues": "Issues",
+    "approvals": "Approvals",
+    "goals": "Goals",
+    "projects": "Projects",
+    "costs": "Costs",
+    "activity": "Activity",
+    "inbox": "Inbox",
+    "settings": "Settings",
+    "notFound": "Not Found"
+  }
+}

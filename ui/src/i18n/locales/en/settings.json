@@ -1,0 +1,123 @@
+{
+  "title": "Company Settings",
+  "noCompanySelected": "No company selected. Select a company from the switcher above.",
+  "sections": {
+    "general": "General",
+    "appearance": "Appearance",
+    "hiring": "Hiring",
+    "invites": "Invites",
+    "dangerZone": "Danger Zone"
+  },
+  "general": {
+    "companyName": "Company name",
+    "companyNameHint": "The display name for your company.",
+    "description": "Description",
+    "descriptionHint": "Optional description shown in the company profile.",
+    "descriptionPlaceholder": "Optional company description"
+  },
+  "appearance": {
+    "logo": "Logo",
+    "logoHint": "Upload a PNG, JPEG, WEBP, GIF, or SVG logo image.",
+    "removeLogo": "Remove logo",
+    "removing": "Removing\u2026",
+    "uploadingLogo": "Uploading logo\u2026",
+    "brandColor": "Brand color",
+    "brandColorHint": "Sets the hue for the company icon. Leave empty for auto-generated color.",
+    "autoPlaceholder": "Auto"
+  },
+  "hiring": {
+    "requireApproval": "Require board approval for new hires",
+    "requireApprovalHint": "New agent hires stay pending until approved by board."
+  },
+  "invites": {
+    "generateHint": "Generate an OpenClaw agent invite snippet.",
+    "hintTooltip": "Creates a short-lived OpenClaw agent invite and renders a copy-ready prompt.",
+    "generateButton": "Generate OpenClaw Invite Prompt",
+    "generating": "Generating\u2026",
+    "openClawInvitePrompt": "OpenClaw Invite Prompt"
+  },
+  "dangerZone": {
+    "archiveDescription": "Archive this company to hide it from the sidebar. This persists in the database.",
+    "archiveButton": "Archive company",
+    "archiving": "Archiving\u2026",
+    "alreadyArchived": "Already archived"
+  },
+  "org": {
+    "breadcrumb": "Org Chart",
+    "selectCompany": "Select a company to view the org chart.",
+    "noAgents": "No organizational hierarchy defined.",
+    "fitToScreen": "Fit to screen",
+    "zoomIn": "Zoom in",
+    "zoomOut": "Zoom out",
+    "fit": "Fit"
+  },
+  "companies": {
+    "breadcrumb": "Companies",
+    "newCompany": "New Company",
+    "loading": "Loading companies\u2026",
+    "rename": "Rename",
+    "deleteCompany": "Delete Company",
+    "agentCount_one": "{{count}} agent",
+    "agentCount_other": "{{count}} agents",
+    "issueCount_one": "{{count}} issue",
+    "issueCount_other": "{{count}} issues",
+    "unlimitedBudget": "Unlimited budget",
+    "createdAt": "Created {{relativeTime}}",
+    "deleteConfirm": "Delete this company and all its data? This cannot be undone.",
+    "cancel": "Cancel",
+    "deleting": "Deleting\u2026",
+    "delete": "Delete"
+  },
+  "instanceSettings": {
+    "breadcrumbParent": "Instance Settings",
+    "breadcrumbChild": "Heartbeats",
+    "loadingHeartbeats": "Loading scheduler heartbeats\u2026",
+    "failedToLoad": "Failed to load scheduler heartbeats.",
+    "schedulerHeartbeatsTitle": "Scheduler Heartbeats",
+    "schedulerHeartbeatsDescription": "Agents with a timer heartbeat enabled across all of your companies.",
+    "active": "active",
+    "disabled": "disabled",
+    "company_one": "company",
+    "company_other": "companies",
+    "noHeartbeats": "No scheduler heartbeats match the current criteria.",
+    "on": "On",
+    "off": "Off",
+    "never": "never",
+    "fullAgentConfig": "Full agent config",
+    "disableTimerHeartbeat": "Disable Timer Heartbeat",
+    "enableTimerHeartbeat": "Enable Timer Heartbeat"
+  },
+  "executionWorkspaceDetail": {
+    "subtitle": "Execution workspace",
+    "loading": "Loading...",
+    "loadError": "Failed to load workspace",
+    "fields": {
+      "project": "Project",
+      "sourceIssue": "Source issue",
+      "branch": "Branch",
+      "baseRef": "Base ref",
+      "workingDir": "Working dir",
+      "providerRef": "Provider ref",
+      "repoUrl": "Repo URL",
+      "opened": "Opened",
+      "lastUsed": "Last used",
+      "cleanup": "Cleanup"
+    },
+    "none": "None",
+    "notScheduled": "Not scheduled"
+  },
+  "experimental": {
+    "breadcrumbParent": "Instance Settings",
+    "breadcrumbChild": "Experimental",
+    "loading": "Loading experimental settings...",
+    "loadError": "Failed to load experimental settings.",
+    "heading": "Experimental",
+    "description": "Opt into features that are still being evaluated before they become default behavior.",
+    "updateError": "Failed to update experimental settings.",
+    "isolatedWorkspaces": {
+      "title": "Enabled Isolated Workspaces",
+      "description": "Show execution workspace controls in project configuration and allow isolated workspace behavior for new and existing issue runs.",
+      "ariaLabel": "Toggle isolated workspaces experimental setting"
+    }
+  }
+}

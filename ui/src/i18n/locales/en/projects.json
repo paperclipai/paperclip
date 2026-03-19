@@ -1,0 +1,81 @@
+{
+  "title": "Projects",
+  "selectCompany": "Select a company to view projects.",
+  "empty": {
+    "noProjects": "No projects yet."
+  },
+  "addProject": "Add Project",
+  "detail": {
+    "addDescription": "Add a description...",
+    "tabs": {
+      "overview": "Overview",
+      "issues": "Issues",
+      "configuration": "Configuration",
+      "budget": "Budget"
+    },
+    "status": "Status",
+    "targetDate": "Target Date",
+    "pausedByBudget": "Paused by budget hard stop"
+  },
+  "newProjectDialog": {
+    "newProject": "New project",
+    "descriptionPlaceholder": "Add description...",
+    "statuses": {
+      "backlog": "Backlog",
+      "planned": "Planned",
+      "inProgress": "In Progress",
+      "completed": "Completed",
+      "cancelled": "Cancelled"
+    },
+    "creating": "Creating\u2026",
+    "createProject": "Create project",
+    "codebaseHint": "Add a repo and/or local folder for this project.",
+    "codebaseBothHint": "Configure both repo and local folder.",
+    "repoUrlLabel": "Repo URL"
+  },
+  "properties": {
+    "name": "Name",
+    "description": "Description",
+    "status": "Status",
+    "lead": "Lead",
+    "goals": "Goals",
+    "created": "Created",
+    "updated": "Updated",
+    "targetDate": "Target Date",
+    "noDescription": "No description",
+    "projectNamePlaceholder": "Project name",
+    "allGoalsLinked": "All goals linked.",
+    "addGoal": "Goal",
+    "workspaces": "Workspaces",
+    "workspacesHelp": "Workspaces give your agents hints about where the work is",
+    "noWorkspace": "No workspace configured.",
+    "addLocalFolder": "Add workspace local folder",
+    "addRepo": "Add workspace repo",
+    "save": "Save",
+    "cancel": "Cancel",
+    "deleteLocalFolder": "Delete local folder",
+    "deleteWorkspaceRepo": "Delete workspace repo",
+    "failedToSaveWorkspace": "Failed to save workspace.",
+    "failedToDeleteWorkspace": "Failed to delete workspace.",
+    "failedToUpdateWorkspace": "Failed to update workspace.",
+    "dangerZone": "Danger Zone",
+    "archiveDescription": "Archive this project to hide it from the sidebar and project selectors.",
+    "unarchiveDescription": "Unarchive this project to restore it in the sidebar and project selectors.",
+    "archiving": "Archiving\u2026",
+    "unarchiving": "Unarchiving\u2026",
+    "archiveProject": "Archive project",
+    "unarchiveProject": "Unarchive project",
+    "confirm": "Confirm",
+    "saving": "Saving",
+    "saved": "Saved",
+    "failed": "Failed",
+    "localFolderAbsolutePathError": "Local folder must be a full absolute path.",
+    "repoUrlInvalidError": "Repo workspace must use a valid GitHub repo URL.",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "codebase": "Codebase",
+    "repoLabel": "Repo",
+    "legacyWorkspaceNotice": "Additional legacy workspace records exist on this project. Paperclip is using the primary workspace as the codebase view.",
+    "noUrl": "No URL"
+  }
+}

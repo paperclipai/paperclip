@@ -1,0 +1,75 @@
+{
+  "title": "Activity",
+  "selectCompany": "Select a company to view activity.",
+  "empty": {
+    "noActivity": "No activity yet."
+  },
+  "filter": {
+    "allTypes": "All types",
+    "placeholder": "Filter by type"
+  },
+  "actionVerbs": {
+    "issue": {
+      "created": "created",
+      "updated": "updated",
+      "checked_out": "checked out",
+      "released": "released",
+      "comment_added": "commented on",
+      "attachment_added": "attached file to",
+      "attachment_removed": "removed attachment from",
+      "document_created": "created document for",
+      "document_updated": "updated document on",
+      "document_deleted": "deleted document from",
+      "commented": "commented on",
+      "deleted": "deleted"
+    },
+    "agent": {
+      "created": "created",
+      "updated": "updated",
+      "paused": "paused",
+      "resumed": "resumed",
+      "terminated": "terminated",
+      "key_created": "created API key for",
+      "budget_updated": "updated budget for",
+      "runtime_session_reset": "reset session for"
+    },
+    "heartbeat": {
+      "invoked": "invoked heartbeat for",
+      "cancelled": "cancelled heartbeat for"
+    },
+    "approval": {
+      "created": "requested approval",
+      "approved": "approved",
+      "rejected": "rejected"
+    },
+    "project": {
+      "created": "created",
+      "updated": "updated",
+      "deleted": "deleted"
+    },
+    "goal": {
+      "created": "created",
+      "updated": "updated",
+      "deleted": "deleted"
+    },
+    "cost": {
+      "reported": "reported cost for",
+      "recorded": "recorded cost for"
+    },
+    "company": {
+      "created": "created company",
+      "updated": "updated company",
+      "archived": "archived",
+      "budget_updated": "updated budget for"
+    }
+  },
+  "changedStatusFrom": "changed status from {{from}} to {{to}} on",
+  "changedStatusTo": "changed status to {{to}} on",
+  "changedPriorityFrom": "changed priority from {{from}} to {{to}} on",
+  "changedPriorityTo": "changed priority to {{to}} on",
+  "actorNames": {
+    "system": "System",
+    "board": "Board",
+    "unknown": "Unknown"
+  }
+}
