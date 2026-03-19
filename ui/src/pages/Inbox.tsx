@@ -39,6 +39,7 @@ import {
   RotateCcw,
 } from "lucide-react";
 import { Identity } from "../components/Identity";
+import { PrBadge } from "../components/PrBadge";
 import { PageTabBar } from "../components/PageTabBar";
 import type { Approval, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
 import {
@@ -781,6 +782,7 @@ export function Inbox() {
                             </span>
                           </span>
                         )}
+                        <PrBadge workProducts={issue.workProducts} />
                       </>
                     )}
                     mobileMeta={
