@@ -1,0 +1,290 @@
+{
+  "common": {
+    "loading": "Carregando...",
+    "error": "Erro",
+    "save": "Salvar",
+    "cancel": "Cancelar",
+    "confirm": "Confirmar",
+    "delete": "Excluir",
+    "edit": "Editar",
+    "create": "Criar",
+    "add": "Adicionar",
+    "remove": "Remover",
+    "close": "Fechar",
+    "back": "Voltar",
+    "next": "Próximo",
+    "submit": "Enviar",
+    "search": "Pesquisar",
+    "filter": "Filtrar",
+    "all": "Todos",
+    "none": "Nenhum",
+    "yes": "Sim",
+    "no": "Não",
+    "ok": "OK",
+    "apply": "Aplicar",
+    "reset": "Redefinir",
+    "noData": "Sem dados",
+    "selectCompany": "Selecionar empresa",
+    "learnMore": "Saiba mais",
+    "viewAll": "Ver todos",
+    "copyToClipboard": "Copiar para área de transferência",
+    "copied": "Copiado!",
+    "required": "Obrigatório",
+    "optional": "Opcional",
+    "settings": "Configurações",
+    "status": "Status",
+    "name": "Nome",
+    "description": "Descrição",
+    "date": "Data",
+    "actions": "Ações",
+    "active": "Ativo",
+    "paused": "Pausado",
+    "error_status": "Erro",
+    "running": "Em execução",
+    "idle": "Inativo",
+    "terminated": "Encerrado",
+    "done": "Concluído",
+    "cancelled": "Cancelado",
+    "pending": "Pendente",
+    "approved": "Aprovado",
+    "rejected": "Rejeitado",
+    "open": "Aberto",
+    "blocked": "Bloqueado",
+    "inProgress": "Em andamento",
+    "live": "Ao vivo",
+    "enabled": "Habilitado",
+    "disabled": "Desabilitado",
+    "unlimited": "Ilimitado",
+    "filters": "Filtros",
+    "showTerminated": "Exibir encerrados",
+    "newIssue": "Nova tarefa",
+    "noCompanySelected": "Selecione uma empresa para continuar.",
+    "goToDashboard": "Ir para o painel"
+  },
+  "nav": {
+    "dashboard": "Painel",
+    "agents": "Agentes",
+    "issues": "Tarefas",
+    "projects": "Projetos",
+    "goals": "Objetivos",
+    "approvals": "Aprovações",
+    "costs": "Custos",
+    "activity": "Atividade",
+    "inbox": "Caixa de entrada",
+    "org": "Org",
+    "settings": "Configurações",
+    "instanceSettings": "Configurações da instância"
+  },
+  "pages": {
+    "dashboard": {
+      "title": "Painel",
+      "recentActivity": "Atividade recente",
+      "recentTasks": "Tarefas recentes",
+      "noTasksYet": "Nenhuma tarefa ainda.",
+      "noAgents": "Você não tem agentes.",
+      "createOneHere": "Crie um aqui",
+      "welcome": "Bem-vindo ao Paperclip. Configure sua primeira empresa e agente para começar.",
+      "selectCompany": "Crie ou selecione uma empresa para ver o painel.",
+      "getStarted": "Começar",
+      "budgetIncident_one": "{{count}} incidente de orçamento ativo",
+      "budgetIncident_other": "{{count}} incidentes de orçamento ativos",
+      "agentsPaused": "{{count}} agentes pausados",
+      "projectsPaused": "{{count}} projetos pausados",
+      "pendingBudgetApprovals": "{{count}} aprovações de orçamento pendentes",
+      "openBudgets": "Abrir orçamentos",
+      "metrics": {
+        "agentsEnabled": "Agentes ativos",
+        "tasksInProgress": "Tarefas em andamento",
+        "monthSpend": "Gasto do mês",
+        "pendingApprovals": "Aprovações pendentes",
+        "agentStatus": "{{running}} em execução, {{paused}} pausados, {{errors}} erros",
+        "taskStatus": "{{open}} abertas, {{blocked}} bloqueadas",
+        "budgetWithLimit": "{{percent}}% de {{budget}} do orçamento",
+        "budgetUnlimited": "Orçamento ilimitado",
+        "approvalsAwaiting": "Aguardando revisão do conselho",
+        "budgetOverrides_one": "{{count}} substituição de orçamento aguardando revisão do conselho",
+        "budgetOverrides_other": "{{count}} substituições de orçamento aguardando revisão do conselho"
+      },
+      "charts": {
+        "runActivity": "Atividade de execução",
+        "issuesByPriority": "Tarefas por prioridade",
+        "issuesByStatus": "Tarefas por status",
+        "successRate": "Taxa de sucesso",
+        "last14Days": "Últimos 14 dias"
+      }
+    },
+    "agents": {
+      "title": "Agentes",
+      "newAgent": "Novo agente",
+      "selectCompany": "Selecione uma empresa para ver os agentes.",
+      "createFirst": "Crie seu primeiro agente para começar.",
+      "noMatch": "Nenhum agente corresponde ao filtro selecionado.",
+      "noOrgHierarchy": "Nenhuma hierarquia organizacional definida.",
+      "agentCount_one": "{{count}} agente",
+      "agentCount_other": "{{count}} agentes",
+      "tabs": {
+        "all": "Todos",
+        "active": "Ativos",
+        "paused": "Pausados",
+        "error": "Erro"
+      },
+      "live": "Ao vivo",
+      "liveWithCount": "Ao vivo ({{count}})"
+    },
+    "issues": {
+      "title": "Tarefas",
+      "selectCompany": "Selecione uma empresa para ver as tarefas.",
+      "noIssues": "Nenhuma tarefa ainda.",
+      "createFirst": "Crie sua primeira tarefa para começar."
+    },
+    "goals": {
+      "title": "Objetivos",
+      "selectCompany": "Selecione uma empresa para ver os objetivos.",
+      "noGoals": "Nenhum objetivo ainda.",
+      "addGoal": "Adicionar objetivo"
+    },
+    "projects": {
+      "title": "Projetos",
+      "selectCompany": "Selecione uma empresa para ver os projetos.",
+      "noProjects": "Nenhum projeto ainda.",
+      "addProject": "Adicionar projeto"
+    },
+    "approvals": {
+      "title": "Aprovações",
+      "selectCompany": "Selecione uma empresa primeiro.",
+      "noPending": "Nenhuma aprovação pendente.",
+      "noApprovals": "Nenhuma aprovação ainda.",
+      "tabs": {
+        "pending": "Pendentes",
+        "all": "Todas"
+      },
+      "failedToApprove": "Falha ao aprovar",
+      "failedToReject": "Falha ao rejeitar"
+    },
+    "costs": {
+      "title": "Custos",
+      "selectCompany": "Selecione uma empresa para ver os custos.",
+      "tabs": {
+        "inferenceSpend": "Gasto com inferência",
+        "budget": "Orçamento",
+        "financeNet": "Financeiro líquido",
+        "financeEvents": "Eventos financeiros"
+      },
+      "debits": "Débitos",
+      "credits": "Créditos",
+      "net": "Líquido",
+      "estimated": "Estimado",
+      "refundsDescription": "Reembolsos, compensações e devoluções de crédito",
+      "unlimitedBudget": "Orçamento ilimitado"
+    },
+    "activity": {
+      "title": "Atividade",
+      "selectCompany": "Selecione uma empresa para ver a atividade.",
+      "noActivity": "Nenhuma atividade ainda.",
+      "filterAll": "Todos",
+      "filterByAgent": "Filtrar por agente"
+    },
+    "inbox": {
+      "title": "Caixa de entrada",
+      "selectCompany": "Selecione uma empresa para ver sua caixa de entrada.",
+      "empty": "Sua caixa de entrada está vazia.",
+      "tabs": {
+        "approvals": "Aprovações",
+        "tasks": "Tarefas",
+        "runs": "Execuções"
+      }
+    },
+    "myIssues": {
+      "title": "Minhas tarefas",
+      "selectCompany": "Selecione uma empresa para ver suas tarefas.",
+      "noIssues": "Nenhuma tarefa atribuída a você."
+    },
+    "notFound": {
+      "title": "Página não encontrada",
+      "companyNotFound": "Empresa não encontrada",
+      "description": "Esta rota não existe.",
+      "companyDescription": "Nenhuma empresa corresponde ao prefixo \"{{prefix}}\".",
+      "requestedPath": "Caminho solicitado:",
+      "goToDashboard": "Ir para o painel",
+      "reportIssue": "Reportar um problema"
+    },
+    "companySettings": {
+      "title": "Configurações da empresa",
+      "general": "Geral",
+      "name": "Nome da empresa",
+      "description": "Descrição",
+      "brandColor": "Cor da marca",
+      "logoUrl": "URL do logo",
+      "save": "Salvar alterações",
+      "saved": "Salvo",
+      "invite": "Convidar",
+      "inviteDescription": "Convide um usuário para esta empresa.",
+      "inviteEmail": "Endereço de e-mail",
+      "sendInvite": "Enviar convite",
+      "inviteSent": "Convite enviado",
+      "danger": "Zona de perigo",
+      "archiveCompany": "Arquivar empresa",
+      "archiveWarning": "Esta ação não pode ser desfeita.",
+      "archiveConfirm": "Arquivar",
+      "agentSnippet": "Snippet do agente",
+      "agentSnippetDescription": "Configure as configurações de conexão para a integração do agente."
+    },
+    "instanceSettings": {
+      "title": "Configurações da instância",
+      "heartbeats": "Heartbeats",
+      "scheduler": "Agendador",
+      "agents": "Agentes",
+      "enable": "Habilitar",
+      "disable": "Desabilitar",
+      "enabled": "Habilitado",
+      "disabled": "Desabilitado",
+      "lastHeartbeat": "Último heartbeat",
+      "noAgents": "Nenhum agente configurado para o agendamento de heartbeat.",
+      "failedToUpdate": "Falha ao atualizar heartbeat."
+    },
+    "instanceExperimentalSettings": {
+      "title": "Configurações experimentais",
+      "language": "Idioma",
+      "languageDescription": "Escolha o idioma preferido para a interface.",
+      "theme": "Tema",
+      "themeDescription": "Escolha o tema de cores preferido."
+    },
+    "companies": {
+      "title": "Empresas",
+      "newCompany": "Nova empresa",
+      "noCompanies": "Nenhuma empresa ainda. Crie sua primeira empresa para começar.",
+      "create": "Criar empresa"
+    },
+    "auth": {
+      "title": "Entrar",
+      "emailLabel": "E-mail",
+      "passwordLabel": "Senha",
+      "signIn": "Entrar",
+      "signUp": "Cadastrar",
+      "forgotPassword": "Esqueceu a senha?",
+      "noAccount": "Não tem uma conta?",
+      "alreadyHaveAccount": "Já tem uma conta?"
+    },
+    "org": {
+      "title": "Organização",
+      "selectCompany": "Selecione uma empresa para ver a organização."
+    }
+  },
+  "sidebar": {
+    "newIssue": "Nova tarefa",
+    "search": "Pesquisar",
+    "dashboard": "Painel",
+    "inbox": "Caixa de entrada",
+    "myIssues": "Minhas tarefas",
+    "issues": "Tarefas",
+    "goals": "Objetivos",
+    "projects": "Projetos",
+    "agents": "Agentes",
+    "org": "Org",
+    "approvals": "Aprovações",
+    "costs": "Custos",
+    "activity": "Atividade",
+    "instanceSettings": "Config. da instância",
+    "companySettings": "Configurações"
+  }
+}

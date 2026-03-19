@@ -1,0 +1,290 @@
+{
+  "common": {
+    "loading": "Loading...",
+    "error": "Error",
+    "save": "Save",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "delete": "Delete",
+    "edit": "Edit",
+    "create": "Create",
+    "add": "Add",
+    "remove": "Remove",
+    "close": "Close",
+    "back": "Back",
+    "next": "Next",
+    "submit": "Submit",
+    "search": "Search",
+    "filter": "Filter",
+    "all": "All",
+    "none": "None",
+    "yes": "Yes",
+    "no": "No",
+    "ok": "OK",
+    "apply": "Apply",
+    "reset": "Reset",
+    "noData": "No data",
+    "selectCompany": "Select company",
+    "learnMore": "Learn more",
+    "viewAll": "View all",
+    "copyToClipboard": "Copy to clipboard",
+    "copied": "Copied!",
+    "required": "Required",
+    "optional": "Optional",
+    "settings": "Settings",
+    "status": "Status",
+    "name": "Name",
+    "description": "Description",
+    "date": "Date",
+    "actions": "Actions",
+    "active": "Active",
+    "paused": "Paused",
+    "error_status": "Error",
+    "running": "Running",
+    "idle": "Idle",
+    "terminated": "Terminated",
+    "done": "Done",
+    "cancelled": "Cancelled",
+    "pending": "Pending",
+    "approved": "Approved",
+    "rejected": "Rejected",
+    "open": "Open",
+    "blocked": "Blocked",
+    "inProgress": "In Progress",
+    "live": "Live",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "unlimited": "Unlimited",
+    "filters": "Filters",
+    "showTerminated": "Show terminated",
+    "newIssue": "New Issue",
+    "noCompanySelected": "Select a company to continue.",
+    "goToDashboard": "Go to dashboard"
+  },
+  "nav": {
+    "dashboard": "Dashboard",
+    "agents": "Agents",
+    "issues": "Issues",
+    "projects": "Projects",
+    "goals": "Goals",
+    "approvals": "Approvals",
+    "costs": "Costs",
+    "activity": "Activity",
+    "inbox": "Inbox",
+    "org": "Org",
+    "settings": "Settings",
+    "instanceSettings": "Instance Settings"
+  },
+  "pages": {
+    "dashboard": {
+      "title": "Dashboard",
+      "recentActivity": "Recent Activity",
+      "recentTasks": "Recent Tasks",
+      "noTasksYet": "No tasks yet.",
+      "noAgents": "You have no agents.",
+      "createOneHere": "Create one here",
+      "welcome": "Welcome to Paperclip. Set up your first company and agent to get started.",
+      "selectCompany": "Create or select a company to view the dashboard.",
+      "getStarted": "Get Started",
+      "budgetIncident_one": "{{count}} active budget incident",
+      "budgetIncident_other": "{{count}} active budget incidents",
+      "agentsPaused": "{{count}} agents paused",
+      "projectsPaused": "{{count}} projects paused",
+      "pendingBudgetApprovals": "{{count}} pending budget approvals",
+      "openBudgets": "Open budgets",
+      "metrics": {
+        "agentsEnabled": "Agents Enabled",
+        "tasksInProgress": "Tasks In Progress",
+        "monthSpend": "Month Spend",
+        "pendingApprovals": "Pending Approvals",
+        "agentStatus": "{{running}} running, {{paused}} paused, {{errors}} errors",
+        "taskStatus": "{{open}} open, {{blocked}} blocked",
+        "budgetWithLimit": "{{percent}}% of {{budget}} budget",
+        "budgetUnlimited": "Unlimited budget",
+        "approvalsAwaiting": "Awaiting board review",
+        "budgetOverrides_one": "{{count}} budget override awaiting board review",
+        "budgetOverrides_other": "{{count}} budget overrides awaiting board review"
+      },
+      "charts": {
+        "runActivity": "Run Activity",
+        "issuesByPriority": "Issues by Priority",
+        "issuesByStatus": "Issues by Status",
+        "successRate": "Success Rate",
+        "last14Days": "Last 14 days"
+      }
+    },
+    "agents": {
+      "title": "Agents",
+      "newAgent": "New Agent",
+      "selectCompany": "Select a company to view agents.",
+      "createFirst": "Create your first agent to get started.",
+      "noMatch": "No agents match the selected filter.",
+      "noOrgHierarchy": "No organizational hierarchy defined.",
+      "agentCount_one": "{{count}} agent",
+      "agentCount_other": "{{count}} agents",
+      "tabs": {
+        "all": "All",
+        "active": "Active",
+        "paused": "Paused",
+        "error": "Error"
+      },
+      "live": "Live",
+      "liveWithCount": "Live ({{count}})"
+    },
+    "issues": {
+      "title": "Issues",
+      "selectCompany": "Select a company to view issues.",
+      "noIssues": "No issues yet.",
+      "createFirst": "Create your first issue to get started."
+    },
+    "goals": {
+      "title": "Goals",
+      "selectCompany": "Select a company to view goals.",
+      "noGoals": "No goals yet.",
+      "addGoal": "Add Goal"
+    },
+    "projects": {
+      "title": "Projects",
+      "selectCompany": "Select a company to view projects.",
+      "noProjects": "No projects yet.",
+      "addProject": "Add Project"
+    },
+    "approvals": {
+      "title": "Approvals",
+      "selectCompany": "Select a company first.",
+      "noPending": "No pending approvals.",
+      "noApprovals": "No approvals yet.",
+      "tabs": {
+        "pending": "Pending",
+        "all": "All"
+      },
+      "failedToApprove": "Failed to approve",
+      "failedToReject": "Failed to reject"
+    },
+    "costs": {
+      "title": "Costs",
+      "selectCompany": "Select a company to view costs.",
+      "tabs": {
+        "inferenceSpend": "Inference spend",
+        "budget": "Budget",
+        "financeNet": "Finance net",
+        "financeEvents": "Finance events"
+      },
+      "debits": "Debits",
+      "credits": "Credits",
+      "net": "Net",
+      "estimated": "Estimated",
+      "refundsDescription": "Refunds, offsets, and credit returns",
+      "unlimitedBudget": "Unlimited budget"
+    },
+    "activity": {
+      "title": "Activity",
+      "selectCompany": "Select a company to view activity.",
+      "noActivity": "No activity yet.",
+      "filterAll": "All",
+      "filterByAgent": "Filter by agent"
+    },
+    "inbox": {
+      "title": "Inbox",
+      "selectCompany": "Select a company to view your inbox.",
+      "empty": "Your inbox is empty.",
+      "tabs": {
+        "approvals": "Approvals",
+        "tasks": "Tasks",
+        "runs": "Runs"
+      }
+    },
+    "myIssues": {
+      "title": "My Issues",
+      "selectCompany": "Select a company to view your issues.",
+      "noIssues": "No issues assigned to you."
+    },
+    "notFound": {
+      "title": "Page not found",
+      "companyNotFound": "Company not found",
+      "description": "This route does not exist.",
+      "companyDescription": "No company matches prefix \"{{prefix}}\".",
+      "requestedPath": "Requested path:",
+      "goToDashboard": "Go to Dashboard",
+      "reportIssue": "Report an issue"
+    },
+    "companySettings": {
+      "title": "Company Settings",
+      "general": "General",
+      "name": "Company Name",
+      "description": "Description",
+      "brandColor": "Brand Color",
+      "logoUrl": "Logo URL",
+      "save": "Save Changes",
+      "saved": "Saved",
+      "invite": "Invite",
+      "inviteDescription": "Invite a user to this company.",
+      "inviteEmail": "Email address",
+      "sendInvite": "Send Invite",
+      "inviteSent": "Invite sent",
+      "danger": "Danger Zone",
+      "archiveCompany": "Archive Company",
+      "archiveWarning": "This action cannot be undone.",
+      "archiveConfirm": "Archive",
+      "agentSnippet": "Agent Snippet",
+      "agentSnippetDescription": "Configure the connection settings for agent onboarding."
+    },
+    "instanceSettings": {
+      "title": "Instance Settings",
+      "heartbeats": "Heartbeats",
+      "scheduler": "Scheduler",
+      "agents": "Agents",
+      "enable": "Enable",
+      "disable": "Disable",
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "lastHeartbeat": "Last Heartbeat",
+      "noAgents": "No agents configured for heartbeat scheduling.",
+      "failedToUpdate": "Failed to update heartbeat."
+    },
+    "instanceExperimentalSettings": {
+      "title": "Experimental Settings",
+      "language": "Language",
+      "languageDescription": "Choose your preferred language for the interface.",
+      "theme": "Theme",
+      "themeDescription": "Choose your preferred color theme."
+    },
+    "companies": {
+      "title": "Companies",
+      "newCompany": "New Company",
+      "noCompanies": "No companies yet. Create your first company to get started.",
+      "create": "Create Company"
+    },
+    "auth": {
+      "title": "Sign In",
+      "emailLabel": "Email",
+      "passwordLabel": "Password",
+      "signIn": "Sign In",
+      "signUp": "Sign Up",
+      "forgotPassword": "Forgot password?",
+      "noAccount": "Don't have an account?",
+      "alreadyHaveAccount": "Already have an account?"
+    },
+    "org": {
+      "title": "Organization",
+      "selectCompany": "Select a company to view the organization."
+    }
+  },
+  "sidebar": {
+    "newIssue": "New Issue",
+    "search": "Search",
+    "dashboard": "Dashboard",
+    "inbox": "Inbox",
+    "myIssues": "My Issues",
+    "issues": "Issues",
+    "goals": "Goals",
+    "projects": "Projects",
+    "agents": "Agents",
+    "org": "Org",
+    "approvals": "Approvals",
+    "costs": "Costs",
+    "activity": "Activity",
+    "instanceSettings": "Instance Settings",
+    "companySettings": "Settings"
+  }
+}
