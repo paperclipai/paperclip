@@ -90,6 +90,9 @@ test.describe("Onboarding wizard", () => {
 
     await expect(page).toHaveURL(/\/issues\//, { timeout: 10_000 });
 
+    const issueId = page.url().match(/\/issues\/([^/?#]+)/)?.[1];
+    expect(issueId).toBeTruthy();
+
     const baseUrl = page.url().split("/").slice(0, 3).join("/");
 
     const companiesRes = await page.request.get(`${baseUrl}/api/companies`);
@@ -118,7 +121,8 @@ test.describe("Onboarding wizard", () => {
     expect(issuesRes.ok()).toBe(true);
     const issues = await issuesRes.json();
     const task = issues.find(
-      (i: { title: string }) => i.title === TASK_TITLE
+      (i: { id: string; title: string }) =>
+        i.id === issueId || i.title === TASK_TITLE
     );
     expect(task).toBeTruthy();
     expect(task.assigneeAgentId).toBe(ceoAgent.id);
@@ -132,5 +136,64 @@ test.describe("Onboarding wizard", () => {
         expect(["in_progress", "done"]).toContain(issue.status);
       }).toPass({ timeout: 120_000, intervals: [5_000] });
     }
+  });
+
+  test("inserts selected @mentions into issue comments", async ({ page }) => {
+    const companyName = `E2E-Test-mentions-${Date.now()}`;
+    const taskTitle = "E2E test task mentions";
+    const companyRes = await page.request.post("/api/companies", {
+      data: { name: companyName },
+    });
+    expect(companyRes.ok()).toBe(true);
+    const company = await companyRes.json();
+
+    const agentRes = await page.request.post(`/api/companies/${company.id}/agents`, {
+      data: {
+        name: AGENT_NAME,
+        role: "ceo",
+        adapterType: "process",
+        adapterConfig: {
+          command: "echo",
+          args: ["hello"],
+          timeoutSec: 0,
+          graceSec: 15,
+        },
+      },
+    });
+    expect(agentRes.ok()).toBe(true);
+    const agent = await agentRes.json();
+
+    const issueRes = await page.request.post(`/api/companies/${company.id}/issues`, {
+      data: {
+        title: taskTitle,
+        assigneeAgentId: agent.id,
+      },
+    });
+    expect(issueRes.ok()).toBe(true);
+    const issue = await issueRes.json();
+
+    await page.goto(`/${company.issuePrefix}/issues/${issue.id}`);
+    await expect(page).toHaveURL(new RegExp(`/${company.issuePrefix}/issues/${issue.id}$`));
+
+    const commentEditor = page.locator('[contenteditable="true"]').last();
+    await commentEditor.click();
+    await page.keyboard.type("@CE");
+
+    const mentionOption = page.getByRole("button", { name: /^@ CEO$/ });
+    await expect(mentionOption).toBeVisible({ timeout: 10_000 });
+
+    await page.keyboard.press("Tab");
+    await expect(mentionOption).toBeHidden({ timeout: 10_000 });
+
+    await page.keyboard.type("hello");
+    await page.getByRole("button", { name: "Comment" }).click();
+
+    await expect(async () => {
+      const commentsRes = await page.request.get(`/api/issues/${issue.id}/comments`);
+      expect(commentsRes.ok()).toBe(true);
+      const comments = await commentsRes.json();
+      const latestComment = comments.at(-1);
+      expect(latestComment?.body).toBe("@CEO hello");
+    }).toPass({ timeout: 10_000, intervals: [500] });
   });
 });
