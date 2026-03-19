@@ -238,7 +238,14 @@ export function issueRoutes(db: Db, storage: StorageService) {
       labelId: req.query.labelId as string | undefined,
       q: req.query.q as string | undefined,
     });
-    res.json(result);
+    // Enrich with PR work products
+    const issueIds = result.map((issue) => issue.id);
+    const prMap = await workProductsSvc.listPrWorkProductsForIssues(issueIds, companyId);
+    const enriched = result.map((issue) => ({
+      ...issue,
+      workProducts: prMap.get(issue.id) ?? [],
+    }));
+    res.json(enriched);
   });
 
   router.get("/companies/:companyId/labels", async (req, res) => {
