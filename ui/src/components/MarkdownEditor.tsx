@@ -286,7 +286,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       listsPlugin(),
       quotePlugin(),
       tablePlugin(),
-      linkPlugin(),
+      linkPlugin({ disableAutoLink: true }),
       linkDialogPlugin(),
       thematicBreakPlugin(),
       codeBlockPlugin({
