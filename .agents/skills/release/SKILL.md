@@ -13,7 +13,7 @@ Run the full Paperclip maintainer release workflow, not just an npm publish.
 This skill coordinates:
 
 - stable changelog drafting via `release-changelog`
-- canary verification and publish status from `master`
+- canary verification and publish (manual dispatch or nightly; not every `master` push)
 - Docker smoke testing via `scripts/docker-onboard-smoke.sh`
 - manual stable promotion from a chosen source ref
 - GitHub Release creation
@@ -37,7 +37,7 @@ Before proceeding, verify all of the following:
 3. There is at least one canary or candidate commit since the last stable tag.
 4. The candidate SHA has passed the verification gate or is about to.
 5. If manifests changed, the CI-owned `pnpm-lock.yaml` refresh is already merged on `master`.
-6. npm publish rights are available through GitHub trusted publishing, or through local npm auth for emergency/manual use.
+6. GitHub Environments `npm-canary` / `npm-stable` have secret **`NPM_TOKEN`**, or local `npm login` for emergency manual publish.
 7. If running through Paperclip, you have issue context for status updates and follow-up task creation.
 
 If any precondition fails, stop and report the blocker.
@@ -53,15 +53,17 @@ Collect these inputs up front:
 
 ## Step 0 — Release Model
 
-Paperclip now uses a commit-driven release model:
+Paperclip release model (merge, deploy, and npm are separate):
 
-1. every push to `master` publishes a canary automatically
-2. canaries use `YYYY.MDD.P-canary.N`
-3. stable releases use `YYYY.MDD.P`
-4. the middle slot is `MDD`, where `M` is the UTC month and `DD` is the zero-padded UTC day
-5. the stable patch slot increments when more than one stable ships on the same UTC date
-6. stable releases are manually promoted from a chosen tested commit or canary source commit
-7. only stable releases get `releases/vYYYY.MDD.P.md`, git tag `vYYYY.MDD.P`, and a GitHub Release
+1. merging to `master` runs PR CI only — **not** npm publish
+2. **canary:** run `release.yml` with **channel `canary`**, or wait for nightly schedule
+3. canaries use `YYYY.MDD.P-canary.N`
+4. stable releases use `YYYY.MDD.P`
+5. the middle slot is `MDD`, where `M` is the UTC month and `DD` is the zero-padded UTC day
+6. the stable patch slot increments when more than one stable ships on the same UTC date
+7. stable releases are manually promoted via `release.yml` with **channel `stable`**
+8. only stable releases get `releases/vYYYY.MDD.P.md`, git tag `vYYYY.MDD.P`, and a GitHub Release
+9. app production deploy uses **Deploy Vultr** (`deploy-vultr.yml`), not the Release workflow
 
 Critical consequences:
 
@@ -74,7 +76,7 @@ Critical consequences:
 
 For canary validation:
 
-- inspect the latest successful canary run on `master`
+- inspect the latest successful **Release** workflow run for channel `canary` (or nightly)
 - record the canary version and source SHA
 
 For stable promotion:
@@ -118,17 +120,17 @@ pnpm build
 
 If the GitHub release workflow will run the publish, it can rerun this gate. Still report local status if you checked it.
 
-For PRs that touch release logic, the repo also runs a canary release dry-run in CI. That is a release-specific guard, not a substitute for the standard gate.
-
 ## Step 4 — Validate the Canary
 
-The normal canary path is automatic from `master` via:
+Publish or confirm a canary via `.github/workflows/release.yml`:
 
-- `.github/workflows/release.yml`
+- **channel:** `canary`
+- **source_ref:** usually `master`
+- **dry_run:** `false` to publish (or check nightly run output)
 
 Confirm:
 
-1. verification passed
+1. workflow succeeded (`npm whoami` + publish steps)
 2. npm canary publish succeeded
 3. git tag `canary/vYYYY.MDD.P-canary.N` exists
 
@@ -165,7 +167,7 @@ If smoke testing fails:
 
 - stop the stable release
 - fix the issue on `master`
-- wait for the next automatic canary
+- run or wait for the next canary publish (`release.yml` channel `canary` or nightly)
 - rerun smoke testing
 
 ## Step 6 — Preview or Publish Stable
@@ -176,6 +178,7 @@ The normal stable path is manual `workflow_dispatch` on:
 
 Inputs:
 
+- **channel:** `stable`
 - `source_ref`
 - `stable_date`
 - `dry_run`

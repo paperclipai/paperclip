@@ -107,17 +107,11 @@ Stable publishes do not create a release commit. Instead:
 - packages are published from the chosen source commit
 - git tag `vYYYY.MDD.P` points at that original commit
 
-## Trusted publishing
+## CI npm authentication
 
-The intended CI model is npm trusted publishing through GitHub OIDC.
+**Today:** GitHub Environments **`npm-canary`** and **`npm-stable`** store secret **`NPM_TOKEN`** (npm automation token). [`.github/workflows/release.yml`](../.github/workflows/release.yml) sets `NODE_AUTH_TOKEN` and runs `npm whoami` before publish.
 
-That means:
-
-- no long-lived `NPM_TOKEN` in repository secrets
-- GitHub Actions obtains short-lived publish credentials
-- trusted publisher rules are configured per workflow file
-
-See [doc/RELEASE-AUTOMATION-SETUP.md](RELEASE-AUTOMATION-SETUP.md) for the GitHub/npm setup steps.
+**Future:** OIDC trusted publishing (no long-lived token) is documented in [doc/RELEASE-AUTOMATION-SETUP.md](RELEASE-AUTOMATION-SETUP.md) once every package on npmjs.com is wired to `Viraforge/paperclip` + `release.yml`.
 
 ## Rollback model
 

@@ -2,24 +2,26 @@
 
 This document covers the GitHub and npm setup required for the current Paperclip release model:
 
-- automatic canaries from `master`
-- manual stable promotion from a chosen source ref
-- npm trusted publishing via GitHub OIDC
-- protected release infrastructure in a public repository
+- **canaries:** manual `workflow_dispatch` (channel `canary`) or nightly schedule — not on every `master` push
+- **stable:** manual promotion from a chosen source ref
+- **npm auth:** `NPM_TOKEN` in GitHub Environments `npm-canary` and `npm-stable` (required for CI publish today)
+- optional future: npm trusted publishing (OIDC) once every package is configured on npmjs.com
 
 Repo-side files that depend on this setup:
 
 - `.github/workflows/release.yml`
 - `.github/CODEOWNERS`
 
-### Workflow prerequisite: `setup-node` registry URL
+### Workflow prerequisites
 
-The `publish_canary` and `publish_stable` jobs **must** use `actions/setup-node` with:
+1. **Secret `NPM_TOKEN`** — Create an npm **automation** token with publish access to `paperclipai` and `@paperclipai/*`. Add it as **`NPM_TOKEN`** in GitHub Environments **`npm-canary`** and **`npm-stable`**. [`.github/workflows/release.yml`](../.github/workflows/release.yml) sets `NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}` and runs **`npm whoami`** before `pnpm install` on publish jobs.
 
-- `registry-url: https://registry.npmjs.org`
-- `always-auth: true`
+2. **`setup-node` registry URL** — Publish jobs use `actions/setup-node` with:
 
-Without this, `pnpm publish` fails with **`npm ERR! code ENEEDAUTH`** even when `id-token: write` is set, because the npm CLI never receives OIDC-backed registry credentials.
+   - `registry-url: https://registry.npmjs.org`
+   - `always-auth: true`
+
+Without (1), `npm whoami` fails immediately. Without (2), the CLI may not use the token correctly.
 
 Note:
 
@@ -52,7 +54,7 @@ For each package:
 
 1. open npm as an owner of the package
 2. go to the package settings / publishing access area
-3. add a trusted publisher for the GitHub repository `paperclipai/paperclip`
+3. add a trusted publisher for the GitHub repository `Viraforge/paperclip`
 
 ### 2.2. Add one trusted publisher entry per package
 
@@ -64,7 +66,7 @@ Configure:
 
 Repository:
 
-- `paperclipai/paperclip`
+- `Viraforge/paperclip`
 
 Environment name:
 
@@ -75,16 +77,16 @@ Why:
 - the single `release.yml` workflow handles both canary and stable publishing
 - GitHub environments `npm-canary` and `npm-stable` still enforce different approval rules on the GitHub side
 
-### 2.3. Verify trusted publishing before removing old auth
+### 2.3. Verify trusted publishing (optional future)
 
-After the workflows are live:
+**Current production path:** publish jobs use **`NPM_TOKEN`** in `npm-canary` / `npm-stable` (see prerequisites above).
 
-1. run a canary publish
-2. confirm npm publish succeeds without any `NPM_TOKEN`
-3. run a stable dry-run
-4. run one real stable publish
+If you later configure OIDC trusted publishing for every package and want to drop the long-lived token:
 
-Only after that should you remove old token-based access.
+1. run a canary publish with `NPM_TOKEN` removed from the environment (test in a fork first)
+2. confirm `npm whoami` and `pnpm publish` succeed via OIDC only
+3. run a stable dry-run, then one real stable publish
+4. only then revoke automation tokens
 
 ## 3. Remove Legacy npm Tokens
 
@@ -125,8 +127,8 @@ Recommended settings for `npm-canary`:
 
 Reasoning:
 
-- every push to `master` should be able to publish a canary automatically
-- no human approval should be required for canaries
+- canary publishes run via **workflow_dispatch** (channel `canary`) or **schedule**; they should not require human reviewers on the environment
+- restrict which branches can *trigger* the workflow in GitHub Actions settings if desired
 
 ## 6. Configure `npm-stable`
 

@@ -20,6 +20,7 @@
   - `docker-compose.vps.yml`
   - `docker-compose.vps-override.yml`
 - Fast-build flow uses prebuilt `ui/dist` and skips the VPS UI build step
+- **CI: merge vs deploy vs npm (three separate actions):** (1) Merge PR → `verify` + `policy` on the PR. (2) Ship the app → run **`deploy-vultr.yml`** when ready (`gh workflow run deploy-vultr.yml --repo Viraforge/paperclip --ref master`). (3) Publish npm canary/stable → run **`release.yml`** with workflow_dispatch (`channel` `canary` or `stable`); **not** triggered by merge. Canary also runs on a **nightly schedule** (02:00 UTC). Requires **`NPM_TOKEN`** in GitHub Environments `npm-canary` and `npm-stable`.
 - **GHCR-based deploy (2026-03-18):** Docker image is now built on GitHub Actions and pushed to `ghcr.io/viraforge/paperclip:<sha>`. VPS only pulls and recreates. `Deploy Vultr` is now `workflow_dispatch` only — no longer triggers on push to master.
   - Image path: `ghcr.io/viraforge/paperclip:<github_sha>`
   - VPS reads image tag from `PAPERCLIP_SERVER_IMAGE` env var during compose commands

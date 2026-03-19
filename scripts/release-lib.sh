@@ -293,14 +293,10 @@ require_npm_publish_auth() {
   fi
 
   if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
-    if npm whoami >/dev/null 2>&1; then
-      release_info "  ✓ Logged in to npm as $(npm whoami)"
-      return
-    fi
-    release_fail "GitHub Actions: npm whoami failed (no registry auth). Ensure setup-node sets registry-url for https://registry.npmjs.org (OIDC + id-token: write), and each published package has an npm Trusted Publisher for this repo's release.yml. Fallback: add NPM_TOKEN to the npm-canary/npm-stable environment and set NODE_AUTH_TOKEN in the publish job env."
+    release_fail "GitHub Actions: npm whoami failed. Add secret NPM_TOKEN to environments npm-canary and npm-stable; release.yml sets NODE_AUTH_TOKEN and runs 'npm whoami' before install."
   fi
 
-  release_fail "npm publish auth is not available. Use 'npm login' locally or run from GitHub Actions with registry OIDC / NPM_TOKEN."
+  release_fail "npm publish auth is not available. Run npm login locally."
 }
 
 list_public_package_info() {

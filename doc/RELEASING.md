@@ -2,12 +2,14 @@
 
 Maintainer runbook for shipping Paperclip across npm, GitHub, and the website-facing changelog surface.
 
-The release model is now commit-driven:
+The release model separates **merge CI**, **app deploy**, and **npm publish**:
 
-1. Every push to `master` publishes a canary automatically.
-2. Stable releases are manually promoted from a chosen tested commit or canary tag.
+1. **Canary** — manual `workflow_dispatch` (channel `canary`) or nightly schedule; not on every `master` push.
+2. **Stable** — manual `workflow_dispatch` (channel `stable`) from a chosen ref.
 3. Stable release notes live in `releases/vYYYY.MDD.P.md`.
 4. Only stable releases get GitHub Releases.
+
+Merging to `master` does **not** publish npm packages. Deploy the app with **Deploy Vultr** when ready ([`deploy-vultr.yml`](../.github/workflows/deploy-vultr.yml)).
 
 ## Versioning Model
 
@@ -45,7 +47,7 @@ Canaries only cover the first two surfaces plus an internal traceability tag.
 
 ## Core Invariants
 
-- canaries publish from `master`
+- canaries publish from `source_ref` (default `master`) or nightly schedule at `master`
 - stables publish from an explicitly chosen source ref
 - tags point at the original source commit, not a generated release commit
 - stable notes are always `releases/vYYYY.MDD.P.md`
@@ -56,14 +58,17 @@ Canaries only cover the first two surfaces plus an internal traceability tag.
 
 ### Canary
 
-Every push to `master` runs the canary path inside [`.github/workflows/release.yml`](../.github/workflows/release.yml).
+Run [`.github/workflows/release.yml`](../.github/workflows/release.yml) manually:
 
-It:
+- **channel:** `canary`
+- **source_ref:** branch, SHA, or tag (default `master`)
+- **dry_run:** `true` to preview without publishing
 
-- verifies the pushed commit
-- computes the canary version for the current UTC date
-- publishes under npm dist-tag `canary`
-- creates a git tag `canary/vYYYY.MDD.P-canary.N`
+Or rely on the **nightly schedule** (02:00 UTC) which publishes from `master`.
+
+The job computes the canary version for the current UTC date, publishes under npm dist-tag `canary`, and creates `canary/vYYYY.MDD.P-canary.N`.
+
+**Prerequisite:** GitHub Environments `npm-canary` and `npm-stable` must define secret **`NPM_TOKEN`** (npm automation token with publish access). The workflow runs `npm whoami` before `pnpm install` to fail fast if auth is missing.
 
 Users install canaries with:
 
@@ -75,19 +80,16 @@ npx paperclipai@canary onboard --data-dir "$(mktemp -d /tmp/paperclip-canary.XXX
 
 ### Stable
 
-Use [`.github/workflows/release.yml`](../.github/workflows/release.yml) from the Actions tab with the manual `workflow_dispatch` inputs.
+Use [`.github/workflows/release.yml`](../.github/workflows/release.yml) from the Actions tab → **Run workflow**.
 
-[Run the action here](https://github.com/paperclipai/paperclip/actions/workflows/release.yml)
+[Run the action here](https://github.com/Viraforge/paperclip/actions/workflows/release.yml)
 
 Inputs:
 
-- `source_ref`
-  - commit SHA, branch, or tag
-- `stable_date`
-  - optional UTC date override in `YYYY-MM-DD`
-  - enter a date like `2026-03-18`, not a version like `2026.318.0`
-- `dry_run`
-  - preview only when true
+- **channel:** `stable` (default)
+- **source_ref** — commit SHA, branch, or tag
+- **stable_date** — optional UTC date override in `YYYY-MM-DD` (e.g. `2026-03-18`, not `2026.318.0`)
+- **dry_run** — preview only when true (runs verify + dry-run publish)
 
 Before running stable:
 

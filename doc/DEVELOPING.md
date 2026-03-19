@@ -21,7 +21,17 @@ GitHub Actions owns `pnpm-lock.yaml`.
 
 - Do not commit `pnpm-lock.yaml` in pull requests.
 - Pull request CI validates dependency resolution when manifests change.
-- Pushes to `master` regenerate `pnpm-lock.yaml` with `pnpm install --lockfile-only --no-frozen-lockfile`, commit it back if needed, and then run verification with `--frozen-lockfile`.
+- When manifests change on `master`, [`.github/workflows/refresh-lockfile.yml`](../.github/workflows/refresh-lockfile.yml) opens/updates a lockfile PR (path-filtered; not on every push).
+
+## Release and deploy (CI)
+
+Three separate actions:
+
+1. **Merge PR** — required checks `verify` + `policy` (see [`.github/workflows/pr-verify.yml`](../.github/workflows/pr-verify.yml)).
+2. **Deploy app to VPS** — [`.github/workflows/deploy-vultr.yml`](../.github/workflows/deploy-vultr.yml) (`workflow_dispatch`).
+3. **Publish npm** — [`.github/workflows/release.yml`](../.github/workflows/release.yml) (`workflow_dispatch`, **channel** `canary` or `stable`; canary also runs on a nightly schedule). Requires **`NPM_TOKEN`** in GitHub Environments `npm-canary` and `npm-stable`.
+
+See [doc/RELEASING.md](RELEASING.md) for maintainer steps.
 
 ## Start Dev
 

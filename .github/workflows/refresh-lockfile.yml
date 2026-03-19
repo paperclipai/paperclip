@@ -4,6 +4,13 @@ on:
   push:
     branches:
       - master
+    paths:
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "packages/**/package.json"
+      - "cli/package.json"
+      - "server/package.json"
   workflow_dispatch:
 
 concurrency:
