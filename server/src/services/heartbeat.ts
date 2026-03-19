@@ -3432,7 +3432,8 @@ export function heartbeatService(db: Db) {
 
       for (const agent of allAgents) {
         // Rate-limit: cap enqueues per tick to prevent thundering herd on recovery
-        if (enqueued >= TICK_MAX_ENQUEUE) break;
+        // Use continue (not break) so all agents are still evaluated fairly
+        if (enqueued >= TICK_MAX_ENQUEUE) continue;
 
         if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
         const policy = parseHeartbeatPolicy(agent);
@@ -3443,9 +3444,12 @@ export function heartbeatService(db: Db) {
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
 
-        // Per-agent jitter spreads agents across ticks so they don't all fire at once.
-        // Jitter is up to 25% of the agent's interval, capped at 5 minutes.
-        const maxJitterMs = Math.min(policy.intervalSec * 250, 5 * 60 * 1000);
+        // Per-agent jitter only during recovery bursts (elapsed >> interval),
+        // so steady-state scheduling fires exactly at intervalSec.
+        const isRecoveryBurst = elapsedMs > policy.intervalSec * 1500;
+        const maxJitterMs = isRecoveryBurst
+          ? Math.min(policy.intervalSec * 250, 5 * 60 * 1000)
+          : 0;
         const jitterMs = stableJitterMs(agent.id, maxJitterMs);
         if (elapsedMs < policy.intervalSec * 1000 + jitterMs) continue;
 

@@ -39,9 +39,9 @@ const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
  */
 function decodeHtmlEntities(text: string): string {
   return text
+    .replace(/&amp;/g, "&")
     .replace(/&#(\d+);/g, (_, code: string) => String.fromCharCode(parseInt(code, 10)))
     .replace(/&#x([0-9a-fA-F]+);/g, (_, code: string) => String.fromCharCode(parseInt(code, 16)))
-    .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')

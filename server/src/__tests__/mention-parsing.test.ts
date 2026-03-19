@@ -97,4 +97,15 @@ describe("matchMentionedNames", () => {
     );
     expect(result).toEqual(new Set(["r&d bot"]));
   });
+
+  // Double-encoded entity tests
+  it("decodes double-encoded &amp;#64; (@ as double-encoded numeric entity)", () => {
+    const result = matchMentionedNames("Hello &amp;#64;CEO please review", agents);
+    expect(result).toEqual(new Set(["ceo"]));
+  });
+
+  it("decodes double-encoded &amp;#x40; (@ as double-encoded hex entity)", () => {
+    const result = matchMentionedNames("Hello &amp;#x40;CEO please review", agents);
+    expect(result).toEqual(new Set(["ceo"]));
+  });
 });
