@@ -10,9 +10,12 @@ import { HermesLocalConfigFields } from "./config-fields";
  */
 function buildHermesConfig(values: CreateConfigValues): Record<string, unknown> {
   const config = upstreamBuildHermesConfig(values);
-  if (!values.model || values.model.trim().length === 0) {
+  if (!values.model || values.model.trim().length === 0 || values.model === "custom") {
     delete config.model;
   }
+  // Note: values.args is intentionally repurposed for provider in create mode.
+  // Upstream buildHermesConfig does NOT consume values.args (only values.extraArgs),
+  // so there is no collision. In edit mode, provider is stored directly in adapterConfig.provider.
   if (values.args && values.args.trim().length > 0) {
     config.provider = values.args.trim();
   }

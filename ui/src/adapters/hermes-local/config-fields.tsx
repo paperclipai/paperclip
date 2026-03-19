@@ -132,6 +132,7 @@ export function HermesLocalConfigFields({
             <DraftInput
               value={currentModel === "custom" ? "" : currentModel}
               onCommit={(v) => {
+                if (!v) return; // keep "custom" selected; buildHermesConfig strips it on save
                 if (isCreate) {
                   set!({ model: v });
                 } else {
