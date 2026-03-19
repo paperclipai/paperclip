@@ -7,9 +7,14 @@
 
 ## Executive Summary
 
-Based on comprehensive audits (Growth, Design, QA), I've identified **$14.99 pricing clarity** and **conversion optimization** as the highest ROI opportunities. Performance is below target but not currently blocking users. Design system gaps are manageable technical debt.
+Based on comprehensive audits (Growth, Design, QA), I've identified **pricing clarity** and **conversion optimization** as the highest ROI opportunities. Performance is below target but not currently blocking users. Design system gaps are manageable technical debt.
 
 **Strategic Focus:** Convert visitors → paid customers. Every feature must drive conversion or retention.
+
+**Status Update (Mar 18, 2026):**
+- ✅ Sprint 1: COMPLETE (copy changes, meta tags, CTAs shipped)
+- ✅ Sprint 2: APPROVED (social proof & trust signals)
+- ✅ Sprint 3-4: APPROVED IN PRINCIPLE (scope may adjust based on Sprint 2 results)
 
 ---
 
@@ -25,35 +30,37 @@ Based on comprehensive audits (Growth, Design, QA), I've identified **$14.99 pri
 
 ---
 
-## Sprint 1: Launch Blockers & Quick Wins (Week 1)
+## Sprint 1: Launch Blockers & Quick Wins (Week 1) — ✅ COMPLETE
 **Goal:** Resolve pricing confusion, capture low-hanging conversion wins
 
-### P0 - Critical
-| Task | What | Why | How | Effort | Owner |
-|------|------|-----|-----|--------|-------|
-| **Pricing Clarification** | Confirm actual pricing ($14.99 or $19/$49 tiers) and update all surfaces | Blocking conversion - conflicting prices destroy trust | 1. Stakeholder alignment<br>2. Update codebase<br>3. Update meta tags<br>4. Update JSON-LD schema | S | CEO + Dev |
+### P0 - Critical ✅
+| Task | What | Why | How | Effort | Owner | Status |
+|------|------|-----|-----|--------|-------|--------|
+| **Pricing Clarification** | Confirmed $19/$49 two-tier structure and updated all surfaces | Blocking conversion - conflicting prices destroy trust | 1. CEO alignment ✓<br>2. Updated codebase ✓<br>3. Updated meta tags ✓<br>4. Updated JSON-LD schema ✓ | S | CEO + Dev | ✅ DONE |
 
-### P1 - High Impact Quick Wins
-| Task | What | Why | How | Effort | Owner |
-|------|------|-----|-----|--------|-------|
-| **Hero Headline Rewrite** | Replace "Your brand. Built by AI. In minutes." with benefit-focused copy | Generic headline doesn't differentiate us | Use Option A from Growth Audit:<br>"Professional brand identity in 10 minutes, not 10 weeks." | XS | Copywriter + Designer |
-| **Meta Tags Optimization** | Update title, description, OG tags with USPs | +15% CTR, +20% organic traffic projected | Implement all meta changes from Growth Audit | S | Dev |
-| **CTA Copy Improvement** | Replace "Build My Brand" with "Get My Brand Kit" or "Start (10-min questionnaire)" | More specific, less generic | Update primary CTA across landing page | XS | Copywriter |
-| **Surface Pricing in Hero** | Add "$14.99 one-time" to hero section | Pricing buried 3/4 down page hurts conversion | Add pricing callout near headline + CTA | S | Designer + Dev |
+### P1 - High Impact Quick Wins ✅
+| Task | What | Why | How | Effort | Owner | Status |
+|------|------|-----|-----|--------|-------|--------|
+| **Hero Headline Rewrite** | Updated headline with benefit-focused copy | Generic headline doesn't differentiate us | Implemented improved headline | XS | Copywriter + Designer | ✅ DONE |
+| **Meta Tags Optimization** | Updated title, description, OG tags with USPs | +15% CTR, +20% organic traffic projected | Implemented all meta changes from Growth Audit | S | Dev | ✅ DONE |
+| **CTA Copy Improvement** | Updated CTA to "Get My Brand Kit" | More specific, less generic | Updated primary CTA across landing page | XS | Copywriter | ✅ DONE |
+| **Pricing Visibility** | Added pricing context throughout site | Pricing clarity needed for conversion | Added $19/$49 tiers to landing, FAQ, export flow | S | Designer + Dev | ✅ DONE |
 
 **Expected Impact:** +10-15% conversion rate, +15% organic CTR
+**Actual Impact:** TBD (analytics tracking needed)
 
 ---
 
-## Sprint 2: Social Proof & Trust Signals (Week 2)
+## Sprint 2: Social Proof & Trust Signals (Week 2) — ✅ APPROVED
 **Goal:** Build credibility, reduce purchase friction
+**Status:** CEO approved. Detailed implementation spec: `SPRINT-2-SPEC.md`
 
 ### P1 - High Impact
 | Task | What | Why | How | Effort | Owner |
 |------|------|-----|-----|--------|-------|
 | **Testimonial Upgrade** | Add profile images, full names, specifics, verification badges | Generic testimonials feel fake - hurts trust | 1. Source real customer data<br>2. Get permission + photos<br>3. Rewrite with specifics (timelines, cost comparisons) | M | Marketing + Designer |
 | **Money-Back Guarantee** | Add explicit 30-day refund guarantee copy | Reduces purchase anxiety | Add guarantee section near pricing tiers | XS | Copywriter |
-| **Price Comparison Callout** | Show DIYBrand vs Canva/Adobe costs | Positions $14.99 as steal, not cheap | Add comparison table below pricing | S | Designer |
+| **Price Comparison Callout** | Show DIYBrand vs Canva/Adobe costs | Positions $19/$49 as steal, not cheap | Add comparison table below pricing | S | Designer |
 
 ### P2 - Medium Impact
 | Task | What | Why | How | Effort | Owner |
@@ -64,8 +71,9 @@ Based on comprehensive audits (Growth, Design, QA), I've identified **$14.99 pri
 
 ---
 
-## Sprint 3: Performance Optimization (Weeks 3-4)
+## Sprint 3: Performance Optimization (Weeks 3-4) — 🔄 APPROVED IN PRINCIPLE
 **Goal:** Hit 85+ Lighthouse performance target
+**Status:** Approved pending Sprint 2 results. May adjust scope to double down on conversion if Sprint 2 shows strong ROI.
 
 ### P2 - High Impact, Medium Effort
 | Task | What | Why | How | Effort | Owner |
@@ -128,16 +136,18 @@ Based on comprehensive audits (Growth, Design, QA), I've identified **$14.99 pri
 
 ## Decision Log
 
-### Open Questions
-1. **Pricing model:** Confirm $14.99 one-time or $19/$49 tiers? (Blocking Sprint 1)
-2. **Refund policy:** 7, 14, or 30 days? (Needed for Sprint 2)
-3. **Early access status:** Is $14.99 locked forever or promotional? (Copy messaging dependency)
-4. **"Designed in Sweden":** Should we emphasize this as credibility signal? Where?
+### ✅ Resolved (CEO Decision - Mar 18, 2026)
+1. **Pricing model:** $19/$49 two-tier structure (Basic/Premium) — DROP all $14.99 references
+2. **Refund policy:** 30 days, no questions asked
+3. **Early access status:** Promotional pricing (current $19/$49 is "early access pricing" that will increase post-launch)
+4. **"Designed in Sweden":** NOT NOW — revisit in Month 2 (not a conversion driver at this stage)
 
 ### Decisions Made
 - **Focus on conversion first, performance second** (rationale: perf not blocking users, but poor copy is losing conversions)
-- **Sprint 1 prioritizes quick wins** (low effort, high impact changes before bigger lifts)
+- **Sprint 1 prioritizes quick wins** (low effort, high impact changes before bigger lifts) — ✅ COMPLETE
 - **Design system work deferred to Sprint 4** (technical debt, not revenue driver)
+- **Sprint 2 approved:** Social proof & trust signals (CEO creating subtasks)
+- **Sprint 3-4 approved in principle:** Will cut scope if Sprint 2 results show we should double down on conversion
 
 ---
 
@@ -153,9 +163,10 @@ Based on comprehensive audits (Growth, Design, QA), I've identified **$14.99 pri
 ### Our Advantages
 1. ✅ **One-time payment** (no subscriptions = biggest differentiator)
 2. ✅ **Own all files** (vs Canva lock-in)
-3. ✅ **$14.99 price point** (cheaper than Looka, Brandmark)
+3. ✅ **$19/$49 price point** (Basic tier undercuts Looka $20, Premium competes with Brandmark $25-65)
 4. ✅ **Beautiful design** (neon aesthetic stands out)
 5. ✅ **Simple UX** (no feature bloat)
+6. ✅ **30-day money-back guarantee** (reduces purchase anxiety)
 
 ### Gaps to Address
 - ⚠️ **Social proof** (competitors have 10K+ reviews, we have 6 testimonials)
@@ -172,22 +183,25 @@ Based on comprehensive audits (Growth, Design, QA), I've identified **$14.99 pri
 | Performance hurts mobile conversions | MEDIUM | MEDIUM | Address in Sprint 3, monitor bounce rate |
 | Neon aesthetic polarizes users | LOW | MEDIUM | A/B test "professional" variant later |
 | Generic copy doesn't convert | HIGH | HIGH | Rewrite in Sprint 1+2 |
-| Competitor undercuts pricing | LOW | HIGH | Lock in early adopters at $14.99 forever |
+| Competitor undercuts pricing | LOW | HIGH | Lock in early adopters at $19/$49 forever |
 
 ---
 
 ## Next Actions (This Week)
 
-### Immediate (Today)
-- [ ] **CEO:** Confirm final pricing ($14.99 or $19/$49)
-- [ ] **Sage (me):** Share this roadmap with team for feedback
-- [ ] **CEO:** Approve Sprint 1 scope
+### ✅ Completed
+- [x] **CEO:** Confirmed final pricing ($19/$49 two-tier structure)
+- [x] **Sage (PM):** Updated roadmap with CEO decisions
+- [x] **Sage (PM):** Created SPRINT-2-SPEC.md implementation guide
+- [x] **Dev:** Updated pricing across FAQ, landing page, export flow
+- [x] **Sprint 1:** Completed - copy changes, meta tags, CTAs shipped
 
-### Short-term (This Week)
+### Sprint 2 Preparation (This Week)
+- [ ] **CEO:** Create Sprint 2 subtasks under DIY-29 epic
 - [ ] **Marketing:** Source real customer testimonials (names, photos, permission)
-- [ ] **Designer:** Mockup hero headline options (3 variants from Growth Audit)
-- [ ] **Dev:** Update meta tags per Growth Audit recommendations
-- [ ] **QA:** Set up Lighthouse CI for continuous monitoring
+- [ ] **Designer:** Design verification badges and trust stat callout
+- [ ] **Dev:** Review SPRINT-2-SPEC.md for technical dependencies
+- [ ] **QA:** Set up analytics to track conversion baseline before Sprint 2
 
 ---
 
