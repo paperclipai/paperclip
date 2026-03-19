@@ -1,0 +1,30 @@
+{
+  "name": "@paperclipai/plugin-adlucy-kb",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Ecosystem-wide architectural knowledge for Ad-Lucy agents",
+  "scripts": {
+    "prebuild": "node ../../../../scripts/ensure-plugin-build-deps.mjs",
+    "build": "node ./esbuild.config.mjs",
+    "dev": "node ./esbuild.config.mjs --watch",
+    "test": "vitest run --config ./vitest.config.ts",
+    "typecheck": "pnpm --filter @paperclipai/plugin-sdk build && tsc --noEmit"
+  },
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js"
+  },
+  "keywords": ["paperclip", "plugin", "adlucy", "knowledge-base"],
+  "author": "Andreas Conradty",
+  "license": "MIT",
+  "dependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "esbuild": "^0.27.3",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}
