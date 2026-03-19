@@ -1,5 +1,5 @@
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
@@ -29,6 +29,14 @@ import {
 } from "./parse.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
+// Stable, content-addressed cache root keyed to this module's install path.
+// Persisting across runs lets Claude reuse the same --add-dir path and keeps
+// the system-prompt prefix identical, which is required for prompt cache hits.
+const CLAUDE_CACHE_ROOT = path.join(
+  __moduleDir,
+  ".cache",
+  crypto.createHash("sha256").update(__moduleDir).digest("hex").slice(0, 16),
+);
 const PAPERCLIP_SKILLS_CANDIDATES = [
   path.resolve(__moduleDir, "../../skills"),         // published: <pkg>/dist/server/ -> <pkg>/skills/
   path.resolve(__moduleDir, "../../../../../skills"), // dev: src/server/ -> repo root/skills/
@@ -43,26 +51,29 @@ async function resolvePaperclipSkillsDir(): Promise<string | null> {
 }
 
 /**
- * Create a tmpdir with `.claude/skills/` containing symlinks to skills from
- * the repo's `skills/` directory, so `--add-dir` makes Claude Code discover
- * them as proper registered skills.
+ * Build a persistent `.claude/skills/` directory containing symlinks to skills
+ * from the repo's `skills/` directory, so `--add-dir` makes Claude Code discover
+ * them as proper registered skills. Using a stable path (not mkdtemp) means the
+ * --add-dir argument is identical across runs, which is required for prompt cache hits.
  */
 async function buildSkillsDir(): Promise<string> {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skills-"));
-  const target = path.join(tmp, ".claude", "skills");
+  const root = CLAUDE_CACHE_ROOT;
+  const target = path.join(root, ".claude", "skills");
   await fs.mkdir(target, { recursive: true });
   const skillsDir = await resolvePaperclipSkillsDir();
-  if (!skillsDir) return tmp;
+  if (!skillsDir) return root;
   const entries = await fs.readdir(skillsDir, { withFileTypes: true });
   for (const entry of entries) {
     if (entry.isDirectory()) {
-      await fs.symlink(
-        path.join(skillsDir, entry.name),
-        path.join(target, entry.name),
-      );
+      const linkPath = path.join(target, entry.name);
+      const linkTarget = path.join(skillsDir, entry.name);
+      const existing = await fs.readlink(linkPath).catch(() => null);
+      if (existing === linkTarget) continue;
+      if (existing !== null) await fs.unlink(linkPath);
+      await fs.symlink(linkTarget, linkPath);
     }
   }
-  return tmp;
+  return root;
 }
 
 interface ClaudeExecutionInput {
@@ -580,7 +591,5 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
 
     return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
-  } finally {
-    fs.rm(skillsDir, { recursive: true, force: true }).catch(() => {});
   }
 }
