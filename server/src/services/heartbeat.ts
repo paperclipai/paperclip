@@ -55,6 +55,7 @@ import {
   resolveSessionCompactionPolicy,
   type SessionCompactionPolicy,
 } from "@paperclipai/adapter-utils";
+import { TICK_MAX_ENQUEUE, stableJitterMs } from "./scheduler-utils.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -1333,6 +1334,7 @@ export function heartbeatService(db: Db) {
     return {
       enabled: asBoolean(heartbeat.enabled, true),
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
+      cooldownSec: Math.max(0, asNumber(heartbeat.cooldownSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
     };
@@ -1458,6 +1460,8 @@ export function heartbeatService(db: Db) {
       .where(eq(heartbeatRuns.status, "running"));
 
     const reaped: string[] = [];
+    // Track unique agents that need their next queued run started (deduplicate)
+    const agentsToResume = new Set<string>();
 
     for (const run of activeRuns) {
       if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
@@ -1468,29 +1472,42 @@ export function heartbeatService(db: Db) {
         if (now.getTime() - refTime < staleThresholdMs) continue;
       }
 
-      await setRunStatus(run.id, "failed", {
-        error: "Process lost -- server may have restarted",
-        errorCode: "process_lost",
-        finishedAt: now,
-      });
-      await setWakeupStatus(run.wakeupRequestId, "failed", {
-        finishedAt: now,
-        error: "Process lost -- server may have restarted",
-      });
-      const updatedRun = await getRun(run.id);
-      if (updatedRun) {
-        await appendRunEvent(updatedRun, 1, {
-          eventType: "lifecycle",
-          stream: "system",
-          level: "error",
-          message: "Process lost -- server may have restarted",
+      try {
+        await setRunStatus(run.id, "failed", {
+          error: "Process lost -- server may have restarted",
+          errorCode: "process_lost",
+          finishedAt: now,
         });
-        await releaseIssueExecutionAndPromote(updatedRun);
+        await setWakeupStatus(run.wakeupRequestId, "failed", {
+          finishedAt: now,
+          error: "Process lost -- server may have restarted",
+        });
+        const updatedRun = await getRun(run.id);
+        if (updatedRun) {
+          await appendRunEvent(updatedRun, 1, {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "error",
+            message: "Process lost -- server may have restarted",
+          });
+          await releaseIssueExecutionAndPromote(updatedRun);
+        }
+        await finalizeAgentStatus(run.agentId, "failed");
+        agentsToResume.add(run.agentId);
+        runningProcesses.delete(run.id);
+        reaped.push(run.id);
+      } catch (err) {
+        logger.error({ err, runId: run.id }, "failed to reap orphaned run");
       }
-      await finalizeAgentStatus(run.agentId, "failed");
-      await startNextQueuedRunForAgent(run.agentId);
-      runningProcesses.delete(run.id);
-      reaped.push(run.id);
+    }
+
+    // Stagger queued run resumption: start next runs sequentially per agent
+    for (const agentId of agentsToResume) {
+      try {
+        await startNextQueuedRunForAgent(agentId);
+      } catch (err) {
+        logger.error({ err, agentId }, "failed to start next queued run after reap");
+      }
     }
 
     if (reaped.length > 0) {
@@ -3414,6 +3431,9 @@ export function heartbeatService(db: Db) {
       let skipped = 0;
 
       for (const agent of allAgents) {
+        // Rate-limit: cap enqueues per tick to prevent thundering herd on recovery
+        if (enqueued >= TICK_MAX_ENQUEUE) break;
+
         if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
         const policy = parseHeartbeatPolicy(agent);
         if (!policy.enabled || policy.intervalSec <= 0) continue;
@@ -3423,20 +3443,34 @@ export function heartbeatService(db: Db) {
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
 
-        const run = await enqueueWakeup(agent.id, {
-          source: "timer",
-          triggerDetail: "system",
-          reason: "heartbeat_timer",
-          requestedByActorType: "system",
-          requestedByActorId: "heartbeat_scheduler",
-          contextSnapshot: {
-            source: "scheduler",
-            reason: "interval_elapsed",
-            now: now.toISOString(),
-          },
-        });
-        if (run) enqueued += 1;
-        else skipped += 1;
+        // Per-agent jitter spreads agents across ticks so they don't all fire at once.
+        // Jitter is up to 25% of the agent's interval, capped at 5 minutes.
+        const maxJitterMs = Math.min(policy.intervalSec * 250, 5 * 60 * 1000);
+        const jitterMs = stableJitterMs(agent.id, maxJitterMs);
+        if (elapsedMs < policy.intervalSec * 1000 + jitterMs) continue;
+
+        // Enforce cooldown: honour the per-agent cooldownSec if configured
+        if (policy.cooldownSec > 0 && elapsedMs < policy.cooldownSec * 1000) continue;
+
+        try {
+          const run = await enqueueWakeup(agent.id, {
+            source: "timer",
+            triggerDetail: "system",
+            reason: "heartbeat_timer",
+            requestedByActorType: "system",
+            requestedByActorId: "heartbeat_scheduler",
+            contextSnapshot: {
+              source: "scheduler",
+              reason: "interval_elapsed",
+              now: now.toISOString(),
+            },
+          });
+          if (run) enqueued += 1;
+          else skipped += 1;
+        } catch {
+          // Individual agent enqueue failures should not block other agents
+          skipped += 1;
+        }
       }
 
       return { checked, enqueued, skipped };
