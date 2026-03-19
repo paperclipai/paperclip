@@ -2,7 +2,8 @@ import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { createCostEventSchema, updateBudgetSchema } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { costService, companyService, agentService, logActivity } from "../services/index.js";
+import { accessService, costService, companyService, agentService, logActivity } from "../services/index.js";
+import { forbidden } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 
 export function costRoutes(db: Db) {
@@ -10,6 +11,7 @@ export function costRoutes(db: Db) {
   const costs = costService(db);
   const companies = companyService(db);
   const agents = agentService(db);
+  const access = accessService(db);
 
   router.post("/companies/:companyId/cost-events", validate(createCostEventSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -73,6 +75,11 @@ export function costRoutes(db: Db) {
   router.patch("/companies/:companyId/budgets", validate(updateBudgetSchema), async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type === "board" && req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
+      const allowed = await access.canUser(companyId, req.actor.userId, "company:settings");
+      if (!allowed) throw forbidden("Missing permission: company:settings");
+    }
     const company = await companies.update(companyId, { budgetMonthlyCents: req.body.budgetMonthlyCents });
     if (!company) {
       res.status(404).json({ error: "Company not found" });
@@ -105,6 +112,11 @@ export function costRoutes(db: Db) {
         res.status(403).json({ error: "Agent can only change its own budget" });
         return;
       }
+    }
+
+    if (req.actor.type === "board" && req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
+      const allowed = await access.canUser(agent.companyId, req.actor.userId, "company:settings");
+      if (!allowed) throw forbidden("Missing permission: company:settings");
     }
 
     const updated = await agents.update(agentId, { budgetMonthlyCents: req.body.budgetMonthlyCents });

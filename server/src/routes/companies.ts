@@ -126,9 +126,16 @@ export function companyRoutes(db: Db) {
   });
 
   router.patch("/:companyId", validate(updateCompanySchema), async (req, res) => {
-    assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    if (req.actor.type === "board") {
+      if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
+        const allowed = await access.canUser(companyId, req.actor.userId, "company:settings");
+        if (!allowed) throw forbidden("Missing permission: company:settings");
+      }
+    } else {
+      throw forbidden("Board access required");
+    }
 
     // Deep-merge settings if provided (so partial updates don't clobber other keys)
     if (req.body.settings) {
@@ -159,9 +166,16 @@ export function companyRoutes(db: Db) {
   });
 
   router.post("/:companyId/archive", async (req, res) => {
-    assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    if (req.actor.type === "board") {
+      if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
+        const allowed = await access.canUser(companyId, req.actor.userId, "company:settings");
+        if (!allowed) throw forbidden("Missing permission: company:settings");
+      }
+    } else {
+      throw forbidden("Board access required");
+    }
     const company = await svc.archive(companyId);
     if (!company) {
       res.status(404).json({ error: "Company not found" });
@@ -179,9 +193,16 @@ export function companyRoutes(db: Db) {
   });
 
   router.delete("/:companyId", async (req, res) => {
-    assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    if (req.actor.type === "board") {
+      if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
+        const allowed = await access.canUser(companyId, req.actor.userId, "company:settings");
+        if (!allowed) throw forbidden("Missing permission: company:settings");
+      }
+    } else {
+      throw forbidden("Board access required");
+    }
     const company = await svc.remove(companyId);
     if (!company) {
       res.status(404).json({ error: "Company not found" });

@@ -509,7 +509,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           </Button>
         </div>
         <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
-          <Field label="Adapter type" hint={help.adapterType}>
+          <Field label="Adapter" hint={help.adapterType}>
             <AdapterTypeDropdown
               value={adapterType}
               onChange={(t) => {
@@ -963,43 +963,32 @@ function AdapterTypeDropdown({
   onChange: (type: string) => void;
 }) {
   return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
-          <span className="inline-flex items-center gap-1.5">
-            {value === "opencode_local" ? <OpenCodeLogoIcon className="h-3.5 w-3.5" /> : null}
-            <span>{adapterLabels[value] ?? value}</span>
-          </span>
-          <ChevronDown className="h-3 w-3 text-muted-foreground" />
+    <div className="flex flex-wrap gap-1.5">
+      {ADAPTER_DISPLAY_LIST.map((item) => (
+        <button
+          key={item.value}
+          type="button"
+          disabled={item.comingSoon}
+          onClick={() => {
+            if (!item.comingSoon) onChange(item.value);
+          }}
+          className={cn(
+            "inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs transition-all",
+            item.comingSoon
+              ? "border-border opacity-40 cursor-not-allowed text-muted-foreground"
+              : item.value === value
+                ? "border-foreground/30 bg-accent font-medium"
+                : "border-border hover:bg-accent/50 text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {item.value === "opencode_local" ? <OpenCodeLogoIcon className="h-3.5 w-3.5" /> : null}
+          <span>{item.label}</span>
+          {item.comingSoon && (
+            <span className="text-[10px] text-muted-foreground ml-0.5">soon</span>
+          )}
         </button>
-      </PopoverTrigger>
-      <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-1" align="start">
-        {ADAPTER_DISPLAY_LIST.map((item) => (
-          <button
-            key={item.value}
-            disabled={item.comingSoon}
-            className={cn(
-              "flex items-center justify-between w-full px-2 py-1.5 text-sm rounded",
-              item.comingSoon
-                ? "opacity-40 cursor-not-allowed"
-                : "hover:bg-accent/50",
-              item.value === value && !item.comingSoon && "bg-accent",
-            )}
-            onClick={() => {
-              if (!item.comingSoon) onChange(item.value);
-            }}
-          >
-            <span className="inline-flex items-center gap-1.5">
-              {item.value === "opencode_local" ? <OpenCodeLogoIcon className="h-3.5 w-3.5" /> : null}
-              <span>{item.label}</span>
-            </span>
-            {item.comingSoon && (
-              <span className="text-[10px] text-muted-foreground">Coming soon</span>
-            )}
-          </button>
-        ))}
-      </PopoverContent>
-    </Popover>
+      ))}
+    </div>
   );
 }
 

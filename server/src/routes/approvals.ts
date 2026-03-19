@@ -10,13 +10,15 @@ import {
 import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
 import {
+  accessService,
   approvalService,
   heartbeatService,
   issueApprovalService,
   logActivity,
   secretService,
 } from "../services/index.js";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { forbidden } from "../errors.js";
 import { redactEventPayload } from "../redaction.js";
 
 function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(approval: T): T {
@@ -32,6 +34,7 @@ export function approvalRoutes(db: Db) {
   const heartbeat = heartbeatService(db);
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
+  const access = accessService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
 
   router.get("/companies/:companyId/approvals", async (req, res) => {
@@ -119,8 +122,20 @@ export function approvalRoutes(db: Db) {
   });
 
   router.post("/approvals/:id/approve", validate(resolveApprovalSchema), async (req, res) => {
-    assertBoard(req);
     const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Approval not found" });
+      return;
+    }
+    if (req.actor.type === "board") {
+      if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
+        const allowed = await access.canUser(existing.companyId, req.actor.userId, "approvals:review");
+        if (!allowed) throw forbidden("Missing permission: approvals:review");
+      }
+    } else {
+      throw forbidden("Board access required");
+    }
     const approval = await svc.approve(id, req.body.decidedByUserId ?? "board", req.body.decisionNote);
     const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
     const linkedIssueIds = linkedIssues.map((issue) => issue.id);
@@ -207,8 +222,20 @@ export function approvalRoutes(db: Db) {
   });
 
   router.post("/approvals/:id/reject", validate(resolveApprovalSchema), async (req, res) => {
-    assertBoard(req);
     const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Approval not found" });
+      return;
+    }
+    if (req.actor.type === "board") {
+      if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
+        const allowed = await access.canUser(existing.companyId, req.actor.userId, "approvals:review");
+        if (!allowed) throw forbidden("Missing permission: approvals:review");
+      }
+    } else {
+      throw forbidden("Board access required");
+    }
     const approval = await svc.reject(id, req.body.decidedByUserId ?? "board", req.body.decisionNote);
 
     await logActivity(db, {
@@ -228,8 +255,20 @@ export function approvalRoutes(db: Db) {
     "/approvals/:id/request-revision",
     validate(requestApprovalRevisionSchema),
     async (req, res) => {
-      assertBoard(req);
       const id = req.params.id as string;
+      const existing = await svc.getById(id);
+      if (!existing) {
+        res.status(404).json({ error: "Approval not found" });
+        return;
+      }
+      if (req.actor.type === "board") {
+        if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
+          const allowed = await access.canUser(existing.companyId, req.actor.userId, "approvals:review");
+          if (!allowed) throw forbidden("Missing permission: approvals:review");
+        }
+      } else {
+        throw forbidden("Board access required");
+      }
       const approval = await svc.requestRevision(
         id,
         req.body.decidedByUserId ?? "board",

@@ -9,11 +9,13 @@ import {
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
-import { logActivity, secretService } from "../services/index.js";
+import { forbidden } from "../errors.js";
+import { accessService, logActivity, secretService } from "../services/index.js";
 
 export function secretRoutes(db: Db) {
   const router = Router();
   const svc = secretService(db);
+  const access = accessService(db);
   const configuredDefaultProvider = process.env.PAPERCLIP_SECRETS_PROVIDER;
   const defaultProvider = (
     configuredDefaultProvider && SECRET_PROVIDERS.includes(configuredDefaultProvider as SecretProvider)
@@ -37,9 +39,16 @@ export function secretRoutes(db: Db) {
   });
 
   router.post("/companies/:companyId/secrets", validate(createSecretSchema), async (req, res) => {
-    assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    if (req.actor.type === "board") {
+      if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
+        const allowed = await access.canUser(companyId, req.actor.userId, "secrets:manage");
+        if (!allowed) throw forbidden("Missing permission: secrets:manage");
+      }
+    } else {
+      throw forbidden("Board access required");
+    }
 
     const created = await svc.create(
       companyId,
@@ -67,7 +76,6 @@ export function secretRoutes(db: Db) {
   });
 
   router.post("/secrets/:id/rotate", validate(rotateSecretSchema), async (req, res) => {
-    assertBoard(req);
     const id = req.params.id as string;
     const existing = await svc.getById(id);
     if (!existing) {
@@ -75,6 +83,14 @@ export function secretRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    if (req.actor.type === "board") {
+      if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
+        const allowed = await access.canUser(existing.companyId, req.actor.userId, "secrets:manage");
+        if (!allowed) throw forbidden("Missing permission: secrets:manage");
+      }
+    } else {
+      throw forbidden("Board access required");
+    }
 
     const rotated = await svc.rotate(
       id,
@@ -99,7 +115,6 @@ export function secretRoutes(db: Db) {
   });
 
   router.patch("/secrets/:id", validate(updateSecretSchema), async (req, res) => {
-    assertBoard(req);
     const id = req.params.id as string;
     const existing = await svc.getById(id);
     if (!existing) {
@@ -107,6 +122,14 @@ export function secretRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    if (req.actor.type === "board") {
+      if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
+        const allowed = await access.canUser(existing.companyId, req.actor.userId, "secrets:manage");
+        if (!allowed) throw forbidden("Missing permission: secrets:manage");
+      }
+    } else {
+      throw forbidden("Board access required");
+    }
 
     const updated = await svc.update(id, {
       name: req.body.name,
@@ -133,7 +156,6 @@ export function secretRoutes(db: Db) {
   });
 
   router.delete("/secrets/:id", async (req, res) => {
-    assertBoard(req);
     const id = req.params.id as string;
     const existing = await svc.getById(id);
     if (!existing) {
@@ -141,6 +163,14 @@ export function secretRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    if (req.actor.type === "board") {
+      if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
+        const allowed = await access.canUser(existing.companyId, req.actor.userId, "secrets:manage");
+        if (!allowed) throw forbidden("Missing permission: secrets:manage");
+      }
+    } else {
+      throw forbidden("Board access required");
+    }
 
     const removed = await svc.remove(id);
     if (!removed) {

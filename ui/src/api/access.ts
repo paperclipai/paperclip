@@ -65,6 +65,18 @@ type BoardClaimStatus = {
 };
 
 export const accessApi = {
+  getMe: () =>
+    api.get<{
+      authenticated: boolean;
+      type?: "board" | "agent";
+      userId?: string | null;
+      isInstanceAdmin?: boolean;
+      source?: string;
+      companies?: string[];
+      agentId?: string | null;
+      companyId?: string | null;
+    }>("/me"),
+
   createCompanyInvite: (
     companyId: string,
     input: {

@@ -19,6 +19,8 @@ import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Bot, Plus, List, GitBranch, SlidersHorizontal } from "lucide-react";
 import type { Agent } from "@paperclipai/shared";
+import { AGENT_PRESETS } from "@paperclipai/shared";
+import { AgentIcon } from "../components/AgentIconPicker";
 
 const adapterLabels: Record<string, string> = {
   claude_local: "Claude",
@@ -214,12 +216,28 @@ export function Agents() {
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       {agents && agents.length === 0 && (
-        <EmptyState
-          icon={Bot}
-          message="Create your first agent to get started."
-          action="New Agent"
-          onAction={openNewAgent}
-        />
+        <div className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            Get started by creating your first agent. Choose a template or create a custom agent.
+          </p>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            {AGENT_PRESETS.slice(0, 6).map((preset) => (
+              <button
+                key={preset.id}
+                onClick={() => {
+                  openNewAgent();
+                }}
+                className="flex flex-col items-start gap-1 rounded-lg border border-border px-3 py-2.5 text-left transition-all hover:bg-accent/50 hover:border-foreground/20"
+              >
+                <div className="flex items-center gap-2">
+                  <AgentIcon icon={preset.icon} className="h-3.5 w-3.5 text-muted-foreground" />
+                  <span className="text-xs font-medium">{preset.name}</span>
+                </div>
+                <span className="text-[10px] text-muted-foreground line-clamp-1">{preset.description}</span>
+              </button>
+            ))}
+          </div>
+        </div>
       )}
 
       {/* List view */}

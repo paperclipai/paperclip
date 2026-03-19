@@ -8,7 +8,7 @@ import type {
   Approval,
   AgentConfigRevision,
 } from "@paperclipai/shared";
-import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
+import { isUuidLike, normalizeAgentUrlKey, AGENT_PRESETS } from "@paperclipai/shared";
 import { ApiError, api } from "./client";
 
 export interface AgentKey {
@@ -98,6 +98,39 @@ export const agentsApi = {
     api.post<Agent>(`/companies/${companyId}/agents`, data),
   hire: (companyId: string, data: Record<string, unknown>) =>
     api.post<AgentHireResponse>(`/companies/${companyId}/agent-hires`, data),
+  createFromPreset: (
+    companyId: string,
+    presetId: string,
+    overrides?: {
+      name?: string;
+      reportsTo?: string;
+      credentialId?: string | null;
+    },
+  ) => {
+    const preset = AGENT_PRESETS.find((p) => p.id === presetId);
+    if (!preset) throw new Error(`Unknown preset: ${presetId}`);
+    return agentsApi.create(companyId, {
+      name: overrides?.name ?? preset.name,
+      role: preset.role,
+      title: preset.title,
+      adapterType: preset.adapterType,
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          enabled: false,
+          intervalSec: 300,
+          wakeOnDemand: true,
+          cooldownSec: 10,
+          maxConcurrentRuns: 1,
+        },
+      },
+      ...(overrides?.reportsTo ? { reportsTo: overrides.reportsTo } : {}),
+      ...(overrides?.credentialId !== undefined
+        ? { credentialId: overrides.credentialId }
+        : {}),
+      budgetMonthlyCents: 0,
+    });
+  },
   update: (id: string, data: Record<string, unknown>, companyId?: string) =>
     api.patch<Agent>(agentPath(id, companyId), data),
   updatePermissions: (id: string, data: { canCreateAgents: boolean }, companyId?: string) =>

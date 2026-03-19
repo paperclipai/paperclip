@@ -5,7 +5,7 @@ import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { agentsApi } from "../api/agents";
 import { queryKeys } from "../lib/queryKeys";
-import { AGENT_ROLES } from "@paperclipai/shared";
+import { AGENT_ROLES, AGENT_PRESETS, type AgentPreset } from "@paperclipai/shared";
 import {
   Dialog,
   DialogContent,
@@ -23,7 +23,7 @@ import {
   User,
 } from "lucide-react";
 import { cn, agentUrl } from "../lib/utils";
-import { roleLabels } from "./agent-config-primitives";
+import { roleLabels, adapterLabels } from "./agent-config-primitives";
 import { AgentConfigForm, type CreateConfigValues } from "./AgentConfigForm";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { getUIAdapter } from "../adapters";
@@ -44,6 +44,10 @@ export function NewAgentDialog() {
 
   // Config values (managed by AgentConfigForm)
   const [configValues, setConfigValues] = useState<CreateConfigValues>(defaultCreateValues);
+
+  // Preset state
+  const [selectedPreset, setSelectedPreset] = useState<AgentPreset | null>(null);
+  const [showFullForm, setShowFullForm] = useState(false);
 
   // Popover states
   const [roleOpen, setRoleOpen] = useState(false);
@@ -103,6 +107,20 @@ export function NewAgentDialog() {
     setConfigValues(defaultCreateValues);
     setExpanded(true);
     setFormError(null);
+    setSelectedPreset(null);
+    setShowFullForm(false);
+  }
+
+  function handlePresetSelect(preset: AgentPreset) {
+    setSelectedPreset(preset);
+    setName(preset.name);
+    setTitle(preset.title);
+    setRole(preset.role);
+    setConfigValues((prev) => ({
+      ...prev,
+      adapterType: preset.adapterType,
+    }));
+    setShowFullForm(false);
   }
 
   function buildAdapterConfig() {
@@ -309,13 +327,70 @@ export function NewAgentDialog() {
             </Popover>
           </div>
 
-          {/* Shared config form (adapter + heartbeat) */}
-          <AgentConfigForm
-            mode="create"
-            values={configValues}
-            onChange={(patch) => setConfigValues((prev) => ({ ...prev, ...patch }))}
-            adapterModels={adapterModels}
-          />
+          {/* Preset grid — shown when no preset selected and not in full-form mode */}
+          {!selectedPreset && !showFullForm && !isFirstAgent && (
+            <div className="px-4 py-3 border-t border-border">
+              <div className="text-xs font-medium text-muted-foreground mb-2">Quick start from template</div>
+              <div className="grid grid-cols-2 gap-2">
+                {AGENT_PRESETS.map((preset) => (
+                  <button
+                    key={preset.id}
+                    onClick={() => handlePresetSelect(preset)}
+                    className="flex flex-col items-start gap-1 rounded-lg border border-border px-3 py-2 text-left transition-all hover:bg-accent/50 hover:border-foreground/20"
+                  >
+                    <div className="flex items-center gap-2">
+                      <AgentIcon icon={preset.icon} className="h-3.5 w-3.5 text-muted-foreground" />
+                      <span className="text-xs font-medium">{preset.name}</span>
+                    </div>
+                    <span className="text-[10px] text-muted-foreground line-clamp-1">{preset.description}</span>
+                  </button>
+                ))}
+              </div>
+              <button
+                className="mt-2 w-full text-xs text-muted-foreground hover:text-foreground transition-colors py-1"
+                onClick={() => setShowFullForm(true)}
+              >
+                or create custom agent...
+              </button>
+            </div>
+          )}
+
+          {/* Selected preset summary — shown when preset is selected but full form is hidden */}
+          {selectedPreset && !showFullForm && (
+            <div className="px-4 py-3 border-t border-border">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <AgentIcon icon={selectedPreset.icon} className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-xs font-medium">{selectedPreset.description}</span>
+                  <span className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-muted-foreground">
+                    {adapterLabels[selectedPreset.adapterType] ?? selectedPreset.adapterType}
+                  </span>
+                </div>
+                <button
+                  className="text-xs text-muted-foreground hover:text-foreground"
+                  onClick={() => { setSelectedPreset(null); setShowFullForm(false); }}
+                >
+                  Change
+                </button>
+              </div>
+              <button
+                className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                onClick={() => setShowFullForm(true)}
+              >
+                Customize settings...
+              </button>
+            </div>
+          )}
+
+          {/* Shared config form (adapter + heartbeat) — shown when full form is active or first agent */}
+          {(showFullForm || isFirstAgent) && (
+            <AgentConfigForm
+              mode="create"
+              values={configValues}
+              onChange={(patch) => setConfigValues((prev) => ({ ...prev, ...patch }))}
+              adapterModels={adapterModels}
+            />
+          )}
         </div>
 
         {/* Footer */}

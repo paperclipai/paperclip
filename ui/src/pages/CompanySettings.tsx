@@ -466,6 +466,12 @@ const PERMISSION_LABELS: Record<PermissionKey, string> = {
   "tasks:assign": "Assign issues",
   "tasks:assign_scope": "Assign (scoped)",
   "joins:approve": "Approve joins",
+  "projects:manage": "Manage projects",
+  "goals:manage": "Manage goals",
+  "secrets:manage": "Manage secrets",
+  "credentials:manage": "Manage credentials",
+  "company:settings": "Company settings",
+  "approvals:review": "Review approvals",
 };
 
 const PERMISSION_DESCRIPTIONS: Record<PermissionKey, string> = {
@@ -475,6 +481,12 @@ const PERMISSION_DESCRIPTIONS: Record<PermissionKey, string> = {
   "tasks:assign": "Assign issues to agents.",
   "tasks:assign_scope": "Assign issues with scope restrictions.",
   "joins:approve": "Approve or reject join requests.",
+  "projects:manage": "Create, update, and archive projects.",
+  "goals:manage": "Create, update, and delete goals.",
+  "secrets:manage": "Manage company secrets and environment variables.",
+  "credentials:manage": "Manage provider credentials (API keys, OAuth).",
+  "company:settings": "Modify company settings and configuration.",
+  "approvals:review": "Review and resolve approval requests.",
 };
 
 // ---- Members & Permissions Section ----
@@ -572,10 +584,9 @@ function MembersSection({ companyId }: { companyId: string }) {
       setExpandedMemberId(null);
       return;
     }
-    // Initialize all permissions to false (since we don't have current grants from the API)
     const initial = {} as Record<PermissionKey, boolean>;
     for (const key of PERMISSION_KEYS) {
-      initial[key] = false;
+      initial[key] = (member.grants ?? []).includes(key);
     }
     setEditingGrants(initial);
     setExpandedMemberId(member.id);
@@ -655,6 +666,11 @@ function MembersSection({ companyId }: { companyId: string }) {
                     {member.membershipRole && (
                       <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
                         {member.membershipRole}
+                      </span>
+                    )}
+                    {(member.grants?.length ?? 0) > 0 && (
+                      <span className="shrink-0 rounded bg-indigo-500/10 px-1.5 py-0.5 text-[10px] font-medium text-indigo-600">
+                        {member.grants!.length} permissions
                       </span>
                     )}
                   </div>

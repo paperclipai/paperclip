@@ -6,12 +6,14 @@ import {
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
-import { logActivity } from "../services/index.js";
+import { forbidden } from "../errors.js";
+import { accessService, logActivity } from "../services/index.js";
 import { credentialService } from "../services/credentials.js";
 
 export function credentialRoutes(db: Db) {
   const router = Router();
   const svc = credentialService(db);
+  const access = accessService(db);
 
   // List credentials for a company (credential values are NOT returned)
   router.get("/companies/:companyId/credentials", async (req, res) => {
@@ -27,9 +29,16 @@ export function credentialRoutes(db: Db) {
     "/companies/:companyId/credentials",
     validate(createProviderCredentialSchema),
     async (req, res) => {
-      assertBoard(req);
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
+      if (req.actor.type === "board") {
+        if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
+          const allowed = await access.canUser(companyId, req.actor.userId, "credentials:manage");
+          if (!allowed) throw forbidden("Missing permission: credentials:manage");
+        }
+      } else {
+        throw forbidden("Board access required");
+      }
 
       const created = await svc.create(companyId, {
         name: req.body.name,
@@ -59,7 +68,6 @@ export function credentialRoutes(db: Db) {
     "/credentials/:id",
     validate(updateProviderCredentialSchema),
     async (req, res) => {
-      assertBoard(req);
       const id = req.params.id as string;
       const existing = await svc.getById(id);
       if (!existing) {
@@ -67,6 +75,14 @@ export function credentialRoutes(db: Db) {
         return;
       }
       assertCompanyAccess(req, existing.companyId);
+      if (req.actor.type === "board") {
+        if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
+          const allowed = await access.canUser(existing.companyId, req.actor.userId, "credentials:manage");
+          if (!allowed) throw forbidden("Missing permission: credentials:manage");
+        }
+      } else {
+        throw forbidden("Board access required");
+      }
 
       const updated = await svc.update(id, {
         name: req.body.name,
@@ -96,7 +112,6 @@ export function credentialRoutes(db: Db) {
 
   // Delete a credential
   router.delete("/credentials/:id", async (req, res) => {
-    assertBoard(req);
     const id = req.params.id as string;
     const existing = await svc.getById(id);
     if (!existing) {
@@ -104,6 +119,14 @@ export function credentialRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    if (req.actor.type === "board") {
+      if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
+        const allowed = await access.canUser(existing.companyId, req.actor.userId, "credentials:manage");
+        if (!allowed) throw forbidden("Missing permission: credentials:manage");
+      }
+    } else {
+      throw forbidden("Board access required");
+    }
 
     const result = await svc.remove(id);
     if (result && "error" in result) {

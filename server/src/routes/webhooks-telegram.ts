@@ -216,9 +216,7 @@ async function cmdRegister(db: Db, msg: TelegramMessage, input: string): Promise
   const name = input.trim();
 
   if (!name) {
-    const allRows = await db.select({ name: companies.name }).from(companies).where(eq(companies.status, "active"));
-    const list = allRows.map((r) => `  • ${esc(r.name)}`).join("\n");
-    await reply(chatId, `📋 <b>Available companies:</b>\n${list}\n\n<b>Usage:</b> <code>/register CompanyName</code>`, msg.message_thread_id);
+    await reply(chatId, `<b>Usage:</b> <code>/register CompanyName</code>\n\nProvide the exact name of your company to link this chat.`, msg.message_thread_id);
     return;
   }
 
@@ -229,9 +227,7 @@ async function cmdRegister(db: Db, msg: TelegramMessage, input: string): Promise
     .limit(1);
 
   if (!rows[0]) {
-    const allRows = await db.select({ name: companies.name }).from(companies).where(eq(companies.status, "active"));
-    const list = allRows.map((r) => `  • ${esc(r.name)}`).join("\n");
-    await reply(chatId, `❌ Company "<b>${esc(name)}</b>" not found.\n\n📋 <b>Available:</b>\n${list}`, msg.message_thread_id);
+    await reply(chatId, `❌ Company "<b>${esc(name)}</b>" not found.\n\nPlease check the name and try again.`, msg.message_thread_id);
     return;
   }
 
