@@ -9,6 +9,7 @@ import { authApi } from "../api/auth";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { usePanel } from "../context/PanelContext";
+import { useToast } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { readIssueDetailBreadcrumb } from "../lib/issueDetailBreadcrumb";
@@ -36,8 +37,10 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Activity as ActivityIcon,
+  Check,
   ChevronDown,
   ChevronRight,
+  Copy,
   EyeOff,
   Hexagon,
   ListTree,
@@ -196,7 +199,9 @@ export function IssueDetail() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
+  const { pushToast } = useToast();
   const [moreOpen, setMoreOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
   const [detailTab, setDetailTab] = useState("comments");
   const [secondaryOpen, setSecondaryOpen] = useState({
@@ -585,6 +590,22 @@ export function IssueDetail() {
     return () => closePanel();
   }, [issue]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const copyIssueToClipboard = async () => {
+    if (!issue) return;
+    const decodeEntities = (text: string) => {
+      const el = document.createElement("textarea");
+      el.innerHTML = text;
+      return el.value;
+    };
+    const title = decodeEntities(issue.title);
+    const body = decodeEntities(issue.description ?? "");
+    const md = `# ${issue.identifier}: ${title}\n\n${body}`.trimEnd();
+    await navigator.clipboard.writeText(md);
+    setCopied(true);
+    pushToast({ title: "Copied to clipboard", tone: "success" });
+    setTimeout(() => setCopied(false), 2000);
+  };
+
   if (isLoading) return <p className="text-sm text-muted-foreground">Loading...</p>;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
   if (!issue) return null;
@@ -737,17 +758,34 @@ export function IssueDetail() {
             </div>
           )}
 
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            className="ml-auto md:hidden shrink-0"
-            onClick={() => setMobilePropsOpen(true)}
-            title="Properties"
-          >
-            <SlidersHorizontal className="h-4 w-4" />
-          </Button>
+          <div className="ml-auto flex items-center gap-0.5 md:hidden shrink-0">
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              onClick={copyIssueToClipboard}
+              title="Copy issue as markdown"
+            >
+              {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              onClick={() => setMobilePropsOpen(true)}
+              title="Properties"
+            >
+              <SlidersHorizontal className="h-4 w-4" />
+            </Button>
+          </div>
 
           <div className="hidden md:flex items-center md:ml-auto shrink-0">
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              onClick={copyIssueToClipboard}
+              title="Copy issue as markdown"
+            >
+              {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
+            </Button>
             <Button
               variant="ghost"
               size="icon-xs"
