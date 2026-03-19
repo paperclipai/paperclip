@@ -22,7 +22,7 @@ import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { secretService } from "./secrets.js";
-import { resolveCredentialEnv } from "./credentials.js";
+import { resolveCredentialEnv, ensureAgentHome } from "./credentials.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
@@ -1263,6 +1263,23 @@ export function heartbeatService(db: Db) {
             { agentId: agent.id, credentialId: agent.credentialId, err: credErr },
             "failed to resolve credential env; continuing without credential",
           );
+        }
+      }
+
+      // Auto-provision HOME for claude_local agents that don't have it set.
+      // Handles agents created after container boot (not in entrypoint).
+      if (agent.adapterType === "claude_local") {
+        try {
+          const currentEnv =
+            typeof resolvedConfig.env === "object" && resolvedConfig.env !== null
+              ? (resolvedConfig.env as Record<string, string>)
+              : {};
+          const homeEnv = await ensureAgentHome(agent.id, currentEnv);
+          if (Object.keys(homeEnv).length > 0) {
+            resolvedConfig.env = { ...currentEnv, ...homeEnv };
+          }
+        } catch (homeErr) {
+          logger.error({ agentId: agent.id, err: homeErr }, "failed to ensure agent HOME");
         }
       }
 

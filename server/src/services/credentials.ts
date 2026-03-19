@@ -198,3 +198,58 @@ export async function resolveCredentialEnv(
   logger.warn({ agentId, credentialId, type: cred.type }, "unknown credential type during runtime resolution");
   return { env: {} };
 }
+
+/**
+ * Ensure a claude_local agent has a HOME directory with OAuth credentials.
+ *
+ * For agents WITHOUT a credentialId, falls back to the global CLAUDE_OAUTH_TOKEN
+ * env var. This handles agents created after container boot that weren't
+ * provisioned by the entrypoint script.
+ *
+ * Returns env vars to merge (HOME) if provisioning was needed, or empty if
+ * the agent already has HOME configured.
+ */
+export async function ensureAgentHome(
+  agentId: string,
+  currentEnv: Record<string, string>,
+): Promise<Record<string, string>> {
+  // Already has HOME set — nothing to do
+  if (currentEnv.HOME) return {};
+
+  const agentHome = path.join(resolvePaperclipHomeDir(), "agent-homes", agentId);
+  const claudeDir = path.join(agentHome, ".claude");
+  const credFile = path.join(claudeDir, ".credentials.json");
+
+  // Check if credentials already exist on disk (from entrypoint or previous run)
+  try {
+    await fs.access(credFile);
+    // File exists — just set HOME
+    return { HOME: agentHome };
+  } catch {
+    // Not provisioned yet
+  }
+
+  // Use global CLAUDE_OAUTH_TOKEN if available
+  const globalToken = process.env.CLAUDE_OAUTH_TOKEN;
+  if (!globalToken) {
+    logger.warn({ agentId }, "agent has no HOME and no CLAUDE_OAUTH_TOKEN to provision with");
+    return {};
+  }
+
+  await fs.mkdir(claudeDir, { recursive: true });
+  await fs.writeFile(
+    credFile,
+    JSON.stringify({
+      claudeAiOauth: {
+        accessToken: globalToken,
+        refreshToken: "",
+        expiresAt: 4102444800000,
+        scopes: ["user:inference", "user:profile", "user:sessions:claude_code"],
+      },
+    }),
+    "utf-8",
+  );
+
+  logger.info({ agentId, agentHome }, "auto-provisioned agent HOME with global OAuth token");
+  return { HOME: agentHome };
+}
