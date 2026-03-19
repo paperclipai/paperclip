@@ -1,4 +1,7 @@
+import { existsSync, readFileSync } from "node:fs";
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { parse as parseEnvFileContents } from "dotenv";
+import { resolvePaperclipEnvPath } from "./paths.js";
 
 interface JwtHeader {
   alg: string;
@@ -25,8 +28,25 @@ function parseNumber(value: string | undefined, fallback: number) {
   return Math.floor(parsed);
 }
 
+function readAgentJwtSecretFromEnvFile(): string | null {
+  const envFilePath = resolvePaperclipEnvPath();
+  if (!existsSync(envFilePath)) return null;
+
+  try {
+    const parsed = parseEnvFileContents(readFileSync(envFilePath, "utf-8"));
+    const value =
+      typeof parsed.PAPERCLIP_AGENT_JWT_SECRET === "string"
+        ? parsed.PAPERCLIP_AGENT_JWT_SECRET.trim()
+        : "";
+    return value.length > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 function jwtConfig() {
-  const secret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
+  const envSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim();
+  const secret = envSecret || readAgentJwtSecretFromEnvFile();
   if (!secret) return null;
 
   return {
