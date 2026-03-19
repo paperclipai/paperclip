@@ -1084,13 +1084,14 @@ export function issueService(db: Db) {
         }
       }
 
-      throw conflict("Issue run ownership conflict", {
+      throw conflict("Issue run ownership conflict — checkout expired or reassigned, do not retry", {
         issueId: current.id,
         status: current.status,
         assigneeAgentId: current.assigneeAgentId,
         checkoutRunId: current.checkoutRunId,
         actorAgentId,
         actorRunId,
+        retryable: false,
       });
     },
 
