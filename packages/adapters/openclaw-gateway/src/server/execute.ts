@@ -599,13 +599,23 @@ class GatewayWsClient {
   private challengePromise: Promise<string>;
   private resolveChallenge!: (nonce: string) => void;
   private rejectChallenge!: (err: Error) => void;
+  private _onEvent: (frame: GatewayEventFrame) => Promise<void> | void;
 
   constructor(private readonly opts: GatewayClientOptions) {
+    this._onEvent = opts.onEvent;
     this.challengePromise = new Promise<string>((resolve, reject) => {
       this.resolveChallenge = resolve;
       this.rejectChallenge = reject;
     });
     this.challengePromise.catch(() => {});
+  }
+
+  get isOpen(): boolean {
+    return this.ws?.readyState === WebSocket.OPEN;
+  }
+
+  setEventHandler(handler: (frame: GatewayEventFrame) => Promise<void> | void): void {
+    this._onEvent = handler;
   }
 
   async connect(
@@ -742,7 +752,7 @@ class GatewayWsClient {
           return;
         }
       }
-      void Promise.resolve(this.opts.onEvent(parsed)).catch(() => {
+      void Promise.resolve(this._onEvent(parsed)).catch(() => {
         // Ignore event callback failures and keep stream active.
       });
       return;
@@ -780,6 +790,68 @@ class GatewayWsClient {
     pending.reject(err);
   }
 }
+
+type PoolEntry = {
+  client: GatewayWsClient;
+  deviceIdentity: GatewayDeviceIdentity | null;
+  idleTimer: ReturnType<typeof setTimeout> | null;
+  createdAt: number;
+};
+
+class RuntimeClientPool {
+  private static readonly MAX_AGE_MS = 60 * 60 * 1000; // 1 hour
+  private static readonly IDLE_MS = 5 * 60 * 1000; // 5 min idle
+  private readonly entries = new Map<string, PoolEntry>();
+
+  get(key: string): PoolEntry | null {
+    const entry = this.entries.get(key);
+    if (!entry) return null;
+    if (!entry.client.isOpen || Date.now() - entry.createdAt > RuntimeClientPool.MAX_AGE_MS) {
+      this.evict(key);
+      return null;
+    }
+    if (entry.idleTimer !== null) {
+      clearTimeout(entry.idleTimer);
+      entry.idleTimer = null;
+    }
+    return entry;
+  }
+
+  set(key: string, client: GatewayWsClient, deviceIdentity: GatewayDeviceIdentity | null): void {
+    this.evict(key);
+    this.entries.set(key, { client, deviceIdentity, idleTimer: null, createdAt: Date.now() });
+  }
+
+  evict(key: string): void {
+    const entry = this.entries.get(key);
+    if (entry) {
+      if (entry.idleTimer !== null) clearTimeout(entry.idleTimer);
+      try {
+        entry.client.close();
+      } catch {
+        /* ignore */
+      }
+    }
+    this.entries.delete(key);
+  }
+
+  scheduleIdle(key: string, onEvict: () => void): void {
+    const entry = this.entries.get(key);
+    if (!entry) return;
+    if (entry.idleTimer !== null) clearTimeout(entry.idleTimer);
+    entry.idleTimer = setTimeout(() => {
+      this.entries.delete(key);
+      try {
+        entry.client.close();
+      } catch {
+        /* ignore */
+      }
+      onEvict();
+    }, RuntimeClientPool.IDLE_MS);
+  }
+}
+
+const globalClientPool = new RuntimeClientPool();
 
 async function autoApproveDevicePairing(params: {
   url: string;
@@ -1118,6 +1190,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   const autoPairOnFirstConnect = parseBoolean(ctx.config.autoPairOnFirstConnect, true);
+  const usePersistentPool = parseBoolean(ctx.config.persistentPool, false);
+  const poolKey = usePersistentPool ? `${ctx.agent.id}:${parsedUrl}` : null;
   let autoPairAttempted = false;
   let latestResultPayload: unknown = null;
 
@@ -1126,6 +1200,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const assistantChunks: string[] = [];
     let lifecycleError: string | null = null;
     let deviceIdentity: GatewayDeviceIdentity | null = null;
+    let keepInPool = false;
 
     const onEvent = async (frame: GatewayEventFrame) => {
       if (frame.event !== "agent") {
@@ -1175,25 +1250,35 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     };
 
-    const client = new GatewayWsClient({
-      url: parsedUrl.toString(),
-      headers,
-      onEvent,
-      onLog: ctx.onLog,
-    });
+    const poolEntry = poolKey ? globalClientPool.get(poolKey) : null;
+    let client: GatewayWsClient;
+    if (poolEntry) {
+      client = poolEntry.client;
+      deviceIdentity = poolEntry.deviceIdentity;
+      client.setEventHandler(onEvent);
+      await ctx.onLog("stdout", `[openclaw-gateway] pool: reusing persistent connection pool_key=${poolKey}\n`);
+    } else {
+      client = new GatewayWsClient({
+        url: parsedUrl.toString(),
+        headers,
+        onEvent,
+        onLog: ctx.onLog,
+      });
+    }
 
     try {
-      deviceIdentity = disableDeviceAuth ? null : resolveDeviceIdentity(parseObject(ctx.config));
-      if (deviceIdentity) {
-        await ctx.onLog(
-          "stdout",
-          `[openclaw-gateway] device auth enabled keySource=${deviceIdentity.source} deviceId=${deviceIdentity.deviceId}\n`,
-        );
-      } else {
-        await ctx.onLog("stdout", "[openclaw-gateway] device auth disabled\n");
-      }
+      if (!poolEntry) {
+        deviceIdentity = disableDeviceAuth ? null : resolveDeviceIdentity(parseObject(ctx.config));
+        if (deviceIdentity) {
+          await ctx.onLog(
+            "stdout",
+            `[openclaw-gateway] device auth enabled keySource=${deviceIdentity.source} deviceId=${deviceIdentity.deviceId}\n`,
+          );
+        } else {
+          await ctx.onLog("stdout", "[openclaw-gateway] device auth disabled\n");
+        }
 
-      await ctx.onLog("stdout", `[openclaw-gateway] connecting to ${parsedUrl.toString()}\n`);
+        await ctx.onLog("stdout", `[openclaw-gateway] connecting to ${parsedUrl.toString()}\n`);
 
       const hello = await client.connect((nonce) => {
         const signedAtMs = Date.now();
@@ -1247,6 +1332,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         "stdout",
         `[openclaw-gateway] connected protocol=${asNumber(asRecord(hello)?.protocol, PROTOCOL_VERSION)}\n`,
       );
+      }
 
       const acceptedPayload = await client.request<Record<string, unknown>>("agent", agentParams, {
         timeoutMs: connectTimeoutMs,
@@ -1355,6 +1441,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[openclaw-gateway] run completed runId=${Array.from(trackedRunIds).join(",")} status=ok\n`,
       );
 
+      if (poolKey) {
+        if (!poolEntry) globalClientPool.set(poolKey, client, deviceIdentity);
+        globalClientPool.scheduleIdle(poolKey, () => {
+          void ctx.onLog("stdout", `[openclaw-gateway] pool: idle timeout, closed pool_key=${poolKey}\n`);
+        });
+        keepInPool = true;
+      }
+
       return {
         exitCode: 0,
         signal: null,
@@ -1368,6 +1462,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ...(summary ? { summary } : {}),
       };
     } catch (err) {
+      if (poolKey) globalClientPool.evict(poolKey);
       const message = err instanceof Error ? err.message : String(err);
       const lower = message.toLowerCase();
       const timedOut = lower.includes("timeout");
@@ -1428,7 +1523,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         resultJson: asRecord(latestResultPayload),
       };
     } finally {
-      client.close();
+      if (!keepInPool) client.close();
     }
   }
 }
