@@ -22,7 +22,7 @@ export const models = [
   { id: "minimax-m2.1", label: "MiniMax M2.1" },
   { id: "minimax-m2.5", label: "MiniMax M2.5" },
   { id: "qwen3-coder-next", label: "Qwen 3 Coder Next" },
-] as const;
+] satisfies { id: string; label: string }[];
 
 export const DEFAULT_KIRO_LOCAL_MODEL = "auto" as const;
 

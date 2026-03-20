@@ -289,7 +289,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
-  const runtimeEnv = ensurePathInEnv(effectiveEnv);
+  const runtimeEnv = ensurePathInEnv(effectiveEnv) as Record<string, string>;
   await ensureCommandResolvable(command, cwd, runtimeEnv);
 
   const timeoutSec = asNumber(config.timeoutSec, 0);

@@ -1,5 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { testEnvironment } from "./test.js";
+import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
+import type { AdapterEnvironmentTestContext } from "@paperclipai/adapter-utils";
 
 // Mock the server-utils module
 vi.mock("@paperclipai/adapter-utils/server-utils", async () => {
@@ -25,8 +27,22 @@ vi.mock("@paperclipai/adapter-utils/server-utils", async () => {
 
 import { ensureAbsoluteDirectory, ensureCommandResolvable, runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 
+function mockResult(overrides: Partial<RunProcessResult> = {}): RunProcessResult {
+  return {
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+    stdout: '{"accountType": "pro", "email": "test@example.com"}',
+    stderr: "",
+    pid: null,
+    startedAt: null,
+    ...overrides,
+  };
+}
+
 describe("testEnvironment", () => {
-  const mockContext = {
+  const mockContext: AdapterEnvironmentTestContext = {
+    companyId: "test-company",
     adapterType: "kiro",
     config: {
       command: "kiro-cli",
@@ -43,23 +59,11 @@ describe("testEnvironment", () => {
     // Reset mocks to default behavior
     vi.mocked(ensureAbsoluteDirectory).mockResolvedValue();
     vi.mocked(ensureCommandResolvable).mockResolvedValue();
-    vi.mocked(runChildProcess).mockResolvedValue({
-      exitCode: 0,
-      signal: null,
-      timedOut: false,
-      stdout: '{"accountType": "pro", "email": "test@example.com"}',
-      stderr: "",
-    });
+    vi.mocked(runChildProcess).mockResolvedValue(mockResult());
   });
 
   it("passes when cwd is valid and command is resolvable", async () => {
-    vi.mocked(runChildProcess).mockResolvedValue({
-      exitCode: 0,
-      signal: null,
-      timedOut: false,
-      stdout: '{"accountType": "pro", "email": "test@example.com"}',
-      stderr: "",
-    });
+    vi.mocked(runChildProcess).mockResolvedValue(mockResult());
 
     const result = await testEnvironment(mockContext);
 
@@ -77,13 +81,9 @@ describe("testEnvironment", () => {
   });
 
   it("reports successful whoami with account and email", async () => {
-    vi.mocked(runChildProcess).mockResolvedValue({
-      exitCode: 0,
-      signal: null,
-      timedOut: false,
+    vi.mocked(runChildProcess).mockResolvedValue(mockResult({
       stdout: '{"accountType": "pro", "email": "user@example.com"}',
-      stderr: "",
-    });
+    }));
 
     const result = await testEnvironment(mockContext);
 
@@ -97,13 +97,11 @@ describe("testEnvironment", () => {
   });
 
   it("reports auth required when whoami returns authentication error", async () => {
-    vi.mocked(runChildProcess).mockResolvedValue({
+    vi.mocked(runChildProcess).mockResolvedValue(mockResult({
       exitCode: 1,
-      signal: null,
-      timedOut: false,
       stdout: "",
       stderr: "authentication required: run 'kiro-cli login' first",
-    });
+    }));
 
     const result = await testEnvironment(mockContext);
 
@@ -137,13 +135,12 @@ describe("testEnvironment", () => {
   });
 
   it("warns when whoami probe times out", async () => {
-    vi.mocked(runChildProcess).mockResolvedValue({
+    vi.mocked(runChildProcess).mockResolvedValue(mockResult({
       exitCode: null,
-      signal: null,
       timedOut: true,
       stdout: "",
       stderr: "",
-    });
+    }));
 
     const result = await testEnvironment(mockContext);
 
@@ -176,13 +173,9 @@ describe("testEnvironment", () => {
   });
 
   it("handles unexpected JSON output from whoami", async () => {
-    vi.mocked(runChildProcess).mockResolvedValue({
-      exitCode: 0,
-      signal: null,
-      timedOut: false,
+    vi.mocked(runChildProcess).mockResolvedValue(mockResult({
       stdout: "not valid json",
-      stderr: "",
-    });
+    }));
 
     const result = await testEnvironment(mockContext);
 
@@ -197,13 +190,11 @@ describe("testEnvironment", () => {
   });
 
   it("reports error when whoami fails with non-auth error", async () => {
-    vi.mocked(runChildProcess).mockResolvedValue({
+    vi.mocked(runChildProcess).mockResolvedValue(mockResult({
       exitCode: 1,
-      signal: null,
-      timedOut: false,
       stdout: "",
       stderr: "internal error: something broke",
-    });
+    }));
 
     const result = await testEnvironment(mockContext);
 
@@ -218,13 +209,7 @@ describe("testEnvironment", () => {
   });
 
   it("uses cwd from config when provided", async () => {
-    vi.mocked(runChildProcess).mockResolvedValue({
-      exitCode: 0,
-      signal: null,
-      timedOut: false,
-      stdout: '{"accountType": "pro", "email": "test@example.com"}',
-      stderr: "",
-    });
+    vi.mocked(runChildProcess).mockResolvedValue(mockResult());
 
     await testEnvironment({
       ...mockContext,
@@ -235,16 +220,10 @@ describe("testEnvironment", () => {
   });
 
   it("falls back to process.cwd() when no cwd in config", async () => {
-    vi.mocked(runChildProcess).mockResolvedValue({
-      exitCode: 0,
-      signal: null,
-      timedOut: false,
-      stdout: '{"accountType": "pro", "email": "test@example.com"}',
-      stderr: "",
-    });
+    vi.mocked(runChildProcess).mockResolvedValue(mockResult());
 
     await testEnvironment({
-      adapterType: "kiro",
+      ...mockContext,
       config: { command: "kiro-cli" },
     });
 

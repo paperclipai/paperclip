@@ -1,7 +1,11 @@
 import type { ServerAdapterModule, AdapterModel, AdapterEnvironmentTestResult, AdapterSessionCodec } from "@paperclipai/adapter-utils";
-import { execute } from "./execute.js";
-import { testEnvironment } from "./test.js";
+import { execute as executeImpl } from "./execute.js";
+import { testEnvironment as testEnvironmentImpl } from "./test.js";
 import { type, models, agentConfigurationDoc, DEFAULT_KIRO_LOCAL_MODEL } from "../index.js";
+
+// Re-export for registry consumption
+export { executeImpl as execute };
+export { testEnvironmentImpl as testEnvironment };
 
 /**
  * Kiro session codec.
@@ -9,7 +13,7 @@ import { type, models, agentConfigurationDoc, DEFAULT_KIRO_LOCAL_MODEL } from ".
  * Kiro uses SQLite for session storage at ~/.local/share/kiro-cli/data.sqlite3.
  * Sessions are identified by cwd path for resume purposes.
  */
-export const kiroSessionCodec: AdapterSessionCodec = {
+export const sessionCodec: AdapterSessionCodec = {
   deserialize(raw: unknown) {
     if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
       return null;
@@ -47,9 +51,9 @@ export async function listKiroModels(): Promise<AdapterModel[]> {
  */
 export const kiroLocalAdapter: ServerAdapterModule = {
   type,
-  execute,
-  testEnvironment,
-  sessionCodec: kiroSessionCodec,
+  execute: executeImpl,
+  testEnvironment: testEnvironmentImpl,
+  sessionCodec,
   models: [...models],
   listModels: listKiroModels,
   supportsLocalAgentJwt: true,

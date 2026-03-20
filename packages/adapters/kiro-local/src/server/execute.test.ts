@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { execute } from "./execute.js";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 
 // Mock the server-utils module
 vi.mock("@paperclipai/adapter-utils/server-utils", async () => {
@@ -33,11 +34,24 @@ vi.mock("./parse.js", () => ({
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 import { parseKiroOutput, isKiroUnknownSessionError } from "./parse.js";
 
+function mockResult(overrides: Partial<RunProcessResult> = {}): RunProcessResult {
+  return {
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+    stdout: "Response from kiro-cli",
+    stderr: "",
+    pid: null,
+    startedAt: null,
+    ...overrides,
+  };
+}
+
 describe("execute", () => {
   const mockContext: AdapterExecutionContext = {
     runId: "test-run-123",
-    agent: { id: "agent-1", companyId: "company-1", name: "Test Agent" },
-    runtime: { sessionId: null, sessionParams: null },
+    agent: { id: "agent-1", companyId: "company-1", name: "Test Agent", adapterType: "kiro_local", adapterConfig: {} },
+    runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
     config: {
       command: "kiro-cli",
       model: "auto",
@@ -55,13 +69,7 @@ describe("execute", () => {
   });
 
   it("executes headless kiro-cli with expected arguments", async () => {
-    vi.mocked(runChildProcess).mockResolvedValue({
-      exitCode: 0,
-      signal: null,
-      timedOut: false,
-      stdout: "Response from kiro-cli",
-      stderr: "",
-    });
+    vi.mocked(runChildProcess).mockResolvedValue(mockResult());
 
     const result = await execute(mockContext);
 
@@ -72,13 +80,10 @@ describe("execute", () => {
   });
 
   it("extracts cost and time from stderr", async () => {
-    vi.mocked(runChildProcess).mockResolvedValue({
-      exitCode: 0,
-      signal: null,
-      timedOut: false,
+    vi.mocked(runChildProcess).mockResolvedValue(mockResult({
       stdout: "Response",
       stderr: "Credits: 0.04 • Time: 5s",
-    });
+    }));
 
     const result = await execute(mockContext);
 
@@ -86,13 +91,13 @@ describe("execute", () => {
   });
 
   it("handles timeout correctly", async () => {
-    vi.mocked(runChildProcess).mockResolvedValue({
+    vi.mocked(runChildProcess).mockResolvedValue(mockResult({
       exitCode: null,
       signal: "SIGTERM",
       timedOut: true,
       stdout: "",
       stderr: "",
-    });
+    }));
 
     const result = await execute(mockContext);
 
@@ -101,13 +106,11 @@ describe("execute", () => {
   });
 
   it("returns error message for non-zero exit code", async () => {
-    vi.mocked(runChildProcess).mockResolvedValue({
+    vi.mocked(runChildProcess).mockResolvedValue(mockResult({
       exitCode: 1,
-      signal: null,
-      timedOut: false,
       stdout: "",
       stderr: "Authentication failed",
-    });
+    }));
 
     const result = await execute(mockContext);
 
@@ -116,13 +119,9 @@ describe("execute", () => {
   });
 
   it("returns no error for exit code 0", async () => {
-    vi.mocked(runChildProcess).mockResolvedValue({
-      exitCode: 0,
-      signal: null,
-      timedOut: false,
+    vi.mocked(runChildProcess).mockResolvedValue(mockResult({
       stdout: "Success",
-      stderr: "",
-    });
+    }));
 
     const result = await execute(mockContext);
 
@@ -131,19 +130,17 @@ describe("execute", () => {
 
   describe("session resume", () => {
     it("passes --resume flag when session can be resumed", async () => {
-      vi.mocked(runChildProcess).mockResolvedValue({
-        exitCode: 0,
-        signal: null,
-        timedOut: false,
+      vi.mocked(runChildProcess).mockResolvedValue(mockResult({
         stdout: "Resumed session response",
-        stderr: "",
-      });
+      }));
 
       const contextWithSession: AdapterExecutionContext = {
         ...mockContext,
         runtime: {
           sessionId: "session-abc",
           sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
         },
       };
 
@@ -159,13 +156,9 @@ describe("execute", () => {
     });
 
     it("does not pass --resume when session cwd differs", async () => {
-      vi.mocked(runChildProcess).mockResolvedValue({
-        exitCode: 0,
-        signal: null,
-        timedOut: false,
+      vi.mocked(runChildProcess).mockResolvedValue(mockResult({
         stdout: "New session response",
-        stderr: "",
-      });
+      }));
 
       const contextWithMismatchedSession: AdapterExecutionContext = {
         ...mockContext,
@@ -175,6 +168,8 @@ describe("execute", () => {
             sessionId: "session-xyz",
             cwd: "/other/directory",
           },
+          sessionDisplayId: null,
+          taskKey: null,
         },
       };
 
@@ -188,20 +183,14 @@ describe("execute", () => {
 
     it("retries without --resume on unknown session error", async () => {
       vi.mocked(runChildProcess)
-        .mockResolvedValueOnce({
+        .mockResolvedValueOnce(mockResult({
           exitCode: 1,
-          signal: null,
-          timedOut: false,
           stdout: "Error: unknown session",
           stderr: "",
-        })
-        .mockResolvedValueOnce({
-          exitCode: 0,
-          signal: null,
-          timedOut: false,
+        }))
+        .mockResolvedValueOnce(mockResult({
           stdout: "New session response",
-          stderr: "",
-        });
+        }));
 
       vi.mocked(isKiroUnknownSessionError).mockReturnValue(true);
 
@@ -210,6 +199,8 @@ describe("execute", () => {
         runtime: {
           sessionId: "session-lost",
           sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
         },
       };
 
@@ -224,13 +215,10 @@ describe("execute", () => {
     });
 
     it("does not retry on non-session errors", async () => {
-      vi.mocked(runChildProcess).mockResolvedValue({
+      vi.mocked(runChildProcess).mockResolvedValue(mockResult({
         exitCode: 1,
-        signal: null,
-        timedOut: false,
         stdout: "Network error",
-        stderr: "",
-      });
+      }));
 
       vi.mocked(isKiroUnknownSessionError).mockReturnValue(false);
 
@@ -239,6 +227,8 @@ describe("execute", () => {
         runtime: {
           sessionId: "session-abc",
           sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
         },
       };
 
@@ -250,13 +240,9 @@ describe("execute", () => {
   });
 
   it("uses custom model from config", async () => {
-    vi.mocked(runChildProcess).mockResolvedValue({
-      exitCode: 0,
-      signal: null,
-      timedOut: false,
+    vi.mocked(runChildProcess).mockResolvedValue(mockResult({
       stdout: "Response",
-      stderr: "",
-    });
+    }));
 
     const contextWithModel: AdapterExecutionContext = {
       ...mockContext,
@@ -272,13 +258,9 @@ describe("execute", () => {
   });
 
   it("includes extra args when provided", async () => {
-    vi.mocked(runChildProcess).mockResolvedValue({
-      exitCode: 0,
-      signal: null,
-      timedOut: false,
+    vi.mocked(runChildProcess).mockResolvedValue(mockResult({
       stdout: "Response",
-      stderr: "",
-    });
+    }));
 
     const contextWithArgs: AdapterExecutionContext = {
       ...mockContext,
@@ -294,13 +276,9 @@ describe("execute", () => {
   });
 
   it("sets provider and biller to kiro", async () => {
-    vi.mocked(runChildProcess).mockResolvedValue({
-      exitCode: 0,
-      signal: null,
-      timedOut: false,
+    vi.mocked(runChildProcess).mockResolvedValue(mockResult({
       stdout: "Response",
-      stderr: "",
-    });
+    }));
 
     const result = await execute(mockContext);
 
@@ -310,13 +288,10 @@ describe("execute", () => {
   });
 
   it("includes resultJson with stdout and stderr", async () => {
-    vi.mocked(runChildProcess).mockResolvedValue({
-      exitCode: 0,
-      signal: null,
-      timedOut: false,
+    vi.mocked(runChildProcess).mockResolvedValue(mockResult({
       stdout: "Output line",
       stderr: "Credits: 0.04 • Time: 1s",
-    });
+    }));
 
     const result = await execute(mockContext);
 
@@ -327,19 +302,17 @@ describe("execute", () => {
   });
 
   it("preserves session info in result", async () => {
-    vi.mocked(runChildProcess).mockResolvedValue({
-      exitCode: 0,
-      signal: null,
-      timedOut: false,
+    vi.mocked(runChildProcess).mockResolvedValue(mockResult({
       stdout: "Response",
-      stderr: "",
-    });
+    }));
 
     const contextWithSession: AdapterExecutionContext = {
       ...mockContext,
       runtime: {
         sessionId: "test-session",
         sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
       },
     };
 

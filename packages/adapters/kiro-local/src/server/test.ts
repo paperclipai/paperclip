@@ -62,9 +62,15 @@ export async function testEnvironment(
     return { adapterType: context.adapterType, status: "fail", checks, testedAt: new Date().toISOString() };
   }
 
+  // Build runtime env
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter((e): e is [string, string] => typeof e[1] === "string"),
+  );
+  const runtimeEnv = ensurePathInEnv(env) as Record<string, string>;
+
   // Check 2: kiro-cli command is resolvable
   try {
-    await ensureCommandResolvable(command);
+    await ensureCommandResolvable(command, cwd, runtimeEnv);
     addCheck("kiro_command_resolvable", "info", `kiro-cli command found: ${command}`);
   } catch (err) {
     addCheck(
@@ -87,12 +93,9 @@ export async function testEnvironment(
     );
   } else {
     try {
-      const env = Object.fromEntries(
-        Object.entries(process.env).filter((e): e is [string, string] => typeof e[1] === "string"),
-      );
       const proc = await runChildProcess("test-whoami", command, ["whoami", "--format", "json"], {
         cwd,
-        env,
+        env: runtimeEnv,
         timeoutSec: 10,
         graceSec: 2,
         onLog: async () => {},
