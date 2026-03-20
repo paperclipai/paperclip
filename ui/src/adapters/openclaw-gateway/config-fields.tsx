@@ -57,6 +57,8 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
   return debounced;
 }
 
+const NEGATIVE_CACHE_MS = 10_000;
+
 function useGatewayModels(
   wsUrl: string,
   token: string,
@@ -66,16 +68,24 @@ function useGatewayModels(
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const debouncedUrl = useDebouncedValue(wsUrl, 600);
+  const lastErrorAtRef = useRef<number>(0);
 
   const refresh = useCallback(() => setRefreshKey((k) => k + 1), []);
 
   useEffect(() => {
     if (!debouncedUrl) return;
 
+    // Negative cache: skip fetch if last error was recent (auto-retry on expiry)
+    const sinceLast = Date.now() - lastErrorAtRef.current;
+    if (lastErrorAtRef.current > 0 && sinceLast < NEGATIVE_CACHE_MS) {
+      const retryTimer = setTimeout(() => setRefreshKey((k) => k + 1), NEGATIVE_CACHE_MS - sinceLast);
+      return () => clearTimeout(retryTimer);
+    }
+
     let cancelled = false;
     let ws: WebSocket | null = null;
     const timer = setTimeout(() => {
-      if (!cancelled) { setError("Connection timed out"); setLoading(false); ws?.close(); }
+      if (!cancelled) { lastErrorAtRef.current = Date.now(); setError("Connection timed out"); setLoading(false); ws?.close(); }
     }, 15_000);
 
     setLoading(true);
@@ -83,6 +93,7 @@ function useGatewayModels(
 
     try { ws = new WebSocket(debouncedUrl); } catch (e) {
       setError(e instanceof Error ? e.message : "Invalid WebSocket URL");
+      lastErrorAtRef.current = Date.now();
       setLoading(false); clearTimeout(timer); return;
     }
 
@@ -103,13 +114,14 @@ function useGatewayModels(
           return;
         }
         if (frame.type === "res" && frame.id === "c1") {
-          if (!frame.ok) { setError(frame.error?.message ?? "Connect failed"); setLoading(false); clearTimeout(timer); ws?.close(); return; }
+          if (!frame.ok) { lastErrorAtRef.current = Date.now(); setError(frame.error?.message ?? "Connect failed"); setLoading(false); clearTimeout(timer); ws?.close(); return; }
           ws?.send(JSON.stringify({ type: "req", id: "ml", method: "models.list", params: {} }));
           return;
         }
         if (frame.type === "res" && frame.id === "ml") {
           clearTimeout(timer);
-          if (!frame.ok) { setError(frame.error?.message ?? "models.list failed"); setLoading(false); ws?.close(); return; }
+          if (!frame.ok) { lastErrorAtRef.current = Date.now(); setError(frame.error?.message ?? "models.list failed"); setLoading(false); ws?.close(); return; }
+          lastErrorAtRef.current = 0; // Clear negative cache on success
           setModels((frame.payload as { models: GatewayModel[] }).models ?? []);
           setLoading(false);
           ws?.close();
@@ -117,7 +129,7 @@ function useGatewayModels(
       } catch { /* ignore */ }
     };
 
-    ws.onerror = () => { if (!cancelled) { setError("WebSocket connection error"); setLoading(false); clearTimeout(timer); } };
+    ws.onerror = () => { if (!cancelled) { lastErrorAtRef.current = Date.now(); setError("WebSocket connection error"); setLoading(false); clearTimeout(timer); } };
     ws.onclose = () => { clearTimeout(timer); };
     return () => { cancelled = true; clearTimeout(timer); ws?.close(); };
   }, [debouncedUrl, token, refreshKey]);
@@ -481,18 +493,15 @@ export function OpenClawGatewayConfigFields({
       </Field>
 
       {isCreate ? (
-        <Field label="Gateway auth token (x-openclaw-token)">
-          <input
-            type="password"
-            value={createToken}
-            onChange={(e) => {
-              setCreateToken(e.target.value);
-              set!({ token: e.target.value } as Partial<typeof values & { token: string }>);
-            }}
-            placeholder="OpenClaw gateway token"
-            className={selectClass}
-          />
-        </Field>
+        <SecretField
+          label="Gateway auth token (x-openclaw-token)"
+          value={createToken}
+          onCommit={(v) => {
+            setCreateToken(v);
+            set!({ token: v } as Partial<typeof values & { token: string }>);
+          }}
+          placeholder="OpenClaw gateway token"
+        />
       ) : (
         <SecretField
           label="Gateway auth token (x-openclaw-token)"
@@ -540,8 +549,8 @@ export function OpenClawGatewayConfigFields({
           <option value="low">Low</option>
           <option value="medium">Medium</option>
           <option value="high">High</option>
-          <option value="adaptive">Adaptive (Claude 4.6)</option>
-          <option value="xhigh">xHigh (GPT-5.2+ / Codex)</option>
+          <option value="adaptive">Adaptive (Claude 4.6+)</option>
+          <option value="xhigh">Extra High</option>
         </select>
         <p className="text-xs text-muted-foreground mt-1">
           Controls reasoning depth. Adaptive and xHigh are model-restricted — mismatches will error.

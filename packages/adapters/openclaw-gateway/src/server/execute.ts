@@ -240,38 +240,7 @@ async function isSkillAlreadyInjectedWithLog(
   return false;
 }
 
-async function isSkillAlreadyInjected(
-  client: { safeRequest: <T>(method: string, params: unknown, opts: { timeoutMs: number }) => Promise<T | null> },
-  sessionKey: string,
-): Promise<boolean> {
-  const marker = getSkillMarker();
-  try {
-    // Use chat.history to scan session messages for the skill marker
-    const result = await client.safeRequest<{
-      messages?: Array<{ role?: string; content?: string | Array<{ type?: string; text?: string }> }>;
-    }>(
-      "chat.history",
-      { sessionKey },
-      { timeoutMs: 15_000 },
-    );
-    for (const msg of result?.messages ?? []) {
-      const content = msg.content;
-      // content can be a string or an array of content blocks [{type, text}]
-      if (typeof content === "string") {
-        if (content.includes(marker)) return true;
-      } else if (Array.isArray(content)) {
-        for (const block of content) {
-          if (typeof block === "object" && block && typeof (block as Record<string, unknown>).text === "string") {
-            if (((block as Record<string, unknown>).text as string).includes(marker)) return true;
-          }
-        }
-      }
-    }
-  } catch {
-    // If check fails, inject to be safe
-  }
-  return false;
-}
+
 
 function isLoopbackHost(hostname: string): boolean {
   const value = hostname.trim().toLowerCase();
@@ -866,7 +835,7 @@ class GatewayWsClient {
       return await this.request<T>(method, params, opts);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`[openclaw-gateway] safeRequest(${method}) failed: ${msg}\n`);
+      void this.opts.onLog("stderr", `[openclaw-gateway] safeRequest(${method}) failed: ${msg}\n`);
       return null;
     }
   }
@@ -1281,12 +1250,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const autoPairOnFirstConnect = parseBoolean(ctx.config.autoPairOnFirstConnect, true);
   let autoPairAttempted = false;
   let latestResultPayload: unknown = null;
+  const originalMessage = agentParams.message;
 
-  while (true) {
+  {
+    const RETRY_DELAYS_MS = [5_000, 30_000, 60_000, 150_000, 300_000];
+    const RETRYABLE_CODES = new Set([1006, 1011, 1012, 1013, 1014]);
+    let attemptNumber = 0;
+
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+    attemptNumber++;
+    // Reset per-attempt state to avoid stale data from failed retries
     const trackedRunIds = new Set<string>([ctx.runId]);
     const assistantChunks: string[] = [];
     let lifecycleError: string | null = null;
     let deviceIdentity: GatewayDeviceIdentity | null = null;
+    agentParams.message = originalMessage;
 
     const onEvent = async (frame: GatewayEventFrame) => {
       if (frame.event !== "agent") {
@@ -1335,14 +1314,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
       }
     };
-
-    const RETRY_DELAYS_MS = [5_000, 30_000, 60_000, 150_000, 300_000];
-    const RETRYABLE_CODES = new Set([1006, 1011, 1012, 1013, 1014]);
-    let attemptNumber = 0;
-
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-    attemptNumber++;
 
     const client = new GatewayWsClient({
       url: parsedUrl.toString(),
