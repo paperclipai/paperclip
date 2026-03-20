@@ -264,8 +264,7 @@ export function verticalBudgetService(db: Db) {
         title,
         description,
         status: "todo",
-        assigneeAgentId: human ? null : vpFinance.id,
-        assigneeUserId: human ? human.id : null,
+        assigneeAgentId: human ? human.id : vpFinance.id,
       });
 
       const assignee = human ?? vpFinance;
