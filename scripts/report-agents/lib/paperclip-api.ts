@@ -2,8 +2,8 @@ export function getConfig() {
   const apiUrl = process.env.PAPERCLIP_API_URL;
   const apiKey = process.env.PAPERCLIP_API_KEY;
   const companyId = process.env.PAPERCLIP_COMPANY_ID;
-  if (!apiUrl || !apiKey || !companyId) throw new Error("Missing PAPERCLIP_API_URL, PAPERCLIP_API_KEY, or PAPERCLIP_COMPANY_ID");
-  return { apiUrl, apiKey, companyId };
+  if (!apiUrl || !companyId) throw new Error("Missing PAPERCLIP_API_URL or PAPERCLIP_COMPANY_ID");
+  return { apiUrl, apiKey: apiKey ?? "", companyId };
 }
 
 async function api(method: string, path: string, body?: unknown) {
@@ -32,7 +32,7 @@ export async function findOrCreateDailyIssue(agentId: string): Promise<{ id: str
   return api("POST", `/api/companies/${companyId}/issues`, {
     title,
     body: `Automated daily report for ${today}`,
-    status: "in_progress",
+    status: "backlog",
     createdByAgentId: agentId,
   });
 }
