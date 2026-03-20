@@ -2450,6 +2450,14 @@ export function accessRoutes(
           "member",
           "active"
         );
+        await access.setPrincipalPermission(
+          companyId,
+          "agent",
+          created.id,
+          "tasks:assign",
+          true,
+          req.actor.userId ?? null
+        );
         const grants = grantsFromDefaults(
           invite.defaultsPayload as Record<string, unknown> | null,
           "agent"

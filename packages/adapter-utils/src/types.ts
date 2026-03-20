@@ -120,6 +120,7 @@ export interface AdapterExecutionContext {
   context: Record<string, unknown>;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
+  onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
   authToken?: string;
 }
 
@@ -246,7 +247,7 @@ export type TranscriptEntry =
   | { kind: "thinking"; ts: string; text: string; delta?: boolean }
   | { kind: "user"; ts: string; text: string }
   | { kind: "tool_call"; ts: string; name: string; input: unknown; toolUseId?: string }
-  | { kind: "tool_result"; ts: string; toolUseId: string; content: string; isError: boolean }
+  | { kind: "tool_result"; ts: string; toolUseId: string; toolName?: string; content: string; isError: boolean }
   | { kind: "init"; ts: string; model: string; sessionId: string }
   | { kind: "result"; ts: string; text: string; inputTokens: number; outputTokens: number; cachedTokens: number; costUsd: number; subtype: string; isError: boolean; errors: string[] }
   | { kind: "stderr"; ts: string; text: string }

@@ -71,6 +71,80 @@ export function agentRoutes(db: Db) {
     return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
   }
 
+  async function buildAgentAccessState(agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>) {
+    const membership = await access.getMembership(agent.companyId, "agent", agent.id);
+    const grants = membership
+      ? await access.listPrincipalGrants(agent.companyId, "agent", agent.id)
+      : [];
+    const hasExplicitTaskAssignGrant = grants.some((grant) => grant.permissionKey === "tasks:assign");
+
+    if (agent.role === "ceo") {
+      return {
+        canAssignTasks: true,
+        taskAssignSource: "ceo_role" as const,
+        membership,
+        grants,
+      };
+    }
+
+    if (canCreateAgents(agent)) {
+      return {
+        canAssignTasks: true,
+        taskAssignSource: "agent_creator" as const,
+        membership,
+        grants,
+      };
+    }
+
+    if (hasExplicitTaskAssignGrant) {
+      return {
+        canAssignTasks: true,
+        taskAssignSource: "explicit_grant" as const,
+        membership,
+        grants,
+      };
+    }
+
+    return {
+      canAssignTasks: false,
+      taskAssignSource: "none" as const,
+      membership,
+      grants,
+    };
+  }
+
+  async function buildAgentDetail(
+    agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
+    options?: { restricted?: boolean },
+  ) {
+    const [chainOfCommand, accessState] = await Promise.all([
+      svc.getChainOfCommand(agent.id),
+      buildAgentAccessState(agent),
+    ]);
+
+    return {
+      ...(options?.restricted ? redactForRestrictedAgentView(agent) : agent),
+      chainOfCommand,
+      access: accessState,
+    };
+  }
+
+  async function applyDefaultAgentTaskAssignGrant(
+    companyId: string,
+    agentId: string,
+    grantedByUserId: string | null,
+  ) {
+    await access.ensureMembership(companyId, "agent", agentId, "member", "active");
+    await access.setPrincipalPermission(
+      companyId,
+      "agent",
+      agentId,
+      "tasks:assign",
+      true,
+      grantedByUserId,
+    );
+  }
+
   async function assertCanCreateAgentsForCompany(req: Request, companyId: string) {
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "board") {
@@ -575,8 +649,7 @@ export function agentRoutes(db: Db) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    const chainOfCommand = await svc.getChainOfCommand(agent.id);
-    res.json({ ...agent, chainOfCommand });
+    res.json(await buildAgentDetail(agent));
   });
 
   router.get("/agents/me/inbox-lite", async (req, res) => {
@@ -618,13 +691,11 @@ export function agentRoutes(db: Db) {
     if (req.actor.type === "agent" && req.actor.agentId !== id) {
       const canRead = await actorCanReadConfigurationsForCompany(req, agent.companyId);
       if (!canRead) {
-        const chainOfCommand = await svc.getChainOfCommand(agent.id);
-        res.json({ ...redactForRestrictedAgentView(agent), chainOfCommand });
+        res.json(await buildAgentDetail(agent, { restricted: true }));
         return;
       }
     }
-    const chainOfCommand = await svc.getChainOfCommand(agent.id);
-    res.json({ ...agent, chainOfCommand });
+    res.json(await buildAgentDetail(agent));
   });
 
   router.get("/agents/:id/configuration", async (req, res) => {
@@ -884,6 +955,12 @@ export function agentRoutes(db: Db) {
       },
     });
 
+    await applyDefaultAgentTaskAssignGrant(
+      companyId,
+      agent.id,
+      actor.actorType === "user" ? actor.actorId : null,
+    );
+
     if (approval) {
       await logActivity(db, {
         companyId,
@@ -945,6 +1022,12 @@ export function agentRoutes(db: Db) {
       details: { name: agent.name, role: agent.role },
     });
 
+    await applyDefaultAgentTaskAssignGrant(
+      companyId,
+      agent.id,
+      req.actor.type === "board" ? (req.actor.userId ?? null) : null,
+    );
+
     if (agent.budgetMonthlyCents > 0) {
       await budgets.upsertPolicy(
         companyId,
@@ -988,6 +1071,18 @@ export function agentRoutes(db: Db) {
       return;
     }
 
+    const effectiveCanAssignTasks =
+      agent.role === "ceo" || Boolean(agent.permissions?.canCreateAgents) || req.body.canAssignTasks;
+    await access.ensureMembership(agent.companyId, "agent", agent.id, "member", "active");
+    await access.setPrincipalPermission(
+      agent.companyId,
+      "agent",
+      agent.id,
+      "tasks:assign",
+      effectiveCanAssignTasks,
+      req.actor.type === "board" ? (req.actor.userId ?? null) : null,
+    );
+
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: agent.companyId,
@@ -998,10 +1093,13 @@ export function agentRoutes(db: Db) {
       action: "agent.permissions_updated",
       entityType: "agent",
       entityId: agent.id,
-      details: req.body,
+      details: {
+        canCreateAgents: agent.permissions?.canCreateAgents ?? false,
+        canAssignTasks: effectiveCanAssignTasks,
+      },
     });
 
-    res.json(agent);
+    res.json(await buildAgentDetail(agent));
   });
 
   router.patch("/agents/:id/instructions-path", validate(updateAgentInstructionsPathSchema), async (req, res) => {

@@ -111,6 +111,10 @@ function makeRun(id: string, status: HeartbeatRun["status"], createdAt: string, 
     logCompressed: false,
     errorCode: null,
     externalRunId: null,
+    processPid: null,
+    processStartedAt: null,
+    retryOfRunId: null,
+    processLossRetryCount: 0,
     stdoutExcerpt: null,
     stderrExcerpt: null,
     contextSnapshot: null,
@@ -289,7 +293,11 @@ describe("inbox helpers", () => {
       getInboxWorkItems({
         issues: [olderIssue, newerIssue],
         approvals: [approval],
-      }).map((item) => item.kind === "issue" ? `issue:${item.issue.id}` : `approval:${item.approval.id}`),
+      }).map((item) => {
+        if (item.kind === "issue") return `issue:${item.issue.id}`;
+        if (item.kind === "approval") return `approval:${item.approval.id}`;
+        return `run:${item.run.id}`;
+      }),
     ).toEqual([
       "issue:1",
       "approval:approval-between",

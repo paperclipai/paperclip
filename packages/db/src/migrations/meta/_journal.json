@@ -267,6 +267,13 @@
       "when": 1773756922363,
       "tag": "0037_friendly_eddie_brock",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1773931592563,
+      "tag": "0038_careless_iron_monger",
+      "breakpoints": true
     }
   ]
 }

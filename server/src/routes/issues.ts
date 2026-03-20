@@ -827,6 +827,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
 
+    const actor = getActorInfo(req);
     const { comment: commentBody, hiddenAt: hiddenAtRaw, ...updateFields } = req.body;
     if (hiddenAtRaw !== undefined) {
       updateFields.hiddenAt = hiddenAtRaw ? new Date(hiddenAtRaw) : null;
@@ -863,6 +864,11 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
 
+    if (actor.runId) {
+      await heartbeat.reportRunActivity(actor.runId).catch((err) =>
+        logger.warn({ err, runId: actor.runId }, "failed to clear detached run warning after issue activity"));
+    }
+
     // Build activity details with previous values for changed fields
     const previous: Record<string, unknown> = {};
     for (const key of Object.keys(updateFields)) {
@@ -871,7 +877,6 @@ export function issueRoutes(db: Db, storage: StorageService) {
       }
     }
 
-    const actor = getActorInfo(req);
     const hasFieldChanges = Object.keys(previous).length > 0;
     await logActivity(db, {
       companyId: issue.companyId,
@@ -1284,6 +1289,11 @@ export function issueRoutes(db: Db, storage: StorageService) {
       agentId: actor.agentId ?? undefined,
       userId: actor.actorType === "user" ? actor.actorId : undefined,
     });
+
+    if (actor.runId) {
+      await heartbeat.reportRunActivity(actor.runId).catch((err) =>
+        logger.warn({ err, runId: actor.runId }, "failed to clear detached run warning after issue comment"));
+    }
 
     await logActivity(db, {
       companyId: currentIssue.companyId,

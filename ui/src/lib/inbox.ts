@@ -23,6 +23,11 @@ export type InboxWorkItem =
       kind: "approval";
       timestamp: number;
       approval: Approval;
+    }
+  | {
+      kind: "failed_run";
+      timestamp: number;
+      run: HeartbeatRun;
     };
 
 export interface InboxBadgeData {
@@ -146,9 +151,11 @@ export function approvalActivityTimestamp(approval: Approval): number {
 export function getInboxWorkItems({
   issues,
   approvals,
+  failedRuns = [],
 }: {
   issues: Issue[];
   approvals: Approval[];
+  failedRuns?: HeartbeatRun[];
 }): InboxWorkItem[] {
   return [
     ...issues.map((issue) => ({
@@ -160,6 +167,11 @@ export function getInboxWorkItems({
       kind: "approval" as const,
       timestamp: approvalActivityTimestamp(approval),
       approval,
+    })),
+    ...failedRuns.map((run) => ({
+      kind: "failed_run" as const,
+      timestamp: normalizeTimestamp(run.createdAt),
+      run,
     })),
   ].sort((a, b) => {
     const timestampDiff = b.timestamp - a.timestamp;
