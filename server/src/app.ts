@@ -221,8 +221,13 @@ export async function createApp(
     }),
   );
   app.use("/api", api);
-  app.use("/api", (_req, res) => {
-    res.status(404).json({ error: "API route not found" });
+  app.use("/api", (req, res) => {
+    // Provide helpful hints for common mistakes
+    let hint = "";
+    if (req.path.startsWith("/agents/") || req.path.startsWith("/companies/")) {
+      hint = " Hint: For single agent operations (get/update/delete), use /api/agents/:id?companyId=:companyId. For company-scoped operations, use /api/companies/:companyId/agents. See https://github.com/paperclipai/paperclip/blob/main/docs/api/agents.md";
+    }
+    res.status(404).json({ error: "API route not found" + hint });
   });
   app.use(pluginUiStaticRoutes(db, {
     localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
