@@ -80,15 +80,16 @@ function useGatewayModels(
     let cancelled = false;
     let ws: WebSocket | null = null;
     const timer = setTimeout(() => {
-      if (!cancelled) { setError("Connection timed out"); setLoading(false); ws?.close(); }
+      if (!cancelled) { setError("Connection timed out"); setModels([]); setLoading(false); ws?.close(); }
     }, 15_000);
 
     setLoading(true);
     setError(null);
+    setModels([]);
 
     try { ws = new WebSocket(debouncedUrl); } catch (e) {
       setError(e instanceof Error ? e.message : "Invalid WebSocket URL");
-      setLoading(false); clearTimeout(timer); return;
+      setModels([]); setLoading(false); clearTimeout(timer); return;
     }
 
     ws.onmessage = (event) => {
@@ -108,13 +109,13 @@ function useGatewayModels(
           return;
         }
         if (frame.type === "res" && frame.id === "c1") {
-          if (!frame.ok) { setError(frame.error?.message ?? "Connect failed"); setLoading(false); clearTimeout(timer); ws?.close(); return; }
+          if (!frame.ok) { setError(frame.error?.message ?? "Connect failed"); setModels([]); setLoading(false); clearTimeout(timer); ws?.close(); return; }
           ws?.send(JSON.stringify({ type: "req", id: "ml", method: "models.list", params: {} }));
           return;
         }
         if (frame.type === "res" && frame.id === "ml") {
           clearTimeout(timer);
-          if (!frame.ok) { setError(frame.error?.message ?? "models.list failed"); setLoading(false); ws?.close(); return; }
+          if (!frame.ok) { setError(frame.error?.message ?? "models.list failed"); setModels([]); setLoading(false); ws?.close(); return; }
           setModels((frame.payload as { models: GatewayModel[] }).models ?? []);
           setLoading(false);
           ws?.close();
@@ -122,7 +123,7 @@ function useGatewayModels(
       } catch { /* ignore */ }
     };
 
-    ws.onerror = () => { if (!cancelled) { setError("WebSocket connection error"); setLoading(false); clearTimeout(timer); } };
+    ws.onerror = () => { if (!cancelled) { setError("WebSocket connection error"); setModels([]); setLoading(false); clearTimeout(timer); } };
     ws.onclose = () => { clearTimeout(timer); };
     return () => { cancelled = true; clearTimeout(timer); ws?.close(); };
   }, [debouncedUrl, token, refreshKey]);
@@ -157,6 +158,8 @@ function useGatewayAgents(
     const timer = setTimeout(() => {
       if (!cancelled) {
         setError("Connection timed out");
+        setAgents([]);
+        setDefaultId(null);
         setLoading(false);
         ws?.close();
       }
@@ -164,11 +167,15 @@ function useGatewayAgents(
 
     setLoading(true);
     setError(null);
+    setAgents([]);
+    setDefaultId(null);
 
     try {
       ws = new WebSocket(debouncedAgentUrl);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Invalid WebSocket URL");
+      setAgents([]);
+      setDefaultId(null);
       setLoading(false);
       clearTimeout(timer);
       return;
@@ -445,7 +452,7 @@ export function OpenClawGatewayConfigFields({
     : eff(
         "adapterConfig",
         "sessionKeyStrategy",
-        String(config.sessionKeyStrategy ?? "project"),
+        String(config.sessionKeyStrategy ?? config.sessionStrategy ?? "project"),
       );
 
   // Resolve the gateway URL and token for agent fetching
@@ -453,8 +460,9 @@ export function OpenClawGatewayConfigFields({
     ? (values?.url ?? "")
     : String(eff("adapterConfig", "url", String(config.url ?? "")));
   const wsUrl = rawUrl.replace(/^http/, "ws");
-  const [createToken, setCreateToken] = useState("");
-  const wsToken = isCreate ? createToken : effectiveGatewayToken;
+  const wsToken = isCreate
+    ? String((values as unknown as Record<string, unknown>)?.token ?? "")
+    : effectiveGatewayToken;
 
   // Agent ID: in create mode stored as extra form value, in edit mode in adapterConfig
   const currentAgentId = isCreate
@@ -494,11 +502,8 @@ export function OpenClawGatewayConfigFields({
       {isCreate ? (
         <SecretField
           label="Gateway auth token (x-openclaw-token)"
-          value={createToken}
-          onCommit={(v) => {
-            setCreateToken(v);
-            set!({ token: v } as Partial<typeof values & { token: string }>);
-          }}
+          value={String((values as unknown as Record<string, unknown>)?.token ?? "")}
+          onCommit={(v) => set!({ token: v } as Partial<typeof values & { token: string }>)}
           placeholder="OpenClaw gateway token"
         />
       ) : (
