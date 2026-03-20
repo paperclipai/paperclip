@@ -1,0 +1,36 @@
+{
+  "name": "@paperclipai/plugin-claude-config-editor",
+  "version": "0.1.0",
+  "description": "Plugin that allows instance admins to edit Claude Code configuration files through the Paperclip settings UI",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js",
+    "ui": "./dist/ui/"
+  },
+  "scripts": {
+    "prebuild": "node ../../../../scripts/ensure-plugin-build-deps.mjs",
+    "build": "tsc && node ./scripts/build-ui.mjs",
+    "clean": "rm -rf dist",
+    "typecheck": "pnpm --filter @paperclipai/plugin-sdk build && tsc --noEmit"
+  },
+  "dependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "@types/react": "^19.0.8",
+    "@types/react-dom": "^19.0.3",
+    "esbuild": "^0.27.3",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "typescript": "^5.7.3"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  }
+}
