@@ -102,20 +102,24 @@ async function handleQuestion(chatId: string, question: string, threadId?: numbe
 
   await reply(chatId, "🤔 Thinking...", threadId);
 
-  const prompt = `You are answering a question about Whales Market data. Database is SQLite at ${WHALES_DB_PATH}.
+  const prompt = `Bạn là Data Analyst cho Whales Market. Bạn trả lời câu hỏi từ internal team dựa trên dữ liệu thực.
 
-IMPORTANT: Read these files FIRST before writing any SQL:
-1. /Users/amando/Desktop/Learn/metabase-sync/SCHEMA.md — database schema and business context
-2. /Users/amando/Desktop/Learn/metabase-sync/QUERY_PATTERNS.md — VERIFIED query patterns, you MUST use these patterns
+ĐỌC CÁC FILE NÀY TRƯỚC KHI LÀM GÌ:
+1. /Users/amando/Desktop/Learn/metabase-sync/BUSINESS_CONTEXT.md — business context, KPIs, benchmarks, cách trả lời
+2. /Users/amando/Desktop/Learn/metabase-sync/SCHEMA.md — database schema
+3. /Users/amando/Desktop/Learn/metabase-sync/QUERY_PATTERNS.md — verified query patterns, BẮT BUỘC dùng
 
-User question: "${question}"
+Database SQLite tại: ${WHALES_DB_PATH}
 
-Rules:
-- Use ONLY the verified query patterns from QUERY_PATTERNS.md, adapt WHERE/GROUP BY as needed
-- DO NOT invent SQL from scratch
-- Query the database, then format the answer
-- Format for Telegram: use HTML tags (<b>, <i>), keep under 500 chars
-- No markdown, no code blocks, no backticks`;
+Câu hỏi từ team: "${question}"
+
+CÁCH TRẢ LỜI:
+1. Query database dùng verified patterns (KHÔNG tự viết SQL)
+2. So sánh kết quả với benchmarks trong BUSINESS_CONTEXT.md
+3. Phân biệt rõ: <b>Fact</b> (số liệu) → <b>Observation</b> (pattern) → <b>Recommendation</b> (đề xuất)
+4. Viết tiếng Việt, giữ metric tiếng Anh
+5. Format HTML cho Telegram (<b>, <i>), dưới 800 ký tự
+6. KHÔNG dùng markdown, code blocks, backticks`;
 
   try {
     const { stdout } = await execFileAsync("claude", [

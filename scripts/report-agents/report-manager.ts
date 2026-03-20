@@ -169,10 +169,14 @@ async function claudeAnalyze(prompt: string): Promise<string> {
   return stdout.trim();
 }
 
-const REPORT_RULES = `QUY TẮC BẮT BUỘC:
+const REPORT_RULES = `ĐỌC FILE NÀY TRƯỚC: /Users/amando/Desktop/Learn/metabase-sync/BUSINESS_CONTEXT.md — chứa KPIs, benchmarks, mục tiêu, cách đánh giá tốt/xấu.
+
+QUY TẮC BẮT BUỘC:
 - Viết tiếng Việt, giữ nguyên tiếng Anh cho metric: Volume, Order, Settlement Rate, Active Users, Sessions, Exit Position, New Users, Returning Users, MoM, WoW, Acquisition Rate, etc.
 - Chỉ dùng HTML tags (<b>, <i>), KHÔNG dùng markdown
 - Mỗi metric kèm giải thích ngắn gọn cho người không chuyên hiểu
+- So sánh với benchmarks trong BUSINESS_CONTEXT.md để đánh giá (Tệ/TB/Tốt/Rất tốt)
+- Phân biệt rõ: Fact (số liệu) → Observation (pattern) → Recommendation (đề xuất)
 - CHỈ nói dựa trên dữ liệu thực, KHÔNG suy đoán hay bịa số
 - Nếu không đủ dữ liệu → ghi rõ "chưa đủ dữ liệu"
 - Giữ dưới 3500 ký tự`;
