@@ -13,14 +13,18 @@ export interface GA4Metrics {
 
 export async function fetchGA4Metrics(): Promise<GA4Metrics> {
   const propertyId = process.env.GA4_PROPERTY_ID;
-  const credentialsJson = process.env.GA4_SERVICE_ACCOUNT_JSON;
-  if (!propertyId || !credentialsJson) throw new Error("Missing GA4_PROPERTY_ID or GA4_SERVICE_ACCOUNT_JSON");
+  if (!propertyId) throw new Error("Missing GA4_PROPERTY_ID");
 
-  const credentials = JSON.parse(credentialsJson);
-  const auth = new google.auth.GoogleAuth({
-    credentials,
-    scopes: ["https://www.googleapis.com/auth/analytics.readonly"],
-  });
+  // Support both: Service Account JSON (env) or Application Default Credentials (gcloud auth)
+  const credentialsJson = process.env.GA4_SERVICE_ACCOUNT_JSON;
+  const auth = credentialsJson
+    ? new google.auth.GoogleAuth({
+        credentials: JSON.parse(credentialsJson),
+        scopes: ["https://www.googleapis.com/auth/analytics.readonly"],
+      })
+    : new google.auth.GoogleAuth({
+        scopes: ["https://www.googleapis.com/auth/analytics.readonly"],
+      });
 
   const analyticsData = google.analyticsdata({ version: "v1beta", auth });
 
