@@ -212,11 +212,16 @@ export function NewProjectDialog() {
     >
       <DialogContent
         showCloseButton={false}
-        className={cn("p-0 gap-0", expanded ? "sm:max-w-2xl" : "sm:max-w-lg")}
+        className={cn(
+          "p-0 gap-0 flex flex-col max-h-[calc(100dvh-2rem)]",
+          expanded
+            ? "sm:max-w-2xl h-[calc(100dvh-2rem)]"
+            : "sm:max-w-lg"
+        )}
         onKeyDown={handleKeyDown}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-2.5 border-b border-border">
+        <div className="flex items-center justify-between px-4 py-2.5 border-b border-border shrink-0">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             {selectedCompany && (
               <span className="bg-muted px-1.5 py-0.5 rounded text-xs font-medium">
@@ -264,7 +269,7 @@ export function NewProjectDialog() {
         </div>
 
         {/* Description */}
-        <div className="px-4 pb-2">
+        <div className={cn("px-4 pb-2 overflow-y-auto min-h-0 border-t border-border/60 pt-3", expanded ? "flex-1" : "")}>
           <MarkdownEditor
             ref={descriptionEditorRef}
             value={description}
@@ -279,7 +284,7 @@ export function NewProjectDialog() {
           />
         </div>
 
-        <div className="px-4 pb-3 space-y-3 border-t border-border">
+        <div className="px-4 pb-3 space-y-3 border-t border-border shrink-0">
           <div className="pt-3">
             <p className="text-sm font-medium">Where will work be done on this project?</p>
             <p className="text-xs text-muted-foreground">Add a repo and/or local folder for this project.</p>
@@ -360,7 +365,7 @@ export function NewProjectDialog() {
         </div>
 
         {/* Property chips */}
-        <div className="flex items-center gap-1.5 px-4 py-2 border-t border-border flex-wrap">
+        <div className="flex items-center gap-1.5 px-4 py-2 border-t border-border flex-wrap shrink-0">
           {/* Status */}
           <Popover open={statusOpen} onOpenChange={setStatusOpen}>
             <PopoverTrigger asChild>
@@ -455,7 +460,7 @@ export function NewProjectDialog() {
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between px-4 py-2.5 border-t border-border">
+        <div className="flex items-center justify-between px-4 py-2.5 border-t border-border shrink-0">
           {createProject.isError ? (
             <p className="text-xs text-destructive">Failed to create project.</p>
           ) : (
