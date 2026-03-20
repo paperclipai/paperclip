@@ -1,4 +1,10 @@
 services:
+  paperclip-init:
+    image: busybox
+    command: chown -R 1000:1000 /paperclip
+    volumes:
+      - paperclip_data:/paperclip
+
   paperclip:
     build:
       context: .
@@ -14,5 +20,13 @@ services:
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+      PAPERCLIP_ALLOWED_HOSTNAMES: "${PAPERCLIP_ALLOWED_HOSTNAMES:-localhost}"
     volumes:
-      - "${PAPERCLIP_DATA_DIR:-./data/docker-paperclip}:/paperclip"
+      - paperclip_data:/paperclip
+    depends_on:
+      paperclip-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  paperclip_data:
