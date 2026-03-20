@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { Eye, EyeOff, RefreshCw } from "lucide-react";
+import { Eye, EyeOff, RefreshCw, AlertTriangle } from "lucide-react";
 import type { AdapterConfigFieldsProps } from "../types";
 import {
   Field,
@@ -10,6 +10,7 @@ import {
   PayloadTemplateJsonField,
   RuntimeServicesJsonField,
 } from "../runtime-json-fields";
+import { MarkdownEditor } from "../../components/MarkdownEditor";
 
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
@@ -596,6 +597,35 @@ export function OpenClawGatewayConfigFields({
         </Field>
       )}
 
+      <Field label="Prompt template" hint={help.promptTemplate}>
+        <MarkdownEditor
+          value={
+            isCreate
+              ? (values!.promptTemplate ?? "")
+              : eff("adapterConfig", "promptTemplate", String(config.promptTemplate ?? ""))
+          }
+          onChange={(v) =>
+            isCreate
+              ? set!({ promptTemplate: v })
+              : mark("adapterConfig", "promptTemplate", v ?? "")
+          }
+          placeholder="You are {{ agent.name }}. Your role is to..."
+          contentClassName="min-h-[88px] text-sm font-mono"
+        />
+      </Field>
+      <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+        Prompt template is injected once per session (hash-based dedup). Supports <code className="bg-amber-900/30 px-1 rounded">{"{{ agent.name }}"}</code>, <code className="bg-amber-900/30 px-1 rounded">{"{{ agent.id }}"}</code>, <code className="bg-amber-900/30 px-1 rounded">{"{{ context.* }}"}</code> and other template variables.
+      </div>
+
+      {/* Legacy payload template — show warning if populated */}
+      {(!isCreate && config.payloadTemplate && Object.keys(config.payloadTemplate).length > 0) && (
+        <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200 flex items-start gap-2">
+          <AlertTriangle className="h-4 w-4 text-red-400 shrink-0 mt-0.5" />
+          <div>
+            <strong>Legacy Payload Template JSON detected.</strong> New adapter features (agent selector, model override, thinking, session strategy, prompt template) are bypassed when a payload template is present. Clear the payload template below to use the new configuration fields.
+          </div>
+        </div>
+      )}
       <PayloadTemplateJsonField
         isCreate={isCreate}
         values={values}

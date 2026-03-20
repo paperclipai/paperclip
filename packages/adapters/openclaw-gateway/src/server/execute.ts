@@ -3,7 +3,7 @@ import type {
   AdapterExecutionResult,
   AdapterRuntimeServiceReport,
 } from "@paperclipai/adapter-utils";
-import { asNumber, asString, buildPaperclipEnv, parseObject } from "@paperclipai/adapter-utils/server-utils";
+import { asNumber, asString, buildPaperclipEnv, parseObject, renderTemplate } from "@paperclipai/adapter-utils/server-utils";
 import crypto, { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -196,48 +196,80 @@ function getPaperclipSkillText(): string {
   ].join("\n");
 }
 
-/**
- * Check if the current skill version is already present in the session history.
- * Returns true if the skill marker with the current hash is found — meaning we can skip injection.
- */
+const PROMPT_TEMPLATE_MARKER_PREFIX = "<!-- PROMPT_TEMPLATE_v";
+const PROMPT_TEMPLATE_MARKER_SUFFIX = " -->";
+
+function getPromptTemplateHash(text: string): string {
+  return crypto.createHash("md5").update(text).digest("hex").slice(0, 8);
+}
+
+function getPromptTemplateMarker(text: string): string {
+  return `${PROMPT_TEMPLATE_MARKER_PREFIX}${getPromptTemplateHash(text)}${PROMPT_TEMPLATE_MARKER_SUFFIX}`;
+}
+
+function buildPromptTemplateBlock(rendered: string): string {
+  const marker = getPromptTemplateMarker(rendered);
+  return [
+    marker,
+    "<!-- Agent prompt template injected by Paperclip OpenClaw adapter -->",
+    "<!-- DO NOT REMOVE OR SUMMARIZE DURING COMPACTION. Preserve verbatim. -->",
+    "",
+    rendered,
+  ].join("\n");
+}
+
 /**
  * Check if the session already has messages (meaning the skill was likely injected before).
  * Uses sessions.list with messageLimit to peek at recent messages for the skill marker.
  * Falls back to "not injected" on any error — safe to always inject.
  */
-async function isSkillAlreadyInjectedWithLog(
+type ChatHistoryResult = {
+  messages?: Array<{ role?: string; content?: string | Array<{ type?: string; text?: string }> }>;
+};
+
+/** Search session history for one or more markers. Returns a Set of found markers. */
+async function findMarkersInHistory(
   client: { safeRequest: <T>(method: string, params: unknown, opts: { timeoutMs: number }) => Promise<T | null> },
   sessionKey: string,
+  markers: string[],
   onLog: (stream: "stdout" | "stderr", text: string) => Promise<void>,
-): Promise<boolean> {
-  const marker = getSkillMarker();
+): Promise<Set<string>> {
+  const found = new Set<string>();
+  if (markers.length === 0) return found;
   try {
-    const result = await client.safeRequest<{
-      messages?: Array<{ role?: string; content?: string | Array<{ type?: string; text?: string }> }>;
-    }>(
+    const result = await client.safeRequest<ChatHistoryResult>(
       "chat.history",
       { sessionKey },
       { timeoutMs: 15_000 },
     );
     const msgCount = result?.messages?.length ?? 0;
-    await onLog("stdout", `[openclaw-gateway] skill dedup: chat.history returned ${msgCount} messages, searching for marker ${marker}\n`);
+    await onLog("stdout", `[openclaw-gateway] dedup: chat.history returned ${msgCount} messages, searching for ${markers.length} marker(s)\n`);
     for (const msg of result?.messages ?? []) {
       const content = msg.content;
+      const texts: string[] = [];
       if (typeof content === "string") {
-        if (content.includes(marker)) return true;
+        texts.push(content);
       } else if (Array.isArray(content)) {
         for (const block of content) {
           if (typeof block === "object" && block && typeof (block as Record<string, unknown>).text === "string") {
-            if (((block as Record<string, unknown>).text as string).includes(marker)) return true;
+            texts.push((block as Record<string, unknown>).text as string);
           }
         }
       }
+      for (const text of texts) {
+        for (const marker of markers) {
+          if (text.includes(marker)) found.add(marker);
+        }
+      }
+      if (found.size === markers.length) break; // All found, early exit
     }
-    await onLog("stdout", `[openclaw-gateway] skill dedup: marker NOT found in ${msgCount} messages\n`);
+    for (const marker of markers) {
+      await onLog("stdout", `[openclaw-gateway] dedup: ${marker} → ${found.has(marker) ? "FOUND" : "NOT FOUND"}\n`);
+    }
   } catch (err) {
-    await onLog("stderr", `[openclaw-gateway] skill dedup error: ${err instanceof Error ? err.message : String(err)}\n`);
+    await onLog("stderr", `[openclaw-gateway] dedup error: ${err instanceof Error ? err.message : String(err)}\n`);
   }
-  return false;
+  return found;
 }
 
 
@@ -1147,6 +1179,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const waitTimeoutMs = parseOptionalPositiveInteger(ctx.config.waitTimeoutMs) ?? (timeoutMs > 0 ? timeoutMs : 30_000);
 
   const payloadTemplate = parseObject(ctx.config.payloadTemplate);
+  const promptTemplateRaw = asString(ctx.config.promptTemplate, "").trim();
   const transportHint = nonEmpty(ctx.config.streamTransport) ?? nonEmpty(ctx.config.transport);
 
   const headers = toStringRecord(ctx.config.headers);
@@ -1388,15 +1421,46 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[openclaw-gateway] connected protocol=${asNumber(asRecord(hello)?.protocol, PROTOCOL_VERSION)}\n`,
       );
 
-      // Check if skill needs injection (hash-based deduplication)
+      // Build injection blocks: skill + prompt template (with hash-based dedup)
       const skillText = getPaperclipSkillText();
+      const renderedPromptTemplate = promptTemplateRaw
+        ? renderTemplate(promptTemplateRaw, {
+            runId: ctx.runId,
+            company: { id: ctx.agent.companyId },
+            agent: ctx.agent,
+            run: { id: ctx.runId, source: "on_demand" },
+            context: ctx.context,
+          })
+        : "";
+      const promptTemplateBlock = renderedPromptTemplate ? buildPromptTemplateBlock(renderedPromptTemplate) : "";
+
+      // Collect markers to check in one history scan
+      const markersToCheck: string[] = [];
+      if (skillText) markersToCheck.push(getSkillMarker());
+      if (promptTemplateBlock) markersToCheck.push(getPromptTemplateMarker(renderedPromptTemplate));
+
+      const foundMarkers = markersToCheck.length > 0
+        ? await findMarkersInHistory(client, sessionKey, markersToCheck, ctx.onLog)
+        : new Set<string>();
+
+      // Inject skill if not already present
       if (skillText) {
-        const alreadyInjected = await isSkillAlreadyInjectedWithLog(client, sessionKey, ctx.onLog);
-        if (alreadyInjected) {
-          await ctx.onLog("stdout", `[openclaw-gateway] paperclip skill already in session (hash=${getSkillHash()}), skipping injection\n`);
+        if (foundMarkers.has(getSkillMarker())) {
+          await ctx.onLog("stdout", `[openclaw-gateway] paperclip skill already in session (hash=${getSkillHash()}), skipping\n`);
         } else {
           agentParams.message = `${skillText}\n\n---\n\n${agentParams.message}`;
           await ctx.onLog("stdout", `[openclaw-gateway] injecting paperclip skill (hash=${getSkillHash()}, ${skillText.length} chars)\n`);
+        }
+      }
+
+      // Inject prompt template if not already present
+      if (promptTemplateBlock) {
+        const ptMarker = getPromptTemplateMarker(renderedPromptTemplate);
+        if (foundMarkers.has(ptMarker)) {
+          await ctx.onLog("stdout", `[openclaw-gateway] prompt template already in session (hash=${getPromptTemplateHash(renderedPromptTemplate)}), skipping\n`);
+        } else {
+          agentParams.message = `${promptTemplateBlock}\n\n---\n\n${agentParams.message}`;
+          await ctx.onLog("stdout", `[openclaw-gateway] injecting prompt template (hash=${getPromptTemplateHash(renderedPromptTemplate)}, ${renderedPromptTemplate.length} chars)\n`);
         }
       }
 
