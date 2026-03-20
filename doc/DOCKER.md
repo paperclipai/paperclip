@@ -93,6 +93,26 @@ Notes:
 - Without API keys, the app still runs normally.
 - Adapter environment checks in Paperclip will surface missing auth/CLI prerequisites.
 
+## Stripe (test / integration)
+
+Paperclip reads Stripe keys from the environment (no billing routes ship yet; keys are normalized for upcoming use and for Stripe SDK defaults).
+
+**Preferred names (test keys):**
+
+- `STRIPE_TEST_PUBLISHABLE_KEY`
+- `STRIPE_TEST_SECRET_KEY`
+
+**Backward-compatible aliases:**
+
+- `STRIPE_PUBLISHABLE_KEY`
+- `STRIPE_SECRET_KEY`
+
+If both prefixed and generic variables are set, **`STRIPE_TEST_*` wins**. On startup the server sets `STRIPE_PUBLISHABLE_KEY` and `STRIPE_SECRET_KEY` to the resolved values so libraries that only read the standard names still work.
+
+`GET /api/health` includes `features.stripe.publishableKey` and `features.stripe.secretKey` as booleans (never key material).
+
+**VPS:** add the variables to `/opt/paperclip/.env` on the host; `docker-compose.vps.yml` passes them into the server container. Use test keys until live billing is intentional.
+
 ## VPS Production Deployment
 
 For production deployment to a VPS with automated CI/CD, use the dedicated VPS setup:

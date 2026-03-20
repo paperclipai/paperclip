@@ -488,6 +488,8 @@ export async function startServer(): Promise<StartedServer> {
     bindHost: config.host,
     authReady,
     companyDeletionEnabled: config.companyDeletionEnabled,
+    stripePublishableKeyConfigured: Boolean(config.stripePublishableKey),
+    stripeSecretKeyConfigured: Boolean(config.stripeSecretKey),
     betterAuthHandler,
     resolveSession,
   });

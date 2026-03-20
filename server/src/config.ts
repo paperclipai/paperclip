@@ -22,6 +22,7 @@ import {
   resolveDefaultStorageDir,
   resolveHomeAwarePath,
 } from "./home-paths.js";
+import { resolveStripeKeysFromProcessEnv, syncStripeStandardEnvFromResolved } from "./stripe-env.js";
 
 const PAPERCLIP_ENV_FILE_PATH = resolvePaperclipEnvPath();
 if (existsSync(PAPERCLIP_ENV_FILE_PATH)) {
@@ -70,6 +71,9 @@ export interface Config {
   heartbeatSchedulerEnabled: boolean;
   heartbeatSchedulerIntervalMs: number;
   companyDeletionEnabled: boolean;
+  /** Resolved from `STRIPE_TEST_*` then `STRIPE_*`; use for future billing routes (never log). */
+  stripePublishableKey: string | undefined;
+  stripeSecretKey: string | undefined;
 }
 
 export function loadConfig(): Config {
@@ -210,6 +214,9 @@ export function loadConfig(): Config {
       resolveDefaultBackupDir(),
   );
 
+  const stripeKeys = resolveStripeKeysFromProcessEnv(process.env);
+  syncStripeStandardEnvFromResolved(process.env, stripeKeys);
+
   return {
     deploymentMode,
     deploymentExposure,
@@ -252,5 +259,7 @@ export function loadConfig(): Config {
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
+    stripePublishableKey: stripeKeys.publishableKey,
+    stripeSecretKey: stripeKeys.secretKey,
   };
 }

@@ -37,6 +37,11 @@ services:
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:?PAPERCLIP_PUBLIC_URL must be set}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+      # Optional Stripe test keys (see root `.env.example`, `doc/DOCKER.md`). Prefer STRIPE_TEST_* on the VPS `.env`.
+      STRIPE_TEST_PUBLISHABLE_KEY: "${STRIPE_TEST_PUBLISHABLE_KEY:-}"
+      STRIPE_TEST_SECRET_KEY: "${STRIPE_TEST_SECRET_KEY:-}"
+      STRIPE_PUBLISHABLE_KEY: "${STRIPE_PUBLISHABLE_KEY:-}"
+      STRIPE_SECRET_KEY: "${STRIPE_SECRET_KEY:-}"
     volumes:
       - paperclip-data:/paperclip
     depends_on:
