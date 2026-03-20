@@ -36,6 +36,7 @@ import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { findServerAdapter, listAdapterModels } from "../adapters/index.js";
 import { redactEventPayload } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
+import { normalizeMsysDrivePath } from "../paths.js";
 import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
@@ -286,16 +287,6 @@ export function agentRoutes(db: Db) {
       const reason = err instanceof Error ? err.message : String(err);
       throw unprocessable(`Invalid opencode_local adapterConfig: ${reason}`);
     }
-  }
-
-  /**
-   * Convert MSYS/Git Bash drive paths (/c/Users/...) to native Windows paths (C:\Users\...).
-   * On non-Windows or non-matching paths, returns the input unchanged.
-   */
-  function normalizeMsysDrivePath(p: string): string {
-    if (process.platform !== "win32") return p;
-    const m = p.match(/^\/([a-zA-Z])\/(.*)/);
-    return m ? `${m[1].toUpperCase()}:\\${m[2].replace(/\//g, "\\")}` : p;
   }
 
   function resolveInstructionsFilePath(candidatePath: string, adapterConfig: Record<string, unknown>) {

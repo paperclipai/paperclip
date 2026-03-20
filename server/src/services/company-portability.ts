@@ -16,6 +16,7 @@ import type {
 } from "@paperclipai/shared";
 import { normalizeAgentUrlKey, portabilityManifestSchema } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
+import { normalizeMsysDrivePath } from "../paths.js";
 import { accessService } from "./access.js";
 import { agentService } from "./agents.js";
 import { companyService } from "./companies.js";
@@ -431,16 +432,6 @@ function parseGitHubTreeUrl(rawUrl: string) {
 function resolveRawGitHubUrl(owner: string, repo: string, ref: string, filePath: string) {
   const normalizedFilePath = filePath.replace(/^\/+/, "");
   return `https://raw.githubusercontent.com/${owner}/${repo}/${ref}/${normalizedFilePath}`;
-}
-
-/**
- * Convert MSYS/Git Bash drive paths (/c/Users/...) to native Windows paths (C:\Users\...).
- * On non-Windows or non-matching paths, returns the input unchanged.
- */
-function normalizeMsysDrivePath(p: string): string {
-  if (process.platform !== "win32") return p;
-  const m = p.match(/^\/([a-zA-Z])\/(.*)/);
-  return m ? `${m[1].toUpperCase()}:\\${m[2].replace(/\//g, "\\")}` : p;
 }
 
 async function readAgentInstructions(agent: AgentLike): Promise<{ body: string; warning: string | null }> {
