@@ -91,3 +91,15 @@ export const orders = pgTable("orders", {
 }, (table) => ({
   questionnaireIdx: index("orders_questionnaire_idx").on(table.questionnaireId),
 }));
+
+export const feedback = pgTable("feedback", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  rating: integer("rating").notNull(), // 1-5
+  text: text("text"), // Optional feedback comment (max 1000 chars enforced in API)
+  userAgent: varchar("user_agent", { length: 500 }),
+  referrer: varchar("referrer", { length: 500 }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  ratingIdx: index("feedback_rating_idx").on(table.rating),
+  createdIdx: index("feedback_created_idx").on(table.createdAt),
+}));

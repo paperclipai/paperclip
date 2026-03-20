@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { db } from '@/db';
+import { feedback as feedbackTable } from '@/db/schema';
 
 interface FeedbackData {
   rating: number;
@@ -47,27 +49,25 @@ export async function POST(request: NextRequest) {
       referrer: request.headers.get('referer') || undefined,
     };
 
-    // TODO: Implement persistent storage
-    // Options:
-    // 1. Database (PostgreSQL recommended)
-    //    - Save to `feedback` table
-    //    - Fields: id, rating, feedback, timestamp, userAgent, referrer
-    // 2. File storage (for MVP)
-    //    - Write to /tmp or cloud storage
-    // 3. Analytics service (Posthog, Mixpanel, etc.)
-    //    - Send event with rating and feedback
-    // 4. Email service
-    //    - Send summary daily to support@diybrand.app
+    // Save feedback to database
+    const result = await db.insert(feedbackTable).values({
+      rating: feedbackData.rating,
+      text: feedbackData.feedback.trim() || null,
+      userAgent: feedbackData.userAgent,
+      referrer: feedbackData.referrer,
+    }).returning({ id: feedbackTable.id });
 
-    // For now, log to console (visible in server logs)
-    console.log('[FEEDBACK]', JSON.stringify(feedbackData, null, 2));
+    const feedbackId = result[0]?.id || `fb_${Date.now()}`;
+
+    // Log for visibility in server logs
+    console.log('[FEEDBACK SAVED]', { feedbackId, rating: feedbackData.rating, feedback: feedbackData.feedback });
 
     // Send success response
     return NextResponse.json(
       {
         success: true,
         message: 'Thank you for your feedback!',
-        feedbackId: `fb_${Date.now()}`,
+        feedbackId,
       },
       { status: 200 }
     );
@@ -83,16 +83,56 @@ export async function POST(request: NextRequest) {
 
 /**
  * GET /api/feedback
- * Retrieve feedback analytics (if authenticated)
+ * Retrieve feedback analytics (requires API key)
  *
- * NOTE: Implement authentication before exposing this in production
+ * Query params:
+ * - apiKey: secret key for authentication (required)
  */
 export async function GET(request: NextRequest) {
-  // TODO: Add authentication check (API key or session)
-  // For now, return 403 to prevent unauthorized access
+  try {
+    const apiKey = request.nextUrl.searchParams.get('apiKey');
+    const expectedKey = process.env.FEEDBACK_API_KEY;
 
-  return NextResponse.json(
-    { error: 'Not implemented' },
-    { status: 403 }
-  );
+    // Require authentication
+    if (!expectedKey || !apiKey || apiKey !== expectedKey) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    // Get feedback analytics
+    const allFeedback = await db.query.feedback.findMany();
+
+    const stats = {
+      total: allFeedback.length,
+      averageRating: allFeedback.length > 0
+        ? (allFeedback.reduce((sum, f) => sum + f.rating, 0) / allFeedback.length).toFixed(2)
+        : 0,
+      ratingDistribution: {
+        5: allFeedback.filter(f => f.rating === 5).length,
+        4: allFeedback.filter(f => f.rating === 4).length,
+        3: allFeedback.filter(f => f.rating === 3).length,
+        2: allFeedback.filter(f => f.rating === 2).length,
+        1: allFeedback.filter(f => f.rating === 1).length,
+      },
+      recentFeedback: allFeedback
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+        .slice(0, 10)
+        .map(f => ({
+          id: f.id,
+          rating: f.rating,
+          text: f.text,
+          createdAt: f.createdAt,
+        })),
+    };
+
+    return NextResponse.json(stats, { status: 200 });
+  } catch (error) {
+    console.error('[FEEDBACK GET ERROR]', error);
+    return NextResponse.json(
+      { error: 'Failed to retrieve feedback' },
+      { status: 500 }
+    );
+  }
 }
