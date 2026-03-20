@@ -16,8 +16,8 @@ function buildHtml(tokens: TokenRow[]): string {
   const filled24h = tokens.reduce((s, t) => s + (Number(t.total_value_24h) || 0), 0);
   const growthPct = totalAll > 0 ? (filled24h / totalAll) * 100 : 0;
 
-  const dpTot24h = tokens.reduce((s, t) => s + (Number(t.total_value_exit_position_24h) || 0), 0);
-  const dpFil24h = tokens.reduce((s, t) => s + (Number(t.total_value_filled_exit_position_24h) || 0), 0);
+  const dpTot24h = tokens.reduce((s, t) => s + (Number(t.total_exit_volume_24h) || 0), 0);
+  const dpFil24h = tokens.reduce((s, t) => s + (Number(t.total_exit_volume_filled_24h) || 0), 0);
   const dpRate24h = dpTot24h > 0 ? (dpFil24h / dpTot24h) * 100 : 0;
 
   const wNew = tokens.reduce((s, t) => s + (Number(t.num_new_wallets_24h) || 0), 0);
@@ -52,8 +52,8 @@ function buildHtml(tokens: TokenRow[]): string {
     const wAc = wT > 0 ? (wN / wT) * 100 : 0;
     out.push(`24h Wallets: <b>${wT}</b>${wT ? ` (New User <b>${wN}</b>, ${acqBadge(wAc)})` : ""}`);
 
-    if (t.total_volume_on_web || t.total_value_all) {
-      out.push(`Total Volume on Web / Filled: ${moneySmart(t.total_volume_on_web)} / ${moneySmart(t.total_value_all)}`);
+    if (t.total_volume_incl_offer || t.total_value_all) {
+      out.push(`Total Volume on Web / Filled: ${moneySmart(t.total_volume_incl_offer)} / ${moneySmart(t.total_value_all)}`);
     }
 
     const rsAll = Number(t.total_value_exit_position_all_time) || 0;
@@ -70,7 +70,9 @@ function buildHtml(tokens: TokenRow[]): string {
 
 async function main() {
   console.log("Platform Collector: fetching metrics...");
-  const tokens = await fetchPlatformMetrics();
+  const dbPath = process.env.WHALES_DB_PATH;
+  if (!dbPath) throw new Error("Missing WHALES_DB_PATH env var");
+  const tokens = fetchPlatformMetrics(dbPath);
 
   if (tokens.length === 0) {
     console.error("No token data found — skipping report");
