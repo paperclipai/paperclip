@@ -9,6 +9,7 @@ import {
   asStringArray,
   parseObject,
   buildPaperclipEnv,
+  buildWakeCommentNote,
   joinPromptSections,
   redactEnvForLogs,
   ensureAbsoluteDirectory,
@@ -295,16 +296,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  const wakeCommentNote = buildWakeCommentNote(context);
   const userPrompt = joinPromptSections([
     renderedBootstrapPrompt,
     sessionHandoffNote,
+    wakeCommentNote,
     renderedHeartbeatPrompt,
-  ]);
+  ]) || "Continue your Paperclip work.";
   const promptMetrics = {
     systemPromptChars: renderedSystemPromptExtension.length,
     promptChars: userPrompt.length,
     bootstrapPromptChars: renderedBootstrapPrompt.length,
     sessionHandoffChars: sessionHandoffNote.length,
+    wakeCommentNoteChars: wakeCommentNote.length,
     heartbeatPromptChars: renderedHeartbeatPrompt.length,
   };
 

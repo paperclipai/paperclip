@@ -17,6 +17,7 @@ import {
   listPaperclipSkillEntries,
   removeMaintainerOnlySkillSymlinks,
   renderTemplate,
+  buildWakeCommentNote,
   joinPromptSections,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -346,19 +347,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  const wakeCommentNote = buildWakeCommentNote(context);
   const paperclipEnvNote = renderPaperclipEnvNote(env);
   const prompt = joinPromptSections([
     instructionsPrefix,
     renderedBootstrapPrompt,
     sessionHandoffNote,
+    wakeCommentNote,
     paperclipEnvNote,
     renderedPrompt,
-  ]);
+  ]) || "Continue your Paperclip work.";
   const promptMetrics = {
     promptChars: prompt.length,
     instructionsChars,
     bootstrapPromptChars: renderedBootstrapPrompt.length,
     sessionHandoffChars: sessionHandoffNote.length,
+    wakeCommentNoteChars: wakeCommentNote.length,
     runtimeNoteChars: paperclipEnvNote.length,
     heartbeatPromptChars: renderedPrompt.length,
   };

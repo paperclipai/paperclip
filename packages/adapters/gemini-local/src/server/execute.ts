@@ -13,6 +13,7 @@ import {
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
   ensurePaperclipSkillSymlink,
+  buildWakeCommentNote,
   joinPromptSections,
   ensurePathInEnv,
   listPaperclipSkillEntries,
@@ -292,21 +293,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  const wakeCommentNote = buildWakeCommentNote(context);
   const paperclipEnvNote = renderPaperclipEnvNote(env);
   const apiAccessNote = renderApiAccessNote(env);
   const prompt = joinPromptSections([
     instructionsPrefix,
     renderedBootstrapPrompt,
     sessionHandoffNote,
+    wakeCommentNote,
     paperclipEnvNote,
     apiAccessNote,
     renderedPrompt,
-  ]);
+  ]) || "Continue your Paperclip work.";
   const promptMetrics = {
     promptChars: prompt.length,
     instructionsChars: instructionsPrefix.length,
     bootstrapPromptChars: renderedBootstrapPrompt.length,
     sessionHandoffChars: sessionHandoffNote.length,
+    wakeCommentNoteChars: wakeCommentNote.length,
     runtimeNoteChars: paperclipEnvNote.length + apiAccessNote.length,
     heartbeatPromptChars: renderedPrompt.length,
   };

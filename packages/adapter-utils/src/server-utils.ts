@@ -114,6 +114,20 @@ export function renderTemplate(template: string, data: Record<string, unknown>) 
   return template.replace(/{{\s*([a-zA-Z0-9_.-]+)\s*}}/g, (_, path) => resolvePathValue(data, path));
 }
 
+const MAX_WAKE_COMMENT_CHARS = 8_000;
+
+export function buildWakeCommentNote(context: Record<string, unknown>): string {
+  const raw = asString(context.wakeCommentBody, "").trim();
+  if (!raw) return "";
+  const body = raw.length > MAX_WAKE_COMMENT_CHARS
+    ? raw.slice(0, MAX_WAKE_COMMENT_CHARS) + "\n\n[…comment truncated…]"
+    : raw;
+  const reason = asString(context.wakeReason, "");
+  if (reason === "issue_comment_mentioned") return `You were mentioned in a comment:\n\n${body}`;
+  if (reason === "issue_reopened_via_comment") return `This issue was reopened with a comment:\n\n${body}`;
+  return `A new comment was added to your issue:\n\n${body}`;
+}
+
 export function joinPromptSections(
   sections: Array<string | null | undefined>,
   separator = "\n\n",
