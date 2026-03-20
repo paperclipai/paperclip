@@ -132,6 +132,60 @@ export function agentRoutes(db: Db) {
     throw forbidden("Only CEO or agent creators can modify other agents");
   }
 
+  function hasAgentPermission(
+    agent: { permissions: Record<string, unknown> | null | undefined },
+    permission: string,
+  ): boolean {
+    if (!agent.permissions || typeof agent.permissions !== "object") return false;
+    return Boolean((agent.permissions as Record<string, unknown>)[permission]);
+  }
+
+  async function assertCanDeleteAgent(req: Request, targetAgentId: string) {
+    if (req.actor.type === "board") return;
+    if (req.actor.type === "none") throw forbidden("Authentication required");
+    if (!req.actor.agentId) throw forbidden("Agent authentication required");
+
+    const actorAgent = await svc.getById(req.actor.agentId);
+    if (!actorAgent) throw forbidden("Agent not found");
+
+    const targetAgent = await svc.getById(targetAgentId);
+    if (targetAgent && actorAgent.companyId !== targetAgent.companyId) {
+      throw forbidden("Agent key cannot access another company");
+    }
+
+    const allowedByGrant = await access.hasPermission(
+      actorAgent.companyId,
+      "agent",
+      actorAgent.id,
+      "agents:delete",
+    );
+    if (allowedByGrant || hasAgentPermission(actorAgent, "canDeleteAgents")) return;
+    throw forbidden("Missing permission: can delete agents");
+  }
+
+  async function assertCanTerminateAgent(req: Request, targetAgentId: string) {
+    if (req.actor.type === "board") return;
+    if (req.actor.type === "none") throw forbidden("Authentication required");
+    if (!req.actor.agentId) throw forbidden("Agent authentication required");
+
+    const actorAgent = await svc.getById(req.actor.agentId);
+    if (!actorAgent) throw forbidden("Agent not found");
+
+    const targetAgent = await svc.getById(targetAgentId);
+    if (targetAgent && actorAgent.companyId !== targetAgent.companyId) {
+      throw forbidden("Agent key cannot access another company");
+    }
+
+    const allowedByGrant = await access.hasPermission(
+      actorAgent.companyId,
+      "agent",
+      actorAgent.id,
+      "agents:terminate",
+    );
+    if (allowedByGrant || hasAgentPermission(actorAgent, "canTerminateAgents")) return;
+    throw forbidden("Missing permission: can terminate agents");
+  }
+
   async function resolveCompanyIdForAgentReference(req: Request): Promise<string | null> {
     const companyIdQuery = req.query.companyId;
     const requestedCompanyId =
@@ -1213,9 +1267,10 @@ export function agentRoutes(db: Db) {
   });
 
   router.post("/agents/:id/terminate", async (req, res) => {
-    assertBoard(req);
     const id = req.params.id as string;
-    const agent = await svc.terminate(id);
+    await assertCanTerminateAgent(req, id);
+
+    const agent = await svc.terminate(id, req.actor.agentId ?? undefined);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -1223,10 +1278,11 @@ export function agentRoutes(db: Db) {
 
     await heartbeat.cancelActiveForAgent(id);
 
+    const actorInfo = getActorInfo(req);
     await logActivity(db, {
       companyId: agent.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorType: actorInfo.actorType,
+      actorId: actorInfo.actorId,
       action: "agent.terminated",
       entityType: "agent",
       entityId: agent.id,
@@ -1236,18 +1292,20 @@ export function agentRoutes(db: Db) {
   });
 
   router.delete("/agents/:id", async (req, res) => {
-    assertBoard(req);
     const id = req.params.id as string;
-    const agent = await svc.remove(id);
+    await assertCanDeleteAgent(req, id);
+
+    const agent = await svc.remove(id, req.actor.agentId ?? undefined);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
 
+    const actorInfo = getActorInfo(req);
     await logActivity(db, {
       companyId: agent.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorType: actorInfo.actorType,
+      actorId: actorInfo.actorId,
       action: "agent.deleted",
       entityType: "agent",
       entityId: agent.id,

@@ -446,9 +446,15 @@ export function agentService(db: Db) {
       return updated ? normalizeAgentRow(updated) : null;
     },
 
-    terminate: async (id: string) => {
+    terminate: async (id: string, actorAgentId?: string) => {
       const existing = await getById(id);
       if (!existing) return null;
+      if (existing.role === "ceo") {
+        throw unprocessable("Cannot terminate the CEO agent");
+      }
+      if (actorAgentId && actorAgentId === id) {
+        throw unprocessable("An agent cannot terminate itself");
+      }
 
       await db
         .update(agents)
@@ -468,9 +474,15 @@ export function agentService(db: Db) {
       return getById(id);
     },
 
-    remove: async (id: string) => {
+    remove: async (id: string, actorAgentId?: string) => {
       const existing = await getById(id);
       if (!existing) return null;
+      if (existing.role === "ceo") {
+        throw unprocessable("Cannot delete the CEO agent");
+      }
+      if (actorAgentId && actorAgentId === id) {
+        throw unprocessable("An agent cannot delete itself");
+      }
 
       return db.transaction(async (tx) => {
         await tx.update(agents).set({ reportsTo: null }).where(eq(agents.reportsTo, id));
@@ -504,14 +516,26 @@ export function agentService(db: Db) {
       return updated ? normalizeAgentRow(updated) : null;
     },
 
-    updatePermissions: async (id: string, permissions: { canCreateAgents: boolean }) => {
+    updatePermissions: async (
+      id: string,
+      permissions: Partial<{
+        canCreateAgents: boolean;
+        canDeleteAgents: boolean;
+        canTerminateAgents: boolean;
+      }>,
+    ) => {
       const existing = await getById(id);
       if (!existing) return null;
+
+      const merged = {
+        ...(existing.permissions ?? {}),
+        ...permissions,
+      };
 
       const updated = await db
         .update(agents)
         .set({
-          permissions: normalizeAgentPermissions(permissions, existing.role),
+          permissions: normalizeAgentPermissions(merged, existing.role),
           updatedAt: new Date(),
         })
         .where(eq(agents.id, id))

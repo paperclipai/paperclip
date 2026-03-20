@@ -672,8 +672,8 @@ export function AgentDetail() {
   });
 
   const updatePermissions = useMutation({
-    mutationFn: (canCreateAgents: boolean) =>
-      agentsApi.updatePermissions(agentLookupRef, { canCreateAgents }, resolvedCompanyId ?? undefined),
+    mutationFn: (perms: Partial<{ canCreateAgents: boolean; canDeleteAgents: boolean; canTerminateAgents: boolean }>) =>
+      agentsApi.updatePermissions(agentLookupRef, perms, resolvedCompanyId ?? undefined),
     onSuccess: () => {
       setActionError(null);
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(routeAgentRef) });
@@ -1414,11 +1414,39 @@ function ConfigurationTab({
               size="sm"
               className="h-7 px-2.5 text-xs"
               onClick={() =>
-                updatePermissions.mutate(!Boolean(agent.permissions?.canCreateAgents))
+                updatePermissions.mutate({ canCreateAgents: !Boolean(agent.permissions?.canCreateAgents) })
               }
               disabled={updatePermissions.isPending}
             >
               {agent.permissions?.canCreateAgents ? "Enabled" : "Disabled"}
+            </Button>
+          </div>
+          <div className="flex items-center justify-between text-sm mt-2">
+            <span>Can delete agents</span>
+            <Button
+              variant={agent.permissions?.canDeleteAgents ? "default" : "outline"}
+              size="sm"
+              className="h-7 px-2.5 text-xs"
+              onClick={() =>
+                updatePermissions.mutate({ canDeleteAgents: !Boolean(agent.permissions?.canDeleteAgents) })
+              }
+              disabled={updatePermissions.isPending}
+            >
+              {agent.permissions?.canDeleteAgents ? "Enabled" : "Disabled"}
+            </Button>
+          </div>
+          <div className="flex items-center justify-between text-sm mt-2">
+            <span>Can terminate agents</span>
+            <Button
+              variant={agent.permissions?.canTerminateAgents ? "default" : "outline"}
+              size="sm"
+              className="h-7 px-2.5 text-xs"
+              onClick={() =>
+                updatePermissions.mutate({ canTerminateAgents: !Boolean(agent.permissions?.canTerminateAgents) })
+              }
+              disabled={updatePermissions.isPending}
+            >
+              {agent.permissions?.canTerminateAgents ? "Enabled" : "Disabled"}
             </Button>
           </div>
         </div>

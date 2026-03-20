@@ -7,6 +7,8 @@ import type {
 
 export interface AgentPermissions {
   canCreateAgents: boolean;
+  canDeleteAgents: boolean;
+  canTerminateAgents: boolean;
 }
 
 export interface Agent {
