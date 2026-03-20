@@ -781,7 +781,7 @@ export function IssueDetail() {
         <Tabs value={detailTab} onValueChange={setDetailTab} className="space-y-3">
           <TabsList variant="line" className="w-full justify-start gap-1">
             <TabsTrigger value="comments" className="gap-1.5">
-              Comments{comments ? ` (${comments.length})` : ""}
+              Comments{comments ? ` (${comments.length + (timelineRuns?.length ?? 0)})` : ""}
             </TabsTrigger>
             <TabsTrigger value="subissues" className="gap-1.5">
               Sub-issues{childIssues.length > 0 ? ` (${childIssues.length})` : ""}
@@ -831,6 +831,7 @@ export function IssueDetail() {
                 }
               }}
               myLastTouchAt={issue.myLastTouchAt}
+              currentUserId={currentUserId}
               liveRunSlot={<LiveRunWidget issueId={issueId!} companyId={issue.companyId} />}
             />
           </TabsContent>
@@ -880,31 +881,32 @@ export function IssueDetail() {
               defaultCollapsed
             />
 
-            {hasAttachments ? (
-              <div
-                className={cn(
-                  "space-y-3 rounded-lg transition-colors mt-4",
-                )}
-                onDragEnter={(evt) => {
-                  evt.preventDefault();
-                  setAttachmentDragActive(true);
-                }}
-                onDragOver={(evt) => {
-                  evt.preventDefault();
-                  setAttachmentDragActive(true);
-                }}
-                onDragLeave={(evt) => {
-                  if (evt.currentTarget.contains(evt.relatedTarget as Node | null)) return;
-                  setAttachmentDragActive(false);
-                }}
-                onDrop={(evt) => void handleAttachmentDrop(evt)}
-              >
-                <h3 className="text-sm font-medium text-muted-foreground">Attachments</h3>
+            <div
+              className={cn(
+                "space-y-3 rounded-lg transition-colors mt-4",
+                attachmentDragActive && "ring-2 ring-primary/40 bg-primary/5",
+              )}
+              onDragEnter={(evt) => {
+                evt.preventDefault();
+                setAttachmentDragActive(true);
+              }}
+              onDragOver={(evt) => {
+                evt.preventDefault();
+                setAttachmentDragActive(true);
+              }}
+              onDragLeave={(evt) => {
+                if (evt.currentTarget.contains(evt.relatedTarget as Node | null)) return;
+                setAttachmentDragActive(false);
+              }}
+              onDrop={(evt) => void handleAttachmentDrop(evt)}
+            >
+              <h3 className="text-sm font-medium text-muted-foreground">Attachments</h3>
 
-                {attachmentError && (
-                  <p className="text-xs text-destructive">{attachmentError}</p>
-                )}
+              {attachmentError && (
+                <p className="text-xs text-destructive">{attachmentError}</p>
+              )}
 
+              {hasAttachments ? (
                 <div className="space-y-2">
                   {attachmentList.map((attachment) => (
                     <div key={attachment.id} className="border border-border rounded-md p-2">
@@ -944,8 +946,12 @@ export function IssueDetail() {
                     </div>
                   ))}
                 </div>
-              </div>
-            ) : null}
+              ) : (
+                <p className="text-xs text-muted-foreground py-4 text-center border border-dashed border-border rounded-md">
+                  Drop files here to attach them to this issue.
+                </p>
+              )}
+            </div>
           </TabsContent>
 
           <TabsContent value="activity">

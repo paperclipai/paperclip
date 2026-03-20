@@ -49,6 +49,8 @@ interface CommentThreadProps {
   mentions?: MentionOption[];
   /** Timestamp of the user's last interaction with the issue. Comments from others after this are "unread". */
   myLastTouchAt?: Date | string | null;
+  /** Current user's ID, used to determine which comments are "unread" (not authored by this user). */
+  currentUserId?: string | null;
 }
 
 const CLOSED_STATUSES = new Set(["done", "cancelled"]);
@@ -127,6 +129,7 @@ const TimelineList = memo(function TimelineList({
   projectId,
   highlightCommentId,
   unreadAfterMs,
+  currentUserId,
 }: {
   timeline: TimelineItem[];
   agentMap?: Map<string, Agent>;
@@ -135,6 +138,8 @@ const TimelineList = memo(function TimelineList({
   highlightCommentId?: string | null;
   /** Epoch ms: comments from others created after this time get an unread dot. */
   unreadAfterMs?: number | null;
+  /** Current user's ID — comments authored by this user are never marked unread. */
+  currentUserId?: string | null;
 }) {
   if (timeline.length === 0) {
     return <p className="text-sm text-muted-foreground">No comments or runs yet.</p>;
@@ -178,7 +183,7 @@ const TimelineList = memo(function TimelineList({
         // and was created after the user's last interaction with the issue.
         const isUnread = Boolean(
           unreadAfterMs &&
-          !comment.authorUserId &&
+          comment.authorUserId !== currentUserId &&
           item.createdAtMs > unreadAfterMs
         );
         return (
@@ -288,6 +293,7 @@ export function CommentThread({
   currentAssigneeValue = "",
   mentions: providedMentions,
   myLastTouchAt,
+  currentUserId,
 }: CommentThreadProps) {
   const unreadAfterMs = useMemo(() => {
     if (!myLastTouchAt) return null;
@@ -446,7 +452,7 @@ export function CommentThread({
               <input
                 ref={attachInputRef}
                 type="file"
-                accept="image/png,image/jpeg,image/webp,image/gif"
+                accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,.pdf,text/markdown,.md,.markdown"
                 className="hidden"
                 onChange={handleAttachFile}
               />
@@ -455,7 +461,7 @@ export function CommentThread({
                 size="icon-sm"
                 onClick={() => attachInputRef.current?.click()}
                 disabled={attaching}
-                title="Attach image"
+                title="Attach file"
               >
                 <Paperclip className="h-4 w-4" />
               </Button>
@@ -523,6 +529,7 @@ export function CommentThread({
         projectId={projectId}
         highlightCommentId={highlightCommentId}
         unreadAfterMs={unreadAfterMs}
+        currentUserId={currentUserId}
       />
 
       {liveRunSlot}
