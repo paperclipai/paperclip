@@ -139,7 +139,7 @@ export async function fetchGA4Metrics(): Promise<GA4Metrics> {
         metrics: [{ name: "sessions" }],
         dimensions: [{ name: "landingPage" }],
         orderBys: [{ metric: { metricName: "sessions" }, desc: true }],
-        limit: "5",
+        limit: "20",
       },
     }),
   ]);
