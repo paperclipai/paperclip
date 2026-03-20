@@ -156,4 +156,70 @@ describe("execution workspace policy helpers", () => {
       ),
     ).toEqual({ enabled: true, defaultMode: "isolated_workspace" });
   });
+
+  it("returns shared_workspace when all inputs are null (no policy configured)", () => {
+    // GH #1164: when executionWorkspacePolicy is not set, default to shared_workspace
+    // so project workspaces are respected
+    expect(
+      resolveExecutionWorkspaceMode({
+        projectPolicy: null,
+        issueSettings: null,
+        legacyUseProjectWorkspace: null,
+      }),
+    ).toBe("shared_workspace");
+  });
+
+  it("returns shared_workspace when policy exists but is not enabled", () => {
+    expect(
+      resolveExecutionWorkspaceMode({
+        projectPolicy: { enabled: false },
+        issueSettings: null,
+        legacyUseProjectWorkspace: null,
+      }),
+    ).toBe("shared_workspace");
+  });
+
+  it("returns agent_default only when legacy flag explicitly opts out", () => {
+    expect(
+      resolveExecutionWorkspaceMode({
+        projectPolicy: null,
+        issueSettings: null,
+        legacyUseProjectWorkspace: false,
+      }),
+    ).toBe("agent_default");
+    // But with null legacy flag, should default to shared_workspace
+    expect(
+      resolveExecutionWorkspaceMode({
+        projectPolicy: null,
+        issueSettings: null,
+        legacyUseProjectWorkspace: null,
+      }),
+    ).toBe("shared_workspace");
+  });
+
+  it("returns null issue defaults when project policy is null or disabled", () => {
+    // GH #1164: should not generate issue settings that override workspace
+    // when no policy is configured
+    expect(
+      defaultIssueExecutionWorkspaceSettingsForProject(null),
+    ).toBeNull();
+    expect(
+      defaultIssueExecutionWorkspaceSettingsForProject({ enabled: false }),
+    ).toBeNull();
+  });
+
+  it("maps adapter_default project policy to agent_default issue setting", () => {
+    expect(
+      defaultIssueExecutionWorkspaceSettingsForProject({
+        enabled: true,
+        defaultMode: "adapter_default",
+      }),
+    ).toEqual({ mode: "agent_default" });
+  });
+
+  it("parses null and empty executionWorkspacePolicy as null", () => {
+    expect(parseProjectExecutionWorkspacePolicy(null)).toBeNull();
+    expect(parseProjectExecutionWorkspacePolicy(undefined)).toBeNull();
+    expect(parseProjectExecutionWorkspacePolicy({})).toBeNull();
+  });
 });

@@ -585,6 +585,23 @@ export function IssueDetail() {
     markIssueRead.mutate(issue.id);
   }, [issue?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Mark read on unmount to capture any comments that arrived while viewing
+  useEffect(() => {
+    return () => {
+      const id = lastMarkedReadIssueIdRef.current;
+      if (!id) return;
+      // Fire-and-forget: use the API directly so the request completes
+      // even after the component unmounts (mutation callbacks won't fire)
+      issuesApi.markRead(id).then(() => {
+        if (selectedCompanyId) {
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId) });
+          queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
+        }
+      }).catch(() => { /* ignore unmount-time errors */ });
+    };
+  }, [selectedCompanyId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     if (issue) {
       openPanel(

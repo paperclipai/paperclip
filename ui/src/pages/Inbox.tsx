@@ -550,6 +550,21 @@ export function Inbox() {
     mutationFn: (id: string) => issuesApi.markRead(id),
     onMutate: (id) => {
       setFadingOutIssues((prev) => new Set(prev).add(id));
+      // Optimistic update: mark single issue as read in cache
+      const touchedKey = queryKeys.issues.listTouchedByMe(selectedCompanyId!);
+      const previous = queryClient.getQueryData<Issue[]>(touchedKey);
+      queryClient.setQueryData<Issue[]>(touchedKey, (old) =>
+        old?.map((issue) =>
+          issue.id === id ? { ...issue, isUnreadForMe: false } : issue,
+        ),
+      );
+      return { previous };
+    },
+    onError: (_err, _id, context) => {
+      if (context?.previous) {
+        const touchedKey = queryKeys.issues.listTouchedByMe(selectedCompanyId!);
+        queryClient.setQueryData(touchedKey, context.previous);
+      }
     },
     onSuccess: () => {
       invalidateInboxIssueQueries();
@@ -567,7 +582,7 @@ export function Inbox() {
 
   const markAllReadMutation = useMutation({
     mutationFn: async (issueIds: string[]) => {
-      await Promise.all(issueIds.map((issueId) => issuesApi.markRead(issueId)));
+      await issuesApi.markAllRead(selectedCompanyId!, issueIds);
     },
     onMutate: (issueIds) => {
       setFadingOutIssues((prev) => {
@@ -575,6 +590,23 @@ export function Inbox() {
         for (const issueId of issueIds) next.add(issueId);
         return next;
       });
+      // Optimistic update: mark issues as read in cache immediately
+      const idsSet = new Set(issueIds);
+      const touchedKey = queryKeys.issues.listTouchedByMe(selectedCompanyId!);
+      const previous = queryClient.getQueryData<Issue[]>(touchedKey);
+      queryClient.setQueryData<Issue[]>(touchedKey, (old) =>
+        old?.map((issue) =>
+          idsSet.has(issue.id) ? { ...issue, isUnreadForMe: false } : issue,
+        ),
+      );
+      return { previous };
+    },
+    onError: (_err, _issueIds, context) => {
+      // Roll back optimistic update on error
+      if (context?.previous) {
+        const touchedKey = queryKeys.issues.listTouchedByMe(selectedCompanyId!);
+        queryClient.setQueryData(touchedKey, context.previous);
+      }
     },
     onSuccess: () => {
       invalidateInboxIssueQueries();

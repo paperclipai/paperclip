@@ -1919,11 +1919,22 @@ export function heartbeatService(db: Db) {
       issueSettings: issueExecutionWorkspaceSettings,
       legacyUseProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null,
     });
+    // When executionWorkspaceMode is "agent_default" but no explicit policy or issue
+    // settings caused that decision, still use the project workspace if one is configured.
+    // This prevents silently ignoring project workspaces when executionWorkspacePolicy
+    // is not explicitly set on the project (GH #1164).
+    const hasExplicitWorkspaceDirective =
+      Boolean(projectExecutionWorkspacePolicy?.enabled) ||
+      issueExecutionWorkspaceSettings !== null ||
+      (issueAssigneeOverrides?.useProjectWorkspace != null);
+    const useProjectWorkspace =
+      executionWorkspaceMode !== "agent_default" ||
+      !hasExplicitWorkspaceDirective;
     const resolvedWorkspace = await resolveWorkspaceForRun(
       agent,
       context,
       previousSessionParams,
-      { useProjectWorkspace: executionWorkspaceMode !== "agent_default" },
+      { useProjectWorkspace },
     );
     const workspaceManagedConfig = buildExecutionWorkspaceAdapterConfig({
       agentConfig: config,
@@ -2117,6 +2128,17 @@ export function heartbeatService(db: Db) {
             taskKey
               ? `Skipping saved session resume for task "${taskKey}" because ${sessionResetReason}.`
               : `Skipping saved session resume because ${sessionResetReason}.`,
+          ]
+        : []),
+      // Warn when workspace mode is "agent_default" but project workspace config exists
+      // and no explicit policy caused that mode (GH #1164).
+      ...(executionWorkspaceMode === "agent_default" &&
+        hasExplicitWorkspaceDirective &&
+        resolvedWorkspace.workspaceHints.length > 0
+        ? [
+            `Project has workspace configuration but execution workspace policy is set to "adapter_default". ` +
+            `The project workspace is not being used. To use the project workspace, update the project's ` +
+            `executionWorkspacePolicy or remove the "adapter_default" override.`,
           ]
         : []),
     ];
