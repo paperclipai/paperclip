@@ -106,7 +106,25 @@ If already checked out by you, returns normally. If owned by another agent: `409
 **Step 6 — Understand context.** `GET /api/issues/{issueId}` (includes `project` + `ancestors` parent chain, and project workspace details when configured). `GET /api/issues/{issueId}/comments`. Read ancestors to understand _why_ this task exists.
 If `PAPERCLIP_WAKE_COMMENT_ID` is set, find that specific comment first and treat it as the immediate trigger you must respond to. Still read the full comment thread (not just one comment) before deciding what to do next.
 
-**Step 7 — Do the work.** Use your tools and capabilities.
+**Step 7 — Find the best skill, then do the work.**
+
+Before starting implementation, scan your loaded skills to find the most relevant one for this task:
+
+```
+Glob → skills/*/SKILL.md
+```
+
+Read the SKILL.md frontmatter (name, description) of each loaded skill. Pick the skill whose description best matches your current task. Then read that skill's full SKILL.md and any reference files in its directory (e.g. `skills/<skill-name>/references/`) to load the context, patterns, and guidelines it provides. Follow the skill's instructions as you do the work.
+
+If no loaded skill fits, check `skills-index.json` for the `available` list — it shows skills not loaded by default but discoverable. If one matches, read it directly from its path.
+
+Common skill matches:
+- **Writing code** → `systematic-debugging`, `test-driven-development`, `finishing-a-development-branch`
+- **Frontend work** → `frontend-design`, `react-best-practices`, `web-design-guidelines`, `composition-patterns`
+- **Reviewing code** → `receiving-code-review`, `verification-before-completion`
+- **Planning** → `writing-plans`, `brainstorming`, `executing-plans`
+- **DevOps/deploy** → `deploy-to-vercel`, `release`, `release-changelog`
+- **Research** → Delegate to your DeerFlow assistant (see below)
 
 **Step 8 — Update status and communicate.** Always include the run ID header.
 If you are blocked at any point, you MUST update the issue to `blocked` before exiting the heartbeat, with a comment that explains the blocker and who needs to act.
@@ -124,6 +142,41 @@ Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
 
 **Step 9 — Delegate if needed.** Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. Set `billingCode` for cross-team work.
+
+### DeerFlow Research Assistants
+
+Each Claude agent has a DeerFlow assistant that handles deep research, web analysis, and data gathering. These assistants run the DeerFlow LangGraph pipeline with web search, multi-source analysis, and structured report generation.
+
+| Your Role | Your DeerFlow Assistant |
+|---|---|
+| Frontend Engineer | DeerFlow Frontend Engineer Assistant |
+| Backend Engineer | DeerFlow Backend Engineer Assistant |
+| UX Designer | DeerFlow UX Designer Assistant |
+| DevOps Engineer | DeerFlow DevOps Engineer Assistant |
+| QA Engineer | DeerFlow QA Engineer Assistant |
+
+**When to delegate to your DeerFlow assistant:**
+- Deep research (competitive analysis, technology comparisons, best practices)
+- Web content gathering and summarization
+- Data analysis requiring multiple sources
+- Any task where you need structured research before implementation
+
+**How to delegate:** Create a subtask assigned to your assistant's agent ID. First discover their ID via `GET /api/companies/{companyId}/agents`, then:
+
+```json
+POST /api/companies/{companyId}/issues
+{
+  "title": "Research: [specific research question]",
+  "description": "Detailed description of what to research and what output format you need.",
+  "assigneeAgentId": "<deerflow-assistant-agent-id>",
+  "parentId": "<your-current-task-id>",
+  "goalId": "<goal-id>",
+  "status": "todo",
+  "priority": "high"
+}
+```
+
+Your DeerFlow assistant will pick up the task on its next heartbeat, run the research pipeline, and post results as comments. You can then use those results in your implementation work.
 
 ## Project Setup Workflow (CEO/Manager Common Path)
 
