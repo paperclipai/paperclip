@@ -4,12 +4,14 @@ import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  agentManagers,
   agentRuntimeState,
   agentTaskSessions,
   agentWakeupRequests,
   heartbeatRunEvents,
   heartbeatRuns,
   costEvents,
+  issueComments,
   issues,
   projectWorkspaces,
 } from "@paperclipai/db";
@@ -30,6 +32,32 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
+const DEERFLOW_PREFLIGHT_TIMEOUT_SEC_DEFAULT = 120;
+const DEERFLOW_RESEARCH_COMMENT_TAG = "<!-- deerflow:research -->";
+const DEERFLOW_RESEARCH_PROMPT = `Research the following task. Do NOT implement it — only gather context.
+
+# Task
+{issueTitle}
+
+{issueBody}
+
+## Your job
+1. Read the project workspace to understand the codebase structure
+2. Identify relevant files, patterns, and dependencies
+3. Check for existing implementations that can be reused
+4. Note any blockers, risks, or ambiguities
+5. Summarize findings in a structured brief (under 2000 chars)
+
+Output format:
+## Research Brief
+### Relevant Files
+- path/to/file — why it matters
+### Key Patterns
+- pattern description
+### Risks & Blockers
+- risk description
+### Recommendation
+- concrete next steps for the implementing engineer`;
 
 // ---------------------------------------------------------------------------
 // Wakeup debounce — batches rapid assignment wakeups for the same agent
@@ -463,6 +491,136 @@ export function heartbeatService(db: Db) {
         ),
       )
       .then((rows) => rows[0] ?? null);
+  }
+
+  // ---------------------------------------------------------------------------
+  // DeerFlow pre-flight research helpers
+  // ---------------------------------------------------------------------------
+
+  async function lookupDeerFlowAssistant(
+    agentId: string,
+    companyId: string,
+  ): Promise<typeof agents.$inferSelect | null> {
+    const rows = await db
+      .select({ agent: agents })
+      .from(agents)
+      .innerJoin(agentManagers, eq(agentManagers.agentId, agents.id))
+      .where(
+        and(
+          eq(agentManagers.managerId, agentId),
+          eq(agents.companyId, companyId),
+          eq(agents.adapterType, "deerflow"),
+          sql`${agents.status} != 'paused' AND ${agents.status} != 'terminated'`,
+        ),
+      )
+      .limit(1);
+    return rows[0]?.agent ?? null;
+  }
+
+  async function runDeerFlowPreflight(
+    deerflowAgent: typeof agents.$inferSelect,
+    parentRun: typeof heartbeatRuns.$inferSelect,
+    context: Record<string, unknown>,
+    onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>,
+  ): Promise<string | null> {
+    const issueId = readNonEmptyString(context.issueId);
+    if (!issueId) return null;
+
+    // Check for existing research comment (dedup)
+    const existingComments = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId))
+      .orderBy(desc(issueComments.createdAt));
+    const alreadyResearched = existingComments.some(
+      (c) => c.body?.includes(DEERFLOW_RESEARCH_COMMENT_TAG),
+    );
+    if (alreadyResearched) {
+      await onLog("stdout", "[preflight] DeerFlow research already exists on issue, skipping\n");
+      return null;
+    }
+
+    // Build research-focused context
+    const issueTitle = typeof context.issueTitle === "string" ? context.issueTitle : "";
+    const issueBody = typeof context.issueBody === "string" ? context.issueBody : "";
+    const researchPrompt = DEERFLOW_RESEARCH_PROMPT
+      .replace("{issueTitle}", issueTitle)
+      .replace("{issueBody}", issueBody);
+
+    const deerflowConfig = parseObject(deerflowAgent.adapterConfig);
+    const parentConfig = parseObject(context.parentAdapterConfig);
+    const timeoutSec = asNumber(
+      parentConfig.deerflowPreflightTimeoutSec as unknown,
+      DEERFLOW_PREFLIGHT_TIMEOUT_SEC_DEFAULT,
+    );
+
+    const preflightContext: Record<string, unknown> = {
+      ...context,
+      promptTemplate: researchPrompt,
+    };
+
+    const deerflowAdapter = getServerAdapter("deerflow");
+    const authToken = deerflowAdapter.supportsLocalAgentJwt
+      ? createLocalAgentJwt(deerflowAgent.id, deerflowAgent.companyId, deerflowAgent.adapterType, parentRun.id)
+      : null;
+
+    // Override timeout in config for shorter pre-flight runs
+    const preflightConfig: Record<string, unknown> = {
+      ...deerflowConfig,
+      timeoutSec,
+    };
+
+    await onLog("stdout", `[preflight] Starting DeerFlow research (timeout: ${timeoutSec}s)\n`);
+
+    const result = await deerflowAdapter.execute({
+      runId: parentRun.id,
+      agent: {
+        id: deerflowAgent.id,
+        companyId: deerflowAgent.companyId,
+        name: deerflowAgent.name,
+        adapterType: deerflowAgent.adapterType,
+        adapterConfig: deerflowAgent.adapterConfig,
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: preflightConfig,
+      context: preflightContext,
+      onLog: async (stream, chunk) => {
+        await onLog(stream, `[preflight] ${chunk}`);
+      },
+      authToken: authToken ?? undefined,
+    });
+
+    if (result.errorMessage || (result.exitCode != null && result.exitCode !== 0)) {
+      await onLog("stderr", `[preflight] DeerFlow research failed: ${result.errorMessage ?? "non-zero exit"}\n`);
+      return null;
+    }
+
+    const summary = result.summary?.trim();
+    if (!summary) {
+      await onLog("stderr", "[preflight] DeerFlow returned empty research\n");
+      return null;
+    }
+
+    // Post research as tagged comment on the issue
+    const commentBody = `${DEERFLOW_RESEARCH_COMMENT_TAG}\n## Pre-Flight Research (DeerFlow)\n\n${summary}`;
+    await db.insert(issueComments).values({
+      companyId: deerflowAgent.companyId,
+      issueId,
+      authorAgentId: deerflowAgent.id,
+      authorUserId: null,
+      body: commentBody,
+    });
+    await db
+      .update(issues)
+      .set({ updatedAt: new Date() })
+      .where(eq(issues.id, issueId));
+
+    return summary;
   }
 
   async function resolveSessionBeforeForWakeup(
@@ -1288,6 +1446,28 @@ export function heartbeatService(db: Db) {
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
       }
+
+      // DeerFlow pre-flight research (non-fatal)
+      if (agent.adapterType === "claude_local") {
+        const dfConfig = parseObject(agent.adapterConfig);
+        const preflightEnabled = dfConfig.deerflowPreflight !== false;
+        if (preflightEnabled) {
+          const dfAssistant = await lookupDeerFlowAssistant(agent.id, agent.companyId);
+          if (dfAssistant) {
+            try {
+              const preflightContext = { ...context, parentAdapterConfig: dfConfig };
+              const research = await runDeerFlowPreflight(dfAssistant, run, preflightContext, onLog);
+              if (research) {
+                await onLog("stdout", `[preflight] DeerFlow research injected (${research.length} chars)\n`);
+              }
+            } catch (err) {
+              logger.warn({ err, agentId: agent.id, runId: run.id }, "DeerFlow preflight failed (non-fatal)");
+              await onLog("stderr", `[preflight] DeerFlow preflight failed: ${err instanceof Error ? err.message : "unknown"}\n`);
+            }
+          }
+        }
+      }
+
       const adapterResult = await adapter.execute({
         runId: run.id,
         agent,

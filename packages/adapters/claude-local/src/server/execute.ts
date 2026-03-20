@@ -46,17 +46,18 @@ async function resolvePaperclipSkillsDir(): Promise<string | null> {
 // ---------------------------------------------------------------------------
 
 const ROLE_TAG_MAP: Record<string, string[]> = {
-  "Chief Executive Officer": ["core", "management", "meta"],
-  "CEO":                     ["core", "management", "meta"],
-  "Chief Technology Officer": ["core", "management", "development", "review", "devops"],
-  "CTO":                     ["core", "management", "development", "review", "devops"],
-  "Frontend Engineer":       ["core", "development", "frontend", "review"],
-  "Backend Engineer":        ["core", "development", "review", "devops"],
-  "Full Stack Engineer":     ["core", "development", "frontend", "review", "devops"],
-  "UX Designer":             ["core", "frontend"],
-  "DevOps Engineer":         ["core", "devops", "development"],
+  "Chief Executive Officer": ["core", "management", "meta", "planning"],
+  "CEO":                     ["core", "management", "meta", "planning"],
+  "Chief Technology Officer": ["core", "management", "planning", "development", "backend", "review", "devops", "docs"],
+  "CTO":                     ["core", "management", "planning", "development", "backend", "review", "devops", "docs"],
+  "Frontend Engineer":       ["core", "planning", "frontend", "design", "development", "testing", "review"],
+  "Backend Engineer":        ["core", "planning", "backend", "development", "testing", "review"],
+  "Full Stack Engineer":     ["core", "planning", "frontend", "backend", "design", "development", "testing", "review"],
+  "UX Designer":             ["core", "planning", "frontend", "design", "docs"],
+  "DevOps Engineer":         ["core", "planning", "devops", "development", "review"],
+  "QA Engineer":             ["core", "planning", "testing", "review", "development"],
 };
-const DEFAULT_TAGS = ["core", "development"];
+const DEFAULT_TAGS = ["core", "planning", "development"];
 
 /**
  * Parse YAML frontmatter from a SKILL.md to extract name, description, and tags.
@@ -465,8 +466,17 @@ async function injectTaskContext(
     }
 
     // Add comments
+    const hasDeerFlowResearch = Array.isArray(comments) && comments.some(
+      (c: { body?: string }) => c.body?.includes("<!-- deerflow:research -->"),
+    );
     if (Array.isArray(comments) && comments.length > 0) {
       lines.push(``, `## Comments (${comments.length})`);
+      if (hasDeerFlowResearch) {
+        lines.push(
+          ``,
+          `> **Note:** A DeerFlow pre-flight research brief is included below. Use it as your starting context — skip redundant exploration and focus on implementation.`,
+        );
+      }
       for (const c of comments.slice(-20)) { // last 20 comments
         const author = c.authorAgent?.name ?? c.authorUser?.name ?? "unknown";
         lines.push(``, `### ${author} (${c.createdAt})`);

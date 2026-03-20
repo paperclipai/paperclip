@@ -1,6 +1,8 @@
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
+import { and, eq, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { issues } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
   createIssueAttachmentMetadataSchema,
@@ -700,6 +702,42 @@ export function issueRoutes(db: Db, storage: StorageService) {
           }
         } catch (err) {
           logger.warn({ err, issueId: issue.id }, "failed to resolve parent issue for child completion wakeup");
+        }
+
+        // Unblock sibling issues and wake their assignees
+        try {
+          const blockedSiblings = await db
+            .select({
+              id: issues.id,
+              assigneeAgentId: issues.assigneeAgentId,
+              identifier: issues.identifier,
+            })
+            .from(issues)
+            .where(
+              and(
+                eq(issues.parentId, issue.parentId!),
+                eq(issues.status, "blocked"),
+                ne(issues.id, issue.id),
+              ),
+            );
+
+          for (const sibling of blockedSiblings) {
+            await svc.update(sibling.id, { status: "todo" });
+            logger.info({ issueId: sibling.id, identifier: sibling.identifier, unblockedBy: issue.id }, "auto-unblocked sibling issue");
+            if (sibling.assigneeAgentId && !wakeups.has(sibling.assigneeAgentId)) {
+              wakeups.set(sibling.assigneeAgentId, {
+                source: "automation",
+                triggerDetail: "system",
+                reason: "issue_assigned",
+                payload: { issueId: sibling.id, mutation: "sibling_unblocked" },
+                requestedByActorType: actor.actorType,
+                requestedByActorId: actor.actorId,
+                contextSnapshot: { issueId: sibling.id, source: "issue.sibling_unblocked" },
+              });
+            }
+          }
+        } catch (err) {
+          logger.warn({ err, issueId: issue.id }, "failed to unblock sibling issues");
         }
       }
 
