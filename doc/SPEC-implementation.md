@@ -463,6 +463,14 @@ All endpoints are under `/api` and return JSON.
 - `POST /agents/:agentId/keys` (create API key)
 - `POST /agents/:agentId/heartbeat/invoke`
 
+Agent create/update payloads may include `runtimeConfig.hooks` for declarative post-run automation.
+
+V1 hook constraints:
+
+- only board-managed create/update flows may add, remove, or change hook configuration
+- non-board patches preserve existing hooks when editing other runtime settings
+- non-board config rollbacks are blocked if they would change hooks
+
 ## 10.4 Tasks (Issues)
 
 - `GET /companies/:companyId/issues`
@@ -605,7 +613,35 @@ Behavior:
 - `thin`: send IDs and pointers only; agent fetches context via API
 - `fat`: include current assignments, goal summary, budget snapshot, and recent comments
 
-## 11.5 Scheduler Rules
+## 11.5 Heartbeat Hooks
+
+Per-agent hook config lives in `runtimeConfig.hooks`.
+
+V1 supported events:
+
+- `heartbeat.run.started`
+- `heartbeat.run.finished`
+- `heartbeat.run.succeeded`
+- `heartbeat.run.failed`
+- `heartbeat.run.cancelled`
+- `heartbeat.run.timed_out`
+
+V1 supported actions:
+
+- `command`
+- `webhook`
+- `wake_agent`
+- `assign_issue`
+
+Execution rules:
+
+- hooks dispatch asynchronously after run-status persistence
+- `running` emits `heartbeat.run.started`
+- terminal states emit `heartbeat.run.finished` plus a terminal-specific event
+- `wake_agent` and `assign_issue` targets must resolve to allow-listed agents in the same company
+- hooks cannot wake the originating agent or assign an issue back to that agent
+
+## 11.6 Scheduler Rules
 
 Per-agent schedule fields in `adapter_config`:
 

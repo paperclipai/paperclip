@@ -33,6 +33,11 @@ import {
 } from "../services/index.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import {
+  normalizeRuntimeConfigForCreate,
+  normalizeRuntimeConfigForPatch,
+  runtimeConfigHooksDiffer,
+} from "./agent-hooks-runtime-config.js";
 import { findServerAdapter, listAdapterModels } from "../adapters/index.js";
 import { redactEventPayload } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
@@ -748,6 +753,17 @@ export function agentRoutes(db: Db) {
     }
     await assertCanUpdateAgent(req, existing);
 
+    const revision = await svc.getConfigRevision(id, revisionId);
+    if (!revision) {
+      res.status(404).json({ error: "Revision not found" });
+      return;
+    }
+
+    const targetRuntimeConfig = asRecord(revision.afterConfig)?.runtimeConfig;
+    if (req.actor.type !== "board" && runtimeConfigHooksDiffer(existing.runtimeConfig, targetRuntimeConfig)) {
+      throw forbidden("Only board can modify agent hook configuration");
+    }
+
     const actor = getActorInfo(req);
     const updated = await svc.rollbackConfigRevision(id, revisionId, {
       agentId: actor.agentId,
@@ -854,9 +870,14 @@ export function agentRoutes(db: Db) {
       hireInput.adapterType,
       normalizedAdapterConfig,
     );
+    const normalizedRuntimeConfig = normalizeRuntimeConfigForCreate({
+      runtimeConfig: hireInput.runtimeConfig ?? {},
+      allowHooksConfig: req.actor.type === "board",
+    });
     const normalizedHireInput = {
       ...hireInput,
       adapterConfig: normalizedAdapterConfig,
+      runtimeConfig: normalizedRuntimeConfig,
     };
 
     const company = await db
@@ -1001,9 +1022,15 @@ export function agentRoutes(db: Db) {
       normalizedAdapterConfig,
     );
 
+    const normalizedRuntimeConfig = normalizeRuntimeConfigForCreate({
+      runtimeConfig: req.body.runtimeConfig ?? {},
+      allowHooksConfig: req.actor.type === "board",
+    });
+
     const agent = await svc.create(companyId, {
       ...req.body,
       adapterConfig: normalizedAdapterConfig,
+      runtimeConfig: normalizedRuntimeConfig,
       status: "idle",
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
@@ -1207,6 +1234,14 @@ export function agentRoutes(db: Db) {
         await assertCanManageInstructionsPath(req, existing);
       }
       patchData.adapterConfig = adapterConfig;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(patchData, "runtimeConfig")) {
+      patchData.runtimeConfig = normalizeRuntimeConfigForPatch({
+        runtimeConfig: patchData.runtimeConfig,
+        existingRuntimeConfig: existing.runtimeConfig,
+        allowHooksConfig: req.actor.type === "board",
+      });
     }
 
     const requestedAdapterType =

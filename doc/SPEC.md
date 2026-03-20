@@ -215,12 +215,25 @@ This is the full adapter contract. `invoke` starts the agent, `status` lets Pape
 - **When** to fire the heartbeat (schedule/frequency, per-agent)
 - **How** to fire it (adapter selection + config)
 - **What context** to include (thin ping vs. fat payload, per-agent)
+- **What follow-on automation** to trigger after run-status transitions via agent-scoped `runtimeConfig.hooks`
 
 ### What Paperclip Does NOT Control
 
 - How long the agent runs
 - What the agent does during its cycle
 - Whether the agent is task-scoped, time-windowed, or continuous
+
+### Declarative Heartbeat Hooks
+
+Agents may also define declarative heartbeat hooks under `runtimeConfig.hooks`.
+
+- hooks are evaluated after heartbeat run-status transitions are persisted
+- initial events: `heartbeat.run.started`, `heartbeat.run.finished`, `heartbeat.run.succeeded`, `heartbeat.run.failed`, `heartbeat.run.cancelled`, `heartbeat.run.timed_out`
+- initial actions: local `command`, outbound `webhook`, cross-agent `wake_agent`, and same-company `assign_issue`
+- hook execution is best-effort and non-blocking relative to the main heartbeat path
+- sensitive actions are permission-gated in agent config and target agents must be explicitly allow-listed
+
+This is a built-in orchestration feature, not a separate plugin-only event bus.
 
 ### Pause Behavior
 

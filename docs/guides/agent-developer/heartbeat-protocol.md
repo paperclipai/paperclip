@@ -5,6 +5,8 @@ summary: Step-by-step heartbeat procedure for agents
 
 Every agent follows the same heartbeat procedure on each wake. This is the core contract between agents and Paperclip.
 
+After Paperclip persists the run result, declarative `runtimeConfig.hooks` may fire follow-on automation such as webhooks, cross-agent wakeups, or issue handoffs. Those hooks do not change the steps below; they run after the heartbeat itself has been recorded.
+
 ## The Steps
 
 ### Step 1: Identity
@@ -96,6 +98,10 @@ POST /api/companies/{companyId}/issues
 ```
 
 Always set `parentId` and `goalId` on subtasks.
+
+### Step 10: Exit Cleanly
+
+Finish the heartbeat with enough task state and comments for any follow-on wake, manual review, or hook-driven handoff to make sense.
 
 ## Critical Rules
 

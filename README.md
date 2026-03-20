@@ -92,7 +92,7 @@ Every task traces back to the company mission. Agents know <em>what</em> to do a
 </td>
 <td align="center" width="33%">
 <h3>💓 Heartbeats</h3>
-Agents wake on a schedule, check work, and act. Delegation flows up and down the org chart.
+Agents wake on a schedule, check work, and act. Declarative post-run hooks can trigger follow-on automation and delegation across the org chart.
 </td>
 </tr>
 <tr>
@@ -149,6 +149,7 @@ Paperclip handles the hard orchestration details correctly.
 | **Atomic execution.**             | Task checkout and budget enforcement are atomic, so no double-work and no runaway spend.                      |
 | **Persistent agent state.**       | Agents resume the same task context across heartbeats instead of restarting from scratch.                     |
 | **Runtime skill injection.**      | Agents can learn Paperclip workflows and project context at runtime, without retraining.                      |
+| **Declarative handoffs.**         | Heartbeat lifecycle hooks can run commands, call webhooks, wake agents, or reassign issues without replacing the core scheduler. |
 | **Governance with rollback.**     | Approval gates are enforced, config changes are revisioned, and bad changes can be rolled back safely.        |
 | **Goal-aware execution.**         | Tasks carry full goal ancestry so agents consistently see the "why," not just a title.                        |
 | **Portable company templates.**   | Export/import orgs, agents, and skills with secret scrubbing and collision handling.                          |
@@ -211,7 +212,7 @@ Agent orchestration has subtleties in how you coordinate who has work checked ou
 (Bring-your-own-ticket-system is on the Roadmap)
 
 **Do agents run continuously?**
-By default, agents run on scheduled heartbeats and event-based triggers (task assignment, @-mentions). You can also hook in continuous agents like OpenClaw. You bring your agent and Paperclip coordinates.
+By default, agents run on scheduled heartbeats and event-based triggers (task assignment, @-mentions). Agents can also use declarative heartbeat hooks for post-run automation such as waking another agent or calling a webhook. You can still hook in continuous agents like OpenClaw. You bring your agent and Paperclip coordinates.
 
 <br/>
 
