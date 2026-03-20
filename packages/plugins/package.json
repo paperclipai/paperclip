@@ -1,0 +1,13 @@
+{
+  "name": "@paperclipai/plugin-sdk",
+  "version": "0.0.1",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./index.js",
+      "require": "./index.js",
+      "types": "./index.d.ts"
+    }
+  }
+}
