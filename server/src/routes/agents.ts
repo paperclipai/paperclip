@@ -1215,11 +1215,15 @@ export function agentRoutes(db: Db) {
   router.post("/agents/:id/terminate", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
-    const agent = await svc.terminate(id);
-    if (!agent) {
+    const target = await svc.getById(id);
+    if (!target) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
+    if (target.role === "ceo") {
+      throw forbidden("Cannot terminate the CEO agent");
+    }
+    const agent = (await svc.terminate(id))!;
 
     await heartbeat.cancelActiveForAgent(id);
 
@@ -1238,11 +1242,15 @@ export function agentRoutes(db: Db) {
   router.delete("/agents/:id", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
-    const agent = await svc.remove(id);
-    if (!agent) {
+    const target = await svc.getById(id);
+    if (!target) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
+    if (target.role === "ceo") {
+      throw forbidden("Cannot delete the CEO agent");
+    }
+    const agent = (await svc.remove(id))!;
 
     await logActivity(db, {
       companyId: agent.companyId,
