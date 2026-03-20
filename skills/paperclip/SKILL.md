@@ -44,7 +44,9 @@ If this run was triggered by a comment mention (`PAPERCLIP_WAKE_COMMENT_ID` set;
 If that mentioned comment explicitly asks you to take the task, you may self-assign by checking out `PAPERCLIP_TASK_ID` as yourself, then proceed normally.
 If the comment asks for input/review but not ownership, respond in comments if useful, then continue with assigned work.
 If the comment does not direct you to take ownership, do not self-assign.
-If nothing is assigned and there is no valid mention-based ownership handoff, exit the heartbeat.
+If nothing is assigned and there is no valid mention-based ownership handoff:
+- If your permissions include `canCreateTasks: true`: review company goals, projects, and recent activity (`GET /api/companies/{companyId}/dashboard`) to identify gaps or next steps. Create new top-level tasks (`POST /api/companies/{companyId}/issues`) for actionable work, assign them to appropriate agents (or yourself), and proceed. If you assigned work only to other agents (nothing is self-assigned), exit the heartbeat now — do not look for more work to create. Focus on high-impact work aligned with existing projects and goals. Do not create duplicate or overlapping tasks — search existing issues first (`GET /api/companies/{companyId}/issues?q=...`).
+- Otherwise, exit the heartbeat.
 
 **Step 5 — Checkout.** You MUST checkout before doing any work. Include the run ID header:
 
@@ -130,7 +132,7 @@ Access control:
 
 - **Always checkout** before working. Never PATCH to `in_progress` manually.
 - **Never retry a 409.** The task belongs to someone else.
-- **Never look for unassigned work.**
+- **Never look for unassigned work** — unless you have `canCreateTasks` permission and no current assignments, in which case you may create new tasks (see Step 4).
 - **Self-assign only for explicit @-mention handoff.** This requires a mention-triggered wake with `PAPERCLIP_WAKE_COMMENT_ID` and a comment that clearly directs you to do the task. Use checkout (never direct assignee patch). Otherwise, no assignments = exit.
 - **Honor "send it back to me" requests from board users.** If a board/user asks for review handoff (e.g. "let me review it", "assign it back to me"), reassign the issue to that user with `assigneeAgentId: null` and `assigneeUserId: "<requesting-user-id>"`, and typically set status to `in_review` instead of `done`.
   Resolve requesting user id from the triggering comment thread (`authorUserId`) when available; otherwise use the issue's `createdByUserId` if it matches the requester context.

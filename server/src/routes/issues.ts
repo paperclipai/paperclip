@@ -93,6 +93,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
     return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
   }
 
+  function canCreateTasksPermission(agent: { permissions: Record<string, unknown> | null | undefined; role: string }) {
+    if (agent.role === "ceo") return true;
+    if (!agent.permissions || typeof agent.permissions !== "object") return false;
+    return Boolean((agent.permissions as Record<string, unknown>).canCreateTasks);
+  }
+
   async function assertCanAssignTasks(req: Request, companyId: string) {
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "board") {
@@ -754,6 +760,29 @@ export function issueRoutes(db: Db, storage: StorageService) {
     assertCompanyAccess(req, companyId);
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
       await assertCanAssignTasks(req, companyId);
+    }
+
+    // Agents creating top-level tasks (no parentId) need canCreateTasks permission.
+    // Uses grant-based check first, falling back to permission object — same two-tier pattern
+    // as assertCanAssignTasks. canCreateAgents in the hiring route will be migrated to match.
+    // Also validate parentId exists if provided, to prevent bypassing the gate with a bogus parentId.
+    if (req.actor.type === "agent") {
+      if (req.body.parentId) {
+        const parent = await svc.getById(req.body.parentId);
+        if (!parent || parent.companyId !== companyId) {
+          res.status(400).json({ error: "parentId references a non-existent issue" });
+          return;
+        }
+      } else {
+        if (!req.actor.agentId) throw forbidden("Agent authentication required");
+        const allowedByGrant = await access.hasPermission(companyId, "agent", req.actor.agentId, "tasks:create");
+        if (!allowedByGrant) {
+          const actorAgent = await agentsSvc.getById(req.actor.agentId);
+          if (!actorAgent || actorAgent.companyId !== companyId || !canCreateTasksPermission(actorAgent)) {
+            throw forbidden("Missing permission: can create tasks");
+          }
+        }
+      }
     }
 
     const actor = getActorInfo(req);

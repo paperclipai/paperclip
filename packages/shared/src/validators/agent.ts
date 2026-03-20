@@ -9,6 +9,7 @@ import { envConfigSchema } from "./secret.js";
 
 export const agentPermissionsSchema = z.object({
   canCreateAgents: z.boolean().optional().default(false),
+  canCreateTasks: z.boolean().optional().default(false),
 });
 
 const adapterConfigSchema = z.record(z.unknown()).superRefine((value, ctx) => {
@@ -99,7 +100,11 @@ export const testAdapterEnvironmentSchema = z.object({
 export type TestAdapterEnvironment = z.infer<typeof testAdapterEnvironmentSchema>;
 
 export const updateAgentPermissionsSchema = z.object({
-  canCreateAgents: z.boolean(),
-});
+  canCreateAgents: z.boolean().optional(),
+  canCreateTasks: z.boolean().optional(),
+}).refine(
+  (data) => data.canCreateAgents !== undefined || data.canCreateTasks !== undefined,
+  { message: "At least one permission field must be provided" },
+);
 
 export type UpdateAgentPermissions = z.infer<typeof updateAgentPermissionsSchema>;
