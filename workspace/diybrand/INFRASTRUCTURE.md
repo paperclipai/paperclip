@@ -2,12 +2,23 @@
 
 This document covers the deployment, monitoring, and infrastructure management for DIYBrand.
 
-> **Quick Links**:
-> - [DEPLOYMENT-CHECKLIST.md](./DEPLOYMENT-CHECKLIST.md) — **START HERE** for pre-launch setup
-> - [INFRASTRUCTURE-RUNBOOK.md](./INFRASTRUCTURE-RUNBOOK.md) — On-call incident response
-> - [VERCEL-SETUP.md](./VERCEL-SETUP.md) — Domain, SSL, and Vercel configuration
-> - [GitHub Actions Workflows](./.github/workflows/) — CI/CD pipeline definitions
-> - [Sentry Configuration](#error-tracking-sentry) — Error tracking setup and monitoring
+> **Quick Links - Read in This Order:**
+>
+> **Pre-Launch (Team Setup):**
+> 1. [DEPLOYMENT-CHECKLIST.md](./DEPLOYMENT-CHECKLIST.md) — 9-phase pre-launch verification
+> 2. [LAUNCH-OPERATIONS-GUIDE.md](./LAUNCH-OPERATIONS-GUIDE.md) — Launch day timeline and operations
+>
+> **Launch Day (Keep Nearby):**
+> 3. [QUICK-REFERENCE.md](./QUICK-REFERENCE.md) — One-page incident response guide ⭐
+>
+> **Detailed Reference:**
+> 4. [INFRASTRUCTURE-RUNBOOK.md](./INFRASTRUCTURE-RUNBOOK.md) — On-call incident procedures
+> 5. [VERCEL-SETUP.md](./VERCEL-SETUP.md) — Domain and Vercel configuration details
+> 6. [Sentry Configuration](#error-tracking-sentry) — Error tracking setup
+> 7. [GitHub Actions Workflows](./.github/workflows/) — CI/CD pipeline definitions
+>
+> **Summary Documents:**
+> - [ATLAS-INFRASTRUCTURE-SUMMARY.md](./ATLAS-INFRASTRUCTURE-SUMMARY.md) — Executive work summary
 
 ## Overview
 
