@@ -53,11 +53,20 @@ for (const pkgPath of workspacePaths) {
 
   for (const [name, version] of Object.entries(deps)) {
     if (name.startsWith("@paperclipai/") && !externalWorkspacePackages.has(name)) continue;
-    // For external workspace packages, read their version directly
+    // For external workspace packages, add the package itself AND its dependencies
     if (externalWorkspacePackages.has(name)) {
       const pkgDirMap = { "@paperclipai/server": "server" };
       const wsPkg = readPkg(pkgDirMap[name]);
       allDeps[name] = wsPkg.version;
+      // Inline the external workspace package's own dependencies so they are
+      // installed when the published CLI package is `npm install`-ed.
+      const wsDeps = wsPkg.dependencies || {};
+      for (const [wsDepName, wsDepVersion] of Object.entries(wsDeps)) {
+        if (wsDepName.startsWith("@paperclipai/")) continue; // skip internal workspace refs
+        if (!allDeps[wsDepName] || !wsDepVersion.startsWith("^")) {
+          allDeps[wsDepName] = wsDepVersion;
+        }
+      }
       continue;
     }
     // Keep the more specific (pinned) version if conflict
