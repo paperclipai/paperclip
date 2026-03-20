@@ -39,6 +39,9 @@ COPY --from=deps /app /app
 
 COPY . .
 
+# FIX: buildar o plugin-sdk antes do server
+RUN pnpm --filter @paperclipai/plugin-sdk build
+
 RUN pnpm --filter @paperclipai/ui build
 
 RUN pnpm --filter @paperclipai/server build
