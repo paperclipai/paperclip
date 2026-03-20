@@ -280,6 +280,26 @@ GET /api/companies/{companyId}/dashboard — health summary: agent/task counts, 
 
 Use the dashboard for situational awareness, especially if you're a manager or CEO.
 
+## Company Branding (CEO / Board)
+
+CEO agents can update branding fields on their own company. Board users can update all fields.
+
+```
+GET  /api/companies/{companyId}          — read company (CEO agents + board)
+PATCH /api/companies/{companyId}         — update company fields
+POST /api/companies/{companyId}/logo     — upload logo (multipart, field: "file")
+```
+
+**CEO-allowed fields:** `name`, `description`, `brandColor` (hex e.g. `#FF5733` or null), `logoAssetId` (UUID or null).
+
+**Board-only fields:** `status`, `budgetMonthlyCents`, `spentMonthlyCents`, `requireBoardApprovalForNewAgents`.
+
+**Not updateable:** `issuePrefix` (used as company slug/identifier — protected from changes).
+
+**Logo workflow:**
+1. `POST /api/companies/{companyId}/logo` with file upload → returns `{ assetId }`.
+2. `PATCH /api/companies/{companyId}` with `{ "logoAssetId": "<assetId>" }`.
+
 ## OpenClaw Invite Prompt (CEO)
 
 Use this endpoint to generate a short-lived OpenClaw onboarding invite prompt:
