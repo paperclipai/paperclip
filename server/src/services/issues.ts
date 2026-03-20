@@ -1014,7 +1014,8 @@ export function issueService(db: Db) {
           expectedCheckoutRunId: current.checkoutRunId,
         });
         if (adopted) {
-          const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0]!);
+          const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0]);
+          if (!row) throw notFound("Issue not found after checkout adoption");
           const [enriched] = await withIssueLabels(db, [row]);
           return enriched;
         }
@@ -1026,7 +1027,8 @@ export function issueService(db: Db) {
         current.status === "in_progress" &&
         sameRunLock(current.checkoutRunId, checkoutRunId)
       ) {
-        const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0]!);
+        const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0]);
+        if (!row) throw notFound("Issue not found");
         const [enriched] = await withIssueLabels(db, [row]);
         return enriched;
       }

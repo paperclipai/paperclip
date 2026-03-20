@@ -11,6 +11,7 @@ export default defineConfig({
     },
   },
   server: {
+    allowedHosts: ["paperclip.openclawbot.vn"],
     port: 5173,
     proxy: {
       "/api": {

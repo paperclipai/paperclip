@@ -367,13 +367,13 @@ function deriveNormalizedUsageDelta(current: UsageTotals | null, previous: Usage
 
   const inputTokens = current.inputTokens >= previous.inputTokens
     ? current.inputTokens - previous.inputTokens
-    : current.inputTokens;
+    : 0;
   const cachedInputTokens = current.cachedInputTokens >= previous.cachedInputTokens
     ? current.cachedInputTokens - previous.cachedInputTokens
-    : current.cachedInputTokens;
+    : 0;
   const outputTokens = current.outputTokens >= previous.outputTokens
     ? current.outputTokens - previous.outputTokens
-    : current.outputTokens;
+    : 0;
 
   return {
     inputTokens: Math.max(0, inputTokens),

@@ -99,6 +99,7 @@ export function costRoutes(db: Db) {
     const to = toRaw ? new Date(toRaw) : undefined;
     if (from && isNaN(from.getTime())) throw badRequest("invalid 'from' date");
     if (to && isNaN(to.getTime())) throw badRequest("invalid 'to' date");
+    if (from && to && from > to) throw badRequest("'from' date must be before 'to' date");
     return (from || to) ? { from, to } : undefined;
   }
 
