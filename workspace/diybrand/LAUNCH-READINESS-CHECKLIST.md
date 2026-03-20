@@ -20,7 +20,7 @@
 ### Feedback & Monitoring
 - [x] Feedback widget integrated on success page
 - [x] Feedback API endpoint created (/api/feedback)
-- [ ] Feedback storage configured (database/file/analytics)
+- [x] Feedback storage configured (PostgreSQL database with migration 0006)
 - [ ] Feedback monitoring dashboard created
 - [ ] NPS tracking setup in analytics
 
@@ -192,10 +192,10 @@
 ## Critical Path Items
 
 **Must Complete Before Launch:**
-1. [ ] Privacy Policy page created
-2. [ ] Terms of Service page created
+1. [x] Privacy Policy page created
+2. [x] Terms of Service page created
 3. [ ] Email system tested (at minimum with test account)
-4. [ ] Feedback API storage configured or logs verified
+4. [x] Feedback API storage configured (PostgreSQL database)
 5. [ ] Support email monitored (inbox setup)
 6. [ ] All pages tested on mobile
 
