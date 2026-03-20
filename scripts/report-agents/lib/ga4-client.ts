@@ -28,36 +28,46 @@ export async function fetchGA4Metrics(): Promise<GA4Metrics> {
 
   const analyticsData = google.analyticsdata({ version: "v1beta", auth });
 
-  const [current, previous, trafficData] = await Promise.all([
+  const [currentTotals, previous, countryData, trafficData] = await Promise.all([
+    // Totals — no dimensions
     analyticsData.properties.runReport({
       property: `properties/${propertyId}`,
       requestBody: {
-        dateRanges: [{ startDate: "7daysAgo", endDate: "today" }],
+        dateRanges: [{ startDate: "yesterday", endDate: "yesterday" }],
         metrics: [
           { name: "activeUsers" },
           { name: "newUsers" },
           { name: "eventCount" },
         ],
+      },
+    }),
+    // Previous period totals (day before yesterday)
+    analyticsData.properties.runReport({
+      property: `properties/${propertyId}`,
+      requestBody: {
+        dateRanges: [{ startDate: "2daysAgo", endDate: "2daysAgo" }],
+        metrics: [
+          { name: "activeUsers" },
+          { name: "newUsers" },
+          { name: "eventCount" },
+        ],
+      },
+    }),
+    // Top countries — with dimension
+    analyticsData.properties.runReport({
+      property: `properties/${propertyId}`,
+      requestBody: {
+        dateRanges: [{ startDate: "yesterday", endDate: "yesterday" }],
+        metrics: [{ name: "activeUsers" }],
         dimensions: [{ name: "country" }],
         orderBys: [{ metric: { metricName: "activeUsers" }, desc: true }],
-        limit: "10",
+        limit: "5",
       },
     }),
     analyticsData.properties.runReport({
       property: `properties/${propertyId}`,
       requestBody: {
-        dateRanges: [{ startDate: "14daysAgo", endDate: "8daysAgo" }],
-        metrics: [
-          { name: "activeUsers" },
-          { name: "newUsers" },
-          { name: "eventCount" },
-        ],
-      },
-    }),
-    analyticsData.properties.runReport({
-      property: `properties/${propertyId}`,
-      requestBody: {
-        dateRanges: [{ startDate: "7daysAgo", endDate: "today" }],
+        dateRanges: [{ startDate: "yesterday", endDate: "yesterday" }],
         metrics: [{ name: "sessions" }],
         dimensions: [{ name: "sessionDefaultChannelGroup" }],
         orderBys: [{ metric: { metricName: "sessions" }, desc: true }],
@@ -71,8 +81,8 @@ export async function fetchGA4Metrics(): Promise<GA4Metrics> {
     sessions: Number(row.metricValues?.[0]?.value ?? 0),
   }));
 
-  const curTotals = current.data.totals?.[0]?.metricValues ?? [];
-  const prevTotals = previous.data.totals?.[0]?.metricValues ?? [];
+  const curTotals = currentTotals.data.rows?.[0]?.metricValues ?? [];
+  const prevTotals = previous.data.rows?.[0]?.metricValues ?? [];
 
   const cur = {
     activeUsers: Number(curTotals[0]?.value ?? 0),
@@ -87,7 +97,7 @@ export async function fetchGA4Metrics(): Promise<GA4Metrics> {
 
   const pctChange = (c: number, p: number) => p > 0 ? ((c - p) / p) * 100 : 0;
 
-  const topCountries = (current.data.rows ?? []).slice(0, 5).map((row) => ({
+  const topCountries = (countryData.data.rows ?? []).slice(0, 5).map((row) => ({
     country: row.dimensionValues?.[0]?.value ?? "Unknown",
     activeUsers: Number(row.metricValues?.[0]?.value ?? 0),
   }));
