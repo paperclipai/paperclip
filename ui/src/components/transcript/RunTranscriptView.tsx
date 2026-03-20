@@ -970,7 +970,7 @@ function findScrollAncestor(el: HTMLElement | null): HTMLElement | null {
   while (node) {
     const { overflowY } = window.getComputedStyle(node);
     if (
-      (overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay") &&
+      (overflowY === "auto" || overflowY === "scroll") &&
       node.scrollHeight > node.clientHeight + 1
     ) {
       return node;
@@ -997,48 +997,62 @@ function useAutoScroll(
 ) {
   const isNearBottom = useRef(true);
   const scrollerRef = useRef<HTMLElement | null>(null);
-  const handlerRef = useRef<(() => void) | null>(null);
+  const listenerRef = useRef<(() => void) | null>(null);
 
-  // (Re-)attach the scroll listener whenever deps change so we always track
-  // the right ancestor, even if overflow only appeared after new entries.
+  const updateNearBottom = (scroller: HTMLElement) => {
+    const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+    isNearBottom.current = distance <= threshold;
+  };
+
+  // 1. Seed isNearBottom synchronously (useLayoutEffect) BEFORE the scroll
+  //    effect fires, so the scroll decision always uses the current ancestor.
+  useLayoutEffect(() => {
+    if (!enabled) return;
+    const sentinel = bottomRef.current;
+    if (!sentinel) return;
+
+    const scroller = findScrollAncestor(sentinel);
+    if (scroller) {
+      updateNearBottom(scroller);
+    } else {
+      // No overflow yet — treat as "at bottom".
+      isNearBottom.current = true;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, ...deps]);
+
+  // 2. Scroll to sentinel (also useLayoutEffect, but declared after the seed
+  //    above so React processes it second in the same commit).
+  useLayoutEffect(() => {
+    if (!enabled || !isNearBottom.current) return;
+    bottomRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, ...deps]);
+
+  // 3. (Re-)attach the passive scroll listener so isNearBottom stays current
+  //    between entry updates. Re-runs on deps change to pick up new ancestors.
   useEffect(() => {
     if (!enabled) return;
     const sentinel = bottomRef.current;
     if (!sentinel) return;
 
     // Detach previous listener if the scroller element changed.
-    if (handlerRef.current && scrollerRef.current) {
-      scrollerRef.current.removeEventListener("scroll", handlerRef.current);
+    if (listenerRef.current && scrollerRef.current) {
+      scrollerRef.current.removeEventListener("scroll", listenerRef.current);
     }
 
     const scroller = findScrollAncestor(sentinel);
     scrollerRef.current = scroller;
 
     if (!scroller) {
-      // No overflow yet — treat as "at bottom".
-      isNearBottom.current = true;
-      handlerRef.current = null;
+      listenerRef.current = null;
       return;
     }
 
-    const onScroll = () => {
-      const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
-      isNearBottom.current = distance <= threshold;
-    };
-
-    // Seed with current position so we pick up a mid-scroll state immediately.
-    onScroll();
-
-    handlerRef.current = onScroll;
+    const onScroll = () => updateNearBottom(scroller);
+    listenerRef.current = onScroll;
     scroller.addEventListener("scroll", onScroll, { passive: true });
     return () => scroller.removeEventListener("scroll", onScroll);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, ...deps]);
-
-  // Scroll to sentinel when deps change and user is near bottom.
-  useLayoutEffect(() => {
-    if (!enabled || !isNearBottom.current) return;
-    bottomRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, ...deps]);
 }
