@@ -10,6 +10,18 @@ export type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
 } from "./agent.js";
+export type {
+  AgentHookMatchValue,
+  AgentHooksPermissions,
+  AgentHookBaseAction,
+  AgentHookCommandAction,
+  AgentHookWebhookAction,
+  AgentHookWakeAgentAction,
+  AgentHookAssignIssueAction,
+  AgentHookAction,
+  AgentHookRule,
+  AgentHooksConfig,
+} from "./agent-hooks.js";
 export type { AssetImage } from "./asset.js";
 export type { Project, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectWorkspace } from "./project.js";
 export type {

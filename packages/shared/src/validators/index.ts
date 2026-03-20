@@ -1,4 +1,15 @@
 export {
+  agentHooksPermissionsSchema,
+  agentHookActionSchema,
+  agentHookRuleSchema,
+  agentHooksConfigSchema,
+  type AgentHooksPermissions,
+  type AgentHookAction,
+  type AgentHookRule,
+  type AgentHooksConfig,
+} from "./agent-hooks.js";
+
+export {
   instanceExperimentalSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
   type InstanceExperimentalSettings,

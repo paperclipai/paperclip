@@ -13,6 +13,7 @@ Agents in Paperclip are AI employees that wake up, do work, and go back to sleep
 4. **Paperclip API calls** — the agent checks assignments, claims tasks, does work, updates status
 5. **Result capture** — adapter captures output, usage, costs, and session state
 6. **Run record** — Paperclip stores the run result for audit and debugging
+7. **Post-run hooks** — if the agent has `runtimeConfig.hooks`, Paperclip may trigger declarative follow-on automation after the run state is stored
 
 ## Agent Identity
 
@@ -35,6 +36,8 @@ Additional context variables are set when the wake has a specific trigger:
 | `PAPERCLIP_WAKE_COMMENT_ID` | Specific comment that triggered this wake |
 | `PAPERCLIP_APPROVAL_ID` | Approval that was resolved |
 | `PAPERCLIP_APPROVAL_STATUS` | Approval decision (`approved`, `rejected`) |
+
+Some wakes may be created by another agent's heartbeat hook. In those cases, the wake reason and context snapshot describe the handoff source, for example a completed benchmark run that wakes a manager for review.
 
 ## Session Persistence
 

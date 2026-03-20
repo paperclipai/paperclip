@@ -75,6 +75,83 @@ PATCH /api/agents/{agentId}
 }
 ```
 
+## Hook configuration
+
+Hooks live under `runtimeConfig.hooks` and are intended for event-driven handoffs.
+
+Supported lifecycle events:
+
+- `heartbeat.run.started`
+- `heartbeat.run.finished`
+- `heartbeat.run.succeeded`
+- `heartbeat.run.failed`
+- `heartbeat.run.cancelled`
+- `heartbeat.run.timed_out`
+
+Supported actions:
+
+- `command`
+- `webhook`
+- `wake_agent`
+- `assign_issue`
+
+Security model:
+
+- only board-managed create/update flows — including config rollbacks that would change hooks — can add, remove, or change `runtimeConfig.hooks`
+- `wake_agent` and `assign_issue` targets must be explicitly allow-listed via `permissions.allowedAgentRefs`
+- `command`, `webhook`, and `assign_issue` each require explicit permission flags
+
+Example: benchmark finished -> wake CTO.
+
+```json
+POST /api/companies/{companyId}/agents
+{
+  "name": "BenchWorker",
+  "role": "engineer",
+  "adapterType": "process",
+  "adapterConfig": {
+    "command": "./bin/bench-worker"
+  },
+  "runtimeConfig": {
+    "heartbeat": {
+      "intervalSec": 0
+    },
+    "hooks": {
+      "enabled": true,
+      "permissions": {
+        "allowedAgentRefs": ["CTO"]
+      },
+      "rules": [
+        {
+          "id": "benchmark-finished-wake-cto",
+          "event": "heartbeat.run.succeeded",
+          "match": {
+            "run.contextSnapshot.workflow": "benchmark"
+          },
+          "actions": [
+            {
+              "type": "wake_agent",
+              "agentRefs": ["CTO"],
+              "reason": "benchmark_finished",
+              "payload": {
+                "issueId": "{{event.issueId}}",
+                "sourceRunId": "{{run.id}}",
+                "completedBy": "{{agent.name}}"
+              },
+              "contextSnapshot": {
+                "issueId": "{{event.issueId}}",
+                "source": "agent_hook.benchmark_finished",
+                "wakeReason": "benchmark_finished"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
+```
+
 ## Pause Agent
 
 ```

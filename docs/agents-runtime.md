@@ -1,7 +1,7 @@
 # Agent Runtime Guide
 
 Status: User-facing guide  
-Last updated: 2026-02-17  
+Last updated: 2026-03-20  
 Audience: Operators setting up and running agents in Paperclip
 
 ## 1. What this system does
@@ -69,6 +69,91 @@ You can set:
 
 Templates support variables like `{{agent.id}}`, `{{agent.name}}`, and run context values.
 
+## 3.5 Event-driven hooks
+
+Agents can also declare **hooks** under `runtimeConfig.hooks`.
+
+Hooks are evaluated after meaningful heartbeat lifecycle transitions and let an agent trigger follow-on automation without replacing the existing scheduler, assignment wakeups, or mention/comment wakeups.
+
+Supported hook events in v1:
+
+- `heartbeat.run.started`
+- `heartbeat.run.finished`
+- `heartbeat.run.succeeded`
+- `heartbeat.run.failed`
+- `heartbeat.run.cancelled`
+- `heartbeat.run.timed_out`
+
+Supported hook actions in v1:
+
+- `command`: run a local script/command on the Paperclip host
+- `webhook`: call an HTTP endpoint with JSON payload
+- `wake_agent`: wake one or more other agents in the same company
+- `assign_issue`: reassign the current issue to another agent, optionally waking them
+
+Hooks are declarative and rule-based:
+
+- each rule listens to one or more events
+- optional `match` filters inspect event/run fields such as `run.contextSnapshot.workflow`
+- actions can use templates like `{{run.id}}`, `{{event.issueId}}`, and `{{agent.name}}`
+
+### Permissions and safety
+
+Hook execution is disabled by default unless the relevant permissions are granted in the hook config:
+
+- `allowCommand`: permit local command execution
+- `allowWebhook`: permit outbound webhook calls
+- `allowIssueAssignment`: permit `assign_issue`
+- `allowedAgentRefs`: explicit allow-list for `wake_agent` and `assign_issue` targets
+
+Additional safety rules:
+
+- hook-config changes are board-managed; non-board agent updates and config rollbacks preserve existing hooks but cannot add/remove/change them
+- target agents must belong to the same company
+- hooks cannot wake the same agent that originated the event
+- hooks run best-effort and asynchronously after run status is persisted, so heartbeat scheduling/coalescing behaviour is unchanged
+
+### Example: benchmark finished -> wake CTO
+
+```json
+{
+  "runtimeConfig": {
+    "hooks": {
+      "enabled": true,
+      "permissions": {
+        "allowedAgentRefs": ["CTO"]
+      },
+      "rules": [
+        {
+          "id": "benchmark-finished-wake-cto",
+          "event": "heartbeat.run.succeeded",
+          "match": {
+            "run.contextSnapshot.workflow": "benchmark"
+          },
+          "actions": [
+            {
+              "type": "wake_agent",
+              "agentRefs": ["CTO"],
+              "reason": "benchmark_finished",
+              "payload": {
+                "issueId": "{{event.issueId}}",
+                "sourceRunId": "{{run.id}}",
+                "completedBy": "{{agent.name}}"
+              },
+              "contextSnapshot": {
+                "issueId": "{{event.issueId}}",
+                "source": "agent_hook.benchmark_finished",
+                "wakeReason": "benchmark_finished"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
+```
+
 ## 4. Session resume behavior
 
 Paperclip stores session IDs for resumable adapters.
@@ -120,7 +205,8 @@ If the connection drops, the UI reconnects automatically.
 
 1. Disable timer or set a long interval
 2. Keep wake-on-assignment enabled
-3. Use on-demand wakeups for manual nudges
+3. Add `runtimeConfig.hooks` rules for handoffs and post-run automation
+4. Use on-demand wakeups for manual nudges
 
 ## 7.3 Safety-first loop
 

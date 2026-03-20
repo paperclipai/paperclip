@@ -34,6 +34,8 @@ export {
   WAKEUP_TRIGGER_DETAILS,
   WAKEUP_REQUEST_STATUSES,
   LIVE_EVENT_TYPES,
+  AGENT_HOOK_EVENT_TYPES,
+  AGENT_HOOK_ACTION_TYPES,
   PRINCIPAL_TYPES,
   MEMBERSHIP_STATUSES,
   INSTANCE_USER_ROLES,
@@ -92,6 +94,8 @@ export {
   type WakeupTriggerDetail,
   type WakeupRequestStatus,
   type LiveEventType,
+  type AgentHookEventType,
+  type AgentHookActionType,
   type PrincipalType,
   type MembershipStatus,
   type InstanceUserRole,
@@ -130,6 +134,16 @@ export type {
   AdapterEnvironmentTestStatus,
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
+  AgentHookMatchValue,
+  AgentHooksPermissions,
+  AgentHookBaseAction,
+  AgentHookCommandAction,
+  AgentHookWebhookAction,
+  AgentHookWakeAgentAction,
+  AgentHookAssignIssueAction,
+  AgentHookAction,
+  AgentHookRule,
+  AgentHooksConfig,
   AssetImage,
   Project,
   ProjectCodebase,
@@ -243,6 +257,13 @@ export type {
   QuotaWindow,
   ProviderQuotaResult,
 } from "./types/index.js";
+
+export {
+  agentHooksPermissionsSchema,
+  agentHookActionSchema,
+  agentHookRuleSchema,
+  agentHooksConfigSchema,
+} from "./validators/agent-hooks.js";
 
 export {
   instanceExperimentalSettingsSchema,

@@ -45,9 +45,12 @@ Edit an agent's configuration from the agent detail page:
 
 - **Adapter config** — change model, prompt template, working directory, environment variables
 - **Heartbeat settings** — interval, cooldown, max concurrent runs, wake triggers
+- **Heartbeat hooks** — declarative post-run actions such as `webhook`, `wake_agent`, and `assign_issue`
 - **Budget** — monthly spend limit
 
 Use the "Test Environment" button to validate that the agent's adapter config is correct before running.
+
+Hook changes are board-managed. Non-board agent updates and config rollbacks can preserve existing hooks, but they cannot add, remove, or modify them.
 
 ## Pausing and Resuming
 

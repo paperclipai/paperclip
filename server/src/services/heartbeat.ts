@@ -41,6 +41,7 @@ import {
 import { issueService } from "./issues.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { workspaceOperationService } from "./workspace-operations.js";
+import { runAgentHooksForEvent } from "./agent-hooks.js";
 import {
   buildExecutionWorkspaceAdapterConfig,
   gateProjectExecutionWorkspacePolicy,
@@ -1236,6 +1237,60 @@ export function heartbeatService(db: Db) {
       .then((rows) => rows[0]);
   }
 
+  async function dispatchHookEventsForRunStatus(run: typeof heartbeatRuns.$inferSelect) {
+    const contextSnapshot = parseObject(run.contextSnapshot);
+    const eventTypes =
+      run.status === "running"
+        ? (["heartbeat.run.started"] as const)
+        : run.status === "succeeded"
+          ? (["heartbeat.run.finished", "heartbeat.run.succeeded"] as const)
+          : run.status === "failed"
+            ? (["heartbeat.run.finished", "heartbeat.run.failed"] as const)
+            : run.status === "cancelled"
+              ? (["heartbeat.run.finished", "heartbeat.run.cancelled"] as const)
+              : run.status === "timed_out"
+                ? (["heartbeat.run.finished", "heartbeat.run.timed_out"] as const)
+                : ([] as const);
+
+    if (eventTypes.length === 0) return;
+
+    const issueId = readNonEmptyString(contextSnapshot.issueId);
+    const projectId = readNonEmptyString(contextSnapshot.projectId);
+    const usageJson = parseObject(run.usageJson);
+    const summarizedResult = summarizeHeartbeatRunResultJson(run.resultJson);
+    const resultJson = summarizedResult ?? parseObject(run.resultJson);
+
+    for (const eventType of eventTypes) {
+      await runAgentHooksForEvent(
+        db,
+        {
+          eventType,
+          companyId: run.companyId,
+          sourceAgentId: run.agentId,
+          occurredAt: run.finishedAt ?? run.startedAt ?? run.updatedAt,
+          issueId,
+          projectId,
+          run: {
+            id: run.id,
+            status: run.status,
+            invocationSource: run.invocationSource,
+            triggerDetail: run.triggerDetail,
+            error: run.error ?? null,
+            errorCode: run.errorCode ?? null,
+            startedAt: run.startedAt,
+            finishedAt: run.finishedAt,
+            contextSnapshot,
+            usageJson: Object.keys(usageJson).length > 0 ? usageJson : null,
+            resultJson: Object.keys(resultJson).length > 0 ? resultJson : null,
+          },
+        },
+        {
+          wakeAgent: enqueueWakeup,
+        },
+      );
+    }
+  }
+
   async function setRunStatus(
     runId: string,
     status: string,
@@ -1263,6 +1318,9 @@ export function heartbeatService(db: Db) {
           startedAt: updated.startedAt ? new Date(updated.startedAt).toISOString() : null,
           finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
         },
+      });
+      void dispatchHookEventsForRunStatus(updated).catch((err) => {
+        logger.warn({ err, runId: updated.id, status: updated.status }, "agent hook dispatch failed");
       });
     }
 
@@ -1395,6 +1453,9 @@ export function heartbeatService(db: Db) {
         startedAt: claimed.startedAt ? new Date(claimed.startedAt).toISOString() : null,
         finishedAt: claimed.finishedAt ? new Date(claimed.finishedAt).toISOString() : null,
       },
+    });
+    void dispatchHookEventsForRunStatus(claimed).catch((err) => {
+      logger.warn({ err, runId: claimed.id, status: claimed.status }, "agent hook dispatch failed");
     });
 
     await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
