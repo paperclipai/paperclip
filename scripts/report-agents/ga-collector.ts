@@ -26,12 +26,6 @@ async function main() {
     });
   }
 
-  // Referrals
-  if (m.topReferrals.length > 0) {
-    const refs = m.topReferrals.map((r: any) => `${r.referrer} (${r.sessions})`).join(", ");
-    lines.push(`\n🔀 <b>Referrals:</b> ${refs}`);
-  }
-
   console.log("GA Collector: sending Telegram...");
   await sendTelegram(lines.join("\n"));
 
