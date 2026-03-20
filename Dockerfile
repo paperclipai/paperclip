@@ -27,7 +27,7 @@ COPY packages/adapters/opencode-local/package.json packages/adapters/opencode-lo
 COPY packages/adapters/pi-local/package.json packages/adapters/pi-local/
 
 # FIX: plugin-sdk estava faltando no stage deps, causando erro TS2307 no build
-COPY packages/plugin-sdk/package.json packages/plugin-sdk/
+COPY packages/plugins/sdk/package.json packages/plugins/sdk/
 
 RUN pnpm install --frozen-lockfile
 
