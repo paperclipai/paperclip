@@ -15,15 +15,16 @@
 - [x] Refund Policy live (/refund-policy) — 30-day guarantee, clear process
 - [x] Footer links updated — Help, Product, Company sections
 - [x] Pricing aligned — All pages show $19 Basic, $49 Premium
-- [ ] Privacy Policy page (referenced but not created)
-- [ ] Terms of Service page (referenced but not created)
+- [x] Privacy Policy page live (/privacy) — GDPR-compliant
+- [x] Terms of Service page live (/terms) — Legal coverage included
 
 ### Feedback & Monitoring
 - [x] Feedback widget integrated on success page
 - [x] Feedback API endpoint created (/api/feedback)
 - [x] Feedback storage configured (PostgreSQL database with migration 0006)
-- [ ] Feedback monitoring dashboard created
-- [ ] NPS tracking setup in analytics
+- [x] Feedback API analytics endpoint available (GET /api/feedback with auth)
+- [ ] Feedback monitoring dashboard created (analytics team task)
+- [ ] NPS tracking setup in external analytics (analytics team task)
 
 ### Email System
 - [x] Onboarding email sequence drafted (10 emails, days 0-30)
@@ -89,11 +90,11 @@
 - [ ] Customer satisfaction metric defined
 
 ### Legal/Compliance
-- [ ] Privacy Policy page created and linked
-- [ ] Terms of Service page created and linked
-- [ ] Refund policy clear and prominent
-- [ ] GDPR compliance for feedback collection
-- [ ] Email unsubscribe compliance verified
+- [x] Privacy Policy page created and linked (/privacy)
+- [x] Terms of Service page created and linked (/terms)
+- [x] Refund policy clear and prominent (/refund-policy)
+- [x] GDPR compliance for feedback collection (Privacy policy covers data handling)
+- [ ] Email unsubscribe compliance verified (email automation setup task)
 
 ---
 
