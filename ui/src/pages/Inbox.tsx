@@ -68,10 +68,10 @@ type SectionKey =
   | "alerts";
 
 const RUN_SOURCE_LABELS: Record<string, string> = {
-  timer: "Scheduled",
-  assignment: "Assignment",
-  on_demand: "Manual",
-  automation: "Automation",
+  timer: "예약됨",
+  assignment: "할당",
+  on_demand: "수동",
+  automation: "자동화",
 };
 
 function firstNonEmptyLine(value: string | null | undefined): string | null {
@@ -81,7 +81,7 @@ function firstNonEmptyLine(value: string | null | undefined): string | null {
 }
 
 function runFailureMessage(run: HeartbeatRun): string {
-  return firstNonEmptyLine(run.error) ?? firstNonEmptyLine(run.stderrExcerpt) ?? "Run exited with an error.";
+  return firstNonEmptyLine(run.error) ?? firstNonEmptyLine(run.stderrExcerpt) ?? "실행이 오류와 함께 종료되었습니다.";
 }
 
 function approvalStatusLabel(status: Approval["status"]): string {
@@ -173,7 +173,7 @@ function FailedRunCard({
           </Link>
         ) : (
           <span className="block text-sm text-muted-foreground">
-            {run.errorCode ? `Error code: ${run.errorCode}` : "No linked issue"}
+            {run.errorCode ? `오류 코드: ${run.errorCode}` : "연결된 이슈 없음"}
           </span>
         )}
 
@@ -191,7 +191,7 @@ function FailedRunCard({
               <StatusBadge status={run.status} />
             </div>
             <p className="mt-2 text-xs text-muted-foreground">
-              {sourceLabel} run failed {timeAgo(run.createdAt)}
+              {sourceLabel} 실행 실패 {timeAgo(run.createdAt)}
             </p>
           </div>
           <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
@@ -204,7 +204,7 @@ function FailedRunCard({
               disabled={retryRun.isPending}
             >
               <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
-              {retryRun.isPending ? "Retrying…" : "Retry"}
+              {retryRun.isPending ? "재시도 중…" : "재시도"}
             </Button>
             <Button
               type="button"
@@ -214,7 +214,7 @@ function FailedRunCard({
               asChild
             >
               <Link to={`/agents/${run.agentId}/runs/${run.id}`}>
-                Open run
+                실행 열기
                 <ArrowUpRight className="ml-1.5 h-3.5 w-3.5" />
               </Link>
             </Button>
@@ -231,7 +231,7 @@ function FailedRunCard({
 
         {retryRun.isError && (
           <div className="text-xs text-destructive">
-            {retryRun.error instanceof Error ? retryRun.error.message : "Failed to retry run"}
+            {retryRun.error instanceof Error ? retryRun.error.message : "실행 재시도 실패"}
           </div>
         )}
       </div>
@@ -276,8 +276,8 @@ function ApprovalInboxRow({
             </span>
             <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
               <span className="capitalize">{approvalStatusLabel(approval.status)}</span>
-              {requesterName ? <span>requested by {requesterName}</span> : null}
-              <span>updated {timeAgo(approval.updatedAt)}</span>
+              {requesterName ? <span>{requesterName}이(가) 요청</span> : null}
+              <span>{timeAgo(approval.updatedAt)}에 수정됨</span>
             </span>
           </span>
         </Link>
@@ -289,7 +289,7 @@ function ApprovalInboxRow({
               onClick={onApprove}
               disabled={isPending}
             >
-              Approve
+              승인
             </Button>
             <Button
               variant="destructive"
@@ -298,7 +298,7 @@ function ApprovalInboxRow({
               onClick={onReject}
               disabled={isPending}
             >
-              Reject
+              거부
             </Button>
           </div>
         ) : null}
@@ -311,7 +311,7 @@ function ApprovalInboxRow({
             onClick={onApprove}
             disabled={isPending}
           >
-            Approve
+            승인
           </Button>
           <Button
             variant="destructive"
@@ -320,7 +320,7 @@ function ApprovalInboxRow({
             onClick={onReject}
             disabled={isPending}
           >
-            Reject
+            거부
           </Button>
         </div>
       ) : null}
@@ -358,7 +358,7 @@ export function Inbox() {
   });
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Inbox" }]);
+    setBreadcrumbs([{ label: "받은함" }]);
   }, [setBreadcrumbs]);
 
   useEffect(() => {
@@ -592,7 +592,7 @@ export function Inbox() {
   });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={InboxIcon} message="Select a company to view inbox." />;
+    return <EmptyState icon={InboxIcon} message="받은함을 보려면 회사를 선택하세요." />;
   }
 
   const hasRunFailures = failedRuns.length > 0;
@@ -652,10 +652,10 @@ export function Inbox() {
               items={[
                 {
                   value: "recent",
-                  label: "Recent",
+                  label: "최근",
                 },
-                { value: "unread", label: "Unread" },
-                { value: "all", label: "All" },
+                { value: "unread", label: "읽지 않음" },
+                { value: "all", label: "전체" },
               ]}
             />
           </Tabs>
@@ -669,7 +669,7 @@ export function Inbox() {
               onClick={() => markAllReadMutation.mutate(unreadIssueIds)}
               disabled={markAllReadMutation.isPending}
             >
-              {markAllReadMutation.isPending ? "Marking…" : "Mark all as read"}
+              {markAllReadMutation.isPending ? "처리 중…" : "모두 읽음으로 표시"}
             </Button>
           )}
         </div>
@@ -684,12 +684,12 @@ export function Inbox() {
                 <SelectValue placeholder="Category" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="everything">All categories</SelectItem>
-                <SelectItem value="issues_i_touched">My recent issues</SelectItem>
-                <SelectItem value="join_requests">Join requests</SelectItem>
-                <SelectItem value="approvals">Approvals</SelectItem>
-                <SelectItem value="failed_runs">Failed runs</SelectItem>
-                <SelectItem value="alerts">Alerts</SelectItem>
+                <SelectItem value="everything">전체 카테고리</SelectItem>
+                <SelectItem value="issues_i_touched">내 최근 이슈</SelectItem>
+                <SelectItem value="join_requests">참여 요청</SelectItem>
+                <SelectItem value="approvals">승인</SelectItem>
+                <SelectItem value="failed_runs">실패한 실행</SelectItem>
+                <SelectItem value="alerts">알림</SelectItem>
               </SelectContent>
             </Select>
 
@@ -702,9 +702,9 @@ export function Inbox() {
                   <SelectValue placeholder="Approval status" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">All approval statuses</SelectItem>
-                  <SelectItem value="actionable">Needs action</SelectItem>
-                  <SelectItem value="resolved">Resolved</SelectItem>
+                  <SelectItem value="all">전체 승인 상태</SelectItem>
+                  <SelectItem value="actionable">조치 필요</SelectItem>
+                  <SelectItem value="resolved">처리 완료</SelectItem>
                 </SelectContent>
               </Select>
             )}
@@ -724,10 +724,10 @@ export function Inbox() {
           icon={InboxIcon}
           message={
             tab === "unread"
-              ? "No new inbox items."
+              ? "새로운 받은함 항목이 없습니다."
               : tab === "recent"
-                ? "No recent inbox items."
-                : "No inbox items match these filters."
+                ? "최근 받은함 항목이 없습니다."
+                : "필터에 해당하는 받은함 항목이 없습니다."
           }
         />
       )}
@@ -808,7 +808,7 @@ export function Inbox() {
           {showSeparatorBefore("join_requests") && <Separator />}
           <div>
             <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              Join Requests
+              참여 요청
             </h3>
             <div className="grid gap-3">
               {joinRequests.map((joinRequest) => (
@@ -817,11 +817,11 @@ export function Inbox() {
                     <div className="space-y-1">
                       <p className="text-sm font-medium">
                         {joinRequest.requestType === "human"
-                          ? "Human join request"
-                          : `Agent join request${joinRequest.agentName ? `: ${joinRequest.agentName}` : ""}`}
+                          ? "사용자 참여 요청"
+                          : `에이전트 참여 요청${joinRequest.agentName ? `: ${joinRequest.agentName}` : ""}`}
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        requested {timeAgo(joinRequest.createdAt)} from IP {joinRequest.requestIp}
+                        {timeAgo(joinRequest.createdAt)}에 IP {joinRequest.requestIp}에서 요청됨
                       </p>
                       {joinRequest.requestEmailSnapshot && (
                         <p className="text-xs text-muted-foreground">
@@ -839,14 +839,14 @@ export function Inbox() {
                         disabled={approveJoinMutation.isPending || rejectJoinMutation.isPending}
                         onClick={() => rejectJoinMutation.mutate(joinRequest)}
                       >
-                        Reject
+                        거부
                       </Button>
                       <Button
                         size="sm"
                         disabled={approveJoinMutation.isPending || rejectJoinMutation.isPending}
                         onClick={() => approveJoinMutation.mutate(joinRequest)}
                       >
-                        Approve
+                        승인
                       </Button>
                     </div>
                   </div>
@@ -862,7 +862,7 @@ export function Inbox() {
           {showSeparatorBefore("failed_runs") && <Separator />}
           <div>
             <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              Failed Runs
+              실패한 실행
             </h3>
             <div className="grid gap-3">
               {failedRuns.map((run) => (
@@ -885,7 +885,7 @@ export function Inbox() {
           {showSeparatorBefore("alerts") && <Separator />}
           <div>
             <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              Alerts
+              알림
             </h3>
             <div className="divide-y divide-border border border-border">
               {showAggregateAgentError && (
@@ -897,7 +897,7 @@ export function Inbox() {
                     <AlertTriangle className="h-4 w-4 shrink-0 text-red-600 dark:text-red-400" />
                     <span className="text-sm">
                       <span className="font-medium">{dashboard!.agents.error}</span>{" "}
-                      {dashboard!.agents.error === 1 ? "agent has" : "agents have"} errors
+                      개의 에이전트에 오류 발생
                     </span>
                   </Link>
                   <button
@@ -918,9 +918,8 @@ export function Inbox() {
                   >
                     <AlertTriangle className="h-4 w-4 shrink-0 text-yellow-400" />
                     <span className="text-sm">
-                      Budget at{" "}
-                      <span className="font-medium">{dashboard!.costs.monthUtilizationPercent}%</span>{" "}
-                      utilization this month
+                      이번 달 예산 사용률{" "}
+                      <span className="font-medium">{dashboard!.costs.monthUtilizationPercent}%</span>
                     </span>
                   </Link>
                   <button
