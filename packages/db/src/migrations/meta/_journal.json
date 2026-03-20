@@ -288,6 +288,13 @@
       "when": 1774031825634,
       "tag": "0040_spotty_the_renegades",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1774040139869,
+      "tag": "0041_special_starhawk",
+      "breakpoints": true
     }
   ]
 }

@@ -46,6 +46,7 @@ import { createPluginHostServiceCleanup } from "./services/plugin-host-service-c
 import { pluginRegistryService } from "./services/plugin-registry.js";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
+import { supabaseBridgeRoute } from "./auth/supabase-bridge.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 
@@ -119,6 +120,10 @@ export async function createApp(
       },
     });
   });
+  // Supabase JWT → Better Auth session bridge (must be before the wildcard)
+  if (process.env.EMISSO_OS_SUPABASE_JWT_SECRET) {
+    app.use("/api/auth/bridge", supabaseBridgeRoute(db));
+  }
   if (opts.betterAuthHandler) {
     app.all("/api/auth/*authPath", opts.betterAuthHandler);
   }
@@ -245,7 +250,7 @@ export async function createApp(
         res.status(200).set("Content-Type", "text/html").end(indexHtml);
       });
     } else {
-      console.warn("[paperclip] UI dist not found; running in API-only mode");
+      console.warn("[emisso-os] UI dist not found; running in API-only mode");
     }
   }
 

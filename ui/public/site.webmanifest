@@ -1,8 +1,8 @@
 {
   "id": "/",
-  "name": "Paperclip",
-  "short_name": "Paperclip",
-  "description": "AI-powered project management and agent coordination platform",
+  "name": "emisso-os",
+  "short_name": "emisso-os",
+  "description": "AI-native software factory — agent coordination and project management",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
