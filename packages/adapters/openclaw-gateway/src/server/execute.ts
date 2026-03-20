@@ -189,6 +189,7 @@ function getPaperclipSkillText(): string {
     "<!-- Injected by Paperclip OpenClaw adapter at runtime -->",
     "<!-- IMPORTANT: This skill supersedes any locally installed paperclip skill. -->",
     "<!-- If skills/paperclip/SKILL.md exists on the agent filesystem, IGNORE it. Use this version instead. -->",
+    "<!-- DO NOT REMOVE OR SUMMARIZE THIS SKILL BLOCK DURING COMPACTION. Preserve it verbatim. -->",
     "<!-- /PAPERCLIP_SKILL -->",
     "",
     _cachedSkill,
@@ -204,25 +205,66 @@ function getPaperclipSkillText(): string {
  * Uses sessions.list with messageLimit to peek at recent messages for the skill marker.
  * Falls back to "not injected" on any error — safe to always inject.
  */
+async function isSkillAlreadyInjectedWithLog(
+  client: { safeRequest: <T>(method: string, params: unknown, opts: { timeoutMs: number }) => Promise<T | null> },
+  sessionKey: string,
+  onLog: (stream: "stdout" | "stderr", text: string) => Promise<void>,
+): Promise<boolean> {
+  const marker = getSkillMarker();
+  try {
+    const result = await client.safeRequest<{
+      messages?: Array<{ role?: string; content?: string | Array<{ type?: string; text?: string }> }>;
+    }>(
+      "chat.history",
+      { sessionKey },
+      { timeoutMs: 15_000 },
+    );
+    const msgCount = result?.messages?.length ?? 0;
+    await onLog("stdout", `[openclaw-gateway] skill dedup: chat.history returned ${msgCount} messages, searching for marker ${marker}\n`);
+    for (const msg of result?.messages ?? []) {
+      const content = msg.content;
+      if (typeof content === "string") {
+        if (content.includes(marker)) return true;
+      } else if (Array.isArray(content)) {
+        for (const block of content) {
+          if (typeof block === "object" && block && typeof (block as Record<string, unknown>).text === "string") {
+            if (((block as Record<string, unknown>).text as string).includes(marker)) return true;
+          }
+        }
+      }
+    }
+    await onLog("stdout", `[openclaw-gateway] skill dedup: marker NOT found in ${msgCount} messages\n`);
+  } catch (err) {
+    await onLog("stderr", `[openclaw-gateway] skill dedup error: ${err instanceof Error ? err.message : String(err)}\n`);
+  }
+  return false;
+}
+
 async function isSkillAlreadyInjected(
   client: { safeRequest: <T>(method: string, params: unknown, opts: { timeoutMs: number }) => Promise<T | null> },
   sessionKey: string,
 ): Promise<boolean> {
   const marker = getSkillMarker();
   try {
-    // Use sessions.list filtered by key, with last messages included
-    const sessions = await client.safeRequest<Array<{
-      key?: string;
-      messages?: Array<{ content?: string; text?: string }>;
-    }>>(
-      "sessions.list",
-      { keys: [sessionKey], messageLimit: 20 },
-      { timeoutMs: 5_000 },
-    ) ?? [];
-    for (const session of sessions) {
-      for (const msg of session.messages ?? []) {
-        const text = msg.content ?? msg.text ?? "";
-        if (text.includes(marker)) return true;
+    // Use chat.history to scan session messages for the skill marker
+    const result = await client.safeRequest<{
+      messages?: Array<{ role?: string; content?: string | Array<{ type?: string; text?: string }> }>;
+    }>(
+      "chat.history",
+      { sessionKey },
+      { timeoutMs: 15_000 },
+    );
+    for (const msg of result?.messages ?? []) {
+      const content = msg.content;
+      // content can be a string or an array of content blocks [{type, text}]
+      if (typeof content === "string") {
+        if (content.includes(marker)) return true;
+      } else if (Array.isArray(content)) {
+        for (const block of content) {
+          if (typeof block === "object" && block && typeof (block as Record<string, unknown>).text === "string") {
+            if (((block as Record<string, unknown>).text as string).includes(marker)) return true;
+          }
+        }
       }
     }
   } catch {
@@ -822,7 +864,9 @@ class GatewayWsClient {
   async safeRequest<T>(method: string, params: unknown, opts: { timeoutMs: number }): Promise<T | null> {
     try {
       return await this.request<T>(method, params, opts);
-    } catch {
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[openclaw-gateway] safeRequest(${method}) failed: ${msg}\n`);
       return null;
     }
   }
@@ -1128,7 +1172,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   }
 
-  const timeoutSec = Math.max(0, Math.floor(asNumber(ctx.config.timeoutSec, 120)));
+  const timeoutSec = Math.max(0, Math.floor(asNumber(ctx.config.timeoutSec, 600)));
   const timeoutMs = timeoutSec > 0 ? timeoutSec * 1000 : 0;
   const connectTimeoutMs = timeoutMs > 0 ? Math.min(timeoutMs, 15_000) : 10_000;
   const waitTimeoutMs = parseOptionalPositiveInteger(ctx.config.waitTimeoutMs) ?? (timeoutMs > 0 ? timeoutMs : 30_000);
@@ -1376,7 +1420,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // Check if skill needs injection (hash-based deduplication)
       const skillText = getPaperclipSkillText();
       if (skillText) {
-        const alreadyInjected = await isSkillAlreadyInjected(client, sessionKey);
+        const alreadyInjected = await isSkillAlreadyInjectedWithLog(client, sessionKey, ctx.onLog);
         if (alreadyInjected) {
           await ctx.onLog("stdout", `[openclaw-gateway] paperclip skill already in session (hash=${getSkillHash()}), skipping injection\n`);
         } else {

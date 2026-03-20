@@ -38,6 +38,11 @@ export function buildOpenClawGatewayConfig(v: CreateConfigValues): Record<string
   if (typeof agentId === "string" && agentId.trim()) {
     ac.agentId = agentId.trim();
   }
+  // Pass selected session strategy
+  const sessionStrategy = (v as unknown as Record<string, unknown>).openclawSessionStrategy;
+  if (typeof sessionStrategy === "string" && sessionStrategy.trim()) {
+    ac.sessionKeyStrategy = sessionStrategy.trim();
+  }
   // Pass selected model override
   const model = (v as unknown as Record<string, unknown>).openclawModel;
   if (typeof model === "string" && model.trim()) {

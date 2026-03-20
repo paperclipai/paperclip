@@ -429,11 +429,13 @@ export function OpenClawGatewayConfigFields({
     mark("adapterConfig", "headers", Object.keys(nextHeaders).length > 0 ? nextHeaders : undefined);
   };
 
-  const sessionStrategy = eff(
-    "adapterConfig",
-    "sessionKeyStrategy",
-    String(config.sessionKeyStrategy ?? "project"),
-  );
+  const sessionStrategy = isCreate
+    ? String((values as unknown as Record<string, unknown>)?.openclawSessionStrategy ?? "project")
+    : eff(
+        "adapterConfig",
+        "sessionKeyStrategy",
+        String(config.sessionKeyStrategy ?? "project"),
+      );
 
   // Resolve the gateway URL and token for agent fetching
   const rawUrl = isCreate
@@ -546,6 +548,41 @@ export function OpenClawGatewayConfigFields({
         </p>
       </Field>
 
+      <Field label="Session strategy">
+        <select
+          value={sessionStrategy}
+          onChange={(e) =>
+            isCreate
+              ? set!({ openclawSessionStrategy: e.target.value } as Partial<typeof values & { openclawSessionStrategy: string }>)
+              : mark("adapterConfig", "sessionKeyStrategy", e.target.value)
+          }
+          className={selectClass}
+        >
+          <option value="project">Per project (recommended)</option>
+          <option value="issue">Per issue</option>
+          <option value="fixed">Fixed</option>
+          <option value="run">Per run</option>
+        </select>
+        <p className="text-xs text-muted-foreground mt-1.5">
+          {sessionStrategy === "project" && "Issues in the same project share one session. Agent builds context across tasks but runs are serialized — concurrent issues queue up."}
+          {sessionStrategy === "issue" && "Each issue gets its own session. Parallel execution with isolated context per task."}
+          {sessionStrategy === "fixed" && "All issues share a single session. Maximum context retention but fully serialized execution. Best for single-purpose agents."}
+          {sessionStrategy === "run" && "Fresh session for every run. No shared context, maximum parallelism. Best for stateless one-shot tasks."}
+        </p>
+      </Field>
+
+      {sessionStrategy === "fixed" && !isCreate && (
+        <Field label="Session key">
+          <DraftInput
+            value={eff("adapterConfig", "sessionKey", String(config.sessionKey ?? "paperclip"))}
+            onCommit={(v) => mark("adapterConfig", "sessionKey", v || undefined)}
+            immediate
+            className={inputClass}
+            placeholder="paperclip"
+          />
+        </Field>
+      )}
+
       <PayloadTemplateJsonField
         isCreate={isCreate}
         values={values}
@@ -579,37 +616,6 @@ export function OpenClawGatewayConfigFields({
               placeholder="https://paperclip.example"
             />
           </Field>
-
-          <Field label="Session strategy">
-            <select
-              value={sessionStrategy}
-              onChange={(e) => mark("adapterConfig", "sessionKeyStrategy", e.target.value)}
-              className={selectClass}
-            >
-              <option value="project">Per project (recommended)</option>
-              <option value="issue">Per issue</option>
-              <option value="fixed">Fixed</option>
-              <option value="run">Per run</option>
-            </select>
-            <p className="text-xs text-muted-foreground mt-1.5">
-              {sessionStrategy === "project" && "Issues in the same project share one session. Agent builds context across tasks but runs are serialized — concurrent issues queue up."}
-              {sessionStrategy === "issue" && "Each issue gets its own session. Parallel execution with isolated context per task."}
-              {sessionStrategy === "fixed" && "All issues share a single session. Maximum context retention but fully serialized execution. Best for single-purpose agents."}
-              {sessionStrategy === "run" && "Fresh session for every run. No shared context, maximum parallelism. Best for stateless one-shot tasks."}
-            </p>
-          </Field>
-
-          {sessionStrategy === "fixed" && (
-            <Field label="Session key">
-              <DraftInput
-                value={eff("adapterConfig", "sessionKey", String(config.sessionKey ?? "paperclip"))}
-                onCommit={(v) => mark("adapterConfig", "sessionKey", v || undefined)}
-                immediate
-                className={inputClass}
-                placeholder="paperclip"
-              />
-            </Field>
-          )}
 
           <Field label="Role">
             <DraftInput
