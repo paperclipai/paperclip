@@ -2,7 +2,8 @@
 // Flow: Fetch RapidAPI → Parse/Filter → Claude API summarize → Write issue comment
 // Env: RAPIDAPI_KEY, PAPERCLIP_*, ANTHROPIC_API_KEY (for summarize)
 
-import { findOrCreateDailyIssue, addComment } from "./lib/paperclip-api.js";
+import { sendTelegram } from "./lib/telegram.js";
+import { moneySmart } from "./lib/formatters.js";
 
 // --- Config from env ---
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
@@ -164,9 +165,6 @@ function getEngagement(likes: number): string {
 
 // --- Main ---
 async function main() {
-  const agentId = process.env.PAPERCLIP_AGENT_ID;
-  if (!agentId) throw new Error("Missing PAPERCLIP_AGENT_ID");
-
   const allAccounts: any[] = [];
 
   for (const account of ACCOUNTS) {
@@ -241,17 +239,30 @@ async function main() {
     }
   }
 
-  // Write to daily issue
-  const today = new Date().toISOString().slice(0, 10);
-  const result = {
-    date: today,
-    accounts: allAccounts,
-  };
+  // Format and send Telegram (same as n8n flow)
+  const todayFormatted = new Date().toLocaleDateString("en-GB", {
+    timeZone: "Asia/Bangkok",
+    day: "2-digit", month: "2-digit",
+  });
 
-  console.log("Social Collector: writing comment to daily issue...");
-  const issue = await findOrCreateDailyIssue(agentId);
-  const comment = `<!-- source:social -->\n${JSON.stringify(result, null, 2)}`;
-  await addComment(issue.id, comment);
+  let report = `<b>Whales Market Social Report ${todayFormatted}:</b>\n\n`;
+  for (const account of allAccounts) {
+    if (account.total_posts === 0) continue;
+    report += `<b>@${account.name}</b>\n`;
+    for (const post of account.posts) {
+      const contentWithLink = `<a href="${post.link}">${post.summary}</a>`;
+      report += `<b>${post.date}</b> - ${contentWithLink}\n`;
+      report += `Likes: ${post.likes} | Retweet: ${post.retweets} | Reply: ${post.replies} | Views: ${moneySmart(post.views, "")}\n`;
+      report += `Engagement: ${post.engagement}\n\n`;
+    }
+  }
+
+  if (report.includes("@")) {
+    console.log("Social Collector: sending Telegram...");
+    await sendTelegram(report);
+  } else {
+    console.log("Social Collector: no tweets to report, skipping Telegram");
+  }
 
   console.log("Social Collector: done ✓");
 }

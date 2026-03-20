@@ -25,8 +25,9 @@ export async function findOrCreateDailyIssue(agentId: string): Promise<{ id: str
   const today = new Date().toISOString().slice(0, 10);
   const title = `Daily Report ${today}`;
 
-  const { items } = await api("GET", `/api/companies/${companyId}/issues?search=${encodeURIComponent(title)}&status=backlog,in_progress`);
-  const existing = items?.find((i: any) => i.title === title);
+  const result = await api("GET", `/api/companies/${companyId}/issues?search=${encodeURIComponent(title)}&status=backlog,in_progress`);
+  const items = Array.isArray(result) ? result : result?.items ?? [];
+  const existing = items.find((i: any) => i.title === title);
   if (existing) return existing;
 
   return api("POST", `/api/companies/${companyId}/issues`, {
@@ -42,8 +43,8 @@ export async function addComment(issueId: string, body: string): Promise<void> {
 }
 
 export async function getComments(issueId: string): Promise<Array<{ id: string; body: string; authorAgentId: string | null }>> {
-  const { items } = await api("GET", `/api/issues/${issueId}/comments`);
-  return items ?? [];
+  const result = await api("GET", `/api/issues/${issueId}/comments`);
+  return Array.isArray(result) ? result : result?.items ?? [];
 }
 
 export async function closeIssue(issueId: string): Promise<void> {
