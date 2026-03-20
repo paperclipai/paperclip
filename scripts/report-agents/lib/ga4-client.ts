@@ -5,17 +5,26 @@ export interface GA4Metrics {
   activeUsersPctChange: number;
   newUsers: number;
   newUsersPctChange: number;
+  sessions: number;
+  sessionsPctChange: number;
   eventCount: number;
   eventCountPctChange: number;
+  avgSessionDuration: number;
+  avgSessionDurationPctChange: number;
+  bounceRate: number;
+  bounceRatePctChange: number;
   topCountries: Array<{ country: string; activeUsers: number }>;
   trafficSources: Array<{ source: string; sessions: number }>;
+  topPages: Array<{ page: string; views: number }>;
+  devices: Array<{ device: string; users: number }>;
+  topReferrals: Array<{ referrer: string; sessions: number }>;
+  topLandingPages: Array<{ page: string; sessions: number }>;
 }
 
 export async function fetchGA4Metrics(): Promise<GA4Metrics> {
   const propertyId = process.env.GA4_PROPERTY_ID;
   if (!propertyId) throw new Error("Missing GA4_PROPERTY_ID");
 
-  // Support both: Service Account JSON (env) or Application Default Credentials (gcloud auth)
   const credentialsJson = process.env.GA4_SERVICE_ACCOUNT_JSON;
   const auth = credentialsJson
     ? new google.auth.GoogleAuth({
@@ -27,89 +36,160 @@ export async function fetchGA4Metrics(): Promise<GA4Metrics> {
       });
 
   const analyticsData = google.analyticsdata({ version: "v1beta", auth });
+  const prop = `properties/${propertyId}`;
+  const yesterday = { startDate: "yesterday", endDate: "yesterday" };
+  const dayBefore = { startDate: "2daysAgo", endDate: "2daysAgo" };
 
-  const [currentTotals, previous, countryData, trafficData] = await Promise.all([
-    // Totals — no dimensions
+  const [currentTotals, prevTotals, countryData, trafficData, pageData, deviceData, referralData, landingData] = await Promise.all([
+    // 1. Current totals
     analyticsData.properties.runReport({
-      property: `properties/${propertyId}`,
+      property: prop,
       requestBody: {
-        dateRanges: [{ startDate: "yesterday", endDate: "yesterday" }],
+        dateRanges: [yesterday],
         metrics: [
           { name: "activeUsers" },
           { name: "newUsers" },
+          { name: "sessions" },
           { name: "eventCount" },
+          { name: "averageSessionDuration" },
+          { name: "bounceRate" },
         ],
       },
     }),
-    // Previous period totals (day before yesterday)
+    // 2. Previous totals
     analyticsData.properties.runReport({
-      property: `properties/${propertyId}`,
+      property: prop,
       requestBody: {
-        dateRanges: [{ startDate: "2daysAgo", endDate: "2daysAgo" }],
+        dateRanges: [dayBefore],
         metrics: [
           { name: "activeUsers" },
           { name: "newUsers" },
+          { name: "sessions" },
           { name: "eventCount" },
+          { name: "averageSessionDuration" },
+          { name: "bounceRate" },
         ],
       },
     }),
-    // Top countries — with dimension
+    // 3. Top countries
     analyticsData.properties.runReport({
-      property: `properties/${propertyId}`,
+      property: prop,
       requestBody: {
-        dateRanges: [{ startDate: "yesterday", endDate: "yesterday" }],
+        dateRanges: [yesterday],
         metrics: [{ name: "activeUsers" }],
         dimensions: [{ name: "country" }],
         orderBys: [{ metric: { metricName: "activeUsers" }, desc: true }],
         limit: "5",
       },
     }),
+    // 4. Traffic sources
     analyticsData.properties.runReport({
-      property: `properties/${propertyId}`,
+      property: prop,
       requestBody: {
-        dateRanges: [{ startDate: "yesterday", endDate: "yesterday" }],
+        dateRanges: [yesterday],
         metrics: [{ name: "sessions" }],
         dimensions: [{ name: "sessionDefaultChannelGroup" }],
         orderBys: [{ metric: { metricName: "sessions" }, desc: true }],
         limit: "5",
       },
     }),
+    // 5. Top pages
+    analyticsData.properties.runReport({
+      property: prop,
+      requestBody: {
+        dateRanges: [yesterday],
+        metrics: [{ name: "screenPageViews" }],
+        dimensions: [{ name: "pagePath" }],
+        orderBys: [{ metric: { metricName: "screenPageViews" }, desc: true }],
+        limit: "5",
+      },
+    }),
+    // 6. Devices
+    analyticsData.properties.runReport({
+      property: prop,
+      requestBody: {
+        dateRanges: [yesterday],
+        metrics: [{ name: "activeUsers" }],
+        dimensions: [{ name: "deviceCategory" }],
+        orderBys: [{ metric: { metricName: "activeUsers" }, desc: true }],
+      },
+    }),
+    // 7. Top referrals
+    analyticsData.properties.runReport({
+      property: prop,
+      requestBody: {
+        dateRanges: [yesterday],
+        metrics: [{ name: "sessions" }],
+        dimensions: [{ name: "sessionSource" }],
+        dimensionFilter: {
+          filter: {
+            fieldName: "sessionDefaultChannelGroup",
+            stringFilter: { value: "Referral", matchType: "EXACT" },
+          },
+        },
+        orderBys: [{ metric: { metricName: "sessions" }, desc: true }],
+        limit: "5",
+      },
+    }),
+    // 8. Top landing pages
+    analyticsData.properties.runReport({
+      property: prop,
+      requestBody: {
+        dateRanges: [yesterday],
+        metrics: [{ name: "sessions" }],
+        dimensions: [{ name: "landingPage" }],
+        orderBys: [{ metric: { metricName: "sessions" }, desc: true }],
+        limit: "5",
+      },
+    }),
   ]);
 
-  const trafficSources = (trafficData.data.rows ?? []).map((row) => ({
-    source: row.dimensionValues?.[0]?.value ?? "Unknown",
-    sessions: Number(row.metricValues?.[0]?.value ?? 0),
-  }));
+  const cur = currentTotals.data.rows?.[0]?.metricValues ?? [];
+  const prev = prevTotals.data.rows?.[0]?.metricValues ?? [];
 
-  const curTotals = currentTotals.data.rows?.[0]?.metricValues ?? [];
-  const prevTotals = previous.data.rows?.[0]?.metricValues ?? [];
-
-  const cur = {
-    activeUsers: Number(curTotals[0]?.value ?? 0),
-    newUsers: Number(curTotals[1]?.value ?? 0),
-    eventCount: Number(curTotals[2]?.value ?? 0),
+  const c = {
+    activeUsers: Number(cur[0]?.value ?? 0),
+    newUsers: Number(cur[1]?.value ?? 0),
+    sessions: Number(cur[2]?.value ?? 0),
+    eventCount: Number(cur[3]?.value ?? 0),
+    avgSessionDuration: Number(cur[4]?.value ?? 0),
+    bounceRate: Number(cur[5]?.value ?? 0),
   };
-  const prev = {
-    activeUsers: Number(prevTotals[0]?.value ?? 0),
-    newUsers: Number(prevTotals[1]?.value ?? 0),
-    eventCount: Number(prevTotals[2]?.value ?? 0),
+  const p = {
+    activeUsers: Number(prev[0]?.value ?? 0),
+    newUsers: Number(prev[1]?.value ?? 0),
+    sessions: Number(prev[2]?.value ?? 0),
+    eventCount: Number(prev[3]?.value ?? 0),
+    avgSessionDuration: Number(prev[4]?.value ?? 0),
+    bounceRate: Number(prev[5]?.value ?? 0),
   };
 
-  const pctChange = (c: number, p: number) => p > 0 ? ((c - p) / p) * 100 : 0;
+  const pctChange = (a: number, b: number) => b > 0 ? ((a - b) / b) * 100 : 0;
 
-  const topCountries = (countryData.data.rows ?? []).slice(0, 5).map((row) => ({
-    country: row.dimensionValues?.[0]?.value ?? "Unknown",
-    activeUsers: Number(row.metricValues?.[0]?.value ?? 0),
-  }));
+  const parseRows = (data: any, dimKey: string, metKey: string) =>
+    (data.data.rows ?? []).map((row: any) => ({
+      [dimKey]: row.dimensionValues?.[0]?.value ?? "Unknown",
+      [metKey]: Number(row.metricValues?.[0]?.value ?? 0),
+    }));
 
   return {
-    activeUsers: cur.activeUsers,
-    activeUsersPctChange: pctChange(cur.activeUsers, prev.activeUsers),
-    newUsers: cur.newUsers,
-    newUsersPctChange: pctChange(cur.newUsers, prev.newUsers),
-    eventCount: cur.eventCount,
-    eventCountPctChange: pctChange(cur.eventCount, prev.eventCount),
-    topCountries,
-    trafficSources,
+    activeUsers: c.activeUsers,
+    activeUsersPctChange: pctChange(c.activeUsers, p.activeUsers),
+    newUsers: c.newUsers,
+    newUsersPctChange: pctChange(c.newUsers, p.newUsers),
+    sessions: c.sessions,
+    sessionsPctChange: pctChange(c.sessions, p.sessions),
+    eventCount: c.eventCount,
+    eventCountPctChange: pctChange(c.eventCount, p.eventCount),
+    avgSessionDuration: c.avgSessionDuration,
+    avgSessionDurationPctChange: pctChange(c.avgSessionDuration, p.avgSessionDuration),
+    bounceRate: c.bounceRate * 100,
+    bounceRatePctChange: pctChange(c.bounceRate, p.bounceRate),
+    topCountries: parseRows(countryData, "country", "activeUsers"),
+    trafficSources: parseRows(trafficData, "source", "sessions"),
+    topPages: parseRows(pageData, "page", "views"),
+    devices: parseRows(deviceData, "device", "users"),
+    topReferrals: parseRows(referralData, "referrer", "sessions"),
+    topLandingPages: parseRows(landingData, "page", "sessions"),
   };
 }
