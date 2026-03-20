@@ -63,6 +63,16 @@ import {
   agentConfigurationDoc as hermesAgentConfigurationDoc,
   models as hermesModels,
 } from "hermes-paperclip-adapter";
+import {
+  execute as kiroExecute,
+  testEnvironment as kiroTestEnvironment,
+  sessionCodec as kiroSessionCodec,
+  listKiroModels,
+} from "@paperclipai/adapter-kiro-local/server";
+import {
+  agentConfigurationDoc as kiroAgentConfigurationDoc,
+  models as kiroModels,
+} from "@paperclipai/adapter-kiro-local";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
 
@@ -157,6 +167,17 @@ const hermesLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: hermesAgentConfigurationDoc,
 };
 
+const kiroLocalAdapter: ServerAdapterModule = {
+  type: "kiro_local",
+  execute: kiroExecute,
+  testEnvironment: kiroTestEnvironment,
+  sessionCodec: kiroSessionCodec,
+  models: kiroModels,
+  listModels: listKiroModels,
+  supportsLocalAgentJwt: true,
+  agentConfigurationDoc: kiroAgentConfigurationDoc,
+};
+
 const adaptersByType = new Map<string, ServerAdapterModule>(
   [
     claudeLocalAdapter,
@@ -167,6 +188,7 @@ const adaptersByType = new Map<string, ServerAdapterModule>(
     geminiLocalAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,
+    kiroLocalAdapter,
     processAdapter,
     httpAdapter,
   ].map((a) => [a.type, a]),

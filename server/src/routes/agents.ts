@@ -52,6 +52,7 @@ export function agentRoutes(db: Db) {
     gemini_local: "instructionsFilePath",
     opencode_local: "instructionsFilePath",
     cursor: "instructionsFilePath",
+    kiro_local: "instructionsFilePath",
   };
   const KNOWN_INSTRUCTIONS_PATH_KEYS = new Set(["instructionsFilePath", "agentsMdPath"]);
 
@@ -337,6 +338,9 @@ export function agentRoutes(db: Db) {
     // OpenCode requires explicit model selection — no default
     if (adapterType === "cursor" && !asNonEmptyString(next.model)) {
       next.model = DEFAULT_CURSOR_LOCAL_MODEL;
+    }
+    if (adapterType === "kiro_local" && !asNonEmptyString(next.model)) {
+      next.model = "auto";
     }
     return ensureGatewayDeviceKey(adapterType, next);
   }

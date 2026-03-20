@@ -62,6 +62,7 @@ type AdapterType =
   | "opencode_local"
   | "pi_local"
   | "cursor"
+  | "kiro_local"
   | "process"
   | "http"
   | "openclaw_gateway";
@@ -200,7 +201,8 @@ export function OnboardingWizard() {
     adapterType === "codex_local" ||
     adapterType === "gemini_local" ||
     adapterType === "opencode_local" ||
-    adapterType === "cursor";
+    adapterType === "cursor" ||
+    adapterType === "kiro_local";
   const effectiveAdapterCommand =
     command.trim() ||
     (adapterType === "codex_local"
@@ -810,6 +812,12 @@ export function OnboardingWizard() {
                             label: "Cursor",
                             icon: MousePointer2,
                             desc: "Local Cursor agent"
+                          },
+                          {
+                            value: "kiro_local" as const,
+                            label: "Kiro",
+                            icon: Terminal,
+                            desc: "Local Kiro agent"
                           },
                           {
                             value: "openclaw_gateway" as const,

@@ -64,6 +64,7 @@ export const adapterLabels: Record<string, string> = {
   opencode_local: "OpenCode (local)",
   openclaw_gateway: "OpenClaw Gateway",
   cursor: "Cursor (local)",
+  kiro_local: "Kiro (local)",
   process: "Process",
   http: "HTTP",
 };
