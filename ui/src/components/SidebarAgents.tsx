@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { NavLink, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import { ChevronRight, Plus } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
@@ -41,6 +42,7 @@ function sortByHierarchy(agents: Agent[]): Agent[] {
 
 export function SidebarAgents() {
   const [open, setOpen] = useState(true);
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialog();
   const { isMobile, setSidebarOpen } = useSidebar();
@@ -89,7 +91,7 @@ export function SidebarAgents() {
               )}
             />
             <span className="text-[10px] font-medium uppercase tracking-widest font-mono text-muted-foreground/60">
-              Agents
+              {t("sidebar.agents")}
             </span>
           </CollapsibleTrigger>
           <button
@@ -98,7 +100,7 @@ export function SidebarAgents() {
               openNewAgent();
             }}
             className="flex items-center justify-center h-4 w-4 rounded text-muted-foreground/60 hover:text-foreground hover:bg-accent/50 transition-colors"
-            aria-label="New agent"
+            aria-label={t("sidebar.newAgent")}
           >
             <Plus className="h-3 w-3" />
           </button>

@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useSidebar } from "../context/SidebarContext";
@@ -31,10 +32,12 @@ import {
 } from "lucide-react";
 import { Identity } from "./Identity";
 import { agentUrl, projectUrl } from "../lib/utils";
+import { translateRole } from "../i18n/translate";
 
 export function CommandPalette() {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const { selectedCompanyId } = useCompany();
   const { openNewIssue, openNewAgent } = useDialog();
@@ -80,8 +83,9 @@ export function CommandPalette() {
     queryFn: () => projectsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId && open,
   });
+
   const projects = useMemo(
-    () => allProjects.filter((p) => !p.archivedAt),
+    () => allProjects.filter((project) => !project.archivedAt),
     [allProjects],
   );
 
@@ -92,7 +96,7 @@ export function CommandPalette() {
 
   const agentName = (id: string | null) => {
     if (!id) return null;
-    return agents.find((a) => a.id === id)?.name ?? null;
+    return agents.find((agent) => agent.id === id)?.name ?? null;
   };
 
   const visibleIssues = useMemo(
@@ -101,19 +105,22 @@ export function CommandPalette() {
   );
 
   return (
-    <CommandDialog open={open} onOpenChange={(v) => {
-        setOpen(v);
-        if (v && isMobile) setSidebarOpen(false);
-      }}>
+    <CommandDialog
+      open={open}
+      onOpenChange={(value) => {
+        setOpen(value);
+        if (value && isMobile) setSidebarOpen(false);
+      }}
+    >
       <CommandInput
-        placeholder="Search issues, agents, projects..."
+        placeholder={t("commandPalette.searchPlaceholder")}
         value={query}
         onValueChange={setQuery}
       />
       <CommandList>
-        <CommandEmpty>No results found.</CommandEmpty>
+        <CommandEmpty>{t("commandPalette.noResults")}</CommandEmpty>
 
-        <CommandGroup heading="Actions">
+        <CommandGroup heading={t("commandPalette.actions")}>
           <CommandItem
             onSelect={() => {
               setOpen(false);
@@ -121,8 +128,10 @@ export function CommandPalette() {
             }}
           >
             <SquarePen className="mr-2 h-4 w-4" />
-            Create new issue
-            <span className="ml-auto text-xs text-muted-foreground">C</span>
+            {t("commandPalette.createNewIssue")}
+            <span className="ml-auto text-xs text-muted-foreground">
+              {t("commandPalette.shortcutCreateIssue")}
+            </span>
           </CommandItem>
           <CommandItem
             onSelect={() => {
@@ -131,55 +140,55 @@ export function CommandPalette() {
             }}
           >
             <Plus className="mr-2 h-4 w-4" />
-            Create new agent
+            {t("commandPalette.createNewAgent")}
           </CommandItem>
           <CommandItem onSelect={() => go("/projects")}>
             <Plus className="mr-2 h-4 w-4" />
-            Create new project
+            {t("commandPalette.createNewProject")}
           </CommandItem>
         </CommandGroup>
 
         <CommandSeparator />
 
-        <CommandGroup heading="Pages">
+        <CommandGroup heading={t("commandPalette.pages")}>
           <CommandItem onSelect={() => go("/dashboard")}>
             <LayoutDashboard className="mr-2 h-4 w-4" />
-            Dashboard
+            {t("sidebar.dashboard")}
           </CommandItem>
           <CommandItem onSelect={() => go("/inbox")}>
             <Inbox className="mr-2 h-4 w-4" />
-            Inbox
+            {t("sidebar.inbox")}
           </CommandItem>
           <CommandItem onSelect={() => go("/issues")}>
             <CircleDot className="mr-2 h-4 w-4" />
-            Issues
+            {t("sidebar.issues")}
           </CommandItem>
           <CommandItem onSelect={() => go("/projects")}>
             <Hexagon className="mr-2 h-4 w-4" />
-            Projects
+            {t("sidebar.projects")}
           </CommandItem>
           <CommandItem onSelect={() => go("/goals")}>
             <Target className="mr-2 h-4 w-4" />
-            Goals
+            {t("sidebar.goals")}
           </CommandItem>
           <CommandItem onSelect={() => go("/agents")}>
             <Bot className="mr-2 h-4 w-4" />
-            Agents
+            {t("sidebar.agents")}
           </CommandItem>
           <CommandItem onSelect={() => go("/costs")}>
             <DollarSign className="mr-2 h-4 w-4" />
-            Costs
+            {t("sidebar.costs")}
           </CommandItem>
           <CommandItem onSelect={() => go("/activity")}>
             <History className="mr-2 h-4 w-4" />
-            Activity
+            {t("sidebar.activity")}
           </CommandItem>
         </CommandGroup>
 
         {visibleIssues.length > 0 && (
           <>
             <CommandSeparator />
-            <CommandGroup heading="Issues">
+            <CommandGroup heading={t("commandPalette.issues")}>
               {visibleIssues.slice(0, 10).map((issue) => (
                 <CommandItem
                   key={issue.id}
@@ -197,7 +206,9 @@ export function CommandPalette() {
                   <span className="flex-1 truncate">{issue.title}</span>
                   {issue.assigneeAgentId && (() => {
                     const name = agentName(issue.assigneeAgentId);
-                    return name ? <Identity name={name} size="sm" className="ml-2 hidden sm:inline-flex" /> : null;
+                    return name
+                      ? <Identity name={name} size="sm" className="ml-2 hidden sm:inline-flex" />
+                      : null;
                   })()}
                 </CommandItem>
               ))}
@@ -208,12 +219,14 @@ export function CommandPalette() {
         {agents.length > 0 && (
           <>
             <CommandSeparator />
-            <CommandGroup heading="Agents">
+            <CommandGroup heading={t("commandPalette.agents")}>
               {agents.slice(0, 10).map((agent) => (
                 <CommandItem key={agent.id} onSelect={() => go(agentUrl(agent))}>
                   <Bot className="mr-2 h-4 w-4" />
                   {agent.name}
-                  <span className="text-xs text-muted-foreground ml-2">{agent.role}</span>
+                  <span className="text-xs text-muted-foreground ml-2">
+                    {translateRole(agent.role)}
+                  </span>
                 </CommandItem>
               ))}
             </CommandGroup>
@@ -223,7 +236,7 @@ export function CommandPalette() {
         {projects.length > 0 && (
           <>
             <CommandSeparator />
-            <CommandGroup heading="Projects">
+            <CommandGroup heading={t("commandPalette.projects")}>
               {projects.slice(0, 10).map((project) => (
                 <CommandItem key={project.id} onSelect={() => go(projectUrl(project))}>
                   <Hexagon className="mr-2 h-4 w-4" />
