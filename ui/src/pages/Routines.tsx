@@ -33,7 +33,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Badge } from "@/components/ui/badge";
 
+const ISSUE_PRIORITIES = ["urgent", "critical", "high", "medium", "low"] as const;
+const priorityLabels: Record<string, string> = {
+  urgent: "Urgent",
+  critical: "Critical",
+  high: "High",
+  medium: "Medium",
+  low: "Low",
+};
 const concurrencyPolicies = ["coalesce_if_active", "always_enqueue", "skip_if_active"];
 const catchUpPolicies = ["skip_missed", "enqueue_missed_with_cap"];
 const concurrencyPolicyDescriptions: Record<string, string> = {
@@ -422,7 +431,24 @@ export function Routines() {
                 {advancedOpen ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
               </CollapsibleTrigger>
               <CollapsibleContent className="pt-3">
-                <div className="grid gap-4 md:grid-cols-2">
+                <div className="grid gap-4 md:grid-cols-3">
+                  <div className="space-y-2">
+                    <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Priority</p>
+                    <Select
+                      value={draft.priority}
+                      onValueChange={(priority) => setDraft((current) => ({ ...current, priority }))}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {ISSUE_PRIORITIES.map((value) => (
+                          <SelectItem key={value} value={value}>{priorityLabels[value]}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">Priority assigned to each execution issue created by this routine.</p>
+                  </div>
                   <div className="space-y-2">
                     <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Concurrency</p>
                     <Select
@@ -530,14 +556,15 @@ export function Routines() {
                       onClick={() => navigate(`/routines/${routine.id}`)}
                     >
                       <td className="px-3 py-2.5">
-                        <div className="min-w-[180px]">
+                        <div className="min-w-[180px] flex items-center gap-2 flex-wrap">
                           <span className="font-medium">
                             {routine.title}
                           </span>
-                          {(isArchived || routine.status === "paused") && (
-                            <div className="mt-1 text-xs text-muted-foreground">
-                              {isArchived ? "archived" : "paused"}
-                            </div>
+                          {isArchived && (
+                            <Badge variant="secondary" className="text-xs">Archived</Badge>
+                          )}
+                          {routine.status === "paused" && (
+                            <Badge variant="outline" className="text-xs text-muted-foreground">Paused</Badge>
                           )}
                         </div>
                       </td>
@@ -600,7 +627,7 @@ export function Routines() {
                             />
                           </button>
                           <span className="text-xs text-muted-foreground">
-                            {isArchived ? "Archived" : enabled ? "On" : "Off"}
+                            {isArchived ? "Archived" : enabled ? "On" : "Paused"}
                           </span>
                         </div>
                       </td>
