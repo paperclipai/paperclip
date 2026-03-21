@@ -22,8 +22,10 @@ const HandbookModule = (() => {
     'terms':            { icon: '📚', color: 'red',    label: 'Röda delen' },
   };
 
-  function _getMeta(sectionId) {
-    return SECTION_META[sectionId] || { icon: '📄', color: 'blue', label: '' };
+  function _getMeta(sectionId, dataColor) {
+    const base = SECTION_META[sectionId] || { icon: '📄', color: 'blue', label: '' };
+    if (dataColor) return { ...base, color: dataColor };
+    return base;
   }
 
   // ============================================================
@@ -76,7 +78,7 @@ const HandbookModule = (() => {
     }
 
     sections.forEach(sec => {
-      const meta = _getMeta(sec.id);
+      const meta = _getMeta(sec.id, sec.color);
       const group = document.createElement('div');
       group.className = 'toc-group';
       group.dataset.bookColor = meta.color;
@@ -136,6 +138,9 @@ const HandbookModule = (() => {
       item.classList.toggle('active', item.dataset.sectionId === sectionId);
     });
     _activeSectionId = sectionId;
+    // Fix #12: scroll active TOC item into view in sidebar
+    const activeItem = document.querySelector('.toc-item.active');
+    if (activeItem) activeItem.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }
 
   function _scrollToSection(sectionId) {
@@ -169,7 +174,7 @@ const HandbookModule = (() => {
   }
 
   function _buildSection(sec) {
-    const meta = _getMeta(sec.id);
+    const meta = _getMeta(sec.id, sec.color);
     const article = document.createElement('article');
     article.className = 'handbook-section';
     article.id = 'section-' + sec.id;

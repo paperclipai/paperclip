@@ -157,8 +157,14 @@ const InspectionsModule = (() => {
 
     const badgeOngoing = document.getElementById('badge-ongoing');
     const badgeCompleted = document.getElementById('badge-completed');
-    if (badgeOngoing) badgeOngoing.textContent = ongoing.length;
-    if (badgeCompleted) badgeCompleted.textContent = completed.length;
+    if (badgeOngoing) {
+      badgeOngoing.textContent = ongoing.length;
+      badgeOngoing.style.display = ongoing.length ? '' : 'none';
+    }
+    if (badgeCompleted) {
+      badgeCompleted.textContent = completed.length;
+      badgeCompleted.style.display = completed.length ? '' : 'none';
+    }
   }
 
   function _renderInspectionCards(list, gridId, emptyId) {
@@ -551,24 +557,29 @@ const InspectionsModule = (() => {
       </div>
     `;
 
-    // Bind buttons after insert
+    // Bind buttons after insert — update in-place to preserve textarea content (fix #15)
     setTimeout(() => {
-      document.getElementById('kallelse-ja')?.addEventListener('click', () => {
-        _wizardData.startmote.kallelse = true;
-        _renderWizardStep(4);
-      });
-      document.getElementById('kallelse-nej')?.addEventListener('click', () => {
-        _wizardData.startmote.kallelse = false;
-        _renderWizardStep(4);
-      });
-      document.getElementById('jav-ja')?.addEventListener('click', () => {
-        _wizardData.startmote.jav = true;
-        _renderWizardStep(4);
-      });
-      document.getElementById('jav-nej')?.addEventListener('click', () => {
-        _wizardData.startmote.jav = false;
-        _renderWizardStep(4);
-      });
+      function _toggleKallelse(val) {
+        _wizardData.startmote.kallelse = val;
+        const ja = document.getElementById('kallelse-ja');
+        const nej = document.getElementById('kallelse-nej');
+        if (ja)  { ja.className  = 'btn ' + (val === true  ? 'btn-success' : 'btn-secondary'); }
+        if (nej) { nej.className = 'btn ' + (val === false ? 'btn-danger active-no' : 'btn-secondary'); }
+      }
+      function _toggleJav(val) {
+        _wizardData.startmote.jav = val;
+        const ja  = document.getElementById('jav-ja');
+        const nej = document.getElementById('jav-nej');
+        if (ja)  { ja.className  = 'btn ' + (val === true  ? 'btn-danger' : 'btn-secondary'); }
+        if (nej) { nej.className = 'btn ' + (val === false ? 'btn-danger' : 'btn-secondary'); }
+        const javGroup = document.getElementById('jav-text-group');
+        if (javGroup) javGroup.style.display = val ? '' : 'none';
+      }
+
+      document.getElementById('kallelse-ja')?.addEventListener('click', () => _toggleKallelse(true));
+      document.getElementById('kallelse-nej')?.addEventListener('click', () => _toggleKallelse(false));
+      document.getElementById('jav-ja')?.addEventListener('click', () => _toggleJav(true));
+      document.getElementById('jav-nej')?.addEventListener('click', () => _toggleJav(false));
     }, 0);
 
     return div;

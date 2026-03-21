@@ -15,11 +15,13 @@
   "sections": [
     {
       "id": "om-handboken",
+      "color": "blue",
       "title": "Om den här handboken",
       "content": "Besiktningsmannaboken beskriver processen vid besiktningar av nybyggda småhus. Den beskriver också vad som kan förväntas av en besiktningsman. Den ger även en samlad beskrivning av var fackmässighetsnivån för olika byggmoment bör ligga och vilka grunder en besiktningsman ska bedöma fackmässigheten utifrån. Handboken riktar sig till beställare, entreprenörer och besiktningsmän för att alla ska ha en samstämmig bild av hur besiktningen går till och vad man har rätt att vänta sig av en besiktning.\n\nBesiktningar har en stor betydelse i byggprocessen, inte minst slutbesiktningen med sina juridiska följder. I dag avslutas nästan alla nyproduktioner av småhus med en slutbesiktning. Ofta görs det också ytterligare besiktningar under entreprenadtiden och en s k §59-besiktning inom 2 år efter slutbesiktningen.\n\nDå parterna ofta har olika bakgrund och erfarenhet av småhusentreprenader (eller småhusbyggande) kan uppfattningen om vad som är fackmässigt utförande skilja sig mellan beställare och entreprenör. Besiktningsmannaboken är då ett viktigt hjälpmedel för att båda parter ska få en gemensam utgångspunkt för besiktningen. Det är därför en fördel att utse en certifierad besiktningsman som har såväl dokumenterad erfarenhet som relevant utbildning.\n\nBesiktningsmannaboken 2024 reviderades 2024-06-30. Vi utvärderar årligen om det finns behov av uppdatering och inför så fall revideringar i handboken."
     },
     {
       "id": "handbokens-delar",
+      "color": "blue",
       "title": "Handbokens olika delar",
       "subsections": [
         {
@@ -44,6 +46,7 @@
     },
     {
       "id": "besiktningstyper",
+      "color": "blue",
       "title": "Olika typer av besiktningar",
       "intro": "I det här avsnittet beskrivs några olika typer av besiktningar, hur de i normalfallet går till och vad de kan få för följder.\n\nUtgångspunkten vid en besiktning är alltid de avtal som finns mellan parterna. De flesta besiktningar av småhus har konsumenttjänstlagen och Allmänna Bestämmelser för Småhusentreprenader (ABS) som övergripande regelverk.\n\nI normalfallet gör man en i huvudsak okulär besiktning. Det innebär att besiktningsmannen tittar efter synliga fel i alla delar av entreprenaden samt konstaterar att det finns fungerande el-, vatten- och andra installationer. Besiktningsmannen testar även stickprovsvis installationerna, men gör inte en komplett funktionsprovning av dem om inte parterna särskilt har begärt det. Därför är det viktigt att alla provningar och egenkontroller har genomförts inför besiktningsdagen.",
       "subsections": [
@@ -96,6 +99,7 @@
     },
     {
       "id": "process",
+      "color": "blue",
       "title": "Från kallelse till utlåtande",
       "subsections": [
         {
@@ -132,6 +136,7 @@
     },
     {
       "id": "fackmasigt",
+      "color": "yellow",
       "title": "Fackmässigt utförande",
       "intro": "I det här avsnittet beskrivs vad som i normalfallet utgör fackmässighetsnivån för olika byggdelar. Här beskrivs också hur en besiktning av de delarna bör utföras. Eftersom besiktningen är okulär kan inte allt som anges här besiktigas.\n\nDet är alltid vad som har avtalats mellan parterna som avgör vad som kan förväntas av en beställd tjänst. Utförandenivåerna som beskrivs nedan är att betrakta som fackmässiga om parterna inte har avtalat om något annat. De flesta toleranser som beskrivs är hämtade ur AMA.\n\nVid § 59-besiktningen kan det finnas anledning att ha en något annorlunda bedömning. Till exempel kan sprickbildningar förekomma i trähus. Denna typ av uttorkningssprickor är helt normala och hårfina sprickor är att betrakta som godtagbara om de inte förekommer i oacceptabelt hög frekvens.",
       "subsections": [

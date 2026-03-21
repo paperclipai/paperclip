@@ -83,6 +83,51 @@
   --sidebar-width:     240px;
   --bottom-nav-height: 64px;
   --view-header-height: 64px;
+
+  /* Book section colors (BLÅ/GUL/RÖD) */
+  --section-blue:       #1a5276;
+  --section-blue-light: rgba(26,82,118,0.08);
+  --section-blue-bg:    rgba(26,82,118,0.04);
+  --section-yellow:     #b7950b;
+  --section-yellow-light: rgba(183,149,11,0.10);
+  --section-yellow-bg:  rgba(183,149,11,0.05);
+  --section-red:        #922b21;
+  --section-red-light:  rgba(146,43,33,0.08);
+  --section-red-bg:     rgba(146,43,33,0.04);
+}
+
+/* Dark mode — system preference */
+@media (prefers-color-scheme: dark) {
+  :root:not(.light-mode) {
+    --color-bg:           #0f1117;
+    --color-surface:      #1a1d27;
+    --color-surface-alt:  #222636;
+    --color-border:       #2e3347;
+    --color-border-light: #242840;
+    --color-text:         #e2e8f0;
+    --color-text-primary: #e2e8f0;
+    --color-text-muted:   #8896aa;
+    --color-text-light:   #5d6d7e;
+    --section-blue-bg:    rgba(26,82,118,0.12);
+    --section-yellow-bg:  rgba(183,149,11,0.10);
+    --section-red-bg:     rgba(146,43,33,0.10);
+  }
+}
+
+/* Dark mode — explicit class (user toggle) */
+body.dark-mode {
+  --color-bg:           #0f1117;
+  --color-surface:      #1a1d27;
+  --color-surface-alt:  #222636;
+  --color-border:       #2e3347;
+  --color-border-light: #242840;
+  --color-text:         #e2e8f0;
+  --color-text-primary: #e2e8f0;
+  --color-text-muted:   #8896aa;
+  --color-text-light:   #5d6d7e;
+  --section-blue-bg:    rgba(26,82,118,0.12);
+  --section-yellow-bg:  rgba(183,149,11,0.10);
+  --section-red-bg:     rgba(146,43,33,0.10);
 }
 
 /* ============================================================
