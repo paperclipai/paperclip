@@ -30,12 +30,14 @@ const mockSecretService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockNotifyKatyaPublishApproved = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
   approvalService: () => mockApprovalService,
   heartbeatService: () => mockHeartbeatService,
   issueApprovalService: () => mockIssueApprovalService,
   logActivity: mockLogActivity,
+  notifyKatyaPublishApproved: mockNotifyKatyaPublishApproved,
   secretService: () => mockSecretService,
 }));
 
@@ -63,6 +65,37 @@ describe("approval routes idempotent retries", () => {
     mockHeartbeatService.wakeup.mockResolvedValue({ id: "wake-1" });
     mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([{ id: "issue-1" }]);
     mockLogActivity.mockResolvedValue(undefined);
+    mockNotifyKatyaPublishApproved.mockResolvedValue(undefined);
+  });
+
+  it("emits katya publish approved hook when approval is newly applied", async () => {
+    mockApprovalService.approve.mockResolvedValue({
+      approval: {
+        id: "approval-1",
+        companyId: "company-1",
+        type: "hire_agent",
+        status: "approved",
+        payload: {},
+        requestedByAgentId: "agent-1",
+      },
+      applied: true,
+    });
+
+    const res = await request(createApp())
+      .post("/api/approvals/approval-1/approve")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockNotifyKatyaPublishApproved).toHaveBeenCalledWith(
+      expect.anything(),
+      {
+        companyId: "company-1",
+        approvalId: "approval-1",
+        approvalType: "hire_agent",
+        requestedByAgentId: "agent-1",
+        linkedIssueIds: ["issue-1"],
+      },
+    );
   });
 
   it("does not emit duplicate approval side effects when approve is already resolved", async () => {
@@ -86,6 +119,7 @@ describe("approval routes idempotent retries", () => {
     expect(mockIssueApprovalService.listIssuesForApproval).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(mockNotifyKatyaPublishApproved).not.toHaveBeenCalled();
   });
 
   it("does not emit duplicate rejection logs when reject is already resolved", async () => {

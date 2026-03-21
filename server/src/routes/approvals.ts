@@ -14,6 +14,7 @@ import {
   heartbeatService,
   issueApprovalService,
   logActivity,
+  notifyKatyaPublishApproved,
   secretService,
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -144,6 +145,19 @@ export function approvalRoutes(db: Db) {
           requestedByAgentId: approval.requestedByAgentId,
           linkedIssueIds,
         },
+      });
+
+      void notifyKatyaPublishApproved(db, {
+        companyId: approval.companyId,
+        approvalId: approval.id,
+        approvalType: approval.type,
+        requestedByAgentId: approval.requestedByAgentId,
+        linkedIssueIds,
+      }).catch((err) => {
+        logger.warn(
+          { err, approvalId: approval.id },
+          "katya publish approved hook failed",
+        );
       });
 
       if (approval.requestedByAgentId) {

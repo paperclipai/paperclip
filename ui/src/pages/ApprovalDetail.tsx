@@ -15,6 +15,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { CheckCircle2, ChevronRight, Sparkles } from "lucide-react";
 import type { ApprovalComment } from "@paperclipai/shared";
 import { MarkdownBody } from "../components/MarkdownBody";
+import { ApprovalDraftReviewPanel, getApprovalDraftText } from "../components/ApprovalDraftReviewPanel";
 
 export function ApprovalDetail() {
   const { approvalId } = useParams<{ approvalId: string }>();
@@ -148,6 +149,8 @@ export function ApprovalDetail() {
   const linkedAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
   const isActionable = approval.status === "pending" || approval.status === "revision_requested";
   const isBudgetApproval = approval.type === "budget_override_required";
+  const isStrategyApproval = approval.type === "approve_ceo_strategy";
+  const draftText = isStrategyApproval ? getApprovalDraftText(payload) : null;
   const TypeIcon = typeIcon[approval.type] ?? defaultTypeIcon;
   const showApprovedBanner = searchParams.get("resolved") === "approved" && approval.status === "approved";
   const primaryLinkedIssue = linkedIssues?.[0] ?? null;
@@ -261,7 +264,7 @@ export function ApprovalDetail() {
           </div>
         )}
         <div className="flex flex-wrap items-center gap-2">
-          {isActionable && !isBudgetApproval && (
+          {isActionable && !isBudgetApproval && !isStrategyApproval && (
             <>
               <Button
                 size="sm"
@@ -293,7 +296,7 @@ export function ApprovalDetail() {
               onClick={() => revisionMutation.mutate()}
               disabled={revisionMutation.isPending}
             >
-              Request revision
+              Needs edits
             </Button>
           )}
           {approval.status === "revision_requested" && (
@@ -322,6 +325,19 @@ export function ApprovalDetail() {
           )}
         </div>
       </div>
+
+      {isStrategyApproval && (
+        <ApprovalDraftReviewPanel
+          draftText={draftText}
+          status={approval.status}
+          onApprove={() => approveMutation.mutate()}
+          onNeedsEdits={() => revisionMutation.mutate()}
+          onReject={() => rejectMutation.mutate()}
+          approvePending={approveMutation.isPending}
+          needsEditsPending={revisionMutation.isPending}
+          rejectPending={rejectMutation.isPending}
+        />
+      )}
 
       <div className="border border-border rounded-lg p-4 space-y-3">
         <h3 className="text-sm font-medium">Comments ({comments?.length ?? 0})</h3>
