@@ -22,44 +22,44 @@ export async function promptSecrets(current?: SecretsConfig): Promise<SecretsCon
   const base = current ?? defaultSecretsConfig();
 
   const provider = await p.select({
-    message: "Secrets provider",
+    message: "密钥管理提供商",
     options: [
       {
         value: "local_encrypted" as const,
-        label: "Local encrypted (recommended)",
-        hint: "best for single-developer installs",
+        label: "本地加密（推荐）",
+        hint: "适合单开发者安装",
       },
       {
         value: "aws_secrets_manager" as const,
         label: "AWS Secrets Manager",
-        hint: "requires external adapter integration",
+        hint: "需要外部适配器集成",
       },
       {
         value: "gcp_secret_manager" as const,
         label: "GCP Secret Manager",
-        hint: "requires external adapter integration",
+        hint: "需要外部适配器集成",
       },
       {
         value: "vault" as const,
         label: "HashiCorp Vault",
-        hint: "requires external adapter integration",
+        hint: "需要外部适配器集成",
       },
     ],
     initialValue: base.provider,
   });
 
   if (p.isCancel(provider)) {
-    p.cancel("Setup cancelled.");
+    p.cancel("设置已取消。");
     process.exit(0);
   }
 
   const strictMode = await p.confirm({
-    message: "Require secret refs for sensitive env vars?",
+    message: "是否要求敏感环境变量使用密钥引用？",
     initialValue: base.strictMode,
   });
 
   if (p.isCancel(strictMode)) {
-    p.cancel("Setup cancelled.");
+    p.cancel("设置已取消。");
     process.exit(0);
   }
 
@@ -67,16 +67,16 @@ export async function promptSecrets(current?: SecretsConfig): Promise<SecretsCon
   let keyFilePath = base.localEncrypted.keyFilePath || fallbackDefault;
   if (provider === "local_encrypted") {
     const keyPath = await p.text({
-      message: "Local encrypted key file path",
+      message: "本地加密密钥文件路径",
       defaultValue: keyFilePath,
       placeholder: fallbackDefault,
       validate: (value) => {
-        if (!value || value.trim().length === 0) return "Key file path is required";
+        if (!value || value.trim().length === 0) return "密钥文件路径为必填项";
       },
     });
 
     if (p.isCancel(keyPath)) {
-      p.cancel("Setup cancelled.");
+      p.cancel("设置已取消。");
       process.exit(0);
     }
     keyFilePath = keyPath.trim();
@@ -84,8 +84,8 @@ export async function promptSecrets(current?: SecretsConfig): Promise<SecretsCon
 
   if (provider !== "local_encrypted") {
     p.note(
-      `${provider} is not fully wired in this build yet. Keep local_encrypted unless you are actively implementing that adapter.`,
-      "Heads up",
+      `${provider} 在当前版本中尚未完全集成。除非你正在实现该适配器，否则请继续使用 local_encrypted。`,
+      "注意",
     );
   }
 
