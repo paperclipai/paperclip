@@ -385,19 +385,38 @@ export function agentRoutes(db: Db) {
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
   ) {
-    if (adapterType !== "opencode_local") return;
-    const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(companyId, adapterConfig);
-    const runtimeEnv = asRecord(runtimeConfig.env) ?? {};
-    try {
-      await ensureOpenCodeModelConfiguredAndAvailable({
-        model: runtimeConfig.model,
-        command: runtimeConfig.command,
-        cwd: runtimeConfig.cwd,
-        env: runtimeEnv,
-      });
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      throw unprocessable(`Invalid opencode_local adapterConfig: ${reason}`);
+    if (!adapterType) return;
+
+    // Validate model compatibility with adapter
+    const model = typeof adapterConfig.model === "string" ? adapterConfig.model : undefined;
+    if (model) {
+      const knownModels = await listAdapterModels(adapterType);
+      if (knownModels.length > 0) {
+        const modelIds = knownModels.map((m) => m.id);
+        if (!modelIds.includes(model)) {
+          throw unprocessable(
+            `Model '${model}' is not compatible with adapter '${adapterType}'. ` +
+            `Supported models: ${modelIds.join(", ")}`,
+          );
+        }
+      }
+    }
+
+    // opencode_local-specific validation
+    if (adapterType === "opencode_local") {
+      const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(companyId, adapterConfig);
+      const runtimeEnv = asRecord(runtimeConfig.env) ?? {};
+      try {
+        await ensureOpenCodeModelConfiguredAndAvailable({
+          model: runtimeConfig.model,
+          command: runtimeConfig.command,
+          cwd: runtimeConfig.cwd,
+          env: runtimeEnv,
+        });
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        throw unprocessable(`Invalid opencode_local adapterConfig: ${reason}`);
+      }
     }
   }
 
@@ -1724,7 +1743,7 @@ export function agentRoutes(db: Db) {
       );
       patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
     }
-    if (touchesAdapterConfiguration && requestedAdapterType === "opencode_local") {
+    if (touchesAdapterConfiguration) {
       const effectiveAdapterConfig = asRecord(patchData.adapterConfig) ?? {};
       await assertAdapterConfigConstraints(
         existing.companyId,
