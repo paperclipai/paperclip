@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lt, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BillingType } from "@paperclipai/shared";
 import {
@@ -1742,6 +1742,42 @@ export function heartbeatService(db: Db) {
     for (const agentId of agentIds) {
       await startNextQueuedRunForAgent(agentId);
     }
+  }
+
+  async function expireStaleQueuedRuns(opts?: { maxAgeMs?: number }) {
+    const maxAgeMs = opts?.maxAgeMs ?? 60_000;
+    const cutoff = new Date(Date.now() - maxAgeMs);
+    const staleRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.status, "queued"),
+          isNull(heartbeatRuns.startedAt),
+          lt(heartbeatRuns.createdAt, cutoff),
+        ),
+      );
+
+    const expired: string[] = [];
+    for (const run of staleRuns) {
+      await setRunStatus(run.id, "cancelled", {
+        finishedAt: new Date(),
+        error: "Expired: queued run never started",
+        errorCode: "stale_queued_expired",
+      });
+      await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+        finishedAt: new Date(),
+        error: "Expired: queued run never started",
+      });
+      await releaseIssueExecutionAndPromote(run);
+      await finalizeAgentStatus(run.agentId, "cancelled");
+      expired.push(run.id);
+    }
+
+    if (expired.length > 0) {
+      logger.warn({ expiredCount: expired.length, runIds: expired }, "expired stale queued runs that never started");
+    }
+    return { expired: expired.length, runIds: expired };
   }
 
   async function updateRuntimeState(
@@ -3658,6 +3694,8 @@ export function heartbeatService(db: Db) {
     reapOrphanedRuns,
 
     resumeQueuedRuns,
+
+    expireStaleQueuedRuns,
 
     tickTimers: async (now = new Date()) => {
       const allAgents = await db.select().from(agents);

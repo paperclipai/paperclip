@@ -430,12 +430,22 @@ export function issueService(db: Db) {
 
   async function isTerminalOrMissingHeartbeatRun(runId: string) {
     const run = await db
-      .select({ status: heartbeatRuns.status })
+      .select({
+        status: heartbeatRuns.status,
+        startedAt: heartbeatRuns.startedAt,
+        createdAt: heartbeatRuns.createdAt,
+      })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
     if (!run) return true;
-    return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
+    if (TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return true;
+    // Treat queued runs that never started as stale after 60s (#1390)
+    if (run.status === "queued" && !run.startedAt && run.createdAt) {
+      const ageMs = Date.now() - new Date(run.createdAt).getTime();
+      if (ageMs > 60_000) return true;
+    }
+    return false;
   }
 
   async function adoptStaleCheckoutRun(input: {
