@@ -17,6 +17,7 @@ import {
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
+import { DEFAULT_QWEN_LOCAL_MODEL } from "@paperclipai/adapter-qwen-local";
 import {
   Popover,
   PopoverContent,
@@ -274,7 +275,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const getCapabilities = useAdapterCapabilities();
   const adapterCaps = getCapabilities(adapterType);
   const isLocal = adapterCaps.supportsInstructionsBundle || adapterCaps.supportsSkills || adapterCaps.supportsLocalAgentJwt;
-  
+
+
   const showLegacyWorkingDirectoryField =
     isLocal && shouldShowLegacyWorkingDirectoryField({ isCreate, adapterConfig: config });
   const uiAdapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
@@ -408,7 +410,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       : adapterType === "opencode_local"
         ? eff("adapterConfig", "variant", String(config.variant ?? ""))
       : eff("adapterConfig", "effort", String(config.effort ?? ""));
-  const showThinkingEffort = adapterType !== "gemini_local";
+  const showThinkingEffort = adapterType !== "gemini_local" && adapterType !== "qwen_local";
   const codexSearchEnabled = adapterType === "codex_local"
     ? (isCreate ? Boolean(val!.search) : eff("adapterConfig", "search", Boolean(config.search)))
     : false;
@@ -565,6 +567,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                         DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
                     } else if (t === "gemini_local") {
                       nextValues.model = DEFAULT_GEMINI_LOCAL_MODEL;
+                    } else if (t === "qwen_local") {
+                      nextValues.model = DEFAULT_QWEN_LOCAL_MODEL;
                     } else if (t === "cursor") {
                       nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
                     } else if (t === "opencode_local") {
@@ -583,6 +587,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                             ? DEFAULT_CODEX_LOCAL_MODEL
                             : t === "gemini_local"
                               ? DEFAULT_GEMINI_LOCAL_MODEL
+                            : t === "qwen_local"
+                              ? DEFAULT_QWEN_LOCAL_MODEL
                             : t === "cursor"
                               ? DEFAULT_CURSOR_LOCAL_MODEL
                             : "",
@@ -703,6 +709,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       claude_local: "claude",
                       codex_local: "codex",
                       gemini_local: "gemini",
+                      qwen_local: "qwen",
                       pi_local: "pi",
                       cursor: "agent",
                       opencode_local: "opencode",

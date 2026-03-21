@@ -69,6 +69,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "Local Gemini agent",
     icon: Gem,
   },
+  qwen_local: {
+    label: "Qwen Code CLI",
+    description: "Local Qwen agent",
+    icon: Terminal,
+  },
   opencode_local: {
     label: "OpenCode",
     description: "Local multi-provider agent",
