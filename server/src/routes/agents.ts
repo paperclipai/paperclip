@@ -401,23 +401,30 @@ export function agentRoutes(db: Db) {
     }
   }
 
-  function assertModelCompatibleWithAdapter(
+  async function assertModelCompatibleWithAdapter(
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
-  ): void {
+  ): Promise<void> {
     if (!adapterType) return;
     const model = asNonEmptyString(adapterConfig.model as string);
     if (!model) return; // no model specified — defaults will apply
 
+    // First quick check against static models (synchronous)
     const staticModels = getStaticAdapterModels(adapterType);
     if (!staticModels) return; // adapter has no static model list (dynamic-only or model-less)
 
-    const validIds = staticModels.map((m) => m.id);
-    if (validIds.includes(model)) return;
+    const staticIds = staticModels.map((m) => m.id);
+    if (staticIds.includes(model)) return;
+
+    // For adapters with dynamic discovery (e.g. codex_local, cursor),
+    // also check dynamically discovered models before rejecting
+    const allModels = await listAdapterModels(adapterType);
+    const allIds = allModels.map((m) => m.id);
+    if (allIds.includes(model)) return;
 
     throw unprocessable(
       `Model '${model}' is not compatible with adapter '${adapterType}'. ` +
-      `Compatible models: ${validIds.join(", ")}. ` +
+      `Compatible models: ${allIds.join(", ")}. ` +
       `Change the model or switch adapter_type.`,
     );
   }
@@ -1190,7 +1197,7 @@ export function agentRoutes(db: Db) {
       hireInput.adapterType,
       normalizedAdapterConfig,
     );
-    assertModelCompatibleWithAdapter(hireInput.adapterType, normalizedAdapterConfig);
+    await assertModelCompatibleWithAdapter(hireInput.adapterType, normalizedAdapterConfig);
     const normalizedHireInput = {
       ...hireInput,
       adapterConfig: normalizedAdapterConfig,
@@ -1351,7 +1358,7 @@ export function agentRoutes(db: Db) {
       createInput.adapterType,
       normalizedAdapterConfig,
     );
-    assertModelCompatibleWithAdapter(createInput.adapterType, normalizedAdapterConfig);
+    await assertModelCompatibleWithAdapter(createInput.adapterType, normalizedAdapterConfig);
 
     const createdAgent = await svc.create(companyId, {
       ...createInput,
@@ -1757,7 +1764,7 @@ export function agentRoutes(db: Db) {
     }
     if (touchesAdapterConfiguration) {
       const effectiveAdapterConfig = asRecord(patchData.adapterConfig) ?? asRecord(existing.adapterConfig) ?? {};
-      assertModelCompatibleWithAdapter(requestedAdapterType, effectiveAdapterConfig);
+      await assertModelCompatibleWithAdapter(requestedAdapterType, effectiveAdapterConfig);
     }
 
     const actor = getActorInfo(req);
