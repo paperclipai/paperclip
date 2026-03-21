@@ -56,6 +56,7 @@ import {
   resolveSessionCompactionPolicy,
   type SessionCompactionPolicy,
 } from "@paperclipai/adapter-utils";
+import { TICK_MAX_ENQUEUE, stableJitterMs } from "./scheduler-utils.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -1518,6 +1519,7 @@ export function heartbeatService(db: Db) {
     return {
       enabled: asBoolean(heartbeat.enabled, true),
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
+      cooldownSec: Math.max(0, asNumber(heartbeat.cooldownSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
     };
@@ -1647,6 +1649,8 @@ export function heartbeatService(db: Db) {
       .where(eq(heartbeatRuns.status, "running"));
 
     const reaped: string[] = [];
+    // Track unique agents that need their next queued run started (deduplicate)
+    const agentsToResume = new Set<string>();
 
     for (const { run, adapterType } of activeRuns) {
       if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
@@ -3666,6 +3670,10 @@ export function heartbeatService(db: Db) {
       let skipped = 0;
 
       for (const agent of allAgents) {
+        // Rate-limit: cap enqueues per tick to prevent thundering herd on recovery
+        // Use continue (not break) so all agents are still evaluated fairly
+        if (enqueued >= TICK_MAX_ENQUEUE) continue;
+
         if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
         const policy = parseHeartbeatPolicy(agent);
         if (!policy.enabled || policy.intervalSec <= 0) continue;
@@ -3675,20 +3683,37 @@ export function heartbeatService(db: Db) {
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
 
-        const run = await enqueueWakeup(agent.id, {
-          source: "timer",
-          triggerDetail: "system",
-          reason: "heartbeat_timer",
-          requestedByActorType: "system",
-          requestedByActorId: "heartbeat_scheduler",
-          contextSnapshot: {
-            source: "scheduler",
-            reason: "interval_elapsed",
-            now: now.toISOString(),
-          },
-        });
-        if (run) enqueued += 1;
-        else skipped += 1;
+        // Per-agent jitter only during recovery bursts (elapsed >> interval),
+        // so steady-state scheduling fires exactly at intervalSec.
+        const isRecoveryBurst = elapsedMs > policy.intervalSec * 1500;
+        const maxJitterMs = isRecoveryBurst
+          ? Math.min(policy.intervalSec * 250, 5 * 60 * 1000)
+          : 0;
+        const jitterMs = stableJitterMs(agent.id, maxJitterMs);
+        if (elapsedMs < policy.intervalSec * 1000 + jitterMs) continue;
+
+        // Enforce cooldown: honour the per-agent cooldownSec if configured
+        if (policy.cooldownSec > 0 && elapsedMs < policy.cooldownSec * 1000) continue;
+
+        try {
+          const run = await enqueueWakeup(agent.id, {
+            source: "timer",
+            triggerDetail: "system",
+            reason: "heartbeat_timer",
+            requestedByActorType: "system",
+            requestedByActorId: "heartbeat_scheduler",
+            contextSnapshot: {
+              source: "scheduler",
+              reason: "interval_elapsed",
+              now: now.toISOString(),
+            },
+          });
+          if (run) enqueued += 1;
+          else skipped += 1;
+        } catch {
+          // Individual agent enqueue failures should not block other agents
+          skipped += 1;
+        }
       }
 
       return { checked, enqueued, skipped };

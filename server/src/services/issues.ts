@@ -34,6 +34,50 @@ import { getDefaultCompanyGoal } from "./goals.js";
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 
+/**
+ * Decode common HTML entities that can leak from rich-text editors.
+ */
+function decodeHtmlEntities(text: string): string {
+  return text
+    .replace(/&amp;/g, "&")
+    .replace(/&#(\d+);/g, (_, code: string) => String.fromCharCode(parseInt(code, 10)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, code: string) => String.fromCharCode(parseInt(code, 16)))
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&nbsp;/g, " ");
+}
+
+/**
+ * Match @mentions in a body against a list of candidate names.
+ * Returns a Set of matched names (lowercased).
+ *
+ * Handles HTML-encoded bodies and multi-word names correctly.
+ */
+export function matchMentionedNames(body: string, names: string[]): Set<string> {
+  const decoded = decodeHtmlEntities(body);
+  const lower = decoded.toLowerCase();
+  const matched = new Set<string>();
+
+  for (const name of names) {
+    const nameLower = name.toLowerCase();
+    const mention = `@${nameLower}`;
+    let pos = 0;
+    while ((pos = lower.indexOf(mention, pos)) !== -1) {
+      // Ensure @ is not preceded by a word char (avoids email-like patterns)
+      if (pos > 0 && /\w/.test(lower[pos - 1])) { pos++; continue; }
+      // Ensure the name is not a prefix of a longer token
+      const end = pos + mention.length;
+      if (end < lower.length && /\w/.test(lower[end])) { pos++; continue; }
+      matched.add(nameLower);
+      break;
+    }
+  }
+
+  return matched;
+}
+
 function assertTransition(from: string, to: string) {
   if (from === to) return;
   if (!ALL_ISSUE_STATUSES.includes(to)) {
@@ -1458,14 +1502,13 @@ export function issueService(db: Db) {
       }),
 
     findMentionedAgents: async (companyId: string, body: string) => {
-      const re = /\B@([^\s@,!?.]+)/g;
-      const tokens = new Set<string>();
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(body)) !== null) tokens.add(m[1].toLowerCase());
-      if (tokens.size === 0) return [];
+      if (!body.includes("@")) return [];
+
       const rows = await db.select({ id: agents.id, name: agents.name })
         .from(agents).where(eq(agents.companyId, companyId));
-      return rows.filter(a => tokens.has(a.name.toLowerCase())).map(a => a.id);
+
+      const matched = matchMentionedNames(body, rows.map(a => a.name));
+      return rows.filter(a => matched.has(a.name.toLowerCase())).map(a => a.id);
     },
 
     findMentionedProjectIds: async (issueId: string) => {
