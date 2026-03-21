@@ -5,6 +5,9 @@ import type {
 } from "@paperclipai/adapter-utils";
 import { asNumber, asString, buildPaperclipEnv, parseObject } from "@paperclipai/adapter-utils/server-utils";
 import crypto, { randomUUID } from "node:crypto";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { WebSocket } from "ws";
 
 type SessionKeyStrategy = "fixed" | "issue" | "run";
@@ -313,8 +316,65 @@ function resolvePaperclipApiUrlOverride(value: unknown): string | null {
   }
 }
 
+/**
+ * Resolve PAPERCLIP_API_KEY for wake context.
+ * Priority chain:
+ *   1. config.paperclipApiKey (explicit per-agent config)
+ *   2. process.env.PAPERCLIP_API_KEY
+ *   3. Claimed key file (agent-scoped path, then cwd path, then default path)
+ */
+export function resolvePaperclipApiKey(config: Record<string, unknown>, agentId?: string): string | null {
+  const configKey = nonEmpty(config.paperclipApiKey);
+  if (configKey) return configKey;
+
+  const envKey = nonEmpty(process.env.PAPERCLIP_API_KEY);
+  if (envKey) return envKey;
+
+  const homeDir = os.homedir();
+  const candidates: string[] = [];
+
+  if (agentId) {
+    candidates.push(
+      path.join(homeDir, ".openclaw", "workspace", agentId, "paperclip-claimed-api-key.json"),
+    );
+  }
+
+  const cwd = nonEmpty(config.cwd);
+  if (cwd) {
+    candidates.push(path.join(cwd, "paperclip-claimed-api-key.json"));
+  }
+
+  candidates.push(path.join(homeDir, ".openclaw", "workspace", "paperclip-claimed-api-key.json"));
+
+  for (const filePath of candidates) {
+    try {
+      const content = fs.readFileSync(filePath, "utf-8");
+      const parsed = JSON.parse(content) as Record<string, unknown>;
+      const key =
+        nonEmpty(parsed.token) ??
+        nonEmpty(parsed.apiKey) ??
+        nonEmpty(parsed.key) ??
+        nonEmpty(parsed.PAPERCLIP_API_KEY);
+      if (!key) continue;
+      const fingerprint = key.length >= 8 ? `${key.slice(0, 4)}...${key.slice(-4)}` : `${key.slice(0, 1)}...`;
+      console.info(
+        `[openclaw-gateway] Resolved PAPERCLIP_API_KEY from ${filePath} for agent ${agentId ?? "unknown"} (${fingerprint})`,
+      );
+      return key;
+    } catch {
+      // Try next candidate.
+    }
+  }
+
+  console.warn(
+    `[openclaw-gateway] Could not resolve PAPERCLIP_API_KEY for agent ${agentId ?? "unknown"}`,
+  );
+  return null;
+}
+
 function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: WakePayload): Record<string, string> {
   const paperclipApiUrlOverride = resolvePaperclipApiUrlOverride(ctx.config.paperclipApiUrl);
+  const resolvedApiKey = resolvePaperclipApiKey(parseObject(ctx.config), ctx.agent.id);
   const paperclipEnv: Record<string, string> = {
     ...buildPaperclipEnv(ctx.agent),
     PAPERCLIP_RUN_ID: ctx.runId,
@@ -331,12 +391,14 @@ function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: Wak
   if (wakePayload.issueIds.length > 0) {
     paperclipEnv.PAPERCLIP_LINKED_ISSUE_IDS = wakePayload.issueIds.join(",");
   }
+  if (resolvedApiKey) {
+    paperclipEnv.PAPERCLIP_API_KEY = resolvedApiKey;
+  }
 
   return paperclipEnv;
 }
 
 function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string>): string {
-  const claimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
   const orderedKeys = [
     "PAPERCLIP_RUN_ID",
     "PAPERCLIP_AGENT_ID",
@@ -359,6 +421,7 @@ function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string
 
   const issueIdHint = payload.taskId ?? payload.issueId ?? "";
   const apiBaseHint = paperclipEnv.PAPERCLIP_API_URL ?? "<set PAPERCLIP_API_URL>";
+  const hasResolvedApiKey = nonEmpty(paperclipEnv.PAPERCLIP_API_KEY) !== null;
 
   const lines = [
     "Paperclip wake event for a cloud adapter.",
@@ -367,9 +430,9 @@ function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string
     "",
     "Set these values in your run context:",
     ...envLines,
-    `PAPERCLIP_API_KEY=<token from ${claimedApiKeyPath}>`,
-    "",
-    `Load PAPERCLIP_API_KEY from ${claimedApiKeyPath} (the token you saved after claim-api-key).`,
+    hasResolvedApiKey
+      ? "PAPERCLIP_API_KEY is provided via environment variable."
+      : "PAPERCLIP_API_KEY could not be resolved. Stop and request re-claim from your manager.",
     "",
     `api_base=${apiBaseHint}`,
     `task_id=${payload.taskId ?? ""}`,
@@ -446,6 +509,7 @@ function buildStandardPaperclipPayload(
     approvalId: wakePayload.approvalId,
     approvalStatus: wakePayload.approvalStatus,
     apiUrl: paperclipEnv.PAPERCLIP_API_URL ?? null,
+    env: paperclipEnv,
   };
 
   if (workspace) {

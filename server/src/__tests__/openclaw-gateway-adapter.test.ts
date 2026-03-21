@@ -1,7 +1,10 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
-import { execute, testEnvironment } from "@paperclipai/adapter-openclaw-gateway/server";
+import { execute, resolvePaperclipApiKey, testEnvironment } from "@paperclipai/adapter-openclaw-gateway/server";
 import {
   buildOpenClawGatewayConfig,
   parseOpenClawGatewayStdoutLine,
@@ -551,6 +554,98 @@ describe("openclaw gateway adapter execute", () => {
       expect(gateway.getAgentPayload()).toBeTruthy();
     } finally {
       await gateway.close();
+    }
+  });
+});
+
+describe("resolvePaperclipApiKey", () => {
+  it("resolves from config.paperclipApiKey", () => {
+    const key = resolvePaperclipApiKey({ paperclipApiKey: "test-key-123" });
+    expect(key).toBe("test-key-123");
+  });
+
+  it("resolves from PAPERCLIP_API_KEY env var", () => {
+    const previous = process.env.PAPERCLIP_API_KEY;
+    process.env.PAPERCLIP_API_KEY = "env-key-456";
+    try {
+      const key = resolvePaperclipApiKey({});
+      expect(key).toBe("env-key-456");
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_API_KEY;
+      else process.env.PAPERCLIP_API_KEY = previous;
+    }
+  });
+
+  it("prefers config over env", () => {
+    const previous = process.env.PAPERCLIP_API_KEY;
+    process.env.PAPERCLIP_API_KEY = "env-key";
+    try {
+      const key = resolvePaperclipApiKey({ paperclipApiKey: "config-key" });
+      expect(key).toBe("config-key");
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_API_KEY;
+      else process.env.PAPERCLIP_API_KEY = previous;
+    }
+  });
+
+  it("returns null when nothing is found", () => {
+    const previous = process.env.PAPERCLIP_API_KEY;
+    const fsSpy = vi.spyOn(fs, "readFileSync").mockImplementation(() => {
+      throw new Error("not found");
+    });
+    try {
+      delete process.env.PAPERCLIP_API_KEY;
+      const key = resolvePaperclipApiKey({});
+      expect(key).toBeNull();
+    } finally {
+      fsSpy.mockRestore();
+      if (previous === undefined) delete process.env.PAPERCLIP_API_KEY;
+      else process.env.PAPERCLIP_API_KEY = previous;
+    }
+  });
+
+  it("resolves from claimed key file", () => {
+    const previous = process.env.PAPERCLIP_API_KEY;
+    const homeSpy = vi.spyOn(os, "homedir").mockReturnValue("/tmp/home");
+    const fsSpy = vi.spyOn(fs, "readFileSync").mockImplementation((targetPath: fs.PathOrFileDescriptor) => {
+      const value = String(targetPath);
+      if (value === path.join("/tmp/home", ".openclaw", "workspace", "agent-42", "paperclip-claimed-api-key.json")) {
+        return JSON.stringify({ token: "file-key-9999" });
+      }
+      throw new Error("missing");
+    });
+    try {
+      delete process.env.PAPERCLIP_API_KEY;
+      const key = resolvePaperclipApiKey({}, "agent-42");
+      expect(key).toBe("file-key-9999");
+    } finally {
+      fsSpy.mockRestore();
+      homeSpy.mockRestore();
+      if (previous === undefined) delete process.env.PAPERCLIP_API_KEY;
+      else process.env.PAPERCLIP_API_KEY = previous;
+    }
+  });
+
+  it("does not log actual key value", () => {
+    const previous = process.env.PAPERCLIP_API_KEY;
+    const homeSpy = vi.spyOn(os, "homedir").mockReturnValue("/tmp/home");
+    const fsSpy = vi.spyOn(fs, "readFileSync").mockReturnValue(
+      JSON.stringify({ token: "very-secret-key-12345678" }),
+    );
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      delete process.env.PAPERCLIP_API_KEY;
+      const key = resolvePaperclipApiKey({}, "agent-7");
+      expect(key).toBe("very-secret-key-12345678");
+      const logged = infoSpy.mock.calls.map((call) => call.map(String).join(" ")).join("\n");
+      expect(logged).toContain("very...5678");
+      expect(logged).not.toContain("very-secret-key-12345678");
+    } finally {
+      infoSpy.mockRestore();
+      fsSpy.mockRestore();
+      homeSpy.mockRestore();
+      if (previous === undefined) delete process.env.PAPERCLIP_API_KEY;
+      else process.env.PAPERCLIP_API_KEY = previous;
     }
   });
 });
