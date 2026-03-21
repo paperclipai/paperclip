@@ -22,21 +22,7 @@
         "dragDropEnabled": true
       }
     ],
-    "security": {
-      "dangerousRemoteDomainIpcAccess": [
-        {
-          "domain": "app.paperclip.inc",
-          "enableTauriAPI": true,
-          "windows": ["main"],
-          "plugins": [
-            "notification",
-            "deep-link",
-            "updater",
-            "process"
-          ]
-        }
-      ]
-    },
+    "security": {},
     "trayIcon": {
       "iconPath": "icons/icon.png",
       "iconAsTemplate": true,
