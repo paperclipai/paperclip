@@ -24,6 +24,7 @@ import { getServerAdapter, runningProcesses } from "../adapters/index.js";
 import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec, UsageSummary } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
+import { isTransientApiError } from "./transient-error-detection.js";
 import { costService } from "./costs.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
@@ -1511,17 +1512,150 @@ export function heartbeatService(db: Db) {
     return queued;
   }
 
+  async function enqueueTransientRetry(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect,
+    delayMs: number,
+  ): Promise<typeof heartbeatRuns.$inferSelect> {
+    const now = new Date();
+    const contextSnapshot = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(contextSnapshot.issueId);
+    const taskKey = deriveTaskKey(contextSnapshot, null);
+    const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
+    const retryCount = (run.transientRetryCount ?? 0) + 1;
+    const retryContextSnapshot = {
+      ...contextSnapshot,
+      retryOfRunId: run.id,
+      wakeReason: "transient_api_retry",
+      retryReason: "transient_api_error",
+      retryAttempt: retryCount,
+    };
+
+    const queued = await db.transaction(async (tx) => {
+      const wakeupRequest = await tx
+        .insert(agentWakeupRequests)
+        .values({
+          companyId: run.companyId,
+          agentId: run.agentId,
+          source: "automation",
+          triggerDetail: "system",
+          reason: "transient_api_retry",
+          payload: {
+            ...(issueId ? { issueId } : {}),
+            retryOfRunId: run.id,
+            retryAttempt: retryCount,
+            delayMs,
+          },
+          status: "queued",
+          requestedByActorType: "system",
+          requestedByActorId: null,
+          updatedAt: now,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      const retryRun = await tx
+        .insert(heartbeatRuns)
+        .values({
+          companyId: run.companyId,
+          agentId: run.agentId,
+          invocationSource: "automation",
+          triggerDetail: "system",
+          status: "queued",
+          wakeupRequestId: wakeupRequest.id,
+          contextSnapshot: retryContextSnapshot,
+          sessionIdBefore: sessionBefore,
+          retryOfRunId: run.id,
+          transientRetryCount: retryCount,
+          updatedAt: now,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      await tx
+        .update(agentWakeupRequests)
+        .set({
+          runId: retryRun.id,
+          updatedAt: now,
+        })
+        .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+
+      if (issueId) {
+        await tx
+          .update(issues)
+          .set({
+            executionRunId: retryRun.id,
+            executionAgentNameKey: normalizeAgentNameKey(agent.name),
+            executionLockedAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(issues.id, issueId),
+              eq(issues.companyId, run.companyId),
+              eq(issues.executionRunId, run.id),
+            ),
+          );
+      }
+
+      return retryRun;
+    });
+
+    publishLiveEvent({
+      companyId: queued.companyId,
+      type: "heartbeat.run.queued",
+      payload: {
+        runId: queued.id,
+        agentId: queued.agentId,
+        invocationSource: queued.invocationSource,
+        triggerDetail: queued.triggerDetail,
+        wakeupRequestId: queued.wakeupRequestId,
+      },
+    });
+
+    await appendRunEvent(queued, 1, {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: `Queued automatic retry (attempt ${retryCount}) after transient API error — delay ${Math.round(delayMs / 1000)}s`,
+      payload: {
+        retryOfRunId: run.id,
+        retryAttempt: retryCount,
+        delayMs,
+      },
+    });
+
+    // Schedule delayed execution
+    if (delayMs > 0) {
+      setTimeout(() => {
+        void startNextQueuedRunForAgent(agent.id).catch((err) => {
+          logger.error({ err, agentId: agent.id }, "failed to start queued transient retry run");
+        });
+      }, delayMs);
+    }
+
+    return queued;
+  }
+
   function parseHeartbeatPolicy(agent: typeof agents.$inferSelect) {
     const runtimeConfig = parseObject(agent.runtimeConfig);
     const heartbeat = parseObject(runtimeConfig.heartbeat);
+    const transientRetry = parseObject(heartbeat.transientRetry);
 
     return {
       enabled: asBoolean(heartbeat.enabled, true),
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
+      transientRetry: {
+        maxRetries: Math.max(0, Math.min(5, asNumber(transientRetry.maxRetries, 3))),
+        initialDelayMs: Math.max(1000, asNumber(transientRetry.initialDelayMs, 30_000)),
+        backoffMultiplier: Math.max(1, asNumber(transientRetry.backoffMultiplier, 2)),
+      },
     };
   }
+
+  // isTransientApiError is imported from ./transient-error-detection.js
 
   async function countRunningRunsForAgent(agentId: string) {
     const [{ count }] = await db
@@ -2490,6 +2624,14 @@ export function heartbeatService(db: Db) {
               ? "timed_out"
               : "failed";
 
+      // Check for transient API errors eligible for retry
+      const policy = parseHeartbeatPolicy(agent);
+      const currentRetryCount = run.transientRetryCount ?? 0;
+      const shouldRetryTransient =
+        outcome === "failed" &&
+        currentRetryCount < policy.transientRetry.maxRetries &&
+        isTransientApiError(adapterResult.errorMessage, stderrExcerpt);
+
       const usageJson =
         normalizedUsage || adapterResult.costUsd != null
           ? ({
@@ -2516,22 +2658,27 @@ export function heartbeatService(db: Db) {
             } as Record<string, unknown>)
           : null;
 
+      const errorForStatus = outcome === "succeeded"
+        ? null
+        : redactCurrentUserText(
+            adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
+            currentUserRedactionOptions,
+          );
+
       await setRunStatus(run.id, status, {
         finishedAt: new Date(),
-        error:
-          outcome === "succeeded"
-            ? null
-            : redactCurrentUserText(
-                adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
-                currentUserRedactionOptions,
-              ),
+        error: shouldRetryTransient
+          ? `${errorForStatus}; queuing transient retry ${currentRetryCount + 1}/${policy.transientRetry.maxRetries}`
+          : errorForStatus,
         errorCode:
           outcome === "timed_out"
             ? "timeout"
             : outcome === "cancelled"
               ? "cancelled"
               : outcome === "failed"
-                ? (adapterResult.errorCode ?? "adapter_failed")
+                ? shouldRetryTransient
+                  ? "transient_api_error"
+                  : (adapterResult.errorCode ?? "adapter_failed")
                 : null,
         exitCode: adapterResult.exitCode,
         signal: adapterResult.signal,
@@ -2556,13 +2703,28 @@ export function heartbeatService(db: Db) {
           eventType: "lifecycle",
           stream: "system",
           level: outcome === "succeeded" ? "info" : "error",
-          message: `run ${outcome}`,
+          message: shouldRetryTransient
+            ? `run failed (transient API error) — queuing retry ${currentRetryCount + 1}/${policy.transientRetry.maxRetries}`
+            : `run ${outcome}`,
           payload: {
             status,
             exitCode: adapterResult.exitCode,
+            ...(shouldRetryTransient ? { transientRetry: true, retryAttempt: currentRetryCount + 1 } : {}),
           },
         });
-        await releaseIssueExecutionAndPromote(finalizedRun);
+
+        if (shouldRetryTransient) {
+          // Enqueue retry with exponential backoff instead of releasing the issue
+          const delayMs = policy.transientRetry.initialDelayMs *
+            Math.pow(policy.transientRetry.backoffMultiplier, currentRetryCount);
+          const retryRun = await enqueueTransientRetry(finalizedRun, agent, delayMs);
+          logger.info(
+            { runId: run.id, retryRunId: retryRun.id, retryAttempt: currentRetryCount + 1, delayMs },
+            "queued transient API failure retry",
+          );
+        } else {
+          await releaseIssueExecutionAndPromote(finalizedRun);
+        }
       }
 
       if (finalizedRun) {
@@ -2597,6 +2759,13 @@ export function heartbeatService(db: Db) {
       );
       logger.error({ err, runId }, "heartbeat execution failed");
 
+      // Check for transient API errors in the exception path
+      const catchRetryPolicy = parseHeartbeatPolicy(agent);
+      const catchRetryCount = run.transientRetryCount ?? 0;
+      const catchShouldRetry =
+        catchRetryCount < catchRetryPolicy.transientRetry.maxRetries &&
+        isTransientApiError(message, stderrExcerpt);
+
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
       if (handle) {
         try {
@@ -2607,8 +2776,10 @@ export function heartbeatService(db: Db) {
       }
 
       const failedRun = await setRunStatus(run.id, "failed", {
-        error: message,
-        errorCode: "adapter_failed",
+        error: catchShouldRetry
+          ? `${message}; queuing transient retry ${catchRetryCount + 1}/${catchRetryPolicy.transientRetry.maxRetries}`
+          : message,
+        errorCode: catchShouldRetry ? "transient_api_error" : "adapter_failed",
         finishedAt: new Date(),
         stdoutExcerpt,
         stderrExcerpt,
@@ -2626,9 +2797,22 @@ export function heartbeatService(db: Db) {
           eventType: "error",
           stream: "system",
           level: "error",
-          message,
+          message: catchShouldRetry
+            ? `${message} — queuing transient retry ${catchRetryCount + 1}/${catchRetryPolicy.transientRetry.maxRetries}`
+            : message,
         });
-        await releaseIssueExecutionAndPromote(failedRun);
+
+        if (catchShouldRetry) {
+          const delayMs = catchRetryPolicy.transientRetry.initialDelayMs *
+            Math.pow(catchRetryPolicy.transientRetry.backoffMultiplier, catchRetryCount);
+          const retryRun = await enqueueTransientRetry(failedRun, agent, delayMs);
+          logger.info(
+            { runId: run.id, retryRunId: retryRun.id, retryAttempt: catchRetryCount + 1, delayMs },
+            "queued transient API failure retry (from catch block)",
+          );
+        } else {
+          await releaseIssueExecutionAndPromote(failedRun);
+        }
 
         await updateRuntimeState(agent, failedRun, {
           exitCode: null,
