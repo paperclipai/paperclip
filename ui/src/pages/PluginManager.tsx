@@ -177,24 +177,30 @@ export function PluginManager() {
             <DialogHeader>
               <DialogTitle>Install Plugin</DialogTitle>
               <DialogDescription>
-                Enter the npm package name of the plugin you wish to install.
+                Enter an npm package name or a local filesystem path to install a plugin.
               </DialogDescription>
             </DialogHeader>
             <div className="grid gap-4 py-4">
               <div className="grid gap-2">
-                <Label htmlFor="packageName">npm Package Name</Label>
+                <Label htmlFor="packageName">Package Name or Local Path</Label>
                 <Input
                   id="packageName"
-                  placeholder="@paperclipai/plugin-example"
+                  placeholder="@paperclipai/plugin-example or /path/to/plugin"
                   value={installPackage}
                   onChange={(e) => setInstallPackage(e.target.value)}
                 />
+                {(installPackage.startsWith("/") || installPackage.startsWith("./") || installPackage.startsWith("../") || installPackage.startsWith("~/")) && (
+                  <p className="text-xs text-muted-foreground">📁 Detected as local filesystem path</p>
+                )}
               </div>
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => setInstallDialogOpen(false)}>Cancel</Button>
               <Button
-                onClick={() => installMutation.mutate({ packageName: installPackage })}
+                onClick={() => {
+                  const isLocal = installPackage.startsWith("/") || installPackage.startsWith("./") || installPackage.startsWith("../") || installPackage.startsWith("~/");
+                  installMutation.mutate({ packageName: installPackage, isLocalPath: isLocal || undefined });
+                }}
                 disabled={!installPackage || installMutation.isPending}
               >
                 {installMutation.isPending ? "Installing..." : "Install"}

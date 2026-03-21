@@ -627,14 +627,25 @@ export function pluginRoutes(
       return;
     }
 
+    // Auto-detect local filesystem paths when isLocalPath is not explicitly set.
+    // Absolute paths (/...), relative paths (./..., ../...), and home-relative
+    // paths (~/) are treated as local installs. This lets the UI and CLI omit
+    // the isLocalPath flag for obvious filesystem paths.
+    const effectiveIsLocalPath =
+      isLocalPath ??
+      (trimmedPackage.startsWith("/") ||
+        trimmedPackage.startsWith("./") ||
+        trimmedPackage.startsWith("../") ||
+        trimmedPackage.startsWith("~/"));
+
     // Basic security check for package name (prevent injection)
-    if (!isLocalPath && /[<>:"|?*]/.test(trimmedPackage)) {
+    if (!effectiveIsLocalPath && /[<>:"|?*]/.test(trimmedPackage)) {
       res.status(400).json({ error: "packageName contains invalid characters" });
       return;
     }
 
     try {
-      const installOptions = isLocalPath
+      const installOptions = effectiveIsLocalPath
         ? { localPath: trimmedPackage }
         : { packageName: trimmedPackage, version: version?.trim() };
 
