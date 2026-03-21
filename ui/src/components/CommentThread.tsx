@@ -1,8 +1,8 @@
-import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { Link, useLocation } from "react-router-dom";
 import type { IssueComment, Agent } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
-import { Check, Copy, Paperclip } from "lucide-react";
+import { ArrowDownUp, Check, Copy, Paperclip } from "lucide-react";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { MarkdownBody } from "./MarkdownBody";
@@ -30,11 +30,31 @@ interface CommentReassignment {
   assigneeUserId: string | null;
 }
 
+type SortOrder = "newest" | "oldest";
+
+function loadSortOrder(issueId: string): SortOrder {
+  try {
+    const val = localStorage.getItem(`paperclip:comment-sort:${issueId}`);
+    return val === "oldest" ? "oldest" : "newest";
+  } catch {
+    return "newest";
+  }
+}
+
+function saveSortOrder(issueId: string, order: SortOrder) {
+  try {
+    localStorage.setItem(`paperclip:comment-sort:${issueId}`, order);
+  } catch {
+    // Ignore localStorage failures.
+  }
+}
+
 interface CommentThreadProps {
   comments: CommentWithRunMeta[];
   linkedRuns?: LinkedRunItem[];
   companyId?: string | null;
   projectId?: string | null;
+  issueId?: string;
   onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment) => Promise<void>;
   issueStatus?: string;
   agentMap?: Map<string, Agent>;
@@ -259,6 +279,7 @@ export function CommentThread({
   linkedRuns = [],
   companyId,
   projectId,
+  issueId,
   onAdd,
   agentMap,
   imageUploadHandler,
@@ -278,6 +299,14 @@ export function CommentThread({
   const effectiveSuggestedAssigneeValue = suggestedAssigneeValue ?? currentAssigneeValue;
   const [reassignTarget, setReassignTarget] = useState(effectiveSuggestedAssigneeValue);
   const [highlightCommentId, setHighlightCommentId] = useState<string | null>(null);
+  const [sortOrder, setSortOrder] = useState<SortOrder>(() => issueId ? loadSortOrder(issueId) : "newest");
+  const toggleSortOrder = useCallback(() => {
+    setSortOrder((prev) => {
+      const next = prev === "newest" ? "oldest" : "newest";
+      if (issueId) saveSortOrder(issueId, next);
+      return next;
+    });
+  }, [issueId]);
   const editorRef = useRef<MarkdownEditorRef>(null);
   const attachInputRef = useRef<HTMLInputElement | null>(null);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -297,12 +326,13 @@ export function CommentThread({
       createdAtMs: new Date(run.startedAt ?? run.createdAt).getTime(),
       run,
     }));
+    const dir = sortOrder === "newest" ? -1 : 1;
     return [...commentItems, ...runItems].sort((a, b) => {
-      if (a.createdAtMs !== b.createdAtMs) return a.createdAtMs - b.createdAtMs;
-      if (a.kind === b.kind) return a.id.localeCompare(b.id);
-      return a.kind === "comment" ? -1 : 1;
+      if (a.createdAtMs !== b.createdAtMs) return (a.createdAtMs - b.createdAtMs) * dir;
+      if (a.kind === b.kind) return a.id.localeCompare(b.id) * dir;
+      return (a.kind === "comment" ? -1 : 1) * dir;
     });
-  }, [comments, linkedRuns]);
+  }, [comments, linkedRuns, sortOrder]);
 
   // Build mention options from agent map (exclude terminated agents)
   const mentions = useMemo<MentionOption[]>(() => {
@@ -398,7 +428,18 @@ export function CommentThread({
 
   return (
     <div className="space-y-4">
-      <h3 className="text-sm font-semibold">Comments &amp; Runs ({timeline.length})</h3>
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-semibold">Comments &amp; Runs ({timeline.length})</h3>
+        <button
+          type="button"
+          onClick={toggleSortOrder}
+          className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+          title={sortOrder === "newest" ? "Showing newest first" : "Showing oldest first"}
+        >
+          <ArrowDownUp className="h-3 w-3" />
+          {sortOrder === "newest" ? "Newest first" : "Oldest first"}
+        </button>
+      </div>
 
       <TimelineList
         timeline={timeline}
