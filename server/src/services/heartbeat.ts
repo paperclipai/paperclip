@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lt, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BillingType } from "@paperclipai/shared";
 import {
@@ -1732,6 +1732,50 @@ export function heartbeatService(db: Db) {
     return { reaped: reaped.length, runIds: reaped };
   }
 
+  /**
+   * Expire queued runs that never transitioned to running within 5 minutes.
+   * These stale queued runs hold `executionRunId` on their target issues,
+   * permanently blocking all subsequent mutations (GH #1390).
+   */
+  async function reapStaleQueuedRuns() {
+    const staleThresholdMs = 5 * 60 * 1000;
+    const cutoff = new Date(Date.now() - staleThresholdMs);
+    const staleRuns = await db
+      .select({ id: heartbeatRuns.id, agentId: heartbeatRuns.agentId })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.status, "queued"),
+          isNull(heartbeatRuns.startedAt),
+          lt(heartbeatRuns.createdAt, cutoff),
+        ),
+      );
+
+    const expired: string[] = [];
+    for (const run of staleRuns) {
+      const finalized = await setRunStatus(run.id, "failed", {
+        error: "Queued run expired: never started within timeout (5m)",
+        errorCode: "queued_run_expired",
+      });
+      if (finalized) {
+        await releaseIssueExecutionAndPromote(finalized);
+        await appendRunEvent(finalized, await nextRunEventSeq(finalized.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: "Queued run expired: never started within 5 minutes",
+        });
+        await finalizeAgentStatus(run.agentId, "failed");
+        expired.push(run.id);
+      }
+    }
+
+    if (expired.length > 0) {
+      logger.warn({ expiredCount: expired.length, runIds: expired }, "expired stale queued heartbeat runs");
+    }
+    return { expired: expired.length, runIds: expired };
+  }
+
   async function resumeQueuedRuns() {
     const queuedRuns = await db
       .select({ agentId: heartbeatRuns.agentId })
@@ -2974,6 +3018,15 @@ export function heartbeatService(db: Db) {
         if (activeExecutionRun && activeExecutionRun.status !== "queued" && activeExecutionRun.status !== "running") {
           activeExecutionRun = null;
         }
+        // A queued run that never started within 5 minutes is stale (GH #1390).
+        if (
+          activeExecutionRun &&
+          activeExecutionRun.status === "queued" &&
+          !activeExecutionRun.startedAt &&
+          Date.now() - new Date(activeExecutionRun.createdAt).getTime() > 5 * 60 * 1000
+        ) {
+          activeExecutionRun = null;
+        }
 
         if (!activeExecutionRun && issue.executionRunId) {
           await tx
@@ -3656,6 +3709,8 @@ export function heartbeatService(db: Db) {
     reportRunActivity: clearDetachedRunWarning,
 
     reapOrphanedRuns,
+
+    reapStaleQueuedRuns,
 
     resumeQueuedRuns,
 
