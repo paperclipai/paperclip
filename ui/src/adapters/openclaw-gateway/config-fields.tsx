@@ -417,6 +417,50 @@ function AgentSelector({
   );
 }
 
+/** Wraps PayloadTemplateJsonField with a deprecation warning that reacts to both saved and draft values. */
+function PayloadTemplateWithWarning(props: Parameters<typeof PayloadTemplateJsonField>[0]) {
+  const { isCreate, values, config } = props;
+  const [draftHasContent, setDraftHasContent] = useState(false);
+  const hasSavedContent = !isCreate && config.payloadTemplate && Object.keys(config.payloadTemplate).length > 0;
+  const hasCreateContent = isCreate && !!(values?.payloadTemplateJson?.trim());
+
+  // Track draft changes via an intercepting set/mark
+  const wrappedSet = useCallback((patch: Record<string, unknown>) => {
+    if ("payloadTemplateJson" in patch) {
+      setDraftHasContent(!!(patch.payloadTemplateJson as string)?.trim());
+    }
+    props.set?.(patch as never);
+  }, [props.set]);
+
+  const wrappedMark = useCallback((...args: Parameters<NonNullable<typeof props.mark>>) => {
+    if (args[0] === "adapterConfig" && args[1] === "payloadTemplate") {
+      setDraftHasContent(args[2] !== undefined);
+    }
+    props.mark?.(...args);
+  }, [props.mark]);
+
+  const showWarning = hasSavedContent || hasCreateContent || draftHasContent;
+
+  return (
+    <div>
+      {showWarning && (
+        <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200 flex items-start gap-2 mb-2">
+          <AlertTriangle className="h-4 w-4 text-red-400 shrink-0 mt-0.5" />
+          <div>
+            <strong>Legacy Payload Template JSON detected.</strong> New adapter features (agent selector, model override, thinking, session strategy, prompt template) are bypassed when a payload template is present. Clear to use new configuration fields.
+          </div>
+        </div>
+      )}
+      <div className="text-xs text-muted-foreground/60 mb-1">(Deprecated)</div>
+      <PayloadTemplateJsonField
+        {...props}
+        set={wrappedSet as typeof props.set}
+        mark={wrappedMark}
+      />
+    </div>
+  );
+}
+
 export function OpenClawGatewayConfigFields({
   isCreate,
   values,
@@ -620,21 +664,13 @@ export function OpenClawGatewayConfigFields({
         Prompt template is injected once per session (hash-based dedup). Supports <code className="bg-amber-900/30 px-1 rounded">{"{{ agent.name }}"}</code>, <code className="bg-amber-900/30 px-1 rounded">{"{{ agent.id }}"}</code>, <code className="bg-amber-900/30 px-1 rounded">{"{{ context.* }}"}</code> and other template variables.
       </div>
 
-      <div>
-        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200 flex items-start gap-2 mb-2">
-          <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
-          <div>
-            <strong>Deprecated.</strong> New adapter features (agent selector, model override, thinking, session strategy, prompt template) are bypassed when a payload template is present. Clear to use new configuration fields.
-          </div>
-        </div>
-        <PayloadTemplateJsonField
-          isCreate={isCreate}
-          values={values}
-          set={set}
-          config={config}
-          mark={mark}
-        />
-      </div>
+      <PayloadTemplateWithWarning
+        isCreate={isCreate}
+        values={values}
+        set={set}
+        config={config}
+        mark={mark}
+      />
 
       <RuntimeServicesJsonField
         isCreate={isCreate}
