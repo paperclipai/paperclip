@@ -19,6 +19,7 @@ const mockAccessService = vi.hoisted(() => ({
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
   reportRunActivity: vi.fn(async () => undefined),
+  getHeartbeatPolicy: vi.fn(async () => ({ enabled: true, intervalSec: 0, wakeOnDemand: true, wakeOnComment: true, maxConcurrentRuns: 1 })),
 }));
 
 const mockAgentService = vi.hoisted(() => ({
