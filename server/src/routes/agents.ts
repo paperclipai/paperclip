@@ -1710,9 +1710,18 @@ export function agentRoutes(db: Db) {
       Object.prototype.hasOwnProperty.call(patchData, "adapterType") ||
       Object.prototype.hasOwnProperty.call(patchData, "adapterConfig");
     if (touchesAdapterConfiguration) {
-      const rawEffectiveAdapterConfig = Object.prototype.hasOwnProperty.call(patchData, "adapterConfig")
+      const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
+      const incomingAdapterConfig = Object.prototype.hasOwnProperty.call(patchData, "adapterConfig")
         ? (asRecord(patchData.adapterConfig) ?? {})
-        : (asRecord(existing.adapterConfig) ?? {});
+        : {};
+      // Merge incoming fields into existing config (PATCH semantics per RFC 7396).
+      // Explicit null values remove keys; missing keys are preserved.
+      const merged = { ...existingAdapterConfig, ...incomingAdapterConfig };
+      // Per RFC 7396, null means "remove this key"
+      const rawEffectiveAdapterConfig: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(merged)) {
+        if (v !== null) rawEffectiveAdapterConfig[k] = v;
+      }
       const effectiveAdapterConfig = applyCreateDefaultsByAdapterType(
         requestedAdapterType,
         rawEffectiveAdapterConfig,
