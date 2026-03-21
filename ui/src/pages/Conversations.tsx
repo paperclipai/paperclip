@@ -265,6 +265,21 @@ function ConversationList({
                                 onArchive(issue.id);
                               }
                             }}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.stopPropagation();
+                                const currentTopic = issue.title?.includes(" — ")
+                                  ? issue.title.split(" — ").slice(1).join(" — ")
+                                  : "";
+                                const newTitle = prompt("Rename conversation:", currentTopic);
+                                if (newTitle !== null && newTitle.trim()) {
+                                  const agentLabel = agent?.name ?? label;
+                                  renameConversation(issue.id, agentLabel, newTitle.trim()).then(() => {
+                                    onSelect(issue.id);
+                                  });
+                                }
+                              }
+                            }}
                             className="text-muted-foreground hover:text-foreground cursor-pointer"
                           >
                             <Archive className="h-3 w-3" />
@@ -517,7 +532,14 @@ function ConversationView({ issueId, companyId, agents, onClose }: ConversationV
                 }
                 if (e.key === "Escape") setEditingTopic(false);
               }}
-              onBlur={() => setEditingTopic(false)}
+              onBlur={async () => {
+                if (topicDraft.trim()) {
+                  await renameConversation(issueId, agentName, topicDraft.trim());
+                  queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId) });
+                  queryClient.invalidateQueries({ queryKey: ["conversations", companyId] });
+                }
+                setEditingTopic(false);
+              }}
               placeholder="Name this conversation..."
             />
           ) : (
@@ -626,7 +648,7 @@ export function Conversations() {
     enabled: !!selectedCompanyId,
   });
 
-  const { data: conversations = [], isLoading: convosLoading } = useQuery({
+  const { data: conversations = [] } = useQuery({
     queryKey: ["conversations", selectedCompanyId],
     queryFn: () => listConversations(selectedCompanyId!, { includeClosed: true }),
     enabled: !!selectedCompanyId,
