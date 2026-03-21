@@ -523,6 +523,19 @@ export {
   type PluginStateScopeKey,
   type SetPluginState,
   type ListPluginState,
+  SPARRING_SESSION_STATUSES,
+  SPARRING_PARTICIPANT_STATUSES,
+  SPARRING_TURN_ROLES,
+  sparringSessionConfigSchema,
+  createSparringSessionSchema,
+  recordSparringTurnSchema,
+  completeSparringSessionSchema,
+  abortSparringSessionSchema,
+  type CreateSparringSession,
+  type RecordSparringTurn,
+  type CompleteSparringSession,
+  type AbortSparringSession,
+  type SparringSessionConfig,
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";

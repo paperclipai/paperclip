@@ -272,3 +272,19 @@ export {
   type SetPluginState,
   type ListPluginState,
 } from "./plugin.js";
+
+export {
+  SPARRING_SESSION_STATUSES,
+  SPARRING_PARTICIPANT_STATUSES,
+  SPARRING_TURN_ROLES,
+  sparringSessionConfigSchema,
+  createSparringSessionSchema,
+  recordSparringTurnSchema,
+  completeSparringSessionSchema,
+  abortSparringSessionSchema,
+  type CreateSparringSession,
+  type RecordSparringTurn,
+  type CompleteSparringSession,
+  type AbortSparringSession,
+  type SparringSessionConfig,
+} from "./sparring.js";

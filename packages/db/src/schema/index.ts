@@ -53,3 +53,6 @@ export { pluginEntities } from "./plugin_entities.js";
 export { pluginJobs, pluginJobRuns } from "./plugin_jobs.js";
 export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
 export { pluginLogs } from "./plugin_logs.js";
+export { sparringSessions } from "./sparring_sessions.js";
+export { sparringParticipants } from "./sparring_participants.js";
+export { sparringTurns } from "./sparring_turns.js";
