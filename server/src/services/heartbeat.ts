@@ -2121,7 +2121,17 @@ export function isZombieRun(
   return run.status === "running" && !tracked.has(run.id);
 }
 
-export function filterZombieCoalesceTarget<T extends { status: string; id: string }>(
+/**
+ * Filter a coalesce target — if it's a zombie run, return null so the
+ * wakeup falls through to create a new queued run instead of coalescing
+ * into the dead process (which would refresh updatedAt and make it immortal).
+ *
+ * Queued runs pass through unchanged (they have no process yet).
+ * Null targets pass through unchanged.
+ */
+export function filterZombieCoalesceTarget<
+  T extends { status: string; id: string },
+>(
   target: T | null,
   tracked: { has(id: string): boolean },
 ): T | null {
@@ -10724,6 +10734,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       sameScopeScheduledRetryRun ??
       (shouldQueueFollowupForRunningWake ? null : sameScopeRunningRun ?? null);
 
+    const coalescedTargetRun = filterZombieCoalesceTarget(
+      rawCoalescedTarget,
+      runningProcesses,
+    );
     const coalescedTargetRun = filterZombieCoalesceTarget(
       rawCoalescedTarget,
       runningProcesses,
