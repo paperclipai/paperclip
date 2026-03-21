@@ -11,6 +11,7 @@ import {
   authVerifications,
 } from "@paperclipai/db";
 import type { Config } from "../config.js";
+import type { EmailSender } from "./email.js";
 
 export type BetterAuthSessionUser = {
   id: string;
@@ -65,7 +66,12 @@ export function deriveAuthTrustedOrigins(config: Config): string[] {
   return Array.from(trustedOrigins);
 }
 
-export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?: string[]): BetterAuthInstance {
+export function createBetterAuthInstance(
+  db: Db,
+  config: Config,
+  trustedOrigins?: string[],
+  emailSender?: EmailSender,
+): BetterAuthInstance {
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
   const secret = process.env.BETTER_AUTH_SECRET ?? process.env.PAPERCLIP_AGENT_JWT_SECRET ?? "paperclip-dev-secret";
   const effectiveTrustedOrigins = trustedOrigins ?? deriveAuthTrustedOrigins(config);
@@ -88,8 +94,24 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?
     }),
     emailAndPassword: {
       enabled: true,
-      requireEmailVerification: false,
+      requireEmailVerification: config.emailVerificationRequired,
       disableSignUp: config.authDisableSignUp,
+      ...(emailSender
+        ? {
+            sendVerificationEmail: async ({ user, url }: { user: { email: string }; url: string }) => {
+              const frontendUrl = url.replace("/api/auth/verify-email", "/auth/verify-email");
+              await emailSender.sendVerificationEmail(user.email, frontendUrl);
+            },
+          }
+        : {}),
+      ...(emailSender
+        ? {
+            sendResetPassword: async ({ user, url }: { user: { email: string }; url: string }) => {
+              const frontendUrl = url.replace("/api/auth/reset-password", "/auth/reset-password");
+              await emailSender.sendPasswordResetEmail(user.email, frontendUrl);
+            },
+          }
+        : {}),
     },
     ...(isHttpOnly ? { advanced: { useSecureCookies: false } } : {}),
   };

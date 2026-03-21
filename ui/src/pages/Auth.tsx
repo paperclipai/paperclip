@@ -47,6 +47,11 @@ export function AuthPage() {
     onSuccess: async () => {
       setError(null);
       await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
+      const session = await authApi.getSession();
+      if (!session && mode === "sign_up") {
+        navigate(`/auth/verify-email?email=${encodeURIComponent(email.trim())}`, { replace: true });
+        return;
+      }
       await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
       navigate(nextPath, { replace: true });
     },
@@ -132,6 +137,16 @@ export function AuthPage() {
                 autoComplete={mode === "sign_in" ? "current-password" : "new-password"}
               />
             </div>
+            {mode === "sign_in" && (
+              <div className="text-right">
+                <a
+                  href="/auth/forgot-password"
+                  className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2"
+                >
+                  Forgot your password?
+                </a>
+              </div>
+            )}
             {error && <p className="text-xs text-destructive">{error}</p>}
             <Button
               type="submit"

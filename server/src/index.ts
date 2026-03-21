@@ -424,6 +424,7 @@ export async function startServer(): Promise<StartedServer> {
   }
   
   let authReady = config.deploymentMode === "local_trusted";
+  let emailEnabled = false;
   let betterAuthHandler: RequestHandler | undefined;
   let resolveSession:
     | ((req: ExpressRequest) => Promise<BetterAuthSessionResult | null>)
@@ -442,6 +443,7 @@ export async function startServer(): Promise<StartedServer> {
       resolveBetterAuthSession,
       resolveBetterAuthSessionFromHeaders,
     } = await import("./auth/better-auth.js");
+    const { createEmailSender } = await import("./auth/email.js");
     const betterAuthSecret =
       process.env.BETTER_AUTH_SECRET?.trim() ?? process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim();
     if (!betterAuthSecret) {
@@ -467,7 +469,19 @@ export async function startServer(): Promise<StartedServer> {
       },
       "Authenticated mode auth origin configuration",
     );
-    const auth = createBetterAuthInstance(db as any, config, effectiveTrustedOrigins);
+    const emailSender = config.resendApiKey
+      ? createEmailSender(config.resendApiKey, config.emailFrom)
+      : undefined;
+
+    if (config.emailVerificationRequired && !emailSender) {
+      throw new Error(
+        "Email verification is enabled (PAPERCLIP_EMAIL_VERIFICATION_REQUIRED=true) but RESEND_API_KEY is not set.",
+      );
+    }
+
+    emailEnabled = !!emailSender;
+
+    const auth = createBetterAuthInstance(db as any, config, effectiveTrustedOrigins, emailSender);
     betterAuthHandler = createBetterAuthHandler(auth);
     resolveSession = (req) => resolveBetterAuthSession(auth, req);
     resolveSessionFromHeaders = (headers) => resolveBetterAuthSessionFromHeaders(auth, headers);
@@ -488,6 +502,7 @@ export async function startServer(): Promise<StartedServer> {
     bindHost: config.host,
     authReady,
     companyDeletionEnabled: config.companyDeletionEnabled,
+    emailEnabled,
     betterAuthHandler,
     resolveSession,
   });
