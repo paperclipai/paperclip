@@ -9,6 +9,7 @@ import {
   updateCompanySchema,
 } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 import { validate } from "../middleware/validate.js";
 import {
   accessService,
@@ -16,6 +17,7 @@ import {
   budgetService,
   companyPortabilityService,
   companyService,
+  heartbeatService,
   logActivity,
 } from "../services/index.js";
 import type { StorageService } from "../storage/types.js";
@@ -315,6 +317,16 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       res.status(404).json({ error: "Company not found" });
       return;
     }
+
+    // Cancel all active/queued heartbeat runs for agents in this company
+    const heartbeat = heartbeatService(db);
+    const companyAgents = await agentService(db).list(companyId);
+    for (const agent of companyAgents) {
+      await heartbeat.cancelActiveForAgent(agent.id).catch((err) => {
+        logger.warn({ err, agentId: agent.id }, "Failed to cancel heartbeat runs for agent during archive");
+      });
+    }
+
     await logActivity(db, {
       companyId,
       actorType: "user",
