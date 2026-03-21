@@ -98,6 +98,11 @@
     --color-text-primary: #e2e8f0;
     --color-text-muted:   #8896aa;
     --color-text-light:   #5d6d7e;
+    /* M2: Status bg vars — rgba so they work on dark surfaces */
+    --color-fel-bg:       rgba(231,76,60,0.15);
+    --color-ok-bg:        rgba(39,174,96,0.15);
+    --color-anm-bg:       rgba(243,156,18,0.15);
+    --color-ej-bg:        rgba(149,165,166,0.12);
   }
   /* K1: Accessible book-color values for dark bg (#1a1d27) — WCAG AA 4.5:1 */
   :root:not(.light-mode) [data-book-color="blue"]   { --book-color: #5dade2; --book-color-light: rgba(93,173,226,0.10); }
@@ -116,6 +121,11 @@ body.dark-mode {
   --color-text-primary: #e2e8f0;
   --color-text-muted:   #8896aa;
   --color-text-light:   #5d6d7e;
+  /* M2: Status bg vars — rgba so they work on dark surfaces */
+  --color-fel-bg:       rgba(231,76,60,0.15);
+  --color-ok-bg:        rgba(39,174,96,0.15);
+  --color-anm-bg:       rgba(243,156,18,0.15);
+  --color-ej-bg:        rgba(149,165,166,0.12);
 }
 /* K1: Accessible book-color values for dark bg — WCAG AA 4.5:1 */
 body.dark-mode [data-book-color="blue"]   { --book-color: #5dade2; --book-color-light: rgba(93,173,226,0.10); }
@@ -1030,13 +1040,15 @@ img {
 }
 
 .search-highlight {
-  background: #fef9c3;
+  background: rgba(254, 249, 3, 0.25);
+  color: inherit;
   padding: 0 2px;
   border-radius: 2px;
 }
 
 .content-highlight {
-  background: #fde68a;
+  background: rgba(253, 230, 0, 0.30);
+  color: inherit;
   padding: 1px 3px;
   border-radius: 3px;
   transition: background 1s ease;
@@ -1051,9 +1063,15 @@ img {
 }
 
 @keyframes highlight-pulse {
-  0%, 100% { background: #fde68a; }
-  50% { background: #f59e0b; }
+  0%, 100% { background: rgba(253, 230, 0, 0.30); }
+  50% { background: rgba(245, 158, 11, 0.50); }
 }
+
+/* Dark mode: stronger highlight opacity for visibility on dark backgrounds */
+body.dark-mode .search-highlight,
+:root:not(.light-mode) .search-highlight { background: rgba(255, 230, 0, 0.35); }
+body.dark-mode .content-highlight,
+:root:not(.light-mode) .content-highlight { background: rgba(255, 200, 0, 0.40); }
 
 .paragraph-highlight {
   background: rgba(253, 230, 138, 0.2);
@@ -1386,11 +1404,11 @@ img {
   gap: var(--space-sm);
 }
 
-/* Fel/Anm filter button */
+/* Fel/Anm filter button — 44px min-height for outdoor/field touch target */
 .btn-issues-filter {
   font-size: var(--font-size-xs);
   font-weight: 600;
-  padding: 4px 10px;
+  padding: 8px 14px;
   border-radius: var(--radius-full);
   border: 1.5px solid var(--color-border);
   background: var(--color-surface);
@@ -1398,7 +1416,7 @@ img {
   cursor: pointer;
   white-space: nowrap;
   transition: background var(--transition), color var(--transition), border-color var(--transition);
-  min-height: 28px;
+  min-height: var(--touch-min); /* 44px — field-app outdoor requirement */
 }
 .btn-issues-filter:hover {
   border-color: var(--color-fel);

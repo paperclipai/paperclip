@@ -102,8 +102,9 @@ async function loadAllData() {
 async function loadSettings() {
   try {
     const raw = localStorage.getItem('besiktning_settings');
-    App.settings = raw ? JSON.parse(raw) : getDefaultSettings();
+    App.settings = raw ? { ...getDefaultSettings(), ...JSON.parse(raw) } : getDefaultSettings();
     applySettingsToForm();
+    applyTheme(App.settings.theme);
   } catch (e) {
     App.settings = getDefaultSettings();
   }
@@ -119,7 +120,14 @@ function getDefaultSettings() {
     orgnr: '',
     address: '',
     logoDataUrl: null,
+    theme: 'auto',
   };
+}
+
+function applyTheme(val) {
+  const theme = val || 'auto';
+  document.body.classList.toggle('dark-mode', theme === 'dark');
+  document.documentElement.classList.toggle('light-mode', theme === 'light');
 }
 
 function applySettingsToForm() {
@@ -129,6 +137,10 @@ function applySettingsToForm() {
     const el = document.getElementById('setting-' + f);
     if (el && s[f]) el.value = s[f];
   });
+
+  // Theme selector
+  const themeEl = document.getElementById('setting-theme');
+  if (themeEl) themeEl.value = s.theme || 'auto';
 
   if (s.logoDataUrl) {
     const preview = document.getElementById('logo-preview');
@@ -146,6 +158,13 @@ function saveSettings() {
     const el = document.getElementById('setting-' + f);
     if (el) App.settings[f] = el.value.trim();
   });
+
+  // Save + apply theme immediately
+  const themeEl = document.getElementById('setting-theme');
+  if (themeEl) {
+    App.settings.theme = themeEl.value;
+    applyTheme(App.settings.theme);
+  }
 
   try {
     localStorage.setItem('besiktning_settings', JSON.stringify(App.settings));
