@@ -56,7 +56,7 @@ export function Dashboard() {
     enabled: !!selectedCompanyId,
   });
 
-  const { data: activity } = useQuery({
+  const { data: activity, isLoading: isActivityLoading } = useQuery({
     queryKey: queryKeys.activity(selectedCompanyId!),
     queryFn: () => activityApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
@@ -307,11 +307,17 @@ export function Dashboard() {
 
           <div className="grid md:grid-cols-2 gap-4">
             {/* Recent Activity */}
-            {recentActivity.length > 0 && (
-              <div className="min-w-0">
-                <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                  Recent Activity
-                </h3>
+            <div className="min-w-0">
+              <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+                Recent Activity
+              </h3>
+              {isActivityLoading ? (
+                <div className="border border-border p-4 animate-pulse h-12" />
+              ) : recentActivity.length === 0 ? (
+                <div className="border border-border p-4">
+                  <p className="text-sm text-muted-foreground">No activity yet.</p>
+                </div>
+              ) : (
                 <div className="border border-border divide-y divide-border overflow-hidden">
                   {recentActivity.map((event) => (
                     <ActivityRow
@@ -324,8 +330,8 @@ export function Dashboard() {
                     />
                   ))}
                 </div>
-              </div>
-            )}
+              )}
+            </div>
 
             {/* Recent Tasks */}
             <div className="min-w-0">
