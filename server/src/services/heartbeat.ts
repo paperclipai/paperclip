@@ -24,6 +24,7 @@ import { getServerAdapter, runningProcesses } from "../adapters/index.js";
 import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec, UsageSummary } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
+import { stripNullBytes } from "../sanitize-postgres.js";
 import { costService } from "./costs.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
@@ -1271,9 +1272,10 @@ export function heartbeatService(db: Db) {
     status: string,
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
   ) {
+    const sanitizedPatch = patch ? stripNullBytes(patch) : patch;
     const updated = await db
       .update(heartbeatRuns)
-      .set({ status, ...patch, updatedAt: new Date() })
+      .set({ status, ...sanitizedPatch, updatedAt: new Date() })
       .where(eq(heartbeatRuns.id, runId))
       .returning()
       .then((rows) => rows[0] ?? null);
@@ -1325,10 +1327,10 @@ export function heartbeatService(db: Db) {
   ) {
     const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
     const sanitizedMessage = event.message
-      ? redactCurrentUserText(event.message, currentUserRedactionOptions)
+      ? stripNullBytes(redactCurrentUserText(event.message, currentUserRedactionOptions))
       : event.message;
     const sanitizedPayload = event.payload
-      ? redactCurrentUserValue(event.payload, currentUserRedactionOptions)
+      ? stripNullBytes(redactCurrentUserValue(event.payload, currentUserRedactionOptions))
       : event.payload;
 
     await db.insert(heartbeatRunEvents).values({
@@ -3484,7 +3486,13 @@ export function heartbeatService(db: Db) {
       const running = runningProcesses.get(run.id);
       if (running) {
         running.child.kill("SIGTERM");
-        runningProcesses.delete(run.id);
+        const graceMs = Math.max(1, running.graceSec) * 1000;
+        setTimeout(() => {
+          if (!running.child.killed) {
+            running.child.kill("SIGKILL");
+          }
+          runningProcesses.delete(run.id);
+        }, graceMs);
       }
       await releaseIssueExecutionAndPromote(run);
     }
