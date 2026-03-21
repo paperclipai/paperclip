@@ -534,7 +534,7 @@ export function NewIssueDialog() {
       const restoredProject = orderedProjects.find((project) => project.id === restoredProjectId);
       setTitle(draft.title);
       setDescription(draft.description);
-      setParentId(newIssueDefaults.parentId ?? "");
+      setParentId(""); // parentId is only seeded from explicit dialog defaults, never from a restored draft
       setStatus(draft.status || "todo");
       setPriority(draft.priority);
       setAssigneeValue(
