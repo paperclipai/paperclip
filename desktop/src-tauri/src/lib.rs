@@ -39,13 +39,13 @@ pub fn run() {
 
             Ok(())
         })
-        .on_window_event(|window, event| {
+        .on_window_event(|_window, event| {
             // Hide window instead of closing on macOS (keep in tray)
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            if let tauri::WindowEvent::CloseRequested { api: _api, .. } = event {
                 #[cfg(target_os = "macos")]
                 {
-                    let _ = window.hide();
-                    api.prevent_close();
+                    let _ = _window.hide();
+                    _api.prevent_close();
                 }
             }
         })
