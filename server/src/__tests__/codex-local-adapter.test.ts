@@ -48,6 +48,34 @@ describe("codex_local pricing", () => {
     expect(cost).toBeCloseTo(0.0045, 9);
   });
 
+  it("calculates cost correctly with cached input tokens", () => {
+    const cost = calculateCodexUsageCostUsd("codex-mini", {
+      inputTokens: 1000,
+      cachedInputTokens: 200,
+      outputTokens: 500,
+    });
+    // regular input: 800 tokens * $1.50/1M = $0.0012
+    // cached input: 200 tokens * $0.375/1M = $0.000075
+    // output: 500 tokens * $6.00/1M = $0.003
+    // total ~= $0.004275
+    expect(cost).toBeGreaterThan(0.004);
+    expect(cost).toBeLessThan(0.005);
+  });
+
+  it("does not double-count cached tokens", () => {
+    const withCache = calculateCodexUsageCostUsd("codex-mini", {
+      inputTokens: 1000,
+      cachedInputTokens: 500,
+      outputTokens: 0,
+    });
+    const noCache = calculateCodexUsageCostUsd("codex-mini", {
+      inputTokens: 1000,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+    });
+    expect(withCache).toBeLessThan(noCache);
+  });
+
   it("uses codex-mini pricing for versioned codex-mini model ids", () => {
     const cost = calculateCodexUsageCostUsd("codex-mini-2025-01-31", {
       inputTokens: 1000,

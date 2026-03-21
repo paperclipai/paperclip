@@ -574,10 +574,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       sessionDisplayId: resolvedSessionId,
       provider: "openai",
       biller: resolveCodexBiller(effectiveEnv, billingType),
-      model: model || "gpt-5.3-codex",
+      model: model || "codex-mini",
       billingType,
       costUsd: calculateCodexUsageCostUsd(
-        model || "gpt-5.3-codex",
+        model || "codex-mini",
         attempt.parsed.usage,
       ),
       resultJson: {
