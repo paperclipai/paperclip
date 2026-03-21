@@ -49,7 +49,7 @@ export function registerApprovalCommands(program: Command): void {
     approval
       .command("list")
       .description("List approvals for a company")
-      .requiredOption("-C, --company-id <id>", "Company ID")
+      .option("-C, --company-id <id>", "Company ID")
       .option("--status <status>", "Status filter")
       .action(async (opts: ApprovalListOptions) => {
         try {
@@ -110,7 +110,7 @@ export function registerApprovalCommands(program: Command): void {
     approval
       .command("create")
       .description("Create an approval request")
-      .requiredOption("-C, --company-id <id>", "Company ID")
+      .option("-C, --company-id <id>", "Company ID")
       .requiredOption("--type <type>", "Approval type (hire_agent|approve_ceo_strategy)")
       .requiredOption("--payload <json>", "Approval payload as JSON object")
       .option("--requested-by-agent-id <id>", "Requesting agent ID")
