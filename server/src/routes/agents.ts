@@ -2,8 +2,8 @@ import { Router, type Request } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
-import { agents as agentsTable, companies, heartbeatRuns } from "@paperclipai/db";
-import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
+import { agents as agentsTable, companies, heartbeatRuns, issues } from "@paperclipai/db";
+import { and, desc, eq, inArray, isNotNull, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
   createAgentKeySchema,
@@ -1902,6 +1902,24 @@ export function agentRoutes(db: Db) {
       return;
     }
 
+    // Auto-resolve checked-out issue context so the run uses the correct workspace
+    const checkedOutIssue = await db
+      .select({
+        id: issues.id,
+        projectId: issues.projectId,
+        projectWorkspaceId: issues.projectWorkspaceId,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.assigneeAgentId, id),
+          eq(issues.companyId, agent.companyId),
+          isNotNull(issues.executionLockedAt),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
     const run = await heartbeat.wakeup(id, {
       source: req.body.source,
       triggerDetail: req.body.triggerDetail ?? "manual",
@@ -1914,6 +1932,11 @@ export function agentRoutes(db: Db) {
         triggeredBy: req.actor.type,
         actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,
         forceFreshSession: req.body.forceFreshSession === true,
+        ...(checkedOutIssue && {
+          issueId: checkedOutIssue.id,
+          projectId: checkedOutIssue.projectId ?? undefined,
+          projectWorkspaceId: checkedOutIssue.projectWorkspaceId ?? undefined,
+        }),
       },
     });
 
