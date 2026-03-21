@@ -31,6 +31,7 @@ COPY packages/adapters/opencode-local/package.json packages/adapters/opencode-lo
 COPY packages/adapters/pi-local/package.json packages/adapters/pi-local/
 COPY packages/plugins/sdk/package.json packages/plugins/sdk/
 COPY packages/plugins/create-paperclip-plugin/package.json packages/plugins/create-paperclip-plugin/
+COPY desktop/package.json desktop/
 
 RUN pnpm install --frozen-lockfile
 

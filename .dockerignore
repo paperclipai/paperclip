@@ -15,7 +15,9 @@ tmp
 tmp-*
 dist
 
-desktop
+desktop/src-tauri
+desktop/src
+desktop/CHANGELOG.md
 docs
 evals
 tests
