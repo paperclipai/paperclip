@@ -527,6 +527,11 @@ async function maybeAutoRestartChild() {
 function installDevIntervals() {
   if (mode !== "dev") return;
 
+  // DISABLED: We turn off the backend file watcher because agents
+  // are constantly modifying the workspace during their runs, which
+  // triggers false 'Restart Required' banners.
+  return;
+
   scanTimer = setInterval(() => {
     void scanForBackendChanges();
   }, scanIntervalMs);
