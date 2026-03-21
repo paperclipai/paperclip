@@ -131,10 +131,19 @@ function resolveSessionKey(input: {
   configuredSessionKey: string | null;
   runId: string;
   issueId: string | null;
+  agentId: string | null;
 }): string {
   const fallback = input.configuredSessionKey ?? "paperclip";
-  if (input.strategy === "run") return `paperclip:run:${input.runId}`;
-  if (input.strategy === "issue" && input.issueId) return `paperclip:issue:${input.issueId}`;
+  // When an agentId is configured, prefix generated keys with "agent:{id}:" so the
+  // OpenClaw gateway resolves the correct agent from the session key. Without this
+  // prefix the gateway falls back to the authenticated agent (usually "main") and
+  // rejects the request when agentId doesn't match.
+  const prefix = input.agentId ? `agent:${input.agentId}:` : "";
+  if (input.strategy === "run") return `${prefix}paperclip:run:${input.runId}`;
+  if (input.strategy === "issue" && input.issueId) return `${prefix}paperclip:issue:${input.issueId}`;
+  // For "fixed" strategy, only apply prefix when the configured key doesn't already
+  // contain an agent segment (avoid double-prefixing).
+  if (input.agentId && !fallback.startsWith("agent:")) return `${prefix}${fallback}`;
   return fallback;
 }
 
@@ -1056,11 +1065,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
   const configuredSessionKey = nonEmpty(ctx.config.sessionKey);
+  const configuredAgentId = nonEmpty(ctx.config.agentId);
   const sessionKey = resolveSessionKey({
     strategy: sessionKeyStrategy,
     configuredSessionKey,
     runId: ctx.runId,
     issueId: wakePayload.issueId,
+    agentId: configuredAgentId,
   });
 
   const templateMessage = nonEmpty(payloadTemplate.message) ?? nonEmpty(payloadTemplate.text);
@@ -1075,7 +1086,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
   delete agentParams.text;
 
-  const configuredAgentId = nonEmpty(ctx.config.agentId);
   if (configuredAgentId && !nonEmpty(agentParams.agentId)) {
     agentParams.agentId = configuredAgentId;
   }
