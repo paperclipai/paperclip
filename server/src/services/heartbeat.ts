@@ -29,7 +29,7 @@ import { costService } from "./costs.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
-import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
+import { resolveDefaultAgentWorkspaceDir, resolveHomeAwarePath, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import { summarizeHeartbeatRunResultJson } from "./heartbeat-run-summary.js";
 import {
   buildWorkspaceReadyComment,
@@ -233,7 +233,7 @@ interface ParsedIssueAssigneeAdapterOverrides {
 
 export type ResolvedWorkspaceForRun = {
   cwd: string;
-  source: "project_primary" | "task_session" | "agent_home";
+  source: "project_primary" | "task_session" | "adapter_config" | "agent_home";
   projectId: string | null;
   workspaceId: string | null;
   repoUrl: string | null;
@@ -1153,12 +1153,45 @@ export function heartbeatService(db: Db) {
       }
     }
 
+    const rawAdapterCwd = readNonEmptyString(
+      (agent.adapterConfig as Record<string, unknown> | null)?.cwd,
+    );
+    const adapterCwd = rawAdapterCwd ? resolveHomeAwarePath(rawAdapterCwd) : null;
+    if (adapterCwd) {
+      const adapterCwdExists = await fs
+        .stat(adapterCwd)
+        .then((stats) => stats.isDirectory())
+        .catch(() => false);
+      if (adapterCwdExists) {
+        const warnings: string[] = [];
+        if (sessionCwd) {
+          warnings.push(
+            `Saved session workspace "${sessionCwd}" is not available. Using adapterConfig.cwd "${adapterCwd}" for this run.`,
+          );
+        }
+        return {
+          cwd: adapterCwd,
+          source: "adapter_config" as const,
+          projectId: resolvedProjectId,
+          workspaceId: null,
+          repoUrl: null,
+          repoRef: null,
+          workspaceHints,
+          warnings,
+        };
+      }
+    }
+
     const cwd = resolveDefaultAgentWorkspaceDir(agent.id);
     await fs.mkdir(cwd, { recursive: true });
     const warnings: string[] = [];
     if (sessionCwd) {
       warnings.push(
         `Saved session workspace "${sessionCwd}" is not available. Using fallback workspace "${cwd}" for this run.`,
+      );
+    } else if (adapterCwd) {
+      warnings.push(
+        `adapterConfig.cwd "${adapterCwd}" is not available. Using fallback workspace "${cwd}" for this run.`,
       );
     } else if (resolvedProjectId) {
       warnings.push(
