@@ -1458,14 +1458,47 @@ export function issueService(db: Db) {
       }),
 
     findMentionedAgents: async (companyId: string, body: string) => {
-      const re = /\B@([^\s@,!?.]+)/g;
-      const tokens = new Set<string>();
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(body)) !== null) tokens.add(m[1].toLowerCase());
-      if (tokens.size === 0) return [];
-      const rows = await db.select({ id: agents.id, name: agents.name })
-        .from(agents).where(eq(agents.companyId, companyId));
-      return rows.filter(a => tokens.has(a.name.toLowerCase())).map(a => a.id);
+      if (!body.includes("@")) return [];
+      const rows = await db
+        .select({ id: agents.id, name: agents.name })
+        .from(agents)
+        .where(eq(agents.companyId, companyId));
+      if (rows.length === 0) return [];
+
+      // Build a map of lowercased agent names to IDs, sorted longest-first
+      // so "Engineering Manager" is tried before a hypothetical "Engineering".
+      const sorted = rows
+        .map((a) => ({ name: a.name.toLowerCase(), id: a.id }))
+        .sort((a, b) => b.name.length - a.name.length);
+
+      const bodyLower = body.toLowerCase();
+      const foundSet = new Set<string>();
+      const found: string[] = [];
+
+      // For every @ in the body, try matching the longest known agent name first.
+      let idx = bodyLower.indexOf("@");
+      while (idx !== -1) {
+        // Replicate the \B guard from the old regex: skip @ preceded by a word
+        // character (letter/digit/underscore) to avoid matching inside emails.
+        const prev = idx > 0 ? bodyLower[idx - 1] : null;
+        if (prev === null || /\W/.test(prev)) {
+          const after = bodyLower.slice(idx + 1);
+          for (const agent of sorted) {
+            if (!after.startsWith(agent.name)) continue;
+            // Verify the next character is a word boundary (or end of string).
+            const next = after[agent.name.length];
+            if (next === undefined || /[\s,!?.;:\-—)}\]>]/.test(next)) {
+              if (!foundSet.has(agent.id)) {
+                foundSet.add(agent.id);
+                found.push(agent.id);
+              }
+              break;
+            }
+          }
+        }
+        idx = bodyLower.indexOf("@", idx + 1);
+      }
+      return found;
     },
 
     findMentionedProjectIds: async (issueId: string) => {
