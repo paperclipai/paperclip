@@ -98,19 +98,17 @@ jobs:
       - name: Install Node dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build Tauri desktop app
+      - name: Build Tauri desktop app (signed)
+        if: secrets.APPLE_CERTIFICATE != ''
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Auto-updater signing key
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # macOS code signing
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # macOS notarization
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
         with:
@@ -123,8 +121,24 @@ jobs:
           includeUpdaterJson: true
           args: --target ${{ matrix.target }}
 
-  # ── iOS build ──
+      - name: Build Tauri desktop app (unsigned)
+        if: secrets.APPLE_CERTIFICATE == ''
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: desktop
+          tagName: app-v__VERSION__
+          releaseName: "Paperclip v__VERSION__"
+          releaseBody: "See the [changelog](https://github.com/paperclipinc/paperclip/blob/main/desktop/CHANGELOG.md) for details."
+          releaseDraft: ${{ inputs.draft || false }}
+          prerelease: false
+          includeUpdaterJson: true
+          args: --target ${{ matrix.target }}
+
+  # ── iOS build (requires Apple signing secrets) ──
   ios:
+    if: github.event_name == 'workflow_dispatch'
     needs: version
     runs-on: macos-latest
     timeout-minutes: 45
@@ -164,6 +178,10 @@ jobs:
       - name: Install Tauri CLI
         run: pnpm --filter @paperclipai/desktop tauri --version || pnpm install
 
+      - name: Initialize iOS project
+        working-directory: desktop
+        run: npx tauri ios init
+
       - name: Build iOS app
         working-directory: desktop
         env:
@@ -183,8 +201,9 @@ jobs:
           path: desktop/src-tauri/gen/apple/build/**/*.ipa
           if-no-files-found: warn
 
-  # ── Android build ──
+  # ── Android build (requires signing secrets) ──
   android:
+    if: github.event_name == 'workflow_dispatch'
     needs: version
     runs-on: ubuntu-22.04
     timeout-minutes: 45
@@ -238,6 +257,12 @@ jobs:
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > /tmp/paperclip.keystore
+
+      - name: Initialize Android project
+        working-directory: desktop
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
+        run: npx tauri android init
 
       - name: Build Android app
         working-directory: desktop
