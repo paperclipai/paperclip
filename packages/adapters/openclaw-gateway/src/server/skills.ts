@@ -74,8 +74,13 @@ async function buildOpenClawSkillSnapshot(config: Record<string, unknown>): Prom
   const gatewaySkills = await queryGatewaySkills(config);
   for (const gs of gatewaySkills) {
     const key = `openclaw/${gs.key || gs.name || "unknown"}`;
-    // If the skill is in desiredSet, use that. Otherwise default to gateway's enabled state.
+    // If explicitly in desiredSet, use that. Otherwise default to gateway's enabled state.
     const isDesired = desiredSet.has(key) ? true : (gs.enabled !== false);
+    if (isDesired && !desiredSet.has(key)) {
+      // Add enabled gateway skills to desiredSkills so the UI draft shows them checked
+      desiredSkills.push(key);
+      desiredSet.add(key);
+    }
     entries.push({
       key,
       runtimeName: gs.name ?? gs.key ?? null,
