@@ -30,8 +30,8 @@ function describeReason(devServer: DevServerHealthStatus): string {
 }
 
 export function DevRestartBanner({ devServer }: { devServer?: DevServerHealthStatus }) {
-  if (!devServer?.enabled || !devServer.restartRequired) return null;
-  return <DevRestartBannerInner devServer={devServer} />;
+  // Banner is disabled in PM2 production environments with scheduled restarts
+  return null;
 }
 
 function DevRestartBannerInner({ devServer }: { devServer: DevServerHealthStatus }) {
