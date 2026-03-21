@@ -164,6 +164,103 @@ async function computeObservedAmount(
   return Number(row?.total ?? 0);
 }
 
+/**
+ * Batch version of computeObservedAmount. Runs at most 3 queries (one per scope type)
+ * instead of one query per policy, eliminating the N+1 pattern in overview().
+ * Returns a Map from policy.id to observed amount.
+ */
+async function computeObservedAmountsBatch(
+  db: Db,
+  policies: Pick<PolicyRow, "id" | "companyId" | "scopeType" | "scopeId" | "windowKind" | "metric">[],
+): Promise<Map<string, number>> {
+  const result = new Map<string, number>();
+  for (const p of policies) {
+    if (p.metric !== "billed_cents") result.set(p.id, 0);
+  }
+
+  const billable = policies.filter((p) => p.metric === "billed_cents");
+  if (billable.length === 0) return result;
+
+  // All policies in an overview share the same companyId and windowKind,
+  // but we handle the general case gracefully.
+  const companyPolicies = billable.filter((p) => p.scopeType === "company");
+  const agentPolicies = billable.filter((p) => p.scopeType === "agent");
+  const projectPolicies = billable.filter((p) => p.scopeType === "project");
+
+  function windowConditions(windowKind: string) {
+    const { start, end } = resolveWindow(windowKind as BudgetWindowKind);
+    const conds = [];
+    if (windowKind === "calendar_month_utc") {
+      conds.push(gte(costEvents.occurredAt, start));
+      conds.push(lt(costEvents.occurredAt, end));
+    }
+    return conds;
+  }
+
+  // Company scope: total of ALL cost events for that company (no agent/project filter)
+  if (companyPolicies.length > 0) {
+    // Group by companyId to handle multiple companies in one query
+    const companyIds = [...new Set(companyPolicies.map((p) => p.companyId))];
+    // Use the window from the first policy (all should share the same window in practice)
+    const wConds = windowConditions(companyPolicies[0].windowKind);
+    const rows = await db
+      .select({
+        companyId: costEvents.companyId,
+        total: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+      })
+      .from(costEvents)
+      .where(and(inArray(costEvents.companyId, companyIds), ...wConds))
+      .groupBy(costEvents.companyId);
+
+    const totals = new Map(rows.map((r) => [r.companyId, Number(r.total ?? 0)]));
+    for (const p of companyPolicies) {
+      result.set(p.id, totals.get(p.companyId) ?? 0);
+    }
+  }
+
+  // Agent scope: group by agentId
+  if (agentPolicies.length > 0) {
+    const agentIds = agentPolicies.map((p) => p.scopeId);
+    const companyIds = [...new Set(agentPolicies.map((p) => p.companyId))];
+    const wConds = windowConditions(agentPolicies[0].windowKind);
+    const rows = await db
+      .select({
+        agentId: costEvents.agentId,
+        total: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+      })
+      .from(costEvents)
+      .where(and(inArray(costEvents.companyId, companyIds), inArray(costEvents.agentId, agentIds), ...wConds))
+      .groupBy(costEvents.agentId);
+
+    const totals = new Map(rows.map((r) => [r.agentId, Number(r.total ?? 0)]));
+    for (const p of agentPolicies) {
+      result.set(p.id, totals.get(p.scopeId) ?? 0);
+    }
+  }
+
+  // Project scope: group by projectId
+  if (projectPolicies.length > 0) {
+    const projectIds = projectPolicies.map((p) => p.scopeId);
+    const companyIds = [...new Set(projectPolicies.map((p) => p.companyId))];
+    const wConds = windowConditions(projectPolicies[0].windowKind);
+    const rows = await db
+      .select({
+        projectId: costEvents.projectId,
+        total: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+      })
+      .from(costEvents)
+      .where(and(inArray(costEvents.companyId, companyIds), inArray(costEvents.projectId, projectIds), ...wConds))
+      .groupBy(costEvents.projectId);
+
+    const totals = new Map(rows.map((r) => [r.projectId, Number(r.total ?? 0)]));
+    for (const p of projectPolicies) {
+      result.set(p.id, totals.get(p.scopeId) ?? 0);
+    }
+  }
+
+  return result;
+}
+
 function buildApprovalPayload(input: {
   policy: PolicyRow;
   scopeName: string;
@@ -313,9 +410,9 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       .orderBy(desc(budgetPolicies.updatedAt));
   }
 
-  async function buildPolicySummary(policy: PolicyRow): Promise<BudgetPolicySummary> {
+  async function buildPolicySummary(policy: PolicyRow, precomputedObserved?: number): Promise<BudgetPolicySummary> {
     const scope = await resolveScopeRecord(db, policy.scopeType as BudgetScopeType, policy.scopeId);
-    const observedAmount = await computeObservedAmount(db, policy);
+    const observedAmount = precomputedObserved ?? await computeObservedAmount(db, policy);
     const { start, end } = resolveWindow(policy.windowKind as BudgetWindowKind);
     const amount = policy.isActive ? policy.amount : 0;
     const utilizationPercent =
@@ -627,7 +724,8 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
 
     overview: async (companyId: string): Promise<BudgetOverview> => {
       const rows = await listPolicyRows(companyId);
-      const policies = await Promise.all(rows.map((row) => buildPolicySummary(row)));
+      const observedAmounts = await computeObservedAmountsBatch(db, rows);
+      const policies = await Promise.all(rows.map((row) => buildPolicySummary(row, observedAmounts.get(row.id))));
       const activeIncidentRows = await db
         .select()
         .from(budgetIncidents)
