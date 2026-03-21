@@ -1,0 +1,20 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/v2/crates/tauri-utils/schema/capability.json",
+  "identifier": "remote-access",
+  "description": "Allow Tauri API access from the hosted Paperclip domain",
+  "remote": {
+    "urls": ["https://app.paperclip.inc", "https://*.paperclip.inc"]
+  },
+  "permissions": [
+    "core:event:allow-emit",
+    "core:event:allow-listen",
+    "notification:default",
+    "notification:allow-is-permission-granted",
+    "notification:allow-request-permission",
+    "notification:allow-notify",
+    "deep-link:default",
+    "shell:allow-open",
+    "process:allow-restart",
+    "process:allow-exit"
+  ]
+}

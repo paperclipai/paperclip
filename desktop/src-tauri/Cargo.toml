@@ -1,0 +1,25 @@
+[package]
+name = "paperclip-desktop"
+version = "0.1.0"
+description = "Paperclip native desktop app"
+authors = ["Paperclip Inc."]
+edition = "2021"
+
+[lib]
+name = "paperclip_app"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-deep-link = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-process = "2"
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

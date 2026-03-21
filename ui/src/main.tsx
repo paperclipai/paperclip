@@ -16,12 +16,19 @@ import { ThemeProvider } from "./context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { initPluginBridge } from "./plugins/bridge-init";
 import { PluginLauncherProvider } from "./plugins/launchers";
+import { isTauriApp } from "./lib/platform";
 import "@mdxeditor/editor/style.css";
 import "./index.css";
 
 initPluginBridge(React, ReactDOM);
 
-if ("serviceWorker" in navigator) {
+// Mark document for Tauri-specific CSS (titlebar drag region, etc.)
+if (isTauriApp()) {
+  document.documentElement.setAttribute("data-tauri", "");
+}
+
+// Skip service worker inside Tauri — the native shell handles caching
+if ("serviceWorker" in navigator && !isTauriApp()) {
   window.addEventListener("load", () => {
     navigator.serviceWorker.register("/sw.js");
   });

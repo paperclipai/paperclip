@@ -1,0 +1,80 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/v2/crates/tauri-cli/config.schema.json",
+  "productName": "Paperclip",
+  "identifier": "inc.paperclip.app",
+  "version": "0.1.0",
+  "build": {
+    "frontendDist": "../src",
+    "devUrl": "http://localhost:3100"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Paperclip",
+        "width": 1280,
+        "height": 860,
+        "minWidth": 900,
+        "minHeight": 600,
+        "url": "https://app.paperclip.inc",
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "dragDropEnabled": true
+      }
+    ],
+    "security": {},
+    "trayIcon": {
+      "iconPath": "icons/icon.png",
+      "iconAsTemplate": true,
+      "tooltip": "Paperclip"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "10.15",
+      "frameworks": [],
+      "entitlements": "Entitlements.plist"
+    },
+    "windows": {
+      "digestAlgorithm": "sha256",
+      "nsis": {
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/icon.ico",
+        "installMode": "currentUser"
+      }
+    },
+    "linux": {
+      "appimage": {
+        "bundleMediaFramework": true
+      },
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libappindicator3-1"
+        ]
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://releases.paperclip.inc/desktop/{{target}}/{{arch}}/{{current_version}}"
+      ],
+      "pubkey": ""
+    },
+    "deep-link": {
+      "desktop": {
+        "schemes": ["paperclip"]
+      }
+    }
+  }
+}

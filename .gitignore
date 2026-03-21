@@ -50,3 +50,7 @@ tests/release-smoke/test-results/
 tests/release-smoke/playwright-report/
 .superset/
 .claude/worktrees/
+
+# Tauri / Rust build artifacts
+desktop/src-tauri/target/
+desktop/src-tauri/gen/

@@ -729,3 +729,33 @@ a.paperclip-project-mention-chip {
 [class*="_toolbarNodeKindSelectContainer_"] {
   z-index: 81 !important;
 }
+
+/* ── Tauri desktop: overlay titlebar drag region ── */
+html[data-tauri] {
+  --titlebar-height: 28px;
+}
+
+html[data-tauri] body {
+  padding-top: var(--titlebar-height);
+}
+
+html[data-tauri]::after {
+  content: "";
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--titlebar-height);
+  -webkit-app-region: drag;
+  z-index: 9999;
+  pointer-events: auto;
+}
+
+/* Prevent drag on interactive elements within the titlebar zone */
+html[data-tauri] button,
+html[data-tauri] a,
+html[data-tauri] input,
+html[data-tauri] select,
+html[data-tauri] [role="button"] {
+  -webkit-app-region: no-drag;
+}
