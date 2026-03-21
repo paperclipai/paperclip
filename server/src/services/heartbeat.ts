@@ -2760,6 +2760,43 @@ export function heartbeatService(db: Db) {
           continue;
         }
 
+        // Cooldown enforcement: do not promote if agent ran within its intervalSec.
+        // This prevents rapid-fire cascading where each completed run immediately
+        // triggers the next deferred wakeup, ignoring the configured heartbeat interval.
+        const deferredPolicy = parseHeartbeatPolicy(deferredAgent);
+        if (deferredPolicy.intervalSec > 0) {
+          const lastFinished = await tx
+            .select({ finishedAt: heartbeatRuns.finishedAt })
+            .from(heartbeatRuns)
+            .where(
+              and(
+                eq(heartbeatRuns.agentId, deferredAgent.id),
+                sql`${heartbeatRuns.finishedAt} is not null`,
+              ),
+            )
+            .orderBy(desc(heartbeatRuns.finishedAt))
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+
+          if (
+            lastFinished?.finishedAt &&
+            (Date.now() - lastFinished.finishedAt.getTime()) / 1000 < deferredPolicy.intervalSec
+          ) {
+            // Agent ran too recently — leave deferred wakeup in place for the
+            // normal heartbeat timer to pick up at the proper interval.
+            logger.info(
+              {
+                agentId: deferredAgent.id,
+                intervalSec: deferredPolicy.intervalSec,
+                lastFinishedAt: lastFinished.finishedAt.toISOString(),
+                deferredWakeId: deferred.id,
+              },
+              "Skipping deferred wakeup promotion: agent within cooldown interval",
+            );
+            return null;
+          }
+        }
+
         const deferredPayload = parseObject(deferred.payload);
         const deferredContextSeed = parseObject(deferredPayload[DEFERRED_WAKE_CONTEXT_KEY]);
         const promotedContextSeed: Record<string, unknown> = { ...deferredContextSeed };
