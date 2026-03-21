@@ -633,11 +633,22 @@ export function writePaperclipSkillSyncPreference(
   return next;
 }
 
+async function symlinkOrCopy(source: string, target: string): Promise<void> {
+  try {
+    await fs.symlink(source, target);
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === "EPERM") {
+      await fs.cp(source, target, { recursive: true });
+    } else {
+      throw err;
+    }
+  }
+}
+
 export async function ensurePaperclipSkillSymlink(
   source: string,
   target: string,
-  linkSkill: (source: string, target: string) => Promise<void> = (linkSource, linkTarget) =>
-    fs.symlink(linkSource, linkTarget),
+  linkSkill: (source: string, target: string) => Promise<void> = symlinkOrCopy,
 ): Promise<"created" | "repaired" | "skipped"> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
