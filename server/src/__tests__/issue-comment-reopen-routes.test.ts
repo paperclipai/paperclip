@@ -19,6 +19,7 @@ const mockAccessService = vi.hoisted(() => ({
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
   reportRunActivity: vi.fn(async () => undefined),
+  getHeartbeatPolicy: vi.fn(async () => ({ enabled: true, intervalSec: 0, wakeOnDemand: true, wakeOnComment: true, maxConcurrentRuns: 1 })),
 }));
 
 const mockAgentService = vi.hoisted(() => ({
@@ -113,6 +114,84 @@ describe("issue comment reopen routes", () => {
         details: expect.not.objectContaining({ reopened: true }),
       }),
     );
+  });
+
+  describe("wakeOnComment policy", () => {
+    // The POST /issues/:id/comments route fires assignee wakes in a void async
+    // block after responding. A short flush lets those promises settle.
+    const flush = () => new Promise((r) => setTimeout(r, 50));
+
+    it("suppresses assignee wake when wakeOnComment is false", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+      mockHeartbeatService.getHeartbeatPolicy.mockResolvedValue({
+        enabled: true, intervalSec: 0, wakeOnDemand: true, wakeOnComment: false, maxConcurrentRuns: 1,
+      });
+
+      const res = await request(createApp())
+        .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+        .send({ body: "looks good, approved" });
+
+      expect(res.status).toBe(201);
+      await flush();
+      // No wake should have been enqueued for the assignee
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    });
+
+    it("still wakes assignee when wakeOnComment is true (default)", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+      mockHeartbeatService.getHeartbeatPolicy.mockResolvedValue({
+        enabled: true, intervalSec: 0, wakeOnDemand: true, wakeOnComment: true, maxConcurrentRuns: 1,
+      });
+
+      const res = await request(createApp())
+        .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+        .send({ body: "revision needed" });
+
+      expect(res.status).toBe(201);
+      await flush();
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        "22222222-2222-4222-8222-222222222222",
+        expect.objectContaining({ reason: "issue_commented" }),
+      );
+    });
+
+    it("falls back to waking when getHeartbeatPolicy returns null", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+      mockHeartbeatService.getHeartbeatPolicy.mockResolvedValue(null);
+
+      const res = await request(createApp())
+        .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+        .send({ body: "hello" });
+
+      expect(res.status).toBe(201);
+      await flush();
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        "22222222-2222-4222-8222-222222222222",
+        expect.objectContaining({ reason: "issue_commented" }),
+      );
+    });
+
+    it("still delivers @-mention wakes even when wakeOnComment is false", async () => {
+      const mentionedAgentId = "33333333-3333-4333-8333-333333333333";
+      mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+      mockHeartbeatService.getHeartbeatPolicy.mockResolvedValue({
+        enabled: true, intervalSec: 0, wakeOnDemand: true, wakeOnComment: false, maxConcurrentRuns: 1,
+      });
+      mockIssueService.findMentionedAgents.mockResolvedValue([mentionedAgentId]);
+
+      const res = await request(createApp())
+        .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+        .send({ body: "hey @SomeAgent check this" });
+
+      expect(res.status).toBe(201);
+      await flush();
+      // Assignee wake suppressed, but @-mention wake fires
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        mentionedAgentId,
+        expect.objectContaining({ reason: "issue_comment_mentioned" }),
+      );
+    });
   });
 
   it("reopens closed issues via the PATCH comment path", async () => {

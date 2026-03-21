@@ -1357,27 +1357,33 @@ export function issueRoutes(db: Db, storage: StorageService) {
             },
           });
         } else {
-          wakeups.set(assigneeId, {
-            source: "automation",
-            triggerDetail: "system",
-            reason: "issue_commented",
-            payload: {
-              issueId: currentIssue.id,
-              commentId: comment.id,
-              mutation: "comment",
-              ...(interruptedRunId ? { interruptedRunId } : {}),
-            },
-            requestedByActorType: actor.actorType,
-            requestedByActorId: actor.actorId,
-            contextSnapshot: {
-              issueId: currentIssue.id,
-              taskId: currentIssue.id,
-              commentId: comment.id,
-              source: "issue.comment",
-              wakeReason: "issue_commented",
-              ...(interruptedRunId ? { interruptedRunId } : {}),
-            },
-          });
+          // Respect assignee's wakeOnComment policy (defaults to true).
+          // When false, only the automatic "someone commented on your issue" wake
+          // is suppressed — @-mention wakes and assignment wakes still fire.
+          const policy = await heartbeat.getHeartbeatPolicy(assigneeId);
+          if (!policy || policy.wakeOnComment) {
+            wakeups.set(assigneeId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "issue_commented",
+              payload: {
+                issueId: currentIssue.id,
+                commentId: comment.id,
+                mutation: "comment",
+                ...(interruptedRunId ? { interruptedRunId } : {}),
+              },
+              requestedByActorType: actor.actorType,
+              requestedByActorId: actor.actorId,
+              contextSnapshot: {
+                issueId: currentIssue.id,
+                taskId: currentIssue.id,
+                commentId: comment.id,
+                source: "issue.comment",
+                wakeReason: "issue_commented",
+                ...(interruptedRunId ? { interruptedRunId } : {}),
+              },
+            });
+          }
         }
       }
 

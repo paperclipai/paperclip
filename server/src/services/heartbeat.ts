@@ -1519,6 +1519,7 @@ export function heartbeatService(db: Db) {
       enabled: asBoolean(heartbeat.enabled, true),
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
+      wakeOnComment: asBoolean(heartbeat.wakeOnComment, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
     };
   }
@@ -3652,6 +3653,12 @@ export function heartbeatService(db: Db) {
       }),
 
     wakeup: enqueueWakeup,
+
+    /** Returns the parsed heartbeat policy for an agent, or null if not found. */
+    getHeartbeatPolicy: async (agentId: string) => {
+      const agent = await getAgent(agentId);
+      return agent ? parseHeartbeatPolicy(agent) : null;
+    },
 
     reportRunActivity: clearDetachedRunWarning,
 
