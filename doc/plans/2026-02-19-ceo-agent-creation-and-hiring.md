@@ -1,160 +1,160 @@
-# CEO Agent Creation and Hiring Governance Plan (V1.1)
+# CEO 智能体创建和招聘治理计划（V1.1）
 
-Status: Proposed  
-Date: 2026-02-19  
-Owner: Product + Server + UI + Skills
+状态：提议
+日期：2026-02-19
+负责人：产品 + 服务器 + UI + 技能
 
-## 1. Goal
+## 1. 目标
 
-Enable a CEO agent to create new agents directly, with lightweight but explicit governance:
+使 CEO 智能体能够直接创建新智能体，具有轻量但显式的治理：
 
-- Company-level toggle: new hires require board approval (default ON).
-- Agent-level permission: `can_create_agents` (default ON for CEO, OFF for everyone else).
-- Clear hire workflow with draft/limbo state until approval.
-- Config reflection so hiring agents can inspect available adapter configuration and compare existing agent configs (including self).
-- Approval collaboration flow with comments, revision requests, and audit trail.
+- 公司级开关：新招聘需要董事会审批（默认开启）。
+- 智能体级权限：`can_create_agents`（CEO 默认开启，其他人默认关闭）。
+- 清晰的招聘工作流，在审批前有草稿/待定状态。
+- 配置反射，使招聘智能体可以检查可用的适配器配置和比较现有智能体配置（包括自身）。
+- 带评论、修改请求和审计跟踪的审批协作流程。
 
-## 2. Current State (Repo Reality)
+## 2. 当前状态（仓库现实）
 
-- Agent creation is board-only at `POST /api/companies/:companyId/agents` (`server/src/routes/agents.ts`).
-- Approvals support `pending/approved/rejected/cancelled` and `hire_agent` + `approve_ceo_strategy` (`packages/shared/src/constants.ts`, `server/src/services/approvals.ts`).
-- `hire_agent` approval currently creates the agent only on approval; there is no pre-created limbo agent.
-- There is no agent permissions system today.
-- There is no company setting for "new hires require board approval".
-- Approvals have no comment thread or revision-request state.
-- Inbox and Approvals UIs support approve/reject only; no approval detail route exists in app routes.
-- Agent adapter configuration is free-form JSON; no runtime reflection endpoint exists for machine-readable or text discovery.
+- 智能体创建仅限董事会在 `POST /api/companies/:companyId/agents`（`server/src/routes/agents.ts`）。
+- 审批支持 `pending/approved/rejected/cancelled` 和 `hire_agent` + `approve_ceo_strategy`（`packages/shared/src/constants.ts`、`server/src/services/approvals.ts`）。
+- `hire_agent` 审批当前仅在审批通过时创建智能体；没有预创建的待定智能体。
+- 目前没有智能体权限系统。
+- 没有"新招聘需要董事会审批"的公司设置。
+- 审批没有评论线程或修改请求状态。
+- 收件箱和审批 UI 仅支持批准/拒绝；应用路由中不存在审批详情路由。
+- 智能体适配器配置是自由形式 JSON；不存在用于机器可读或文本发现的运行时反射端点。
 
-## 3. Product Decisions
+## 3. 产品决策
 
-## 3.1 Company setting
+## 3.1 公司设置
 
-Add company setting:
+添加公司设置：
 
 - `requireBoardApprovalForNewAgents: boolean`
-- Default: `true`
-- Editable only in company advanced settings (not onboarding/company creation flow UI)
+- 默认：`true`
+- 仅在公司高级设置中可编辑（不在入门/公司创建流程 UI 中）
 
-## 3.2 Agent permissions
+## 3.2 智能体权限
 
-Introduce lightweight permission model with one explicit permission now:
+引入具有一个显式权限的轻量级权限模型：
 
 - `can_create_agents: boolean`
 
-Defaults:
+默认值：
 
-- CEO: `true`
-- Everyone else: `false`
+- CEO：`true`
+- 其他人：`false`
 
-Authority:
+权限：
 
-- Board can edit permissions for any agent.
-- CEO can edit permissions for agents in same company.
+- 董事会可以编辑任何智能体的权限。
+- CEO 可以编辑同公司智能体的权限。
 
-No broader RBAC system in this phase.
+本阶段不引入更广泛的 RBAC 系统。
 
-## 3.3 Limbo state for hires
+## 3.3 招聘待定状态
 
-Introduce dedicated non-operational status:
+引入专用的非运营状态：
 
 - `pending_approval`
 
-Meaning:
+含义：
 
-- Agent record exists in org tree and can be reviewed.
-- Agent cannot run, receive assignments, create keys, or be resumed to active states until approved.
+- 智能体记录存在于组织树中，可以被审查。
+- 在审批通过之前，智能体不能运行、接收分配、创建密钥或恢复为活跃状态。
 
-## 4. Data Model Changes
+## 4. 数据模型变更
 
 ## 4.1 `companies`
 
-Add column:
+添加列：
 
 - `require_board_approval_for_new_agents` boolean not null default `true`
 
-Sync required:
+需同步：
 
 - `packages/db/src/schema/companies.ts`
 - `packages/shared/src/types/company.ts`
 - `packages/shared/src/validators/company.ts`
-- UI company API type usage and company advanced settings form
+- UI 公司 API 类型使用和公司高级设置表单
 
 ## 4.2 `agents`
 
-Add columns:
+添加列：
 
 - `permissions` jsonb not null default `{}`
-- status value expansion to include `pending_approval`
+- 状态值扩展以包含 `pending_approval`
 
-Sync required:
+需同步：
 
 - `packages/db/src/schema/agents.ts`
-- `packages/shared/src/constants.ts` (`AGENT_STATUSES`)
+- `packages/shared/src/constants.ts`（`AGENT_STATUSES`）
 - `packages/shared/src/types/agent.ts`
 - `packages/shared/src/validators/agent.ts`
-- status badges, filters, and lifecycle controls in UI
+- UI 中的状态徽章、筛选器和生命周期控制
 
 ## 4.3 `approvals`
 
-Keep approval as central governance record; extend workflow support:
+保持审批作为中心治理记录；扩展工作流支持：
 
-- add status `revision_requested`
-- ensure payload for hire approvals contains:
+- 添加状态 `revision_requested`
+- 确保招聘审批的负载包含：
   - `agentId`
   - `requestedByAgentId`
   - `requestedConfigurationSnapshot`
 
-## 4.4 New `approval_comments` table
+## 4.4 新表 `approval_comments`
 
-Add discussion thread for approvals:
+为审批添加讨论线程：
 
-- `id`, `company_id`, `approval_id`, `author_agent_id`, `author_user_id`, `body`, timestamps
+- `id`、`company_id`、`approval_id`、`author_agent_id`、`author_user_id`、`body`、时间戳
 
-Purpose:
+用途：
 
-- review comments
-- revision requests
-- rationale for approve/reject
-- permanent audit trail
+- 审查评论
+- 修改请求
+- 批准/拒绝的理由
+- 永久审计跟踪
 
-## 5. API and AuthZ Plan
+## 5. API 和授权计划
 
-## 5.1 Permission helpers
+## 5.1 权限助手
 
-Add server-side authz helpers:
+添加服务器端授权助手：
 
 - `assertCanCreateAgents(req, companyId)`
 - `assertCanManageAgentPermissions(req, companyId)`
 
-Rules:
+规则：
 
-- Board always passes.
-- Agent passes `can_create_agents` check if self permission true and same company.
-- Permission management by CEO or board.
+- 董事会总是通过。
+- 如果自身权限为 true 且同公司，智能体通过 `can_create_agents` 检查。
+- 权限管理由 CEO 或董事会执行。
 
-## 5.2 Hire creation flow
+## 5.2 招聘创建流程
 
-Add route:
+添加路由：
 
 - `POST /api/companies/:companyId/agent-hires`
 
-Behavior:
+行为：
 
-- Requires `can_create_agents` (or board).
-- Creates agent row first.
-- If company setting requires approval:
-  - create agent with `status=pending_approval`
-  - create `approvals(type=hire_agent,status=pending,payload.agentId=...)`
-  - return both agent + approval
-- If setting disabled:
-  - create agent as `idle`
-  - no approval record required
+- 需要 `can_create_agents`（或董事会）。
+- 先创建智能体行。
+- 如果公司设置需要审批：
+  - 以 `status=pending_approval` 创建智能体
+  - 创建 `approvals(type=hire_agent,status=pending,payload.agentId=...)`
+  - 返回智能体 + 审批
+- 如果设置禁用：
+  - 以 `idle` 创建智能体
+  - 不需要审批记录
 
-Board may continue using direct create route, but this route becomes canonical for CEO/agent-led hiring.
+董事会可以继续使用直接创建路由，但此路由成为 CEO/智能体主导招聘的规范路径。
 
-## 5.3 Approval workflow endpoints
+## 5.3 审批工作流端点
 
-Add/extend:
+添加/扩展：
 
 - `GET /api/approvals/:id`
 - `POST /api/approvals/:id/request-revision`
@@ -162,228 +162,228 @@ Add/extend:
 - `GET /api/approvals/:id/comments`
 - `POST /api/approvals/:id/comments`
 
-Update existing approve/reject semantics:
+更新现有批准/拒绝语义：
 
-- approve of hire transitions linked agent `pending_approval -> idle`
-- reject keeps linked agent in non-active state (`pending_approval` or `terminated`/purged later)
+- 招聘审批通过将关联智能体从 `pending_approval -> idle`
+- 拒绝保持关联智能体在非活跃状态（`pending_approval` 或 `terminated`/后续清理）
 
-## 5.4 Agent permission management endpoints
+## 5.4 智能体权限管理端点
 
-Add:
+添加：
 
 - `PATCH /api/agents/:id/permissions`
 
-Supports initial key only:
+支持初始键：
 
 - `{ "canCreateAgents": boolean }`
 
-## 5.5 Read config endpoints (protected)
+## 5.5 读取配置端点（受保护）
 
-Add permission-gated config-read endpoints:
+添加权限受控的配置读取端点：
 
 - `GET /api/companies/:companyId/agent-configurations`
 - `GET /api/agents/:id/configuration`
 
-Access:
+访问：
 
-- board
+- 董事会
 - CEO
-- any agent with `can_create_agents`
+- 任何具有 `can_create_agents` 的智能体
 
-Security:
+安全：
 
-- redact obvious secret values from adapter config (`env`, API keys, tokens, JWT-looking values)
-- include redaction marker in response
+- 从适配器配置中脱敏明显的秘密值（`env`、API 密钥、Token、JWT 样式的值）
+- 在响应中包含脱敏标记
 
-## 5.6 Reflection endpoints for adapter configuration
+## 5.6 适配器配置的反射端点
 
-Add plain-text reflection routes:
+添加纯文本反射路由：
 
 - `GET /llms/agent-configuration.txt`
 - `GET /llms/agent-configuration/:adapterType.txt`
 
-Index file includes:
+索引文件包含：
 
-- installed adapter list for this Paperclip instance
-- per-adapter doc URLs
-- brief "how to hire" API sequence links
+- 此 Paperclip 实例安装的适配器列表
+- 每适配器文档 URL
+- 简短的"如何招聘"API 序列链接
 
-Per-adapter file includes:
+每适配器文件包含：
 
-- required/optional config keys
-- defaults
-- field descriptions
-- safety notes
-- example payloads
+- 必需/可选配置键
+- 默认值
+- 字段描述
+- 安全说明
+- 示例负载
 
-Auth:
+认证：
 
-- same gate as config-read endpoints (board/CEO/`can_create_agents`).
+- 与配置读取端点相同的门控（董事会/CEO/`can_create_agents`）。
 
-## 6. Adapter Protocol Extension
+## 6. 适配器协议扩展
 
-Extend `ServerAdapterModule` contract to expose config docs:
+扩展 `ServerAdapterModule` 合约以暴露配置文档：
 
-- `agentConfigurationDoc` (string) or `getAgentConfigurationDoc()`
+- `agentConfigurationDoc`（string）或 `getAgentConfigurationDoc()`
 
-Implement in:
+在以下位置实现：
 
 - `packages/adapters/claude-local`
 - `packages/adapters/codex-local`
 - `server/src/adapters/registry.ts`
 
-This is required so reflection is generated from installed adapters, not hardcoded.
+这是必需的，以便反射从安装的适配器生成，而不是硬编码。
 
-## 7. UI Plan
+## 7. UI 计划
 
-## 7.1 Company advanced settings
+## 7.1 公司高级设置
 
-In Companies UI, add advanced settings panel/modal with:
+在公司 UI 中，添加高级设置面板/模态框：
 
-- toggle: "Require board approval for new agent hires" (default on)
+- 开关："新智能体招聘需要董事会审批"（默认开启）
 
-Not shown in onboarding flow.
+不在入门流程中显示。
 
-## 7.2 Agent permissions UI
+## 7.2 智能体权限 UI
 
-In Agent Detail (board/CEO context):
+在智能体详情中（董事会/CEO 上下文）：
 
-- permissions section
-- toggle for "Can create new agents"
+- 权限部分
+- "可以创建新智能体"的开关
 
-## 7.3 Hire UX
+## 7.3 招聘 UX
 
-Add "Hire Agent" flow (for CEO/authorized agents):
+添加"招聘智能体"流程（用于 CEO/授权智能体）：
 
-- choose role/name/title/reportsTo
-- compose initial prompt/capabilities
-- inspect adapter reflection docs
-- inspect existing related agent configurations
-- submit hire
+- 选择角色/名称/职称/汇报对象
+- 编写初始提示/能力
+- 检查适配器反射文档
+- 检查现有相关智能体配置
+- 提交招聘
 
-State messaging:
+状态消息：
 
-- if approval required: show "Pending board approval"
-- if not required: show active-ready state
+- 如果需要审批：显示"待董事会审批"
+- 如果不需要：显示活跃就绪状态
 
-## 7.4 Approvals UX
+## 7.4 审批 UX
 
-Add approval detail page and expand inbox integration:
+添加审批详情页面并扩展收件箱集成：
 
 - `/approvals/:approvalId`
-- threaded comments
-- revision request action
-- approve/reject with decision note
-- activity timeline (created, revisions, decisions)
+- 线程化评论
+- 修改请求操作
+- 带决策说明的批准/拒绝
+- 活动时间线（创建、修改、决策）
 
-## 7.5 Disapproved agent cleanup
+## 7.5 被拒绝智能体清理
 
-Provide board-only destructive action in approval detail:
+在审批详情中提供仅董事会的破坏性操作：
 
-- "Delete disapproved agent"
-- explicit confirmation dialog
-- preserves approval + comment history (audit)
+- "删除被拒绝的智能体"
+- 显式确认对话框
+- 保留审批 + 评论历史（审计）
 
-## 8. New Skill: `paperclip-create-agent`
+## 8. 新技能：`paperclip-create-agent`
 
-Create new skill directory:
+创建新技能目录：
 
 - `skills/paperclip-create-agent/SKILL.md`
 - `skills/paperclip-create-agent/references/api-reference.md`
 
-Skill responsibilities:
+技能职责：
 
-- Discover available adapter configuration via `/llms/agent-configuration*.txt`
-- Read existing agent configurations (including self and related roles)
-- Propose best-fit config for current environment
-- Draft high-quality initial prompt for new agent
-- Set manager/reporting line
-- Execute hire API flow
-- Handle revision loop with board comments
+- 通过 `/llms/agent-configuration*.txt` 发现可用的适配器配置
+- 读取现有智能体配置（包括自身和相关角色）
+- 为当前环境提出最佳匹配配置
+- 为新智能体起草高质量初始提示
+- 设置管理者/汇报线
+- 执行招聘 API 流程
+- 处理与董事会评论的修改循环
 
-Also update `skills/paperclip/SKILL.md` to reference this skill for hiring workflows.
+同时更新 `skills/paperclip/SKILL.md` 以引用此技能用于招聘工作流。
 
-## 9. Enforcement and Invariants
+## 9. 强制执行和不变量
 
-New/updated invariants:
+新增/更新的不变量：
 
-- `pending_approval` agents cannot:
-  - be invoked/woken
-  - be assigned issues
-  - create or use API keys
-  - transition to active lifecycle states except through hire approval
-- approval transitions:
+- `pending_approval` 智能体不能：
+  - 被调用/唤醒
+  - 被分配任务
+  - 创建或使用 API 密钥
+  - 除通过招聘审批外转换为活跃生命周期状态
+- 审批转换：
   - `pending -> revision_requested | approved | rejected | cancelled`
   - `revision_requested -> pending | rejected | cancelled`
-- every mutation writes `activity_log` records.
+- 每次变更写入 `activity_log` 记录。
 
-## 10. Implementation Phases
+## 10. 实现阶段
 
-## Phase 1: Contracts and migration
+## 阶段 1：合约和迁移
 
-- DB schema updates (`companies`, `agents`, approvals status expansion, `approval_comments`)
-- shared constants/types/validators updates
-- migration generation and typecheck
+- 数据库模式更新（`companies`、`agents`、审批状态扩展、`approval_comments`）
+- 共享常量/类型/验证器更新
+- 迁移生成和类型检查
 
-## Phase 2: Server authz + hire flow
+## 阶段 2：服务器授权 + 招聘流程
 
-- permission resolver and authz guards
-- `agent-hires` route
-- limbo status enforcement in heartbeat/issue/key flows
-- approval revision/comment endpoints
+- 权限解析器和授权守卫
+- `agent-hires` 路由
+- 待定状态在心跳/任务/密钥流程中的强制执行
+- 审批修改/评论端点
 
-## Phase 3: Reflection and config-read APIs
+## 阶段 3：反射和配置读取 API
 
-- adapter protocol docs support
-- `/llms/agent-configuration*.txt` routes
-- protected config-read endpoints with redaction
+- 适配器协议文档支持
+- `/llms/agent-configuration*.txt` 路由
+- 带脱敏的受保护配置读取端点
 
-## Phase 4: UI and skilling
+## 阶段 4：UI 和技能
 
-- company advanced setting UI
-- permission controls
-- approval detail + comments/revision flow in inbox/approvals
-- disapproved agent delete flow
-- `paperclip-create-agent` skill + docs updates
+- 公司高级设置 UI
+- 权限控制
+- 收件箱/审批中的审批详情 + 评论/修改流程
+- 被拒绝智能体删除流程
+- `paperclip-create-agent` 技能 + 文档更新
 
-## 11. Test Plan
+## 11. 测试计划
 
-Server tests:
+服务器测试：
 
-- permission gate tests for hire/config-read/permission-update endpoints
-- hire creation behavior with company setting on/off
-- approval transitions including revision cycle
-- pending_approval enforcement across wakeup/invoke/assignment/keys
-- config redaction tests
+- 招聘/配置读取/权限更新端点的权限门控测试
+- 公司设置开启/关闭时的招聘创建行为
+- 包括修改循环在内的审批转换
+- 唤醒/调用/分配/密钥中的 pending_approval 强制执行
+- 配置脱敏测试
 
-UI tests:
+UI 测试：
 
-- advanced setting toggle persistence
-- approval detail comment/revision interactions
-- hire flow states (pending vs immediate)
+- 高级设置开关持久化
+- 审批详情评论/修改交互
+- 招聘流程状态（待处理 vs 立即）
 
-Repo verification before merge:
+合并前仓库验证：
 
 - `pnpm -r typecheck`
 - `pnpm test:run`
 - `pnpm build`
 
-## 12. Risks and Mitigations
+## 12. 风险和缓解
 
-- Risk: leaking secrets through agent config reads.
-  - Mitigation: strict redaction pass + allowlist/denylist tests.
-- Risk: status explosion complexity.
-  - Mitigation: single added status (`pending_approval`) with explicit transition guards.
-- Risk: approval flow regressions.
-  - Mitigation: centralize transition logic in approval service and back it with tests.
+- 风险：通过智能体配置读取泄露秘密。
+  - 缓解：严格的脱敏传递 + 白名单/黑名单测试。
+- 风险：状态爆炸复杂性。
+  - 缓解：仅添加一个状态（`pending_approval`），带有显式转换守卫。
+- 风险：审批流程回归。
+  - 缓解：在审批服务中集中转换逻辑并用测试支撑。
 
-## 13. Open Decisions (Default Recommendation)
+## 13. 待决定（默认建议）
 
-1. Should board direct-create bypass approval setting?
-Recommendation: yes, board is explicit governance override.
+1. 董事会直接创建是否应绕过审批设置？
+建议：是，董事会是显式的治理覆盖。
 
-2. Should non-authorized agents still see basic agent metadata?
-Recommendation: yes (name/role/status), but configuration fields stay restricted.
+2. 未授权的智能体是否仍应看到基本智能体元数据？
+建议：是（名称/角色/状态），但配置字段保持受限。
 
-3. On rejection, should limbo agent remain `pending_approval` or move to `terminated`?
-Recommendation: move to `terminated` on final reject; keep optional hard delete action for cleanup.
+3. 拒绝后，待定智能体应保持 `pending_approval` 还是转为 `terminated`？
+建议：最终拒绝时转为 `terminated`；保留可选的硬删除操作用于清理。

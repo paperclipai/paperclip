@@ -1,141 +1,141 @@
-# Issue Run Orchestration Plan
+# 任务运行编排计划
 
-## Context
+## 背景
 
-We observed cascaded wakeups on a single issue (for example PAP-39) that produced multiple runs at once:
+我们观察到单个任务（例如 PAP-39）上的级联唤醒产生了多个同时运行：
 
-- assignee self-wake from `issue_commented`
-- mention wake to manager/CTO from `issue_comment_mentioned`
-- overlapping runs on the same issue
+- 来自 `issue_commented` 的负责人自唤醒
+- 来自 `issue_comment_mentioned` 的对管理者/CTO 的提及唤醒
+- 同一任务上的重叠运行
 
-Current behavior is run-centric and agent-centric. It coalesces per-agent+task in `heartbeat.wakeup`, but does not enforce a single active execution slot per issue across all agents.
+当前行为是以运行为中心和以智能体为中心的。它在 `heartbeat.wakeup` 中按智能体+任务合并，但不强制每个任务跨所有智能体只有一个活跃执行槽。
 
-## What We Know Today
+## 当前已知情况
 
-- The only reliable issue/run linkage today is derived from `heartbeat_runs.context_snapshot.issueId` with run status `queued` or `running`.
-- `checkoutRunId` on issues is a work-ownership lock, not an orchestration lock.
-- Wakeups are created from multiple routes (`issues`, `approvals`, `agents`) and all funnel through `heartbeat.wakeup`.
+- 目前唯一可靠的任务/运行关联是从 `heartbeat_runs.context_snapshot.issueId` 中派生的，运行状态为 `queued` 或 `running`。
+- 任务上的 `checkoutRunId` 是工作所有权锁，不是编排锁。
+- 唤醒从多个路由创建（`issues`、`approvals`、`agents`），全部通过 `heartbeat.wakeup` 汇聚。
 
-## Goals
+## 目标
 
-1. Prevent self-wake cascades for the same issue when the target agent has the same normalized name as the currently active issue runner.
-2. Allow cross-agent wake requests, but do not run them until the current issue runner exits.
-3. Guarantee at most one active (queued or running) execution owner per issue at a time.
-4. Keep this enforcement centralized in orchestration (not prompt/skill rules).
+1. 当目标智能体与当前活跃任务运行者具有相同的规范化名称时，防止同一任务的自唤醒级联。
+2. 允许跨智能体唤醒请求，但在当前任务运行者退出之前不运行它们。
+3. 保证每个任务同一时间最多只有一个活跃（排队或运行中）执行所有者。
+4. 将此强制执行集中在编排中（不是提示/技能规则）。
 
-## Non-Goals
+## 非目标
 
-- Replacing checkout semantics for code-change ownership.
-- Changing manager escalation policy itself.
-- Enforcing uniqueness of agent names globally (handled as a separate governance decision).
+- 替换代码变更所有权的签出语义。
+- 改变管理者升级策略本身。
+- 全局强制智能体名称唯一性（作为单独的治理决策处理）。
 
-## Proposed Model
+## 提议模型
 
-Use an explicit issue-level orchestration lock on `issues`.
+在 `issues` 上使用显式的任务级编排锁。
 
-### New Issue Properties
+### 新增任务属性
 
-- `executionRunId: uuid | null` (FK to `heartbeat_runs.id`, `ON DELETE SET NULL`)
-- `executionAgentNameKey: text | null` (normalized lowercase/trimmed agent name)
+- `executionRunId: uuid | null`（FK 到 `heartbeat_runs.id`，`ON DELETE SET NULL`）
+- `executionAgentNameKey: text | null`（规范化的小写/去空格智能体名称）
 - `executionLockedAt: timestamptz | null`
 
-`executionRunId` is the canonical “who currently owns orchestration for this issue” field.
+`executionRunId` 是规范的"谁当前拥有此任务编排权"字段。
 
-## Orchestration Rules
+## 编排规则
 
-### Rule A: No Self-Wake by Same Agent Name
+### 规则 A：不允许相同智能体名称的自唤醒
 
-If a wakeup is issue-scoped and `issues.executionRunId` points to an active run whose `executionAgentNameKey` matches the waking agent name key:
+如果唤醒是任务范围的，且 `issues.executionRunId` 指向一个活跃运行，其 `executionAgentNameKey` 与唤醒智能体名称键匹配：
 
-- do not create a new heartbeat run
-- write wakeup request as `coalesced` with reason `issue_execution_same_name`
-- return existing run reference
+- 不创建新的心跳运行
+- 将唤醒请求写为 `coalesced`，原因为 `issue_execution_same_name`
+- 返回现有运行引用
 
-### Rule B: Different Name May Wake, But Waits
+### 规则 B：不同名称可以唤醒但需等待
 
-If an issue has an active execution lock held by a different agent-name key:
+如果任务有一个由不同智能体名称键持有的活跃执行锁：
 
-- accept the wake request
-- persist request as deferred (new wakeup status `deferred_issue_execution`)
-- do not create a run yet
+- 接受唤醒请求
+- 将请求持久化为延迟（新唤醒状态 `deferred_issue_execution`）
+- 暂不创建运行
 
-When the active issue run finishes, promote the oldest deferred request for that issue into a queued run and transfer `executionRunId`.
+当活跃任务运行完成时，将该任务的最旧延迟请求提升为排队运行并转移 `executionRunId`。
 
-### Rule C: One Active Execution Owner Per Issue
+### 规则 C：每个任务一个活跃执行所有者
 
-For issue-scoped wakeups, run creation is done only while holding a transaction lock on the issue row. This ensures only one queued/running run can become owner at a time.
+对于任务范围的唤醒，运行创建仅在持有任务行事务锁时完成。这确保同一时间只有一个排队/运行中的运行可以成为所有者。
 
-## Implementation Plan
+## 实现计划
 
-## Phase 1: Schema + Shared Contracts
+## 阶段 1：模式 + 共享合约
 
-1. Add issue columns: `execution_run_id`, `execution_agent_name_key`, `execution_locked_at`.
-2. Extend shared `Issue` type in `packages/shared/src/types/issue.ts`.
-3. Add migration and export updates.
+1. 添加任务列：`execution_run_id`、`execution_agent_name_key`、`execution_locked_at`。
+2. 在 `packages/shared/src/types/issue.ts` 中扩展共享 `Issue` 类型。
+3. 添加迁移和导出更新。
 
-## Phase 2: Centralize Issue Execution Gate in `heartbeat.wakeup`
+## 阶段 2：在 `heartbeat.wakeup` 中集中任务执行门控
 
-1. In `enqueueWakeup`, derive `issueId` from context/payload as today.
-2. If no `issueId`, keep existing behavior.
-3. If `issueId` exists:
-   - transaction + `SELECT ... FOR UPDATE` on issue row
-   - resolve/repair stale `executionRunId` (if referenced run is not `queued|running`, clear lock)
-   - apply Rule A/Rule B/Rule C
-4. Name normalization helper:
+1. 在 `enqueueWakeup` 中，像今天一样从上下文/负载派生 `issueId`。
+2. 如果没有 `issueId`，保持现有行为。
+3. 如果 `issueId` 存在：
+   - 事务 + `SELECT ... FOR UPDATE` 锁定任务行
+   - 解析/修复陈旧的 `executionRunId`（如果引用的运行不是 `queued|running`，清除锁）
+   - 应用规则 A/规则 B/规则 C
+4. 名称规范化助手：
    - `agentNameKey = agent.name.trim().toLowerCase()`
 
-## Phase 3: Deferred Queue Promotion on Run Finalization
+## 阶段 3：运行完成时的延迟队列提升
 
-1. On run terminal states (`succeeded`, `failed`, `cancelled`, orphan reaped):
-   - if run owns `issues.executionRunId`, clear issue lock
-   - promote oldest deferred issue wakeup to queued run
-   - set issue lock to the promoted run
-   - trigger `startNextQueuedRunForAgent(promotedAgentId)`
+1. 在运行终态（`succeeded`、`failed`、`cancelled`、孤儿被回收）时：
+   - 如果运行拥有 `issues.executionRunId`，清除任务锁
+   - 将该任务的最旧延迟唤醒提升为排队运行
+   - 将任务锁设置为提升的运行
+   - 触发 `startNextQueuedRunForAgent(promotedAgentId)`
 
-## Phase 4: Route Hygiene (“Apply Everywhere”)
+## 阶段 4：路由清理（"全面应用"）
 
-1. Keep route-side wakeup dedupe by agent id, but rely on heartbeat gate as source of truth.
-2. Ensure all issue-related wakeup calls include `issueId` in payload/context snapshot.
-3. Add explicit reason codes so logs make suppression/deferral obvious.
+1. 按智能体 id 保持路由端去重，但依赖心跳门控作为事实来源。
+2. 确保所有任务相关唤醒调用在负载/上下文快照中包含 `issueId`。
+3. 添加显式原因码使日志中的抑制/延迟明显。
 
-## Phase 5: Tests
+## 阶段 5：测试
 
-1. Unit tests for `heartbeat.wakeup`:
-   - same-name self-wake suppressed
-   - different-name wake deferred
-   - lock released and deferred wake promoted on owner completion
-   - stale lock recovery
-2. Integration tests:
-   - comment with `@CTO` during active assignee run does not create concurrent active run
-   - only one active owner per issue at any time
-3. Regression tests:
-   - non-issue wakeups unchanged
-   - existing assignment/timer behavior unchanged for tasks without issue context
+1. `heartbeat.wakeup` 的单元测试：
+   - 相同名称自唤醒被抑制
+   - 不同名称唤醒被延迟
+   - 所有者完成后锁释放和延迟唤醒被提升
+   - 陈旧锁恢复
+2. 集成测试：
+   - 活跃负责人运行期间的 `@CTO` 评论不创建并发活跃运行
+   - 任何时刻每个任务只有一个活跃所有者
+3. 回归测试：
+   - 非任务唤醒不变
+   - 没有任务上下文的任务的现有分配/定时器行为不变
 
-## Telemetry + Debuggability
+## 遥测 + 可调试性
 
-- Add structured reasons in `agent_wakeup_requests.reason`:
+- 在 `agent_wakeup_requests.reason` 中添加结构化原因：
   - `issue_execution_same_name`
   - `issue_execution_deferred`
   - `issue_execution_promoted`
-- Add activity log details for lock transfer events:
-  - from run id / to run id / issue id / agent name key
+- 为锁转移事件添加活动日志详情：
+  - 从运行 id / 到运行 id / 任务 id / 智能体名称键
 
-## Rollout Strategy
+## 发布策略
 
-1. Ship schema + feature flag (`ISSUE_EXECUTION_LOCK_ENABLED`) default off.
-2. Enable in dev and verify PAP-39 style scenarios.
-3. Enable in staging with high log verbosity.
-4. Enable by default after stable run.
+1. 发布模式 + 功能标志（`ISSUE_EXECUTION_LOCK_ENABLED`）默认关闭。
+2. 在开发环境启用并验证 PAP-39 类型场景。
+3. 在预发布环境启用，高日志详细度。
+4. 稳定运行后默认启用。
 
-## Acceptance Criteria
+## 验收标准
 
-1. A single issue never has more than one active execution owner run (`queued|running`) at once.
-2. Same-name self-wakes for the same issue are suppressed, not spawned.
-3. Different-name wakeups are accepted but deferred until issue execution lock is released.
-4. Mentioning CTO during an active issue run does not start CTO concurrently on that issue.
-5. Parallelism remains available via separate issues/subissues.
+1. 单个任务同时永远不会有多于一个活跃执行所有者运行（`queued|running`）。
+2. 同一任务的相同名称自唤醒被抑制，不被生成。
+3. 不同名称唤醒被接受但延迟，直到任务执行锁被释放。
+4. 活跃任务运行期间提及 CTO 不会在该任务上并发启动 CTO。
+5. 并行性仍然可以通过单独的任务/子任务实现。
 
-## Follow-Up (Separate but Related)
+## 后续（单独但相关）
 
-Checkout conflict logic should be corrected independently so assignees with `checkoutRunId = null` can acquire checkout by current run id without false 409 loops.
+签出冲突逻辑应独立修正，以便 `checkoutRunId = null` 的负责人可以通过当前运行 id 获取签出，而不会出现错误的 409 循环。
