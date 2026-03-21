@@ -563,10 +563,13 @@ export function agentRoutes(db: Db) {
       };
     }
 
-    const resolvedRequestedSkills = await companySkills.resolveRequestedSkillKeys(
-      companyId,
-      requestedDesiredSkills,
-    );
+    // External gateway skills (e.g. "openclaw/bird") bypass company skill validation
+    const externalSkillKeys = requestedDesiredSkills.filter((k) => k.includes("/") && !k.startsWith("paperclipai/"));
+    const companySkillRefs = requestedDesiredSkills.filter((k) => !externalSkillKeys.includes(k));
+    const resolvedCompanySkills = companySkillRefs.length > 0
+      ? await companySkills.resolveRequestedSkillKeys(companyId, companySkillRefs)
+      : [];
+    const resolvedRequestedSkills = [...resolvedCompanySkills, ...externalSkillKeys];
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(companyId, {
       materializeMissing: shouldMaterializeRuntimeSkillsForAdapter(adapterType),
     });
