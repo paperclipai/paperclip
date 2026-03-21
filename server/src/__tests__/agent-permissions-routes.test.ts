@@ -272,4 +272,83 @@ describe("agent permission routes", () => {
     expect(res.body.access.canAssignTasks).toBe(true);
     expect(res.body.access.taskAssignSource).toBe("agent_creator");
   });
+
+  it("allows board users to reset agent runtime sessions", async () => {
+    mockHeartbeatService.resetRuntimeSession.mockResolvedValue({ ok: true });
+
+    const app = createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app)
+      .post(`/api/agents/${agentId}/runtime-state/reset-session`)
+      .send({ taskKey: "task-123" });
+
+    expect(res.status).toBe(200);
+    expect(mockAccessService.hasPermission).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.resetRuntimeSession).toHaveBeenCalledWith(agentId, { taskKey: "task-123" });
+  });
+
+  it("rejects agent runtime-session resets without an explicit grant", async () => {
+    mockAccessService.hasPermission.mockResolvedValue(false);
+
+    const app = createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      runId: "run-123",
+    });
+
+    const res = await request(app)
+      .post(`/api/agents/${agentId}/runtime-state/reset-session`)
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Missing permission: agents:runtime-reset");
+    expect(mockAccessService.hasPermission).toHaveBeenCalledWith(
+      companyId,
+      "agent",
+      agentId,
+      "agents:runtime-reset",
+    );
+    expect(mockHeartbeatService.resetRuntimeSession).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("allows granted agents to reset sessions and logs the agent actor metadata", async () => {
+    mockAccessService.hasPermission.mockResolvedValue(true);
+    mockHeartbeatService.resetRuntimeSession.mockResolvedValue({ ok: true });
+
+    const app = createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      runId: "run-123",
+    });
+
+    const res = await request(app)
+      .post(`/api/agents/${agentId}/runtime-state/reset-session`)
+      .send({ taskKey: "task-456" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.resetRuntimeSession).toHaveBeenCalledWith(agentId, { taskKey: "task-456" });
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId,
+        actorType: "agent",
+        actorId: agentId,
+        agentId,
+        runId: "run-123",
+        action: "agent.runtime_session_reset",
+        entityType: "agent",
+        entityId: agentId,
+        details: { taskKey: "task-456" },
+      }),
+    );
+  });
 });
