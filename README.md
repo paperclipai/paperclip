@@ -172,13 +172,11 @@ Paperclip handles the hard orchestration details correctly.
 ## Quickstart
 
 Open source. Self-hosted. No Paperclip account required.
-
 ```bash
 npx paperclipai onboard --yes
 ```
 
 Or manually:
-
 ```bash
 git clone https://github.com/paperclipai/paperclip.git
 cd paperclip
@@ -216,7 +214,6 @@ By default, agents run on scheduled heartbeats and event-based triggers (task as
 <br/>
 
 ## Development
-
 ```bash
 pnpm dev              # Full dev (API + UI, watch mode)
 pnpm dev:once         # Full dev without file watching
@@ -241,6 +238,98 @@ See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
 - ⚪ Better support for harness engineering
 - 🟢 Plugin system (e.g. if you want to add a knowledgebase, custom tracing, queues, etc)
 - ⚪ Better docs
+
+<br/>
+
+## Security & Safety
+
+Paperclip orchestrates AI agents that have real access to your filesystem,
+APIs, and network. Understanding the security model helps you deploy safely.
+
+### Filesystem isolation
+
+By default, all agents share the same workspace directory. Agent A can read
+files created by Agent B. For sensitive workloads:
+
+- Use separate `cwd` paths per agent in your company configuration
+- Mount sensitive directories as read-only when using Docker
+- Keep `.env` files and credentials outside the agent workspace
+- Consider per-agent workspace directories (`/workspace/{agent-id}/`)
+
+### Docker sandboxing
+
+Running Paperclip in Docker provides process-level isolation:
+```bash
+docker compose up -d
+```
+
+Key settings for production:
+- Set `PAPERCLIP_AUTH_DISABLE_SIGN_UP=true` to prevent unauthorized access
+- Use named volumes for persistent data (not bind mounts to sensitive paths)
+- Enable health checks for automatic restart on failure
+- Bind to `127.0.0.1` if not using a reverse proxy
+
+See the Docker deployment guide in `/docs` for full configuration.
+
+### API key management
+
+Agent adapter configurations include API keys for LLM providers. Best practices:
+
+- Never commit API keys to version control
+- Use environment variables or a secrets manager
+- Rotate keys periodically, especially after team member changes
+- Monitor API provider dashboards for unexpected usage
+- Set per-key spending limits at the provider level
+
+### Agent permissions
+
+The `dangerouslySkipPermissions` flag bypasses all approval gates.
+This is convenient for development but removes a critical safety layer
+in production:
+
+- **Development:** acceptable with local-only access
+- **Production:** always use the approval system
+- **Unattended operation:** configure explicit allow-lists rather than
+  skipping permissions entirely
+
+### Budget controls
+
+Paperclip checks budgets at heartbeat boundaries (when an agent wakes up
+or completes a run). Between heartbeats, agents can spend without limit.
+For cost safety:
+
+- Set conservative `monthlyBudgetCents` per agent
+- Keep `maxTurnsPerRun` reasonable (100-300 for most tasks)
+- Set `timeoutSec` to prevent indefinite runs (recommended: 300-900)
+- Monitor the cost dashboard for unexpected spikes
+- Note: some adapters (e.g., Codex) may report $0.00 costs — verify
+  against your provider's billing dashboard
+
+### Network access
+
+Agents can make arbitrary network requests unless explicitly restricted.
+For production deployments:
+
+- Use network policies or firewall rules to restrict outbound access
+- Audit agent tool configurations for unnecessary network capabilities
+- Consider using an HTTP proxy for agent-to-LLM traffic to monitor
+  and control API calls
+
+### Plugin security
+
+The plugin system (when available) runs in the server process.
+Plugins have access to the full application context. Before installing
+third-party plugins:
+
+- Review the plugin source code
+- Check what data the plugin accesses
+- Prefer plugins from known, trusted sources
+- Monitor plugin behavior after installation
+
+### Reporting security issues
+
+If you discover a security vulnerability, please report it responsibly
+via GitHub Security Advisories rather than public issues.
 
 <br/>
 
@@ -276,4 +365,4 @@ MIT &copy; 2026 Paperclip
 
 <p align="center">
   <sub>Open source under MIT. Built for people who want to run companies, not babysit agents.</sub>
-</p>
+</p>>
