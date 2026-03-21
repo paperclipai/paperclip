@@ -134,7 +134,7 @@ export function supabaseBridgeRoute(db: Db): Router {
 
       // Create a Better Auth-compatible session directly in the DB
       const sessionId = crypto.randomUUID();
-      const sessionToken = crypto.randomUUID();
+      const sessionToken = crypto.getRandomValues(new Uint8Array(32)).reduce((s, b) => s + b.toString(16).padStart(2, "0"), "");
       const now = new Date();
       const expiresAt = new Date(now.getTime() + SESSION_DURATION_MS);
 

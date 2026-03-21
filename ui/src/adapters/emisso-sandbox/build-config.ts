@@ -1,5 +1,12 @@
 import type { CreateConfigValues } from "../types";
 
+export interface EmissoCreateConfigValues extends CreateConfigValues {
+  repoUrl?: string;
+  vcpus?: number;
+  timeoutSec?: number;
+  snapshotId?: string;
+}
+
 function parseJsonObject(text: string): Record<string, unknown> | null {
   const trimmed = text.trim();
   if (!trimmed) return null;
@@ -13,14 +20,15 @@ function parseJsonObject(text: string): Record<string, unknown> | null {
 }
 
 export function buildEmissoSandboxConfig(v: CreateConfigValues): Record<string, unknown> {
+  const ev = v as EmissoCreateConfigValues;
   const ac: Record<string, unknown> = {};
 
-  if (v.model) ac.model = v.model;
-  if (v.repoUrl) ac.repoUrl = v.repoUrl;
-  if (v.vcpus) ac.vcpus = Number(v.vcpus);
-  if (v.timeoutSec) ac.timeoutSec = Number(v.timeoutSec);
-  if (v.maxTurns) ac.maxTurns = Number(v.maxTurns);
-  if (v.snapshotId) ac.snapshotId = v.snapshotId;
+  if (ev.model) ac.model = ev.model;
+  if (ev.repoUrl) ac.repoUrl = ev.repoUrl;
+  if (ev.vcpus) ac.vcpus = Number(ev.vcpus);
+  if (ev.timeoutSec) ac.timeoutSec = Number(ev.timeoutSec);
+  if (ev.maxTurns) ac.maxTurns = Number(ev.maxTurns);
+  if (ev.snapshotId) ac.snapshotId = ev.snapshotId;
   if (v.promptTemplate) ac.promptTemplate = v.promptTemplate;
   if (v.instructionsFilePath) ac.instructionsFilePath = v.instructionsFilePath;
 

@@ -1,4 +1,5 @@
 import type { AdapterConfigFieldsProps } from "../types";
+import type { EmissoCreateConfigValues } from "./build-config";
 import {
   Field,
   DraftInput,
@@ -14,13 +15,15 @@ const textareaClass =
 
 export function EmissoSandboxConfigFields({
   isCreate,
-  values,
-  set,
+  values: rawValues,
+  set: rawSet,
   config,
   eff,
   mark,
   models,
 }: AdapterConfigFieldsProps) {
+  const values = rawValues as EmissoCreateConfigValues | null;
+  const set = rawSet as ((patch: Partial<EmissoCreateConfigValues>) => void) | null;
   return (
     <>
       <Field label="Model" hint="Claude model used inside the sandbox.">
@@ -162,13 +165,7 @@ export function EmissoSandboxConfigFields({
               config.mcpServers ? JSON.stringify(config.mcpServers, null, 2) : "",
             )}
             onChange={(e) => {
-              try {
-                const parsed = e.target.value.trim() ? JSON.parse(e.target.value) : undefined;
-                mark("adapterConfig", "mcpServers", parsed);
-              } catch {
-                // Keep the raw text until it's valid JSON
-                mark("adapterConfig", "mcpServersJson", e.target.value);
-              }
+              mark("adapterConfig", "mcpServersJson", e.target.value);
             }}
             placeholder={'{\n  "github": {\n    "command": "mcp-server-github"\n  }\n}'}
           />

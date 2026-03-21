@@ -271,41 +271,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // --- 6. Run Claude CLI ---
     await onLog("stdout", `[emisso-sandbox] Running Claude (model=${model}, maxTurns=${maxTurns})...\n`);
 
-    const claudeArgs = [
-      "--print", "-",
-      "--output-format", "stream-json",
-      "--model", model,
-      "--max-turns", String(maxTurns),
-      "--dangerously-skip-permissions",
-      "--verbose",
-    ];
-    if (mcpConfigPath) claudeArgs.push("--mcp-config", mcpConfigPath);
-
-    const cmd = await sandbox.runCommand({
-      cmd: "claude",
-      args: claudeArgs,
-      cwd: WORKSPACE_DIR,
-      env: {
-        ANTHROPIC_API_KEY: anthropicApiKey,
-        CI: "1",
-        CLAUDE_CODE_ENTRYPOINT: "cli",
-        PAPERCLIP_AGENT_ID: agent.id,
-        PAPERCLIP_COMPANY_ID: agent.companyId,
-        PAPERCLIP_RUN_ID: runId,
-      },
-      detached: true,
-    });
-
-    // Stream stdin (the prompt)
-    // Note: The sandbox cmd interface uses stdin via the command itself.
-    // For Claude's `--print -` mode, we write the prompt via a runner script approach.
-    // Since we can't pipe stdin directly, we use a runner script.
-
-    // Actually, let's use a runner script like emisso-hq does
-    // to handle stdin properly with the `claude` CLI.
-    // Kill the detached process and re-run via runner script.
-    await cmd.kill("SIGTERM");
-
+    // Use a runner script to pipe the prompt via stdin to Claude's `--print -` mode,
+    // since the sandbox cmd interface doesn't support direct stdin piping.
     const runnerScript = buildRunnerScript(prompt, model, maxTurns, mcpConfigPath);
     await sandbox.writeFiles([{
       path: "/vercel/sandbox/runner.mjs",
@@ -433,7 +400,7 @@ const prompt = ${escapedPrompt};
 const model = ${JSON.stringify(model)};
 
 const args = [
-  "--print",
+  "--print", "-",
   "--verbose",
   "--output-format", "stream-json",
   "--model", model,
