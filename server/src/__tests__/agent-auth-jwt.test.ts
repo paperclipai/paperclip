@@ -66,6 +66,44 @@ describe("agent local JWT", () => {
     expect(verifyLocalAgentJwt(token!)).toBeNull();
   });
 
+  it("falls back to BETTER_AUTH_SECRET when JWT secret is missing", () => {
+    delete process.env[secretEnv];
+    process.env.BETTER_AUTH_SECRET = "fallback-secret";
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+
+    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
+    expect(typeof token).toBe("string");
+
+    const claims = verifyLocalAgentJwt(token!);
+    expect(claims).toMatchObject({
+      sub: "agent-1",
+      company_id: "company-1",
+    });
+
+    delete process.env.BETTER_AUTH_SECRET;
+  });
+
+  it("prefers PAPERCLIP_AGENT_JWT_SECRET over BETTER_AUTH_SECRET", () => {
+    process.env[secretEnv] = "primary-secret";
+    process.env.BETTER_AUTH_SECRET = "fallback-secret";
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+
+    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
+    expect(typeof token).toBe("string");
+
+    // Token signed with primary secret should verify with primary secret
+    const claims = verifyLocalAgentJwt(token!);
+    expect(claims).not.toBeNull();
+
+    // If we remove primary and only have fallback, token should NOT verify
+    // (proves it was signed with primary, not fallback)
+    delete process.env[secretEnv];
+    const claimsWithFallback = verifyLocalAgentJwt(token!);
+    expect(claimsWithFallback).toBeNull();
+
+    delete process.env.BETTER_AUTH_SECRET;
+  });
+
   it("rejects issuer/audience mismatch", () => {
     process.env[issuerEnv] = "custom-issuer";
     process.env[audienceEnv] = "custom-audience";
