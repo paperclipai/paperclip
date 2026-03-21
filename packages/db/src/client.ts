@@ -684,7 +684,11 @@ export async function applyPendingMigrations(url: string): Promise<void> {
     // partially-failed prior run, or external schema management).
     // Reconcile by detecting already-applied statements and recording them,
     // then apply any genuinely pending migrations with per-statement safety.
-    const repair = await reconcilePendingMigrationHistory(url);
+    // reconcilePendingMigrationHistory cannot help here because there is no
+    // migration journal table yet (inspectMigrations would return
+    // "no-migration-journal-non-empty-db", not "pending-migrations").
+    // Instead, fall through to applyPendingMigrationsManually which handles
+    // already-applied statements gracefully.
     let state = await inspectMigrations(url);
     if (state.status === "upToDate") return;
 
@@ -708,8 +712,8 @@ export async function applyPendingMigrations(url: string): Promise<void> {
   let state = await inspectMigrations(url);
   if (state.status === "upToDate") return;
 
-  const repair = await reconcilePendingMigrationHistory(url);
-  if (repair.repairedMigrations.length > 0) {
+  const { repairedMigrations } = await reconcilePendingMigrationHistory(url);
+  if (repairedMigrations.length > 0) {
     state = await inspectMigrations(url);
     if (state.status === "upToDate") return;
   }
