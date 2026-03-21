@@ -30,6 +30,7 @@ type AgentLike = {
   id: string;
   companyId: string;
   name: string;
+  cwd?: string | null;
   adapterConfig: unknown;
 };
 
@@ -86,6 +87,15 @@ function asString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function resolveAgentCwd(agentCwd: string | null | undefined, config: Record<string, unknown>): string | null {
+  const primary = asString(agentCwd);
+  if (primary && path.isAbsolute(primary)) return primary;
+
+  const legacy = asString(config.cwd);
+  if (legacy && path.isAbsolute(legacy)) return legacy;
+  return null;
+}
+
 function isBundleMode(value: unknown): value is BundleMode {
   return value === "managed" || value === "external";
 }
@@ -140,12 +150,16 @@ function resolveManagedInstructionsRoot(agent: AgentLike): string {
   );
 }
 
-function resolveLegacyInstructionsPath(candidatePath: string, config: Record<string, unknown>): string {
+function resolveLegacyInstructionsPath(
+  candidatePath: string,
+  config: Record<string, unknown>,
+  agentCwd?: string | null,
+): string {
   if (path.isAbsolute(candidatePath)) return candidatePath;
-  const cwd = asString(config.cwd);
-  if (!cwd || !path.isAbsolute(cwd)) {
+  const cwd = resolveAgentCwd(agentCwd, config);
+  if (!cwd) {
     throw unprocessable(
-      "Legacy relative instructionsFilePath requires adapterConfig.cwd to be set to an absolute path",
+      "Legacy relative instructionsFilePath requires agent.cwd or adapterConfig.cwd to be set to an absolute path",
     );
   }
   return path.resolve(cwd, candidatePath);
@@ -212,7 +226,7 @@ async function readLegacyInstructions(agent: AgentLike, config: Record<string, u
   const instructionsFilePath = asString(config[FILE_KEY]);
   if (instructionsFilePath) {
     try {
-      const resolvedPath = resolveLegacyInstructionsPath(instructionsFilePath, config);
+      const resolvedPath = resolveLegacyInstructionsPath(instructionsFilePath, config, agent.cwd ?? null);
       return await fs.readFile(resolvedPath, "utf8");
     } catch {
       // Fall back to promptTemplate below.
@@ -243,7 +257,11 @@ function deriveBundleState(agent: AgentLike): BundleState {
 
   if (!rootPath && legacyInstructionsPath) {
     try {
-      const resolvedLegacyPath = resolveLegacyInstructionsPath(legacyInstructionsPath, config);
+      const resolvedLegacyPath = resolveLegacyInstructionsPath(
+        legacyInstructionsPath,
+        config,
+        agent.cwd ?? null,
+      );
       rootPath = path.dirname(resolvedLegacyPath);
       entryFile = path.basename(resolvedLegacyPath);
       mode = resolvedLegacyPath.startsWith(`${resolveManagedInstructionsRoot(agent)}${path.sep}`)
@@ -354,7 +372,7 @@ export function syncInstructionsBundleConfigFromFilePath(
     delete next[ENTRY_KEY];
     return next;
   }
-  const resolvedPath = resolveLegacyInstructionsPath(instructionsFilePath, adapterConfig);
+  const resolvedPath = resolveLegacyInstructionsPath(instructionsFilePath, adapterConfig, agent.cwd ?? null);
   const rootPath = path.dirname(resolvedPath);
   const entryFile = path.basename(resolvedPath);
   const mode: BundleMode = resolvedPath.startsWith(`${resolveManagedInstructionsRoot(agent)}${path.sep}`)

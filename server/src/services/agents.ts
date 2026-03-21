@@ -32,6 +32,7 @@ const CONFIG_REVISION_FIELDS = [
   "reportsTo",
   "capabilities",
   "adapterType",
+  "cwd",
   "adapterConfig",
   "runtimeConfig",
   "budgetMonthlyCents",
@@ -92,6 +93,7 @@ function buildConfigSnapshot(
     reportsTo: row.reportsTo,
     capabilities: row.capabilities,
     adapterType: row.adapterType,
+    cwd: row.cwd,
     adapterConfig,
     runtimeConfig,
     budgetMonthlyCents: row.budgetMonthlyCents,
@@ -144,6 +146,7 @@ function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agents.$infe
         ? snapshot.capabilities
         : null,
     adapterType: snapshot.adapterType,
+    cwd: typeof snapshot.cwd === "string" || snapshot.cwd === null ? snapshot.cwd : null,
     adapterConfig: isPlainRecord(snapshot.adapterConfig) ? snapshot.adapterConfig : {},
     runtimeConfig: isPlainRecord(snapshot.runtimeConfig) ? snapshot.runtimeConfig : {},
     budgetMonthlyCents: Math.max(0, Math.floor(snapshot.budgetMonthlyCents)),

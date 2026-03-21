@@ -303,6 +303,18 @@ export function agentRoutes(db: Db) {
     return trimmed.length > 0 ? trimmed : null;
   }
 
+  function resolveAgentCwd(agent: {
+    cwd?: unknown;
+    adapterConfig?: Record<string, unknown>;
+  }): string | null {
+    const fromColumn = asNonEmptyString(agent.cwd);
+    if (fromColumn && path.isAbsolute(fromColumn)) return fromColumn;
+
+    const fromLegacy = asNonEmptyString(agent.adapterConfig?.cwd);
+    if (fromLegacy && path.isAbsolute(fromLegacy)) return fromLegacy;
+    return null;
+  }
+
   function parseBooleanLike(value: unknown): boolean | null {
     if (typeof value === "boolean") return value;
     if (typeof value === "number") {
@@ -401,18 +413,18 @@ export function agentRoutes(db: Db) {
     }
   }
 
-  function resolveInstructionsFilePath(candidatePath: string, adapterConfig: Record<string, unknown>) {
+  function resolveInstructionsFilePath(
+    candidatePath: string,
+    agent: { cwd?: unknown; adapterConfig: Record<string, unknown> },
+  ) {
     const trimmed = candidatePath.trim();
     if (path.isAbsolute(trimmed)) return trimmed;
 
-    const cwd = asNonEmptyString(adapterConfig.cwd);
+    const cwd = resolveAgentCwd(agent);
     if (!cwd) {
       throw unprocessable(
-        "Relative instructions path requires adapterConfig.cwd to be set to an absolute path",
+        "Relative instructions path requires agent.cwd or adapterConfig.cwd to be set to an absolute path",
       );
-    }
-    if (!path.isAbsolute(cwd)) {
-      throw unprocessable("adapterConfig.cwd must be an absolute path to resolve relative instructions path");
     }
     return path.resolve(cwd, trimmed);
   }
@@ -1461,7 +1473,10 @@ export function agentRoutes(db: Db) {
     if (req.body.path === null) {
       delete nextAdapterConfig[adapterConfigKey];
     } else {
-      nextAdapterConfig[adapterConfigKey] = resolveInstructionsFilePath(req.body.path, existingAdapterConfig);
+      nextAdapterConfig[adapterConfigKey] = resolveInstructionsFilePath(req.body.path, {
+        cwd: existing.cwd ?? null,
+        adapterConfig: existingAdapterConfig,
+      });
     }
 
     const syncedAdapterConfig = syncInstructionsBundleConfigFromFilePath(existing, nextAdapterConfig);

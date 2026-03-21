@@ -264,6 +264,29 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+/**
+ * Resolve agent working directory.
+ * Priority: agent.cwd > adapterConfig.cwd > null.
+ * Only absolute paths are accepted.
+ */
+export function resolveAgentCwd(agent: {
+  cwd?: unknown;
+  adapterConfig?: unknown;
+}): string | null {
+  const normalizeAbsolute = (value: unknown): string | null => {
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    return path.isAbsolute(trimmed) ? trimmed : null;
+  };
+
+  const fromColumn = normalizeAbsolute(agent.cwd);
+  if (fromColumn) return fromColumn;
+
+  const adapterConfig = parseObject(agent.adapterConfig);
+  return normalizeAbsolute(adapterConfig.cwd);
+}
+
 function normalizeLedgerBillingType(value: unknown): BillingType {
   const raw = readNonEmptyString(value);
   switch (raw) {
@@ -1083,7 +1106,7 @@ export function heartbeatService(db: Db) {
         missingProjectCwds.push(projectCwd);
       }
 
-      const fallbackCwd = resolveDefaultAgentWorkspaceDir(agent.id);
+      const fallbackCwd = resolveAgentCwd(agent) ?? resolveDefaultAgentWorkspaceDir(agent.id);
       await fs.mkdir(fallbackCwd, { recursive: true });
       const warnings: string[] = [];
       if (preferredWorkspaceWarning) {
@@ -1152,7 +1175,7 @@ export function heartbeatService(db: Db) {
       }
     }
 
-    const cwd = resolveDefaultAgentWorkspaceDir(agent.id);
+    const cwd = resolveAgentCwd(agent) ?? resolveDefaultAgentWorkspaceDir(agent.id);
     await fs.mkdir(cwd, { recursive: true });
     const warnings: string[] = [];
     if (sessionCwd) {
@@ -2147,7 +2170,7 @@ export function heartbeatService(db: Db) {
       branchName: executionWorkspace.branchName,
       worktreePath: executionWorkspace.worktreePath,
       agentHome: await (async () => {
-        const home = resolveDefaultAgentWorkspaceDir(agent.id);
+        const home = resolveAgentCwd(agent) ?? resolveDefaultAgentWorkspaceDir(agent.id);
         await fs.mkdir(home, { recursive: true });
         return home;
       })(),
