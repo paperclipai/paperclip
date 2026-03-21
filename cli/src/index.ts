@@ -26,7 +26,7 @@ const DATA_DIR_OPTION_HELP =
 
 program
   .name("paperclipai")
-  .description("Paperclip CLI — setup, diagnose, and configure your instance")
+  .description("Paperclip CLI — setup, diagnose, and configure your environment")
   .version("0.2.7");
 
 program.hook("preAction", (_thisCommand, actionCommand) => {
@@ -143,7 +143,7 @@ const auth = program.command("auth").description("Authentication and bootstrap u
 
 auth
   .command("bootstrap-ceo")
-  .description("Create a one-time bootstrap invite URL for first instance admin")
+  .description("Create a one-time bootstrap invite URL for the first admin")
   .option("-c, --config <path>", "Path to config file")
   .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
   .option("--force", "Create new invite even if admin already exists", false)

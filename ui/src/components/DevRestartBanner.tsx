@@ -74,7 +74,7 @@ export function DevRestartBanner({ devServer }: { devServer?: DevServerHealthSta
           ) : devServer.autoRestartEnabled ? (
             <div className="inline-flex items-center gap-2 rounded-full bg-amber-900/10 px-3 py-1.5 dark:bg-amber-100/10">
               <RotateCcw className="h-3.5 w-3.5" />
-              <span>Auto-restart will trigger when the instance is idle</span>
+              <span>Auto-restart will trigger when the server is idle</span>
             </div>
           ) : (
             <div className="inline-flex items-center gap-2 rounded-full bg-amber-900/10 px-3 py-1.5 dark:bg-amber-100/10">

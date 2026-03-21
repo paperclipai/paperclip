@@ -83,8 +83,8 @@ export function AuthPage() {
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
             {mode === "sign_in"
-              ? "Use your email and password to access this instance."
-              : "Create an account for this instance. Email confirmation is not required in v1."}
+              ? "Sign in with your email and password."
+              : "Create your Paperclip account to get started."}
           </p>
 
           <form

@@ -72,7 +72,7 @@ export function BoardClaimPage() {
         <div className="rounded-lg border border-border bg-card p-6">
           <h1 className="text-lg font-semibold">Board ownership claimed</h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            This instance is now linked to your authenticated user.
+            Board ownership is now linked to your account.
           </p>
           <Button asChild className="mt-4">
             <Link to="/">Open board</Link>
@@ -103,7 +103,7 @@ export function BoardClaimPage() {
       <div className="rounded-lg border border-border bg-card p-6">
         <h1 className="text-xl font-semibold">Claim Board ownership</h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          This will promote your user to instance admin and migrate company ownership access from local trusted mode.
+          This will promote your account to admin and migrate company ownership from local trusted mode.
         </p>
 
         {claimMutation.error && (

@@ -141,7 +141,7 @@ export function InviteLandingPage() {
         <div className="rounded-lg border border-border bg-card p-6">
           <h1 className="text-lg font-semibold">Bootstrap complete</h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            The first instance admin is now configured. You can continue to the board.
+            Your admin account is now configured. You can continue to the board.
           </p>
           <Button asChild className="mt-4">
             <Link to="/">Open board</Link>
@@ -225,7 +225,7 @@ export function InviteLandingPage() {
     <div className="mx-auto max-w-xl py-10">
       <div className="rounded-lg border border-border bg-card p-6">
         <h1 className="text-xl font-semibold">
-          {invite.inviteType === "bootstrap_ceo" ? "Bootstrap your Paperclip instance" : "Join this Paperclip company"}
+          {invite.inviteType === "bootstrap_ceo" ? "Set up your Paperclip account" : "Join this Paperclip company"}
         </h1>
         <p className="mt-2 text-sm text-muted-foreground">Invite expires {dateTime(invite.expiresAt)}.</p>
 

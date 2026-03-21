@@ -666,7 +666,7 @@ export async function startServer(): Promise<StartedServer> {
         console.log(
           [
             `${red}  BOARD CLAIM REQUIRED  ${reset}`,
-            `${yellow}This instance was previously local_trusted and still has local-board as the only admin.${reset}`,
+            `${yellow}This environment was previously local_trusted and still has local-board as the only admin.${reset}`,
             `${yellow}Sign in with a real user and open this one-time URL to claim ownership:${reset}`,
             `${yellow}${boardClaimUrl}${reset}`,
             `${yellow}If you are connecting over Tailscale, replace the host in this URL with your Tailscale IP/MagicDNS name.${reset}`,
