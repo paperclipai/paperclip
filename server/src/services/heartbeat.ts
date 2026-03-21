@@ -759,6 +759,29 @@ function resolveNextSessionState(input: {
   };
 }
 
+// --- Vault Snapshot Cache (cross-platform context injection) ---
+const VAULT_BASE = path.join(
+  process.env.HOME ?? "/Users/evohaus",
+  "Documents/EvoHaus-Vault/Hafiza",
+);
+const VAULT_CACHE_TTL_MS = 5 * 60 * 1000; // 5 min
+const VAULT_FILES = ["orkestrasyon/cross-platform.md", "altyapi.md"];
+let vaultCache: { data: Record<string, string>; fetchedAt: number } | null = null;
+
+async function getVaultSnapshot(): Promise<Record<string, string>> {
+  if (vaultCache && Date.now() - vaultCache.fetchedAt < VAULT_CACHE_TTL_MS) {
+    return vaultCache.data;
+  }
+  const data: Record<string, string> = {};
+  for (const f of VAULT_FILES) {
+    try {
+      data[f] = await fs.readFile(path.join(VAULT_BASE, f), "utf-8");
+    } catch { /* skip missing files */ }
+  }
+  vaultCache = { data, fetchedAt: Date.now() };
+  return data;
+}
+
 export function heartbeatService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
 
@@ -1665,6 +1688,7 @@ export function heartbeatService(db: Db) {
       await costs.createEvent(agent.companyId, {
         heartbeatRunId: run.id,
         agentId: agent.id,
+        adapterType: agent.adapterType,
         issueId: ledgerScope.issueId,
         projectId: ledgerScope.projectId,
         provider,

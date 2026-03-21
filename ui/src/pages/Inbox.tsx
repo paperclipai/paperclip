@@ -524,13 +524,13 @@ export function Inbox() {
         ? unreadTouchedIssues.length > 0
         : hasTouchedIssues;
   const showJoinRequestsSection =
-    tab === "all" ? showJoinRequestsCategory && hasJoinRequests : tab === "unread" && hasJoinRequests;
+    tab === "all" ? showJoinRequestsCategory && hasJoinRequests : hasJoinRequests;
   const showApprovalsSection = tab === "all"
     ? showApprovalsCategory && filteredAllApprovals.length > 0
     : actionableApprovals.length > 0;
   const showFailedRunsSection =
-    tab === "all" ? showFailedRunsCategory && hasRunFailures : tab === "unread" && hasRunFailures;
-  const showAlertsSection = tab === "all" ? showAlertsCategory && hasAlerts : tab === "unread" && hasAlerts;
+    tab === "all" ? showFailedRunsCategory && hasRunFailures : hasRunFailures;
+  const showAlertsSection = tab === "all" ? showAlertsCategory && hasAlerts : hasAlerts;
 
   const visibleSections = [
     showFailedRunsSection ? "failed_runs" : null,

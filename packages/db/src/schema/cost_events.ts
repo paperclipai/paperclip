@@ -16,6 +16,7 @@ export const costEvents = pgTable(
     projectId: uuid("project_id").references(() => projects.id),
     goalId: uuid("goal_id").references(() => goals.id),
     heartbeatRunId: uuid("heartbeat_run_id").references(() => heartbeatRuns.id),
+    adapterType: text("adapter_type"),
     billingCode: text("billing_code"),
     provider: text("provider").notNull(),
     biller: text("biller").notNull().default("unknown"),
@@ -43,6 +44,11 @@ export const costEvents = pgTable(
     companyBillerOccurredIdx: index("cost_events_company_biller_occurred_idx").on(
       table.companyId,
       table.biller,
+      table.occurredAt,
+    ),
+    companyAdapterOccurredIdx: index("cost_events_company_adapter_occurred_idx").on(
+      table.companyId,
+      table.adapterType,
       table.occurredAt,
     ),
     companyHeartbeatRunIdx: index("cost_events_company_heartbeat_run_idx").on(

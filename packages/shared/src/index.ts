@@ -120,6 +120,7 @@ export {
 
 export type {
   Company,
+  CompanyTreeNode,
   InstanceExperimentalSettings,
   InstanceSettings,
   Agent,

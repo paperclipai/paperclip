@@ -26,7 +26,7 @@ import { PluginSlotOutlet } from "@/plugins/slots";
 
 export function Sidebar() {
   const { openNewIssue } = useDialog();
-  const { selectedCompanyId, selectedCompany } = useCompany();
+  const { selectedCompanyId, selectedCompany, parentCompany } = useCompany();
   const { isConnected: isWsConnected } = useLiveUpdates();
   const inboxBadge = useInboxBadge(selectedCompanyId);
   const { data: liveRuns } = useQuery({
@@ -59,6 +59,11 @@ export function Sidebar() {
         <span className="flex-1 text-sm font-bold text-foreground truncate pl-1">
           {selectedCompany?.name ?? "Select company"}
         </span>
+        {parentCompany && (
+          <span className="text-[10px] text-muted-foreground shrink-0 mr-1">
+            ↑ {parentCompany.name}
+          </span>
+        )}
         <Button
           variant="ghost"
           size="icon-sm"

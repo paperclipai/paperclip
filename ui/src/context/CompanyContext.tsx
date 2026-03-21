@@ -19,6 +19,9 @@ interface CompanyContextValue {
   companies: Company[];
   selectedCompanyId: string | null;
   selectedCompany: Company | null;
+  parentCompany: Company | null;
+  subsidiaries: Company[];
+  isHolding: boolean;
   selectionSource: CompanySelectionSource;
   loading: boolean;
   error: Error | null;
@@ -113,11 +116,33 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
     [companies, selectedCompanyId],
   );
 
+  const parentCompany = useMemo(
+    () => selectedCompany?.parentCompanyId
+      ? (companies.find((c) => c.id === selectedCompany.parentCompanyId) ?? null)
+      : null,
+    [selectedCompany, companies],
+  );
+
+  const subsidiaries = useMemo(
+    () => selectedCompany
+      ? companies.filter((c) => c.parentCompanyId === selectedCompany.id && c.status !== "archived")
+      : [],
+    [selectedCompany, companies],
+  );
+
+  const isHolding = useMemo(
+    () => selectedCompany ? !selectedCompany.parentCompanyId && subsidiaries.length > 0 : false,
+    [selectedCompany, subsidiaries],
+  );
+
   const value = useMemo(
     () => ({
       companies,
       selectedCompanyId,
       selectedCompany,
+      parentCompany,
+      subsidiaries,
+      isHolding,
       selectionSource,
       loading: isLoading,
       error: error as Error | null,
@@ -129,6 +154,9 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
       companies,
       selectedCompanyId,
       selectedCompany,
+      parentCompany,
+      subsidiaries,
+      isHolding,
       selectionSource,
       isLoading,
       error,

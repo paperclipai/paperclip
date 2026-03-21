@@ -1,4 +1,4 @@
-export type { Company } from "./company.js";
+export type { Company, CompanyTreeNode } from "./company.js";
 export type { InstanceExperimentalSettings, InstanceSettings } from "./instance.js";
 export type {
   Agent,

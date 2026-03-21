@@ -25,8 +25,13 @@ function statusDotColor(status?: string): string {
 }
 
 export function CompanySwitcher() {
-  const { companies, selectedCompany, setSelectedCompanyId } = useCompany();
+  const { companies, selectedCompany, parentCompany, isHolding, setSelectedCompanyId } = useCompany();
   const sidebarCompanies = companies.filter((company) => company.status !== "archived");
+
+  // Group: holding companies (no parent) and their subsidiaries
+  const holdings = sidebarCompanies.filter((c) => !c.parentCompanyId);
+  const childrenOf = (parentId: string) =>
+    sidebarCompanies.filter((c) => c.parentCompanyId === parentId);
 
   return (
     <DropdownMenu>
@@ -42,23 +47,49 @@ export function CompanySwitcher() {
             <span className="text-sm font-medium truncate">
               {selectedCompany?.name ?? "Select company"}
             </span>
+            {parentCompany && (
+              <span className="text-[10px] text-muted-foreground shrink-0">
+                ↑ {parentCompany.name}
+              </span>
+            )}
+            {isHolding && (
+              <span className="text-[10px] px-1 py-0.5 rounded bg-muted text-muted-foreground shrink-0">
+                Holding
+              </span>
+            )}
           </div>
           <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-[220px]">
-        <DropdownMenuLabel>Companies</DropdownMenuLabel>
-        <DropdownMenuSeparator />
-        {sidebarCompanies.map((company) => (
-          <DropdownMenuItem
-            key={company.id}
-            onClick={() => setSelectedCompanyId(company.id)}
-            className={company.id === selectedCompany?.id ? "bg-accent" : ""}
-          >
-            <span className={`h-2 w-2 rounded-full shrink-0 mr-2 ${statusDotColor(company.status)}`} />
-            <span className="truncate">{company.name}</span>
-          </DropdownMenuItem>
-        ))}
+      <DropdownMenuContent align="start" className="w-[240px]">
+        {holdings.map((holding) => {
+          const subs = childrenOf(holding.id);
+          return (
+            <div key={holding.id}>
+              <DropdownMenuLabel className="text-xs text-muted-foreground">
+                {subs.length > 0 ? `${holding.name} (Holding)` : holding.name}
+              </DropdownMenuLabel>
+              <DropdownMenuItem
+                onClick={() => setSelectedCompanyId(holding.id)}
+                className={holding.id === selectedCompany?.id ? "bg-accent" : ""}
+              >
+                <span className={`h-2 w-2 rounded-full shrink-0 mr-2 ${statusDotColor(holding.status)}`} />
+                <span className="truncate font-medium">{holding.name}</span>
+              </DropdownMenuItem>
+              {subs.map((sub) => (
+                <DropdownMenuItem
+                  key={sub.id}
+                  onClick={() => setSelectedCompanyId(sub.id)}
+                  className={sub.id === selectedCompany?.id ? "bg-accent pl-6" : "pl-6"}
+                >
+                  <span className={`h-2 w-2 rounded-full shrink-0 mr-2 ${statusDotColor(sub.status)}`} />
+                  <span className="truncate">{sub.name}</span>
+                </DropdownMenuItem>
+              ))}
+              {holdings.length > 1 && <DropdownMenuSeparator />}
+            </div>
+          );
+        })}
         {sidebarCompanies.length === 0 && (
           <DropdownMenuItem disabled>No companies</DropdownMenuItem>
         )}

@@ -52,3 +52,5 @@ export { pluginJobs, pluginJobRuns } from "./plugin_jobs.js";
 export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
 export { pluginLogs } from "./plugin_logs.js";
 export { artifacts } from "./artifacts.js";
+export { workflowRuns } from "./workflow_runs.js";
+export { workflowStepRuns } from "./workflow_step_runs.js";

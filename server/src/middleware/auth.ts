@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import type { Request, RequestHandler } from "express";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentApiKeys, agents, companyMemberships, instanceUserRoles } from "@paperclipai/db";
+import { agentApiKeys, agents, companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import { isUuidLike, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
@@ -61,10 +61,23 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
                 ),
               ),
           ]);
+          // Expand companyIds: include subsidiaries of any company the user has access to
+          const memberCompanyIds = memberships.map((row) => row.companyId);
+          let allCompanyIds = memberCompanyIds;
+          if (memberCompanyIds.length > 0) {
+            const children = await db
+              .select({ id: companies.id })
+              .from(companies)
+              .where(inArray(companies.parentCompanyId, memberCompanyIds));
+            if (children.length > 0) {
+              const childIds = children.map((c) => c.id);
+              allCompanyIds = [...memberCompanyIds, ...childIds.filter((id) => !memberCompanyIds.includes(id))];
+            }
+          }
           req.actor = {
             type: "board",
             userId,
-            companyIds: memberships.map((row) => row.companyId),
+            companyIds: allCompanyIds,
             isInstanceAdmin: Boolean(roleRow),
             runId: runIdHeader ?? undefined,
             source: "session",

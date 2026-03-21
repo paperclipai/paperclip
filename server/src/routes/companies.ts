@@ -42,12 +42,62 @@ export function companyRoutes(db: Db) {
       ? null
       : new Set(req.actor.companyIds ?? []);
     const stats = await svc.stats();
-    if (!allowed) {
-      res.json(stats);
+    const filtered = allowed
+      ? Object.fromEntries(Object.entries(stats).filter(([companyId]) => allowed.has(companyId)))
+      : stats;
+
+    if (req.query.includeChildren !== "true") {
+      res.json(filtered);
       return;
     }
-    const filtered = Object.fromEntries(Object.entries(stats).filter(([companyId]) => allowed.has(companyId)));
-    res.json(filtered);
+
+    // Build child → parent map to aggregate subsidiary counts into holding totals
+    const all = await svc.list();
+    const childrenByParent = new Map<string, string[]>();
+    for (const c of all) {
+      if (c.parentCompanyId) {
+        const siblings = childrenByParent.get(c.parentCompanyId) ?? [];
+        siblings.push(c.id);
+        childrenByParent.set(c.parentCompanyId, siblings);
+      }
+    }
+
+    const result: Record<string, {
+      agentCount: number; issueCount: number;
+      subsidiaryCount: number; totalAgentCount: number; totalIssueCount: number;
+    }> = {};
+    for (const [companyId, s] of Object.entries(filtered)) {
+      const children = childrenByParent.get(companyId) ?? [];
+      const totalAgentCount = s.agentCount + children.reduce((sum, cid) => sum + (stats[cid]?.agentCount ?? 0), 0);
+      const totalIssueCount = s.issueCount + children.reduce((sum, cid) => sum + (stats[cid]?.issueCount ?? 0), 0);
+      result[companyId] = { ...s, subsidiaryCount: children.length, totalAgentCount, totalIssueCount };
+    }
+    res.json(result);
+  });
+
+  router.get("/tree", async (req, res) => {
+    assertBoard(req);
+    const all = await svc.list();
+    const visible = (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)
+      ? all
+      : (() => {
+          const actorIds = new Set(req.actor.companyIds ?? []);
+          // Include subsidiaries of any company the actor has access to
+          const parentIds = new Set(all.filter(c => c.parentCompanyId && actorIds.has(c.parentCompanyId)).map(c => c.id));
+          return all.filter(c => actorIds.has(c.id) || parentIds.has(c.id));
+        })();
+
+    type TreeNode = (typeof visible[0]) & { children: TreeNode[] };
+    const byId = new Map<string, TreeNode>(visible.map(c => [c.id, { ...c, children: [] }]));
+    const roots: TreeNode[] = [];
+    for (const node of byId.values()) {
+      if (node.parentCompanyId && byId.has(node.parentCompanyId)) {
+        byId.get(node.parentCompanyId)!.children.push(node);
+      } else {
+        roots.push(node);
+      }
+    }
+    res.json(roots);
   });
 
   // Common malformed path when companyId is empty in "/api/companies/{companyId}/issues".

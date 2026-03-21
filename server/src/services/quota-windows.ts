@@ -7,6 +7,8 @@ function providerSlugForAdapterType(type: string): string {
   switch (type) {
     case "claude_local":
       return "anthropic";
+    case "gemini_local":
+      return "google";
     case "codex_local":
       return "openai";
     default:

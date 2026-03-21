@@ -267,6 +267,20 @@
       "when": 1773756922363,
       "tag": "0037_friendly_eddie_brock",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1774000000000,
+      "tag": "0038_holding_parent_company",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1774200000000,
+      "tag": "0039_cross_platform_orchestration",
+      "breakpoints": true
     }
   ]
 }

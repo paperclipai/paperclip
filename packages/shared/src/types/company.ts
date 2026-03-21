@@ -13,8 +13,13 @@ export interface Company {
   spentMonthlyCents: number;
   requireBoardApprovalForNewAgents: boolean;
   brandColor: string | null;
+  parentCompanyId: string | null;
   logoAssetId: string | null;
   logoUrl: string | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface CompanyTreeNode extends Company {
+  children: CompanyTreeNode[];
 }
