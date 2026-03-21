@@ -55,14 +55,7 @@ test.describe("Onboarding wizard", () => {
     ).toBeVisible();
 
     await page.getByRole("button", { name: "More Agent Adapter Types" }).click();
-    await page.getByRole("button", { name: "Process" }).click();
-
-    const commandInput = page.locator('input[placeholder="e.g. node, python"]');
-    await commandInput.fill("echo");
-    const argsInput = page.locator(
-      'input[placeholder="e.g. script.js, --flag"]'
-    );
-    await argsInput.fill("hello");
+    await expect(page.getByRole("button", { name: "Process" })).toHaveCount(0);
 
     await page.getByRole("button", { name: "Next" }).click();
 
@@ -110,7 +103,16 @@ test.describe("Onboarding wizard", () => {
     );
     expect(ceoAgent).toBeTruthy();
     expect(ceoAgent.role).toBe("ceo");
-    expect(ceoAgent.adapterType).toBe("process");
+    expect(ceoAgent.adapterType).not.toBe("process");
+
+    const instructionsBundleRes = await page.request.get(
+      `${baseUrl}/api/agents/${ceoAgent.id}/instructions-bundle?companyId=${company.id}`
+    );
+    expect(instructionsBundleRes.ok()).toBe(true);
+    const instructionsBundle = await instructionsBundleRes.json();
+    expect(
+      instructionsBundle.files.map((file: { path: string }) => file.path).sort()
+    ).toEqual(["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"]);
 
     const issuesRes = await page.request.get(
       `${baseUrl}/api/companies/${company.id}/issues`
@@ -122,6 +124,10 @@ test.describe("Onboarding wizard", () => {
     );
     expect(task).toBeTruthy();
     expect(task.assigneeAgentId).toBe(ceoAgent.id);
+    expect(task.description).toContain(
+      "You are the CEO. You set the direction for the company."
+    );
+    expect(task.description).not.toContain("github.com/paperclipai/companies");
 
     if (!SKIP_LLM) {
       await expect(async () => {

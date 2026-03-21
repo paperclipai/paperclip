@@ -20,6 +20,8 @@ export interface AdapterConfigFieldsProps {
   mark: (group: "adapterConfig", field: string, value: unknown) => void;
   /** Available models for dropdowns */
   models: { id: string; label: string }[];
+  /** When true, hides the instructions file path field (e.g. during import where it's set automatically) */
+  hideInstructionsFile?: boolean;
 }
 
 export interface UIAdapterModule {

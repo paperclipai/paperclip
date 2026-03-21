@@ -267,6 +267,48 @@
       "when": 1773756922363,
       "tag": "0037_friendly_eddie_brock",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1773931592563,
+      "tag": "0038_careless_iron_monger",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1773926116580,
+      "tag": "0039_fat_magneto",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1773927102783,
+      "tag": "0040_eager_shotgun",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1774011294562,
+      "tag": "0041_curly_maria_hill",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1774031825634,
+      "tag": "0042_spotty_the_renegades",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1774008910991,
+      "tag": "0043_reflective_captain_universe",
+      "breakpoints": true
     }
   ]
 }

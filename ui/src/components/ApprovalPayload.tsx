@@ -7,6 +7,15 @@ export const typeLabel: Record<string, string> = {
   budget_override_required: "Budget Override",
 };
 
+/** Build a contextual label for an approval, e.g. "Hire Agent: Designer" */
+export function approvalLabel(type: string, payload?: Record<string, unknown> | null): string {
+  const base = typeLabel[type] ?? type;
+  if (type === "hire_agent" && payload?.name) {
+    return `${base}: ${String(payload.name)}`;
+  }
+  return base;
+}
+
 export const typeIcon: Record<string, typeof UserPlus> = {
   hire_agent: UserPlus,
   approve_ceo_strategy: Lightbulb,
@@ -21,6 +30,31 @@ function PayloadField({ label, value }: { label: string; value: unknown }) {
     <div className="flex items-center gap-2">
       <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-xs">{label}</span>
       <span>{String(value)}</span>
+    </div>
+  );
+}
+
+function SkillList({ values }: { values: unknown }) {
+  if (!Array.isArray(values)) return null;
+  const items = values
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (items.length === 0) return null;
+
+  return (
+    <div className="flex items-start gap-2">
+      <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-xs pt-0.5">Skills</span>
+      <div className="flex flex-wrap gap-1.5">
+        {items.map((item) => (
+          <span
+            key={item}
+            className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
+          >
+            {item}
+          </span>
+        ))}
+      </div>
     </div>
   );
 }
@@ -49,6 +83,7 @@ export function HireAgentPayload({ payload }: { payload: Record<string, unknown>
           </span>
         </div>
       )}
+      <SkillList values={payload.desiredSkills} />
     </div>
   );
 }

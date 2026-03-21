@@ -5,6 +5,7 @@ import type { WorkspaceOperation, WorkspaceOperationPhase, WorkspaceOperationSta
 import { asc, desc, eq, inArray, isNull, or, and } from "drizzle-orm";
 import { notFound } from "../errors.js";
 import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.js";
+import { instanceSettingsService } from "./instance-settings.js";
 import { getWorkspaceOperationLogStore } from "./workspace-operation-log-store.js";
 
 type WorkspaceOperationRow = typeof workspaceOperations.$inferSelect;
@@ -69,6 +70,7 @@ export interface WorkspaceOperationRecorder {
 }
 
 export function workspaceOperationService(db: Db) {
+  const instanceSettings = instanceSettingsService(db);
   const logStore = getWorkspaceOperationLogStore();
 
   async function getById(id: string) {
@@ -105,6 +107,9 @@ export function workspaceOperationService(db: Db) {
         },
 
         async recordOperation(recordInput) {
+          const currentUserRedactionOptions = {
+            enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
+          };
           const startedAt = new Date();
           const id = randomUUID();
           const handle = await logStore.begin({
@@ -116,7 +121,7 @@ export function workspaceOperationService(db: Db) {
           let stderrExcerpt = "";
           const append = async (stream: "stdout" | "stderr" | "system", chunk: string | null | undefined) => {
             if (!chunk) return;
-            const sanitizedChunk = redactCurrentUserText(chunk);
+            const sanitizedChunk = redactCurrentUserText(chunk, currentUserRedactionOptions);
             if (stream === "stdout") stdoutExcerpt = appendExcerpt(stdoutExcerpt, sanitizedChunk);
             if (stream === "stderr") stderrExcerpt = appendExcerpt(stderrExcerpt, sanitizedChunk);
             await logStore.append(handle, {
@@ -137,7 +142,10 @@ export function workspaceOperationService(db: Db) {
             status: "running",
             logStore: handle.store,
             logRef: handle.logRef,
-            metadata: redactCurrentUserValue(recordInput.metadata ?? null) as Record<string, unknown> | null,
+            metadata: redactCurrentUserValue(
+              recordInput.metadata ?? null,
+              currentUserRedactionOptions,
+            ) as Record<string, unknown> | null,
             startedAt,
           });
           createdIds.push(id);
@@ -162,6 +170,7 @@ export function workspaceOperationService(db: Db) {
                 logCompressed: finalized.compressed,
                 metadata: redactCurrentUserValue(
                   combineMetadata(recordInput.metadata, result.metadata),
+                  currentUserRedactionOptions,
                 ) as Record<string, unknown> | null,
                 finishedAt,
                 updatedAt: finishedAt,
@@ -241,7 +250,9 @@ export function workspaceOperationService(db: Db) {
         store: operation.logStore,
         logRef: operation.logRef,
         ...result,
-        content: redactCurrentUserText(result.content),
+        content: redactCurrentUserText(result.content, {
+          enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
+        }),
       };
     },
   };

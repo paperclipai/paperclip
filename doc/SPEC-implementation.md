@@ -441,6 +441,7 @@ All endpoints are under `/api` and return JSON.
 - `POST /companies`
 - `GET /companies/:companyId`
 - `PATCH /companies/:companyId`
+- `PATCH /companies/:companyId/branding`
 - `POST /companies/:companyId/archive`
 
 ## 10.2 Goals
@@ -843,20 +844,27 @@ V1 is complete only when all criteria are true:
 
 V1 supports company import/export using a portable package contract:
 
-- exactly one JSON entrypoint: `paperclip.manifest.json`
-- all other package files are markdown with frontmatter
-- agent convention:
-  - `agents/<slug>/AGENTS.md` (required for V1 export/import)
-  - `agents/<slug>/HEARTBEAT.md` (optional, import accepted)
-  - `agents/<slug>/*.md` (optional, import accepted)
+- markdown-first package rooted at `COMPANY.md`
+- implicit folder discovery by convention
+- `.paperclip.yaml` sidecar for Paperclip-specific fidelity
+- canonical base package is vendor-neutral and aligned with `docs/companies/companies-spec.md`
+- common conventions:
+  - `agents/<slug>/AGENTS.md`
+  - `teams/<slug>/TEAM.md`
+  - `projects/<slug>/PROJECT.md`
+  - `projects/<slug>/tasks/<slug>/TASK.md`
+  - `tasks/<slug>/TASK.md`
+  - `skills/<slug>/SKILL.md`
 
 Export/import behavior in V1:
 
-- export includes company metadata and/or agents based on selection
-- export strips environment-specific paths (`cwd`, local instruction file paths)
-- export never includes secret values; secret requirements are reported
+- export emits a clean vendor-neutral markdown package plus `.paperclip.yaml`
+- projects and starter tasks are opt-in export content rather than default package content
+- export strips environment-specific paths (`cwd`, local instruction file paths, inline prompt duplication)
+- export never includes secret values; env inputs are reported as portable declarations instead
 - import supports target modes:
   - create a new company
   - import into an existing company
 - import supports collision strategies: `rename`, `skip`, `replace`
 - import supports preview (dry-run) before apply
+- GitHub imports warn on unpinned refs instead of blocking

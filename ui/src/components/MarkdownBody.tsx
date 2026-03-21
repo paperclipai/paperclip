@@ -1,5 +1,5 @@
 import { isValidElement, useEffect, useId, useState, type CSSProperties, type ReactNode } from "react";
-import Markdown from "react-markdown";
+import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { parseProjectMentionHref } from "@paperclipai/shared";
 import { cn } from "../lib/utils";
@@ -8,6 +8,8 @@ import { useTheme } from "../context/ThemeContext";
 interface MarkdownBodyProps {
   children: string;
   className?: string;
+  /** Optional resolver for relative image paths (e.g. within export packages) */
+  resolveImageSrc?: (src: string) => string | null;
 }
 
 let mermaidLoaderPromise: Promise<typeof import("mermaid").default> | null = null;
@@ -112,8 +114,44 @@ function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: b
   );
 }
 
-export function MarkdownBody({ children, className }: MarkdownBodyProps) {
+export function MarkdownBody({ children, className, resolveImageSrc }: MarkdownBodyProps) {
   const { theme } = useTheme();
+  const components: Components = {
+    pre: ({ node: _node, children: preChildren, ...preProps }) => {
+      const mermaidSource = extractMermaidSource(preChildren);
+      if (mermaidSource) {
+        return <MermaidDiagramBlock source={mermaidSource} darkMode={theme === "dark"} />;
+      }
+      return <pre {...preProps}>{preChildren}</pre>;
+    },
+    a: ({ href, children: linkChildren }) => {
+      const parsed = href ? parseProjectMentionHref(href) : null;
+      if (parsed) {
+        const label = linkChildren;
+        return (
+          <a
+            href={`/projects/${parsed.projectId}`}
+            className="paperclip-project-mention-chip"
+            style={mentionChipStyle(parsed.color)}
+          >
+            {label}
+          </a>
+        );
+      }
+      return (
+        <a href={href} rel="noreferrer">
+          {linkChildren}
+        </a>
+      );
+    },
+  };
+  if (resolveImageSrc) {
+    components.img = ({ node: _node, src, alt, ...imgProps }) => {
+      const resolved = src ? resolveImageSrc(src) : null;
+      return <img {...imgProps} src={resolved ?? src} alt={alt ?? ""} />;
+    };
+  }
+
   return (
     <div
       className={cn(
@@ -122,38 +160,7 @@ export function MarkdownBody({ children, className }: MarkdownBodyProps) {
         className,
       )}
     >
-      <Markdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          pre: ({ node: _node, children: preChildren, ...preProps }) => {
-            const mermaidSource = extractMermaidSource(preChildren);
-            if (mermaidSource) {
-              return <MermaidDiagramBlock source={mermaidSource} darkMode={theme === "dark"} />;
-            }
-            return <pre {...preProps}>{preChildren}</pre>;
-          },
-          a: ({ href, children: linkChildren }) => {
-            const parsed = href ? parseProjectMentionHref(href) : null;
-            if (parsed) {
-              const label = linkChildren;
-              return (
-                <a
-                  href={`/projects/${parsed.projectId}`}
-                  className="paperclip-project-mention-chip"
-                  style={mentionChipStyle(parsed.color)}
-                >
-                  {label}
-                </a>
-              );
-            }
-            return (
-              <a href={href} rel="noreferrer">
-                {linkChildren}
-              </a>
-            );
-          },
-        }}
-      >
+      <Markdown remarkPlugins={[remarkGfm]} components={components}>
         {children}
       </Markdown>
     </div>

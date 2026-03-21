@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   type AnyPgColumn,
   pgTable,
@@ -40,6 +41,9 @@ export const issues = pgTable(
     createdByUserId: text("created_by_user_id"),
     issueNumber: integer("issue_number"),
     identifier: text("identifier"),
+    originKind: text("origin_kind").notNull().default("manual"),
+    originId: text("origin_id"),
+    originRunId: text("origin_run_id"),
     requestDepth: integer("request_depth").notNull().default(0),
     billingCode: text("billing_code"),
     assigneeAdapterOverrides: jsonb("assignee_adapter_overrides").$type<Record<string, unknown>>(),
@@ -68,8 +72,18 @@ export const issues = pgTable(
     ),
     parentIdx: index("issues_company_parent_idx").on(table.companyId, table.parentId),
     projectIdx: index("issues_company_project_idx").on(table.companyId, table.projectId),
+    originIdx: index("issues_company_origin_idx").on(table.companyId, table.originKind, table.originId),
     projectWorkspaceIdx: index("issues_company_project_workspace_idx").on(table.companyId, table.projectWorkspaceId),
     executionWorkspaceIdx: index("issues_company_execution_workspace_idx").on(table.companyId, table.executionWorkspaceId),
     identifierIdx: uniqueIndex("issues_identifier_idx").on(table.identifier),
+    openRoutineExecutionIdx: uniqueIndex("issues_open_routine_execution_uq")
+      .on(table.companyId, table.originKind, table.originId)
+      .where(
+        sql`${table.originKind} = 'routine_execution'
+          and ${table.originId} is not null
+          and ${table.hiddenAt} is null
+          and ${table.executionRunId} is not null
+          and ${table.status} in ('backlog', 'todo', 'in_progress', 'in_review', 'blocked')`,
+      ),
   }),
 );

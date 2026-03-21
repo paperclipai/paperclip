@@ -120,6 +120,7 @@ export interface AdapterExecutionContext {
   context: Record<string, unknown>;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
+  onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
   authToken?: string;
 }
 
@@ -145,6 +146,55 @@ export interface AdapterEnvironmentTestResult {
   status: AdapterEnvironmentTestStatus;
   checks: AdapterEnvironmentCheck[];
   testedAt: string;
+}
+
+export type AdapterSkillSyncMode = "unsupported" | "persistent" | "ephemeral";
+
+export type AdapterSkillState =
+  | "available"
+  | "configured"
+  | "installed"
+  | "missing"
+  | "stale"
+  | "external";
+
+export type AdapterSkillOrigin =
+  | "company_managed"
+  | "paperclip_required"
+  | "user_installed"
+  | "external_unknown";
+
+export interface AdapterSkillEntry {
+  key: string;
+  runtimeName: string | null;
+  desired: boolean;
+  managed: boolean;
+  required?: boolean;
+  requiredReason?: string | null;
+  state: AdapterSkillState;
+  origin?: AdapterSkillOrigin;
+  originLabel?: string | null;
+  locationLabel?: string | null;
+  readOnly?: boolean;
+  sourcePath?: string | null;
+  targetPath?: string | null;
+  detail?: string | null;
+}
+
+export interface AdapterSkillSnapshot {
+  adapterType: string;
+  supported: boolean;
+  mode: AdapterSkillSyncMode;
+  desiredSkills: string[];
+  entries: AdapterSkillEntry[];
+  warnings: string[];
+}
+
+export interface AdapterSkillContext {
+  agentId: string;
+  companyId: string;
+  adapterType: string;
+  config: Record<string, unknown>;
 }
 
 export interface AdapterEnvironmentTestContext {
@@ -215,6 +265,8 @@ export interface ServerAdapterModule {
   type: string;
   execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult>;
   testEnvironment(ctx: AdapterEnvironmentTestContext): Promise<AdapterEnvironmentTestResult>;
+  listSkills?: (ctx: AdapterSkillContext) => Promise<AdapterSkillSnapshot>;
+  syncSkills?: (ctx: AdapterSkillContext, desiredSkills: string[]) => Promise<AdapterSkillSnapshot>;
   sessionCodec?: AdapterSessionCodec;
   sessionManagement?: import("./session-compaction.js").AdapterSessionManagement;
   supportsLocalAgentJwt?: boolean;
@@ -246,7 +298,7 @@ export type TranscriptEntry =
   | { kind: "thinking"; ts: string; text: string; delta?: boolean }
   | { kind: "user"; ts: string; text: string }
   | { kind: "tool_call"; ts: string; name: string; input: unknown; toolUseId?: string }
-  | { kind: "tool_result"; ts: string; toolUseId: string; content: string; isError: boolean }
+  | { kind: "tool_result"; ts: string; toolUseId: string; toolName?: string; content: string; isError: boolean }
   | { kind: "init"; ts: string; model: string; sessionId: string }
   | { kind: "result"; ts: string; text: string; inputTokens: number; outputTokens: number; cachedTokens: number; costUsd: number; subtype: string; isError: boolean; errors: string[] }
   | { kind: "stderr"; ts: string; text: string }

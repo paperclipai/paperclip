@@ -30,7 +30,8 @@ describe("paperclip skill utils", () => {
 
     const entries = await listPaperclipSkillEntries(moduleDir);
 
-    expect(entries.map((entry) => entry.name)).toEqual(["paperclip"]);
+    expect(entries.map((entry) => entry.key)).toEqual(["paperclipai/paperclip/paperclip"]);
+    expect(entries.map((entry) => entry.runtimeName)).toEqual(["paperclip"]);
     expect(entries[0]?.source).toBe(path.join(root, "skills", "paperclip"));
   });
 

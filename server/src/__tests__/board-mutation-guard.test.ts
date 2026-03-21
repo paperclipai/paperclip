@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import express from "express";
 import request from "supertest";
 import { boardMutationGuard } from "../middleware/board-mutation-guard.js";
@@ -61,8 +61,21 @@ describe("boardMutationGuard", () => {
   });
 
   it("does not block authenticated agent mutations", async () => {
-    const app = createApp("agent");
-    const res = await request(app).post("/mutate").send({ ok: true });
-    expect(res.status).toBe(204);
+    const middleware = boardMutationGuard();
+    const req = {
+      method: "POST",
+      actor: { type: "agent", agentId: "agent-1" },
+      header: () => undefined,
+    } as any;
+    const res = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn(),
+    } as any;
+    const next = vi.fn();
+
+    middleware(req, res, next);
+
+    expect(next).toHaveBeenCalledOnce();
+    expect(res.status).not.toHaveBeenCalled();
   });
 });

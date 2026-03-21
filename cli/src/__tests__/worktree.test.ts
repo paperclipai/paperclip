@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   copyGitHooksToWorktreeGitDir,
   copySeededSecretsKey,
+  readSourceAttachmentBody,
   rebindWorkspaceCwd,
   resolveSourceConfigPath,
   resolveGitWorktreeAddArgs,
@@ -193,6 +194,43 @@ describe("worktree helpers", () => {
     expect(env.PAPERCLIP_WORKTREE_NAME).toBe("feature-worktree-support");
     expect(env.PAPERCLIP_WORKTREE_COLOR).toBe("#3abf7a");
     expect(formatShellExports(env)).toContain("export PAPERCLIP_INSTANCE_ID='feature-worktree-support'");
+  });
+
+  it("falls back across storage roots before skipping a missing attachment object", async () => {
+    const missingErr = Object.assign(new Error("missing"), { code: "ENOENT" });
+    const expected = Buffer.from("image-bytes");
+    await expect(
+      readSourceAttachmentBody(
+        [
+          {
+            getObject: vi.fn().mockRejectedValue(missingErr),
+          },
+          {
+            getObject: vi.fn().mockResolvedValue(expected),
+          },
+        ],
+        "company-1",
+        "company-1/issues/issue-1/missing.png",
+      ),
+    ).resolves.toEqual(expected);
+  });
+
+  it("returns null when an attachment object is missing from every lookup storage", async () => {
+    const missingErr = Object.assign(new Error("missing"), { code: "ENOENT" });
+    await expect(
+      readSourceAttachmentBody(
+        [
+          {
+            getObject: vi.fn().mockRejectedValue(missingErr),
+          },
+          {
+            getObject: vi.fn().mockRejectedValue(Object.assign(new Error("missing"), { status: 404 })),
+          },
+        ],
+        "company-1",
+        "company-1/issues/issue-1/missing.png",
+      ),
+    ).resolves.toBeNull();
   });
 
   it("generates vivid worktree colors as hex", () => {

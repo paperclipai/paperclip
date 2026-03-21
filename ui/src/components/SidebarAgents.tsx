@@ -74,8 +74,10 @@ export function SidebarAgents() {
     return sortByHierarchy(filtered);
   }, [agents]);
 
-  const agentMatch = location.pathname.match(/^\/(?:[^/]+\/)?agents\/([^/]+)/);
+  const agentMatch = location.pathname.match(/^\/(?:[^/]+\/)?agents\/([^/]+)(?:\/([^/]+))?/);
   const activeAgentId = agentMatch?.[1] ?? null;
+  const activeTab = agentMatch?.[2] ?? null;
+
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
@@ -112,7 +114,7 @@ export function SidebarAgents() {
             return (
               <NavLink
                 key={agent.id}
-                to={agentUrl(agent)}
+                to={activeTab ? `${agentUrl(agent)}/${activeTab}` : agentUrl(agent)}
                 onClick={() => {
                   if (isMobile) setSidebarOpen(false);
                 }}
