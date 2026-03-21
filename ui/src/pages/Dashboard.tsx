@@ -56,7 +56,7 @@ export function Dashboard() {
     enabled: !!selectedCompanyId,
   });
 
-  const { data: activity } = useQuery({
+  const { data: activity, isLoading: isActivityLoading } = useQuery({
     queryKey: queryKeys.activity(selectedCompanyId!),
     queryFn: () => activityApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
@@ -311,7 +311,9 @@ export function Dashboard() {
               <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
                 Recent Activity
               </h3>
-              {recentActivity.length === 0 ? (
+              {isActivityLoading ? (
+                <div className="border border-border p-4 animate-pulse h-12" />
+              ) : recentActivity.length === 0 ? (
                 <div className="border border-border p-4">
                   <p className="text-sm text-muted-foreground">No activity yet.</p>
                 </div>
