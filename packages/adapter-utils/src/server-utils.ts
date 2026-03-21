@@ -761,6 +761,10 @@ export async function runChildProcess(
         }) as ChildProcessWithEvents;
         const startedAt = new Date().toISOString();
 
+        // Ensure UTF-8 encoding on streams to prevent WIN1252 crashes on Windows
+        child.stdout?.setEncoding("utf8");
+        child.stderr?.setEncoding("utf8");
+
         if (opts.stdin != null && child.stdin) {
           child.stdin.write(opts.stdin);
           child.stdin.end();

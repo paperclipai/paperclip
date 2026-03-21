@@ -1,9 +1,10 @@
 export const type = "cursor";
 export const label = "Cursor CLI (local)";
-export const DEFAULT_CURSOR_LOCAL_MODEL = "auto";
+export const DEFAULT_CURSOR_LOCAL_MODEL = "composer-2";
 
 const CURSOR_FALLBACK_MODEL_IDS = [
-  "auto",
+  "composer-2",
+  "composer-2-fast",
   "composer-1.5",
   "composer-1",
   "gpt-5.3-codex-low",
