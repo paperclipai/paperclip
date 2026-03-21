@@ -1219,9 +1219,26 @@ export function agentRoutes(db: Db) {
       Object.prototype.hasOwnProperty.call(patchData, "adapterType") ||
       Object.prototype.hasOwnProperty.call(patchData, "adapterConfig");
     if (touchesAdapterConfiguration) {
-      const rawEffectiveAdapterConfig = Object.prototype.hasOwnProperty.call(patchData, "adapterConfig")
+      let rawEffectiveAdapterConfig = Object.prototype.hasOwnProperty.call(patchData, "adapterConfig")
         ? (asRecord(patchData.adapterConfig) ?? {})
         : (asRecord(existing.adapterConfig) ?? {});
+      // Defense-in-depth: when adapter type is changing, merge shared fields
+      // from the existing config so cwd, instructionsFilePath, etc. survive.
+      if (
+        Object.prototype.hasOwnProperty.call(patchData, "adapterType") &&
+        patchData.adapterType !== existing.adapterType
+      ) {
+        const SHARED_ADAPTER_CONFIG_KEYS = [
+          "cwd", "instructionsFilePath", "command", "extraArgs",
+          "env", "timeoutSec", "graceSec",
+        ];
+        const existingConfig = asRecord(existing.adapterConfig) ?? {};
+        const shared: Record<string, unknown> = {};
+        for (const key of SHARED_ADAPTER_CONFIG_KEYS) {
+          if (existingConfig[key] !== undefined) shared[key] = existingConfig[key];
+        }
+        rawEffectiveAdapterConfig = { ...shared, ...rawEffectiveAdapterConfig };
+      }
       const effectiveAdapterConfig = applyCreateDefaultsByAdapterType(
         requestedAdapterType,
         rawEffectiveAdapterConfig,

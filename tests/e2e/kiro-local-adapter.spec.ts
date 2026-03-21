@@ -587,3 +587,170 @@ test.describe("kiro_local adapter — API validation", () => {
     expect(models).toHaveLength(8);
   });
 });
+
+test.describe("Adapter switch field preservation (API-level)", () => {
+  const SHARED_FIELDS = {
+    cwd: "/tmp/adapter-switch-test",
+    instructionsFilePath: "/tmp/adapter-switch-test/AGENTS.md",
+    command: "custom-cli",
+    extraArgs: "--verbose",
+    env: [{ key: "FOO", value: "bar" }],
+    timeoutSec: 120,
+    graceSec: 30,
+  };
+
+  const CLAUDE_SPECIFIC_FIELDS = {
+    effort: "high",
+    mode: "code",
+    variant: "standard",
+    modelReasoningEffort: "medium",
+    chrome: true,
+    dangerouslySkipPermissions: true,
+  };
+
+  let companyId: string;
+
+  test.beforeAll(async ({ browser }) => {
+    const page = await browser.newPage();
+    await page.goto(`${BASE_URL}`);
+    const company = await getCompany(page);
+    companyId = company.id;
+    await page.close();
+  });
+
+  test("adapter switch (claude_local → kiro_local) preserves shared fields", async ({ page }) => {
+    // Create agent with claude_local and shared + adapter-specific fields
+    const createRes = await page.request.post(`${BASE_URL}/api/companies/${companyId}/agents`, {
+      data: {
+        name: `Switch-Test-${Date.now()}`,
+        role: "general",
+        adapterType: "claude_local",
+        adapterConfig: { model: "", ...SHARED_FIELDS, ...CLAUDE_SPECIFIC_FIELDS },
+        runtimeConfig: { heartbeat: { enabled: false, intervalSec: 3600, wakeOnDemand: true, cooldownSec: 10, maxConcurrentRuns: 1 } },
+        budgetMonthlyCents: 0,
+      },
+    });
+    expect(createRes.ok()).toBe(true);
+    const agent = await createRes.json();
+
+    try {
+      // Switch to kiro_local — only send model in adapterConfig (simulating frontend save)
+      const patchRes = await page.request.patch(`${BASE_URL}/api/agents/${agent.id}`, {
+        data: { adapterType: "kiro_local", adapterConfig: { model: "auto" } },
+      });
+      expect(patchRes.ok()).toBe(true);
+
+      // Reload and verify
+      const getRes = await page.request.get(`${BASE_URL}/api/agents/${agent.id}`);
+      const updated = await getRes.json();
+      expect(updated.adapterType).toBe("kiro_local");
+      expect(updated.adapterConfig.cwd).toBe(SHARED_FIELDS.cwd);
+      expect(updated.adapterConfig.instructionsFilePath).toBe(SHARED_FIELDS.instructionsFilePath);
+      expect(updated.adapterConfig.command).toBe(SHARED_FIELDS.command);
+      expect(updated.adapterConfig.extraArgs).toBe(SHARED_FIELDS.extraArgs);
+      expect(updated.adapterConfig.timeoutSec).toBe(SHARED_FIELDS.timeoutSec);
+      expect(updated.adapterConfig.graceSec).toBe(SHARED_FIELDS.graceSec);
+    } finally {
+      await page.request.delete(`${BASE_URL}/api/companies/${companyId}/agents/${agent.id}`);
+    }
+  });
+
+  test("adapter switch clears adapter-specific fields", async ({ page }) => {
+    const createRes = await page.request.post(`${BASE_URL}/api/companies/${companyId}/agents`, {
+      data: {
+        name: `Switch-Clear-${Date.now()}`,
+        role: "general",
+        adapterType: "claude_local",
+        adapterConfig: { model: "", ...SHARED_FIELDS, ...CLAUDE_SPECIFIC_FIELDS },
+        runtimeConfig: { heartbeat: { enabled: false, intervalSec: 3600, wakeOnDemand: true, cooldownSec: 10, maxConcurrentRuns: 1 } },
+        budgetMonthlyCents: 0,
+      },
+    });
+    expect(createRes.ok()).toBe(true);
+    const agent = await createRes.json();
+
+    try {
+      const patchRes = await page.request.patch(`${BASE_URL}/api/agents/${agent.id}`, {
+        data: { adapterType: "kiro_local", adapterConfig: { model: "auto" } },
+      });
+      expect(patchRes.ok()).toBe(true);
+
+      const getRes = await page.request.get(`${BASE_URL}/api/agents/${agent.id}`);
+      const updated = await getRes.json();
+      const cfg = updated.adapterConfig;
+
+      // Claude-specific fields must NOT be present
+      for (const field of Object.keys(CLAUDE_SPECIFIC_FIELDS)) {
+        expect(cfg[field], `Should not have claude-specific field "${field}"`).toBeUndefined();
+      }
+    } finally {
+      await page.request.delete(`${BASE_URL}/api/companies/${companyId}/agents/${agent.id}`);
+    }
+  });
+
+  test("reverse switch (kiro_local → claude_local) preserves shared fields", async ({ page }) => {
+    const createRes = await page.request.post(`${BASE_URL}/api/companies/${companyId}/agents`, {
+      data: {
+        name: `ReverseSwitch-${Date.now()}`,
+        role: "general",
+        adapterType: "kiro_local",
+        adapterConfig: { model: "auto", ...SHARED_FIELDS },
+        runtimeConfig: { heartbeat: { enabled: false, intervalSec: 3600, wakeOnDemand: true, cooldownSec: 10, maxConcurrentRuns: 1 } },
+        budgetMonthlyCents: 0,
+      },
+    });
+    expect(createRes.ok()).toBe(true);
+    const agent = await createRes.json();
+
+    try {
+      const patchRes = await page.request.patch(`${BASE_URL}/api/agents/${agent.id}`, {
+        data: { adapterType: "claude_local", adapterConfig: { model: "" } },
+      });
+      expect(patchRes.ok()).toBe(true);
+
+      const getRes = await page.request.get(`${BASE_URL}/api/agents/${agent.id}`);
+      const updated = await getRes.json();
+      expect(updated.adapterType).toBe("claude_local");
+      expect(updated.adapterConfig.cwd).toBe(SHARED_FIELDS.cwd);
+      expect(updated.adapterConfig.instructionsFilePath).toBe(SHARED_FIELDS.instructionsFilePath);
+      expect(updated.adapterConfig.command).toBe(SHARED_FIELDS.command);
+      expect(updated.adapterConfig.timeoutSec).toBe(SHARED_FIELDS.timeoutSec);
+      expect(updated.adapterConfig.graceSec).toBe(SHARED_FIELDS.graceSec);
+    } finally {
+      await page.request.delete(`${BASE_URL}/api/companies/${companyId}/agents/${agent.id}`);
+    }
+  });
+
+  test("user-modified shared fields after switch take precedence", async ({ page }) => {
+    const createRes = await page.request.post(`${BASE_URL}/api/companies/${companyId}/agents`, {
+      data: {
+        name: `Override-${Date.now()}`,
+        role: "general",
+        adapterType: "claude_local",
+        adapterConfig: { model: "", ...SHARED_FIELDS },
+        runtimeConfig: { heartbeat: { enabled: false, intervalSec: 3600, wakeOnDemand: true, cooldownSec: 10, maxConcurrentRuns: 1 } },
+        budgetMonthlyCents: 0,
+      },
+    });
+    expect(createRes.ok()).toBe(true);
+    const agent = await createRes.json();
+
+    try {
+      // Switch adapter AND override cwd with a new value
+      const newCwd = "/tmp/user-override-path";
+      const patchRes = await page.request.patch(`${BASE_URL}/api/agents/${agent.id}`, {
+        data: { adapterType: "kiro_local", adapterConfig: { model: "auto", cwd: newCwd } },
+      });
+      expect(patchRes.ok()).toBe(true);
+
+      const getRes = await page.request.get(`${BASE_URL}/api/agents/${agent.id}`);
+      const updated = await getRes.json();
+      // User's override wins over the existing value
+      expect(updated.adapterConfig.cwd).toBe(newCwd);
+      // Non-overridden shared fields still preserved from original
+      expect(updated.adapterConfig.instructionsFilePath).toBe(SHARED_FIELDS.instructionsFilePath);
+    } finally {
+      await page.request.delete(`${BASE_URL}/api/companies/${companyId}/agents/${agent.id}`);
+    }
+  });
+});

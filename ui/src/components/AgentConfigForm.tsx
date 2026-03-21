@@ -236,9 +236,19 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     }
     if (overlay.adapterType !== undefined) {
       patch.adapterType = overlay.adapterType;
-      // When adapter type changes, send only the new config — don't merge
-      // with old config since old adapter fields are meaningless for the new type
-      patch.adapterConfig = overlay.adapterConfig;
+      // Preserve shared fields (cwd, instructionsFilePath, etc.) from the
+      // existing agent config when switching adapter types.  Overlay values
+      // take precedence so user edits after the switch are respected.
+      const SHARED_ADAPTER_FIELDS = [
+        "cwd", "instructionsFilePath", "command", "extraArgs",
+        "env", "timeoutSec", "graceSec",
+      ];
+      const existing = (agent.adapterConfig ?? {}) as Record<string, unknown>;
+      const sharedFromExisting: Record<string, unknown> = {};
+      for (const key of SHARED_ADAPTER_FIELDS) {
+        if (existing[key] !== undefined) sharedFromExisting[key] = existing[key];
+      }
+      patch.adapterConfig = { ...sharedFromExisting, ...overlay.adapterConfig };
     } else if (Object.keys(overlay.adapterConfig).length > 0) {
       const existing = (agent.adapterConfig ?? {}) as Record<string, unknown>;
       patch.adapterConfig = { ...existing, ...overlay.adapterConfig };
@@ -533,12 +543,23 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   }
                   set!(nextValues);
                 } else {
-                  // Clear all adapter config and explicitly blank out model + effort/mode keys
-                  // so the old adapter's values don't bleed through via eff()
+                  // Carry forward shared fields from the existing agent config so
+                  // they stay visible in the form after switching adapter type.
+                  // Adapter-specific fields are reset to defaults / blanked out.
+                  const SHARED_OVERLAY_FIELDS = [
+                    "cwd", "instructionsFilePath", "command", "extraArgs",
+                    "env", "timeoutSec", "graceSec",
+                  ] as const;
+                  const existingCfg = (props.agent.adapterConfig ?? {}) as Record<string, unknown>;
+                  const sharedCarry: Record<string, unknown> = {};
+                  for (const k of SHARED_OVERLAY_FIELDS) {
+                    if (existingCfg[k] !== undefined) sharedCarry[k] = existingCfg[k];
+                  }
                   setOverlay((prev) => ({
                     ...prev,
                     adapterType: t,
                     adapterConfig: {
+                      ...sharedCarry,
                       model:
                         t === "codex_local"
                           ? DEFAULT_CODEX_LOCAL_MODEL
