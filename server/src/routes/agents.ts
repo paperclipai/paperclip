@@ -1683,6 +1683,30 @@ export function agentRoutes(db: Db) {
     }
     await assertCanUpdateAgent(req, existing);
 
+    // Agents cannot terminate themselves or other agents via PATCH (#1334).
+    // Status changes to "terminated" must go through the board-only POST /terminate endpoint.
+    if (req.body.status === "terminated" && req.actor.type !== "board") {
+      res.status(403).json({ error: "Only board users can terminate agents. Use POST /agents/:id/terminate." });
+      return;
+    }
+
+    // Prevent removing the last CEO via role change or status change (#1334)
+    const isLosingCEO =
+      (existing.role === "ceo" && req.body.role && req.body.role !== "ceo") ||
+      (existing.role === "ceo" && req.body.status === "terminated");
+    if (isLosingCEO) {
+      const companyAgents = await svc.list(existing.companyId);
+      const otherCEOs = companyAgents.filter(
+        (a) => a.role === "ceo" && a.status !== "terminated" && a.id !== id,
+      );
+      if (otherCEOs.length === 0) {
+        res.status(409).json({
+          error: "Cannot remove or demote the last CEO. Hire or promote another CEO first.",
+        });
+        return;
+      }
+    }
+
     if (Object.prototype.hasOwnProperty.call(req.body, "permissions")) {
       res.status(422).json({ error: "Use /api/agents/:id/permissions for permission changes" });
       return;
@@ -1808,6 +1832,26 @@ export function agentRoutes(db: Db) {
   router.post("/agents/:id/terminate", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
+
+    // Prevent terminating the last CEO in a company (#1334)
+    const target = await svc.getById(id);
+    if (!target) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    if (target.role === "ceo") {
+      const companyAgents = await svc.list(target.companyId);
+      const activeCEOs = companyAgents.filter(
+        (a) => a.role === "ceo" && a.status !== "terminated" && a.id !== id,
+      );
+      if (activeCEOs.length === 0) {
+        res.status(409).json({
+          error: "Cannot terminate the last CEO. Hire or promote another CEO first.",
+        });
+        return;
+      }
+    }
+
     const agent = await svc.terminate(id);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
@@ -1831,6 +1875,22 @@ export function agentRoutes(db: Db) {
   router.delete("/agents/:id", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
+
+    // Prevent deleting the last CEO in a company (#1334)
+    const target = await svc.getById(id);
+    if (target && target.role === "ceo") {
+      const companyAgents = await svc.list(target.companyId);
+      const otherCEOs = companyAgents.filter(
+        (a) => a.role === "ceo" && a.status !== "terminated" && a.id !== id,
+      );
+      if (otherCEOs.length === 0) {
+        res.status(409).json({
+          error: "Cannot delete the last CEO. Hire or promote another CEO first.",
+        });
+        return;
+      }
+    }
+
     const agent = await svc.remove(id);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
