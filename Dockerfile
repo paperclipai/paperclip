@@ -1,6 +1,6 @@
 FROM node:lts-trixie-slim AS base
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl git \
+  && apt-get install -y --no-install-recommends ca-certificates curl git tini \
   && apt-get clean
 RUN corepack enable
 
@@ -55,4 +55,5 @@ VOLUME ["/paperclip"]
 EXPOSE 3100
 
 USER node
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
