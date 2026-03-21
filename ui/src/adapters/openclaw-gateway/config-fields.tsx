@@ -629,13 +629,16 @@ export function OpenClawGatewayConfigFields({
           </div>
         </div>
       )}
-      <PayloadTemplateJsonField
-        isCreate={isCreate}
-        values={values}
-        set={set}
-        config={config}
-        mark={mark}
-      />
+      <div>
+        <div className="text-xs text-muted-foreground/60 mb-1">(Deprecated — clear to use new adapter features)</div>
+        <PayloadTemplateJsonField
+          isCreate={isCreate}
+          values={values}
+          set={set}
+          config={config}
+          mark={mark}
+        />
+      </div>
 
       <RuntimeServicesJsonField
         isCreate={isCreate}
