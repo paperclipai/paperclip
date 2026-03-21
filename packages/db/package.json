@@ -35,7 +35,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc && cp -r src/migrations dist/migrations",
+    "build": "tsc && node -e \"const fs=require('fs');fs.cpSync('src/migrations','dist/migrations',{recursive:true})\"",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
     "generate": "tsc -p tsconfig.json && drizzle-kit generate",
