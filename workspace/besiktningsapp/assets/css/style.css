@@ -981,6 +981,29 @@ img {
   margin-top: var(--space-xs);
 }
 
+/* Term cross-references (term → handbook section) */
+.term-refs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  margin-top: var(--space-sm);
+}
+
+.term-ref-link {
+  font-size: var(--font-size-xs);
+  color: var(--color-primary-light);
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  padding: 2px 8px;
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+}
+.term-ref-link:hover {
+  background: var(--color-surface-alt);
+  border-color: var(--color-primary-light);
+}
+
 /* Search results */
 .search-results {
   padding: var(--space-md) 0;

@@ -426,7 +426,7 @@ router.post('/generate-pdf', express.json({ limit: '30mb' }), (req, res) => {
     // Text
     font('regular', 7, C.grey)
       .text(
-        `${inspection.objekt?.adress || 'Besiktningsutlatande'}  |  ${inspection.datum || ''}  |  Sida ${i + 1} av ${pageCount}`,
+        `${inspection.objekt?.adress || 'Besiktningsutlåtande'}  |  ${inspection.datum || ''}  |  Sida ${i + 1} av ${pageCount}`,
         0, pageH - 30,
         { align: 'center', width: pageW }
       );

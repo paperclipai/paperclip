@@ -11,6 +11,7 @@ const HandbookModule = (() => {
   let _data = null;
   let _searchTimeout = null;
   let _activeSectionId = null;
+  let _termIndex = null; // Map<termName.toLowerCase(), [{sectionId, sectionTitle}]>
 
   // Color coding per book section
   const SECTION_META = {
@@ -36,6 +37,7 @@ const HandbookModule = (() => {
       data.terms = termsData.terms;
     }
     _data = data;
+    _termIndex = null; // reset so it's rebuilt on next terms render
     // If current view is already visible, render now
     if (document.getElementById('view-handbook').classList.contains('active')) {
       render(data);
@@ -397,16 +399,58 @@ const HandbookModule = (() => {
     }
   }
 
+  // Build an index of term -> [{sectionId, sectionTitle}] from handbook sections
+  function _buildTermIndex(terms, data) {
+    if (!terms || !data || !data.sections) return new Map();
+    const index = new Map();
+
+    const collectText = (sec) => {
+      const parts = [];
+      if (sec.content) parts.push(sec.content);
+      if (sec.subsections) sec.subsections.forEach(s => parts.push(...collectText(s)));
+      return parts;
+    };
+
+    terms.forEach(term => {
+      const key = (term.term || term.name || '').toLowerCase();
+      if (!key || key.length < 3) return; // skip very short terms
+      const refs = [];
+      data.sections.forEach(sec => {
+        const texts = collectText(sec);
+        const found = texts.some(t => t && t.toLowerCase().includes(key));
+        if (found) refs.push({ sectionId: sec.id, sectionTitle: sec.title });
+      });
+      if (refs.length) index.set(key, refs);
+    });
+    return index;
+  }
+
   function _renderTermsList(terms, container) {
+    // Build index lazily on first render
+    if (!_termIndex && _data) {
+      _termIndex = _buildTermIndex(terms, _data);
+    }
     container.innerHTML = '';
     terms.forEach(term => {
+      const termName = term.term || term.name || '';
+      const refs = (_termIndex && _termIndex.get(termName.toLowerCase())) || [];
       const card = document.createElement('div');
       card.className = 'term-card';
       card.setAttribute('role', 'article');
       card.innerHTML = `
-        <div class="term-name">${_escHtml(term.term || term.name || '')}</div>
+        <div class="term-name">${_escHtml(termName)}</div>
         <div class="term-def">${_escHtml(term.definition || term.def || '')}</div>
+        ${refs.length ? `<div class="term-refs">${refs.map(r =>
+          `<button class="term-ref-link" data-section-id="${_escHtml(r.sectionId)}">→ ${_escHtml(r.sectionTitle)}</button>`
+        ).join('')}</div>` : ''}
       `;
+      // Bind cross-ref navigation
+      card.querySelectorAll('.term-ref-link').forEach(btn => {
+        btn.addEventListener('click', () => {
+          _scrollToSection(btn.dataset.sectionId);
+          _setActiveTOCItem(btn.dataset.sectionId);
+        });
+      });
       container.appendChild(card);
     });
   }
