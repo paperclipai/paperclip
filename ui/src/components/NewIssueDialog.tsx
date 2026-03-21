@@ -21,6 +21,7 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import {
@@ -870,6 +871,7 @@ export function NewIssueDialog() {
       <DialogContent
         showCloseButton={false}
         aria-describedby={undefined}
+        aria-label="Create new issue"
         className={cn(
           "p-0 gap-0 flex flex-col max-h-[calc(100dvh-2rem)]",
           expanded
@@ -899,6 +901,7 @@ export function NewIssueDialog() {
           }
         }}
       >
+        <DialogTitle className="sr-only">Create new issue</DialogTitle>
         {/* Header bar */}
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-border shrink-0">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
