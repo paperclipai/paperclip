@@ -9,6 +9,7 @@ import {
   SquarePen,
   Network,
   Settings,
+  Bug,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarSection } from "./SidebarSection";
@@ -24,7 +25,7 @@ import { Button } from "@/components/ui/button";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
 export function Sidebar() {
-  const { openNewIssue } = useDialog();
+  const { openNewIssue, openBugReport } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const inboxBadge = useInboxBadge(selectedCompanyId);
   const { data: liveRuns } = useQuery({
@@ -119,6 +120,17 @@ export function Sidebar() {
           missingBehavior="placeholder"
         />
       </nav>
+
+      {/* Report Bug — pinned to bottom */}
+      <div className="shrink-0 border-t border-border px-3 py-2">
+        <button
+          onClick={openBugReport}
+          className="flex items-center gap-2.5 w-full px-3 py-1.5 text-[13px] font-medium text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors rounded-sm"
+        >
+          <Bug className="h-4 w-4 shrink-0" />
+          <span className="truncate">Report Bug</span>
+        </button>
+      </div>
     </aside>
   );
 }

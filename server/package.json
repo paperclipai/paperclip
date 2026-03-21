@@ -44,6 +44,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.888.0",
+    "@linear/sdk": "^78.0.0",
     "@paperclipai/adapter-claude-local": "workspace:*",
     "@paperclipai/adapter-codex-local": "workspace:*",
     "@paperclipai/adapter-cursor-local": "workspace:*",
@@ -51,7 +52,6 @@
     "@paperclipai/adapter-openclaw-gateway": "workspace:*",
     "@paperclipai/adapter-opencode-local": "workspace:*",
     "@paperclipai/adapter-pi-local": "workspace:*",
-    "hermes-paperclip-adapter": "0.1.1",
     "@paperclipai/adapter-utils": "workspace:*",
     "@paperclipai/db": "workspace:*",
     "@paperclipai/plugin-sdk": "workspace:*",
@@ -66,6 +66,7 @@
     "drizzle-orm": "^0.38.4",
     "embedded-postgres": "^18.1.0-beta.16",
     "express": "^5.1.0",
+    "hermes-paperclip-adapter": "0.1.1",
     "jsdom": "^28.1.0",
     "multer": "^2.0.2",
     "open": "^11.0.0",

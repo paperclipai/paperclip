@@ -38,6 +38,9 @@ interface DialogContextValue {
   onboardingOptions: OnboardingOptions;
   openOnboarding: (options?: OnboardingOptions) => void;
   closeOnboarding: () => void;
+  bugReportOpen: boolean;
+  openBugReport: () => void;
+  closeBugReport: () => void;
 }
 
 const DialogContext = createContext<DialogContextValue | null>(null);
@@ -51,6 +54,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
   const [newAgentOpen, setNewAgentOpen] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [onboardingOptions, setOnboardingOptions] = useState<OnboardingOptions>({});
+  const [bugReportOpen, setBugReportOpen] = useState(false);
 
   const openNewIssue = useCallback((defaults: NewIssueDefaults = {}) => {
     setNewIssueDefaults(defaults);
@@ -98,6 +102,14 @@ export function DialogProvider({ children }: { children: ReactNode }) {
     setOnboardingOptions({});
   }, []);
 
+  const openBugReport = useCallback(() => {
+    setBugReportOpen(true);
+  }, []);
+
+  const closeBugReport = useCallback(() => {
+    setBugReportOpen(false);
+  }, []);
+
   return (
     <DialogContext.Provider
       value={{
@@ -119,6 +131,9 @@ export function DialogProvider({ children }: { children: ReactNode }) {
         onboardingOptions,
         openOnboarding,
         closeOnboarding,
+        bugReportOpen,
+        openBugReport,
+        closeBugReport,
       }}
     >
       {children}

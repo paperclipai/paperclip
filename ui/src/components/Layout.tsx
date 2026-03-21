@@ -12,6 +12,7 @@ import { NewIssueDialog } from "./NewIssueDialog";
 import { NewProjectDialog } from "./NewProjectDialog";
 import { NewGoalDialog } from "./NewGoalDialog";
 import { NewAgentDialog } from "./NewAgentDialog";
+import { BugReportDialog } from "./BugReportDialog";
 import { ToastViewport } from "./ToastViewport";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { WorktreeBanner } from "./WorktreeBanner";
@@ -428,6 +429,7 @@ export function Layout() {
       <NewProjectDialog />
       <NewGoalDialog />
       <NewAgentDialog />
+      <BugReportDialog />
       <ToastViewport />
     </div>
   );
