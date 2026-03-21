@@ -1,6 +1,8 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  agents,
+  authUsers,
   companyMemberships,
   instanceUserRoles,
   principalPermissionGrants,
@@ -89,16 +91,46 @@ export function accessService(db: Db) {
       .select()
       .from(principalPermissionGrants)
       .where(eq(principalPermissionGrants.companyId, companyId));
-    return members.map((m) => ({
-      ...m,
-      grants: grants
-        .filter(
-          (g) =>
-            g.principalType === m.principalType &&
-            g.principalId === m.principalId,
-        )
-        .map((g) => g.permissionKey),
-    }));
+
+    // Resolve display names for users and agents
+    const userIds = members.filter((m) => m.principalType === "user").map((m) => m.principalId);
+    const agentIds = members.filter((m) => m.principalType === "agent").map((m) => m.principalId);
+
+    const userMap = new Map<string, { name: string; email: string; image: string | null }>();
+    const agentMap = new Map<string, { name: string }>();
+
+    if (userIds.length > 0) {
+      const users = await db
+        .select({ id: authUsers.id, name: authUsers.name, email: authUsers.email, image: authUsers.image })
+        .from(authUsers)
+        .where(inArray(authUsers.id, userIds));
+      for (const u of users) userMap.set(u.id, u);
+    }
+    if (agentIds.length > 0) {
+      const agentRows = await db
+        .select({ id: agents.id, name: agents.name })
+        .from(agents)
+        .where(inArray(agents.id, agentIds));
+      for (const a of agentRows) agentMap.set(a.id, a);
+    }
+
+    return members.map((m) => {
+      const user = m.principalType === "user" ? userMap.get(m.principalId) : null;
+      const agent = m.principalType === "agent" ? agentMap.get(m.principalId) : null;
+      return {
+        ...m,
+        displayName: user?.name ?? agent?.name ?? null,
+        email: user?.email ?? null,
+        image: user?.image ?? null,
+        grants: grants
+          .filter(
+            (g) =>
+              g.principalType === m.principalType &&
+              g.principalId === m.principalId,
+          )
+          .map((g) => g.permissionKey),
+      };
+    });
   }
 
   async function setMemberPermissions(

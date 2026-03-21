@@ -2640,7 +2640,7 @@ export function accessRoutes(
     res.json(ROLE_PRESETS);
   });
 
-  router.put(
+  router.post(
     "/companies/:companyId/members/:memberId/role-preset",
     async (req, res) => {
       const companyId = req.params.companyId as string;

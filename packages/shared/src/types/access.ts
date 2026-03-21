@@ -18,6 +18,9 @@ export interface CompanyMembership {
   status: MembershipStatus;
   membershipRole: string | null;
   grants?: PermissionKey[];
+  displayName?: string | null;
+  email?: string | null;
+  image?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }

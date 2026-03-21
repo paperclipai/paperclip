@@ -15,7 +15,7 @@ import {
   HintIcon
 } from "../components/agent-config-primitives";
 import type { CompanySettings as CompanySettingsType, CompanyMembership, CredentialType, JoinRequest, PermissionKey, ProviderCredential } from "@paperclipai/shared";
-import { PERMISSION_KEYS } from "@paperclipai/shared";
+import { PERMISSION_KEYS, ROLE_PRESETS } from "@paperclipai/shared";
 
 type AgentSnippetInput = {
   onboardingTextUrl: string;
@@ -655,8 +655,13 @@ function MembersSection({ companyId }: { companyId: string }) {
                 >
                   <div className="flex items-center gap-2 min-w-0">
                     <span className="text-sm font-medium truncate">
-                      {member.principalId}
+                      {member.displayName || member.email || member.principalId}
                     </span>
+                    {member.email && member.displayName && (
+                      <span className="shrink-0 text-xs text-muted-foreground truncate max-w-[200px]">
+                        {member.email}
+                      </span>
+                    )}
                     <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
                       {member.principalType}
                     </span>
@@ -691,8 +696,27 @@ function MembersSection({ companyId }: { companyId: string }) {
                 {/* Permission editor (expanded) */}
                 {expandedMemberId === member.id && (
                   <div className="mt-1 space-y-2 rounded-md border border-border bg-muted/30 px-3 py-3">
-                    <div className="text-xs font-medium text-muted-foreground">
-                      Permissions
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs font-medium text-muted-foreground">
+                        Permissions
+                      </div>
+                      <div className="flex items-center gap-1">
+                        {ROLE_PRESETS.map((preset) => (
+                          <button
+                            key={preset.id}
+                            onClick={() => {
+                              const next: Record<string, boolean> = {};
+                              for (const k of PERMISSION_KEYS) next[k] = false;
+                              for (const k of preset.permissions) next[k] = true;
+                              setEditingGrants(next);
+                            }}
+                            className="rounded px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+                            title={preset.description}
+                          >
+                            {preset.label}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                     <div className="space-y-1">
                       {PERMISSION_KEYS.map((key) => (

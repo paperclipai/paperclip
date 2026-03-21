@@ -141,6 +141,12 @@ export const accessApi = {
       { grants },
     ),
 
+  applyRolePreset: (companyId: string, memberId: string, presetId: string) =>
+    api.post<CompanyMembership & { appliedPreset: string }>(
+      `/companies/${companyId}/members/${memberId}/role-preset`,
+      { presetId },
+    ),
+
   revokeInvite: (inviteId: string) =>
     api.post<{ id: string; revokedAt: string }>(`/invites/${inviteId}/revoke`, {}),
 
