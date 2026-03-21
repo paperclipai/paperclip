@@ -1188,6 +1188,7 @@ export function NewIssueDialog() {
                     searchPlaceholder="Search models..."
                     emptyMessage="No models found."
                     onChange={setAssigneeModelOverride}
+                    allowCustomValue
                   />
                 </div>
                 <div className="space-y-1.5">

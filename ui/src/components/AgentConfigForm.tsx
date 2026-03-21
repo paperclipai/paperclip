@@ -1393,8 +1393,20 @@ function ModelDropdown({
                 ))}
               </div>
             ))}
-            {filteredModels.length === 0 && (
+            {filteredModels.length === 0 && !modelSearch.trim() && (
               <p className="px-2 py-1.5 text-xs text-muted-foreground">No models found.</p>
+            )}
+            {modelSearch.trim() && !models.some((m) => m.id === modelSearch.trim()) && (
+              <button
+                className="flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50 border-t border-border mt-1 pt-2"
+                onClick={() => {
+                  onChange(modelSearch.trim());
+                  onOpenChange(false);
+                }}
+              >
+                <span className="text-muted-foreground">Use</span>{" "}
+                <code className="text-xs bg-muted px-1 py-0.5 rounded">{modelSearch.trim()}</code>
+              </button>
             )}
           </div>
         </PopoverContent>
