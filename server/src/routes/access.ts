@@ -10,7 +10,8 @@ import {
   agentApiKeys,
   authUsers,
   invites,
-  joinRequests
+  joinRequests,
+  principalPermissionGrants,
 } from "@paperclipai/db";
 import {
   acceptInviteSchema,
@@ -19,7 +20,9 @@ import {
   listJoinRequestsQuerySchema,
   updateMemberPermissionsSchema,
   updateUserCompanyAccessSchema,
-  PERMISSION_KEYS
+  PERMISSION_KEYS,
+  ROLE_PRESETS,
+  AGENT_ROLE_DEFAULT_PERMISSIONS,
 } from "@paperclipai/shared";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import {
@@ -1531,13 +1534,36 @@ export function accessRoutes(
       const memberships = userId
         ? await access.listUserCompanyAccess(userId)
         : [];
+      // Fetch permission grants for all companies
+      const companyIds = memberships.map((m) => m.companyId);
+      let grants: { companyId: string; permissionKey: string }[] = [];
+      if (userId && companyIds.length > 0) {
+        grants = await db
+          .select({
+            companyId: principalPermissionGrants.companyId,
+            permissionKey: principalPermissionGrants.permissionKey,
+          })
+          .from(principalPermissionGrants)
+          .where(
+            and(
+              eq(principalPermissionGrants.principalType, "user"),
+              eq(principalPermissionGrants.principalId, userId),
+            ),
+          );
+      }
+      const grantsByCompany: Record<string, string[]> = {};
+      for (const g of grants) {
+        if (!grantsByCompany[g.companyId]) grantsByCompany[g.companyId] = [];
+        grantsByCompany[g.companyId].push(g.permissionKey);
+      }
       res.json({
         authenticated: true,
         type: "board",
         userId,
         isInstanceAdmin: isAdmin,
         source: req.actor.source,
-        companies: memberships.map((m) => m.companyId),
+        companies: companyIds,
+        permissions: grantsByCompany,
       });
       return;
     }
@@ -2400,10 +2426,15 @@ export function accessRoutes(
           "member",
           "active"
         );
-        const grants = grantsFromDefaults(
+        let grants = grantsFromDefaults(
           invite.defaultsPayload as Record<string, unknown> | null,
           "agent"
         );
+        // Fallback: if invite has no grant defaults, use role-based defaults
+        if (grants.length === 0) {
+          const rolePerms = AGENT_ROLE_DEFAULT_PERMISSIONS[created.role] ?? [];
+          grants = rolePerms.map((key) => ({ permissionKey: key, scope: null }));
+        }
         await access.setPrincipalGrants(
           companyId,
           "agent",
@@ -2603,6 +2634,31 @@ export function accessRoutes(
       if (!updated) throw notFound("Member not found");
       res.json(updated);
     }
+  );
+
+  router.get("/role-presets", (_req, res) => {
+    res.json(ROLE_PRESETS);
+  });
+
+  router.put(
+    "/companies/:companyId/members/:memberId/role-preset",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const memberId = req.params.memberId as string;
+      await assertCompanyPermission(req, companyId, "users:manage_permissions");
+      const presetId = req.body.presetId;
+      if (typeof presetId !== "string") throw badRequest("presetId is required");
+      const preset = ROLE_PRESETS.find((p) => p.id === presetId);
+      if (!preset) throw badRequest(`Unknown role preset: ${presetId}`);
+      const updated = await access.setMemberPermissions(
+        companyId,
+        memberId,
+        preset.permissions.map((key) => ({ permissionKey: key })),
+        req.actor.userId ?? null,
+      );
+      if (!updated) throw notFound("Member not found");
+      res.json({ ...updated, appliedPreset: presetId });
+    },
   );
 
   router.post(

@@ -3,8 +3,8 @@ import multer from "multer";
 import type { Db } from "@paperclipai/db";
 import { createAssetImageMetadataSchema } from "@paperclipai/shared";
 import type { StorageService } from "../storage/types.js";
-import { assetService, logActivity } from "../services/index.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { accessService, assetService, logActivity } from "../services/index.js";
+import { assertCompanyAccess, getActorInfo, requirePermission } from "./authz.js";
 
 const MAX_ASSET_IMAGE_BYTES = Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
 const ALLOWED_IMAGE_CONTENT_TYPES = new Set([
@@ -18,6 +18,7 @@ const ALLOWED_IMAGE_CONTENT_TYPES = new Set([
 export function assetRoutes(db: Db, storage: StorageService) {
   const router = Router();
   const svc = assetService(db);
+  const access = accessService(db);
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: MAX_ASSET_IMAGE_BYTES, files: 1 },
@@ -34,7 +35,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
 
   router.post("/companies/:companyId/assets/images", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await requirePermission(req, access, companyId, "issues:manage");
 
     try {
       await runSingleFileUpload(req, res);

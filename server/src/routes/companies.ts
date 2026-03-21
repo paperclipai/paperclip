@@ -6,11 +6,12 @@ import {
   companyPortabilityPreviewSchema,
   createCompanySchema,
   updateCompanySchema,
+  ROLE_PRESETS,
 } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { accessService, companyPortabilityService, companyService, logActivity } from "../services/index.js";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getActorInfo, requirePermission } from "./authz.js";
 
 export function companyRoutes(db: Db) {
   const router = Router();
@@ -64,16 +65,19 @@ export function companyRoutes(db: Db) {
 
   router.post("/:companyId/export", validate(companyPortabilityExportSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await requirePermission(req, access, companyId, "company:export");
     const result = await portability.exportBundle(companyId, req.body);
     res.json(result);
   });
 
   router.post("/import/preview", validate(companyPortabilityPreviewSchema), async (req, res) => {
     if (req.body.target.mode === "existing_company") {
-      assertCompanyAccess(req, req.body.target.companyId);
+      await requirePermission(req, access, req.body.target.companyId, "company:export");
     } else {
       assertBoard(req);
+      if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
+        throw forbidden("Instance admin required for new company import");
+      }
     }
     const preview = await portability.previewImport(req.body);
     res.json(preview);
@@ -81,9 +85,12 @@ export function companyRoutes(db: Db) {
 
   router.post("/import", validate(companyPortabilityImportSchema), async (req, res) => {
     if (req.body.target.mode === "existing_company") {
-      assertCompanyAccess(req, req.body.target.companyId);
+      await requirePermission(req, access, req.body.target.companyId, "company:export");
     } else {
       assertBoard(req);
+      if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
+        throw forbidden("Instance admin required for new company import");
+      }
     }
     const actor = getActorInfo(req);
     const result = await portability.importBundle(req.body, req.actor.type === "board" ? req.actor.userId : null);
@@ -112,7 +119,21 @@ export function companyRoutes(db: Db) {
       throw forbidden("Instance admin required");
     }
     const company = await svc.create(req.body);
-    await access.ensureMembership(company.id, "user", req.actor.userId ?? "local-board", "owner", "active");
+    const creatorUserId = req.actor.userId ?? "local-board";
+    await access.ensureMembership(company.id, "user", creatorUserId, "owner", "active");
+    // Auto-grant owner permissions to company creator
+    const ownerPreset = ROLE_PRESETS.find((p) => p.id === "owner");
+    if (ownerPreset) {
+      const membership = await access.getMembership(company.id, "user", creatorUserId);
+      if (membership) {
+        await access.setMemberPermissions(
+          company.id,
+          membership.id,
+          ownerPreset.permissions.map((key) => ({ permissionKey: key })),
+          req.actor.userId ?? null,
+        );
+      }
+    }
     await logActivity(db, {
       companyId: company.id,
       actorType: "user",

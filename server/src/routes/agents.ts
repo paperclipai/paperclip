@@ -15,6 +15,7 @@ import {
   updateAgentInstructionsPathSchema,
   wakeAgentSchema,
   updateAgentSchema,
+  AGENT_ROLE_DEFAULT_PERMISSIONS,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import {
@@ -651,6 +652,19 @@ export function agentRoutes(db: Db) {
       lastHeartbeatAt: null,
     });
 
+    // Auto-grant default permissions based on agent role
+    const defaultPerms = AGENT_ROLE_DEFAULT_PERMISSIONS[agent.role] ?? [];
+    if (defaultPerms.length > 0) {
+      await access.ensureMembership(companyId, "agent", agent.id, "member", "active");
+      await access.setPrincipalGrants(
+        companyId,
+        "agent",
+        agent.id,
+        defaultPerms.map((key) => ({ permissionKey: key })),
+        req.actor.type === "board" ? (req.actor.userId ?? null) : null,
+      );
+    }
+
     let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
     const actor = getActorInfo(req);
 
@@ -775,6 +789,19 @@ export function agentRoutes(db: Db) {
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
     });
+
+    // Auto-grant default permissions based on agent role
+    const directDefaultPerms = AGENT_ROLE_DEFAULT_PERMISSIONS[agent.role] ?? [];
+    if (directDefaultPerms.length > 0) {
+      await access.ensureMembership(companyId, "agent", agent.id, "member", "active");
+      await access.setPrincipalGrants(
+        companyId,
+        "agent",
+        agent.id,
+        directDefaultPerms.map((key) => ({ permissionKey: key })),
+        req.actor.type === "board" ? (req.actor.userId ?? null) : null,
+      );
+    }
 
     const actor = getActorInfo(req);
     await logActivity(db, {

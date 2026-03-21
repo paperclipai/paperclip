@@ -471,7 +471,9 @@ const PERMISSION_LABELS: Record<PermissionKey, string> = {
   "secrets:manage": "Manage secrets",
   "credentials:manage": "Manage credentials",
   "company:settings": "Company settings",
+  "company:export": "Export & import",
   "approvals:review": "Review approvals",
+  "issues:manage": "Manage issues",
 };
 
 const PERMISSION_DESCRIPTIONS: Record<PermissionKey, string> = {
@@ -486,7 +488,9 @@ const PERMISSION_DESCRIPTIONS: Record<PermissionKey, string> = {
   "secrets:manage": "Manage company secrets and environment variables.",
   "credentials:manage": "Manage provider credentials (API keys, OAuth).",
   "company:settings": "Modify company settings and configuration.",
+  "company:export": "Export and import company data.",
   "approvals:review": "Review and resolve approval requests.",
+  "issues:manage": "Create, update, and delete issues and labels.",
 };
 
 // ---- Members & Permissions Section ----

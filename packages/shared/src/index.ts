@@ -237,6 +237,7 @@ export {
 } from "./validators/index.js";
 
 export { AGENT_PRESETS, type AgentPreset } from "./agent-presets.js";
+export { ROLE_PRESETS, AGENT_ROLE_DEFAULT_PERMISSIONS, type RolePreset } from "./role-presets.js";
 export { API_PREFIX, API } from "./api.js";
 export { normalizeAgentUrlKey, deriveAgentUrlKey, isUuidLike } from "./agent-url-key.js";
 export { deriveProjectUrlKey, normalizeProjectUrlKey } from "./project-url-key.js";

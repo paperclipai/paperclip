@@ -236,6 +236,8 @@ export const PERMISSION_KEYS = [
   "secrets:manage",
   "credentials:manage",
   "company:settings",
+  "company:export",
   "approvals:review",
+  "issues:manage",
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
