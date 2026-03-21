@@ -161,6 +161,7 @@ describe("heartbeat orphaned process recovery", () => {
 
   async function seedRunFixture(input?: {
     adapterType?: string;
+    agentStatus?: "paused" | "running" | "idle";
     runStatus?: "running" | "queued" | "failed";
     processPid?: number | null;
     processLossRetryCount?: number;
@@ -188,7 +189,7 @@ describe("heartbeat orphaned process recovery", () => {
       companyId,
       name: "CodexCoder",
       role: "engineer",
-      status: "paused",
+      status: input?.agentStatus ?? "paused",
       adapterType: input?.adapterType ?? "codex_local",
       adapterConfig: {},
       runtimeConfig: {},
@@ -328,6 +329,103 @@ describe("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBeNull();
     expect(issue?.checkoutRunId).toBe(runId);
+  });
+
+  it("does not start queued runs during agent-wide cancel loop", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const run1Id = randomUUID();
+    const run2Id = randomUUID();
+    const wake1Id = randomUUID();
+    const wake2Id = randomUUID();
+    const now = new Date("2026-03-20T00:00:00.000Z");
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Runner",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(agentWakeupRequests).values([
+      {
+        id: wake1Id,
+        companyId,
+        agentId,
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: {},
+        status: "claimed",
+        runId: run1Id,
+        claimedAt: now,
+      },
+      {
+        id: wake2Id,
+        companyId,
+        agentId,
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: {},
+        status: "queued",
+        runId: run2Id,
+      },
+    ]);
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: run1Id,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "running",
+        wakeupRequestId: wake1Id,
+        contextSnapshot: {},
+        startedAt: now,
+        updatedAt: now,
+      },
+      {
+        id: run2Id,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "queued",
+        wakeupRequestId: wake2Id,
+        contextSnapshot: {},
+        startedAt: null,
+        updatedAt: now,
+      },
+    ]);
+
+    const heartbeat = heartbeatService(db);
+    const cancelledCount = await heartbeat.cancelActiveForAgent(agentId);
+    expect(cancelledCount).toBe(2);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    const run1 = runs.find((row) => row.id === run1Id);
+    const run2 = runs.find((row) => row.id === run2Id);
+    expect(run1?.status).toBe("cancelled");
+    expect(run2?.status).toBe("cancelled");
+    expect(run2?.startedAt).toBeNull();
   });
 
   it("clears the detached warning when the run reports activity again", async () => {
