@@ -1,3 +1,30 @@
+import type { AgentStatus } from "../constants.js";
+
+export type CapacityStatus = "GREEN" | "YELLOW" | "RED";
+
+export interface AgentWorkloadTask {
+  issueId: string;
+  identifier: string;
+  title: string;
+  startedAt: string | null;
+}
+
+export interface AgentWorkloadEntry {
+  agentId: string;
+  name: string;
+  urlKey: string;
+  status: AgentStatus;
+  currentTasks: AgentWorkloadTask[];
+  timeInCurrentTaskSec: number | null;
+}
+
+export interface AgentWorkload {
+  capacityStatus: CapacityStatus;
+  idleEngineers: number;
+  queuedTasks: number;
+  engineers: AgentWorkloadEntry[];
+}
+
 export interface DashboardSummary {
   companyId: string;
   agents: {
@@ -20,4 +47,5 @@ export interface DashboardSummary {
     monthOutputTokens: number;
   };
   pendingApprovals: number;
+  agentWorkload: AgentWorkload;
 }

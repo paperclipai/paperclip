@@ -11,9 +11,9 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { MetricCard } from "../components/MetricCard";
 import { EmptyState } from "../components/EmptyState";
-import { cn } from "../lib/utils";
 import { Bot, CircleDot, ShieldCheck, LayoutDashboard, Zap } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
+import { CapacityPanel } from "../components/CapacityPanel";
 import { ActiveWorkWidget } from "../components/ActiveWorkWidget";
 import { AwaitingBoardWidget } from "../components/AwaitingBoardWidget";
 import { RecentActivityWidget } from "../components/RecentActivityWidget";
@@ -117,6 +117,8 @@ export function Dashboard() {
       <AwaitingBoardWidget companyId={selectedCompanyId!} />
 
       <ActiveAgentsPanel companyId={selectedCompanyId!} />
+
+      {data?.agentWorkload && <CapacityPanel workload={data.agentWorkload} />}
 
       <ActiveWorkWidget companyId={selectedCompanyId!} />
 

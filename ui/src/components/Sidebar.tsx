@@ -1,5 +1,6 @@
 import {
   Inbox,
+  MessageSquare,
   CircleDot,
   Target,
   LayoutDashboard,
@@ -86,6 +87,7 @@ export function Sidebar() {
             badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
             alert={inboxBadge.failedRuns > 0}
           />
+          <SidebarNavItem to="/chat" label="Chat" icon={MessageSquare} />
           <PluginSlotOutlet
             slotTypes={["sidebar"]}
             context={pluginContext}

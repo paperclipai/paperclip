@@ -281,7 +281,8 @@ export function CommentThread({
   const attachInputRef = useRef<HTMLInputElement | null>(null);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const location = useLocation();
-  const hasScrolledRef = useRef(false);
+  const lastHashScrolledRef = useRef<string | null>(null);
+  const hasAutoScrolledRef = useRef(false);
 
   const isClosed = issueStatus ? CLOSED_STATUSES.has(issueStatus) : false;
 
@@ -340,16 +341,52 @@ export function CommentThread({
     setReassignTarget(currentAssigneeValue);
   }, [currentAssigneeValue]);
 
+  // Reset one-time scroll guards when navigating between issue routes.
+  useEffect(() => {
+    hasAutoScrolledRef.current = false;
+    lastHashScrolledRef.current = null;
+  }, [location.pathname]);
+
+  // On initial issue load (without a comment hash), jump to latest comment once.
+  useEffect(() => {
+    if (hasAutoScrolledRef.current) return;
+    if (comments.length === 0) return;
+    if (location.hash.startsWith("#comment-")) return;
+
+    hasAutoScrolledRef.current = true;
+    const rafId = window.requestAnimationFrame(() => {
+      const mainContent = document.getElementById("main-content");
+      if (mainContent instanceof HTMLElement) {
+        const overflowY = window.getComputedStyle(mainContent).overflowY;
+        const usesOwnScroll =
+          (overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay")
+          && mainContent.scrollHeight > mainContent.clientHeight + 1;
+
+        if (usesOwnScroll) {
+          mainContent.scrollTo({ top: mainContent.scrollHeight, left: 0, behavior: "auto" });
+          return;
+        }
+      }
+
+      const scroller = document.scrollingElement ?? document.documentElement;
+      window.scrollTo({ top: scroller.scrollHeight, left: 0, behavior: "auto" });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(rafId);
+    };
+  }, [comments.length, location.hash, location.pathname]);
+
   // Scroll to comment when URL hash matches #comment-{id}
   useEffect(() => {
     const hash = location.hash;
     if (!hash.startsWith("#comment-") || comments.length === 0) return;
     const commentId = hash.slice("#comment-".length);
-    // Only scroll once per hash
-    if (hasScrolledRef.current) return;
+    // Only scroll once per hash value.
+    if (lastHashScrolledRef.current === hash) return;
     const el = document.getElementById(`comment-${commentId}`);
     if (el) {
-      hasScrolledRef.current = true;
+      lastHashScrolledRef.current = hash;
       setHighlightCommentId(commentId);
       el.scrollIntoView({ behavior: "smooth", block: "center" });
       // Clear highlight after animation

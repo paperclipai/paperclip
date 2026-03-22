@@ -1,5 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
+import { and, eq, inArray, isNull } from "drizzle-orm";
+import { issueDependencies, issues } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
@@ -28,12 +30,14 @@ import {
   runCompletionHook,
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
-import { forbidden, HttpError, unauthorized } from "../errors.js";
+import { forbidden, HttpError, unauthorized, unprocessable } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+const BLOCKED_BY_CLAUSE_RE = /\bblocked\s+by\b([^.!?\n\r]*)/gi;
+const ISSUE_IDENTIFIER_RE = /\b([A-Z]+-\d+)\b/gi;
 
 export function issueRoutes(db: Db, storage: StorageService) {
   const router = Router();
@@ -49,6 +53,113 @@ export function issueRoutes(db: Db, storage: StorageService) {
     storage: multer.memoryStorage(),
     limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
   });
+
+  function parseBlockedByIdentifiers(body: string): string[] {
+    const identifiers = new Set<string>();
+    let clauseMatch: RegExpExecArray | null;
+    while ((clauseMatch = BLOCKED_BY_CLAUSE_RE.exec(body)) !== null) {
+      const clause = clauseMatch[1] ?? "";
+      let idMatch: RegExpExecArray | null;
+      ISSUE_IDENTIFIER_RE.lastIndex = 0;
+      while ((idMatch = ISSUE_IDENTIFIER_RE.exec(clause)) !== null) {
+        identifiers.add(idMatch[1].toUpperCase());
+      }
+    }
+    return [...identifiers];
+  }
+
+  async function wouldCreateDependencyCycle(
+    companyId: string,
+    blockedIssueId: string,
+    blockingIssueId: string,
+  ): Promise<boolean> {
+    if (blockedIssueId === blockingIssueId) return true;
+
+    const visited = new Set<string>([blockingIssueId]);
+    let frontier = [blockingIssueId];
+
+    while (frontier.length > 0) {
+      const rows = await db
+        .select({ blockingIssueId: issueDependencies.blockingIssueId })
+        .from(issueDependencies)
+        .where(
+          and(
+            eq(issueDependencies.companyId, companyId),
+            inArray(issueDependencies.blockedIssueId, frontier),
+            isNull(issueDependencies.resolvedAt),
+          ),
+        );
+
+      const next: string[] = [];
+      for (const row of rows) {
+        if (row.blockingIssueId === blockedIssueId) return true;
+        if (!visited.has(row.blockingIssueId)) {
+          visited.add(row.blockingIssueId);
+          next.push(row.blockingIssueId);
+        }
+      }
+      frontier = next;
+    }
+
+    return false;
+  }
+
+  async function upsertDependenciesFromBlockedByText(input: {
+    companyId: string;
+    blockedIssueId: string;
+    body: string;
+    actorAgentId?: string | null;
+    actorUserId?: string | null;
+  }) {
+    const identifiers = parseBlockedByIdentifiers(input.body);
+    if (identifiers.length === 0) return;
+
+    for (const identifier of identifiers) {
+      const blockingIssue = await svc.getByIdentifier(identifier);
+      if (!blockingIssue || blockingIssue.companyId !== input.companyId) continue;
+      if (blockingIssue.id === input.blockedIssueId) continue;
+
+      const hasCycle = await wouldCreateDependencyCycle(
+        input.companyId,
+        input.blockedIssueId,
+        blockingIssue.id,
+      );
+      if (hasCycle) {
+        throw unprocessable(
+          `Dependency cycle detected: cannot add ${input.blockedIssueId} blocked-by ${identifier}`,
+          {
+            blockedIssueId: input.blockedIssueId,
+            blockingIssueIdentifier: identifier,
+            blockingIssueId: blockingIssue.id,
+          },
+        );
+      }
+
+      const resolvedAt =
+        blockingIssue.status === "done" || blockingIssue.status === "cancelled" ? new Date() : null;
+
+      await db
+        .insert(issueDependencies)
+        .values({
+          companyId: input.companyId,
+          blockedIssueId: input.blockedIssueId,
+          blockingIssueId: blockingIssue.id,
+          createdByAgentId: input.actorAgentId ?? null,
+          createdByUserId: input.actorUserId ?? null,
+          source: "comment_parsed",
+          resolvedAt,
+        })
+        .onConflictDoUpdate({
+          target: [issueDependencies.blockedIssueId, issueDependencies.blockingIssueId],
+          set: {
+            source: "comment_parsed",
+            createdByAgentId: input.actorAgentId ?? null,
+            createdByUserId: input.actorUserId ?? null,
+            resolvedAt,
+          },
+        });
+    }
+  }
 
   function withContentPath<T extends { id: string }>(attachment: T) {
     return {
@@ -729,7 +840,23 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (hiddenAtRaw !== undefined) {
       updateFields.hiddenAt = hiddenAtRaw ? new Date(hiddenAtRaw) : null;
     }
-    let issue;
+    const actor = getActorInfo(req);
+    const shouldParsePatchDependencies =
+      existing.status !== "blocked" &&
+      req.body.status === "blocked" &&
+      typeof commentBody === "string" &&
+      commentBody.trim().length > 0;
+    if (shouldParsePatchDependencies) {
+      await upsertDependenciesFromBlockedByText({
+        companyId: existing.companyId,
+        blockedIssueId: existing.id,
+        body: commentBody,
+        actorAgentId: actor.agentId,
+        actorUserId: actor.actorType === "user" ? actor.actorId : null,
+      });
+    }
+
+    let issue: Awaited<ReturnType<typeof svc.update>>;
     try {
       issue = await svc.update(id, updateFields);
     } catch (err) {
@@ -769,7 +896,6 @@ export function issueRoutes(db: Db, storage: StorageService) {
       }
     }
 
-    const actor = getActorInfo(req);
     const hasFieldChanges = Object.keys(previous).length > 0;
     await logActivity(db, {
       companyId: issue.companyId,
@@ -899,7 +1025,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       for (const [agentId, wakeup] of wakeups.entries()) {
         heartbeat
           .wakeup(agentId, wakeup)
-          .catch((err) => logger.warn({ err, issueId: issue.id, agentId }, "failed to wake agent on issue update"));
+          .catch((err) => logger.warn({ err, issueId: issue?.id, agentId }, "failed to wake agent on issue update"));
       }
 
       // Auto-route parent to CEO when a subtask is marked done
@@ -914,7 +1040,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
             parentId: issue.parentId ?? null,
           },
           heartbeat,
-        ).catch((err) => logger.warn({ err, issueId: issue.id }, "completion-hook failed"));
+        ).catch((err) => logger.warn({ err, issueId: issue?.id }, "completion-hook failed"));
       }
     })();
 
@@ -1195,6 +1321,16 @@ export function issueRoutes(db: Db, storage: StorageService) {
           });
         }
       }
+    }
+
+    if (currentIssue.status === "blocked") {
+      await upsertDependenciesFromBlockedByText({
+        companyId: currentIssue.companyId,
+        blockedIssueId: currentIssue.id,
+        body: req.body.body,
+        actorAgentId: actor.agentId,
+        actorUserId: actor.actorType === "user" ? actor.actorId : null,
+      });
     }
 
     const comment = await svc.addComment(id, req.body.body, {

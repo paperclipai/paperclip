@@ -162,8 +162,16 @@ const dashboard: DashboardSummary = {
     monthSpendCents: 900,
     monthBudgetCents: 1000,
     monthUtilizationPercent: 90,
+    monthInputTokens: 1200,
+    monthOutputTokens: 3400,
   },
   pendingApprovals: 1,
+  agentWorkload: {
+    capacityStatus: "GREEN",
+    idleEngineers: 1,
+    queuedTasks: 0,
+    engineers: [],
+  },
 };
 
 describe("inbox helpers", () => {

@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { agents, issueComments, issues } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
+import { runDependencyResolutionHook } from "./dependency-resolution-hook.js";
 import type { heartbeatService } from "./heartbeat.js";
 
 type HeartbeatService = ReturnType<typeof heartbeatService>;
@@ -45,6 +46,13 @@ export async function runCompletionHook(
   },
   heartbeat?: HeartbeatService,
 ): Promise<void> {
+  await runDependencyResolutionHook(db, completedIssue, heartbeat).catch((err) => {
+    logger.error(
+      { err, completedIssueId: completedIssue.id },
+      "completion-hook: dependency resolution hook failed",
+    );
+  });
+
   if (!completedIssue.parentId) return;
 
   const parent = await db

@@ -1,6 +1,7 @@
 import { and, eq, gte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, approvals, companies, costEvents, issues } from "@paperclipai/db";
+import { normalizeAgentUrlKey, type AgentStatus } from "@paperclipai/shared";
 import { notFound } from "../errors.js";
 
 export function dashboardService(db: Db) {
@@ -30,6 +31,43 @@ export function dashboardService(db: Db) {
         .select({ count: sql<number>`count(*)` })
         .from(approvals)
         .where(and(eq(approvals.companyId, companyId), eq(approvals.status, "pending")))
+        .then((rows) => Number(rows[0]?.count ?? 0));
+
+      const operationalAgents = await db
+        .select({
+          id: agents.id,
+          name: agents.name,
+          status: agents.status,
+        })
+        .from(agents)
+        .where(
+          and(
+            eq(agents.companyId, companyId),
+            sql`${agents.status} not in ('paused', 'error', 'pending_approval', 'terminated')`,
+          ),
+        );
+
+      const inProgressTasks = await db
+        .select({
+          id: issues.id,
+          identifier: issues.identifier,
+          title: issues.title,
+          assigneeAgentId: issues.assigneeAgentId,
+          startedAt: issues.startedAt,
+        })
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.status, "in_progress")));
+
+      const queuedTasks = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            sql`${issues.status} in ('todo', 'backlog')`,
+            sql`${issues.assigneeAgentId} is not null`,
+          ),
+        )
         .then((rows) => Number(rows[0]?.count ?? 0));
 
       const agentCounts: Record<string, number> = {
@@ -81,6 +119,48 @@ export function dashboardService(db: Db) {
           ? (monthSpendCents / company.budgetMonthlyCents) * 100
           : 0;
 
+      const tasksByAgent = new Map<string, typeof inProgressTasks>();
+      for (const task of inProgressTasks) {
+        if (!task.assigneeAgentId) continue;
+        const list = tasksByAgent.get(task.assigneeAgentId) ?? [];
+        list.push(task);
+        tasksByAgent.set(task.assigneeAgentId, list);
+      }
+
+      const engineers = operationalAgents.map((agent) => {
+        const currentTasks = tasksByAgent.get(agent.id) ?? [];
+        const earliest = currentTasks.reduce<Date | null>((earliestTaskStart, task) => {
+          if (!task.startedAt) return earliestTaskStart;
+          if (!earliestTaskStart || task.startedAt < earliestTaskStart) return task.startedAt;
+          return earliestTaskStart;
+        }, null);
+
+        return {
+          agentId: agent.id,
+          name: agent.name,
+          urlKey: normalizeAgentUrlKey(agent.name) ?? agent.id,
+          status: agent.status as AgentStatus,
+          currentTasks: currentTasks.map((task) => ({
+            issueId: task.id,
+            identifier: task.identifier,
+            title: task.title,
+            startedAt: task.startedAt?.toISOString() ?? null,
+          })),
+          timeInCurrentTaskSec: earliest
+            ? Math.floor((now.getTime() - earliest.getTime()) / 1000)
+            : null,
+        };
+      });
+
+      const idleEngineers = engineers.filter((engineer) => engineer.currentTasks.length === 0).length;
+      const allBusy = engineers.length > 0 && idleEngineers === 0;
+      const capacityStatus =
+        !allBusy
+          ? "GREEN"
+          : queuedTasks > 0
+            ? "RED"
+            : "YELLOW";
+
       return {
         companyId,
         agents: {
@@ -98,6 +178,12 @@ export function dashboardService(db: Db) {
           monthOutputTokens: Number(monthOutputTokens),
         },
         pendingApprovals,
+        agentWorkload: {
+          capacityStatus,
+          idleEngineers,
+          queuedTasks,
+          engineers,
+        },
       };
     },
   };

@@ -496,6 +496,25 @@ function handleLiveEvent(
     return;
   }
 
+  if (event.type === "chat.thread.created" || event.type === "chat.thread.updated") {
+    queryClient.invalidateQueries({ queryKey: queryKeys.chat.threads(expectedCompanyId) });
+    const threadId = readString(payload.threadId);
+    if (threadId) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.chat.threadDetail(threadId) });
+    }
+    return;
+  }
+
+  if (event.type === "chat.message.created") {
+    const threadId = readString(payload.threadId);
+    if (threadId) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.chat.messages(threadId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.chat.threadDetail(threadId) });
+    }
+    queryClient.invalidateQueries({ queryKey: queryKeys.chat.threads(expectedCompanyId) });
+    return;
+  }
+
   if (event.type === "activity.logged") {
     invalidateActivityQueries(queryClient, expectedCompanyId, payload);
     const action = readString(payload.action);

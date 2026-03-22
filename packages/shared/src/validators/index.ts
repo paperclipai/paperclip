@@ -82,6 +82,15 @@ export {
 } from "./issue.js";
 
 export {
+  createChatThreadSchema,
+  updateChatThreadSchema,
+  createChatMessageSchema,
+  type CreateChatThread,
+  type UpdateChatThread,
+  type CreateChatMessage,
+} from "./chat.js";
+
+export {
   createGoalSchema,
   updateGoalSchema,
   type CreateGoal,

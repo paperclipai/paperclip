@@ -8,6 +8,7 @@ interface JwtHeader {
 export interface LocalAgentJwtClaims {
   sub: string;
   company_id: string;
+  role?: string;
   adapter_type: string;
   run_id: string;
   iat: number;
@@ -65,7 +66,13 @@ function safeCompare(a: string, b: string) {
   return timingSafeEqual(left, right);
 }
 
-export function createLocalAgentJwt(agentId: string, companyId: string, adapterType: string, runId: string) {
+export function createLocalAgentJwt(
+  agentId: string,
+  companyId: string,
+  role: string | null | undefined,
+  adapterType: string,
+  runId: string,
+) {
   const config = jwtConfig();
   if (!config) return null;
 
@@ -73,6 +80,7 @@ export function createLocalAgentJwt(agentId: string, companyId: string, adapterT
   const claims: LocalAgentJwtClaims = {
     sub: agentId,
     company_id: companyId,
+    ...(role ? { role } : {}),
     adapter_type: adapterType,
     run_id: runId,
     iat: now,
@@ -113,6 +121,7 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
 
   const sub = typeof claims.sub === "string" ? claims.sub : null;
   const companyId = typeof claims.company_id === "string" ? claims.company_id : null;
+  const role = typeof claims.role === "string" ? claims.role : undefined;
   const adapterType = typeof claims.adapter_type === "string" ? claims.adapter_type : null;
   const runId = typeof claims.run_id === "string" ? claims.run_id : null;
   const iat = typeof claims.iat === "number" ? claims.iat : null;
@@ -130,6 +139,7 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
   return {
     sub,
     company_id: companyId,
+    ...(role ? { role } : {}),
     adapter_type: adapterType,
     run_id: runId,
     iat,
