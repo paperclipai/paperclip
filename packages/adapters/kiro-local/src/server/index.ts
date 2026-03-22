@@ -19,6 +19,9 @@ export {
   isKiroUnknownSessionError,
 } from "./parse.js";
 
+// Re-export skill sync methods
+export { listKiroSkills, syncKiroSkills } from "./skills.js";
+
 // Re-export models constant (listKiroModels is defined locally below)
 export { KIRO_MODELS } from "./models.js";
 

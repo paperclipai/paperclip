@@ -80,6 +80,8 @@ import {
   testEnvironment as kiroTestEnvironment,
   sessionCodec as kiroSessionCodec,
   listKiroModels,
+  listKiroSkills,
+  syncKiroSkills,
 } from "@paperclipai/adapter-kiro-local/server";
 import {
   agentConfigurationDoc as kiroAgentConfigurationDoc,
@@ -195,6 +197,8 @@ const kiroLocalAdapter: ServerAdapterModule = {
   type: "kiro_local",
   execute: kiroExecute,
   testEnvironment: kiroTestEnvironment,
+  listSkills: listKiroSkills,
+  syncSkills: syncKiroSkills,
   sessionCodec: kiroSessionCodec,
   models: kiroModels,
   listModels: listKiroModels,
