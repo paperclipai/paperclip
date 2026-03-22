@@ -267,6 +267,10 @@ export function IssueDetail() {
   });
 
   const hasLiveRuns = (liveRuns ?? []).length > 0 || !!activeRun;
+  const isScheduledWorkflowStage =
+    issue?.status === "in_review" &&
+    (linkedApprovals ?? []).some((approval) => approval.status === "approved");
+
   const sourceBreadcrumb = useMemo(
     () => readIssueDetailBreadcrumb(location.state) ?? { label: "Issues", href: "/issues" },
     [location.state],
@@ -716,6 +720,12 @@ export function IssueDetail() {
             onChange={(priority) => updateIssue.mutate({ priority })}
           />
           <span className="text-sm font-mono text-muted-foreground shrink-0">{issue.identifier ?? issue.id.slice(0, 8)}</span>
+
+          {isScheduledWorkflowStage && (
+            <span className="inline-flex items-center rounded-full border border-indigo-500/30 bg-indigo-500/10 px-2 py-0.5 text-[10px] font-medium text-indigo-600 dark:text-indigo-300 shrink-0">
+              Scheduled
+            </span>
+          )}
 
           {hasLiveRuns && (
             <span className="inline-flex items-center gap-1.5 rounded-full bg-cyan-500/10 border border-cyan-500/30 px-2 py-0.5 text-[10px] font-medium text-cyan-600 dark:text-cyan-400 shrink-0">
