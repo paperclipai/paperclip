@@ -33,18 +33,25 @@
  *   declared in their manifest may call it (enforced by `host-client-factory`).
  * - The host handler itself does not cache resolved values. Each call goes
  *   through the secret provider to honour rotation.
- * - The secret UUID itself acts as an unguessable capability token (122 bits
- *   of entropy). Access is further protected by per-plugin rate limiting
- *   (30 attempts per minute) to prevent enumeration.
+ * - Company isolation is enforced: secrets are only resolvable if they
+ *   belong to a company the plugin is associated with (per AGENTS.md §5).
+ * - Per-plugin rate limiting (30 attempts/minute, process-local) provides
+ *   best-effort defence against UUID enumeration. In multi-instance
+ *   deployments this limit is per-process; defence-in-depth relies on
+ *   UUID entropy (122 bits) and company scoping.
  *
  * @see PLUGIN_SPEC.md §22 — Secrets
  * @see host-client-factory.ts — capability gating
  * @see services/secrets.ts — secretService used by agent env bindings
  */
 
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { companySecrets, companySecretVersions } from "@paperclipai/db";
+import {
+  companySecrets,
+  companySecretVersions,
+  pluginCompanySettings,
+} from "@paperclipai/db";
 import type { SecretProvider } from "@paperclipai/shared";
 import { getSecretProvider } from "../secrets/provider-registry.js";
 
@@ -78,7 +85,7 @@ function invalidSecretRef(secretRef: string): Error {
 // Validation
 // ---------------------------------------------------------------------------
 
-/** UUID v4 regex for validating secretRef format. */
+/** Regex for validating a RFC-4122 UUID (any version). */
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -222,8 +229,8 @@ export interface PluginSecretsHandlerOptions {
   db: Db;
   /**
    * The plugin ID using this handler.
-   * Used for rate-limiting context; never included in error payloads
-   * that reach the plugin worker.
+   * Used for company-scoping and rate-limiting; never included in error
+   * payloads that reach the plugin worker.
    */
   pluginId: string;
 }
@@ -266,6 +273,7 @@ export interface PluginSecretsService {
  * @param options - Database connection and plugin identity
  * @returns A `PluginSecretsService` suitable for `HostServices.secrets`
  */
+
 /** Simple sliding-window rate limiter for secret resolution attempts. */
 function createRateLimiter(maxAttempts: number, windowMs: number) {
   const attempts = new Map<string, number[]>();
@@ -289,16 +297,40 @@ export function createPluginSecretsHandler(
   const { db, pluginId } = options;
 
   // Rate limit: max 30 resolution attempts per plugin per minute.
-  // This is the primary defence against UUID enumeration — with 122 bits
-  // of entropy and 30 guesses/minute, brute-force is infeasible.
+  // NOTE: This limiter is process-local. In multi-instance deployments the
+  // effective limit is 30 × N where N is the number of instances.
+  // Defence-in-depth relies on UUID entropy (122 bits) and the company
+  // scoping below — not solely on this rate limiter.
   const rateLimiter = createRateLimiter(30, 60_000);
+
+  // Cache the set of company IDs this plugin is associated with.
+  // Plugins are instance-wide, but plugin_company_settings maps them
+  // to specific companies. We use this to enforce company boundaries
+  // on secret lookups (AGENTS.md §5).
+  let cachedCompanyIds: string[] | null = null;
+  let cachedCompanyIdsExpiry = 0;
+  const COMPANY_CACHE_TTL_MS = 30_000;
+
+  async function getPluginCompanyIds(): Promise<string[]> {
+    const now = Date.now();
+    if (cachedCompanyIds && now < cachedCompanyIdsExpiry) {
+      return cachedCompanyIds;
+    }
+    const rows = await db
+      .select({ companyId: pluginCompanySettings.companyId })
+      .from(pluginCompanySettings)
+      .where(eq(pluginCompanySettings.pluginId, pluginId));
+    cachedCompanyIds = rows.map((r) => r.companyId);
+    cachedCompanyIdsExpiry = now + COMPANY_CACHE_TTL_MS;
+    return cachedCompanyIds;
+  }
 
   return {
     async resolve(params: PluginSecretsResolveParams): Promise<string> {
       const { secretRef } = params;
 
       // ---------------------------------------------------------------
-      // 0. Rate limiting — prevent brute-force UUID enumeration
+      // 0. Rate limiting — best-effort defence against UUID enumeration
       // ---------------------------------------------------------------
       if (!rateLimiter.check(pluginId)) {
         const err = new Error("Rate limit exceeded for secret resolution");
@@ -321,12 +353,27 @@ export function createPluginSecretsHandler(
       }
 
       // ---------------------------------------------------------------
-      // 2. Look up the secret record by UUID
+      // 2. Look up the secret record by UUID, scoped to the plugin's
+      //    associated companies (AGENTS.md §5 — company boundaries).
+      //
+      //    If the plugin has no company settings rows it is enabled for
+      //    all companies by default, so we skip the company filter.
+      //    In that case, isolation relies on capability gating and UUID
+      //    entropy.
       // ---------------------------------------------------------------
+      const companyIds = await getPluginCompanyIds();
+
+      const conditions = companyIds.length > 0
+        ? and(
+            eq(companySecrets.id, secretId),
+            inArray(companySecrets.companyId, companyIds),
+          )
+        : eq(companySecrets.id, secretId);
+
       const secret = await db
         .select()
         .from(companySecrets)
-        .where(eq(companySecrets.id, secretId))
+        .where(conditions)
         .then((rows) => rows[0] ?? null);
 
       if (!secret) {
