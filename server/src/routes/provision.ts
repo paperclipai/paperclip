@@ -18,8 +18,12 @@ import {
 import { ROLE_PERMISSIONS } from "@paperclipai/shared";
 import { companyService, agentService, accessService, logActivity } from "../services/index.js";
 
-/** Default model for hosted agents routed through the metered gateway. */
-const DEFAULT_GATEWAY_MODEL = "deepseek/deepseek-v3.2";
+/**
+ * Logical model name for the gateway. The actual upstream model is controlled
+ * server-side via GATEWAY_DEFAULT_MODEL on the platform — clients never choose.
+ * This is just a label so OpenCode can discover the provider in `opencode models`.
+ */
+const GATEWAY_MODEL_ALIAS = "default";
 
 /** Directory where we persist the OpenCode gateway provider config. */
 const GATEWAY_CONFIG_DIR = path.join(process.env.PAPERCLIP_HOME ?? "/data", ".opencode-gateway");
@@ -30,6 +34,10 @@ const GATEWAY_CONFIG_DIR = path.join(process.env.PAPERCLIP_HOME ?? "/data", ".op
  * OPENCODE_CONFIG_DIR via the adapter env so OpenCode finds it regardless of
  * which workspace cwd the agent runs in (OpenCode only walks up to the nearest
  * .git boundary, which won't reach a parent config).
+ *
+ * The model alias is intentionally generic ("default"). The platform gateway
+ * rewrites the model field before forwarding to the upstream provider, so the
+ * agent never needs to know what model is actually being served.
  */
 async function ensureGatewayProviderConfig(gatewayUrl: string): Promise<void> {
   const configPath = path.join(GATEWAY_CONFIG_DIR, "opencode.json");
@@ -44,14 +52,14 @@ async function ensureGatewayProviderConfig(gatewayUrl: string): Promise<void> {
           apiKey: "{env:PAPERCLIP_GATEWAY_KEY}",
         },
         models: {
-          [DEFAULT_GATEWAY_MODEL]: {
-            name: "DeepSeek V3.2",
+          [GATEWAY_MODEL_ALIAS]: {
+            name: "Paperclip AI",
             limit: { context: 163840, output: 16384 },
           },
         },
       },
     },
-    model: `paperclip-gateway/${DEFAULT_GATEWAY_MODEL}`,
+    model: `paperclip-gateway/${GATEWAY_MODEL_ALIAS}`,
   };
   await fs.mkdir(GATEWAY_CONFIG_DIR, { recursive: true });
   await fs.writeFile(configPath, JSON.stringify(config, null, 2) + "\n");
@@ -157,7 +165,7 @@ function createPaperclipAdapter(db: Db): ProvisionAdapter {
           title: spec.title ?? null,
           adapterType: "opencode_local",
           adapterConfig: {
-            model: `paperclip-gateway/${DEFAULT_GATEWAY_MODEL}`,
+            model: `paperclip-gateway/${GATEWAY_MODEL_ALIAS}`,
             env: {
               PAPERCLIP_GATEWAY_KEY: gateway.apiKey,
               OPENCODE_CONFIG_DIR: GATEWAY_CONFIG_DIR,
