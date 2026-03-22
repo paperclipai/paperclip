@@ -58,6 +58,7 @@ export function PromptsTab({
   const isLocal =
     agent.adapterType === "claude_local" ||
     agent.adapterType === "codex_local" ||
+    agent.adapterType === "gemini_local" ||
     agent.adapterType === "opencode_local" ||
     agent.adapterType === "pi_local" ||
     agent.adapterType === "hermes_local" ||
@@ -126,8 +127,10 @@ export function PromptsTab({
     mutationFn: (data: { path: string; content: string; clearLegacyPromptTemplate?: boolean }) =>
       agentsApi.saveInstructionsFile(agent.id, data, companyId),
     onMutate: () => setAwaitingRefresh(true),
-    onSuccess: (_, variables) => {
+    onSuccess: (result, variables) => {
       setPendingFiles((prev) => prev.filter((f) => f !== variables.path));
+      // Set file data immediately so the editor never sees an empty transient state
+      queryClient.setQueryData(queryKeys.agents.instructionsFile(agent.id, variables.path), result);
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.instructionsBundle(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.instructionsFile(agent.id, variables.path) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
