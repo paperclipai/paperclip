@@ -67,30 +67,30 @@ export function CompanySecrets() {
   }, [providers, newProvider]);
 
   // --- Mutations ---
-  const invalidateSecrets = useCallback(
-    () => queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId!) }),
-    [queryClient, selectedCompanyId],
+  const invalidateCompanySecrets = useCallback(
+    (companyId: string) => queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(companyId) }),
+    [queryClient],
   );
 
   const createMutation = useMutation({
-    mutationFn: () =>
-      secretsApi.create(selectedCompanyId!, {
+    mutationFn: (vars: { companyId: string }) =>
+      secretsApi.create(vars.companyId, {
         name: newName.trim(),
         value: newValue,
         provider: newProvider,
         description: newDescription.trim() || null,
       }),
-    onSuccess: () => {
+    onSuccess: (_data, vars) => {
       setNewName("");
       setNewValue("");
       setNewDescription("");
       pushToast({ title: "Secret created" });
-      invalidateSecrets();
+      invalidateCompanySecrets(vars.companyId);
     },
   });
 
   const updateMutation = useMutation({
-    mutationFn: async ({ id, name, description, value }: { id: string; name: string; description: string; value: string }) => {
+    mutationFn: async ({ companyId, id, name, description, value }: { companyId: string; id: string; name: string; description: string; value: string }) => {
       const updated = await secretsApi.update(id, {
         name: name.trim(),
         description: description.trim() || null,
@@ -108,18 +108,18 @@ export function CompanySecrets() {
       setEditingId(null);
       pushToast({ title: "Secret updated" });
     },
-    onSettled: () => {
-      invalidateSecrets();
+    onSettled: (_data, _error, vars) => {
+      invalidateCompanySecrets(vars.companyId);
     },
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => secretsApi.remove(id),
-    onSuccess: () => {
+    mutationFn: (vars: { companyId: string; id: string }) => secretsApi.remove(vars.id),
+    onSuccess: (_data, vars) => {
       setConfirmDeleteId(null);
       setDeletingId(null);
       pushToast({ title: "Secret deleted" });
-      invalidateSecrets();
+      invalidateCompanySecrets(vars.companyId);
     },
     onError: () => {
       setDeletingId(null);
@@ -154,7 +154,7 @@ export function CompanySecrets() {
 
   function handleDelete(id: string) {
     setDeletingId(id);
-    deleteMutation.mutate(id);
+    deleteMutation.mutate({ companyId: selectedCompanyId!, id });
   }
 
   return (
@@ -218,7 +218,7 @@ export function CompanySecrets() {
           <div className="flex items-center gap-2">
             <Button
               size="sm"
-              onClick={() => createMutation.mutate()}
+              onClick={() => createMutation.mutate({ companyId: selectedCompanyId! })}
               disabled={createMutation.isPending || !newName.trim() || !newValue}
             >
               {createMutation.isPending ? "Creating..." : "Create Secret"}
@@ -354,6 +354,7 @@ export function CompanySecrets() {
                         size="sm"
                         onClick={() =>
                           updateMutation.mutate({
+                            companyId: selectedCompanyId!,
                             id: secret.id,
                             name: editName,
                             description: editDescription,
