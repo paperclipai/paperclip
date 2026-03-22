@@ -30,6 +30,17 @@ execSync(
   { cwd: monorepoRoot, stdio: "inherit" }
 );
 
+// ── Step 1b: remove self-referencing @paperclipai/server symlink from .pnpm ──
+// pnpm deploy creates node_modules/.pnpm/node_modules/@paperclipai/server ->
+// ../../../../../../../server (pointing back to the monorepo source). This
+// broken symlink gets copied into the bundle and causes codesign to fail.
+const pnpmHoistedPaperclip = path.join(deployDir, "node_modules", ".pnpm", "node_modules", "@paperclipai");
+const selfRef = path.join(pnpmHoistedPaperclip, "server");
+if (existsSync(selfRef)) {
+  rmSync(selfRef, { recursive: true, force: true });
+  console.log("[prepare-server] Removed self-referencing @paperclipai/server symlink from .pnpm/node_modules");
+}
+
 // ── Step 2: patch @paperclipai/* package.json exports ────────────────────────
 const scopeDir = path.join(deployDir, "node_modules", "@paperclipai");
 if (existsSync(scopeDir)) {
