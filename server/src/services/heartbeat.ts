@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BillingType } from "@paperclipai/shared";
 import {
@@ -3080,10 +3080,44 @@ export function heartbeatService(db: Db) {
       triggerDetail,
       payload,
     });
-    const issueId = readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueIdFromPayload;
+    let issueId = readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueIdFromPayload;
 
     const agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
+
+    // Auto-resolve checked-out issue context when not provided by the caller.
+    // This handles the case where /agents/:id/wakeup is called directly without
+    // issueId, but the agent already has an issue checked out (GH #1387).
+    if (!issueId) {
+      const checkedOutIssue = await db
+        .select({
+          id: issues.id,
+          projectId: issues.projectId,
+          projectWorkspaceId: issues.projectWorkspaceId,
+        })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.assigneeAgentId, agentId),
+            eq(issues.companyId, agent.companyId),
+            eq(issues.status, "in_progress"),
+            isNotNull(issues.executionRunId),
+          ),
+        )
+        .orderBy(desc(issues.updatedAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (checkedOutIssue) {
+        issueId = checkedOutIssue.id;
+        enrichedContextSnapshot.issueId = checkedOutIssue.id;
+        if (!readNonEmptyString(enrichedContextSnapshot.projectId) && checkedOutIssue.projectId) {
+          enrichedContextSnapshot.projectId = checkedOutIssue.projectId;
+        }
+        if (!readNonEmptyString(enrichedContextSnapshot.projectWorkspaceId) && checkedOutIssue.projectWorkspaceId) {
+          enrichedContextSnapshot.projectWorkspaceId = checkedOutIssue.projectWorkspaceId;
+        }
+      }
+    }
 
     const writeSkippedRequest = async (skipReason: string) => {
       await db.insert(agentWakeupRequests).values({
@@ -3108,6 +3142,9 @@ export function heartbeatService(db: Db) {
         .from(issues)
         .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
         .then((rows) => rows[0]?.projectId ?? null);
+      if (projectId) {
+        enrichedContextSnapshot.projectId = projectId;
+      }
     }
 
     const budgetBlock = await budgets.getInvocationBlock(agent.companyId, agentId, {
