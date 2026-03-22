@@ -1,205 +1,204 @@
-# Humans and Permissions Implementation (V1)
+# 用户与权限实施方案（V1）
 
-Status: Draft
-Date: 2026-02-21
-Owners: Server + UI + CLI + DB + Shared
-Companion plan: `doc/plan/humans-and-permissions.md`
+状态：草案
+日期：2026-02-21
+负责方：Server + UI + CLI + DB + Shared
+配套计划：`doc/plan/humans-and-permissions.md`
 
-## 1. Document role
+## 1. 文档角色
 
-This document is the engineering implementation contract for the humans-and-permissions plan.
-It translates product decisions into concrete schema, API, middleware, UI, CLI, and test work.
+本文档是用户与权限计划的工程实施合约。它将产品决策转化为具体的 schema、API、中间件、UI、CLI 和测试工作。
 
-If this document conflicts with prior exploratory notes, this document wins for V1 execution.
+如果本文档与先前的探索性文档冲突，本文档以 V1 执行为准。
 
-## 2. Locked V1 decisions
+## 2. 锁定的 V1 决策
 
-1. Two deployment modes remain:
+1. 保留两种部署模式：
 - `local_trusted`
 - `cloud_hosted`
 
-2. `local_trusted`:
-- no login UX
-- implicit local instance admin actor
-- loopback-only server binding
-- full admin/settings/invite/approval capabilities available locally
+2. `local_trusted`：
+- 无登录 UX
+- 隐式本地实例管理员角色
+- 仅绑定回环地址
+- 本地可使用全部管理/设置/邀请/审批功能
 
-3. `cloud_hosted`:
-- Better Auth for humans
-- email/password only
-- no email verification requirement in V1
+3. `cloud_hosted`：
+- 使用 Better Auth 进行人类认证
+- 仅邮箱/密码
+- V1 不要求邮箱验证
 
-4. Permissions:
-- one shared authorization system for humans and agents
-- normalized grants table (`principal_permission_grants`)
-- no separate “agent permissions engine”
+4. 权限：
+- 用户和智能体共享统一的授权系统
+- 规范化的授权表（`principal_permission_grants`）
+- 没有单独的"智能体权限引擎"
 
-5. Invites:
-- copy-link only (no outbound email sending in V1)
-- unified `company_join` link that supports human or agent path
-- acceptance creates `pending_approval` join request
-- no access until admin approval
+5. 邀请：
+- 仅复制链接（V1 不发送邮件）
+- 统一的 `company_join` 链接，支持用户或智能体路径
+- 接受邀请创建 `pending_approval` 加入请求
+- 管理员审批前无访问权限
 
-6. Join review metadata:
-- source IP required
-- no GeoIP/country lookup in V1
+6. 加入审核元数据：
+- 需要来源 IP
+- V1 不做 GeoIP/国家查询
 
-7. Agent API keys:
-- indefinite by default
-- hash at rest
-- display once on claim
-- revoke/regenerate supported
+7. 智能体 API 密钥：
+- 默认无期限
+- 静态哈希存储
+- 仅在认领时显示一次
+- 支持撤销/重新生成
 
-8. Local ingress:
-- public/untrusted ingress is out of scope for V1
-- no `--dangerous-agent-ingress` in V1
+8. 本地入口：
+- V1 不支持公共/不受信入口
+- V1 没有 `--dangerous-agent-ingress`
 
-## 3. Current baseline and delta
+## 3. 当前基线与差异
 
-Current baseline (repo as of this doc):
+当前基线（截至本文档时的仓库状态）：
 
-- server actor model defaults to `board` in `server/src/middleware/auth.ts`
-- authorization is mostly `assertBoard` + company check in `server/src/routes/authz.ts`
-- no human auth/session tables in local schema
-- no principal membership or grants tables
-- no invite or join-request lifecycle
+- 服务端 actor 模型在 `server/src/middleware/auth.ts` 中默认为 `board`
+- 授权主要是 `server/src/routes/authz.ts` 中的 `assertBoard` + 公司检查
+- 本地 schema 中没有人类认证/会话表
+- 没有主体成员资格或授权表
+- 没有邀请或加入请求生命周期
 
-Required delta:
+需要的变更：
 
-- move from board-vs-agent authz to principal-based authz
-- add Better Auth integration in cloud mode
-- add membership/grants/invite/join-request persistence
-- add approval inbox signals and actions
-- preserve local no-login UX without weakening cloud security
+- 从 board-vs-agent 授权迁移到基于主体的授权
+- 在云模式下添加 Better Auth 集成
+- 添加成员资格/授权/邀请/加入请求的持久化
+- 添加审批收件箱信号和操作
+- 保留本地无登录 UX，同时不削弱云安全性
 
-## 4. Architecture
+## 4. 架构
 
-## 4.1 Deployment mode contract
+## 4.1 部署模式合约
 
-Add explicit runtime mode:
+添加显式运行时模式：
 
 - `deployment.mode = local_trusted | cloud_hosted`
 
-Config behavior:
+配置行为：
 
-- mode stored in config file (`packages/shared/src/config-schema.ts`)
-- loaded in server config (`server/src/config.ts`)
-- surfaced in `/api/health`
+- 模式存储在配置文件中（`packages/shared/src/config-schema.ts`）
+- 在服务器配置中加载（`server/src/config.ts`）
+- 在 `/api/health` 中公开
 
-Startup guardrails:
+启动保护：
 
-- `local_trusted`: fail startup if bind host is not loopback
-- `cloud_hosted`: fail startup if Better Auth is not configured
+- `local_trusted`：如果绑定主机不是回环地址则启动失败
+- `cloud_hosted`：如果 Better Auth 未配置则启动失败
 
-## 4.2 Actor model
+## 4.2 Actor 模型
 
-Replace implicit “board” semantics with explicit actors:
+用显式 actor 替换隐式的 "board" 语义：
 
-- `user` (session-authenticated human)
-- `agent` (bearer API key)
-- `local_implicit_admin` (local_trusted only)
+- `user`（会话认证的人类用户）
+- `agent`（Bearer API 密钥）
+- `local_implicit_admin`（仅 `local_trusted` 模式）
 
-Implementation note:
+实现说明：
 
-- keep `req.actor` shape backward-compatible during migration by introducing a normalizer helper
-- remove hard-coded `"board"` checks route-by-route after new authz helpers are in place
+- 在迁移期间通过引入规范化辅助函数保持 `req.actor` 结构向后兼容
+- 在新的 authz 辅助函数就位后，逐个路由移除硬编码的 `"board"` 检查
 
-## 4.3 Authorization model
+## 4.3 授权模型
 
-Authorization input tuple:
+授权输入元组：
 
 - `(company_id, principal_type, principal_id, permission_key, scope_payload)`
 
-Principal types:
+主体类型：
 
 - `user`
 - `agent`
 
-Role layers:
+角色层级：
 
-- `instance_admin` (instance-wide)
-- company-scoped grants via `principal_permission_grants`
+- `instance_admin`（实例范围）
+- 通过 `principal_permission_grants` 进行公司范围的授权
 
-Evaluation order:
+评估顺序：
 
-1. resolve principal from actor
-2. resolve instance role (`instance_admin` short-circuit for admin-only actions)
-3. resolve company membership (`active` required for company access)
-4. resolve grant + scope for requested action
+1. 从 actor 解析主体
+2. 解析实例角色（`instance_admin` 对仅管理员操作的短路）
+3. 解析公司成员资格（需要 `active` 状态才能访问公司）
+4. 解析请求操作的授权 + 作用域
 
-## 5. Data model
+## 5. 数据模型
 
-## 5.1 Better Auth tables
+## 5.1 Better Auth 表
 
-Managed by Better Auth adapter/migrations (expected minimum):
+由 Better Auth 适配器/迁移管理（预期最低要求）：
 
 - `user`
 - `session`
 - `account`
 - `verification`
 
-Note:
+说明：
 
-- use Better Auth canonical table names/types to avoid custom forks
+- 使用 Better Auth 规范表名/类型以避免自定义分支
 
-## 5.2 New Paperclip tables
+## 5.2 新的 Paperclip 表
 
 1. `instance_user_roles`
 
 - `id` uuid pk
 - `user_id` text not null
-- `role` text not null (`instance_admin`)
-- `created_at`, `updated_at`
-- unique index: `(user_id, role)`
+- `role` text not null（`instance_admin`）
+- `created_at`、`updated_at`
+- 唯一索引：`(user_id, role)`
 
 2. `company_memberships`
 
 - `id` uuid pk
 - `company_id` uuid fk `companies.id` not null
-- `principal_type` text not null (`user | agent`)
+- `principal_type` text not null（`user | agent`）
 - `principal_id` text not null
-- `status` text not null (`pending | active | suspended`)
+- `status` text not null（`pending | active | suspended`）
 - `membership_role` text null
-- `created_at`, `updated_at`
-- unique index: `(company_id, principal_type, principal_id)`
-- index: `(principal_type, principal_id, status)`
+- `created_at`、`updated_at`
+- 唯一索引：`(company_id, principal_type, principal_id)`
+- 索引：`(principal_type, principal_id, status)`
 
 3. `principal_permission_grants`
 
 - `id` uuid pk
 - `company_id` uuid fk `companies.id` not null
-- `principal_type` text not null (`user | agent`)
+- `principal_type` text not null（`user | agent`）
 - `principal_id` text not null
 - `permission_key` text not null
 - `scope` jsonb null
 - `granted_by_user_id` text null
-- `created_at`, `updated_at`
-- unique index: `(company_id, principal_type, principal_id, permission_key)`
-- index: `(company_id, permission_key)`
+- `created_at`、`updated_at`
+- 唯一索引：`(company_id, principal_type, principal_id, permission_key)`
+- 索引：`(company_id, permission_key)`
 
 4. `invites`
 
 - `id` uuid pk
 - `company_id` uuid fk `companies.id` not null
-- `invite_type` text not null (`company_join | bootstrap_ceo`)
+- `invite_type` text not null（`company_join | bootstrap_ceo`）
 - `token_hash` text not null
-- `allowed_join_types` text not null (`human | agent | both`) for `company_join`
+- `allowed_join_types` text not null（`human | agent | both`）用于 `company_join`
 - `defaults_payload` jsonb null
 - `expires_at` timestamptz not null
 - `invited_by_user_id` text null
 - `revoked_at` timestamptz null
 - `accepted_at` timestamptz null
 - `created_at` timestamptz not null default now()
-- unique index: `(token_hash)`
-- index: `(company_id, invite_type, revoked_at, expires_at)`
+- 唯一索引：`(token_hash)`
+- 索引：`(company_id, invite_type, revoked_at, expires_at)`
 
 5. `join_requests`
 
 - `id` uuid pk
 - `invite_id` uuid fk `invites.id` not null
 - `company_id` uuid fk `companies.id` not null
-- `request_type` text not null (`human | agent`)
-- `status` text not null (`pending_approval | approved | rejected`)
+- `request_type` text not null（`human | agent`）
+- `status` text not null（`pending_approval | approved | rejected`）
 - `request_ip` text not null
 - `requesting_user_id` text null
 - `request_email_snapshot` text null
@@ -212,99 +211,99 @@ Note:
 - `approved_at` timestamptz null
 - `rejected_by_user_id` text null
 - `rejected_at` timestamptz null
-- `created_at`, `updated_at`
-- index: `(company_id, status, request_type, created_at desc)`
-- unique index: `(invite_id)` to enforce one request per consumed invite
+- `created_at`、`updated_at`
+- 索引：`(company_id, status, request_type, created_at desc)`
+- 唯一索引：`(invite_id)` 确保每个已消费的邀请只有一个请求
 
-## 5.3 Existing table changes
+## 5.3 现有表变更
 
 1. `issues`
 
-- add `assignee_user_id` text null
-- enforce single-assignee invariant:
-  - at most one of `assignee_agent_id` and `assignee_user_id` is non-null
+- 添加 `assignee_user_id` text null
+- 强制单一受理人不变式：
+  - `assignee_agent_id` 和 `assignee_user_id` 最多只有一个非空
 
 2. `agents`
 
-- keep existing `permissions` JSON for transition only
-- mark as deprecated in code path once principal grants are live
+- 保留现有的 `permissions` JSON 仅用于过渡
+- 在主体授权上线后在代码路径中标记为已弃用
 
-## 5.4 Migration strategy
+## 5.4 迁移策略
 
-Migration ordering:
+迁移顺序：
 
-1. add new tables/columns/indexes
-2. backfill minimum memberships/grants for existing data:
-- create local implicit admin membership context in local mode at runtime (not persisted as Better Auth user)
-- for cloud, bootstrap creates first admin user role on acceptance
-3. switch authz reads to new tables
-4. remove legacy board-only checks
+1. 添加新表/列/索引
+2. 为现有数据回填最低成员资格/授权：
+- 在本地模式下运行时创建本地隐式管理员成员资格上下文（不作为 Better Auth 用户持久化）
+- 对于云模式，引导程序在接受时创建第一个管理员用户角色
+3. 将 authz 读取切换到新表
+4. 移除遗留的仅 board 检查
 
-## 6. API contract (new/changed)
+## 6. API 合约（新增/变更）
 
-All under `/api`.
+全部在 `/api` 下。
 
-## 6.1 Health
+## 6.1 健康检查
 
-`GET /api/health` response additions:
+`GET /api/health` 响应新增：
 
 - `deploymentMode`
 - `authReady`
-- `bootstrapStatus` (`ready | bootstrap_pending`)
+- `bootstrapStatus`（`ready | bootstrap_pending`）
 
-## 6.2 Invites
+## 6.2 邀请
 
 1. `POST /api/companies/:companyId/invites`
-- create `company_join` invite
-- copy-link value returned once
+- 创建 `company_join` 邀请
+- 返回一次性的复制链接值
 
 2. `GET /api/invites/:token`
-- validate token
-- return invite landing payload
-- includes `allowedJoinTypes`
+- 验证 token
+- 返回邀请落地页负载
+- 包含 `allowedJoinTypes`
 
 3. `POST /api/invites/:token/accept`
-- body:
+- 请求体：
   - `requestType: human | agent`
-  - human path: no extra payload beyond authenticated user
-  - agent path: `agentName`, `adapterType`, `capabilities`, optional adapter defaults
-- consumes invite token
-- creates `join_requests(status=pending_approval)`
+  - 人类路径：除认证用户外无额外负载
+  - 智能体路径：`agentName`、`adapterType`、`capabilities`、可选的适配器默认值
+- 消费邀请 token
+- 创建 `join_requests(status=pending_approval)`
 
 4. `POST /api/invites/:inviteId/revoke`
-- revokes non-consumed invite
+- 撤销未消费的邀请
 
-## 6.3 Join requests
+## 6.3 加入请求
 
 1. `GET /api/companies/:companyId/join-requests?status=pending_approval&requestType=...`
 
 2. `POST /api/companies/:companyId/join-requests/:requestId/approve`
-- human:
-  - create/activate `company_memberships`
-  - apply default grants
-- agent:
-  - create `agents` row
-  - create pending claim context for API key
-  - create/activate agent membership
-  - apply default grants
+- 人类：
+  - 创建/激活 `company_memberships`
+  - 应用默认授权
+- 智能体：
+  - 创建 `agents` 行
+  - 创建待认领的 API 密钥上下文
+  - 创建/激活智能体成员资格
+  - 应用默认授权
 
 3. `POST /api/companies/:companyId/join-requests/:requestId/reject`
 
 4. `POST /api/join-requests/:requestId/claim-api-key`
-- approved agent request only
-- returns plaintext key once
-- stores hash in `agent_api_keys`
+- 仅限已批准的智能体请求
+- 返回一次性明文密钥
+- 将哈希存储在 `agent_api_keys` 中
 
-## 6.4 Membership and grants
+## 6.4 成员资格和授权
 
 1. `GET /api/companies/:companyId/members`
-- returns both principal types
+- 返回两种主体类型
 
 2. `PATCH /api/companies/:companyId/members/:memberId/permissions`
-- upsert/remove grants
+- 新增/移除授权
 
 3. `PUT /api/admin/users/:userId/company-access`
-- instance admin only
+- 仅限实例管理员
 
 4. `GET /api/admin/users/:userId/company-access`
 
@@ -312,111 +311,111 @@ All under `/api`.
 
 6. `POST /api/admin/users/:userId/demote-instance-admin`
 
-## 6.5 Inbox
+## 6.5 收件箱
 
-`GET /api/companies/:companyId/inbox` additions:
+`GET /api/companies/:companyId/inbox` 新增：
 
-- pending join request alert items when actor can `joins:approve`
-- each item includes inline action metadata:
-  - join request id
-  - request type
-  - source IP
-  - human email snapshot when applicable
+- 当 actor 拥有 `joins:approve` 权限时显示待处理加入请求告警项
+- 每个项目包含内联操作元数据：
+  - 加入请求 id
+  - 请求类型
+  - 来源 IP
+  - 适用时的人类邮箱快照
 
-## 7. Server implementation details
+## 7. 服务端实现细节
 
-## 7.1 Config and startup
+## 7.1 配置和启动
 
-Files:
+文件：
 
 - `packages/shared/src/config-schema.ts`
 - `server/src/config.ts`
 - `server/src/index.ts`
 - `server/src/startup-banner.ts`
 
-Changes:
+变更：
 
-- add deployment mode + bind host settings
-- enforce loopback-only for `local_trusted`
-- enforce Better Auth readiness in `cloud_hosted`
-- banner shows mode and bootstrap status
+- 添加部署模式 + 绑定主机设置
+- `local_trusted` 强制仅回环
+- `cloud_hosted` 强制 Better Auth 就绪
+- 启动横幅显示模式和引导状态
 
-## 7.2 Better Auth integration
+## 7.2 Better Auth 集成
 
-Files:
+文件：
 
-- `server/package.json` (dependency)
-- `server/src/auth/*` (new)
-- `server/src/app.ts` (mount auth handler endpoints + session middleware)
+- `server/package.json`（依赖）
+- `server/src/auth/*`（新增）
+- `server/src/app.ts`（挂载认证处理端点 + 会话中间件）
 
-Changes:
+变更：
 
-- add Better Auth server instance
-- cookie/session handling for cloud mode
-- no-op session auth in local mode
+- 添加 Better Auth 服务端实例
+- 云模式的 cookie/会话处理
+- 本地模式下的空操作会话认证
 
-## 7.3 Actor middleware
+## 7.3 Actor 中间件
 
-Files:
+文件：
 
 - `server/src/middleware/auth.ts`
 - `server/src/routes/authz.ts`
 - `server/src/middleware/board-mutation-guard.ts`
 
-Changes:
+变更：
 
-- stop defaulting every request to board in cloud mode
-- map local requests to `local_implicit_admin` actor in local mode
-- map Better Auth session to `user` actor in cloud mode
-- preserve agent bearer path
-- replace `assertBoard` with permission-oriented helpers:
+- 在云模式下停止将每个请求默认为 board
+- 在本地模式下将本地请求映射为 `local_implicit_admin` actor
+- 在云模式下将 Better Auth 会话映射为 `user` actor
+- 保留智能体 bearer 路径
+- 用面向权限的辅助函数替换 `assertBoard`：
   - `requireInstanceAdmin(req)`
   - `requireCompanyAccess(req, companyId)`
   - `requireCompanyPermission(req, companyId, permissionKey, scope?)`
 
-## 7.4 Authorization services
+## 7.4 授权服务
 
-Files:
+文件：
 
-- `server/src/services` (new modules)
+- `server/src/services`（新模块）
   - `memberships.ts`
   - `permissions.ts`
   - `invites.ts`
   - `join-requests.ts`
   - `instance-admin.ts`
 
-Changes:
+变更：
 
-- centralized permission evaluation
-- centralized membership resolution
-- one place for principal-type branching
+- 集中式权限评估
+- 集中式成员资格解析
+- 主体类型分支的统一位置
 
-## 7.5 Routes
+## 7.5 路由
 
-Files:
+文件：
 
-- `server/src/routes/index.ts` and new route modules:
-  - `auth.ts` (if needed)
+- `server/src/routes/index.ts` 和新路由模块：
+  - `auth.ts`（如需要）
   - `invites.ts`
   - `join-requests.ts`
   - `members.ts`
   - `instance-admin.ts`
-  - `inbox.ts` (or extension of existing inbox source)
+  - `inbox.ts`（或扩展现有收件箱数据源）
 
-Changes:
+变更：
 
-- add new endpoints listed above
-- apply company and permission checks consistently
-- log all mutations through activity log service
+- 添加上述列出的新端点
+- 一致地应用公司和权限检查
+- 通过活动日志服务记录所有变更
 
-## 7.6 Activity log and audit
+## 7.6 活动日志和审计
 
-Files:
+文件：
 
 - `server/src/services/activity-log.ts`
-- call sites in invite/join/member/admin routes
+- 邀请/加入/成员/管理员路由中的调用点
 
-Required actions:
+必需操作：
 
 - `invite.created`
 - `invite.revoked`
@@ -431,198 +430,198 @@ Required actions:
 - `agent_api_key.claimed`
 - `agent_api_key.revoked`
 
-## 7.7 Real-time and inbox propagation
+## 7.7 实时和收件箱传播
 
-Files:
+文件：
 
 - `server/src/services/live-events.ts`
 - `server/src/realtime/live-events-ws.ts`
-- inbox data source endpoint(s)
+- 收件箱数据源端点
 
-Changes:
+变更：
 
-- emit join-request events
-- ensure inbox refresh path includes join alerts
+- 发出加入请求事件
+- 确保收件箱刷新路径包含加入告警
 
-## 8. CLI implementation
+## 8. CLI 实现
 
-Files:
+文件：
 
 - `cli/src/index.ts`
 - `cli/src/commands/onboard.ts`
 - `cli/src/commands/configure.ts`
 - `cli/src/prompts/server.ts`
 
-Commands:
+命令：
 
 1. `paperclipai auth bootstrap-ceo`
-- create bootstrap invite
-- print one-time URL
+- 创建引导邀请
+- 打印一次性 URL
 
 2. `paperclipai onboard`
-- in cloud mode with `bootstrap_pending`, print bootstrap URL and next steps
-- in local mode, skip bootstrap requirement
+- 在云模式且 `bootstrap_pending` 时，打印引导 URL 和后续步骤
+- 在本地模式下跳过引导要求
 
-Config additions:
+配置新增：
 
-- deployment mode
-- bind host (validated against mode)
+- 部署模式
+- 绑定主机（根据模式验证）
 
-## 9. UI implementation
+## 9. UI 实现
 
-Files:
+文件：
 
-- routing: `ui/src/App.tsx`
-- API clients: `ui/src/api/*`
-- pages/components (new):
-  - `AuthLogin` / `AuthSignup` (cloud mode)
-  - `BootstrapPending` page
-  - `InviteLanding` page
-  - `InstanceSettings` page
-  - join approval components in `Inbox`
-  - member/grant management in company settings
+- 路由：`ui/src/App.tsx`
+- API 客户端：`ui/src/api/*`
+- 页面/组件（新增）：
+  - `AuthLogin` / `AuthSignup`（云模式）
+  - `BootstrapPending` 页面
+  - `InviteLanding` 页面
+  - `InstanceSettings` 页面
+  - `Inbox` 中的加入审批组件
+  - 公司设置中的成员/授权管理
 
-Required UX:
+所需 UX：
 
-1. Cloud unauthenticated user:
-- redirect to login/signup
+1. 云模式未认证用户：
+- 重定向到登录/注册
 
-2. Cloud bootstrap pending:
-- block app with setup command guidance
+2. 云模式引导待处理：
+- 用设置命令指引阻止应用访问
 
-3. Invite landing:
-- choose human vs agent path (respect `allowedJoinTypes`)
-- submit join request
-- show pending approval confirmation
+3. 邀请落地页：
+- 选择人类 vs 智能体路径（遵守 `allowedJoinTypes`）
+- 提交加入请求
+- 显示待审批确认
 
-4. Inbox:
-- show join approval cards with approve/reject actions
-- include source IP and human email snapshot when applicable
+4. 收件箱：
+- 显示带有批准/拒绝操作的加入审批卡片
+- 适用时包含来源 IP 和人类邮箱快照
 
-5. Local mode:
-- no login prompts
-- full settings/invite/approval UI available
+5. 本地模式：
+- 无登录提示
+- 可使用全部设置/邀请/审批 UI
 
-## 10. Security controls
+## 10. 安全控制
 
-1. Token handling
+1. Token 处理
 
-- invite tokens hashed at rest
-- API keys hashed at rest
-- one-time plaintext key reveal only
+- 邀请 token 静态哈希存储
+- API 密钥静态哈希存储
+- 仅一次性明文密钥展示
 
-2. Local mode isolation
+2. 本地模式隔离
 
-- loopback bind enforcement
-- startup hard-fail on non-loopback host
+- 回环绑定强制
+- 非回环主机时启动硬失败
 
-3. Cloud auth
+3. 云认证
 
-- no implicit board fallback
-- session auth mandatory for human mutations
+- 无隐式 board 回退
+- 人类变更操作必须进行会话认证
 
-4. Join workflow hardening
+4. 加入工作流加固
 
-- one request per invite token
-- pending request has no data access
-- approval required before membership activation
+- 每个邀请 token 只能有一个请求
+- 待处理请求无数据访问权限
+- 需要审批才能激活成员资格
 
-5. Abuse controls
+5. 滥用控制
 
-- rate limit invite accept and key claim endpoints
-- structured logging for join and claim failures
+- 对邀请接受和密钥认领端点进行速率限制
+- 结构化日志记录加入和认领失败
 
-## 11. Migration and compatibility
+## 11. 迁移与兼容性
 
-## 11.1 Runtime compatibility
+## 11.1 运行时兼容性
 
-- keep existing board-dependent routes functional while migrating authz helper usage
-- phase out `assertBoard` calls only after permission helpers cover all routes
+- 在迁移 authz 辅助函数使用期间保持现有依赖 board 的路由功能
+- 仅在权限辅助函数覆盖所有路由后才逐步移除 `assertBoard` 调用
 
-## 11.2 Data compatibility
+## 11.2 数据兼容性
 
-- do not delete `agents.permissions` in V1
-- stop reading it once grants are wired
-- remove in post-V1 cleanup migration
+- V1 不删除 `agents.permissions`
+- 授权接入后停止读取
+- 在 V1 后的清理迁移中移除
 
-## 11.3 Better Auth user ID handling
+## 11.3 Better Auth 用户 ID 处理
 
-- treat `user.id` as text end-to-end
-- existing `created_by_user_id` and similar text fields remain valid
+- 端到端将 `user.id` 视为 text
+- 现有的 `created_by_user_id` 和类似的 text 字段保持有效
 
-## 12. Testing strategy
+## 12. 测试策略
 
-## 12.1 Unit tests
+## 12.1 单元测试
 
-- permission evaluator:
-  - instance admin bypass
-  - grant checks
-  - scope checks
-- join approval state machine
-- invite token lifecycle
+- 权限评估器：
+  - 实例管理员绕过
+  - 授权检查
+  - 作用域检查
+- 加入审批状态机
+- 邀请 token 生命周期
 
-## 12.2 Integration tests
+## 12.2 集成测试
 
-- cloud mode unauthenticated mutation -> `401`
-- local mode implicit admin mutation -> success
-- invite accept -> pending join -> no access
-- join approve (human) -> membership/grants active
-- join approve (agent) -> key claim once
-- cross-company access denied for user and agent principals
-- local mode non-loopback bind -> startup failure
+- 云模式未认证变更 -> `401`
+- 本地模式隐式管理员变更 -> 成功
+- 邀请接受 -> 待处理加入 -> 无访问权限
+- 加入审批（人类）-> 成员资格/授权激活
+- 加入审批（智能体）-> 一次性密钥认领
+- 跨公司访问被拒绝——用户和智能体主体
+- 本地模式非回环绑定 -> 启动失败
 
-## 12.3 UI tests
+## 12.3 UI 测试
 
-- login gate in cloud mode
-- bootstrap pending screen
-- invite landing choose-path UX
-- inbox join alert approve/reject flows
+- 云模式登录门禁
+- 引导待处理页面
+- 邀请落地页选择路径 UX
+- 收件箱加入告警批准/拒绝流程
 
-## 12.4 Regression tests
+## 12.4 回归测试
 
-- existing agent API key flows still work
-- task assignment and checkout invariants unchanged
-- activity logging still emitted for all mutations
+- 现有智能体 API 密钥流程仍然正常
+- 任务分配和签出不变式不变
+- 所有变更的活动日志仍然正常发出
 
-## 13. Delivery plan
+## 13. 交付计划
 
-## Phase A: Foundations
+## 阶段 A：基础
 
-- config mode/bind host support
-- startup guardrails
-- Better Auth integration skeleton
-- actor type expansion
+- 配置模式/绑定主机支持
+- 启动保护
+- Better Auth 集成骨架
+- actor 类型扩展
 
-## Phase B: Schema and authz core
+## 阶段 B：Schema 和授权核心
 
-- add membership/grants/invite/join tables
-- add permission service and helpers
-- wire company/member/instance admin checks
+- 添加成员资格/授权/邀请/加入表
+- 添加权限服务和辅助函数
+- 接入公司/成员/实例管理员检查
 
-## Phase C: Invite + join backend
+## 阶段 C：邀请 + 加入后端
 
-- invite create/revoke
-- invite accept -> pending request
-- approve/reject + key claim
-- activity log + live events
+- 邀请创建/撤销
+- 邀请接受 -> 待处理请求
+- 批准/拒绝 + 密钥认领
+- 活动日志 + 实时事件
 
-## Phase D: UI + CLI
+## 阶段 D：UI + CLI
 
-- cloud login/bootstrap screens
-- invite landing
-- inbox join approval actions
-- instance settings and member permissions
-- bootstrap CLI command and onboarding updates
+- 云登录/引导页面
+- 邀请落地页
+- 收件箱加入审批操作
+- 实例设置和成员权限
+- 引导 CLI 命令和入职更新
 
-## Phase E: Hardening
+## 阶段 E：加固
 
-- full integration/e2e coverage
-- docs updates (`SPEC-implementation`, `DEVELOPING`, `CLI`)
-- cleanup of legacy board-only codepaths
+- 完整的集成/E2E 覆盖
+- 文档更新（`SPEC-implementation`、`DEVELOPING`、`CLI`）
+- 清理遗留的仅 board 代码路径
 
-## 14. Verification gate
+## 14. 验证门禁
 
-Before handoff:
+交付前：
 
 ```sh
 pnpm -r typecheck
@@ -630,14 +629,14 @@ pnpm test:run
 pnpm build
 ```
 
-If any command is skipped, record exactly what was skipped and why.
+如果任何命令被跳过，记录确切的跳过内容和原因。
 
-## 15. Done criteria
+## 15. 完成标准
 
-1. Behavior matches locked V1 decisions in this doc and `doc/plan/humans-and-permissions.md`.
-2. Cloud mode requires auth; local mode has no login UX.
-3. Unified invite + pending approval flow works for both humans and agents.
-4. Shared principal membership + permission system is live for users and agents.
-5. Local mode remains loopback-only and fails otherwise.
-6. Inbox shows actionable join approvals.
-7. All new mutating paths are activity-logged.
+1. 行为符合本文档和 `doc/plan/humans-and-permissions.md` 中锁定的 V1 决策。
+2. 云模式需要认证；本地模式无登录 UX。
+3. 统一的邀请 + 待审批流程对人类和智能体都适用。
+4. 共享的主体成员资格 + 权限系统对用户和智能体均已上线。
+5. 本地模式保持仅回环绑定，否则启动失败。
+6. 收件箱显示可操作的加入审批。
+7. 所有新的变更路径都有活动日志记录。

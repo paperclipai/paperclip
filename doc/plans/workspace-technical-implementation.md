@@ -1,149 +1,149 @@
-# Workspace Technical Implementation Spec
+# 工作区技术实现规格
 
-## Role of This Document
+## 本文档的角色
 
-This document translates [workspace-product-model-and-work-product.md](/Users/dotta/paperclip-subissues/doc/plans/workspace-product-model-and-work-product.md) into an implementation-ready engineering plan.
+本文档将 [workspace-product-model-and-work-product.md](/Users/dotta/paperclip-subissues/doc/plans/workspace-product-model-and-work-product.md) 转化为可实施的工程计划。
 
-It is intentionally concrete:
+它有意是具体的：
 
-- schema and migration shape
-- shared contract updates
-- route and service changes
-- UI changes
-- rollout and compatibility rules
+- 数据库和迁移形态
+- 共享契约更新
+- 路由和服务变更
+- UI 变更
+- 上线和兼容规则
 
-This is the implementation target for the first workspace-aware delivery slice.
+这是第一个工作区感知交付切片的实现目标。
 
-## Locked Decisions
+## 已锁定决策
 
-These decisions are treated as settled for this implementation:
+以下决策在本次实现中视为已定：
 
-1. Add a new durable `execution_workspaces` table now.
-2. Each issue has at most one current execution workspace at a time.
-3. `issues` get explicit `project_workspace_id` and `execution_workspace_id`.
-4. Workspace reuse is in scope for V1.
-5. The feature is gated in the UI by `/instance/settings > Experimental > Workspaces`.
-6. The gate is UI-only. Backend model changes and migrations always ship.
-7. Existing users upgrade into compatibility-preserving defaults.
-8. `project_workspaces` evolves in place rather than being replaced.
-9. Work product is issue-first, with optional links to execution workspaces and runtime services.
-10. GitHub is the only PR provider in the first slice.
-11. Both `adapter_managed` and `cloud_sandbox` execution modes are in scope.
-12. Workspace controls ship first inside existing project properties, not in a new global navigation area.
-13. Subissues are out of scope for this implementation slice.
+1. 现在添加新的持久 `execution_workspaces` 表。
+2. 每个任务同时最多有一个当前执行工作区。
+3. `issues` 获得显式的 `project_workspace_id` 和 `execution_workspace_id`。
+4. 工作区复用在 V1 范围内。
+5. 功能在 UI 中通过 `/instance/settings > Experimental > Workspaces` 门控。
+6. 门控仅限 UI。后端模型变更和迁移始终发布。
+7. 现有用户升级到兼容保留的默认值。
+8. `project_workspaces` 就地演进而非被替换。
+9. 工作产出以任务为先，可选链接到执行工作区和运行时服务。
+10. GitHub 是第一个切片中唯一的 PR 提供商。
+11. `adapter_managed` 和 `cloud_sandbox` 执行模式都在范围内。
+12. 工作区控制首先在现有项目属性中发布，而非在新的全局导航区域中。
+13. 子任务不在本次实现切片范围内。
 
-## Non-Goals
+## 非目标
 
-- Building a full code review system
-- Solving subissue UX in this slice
-- Implementing reusable shared workspace definitions across projects in this slice
-- Reworking all current runtime service behavior before introducing execution workspaces
+- 构建完整的代码审查系统
+- 在本切片中解决子任务 UX
+- 在本切片中实现跨项目的可复用共享工作区定义
+- 在引入执行工作区之前重做所有当前运行时服务行为
 
-## Existing Baseline
+## 现有基线
 
-The repo already has:
+仓库已有：
 
 - `project_workspaces`
 - `projects.execution_workspace_policy`
 - `issues.execution_workspace_settings`
-- runtime service persistence in `workspace_runtime_services`
-- local git-worktree realization in `workspace-runtime.ts`
+- `workspace_runtime_services` 中的运行时服务持久化
+- `workspace-runtime.ts` 中的本地 git-worktree 实现
 
-This implementation should build on that baseline rather than fork it.
+本次实现应在该基线上构建而非分叉。
 
-## Terminology
+## 术语
 
-- `Project workspace`: durable configured codebase/root for a project
-- `Execution workspace`: actual runtime workspace used for one or more issues
-- `Work product`: user-facing output such as PR, preview, branch, commit, artifact, document
-- `Runtime service`: process or service owned or tracked for a workspace
-- `Compatibility mode`: existing behavior preserved for upgraded installs with no explicit workspace opt-in
+- `项目工作区`：项目的持久配置代码库/根目录
+- `执行工作区`：一个或多个任务使用的实际运行时工作区
+- `工作产出`：面向用户的输出，如 PR、预览、分支、提交、产物、文档
+- `运行时服务`：为工作区拥有或跟踪的进程或服务
+- `兼容模式`：升级安装中保留的现有行为，无显式工作区选择
 
-## Architecture Summary
+## 架构摘要
 
-The first slice should introduce three explicit layers:
+第一个切片应引入三个显式层：
 
-1. `Project workspace`
-   - existing durable project-scoped codebase record
-   - extended to support local, git, non-git, and remote-managed shapes
+1. `项目工作区`
+   - 现有的持久项目范围代码库记录
+   - 扩展以支持本地、git、非 git 和远程管理形态
 
-2. `Execution workspace`
-   - new durable runtime record
-   - represents shared, isolated, operator-branch, or remote-managed execution context
+2. `执行工作区`
+   - 新的持久运行时记录
+   - 表示共享、隔离、操作者分支或远程管理的执行上下文
 
-3. `Issue work product`
-   - new durable output record
-   - stores PRs, previews, branches, commits, artifacts, and documents
+3. `任务工作产出`
+   - 新的持久输出记录
+   - 存储 PR、预览、分支、提交、产物和文档
 
-The issue remains the planning and ownership unit.
-The execution workspace remains the runtime unit.
-The work product remains the deliverable/output unit.
+任务保持为规划和所有权单元。
+执行工作区保持为运行时单元。
+工作产出保持为可交付/输出单元。
 
-## Configuration and Deployment Topology
+## 配置和部署拓扑
 
-## Important correction
+## 重要纠正
 
-This repo already uses `PAPERCLIP_DEPLOYMENT_MODE` for auth/deployment behavior (`local_trusted | authenticated`).
+此仓库已使用 `PAPERCLIP_DEPLOYMENT_MODE` 来控制认证/部署行为（`local_trusted | authenticated`）。
 
-Do not overload that variable for workspace execution topology.
+不要为工作区执行拓扑重载该变量。
 
-## New env var
+## 新环境变量
 
-Add a separate execution-host hint:
+添加单独的执行主机提示：
 
 - `PAPERCLIP_EXECUTION_TOPOLOGY=local|cloud|hybrid`
 
-Default:
+默认：
 
-- if unset, treat as `local`
+- 如果未设置，视为 `local`
 
-Purpose:
+目的：
 
-- influences defaults and validation for workspace configuration
-- does not change current auth/deployment semantics
-- does not break existing installs
+- 影响工作区配置的默认值和验证
+- 不改变当前认证/部署语义
+- 不破坏现有安装
 
-### Semantics
+### 语义
 
 - `local`
-  - Paperclip may create host-local worktrees, processes, and paths
+  - Paperclip 可以创建主机本地的 worktree、进程和路径
 - `cloud`
-  - Paperclip should assume no durable host-local execution workspace management
-  - adapter-managed and cloud-sandbox flows should be treated as first-class
+  - Paperclip 应假设没有持久的主机本地执行工作区管理
+  - 适配器管理和云沙箱流程应视为一等
 - `hybrid`
-  - both local and remote execution strategies may exist
+  - 本地和远程执行策略可能共存
 
-This is a guardrail and defaulting aid, not a hard policy engine in the first slice.
+这在第一个切片中是护栏和默认辅助，而非硬策略引擎。
 
-## Instance Settings
+## 实例设置
 
-Add a new `Experimental` section under `/instance/settings`.
+在 `/instance/settings` 下添加新的 `实验性` 部分。
 
-### New setting
+### 新设置
 
 - `experimental.workspaces: boolean`
 
-Rules:
+规则：
 
-- default `false`
-- UI-only gate
-- stored in instance config or instance settings API response
-- backend routes and migrations remain available even when false
+- 默认 `false`
+- 仅 UI 门控
+- 存储在实例配置或实例设置 API 响应中
+- 后端路由和迁移即使为 false 时也保持可用
 
-### UI behavior when off
+### 关闭时的 UI 行为
 
-- hide workspace-specific issue controls
-- hide workspace-specific project configuration
-- hide issue `Work Product` tab if it would otherwise be empty
-- do not remove or invalidate any stored workspace data
+- 隐藏工作区特定的任务控制
+- 隐藏工作区特定的项目配置
+- 如果 `工作产出` 标签页本来为空则隐藏
+- 不移除或无效化任何已存储的工作区数据
 
-## Data Model
+## 数据模型
 
-## 1. Extend `project_workspaces`
+## 1. 扩展 `project_workspaces`
 
-Current table exists and should evolve in place.
+当前表已存在，应就地演进。
 
-### New columns
+### 新列
 
 - `source_type text not null default 'local_path'`
   - `local_path | git_repo | non_git_path | remote_managed`
@@ -153,29 +153,29 @@ Current table exists and should evolve in place.
 - `setup_command text null`
 - `cleanup_command text null`
 - `remote_provider text null`
-  - examples: `github`, `openai`, `anthropic`, `custom`
+  - 示例：`github`、`openai`、`anthropic`、`custom`
 - `remote_workspace_ref text null`
 - `shared_workspace_key text null`
-  - reserved for future cross-project shared workspace definitions
+  - 为未来跨项目共享工作区定义预留
 
-### Backfill rules
+### 回填规则
 
-- if existing row has `repo_url`, backfill `source_type='git_repo'`
-- else if existing row has `cwd`, backfill `source_type='local_path'`
-- else backfill `source_type='remote_managed'`
-- copy existing `repo_ref` into `default_ref`
+- 如果现有行有 `repo_url`，回填 `source_type='git_repo'`
+- 否则如果现有行有 `cwd`，回填 `source_type='local_path'`
+- 否则回填 `source_type='remote_managed'`
+- 将现有 `repo_ref` 复制到 `default_ref`
 
-### Indexes
+### 索引
 
-- retain current indexes
-- add `(project_id, source_type)`
-- add `(company_id, shared_workspace_key)` non-unique for future support
+- 保留当前索引
+- 添加 `(project_id, source_type)`
+- 添加 `(company_id, shared_workspace_key)` 非唯一，为未来支持
 
-## 2. Add `execution_workspaces`
+## 2. 添加 `execution_workspaces`
 
-Create a new durable table.
+创建新的持久表。
 
-### Columns
+### 列
 
 - `id uuid pk`
 - `company_id uuid not null`
@@ -206,7 +206,7 @@ Create a new durable table.
 - `created_at timestamptz not null default now()`
 - `updated_at timestamptz not null default now()`
 
-### Foreign keys
+### 外键
 
 - `company_id -> companies.id`
 - `project_id -> projects.id`
@@ -214,46 +214,46 @@ Create a new durable table.
 - `source_issue_id -> issues.id on delete set null`
 - `derived_from_execution_workspace_id -> execution_workspaces.id on delete set null`
 
-### Indexes
+### 索引
 
 - `(company_id, project_id, status)`
 - `(company_id, project_workspace_id, status)`
 - `(company_id, source_issue_id)`
 - `(company_id, last_used_at desc)`
-- `(company_id, branch_name)` non-unique
+- `(company_id, branch_name)` 非唯一
 
-## 3. Extend `issues`
+## 3. 扩展 `issues`
 
-Add explicit workspace linkage.
+添加显式工作区链接。
 
-### New columns
+### 新列
 
 - `project_workspace_id uuid null`
 - `execution_workspace_id uuid null`
 - `execution_workspace_preference text null`
   - `inherit | shared_workspace | isolated_workspace | operator_branch | reuse_existing`
 
-### Foreign keys
+### 外键
 
 - `project_workspace_id -> project_workspaces.id on delete set null`
 - `execution_workspace_id -> execution_workspaces.id on delete set null`
 
-### Backfill rules
+### 回填规则
 
-- all existing issues get null values
-- null should be interpreted as compatibility/inherit behavior
+- 所有现有任务获得 null 值
+- null 应被解释为兼容/继承行为
 
-### Invariants
+### 不变量
 
-- if `project_workspace_id` is set, it must belong to the issue's project and company
-- if `execution_workspace_id` is set, it must belong to the issue's company
-- if `execution_workspace_id` is set, the referenced workspace's `project_id` must match the issue's `project_id`
+- 如果设置了 `project_workspace_id`，它必须属于任务的项目和公司
+- 如果设置了 `execution_workspace_id`，它必须属于任务的公司
+- 如果设置了 `execution_workspace_id`，引用工作区的 `project_id` 必须与任务的 `project_id` 匹配
 
-## 4. Add `issue_work_products`
+## 4. 添加 `issue_work_products`
 
-Create a new durable table for outputs.
+为输出创建新的持久表。
 
-### Columns
+### 列
 
 - `id uuid pk`
 - `company_id uuid not null`
@@ -281,7 +281,7 @@ Create a new durable table for outputs.
 - `created_at timestamptz not null default now()`
 - `updated_at timestamptz not null default now()`
 
-### Foreign keys
+### 外键
 
 - `company_id -> companies.id`
 - `project_id -> projects.id on delete set null`
@@ -290,37 +290,37 @@ Create a new durable table for outputs.
 - `runtime_service_id -> workspace_runtime_services.id on delete set null`
 - `created_by_run_id -> heartbeat_runs.id on delete set null`
 
-### Indexes
+### 索引
 
 - `(company_id, issue_id, type)`
 - `(company_id, execution_workspace_id, type)`
 - `(company_id, provider, external_id)`
 - `(company_id, updated_at desc)`
 
-## 5. Extend `workspace_runtime_services`
+## 5. 扩展 `workspace_runtime_services`
 
-This table already exists and should remain the system of record for owned/tracked services.
+此表已存在，应继续作为拥有/跟踪服务的记录系统。
 
-### New column
+### 新列
 
 - `execution_workspace_id uuid null`
 
-### Foreign key
+### 外键
 
 - `execution_workspace_id -> execution_workspaces.id on delete set null`
 
-### Behavior
+### 行为
 
-- runtime services remain workspace-first
-- issue UIs should surface them through linked execution workspaces and work products
+- 运行时服务保持以工作区为先
+- 任务 UI 应通过链接的执行工作区和工作产出展示它们
 
-## Shared Contracts
+## 共享契约
 
 ## 1. `packages/shared`
 
-### Update project workspace types and validators
+### 更新项目工作区类型和校验器
 
-Add fields:
+添加字段：
 
 - `sourceType`
 - `defaultRef`
@@ -331,36 +331,36 @@ Add fields:
 - `remoteWorkspaceRef`
 - `sharedWorkspaceKey`
 
-### Add execution workspace types and validators
+### 添加执行工作区类型和校验器
 
-New shared types:
+新共享类型：
 
 - `ExecutionWorkspace`
 - `ExecutionWorkspaceMode`
 - `ExecutionWorkspaceStatus`
 - `ExecutionWorkspaceProviderType`
 
-### Add work product types and validators
+### 添加工作产出类型和校验器
 
-New shared types:
+新共享类型：
 
 - `IssueWorkProduct`
 - `IssueWorkProductType`
 - `IssueWorkProductStatus`
 - `IssueWorkProductReviewState`
 
-### Update issue types and validators
+### 更新任务类型和校验器
 
-Add:
+添加：
 
 - `projectWorkspaceId`
 - `executionWorkspaceId`
 - `executionWorkspacePreference`
 - `workProducts?: IssueWorkProduct[]`
 
-### Extend project execution policy contract
+### 扩展项目执行策略契约
 
-Replace the current narrow policy with a more explicit shape:
+用更显式的形态替换当前狭窄的策略：
 
 - `enabled`
 - `defaultMode`
@@ -373,118 +373,118 @@ Replace the current narrow policy with a more explicit shape:
 - `runtimePolicy`
 - `cleanupPolicy`
 
-Do not try to encode every possible provider-specific field in V1. Keep provider-specific extensibility in nested JSON where needed.
+V1 中不要尝试编码每个可能的提供商特定字段。在需要时将提供商特定的可扩展性保留在嵌套 JSON 中。
 
-## Service Layer Changes
+## 服务层变更
 
-## 1. Project service
+## 1. 项目服务
 
-Update project workspace CRUD to handle the extended schema.
+更新项目工作区 CRUD 以处理扩展的数据库。
 
-### Required rules
+### 必需规则
 
-- when setting a primary workspace, clear `is_primary` on siblings
-- `source_type=remote_managed` may have null `cwd`
-- local/git-backed workspaces should still require one of `cwd` or `repo_url`
-- preserve current behavior for existing callers that only send `cwd/repoUrl/repoRef`
+- 设置主工作区时，清除兄弟上的 `is_primary`
+- `source_type=remote_managed` 可以有 null `cwd`
+- 本地/git 支持的工作区仍应要求 `cwd` 或 `repo_url` 之一
+- 为仅发送 `cwd/repoUrl/repoRef` 的现有调用者保留当前行为
 
-## 2. Issue service
+## 2. 任务服务
 
-Update create/update flows to handle explicit workspace binding.
+更新创建/更新流程以处理显式工作区绑定。
 
-### Create behavior
+### 创建行为
 
-Resolve defaults in this order:
+按此顺序解析默认值：
 
-1. explicit `projectWorkspaceId` from request
+1. 请求中显式的 `projectWorkspaceId`
 2. `project.executionWorkspacePolicy.defaultProjectWorkspaceId`
-3. project's primary workspace
+3. 项目的主工作区
 4. null
 
-Resolve `executionWorkspacePreference`:
+解析 `executionWorkspacePreference`：
 
-1. explicit request field
-2. project policy default
-3. compatibility fallback to `inherit`
+1. 显式请求字段
+2. 项目策略默认值
+3. 兼容回退到 `inherit`
 
-Do not create an execution workspace at issue creation time unless:
+不要在任务创建时创建执行工作区，除非：
 
-- `reuse_existing` is explicitly chosen and `executionWorkspaceId` is provided
+- 显式选择了 `reuse_existing` 并提供了 `executionWorkspaceId`
 
-Otherwise, workspace realization happens when execution starts.
+否则，工作区实现在执行开始时发生。
 
-### Update behavior
+### 更新行为
 
-- allow changing `projectWorkspaceId` only if the workspace belongs to the same project
-- allow setting `executionWorkspaceId` only if it belongs to the same company and project
-- do not automatically destroy or relink historical work products when workspace linkage changes
+- 仅当工作区属于同一项目时才允许更改 `projectWorkspaceId`
+- 仅当执行工作区属于同一公司和项目时才允许设置 `executionWorkspaceId`
+- 工作区链接变更时不要自动销毁或重新链接历史工作产出
 
-## 3. Workspace realization service
+## 3. 工作区实现服务
 
-Refactor `workspace-runtime.ts` so realization produces or reuses an `execution_workspaces` row.
+重构 `workspace-runtime.ts` 使实现产生或复用 `execution_workspaces` 行。
 
-### New flow
+### 新流程
 
-Input:
+输入：
 
-- issue
-- project workspace
-- project execution policy
-- execution topology hint
-- adapter/runtime configuration
+- 任务
+- 项目工作区
+- 项目执行策略
+- 执行拓扑提示
+- 适配器/运行时配置
 
-Output:
+输出：
 
-- realized execution workspace record
-- runtime cwd/provider metadata
+- 已实现的执行工作区记录
+- 运行时 cwd/提供商元数据
 
-### Required modes
+### 必需模式
 
 - `shared_workspace`
-  - reuse a stable execution workspace representing the project primary/shared workspace
+  - 复用表示项目主/共享工作区的稳定执行工作区
 - `isolated_workspace`
-  - create or reuse a derived isolated execution workspace
+  - 创建或复用派生的隔离执行工作区
 - `operator_branch`
-  - create or reuse a long-lived branch workspace
+  - 创建或复用长期分支工作区
 - `adapter_managed`
-  - create an execution workspace with provider references and optional null `cwd`
+  - 创建带提供商引用和可选 null `cwd` 的执行工作区
 - `cloud_sandbox`
-  - same as adapter-managed, but explicit remote sandbox semantics
+  - 与 adapter_managed 相同，但具有显式的远程沙箱语义
 
-### Reuse rules
+### 复用规则
 
-When `reuse_existing` is requested:
+当请求 `reuse_existing` 时：
 
-- only list active or recently used execution workspaces
-- only for the same project
-- only for the same project workspace if one is specified
-- exclude archived and cleanup-failed workspaces
+- 仅列出活跃或近期使用的执行工作区
+- 仅限同一项目
+- 如果指定了项目工作区则仅限同一项目工作区
+- 排除已归档和清理失败的工作区
 
-### Shared workspace realization
+### 共享工作区实现
 
-For compatibility mode and shared-workspace projects:
+对于兼容模式和共享工作区项目：
 
-- create a stable execution workspace per project workspace when first needed
-- reuse it for subsequent runs
+- 在首次需要时为每个项目工作区创建稳定的执行工作区
+- 后续运行复用它
 
-This avoids a special-case branch in later work product linkage.
+这避免了后续工作产出链接中的特殊情况分支。
 
-## 4. Runtime service integration
+## 4. 运行时服务集成
 
-When runtime services are started or reused:
+当运行时服务启动或复用时：
 
-- populate `execution_workspace_id`
-- continue populating `project_workspace_id`, `project_id`, and `issue_id`
+- 填充 `execution_workspace_id`
+- 继续填充 `project_workspace_id`、`project_id` 和 `issue_id`
 
-When a runtime service yields a URL:
+当运行时服务产生 URL 时：
 
-- optionally create or update a linked `issue_work_products` row of type `runtime_service` or `preview_url`
+- 可选地创建或更新 `runtime_service` 或 `preview_url` 类型的链接 `issue_work_products` 行
 
-## 5. PR and preview reporting
+## 5. PR 和预览报告
 
-Add a service for creating/updating `issue_work_products`.
+添加创建/更新 `issue_work_products` 的服务。
 
-### Supported V1 product types
+### 支持的 V1 产品类型
 
 - `pull_request`
 - `preview_url`
@@ -494,11 +494,11 @@ Add a service for creating/updating `issue_work_products`.
 - `artifact`
 - `document`
 
-### GitHub PR reporting
+### GitHub PR 报告
 
-For V1, GitHub is the only provider with richer semantics.
+V1 中 GitHub 是唯一具有更丰富语义的提供商。
 
-Supported statuses:
+支持的状态：
 
 - `draft`
 - `ready_for_review`
@@ -507,20 +507,20 @@ Supported statuses:
 - `merged`
 - `closed`
 
-Represent these in `status` and `review_state` rather than inventing a separate PR table in V1.
+在 `status` 和 `review_state` 中表示这些，而非在 V1 中发明单独的 PR 表。
 
-## Routes and API
+## 路由和 API
 
-## 1. Project workspace routes
+## 1. 项目工作区路由
 
-Extend existing routes:
+扩展现有路由：
 
 - `GET /projects/:id/workspaces`
 - `POST /projects/:id/workspaces`
 - `PATCH /projects/:id/workspaces/:workspaceId`
 - `DELETE /projects/:id/workspaces/:workspaceId`
 
-### New accepted/returned fields
+### 新接受/返回的字段
 
 - `sourceType`
 - `defaultRef`
@@ -530,12 +530,12 @@ Extend existing routes:
 - `remoteProvider`
 - `remoteWorkspaceRef`
 
-## 2. Execution workspace routes
+## 2. 执行工作区路由
 
-Add:
+添加：
 
 - `GET /companies/:companyId/execution-workspaces`
-  - filters:
+  - 过滤器：
     - `projectId`
     - `projectWorkspaceId`
     - `status`
@@ -543,34 +543,34 @@ Add:
     - `reuseEligible=true`
 - `GET /execution-workspaces/:id`
 - `PATCH /execution-workspaces/:id`
-  - update status/metadata/cleanup fields only in V1
+  - V1 中仅更新状态/元数据/清理字段
 
-Do not add top-level navigation for these routes yet.
+暂不为这些路由添加顶级导航。
 
-## 3. Work product routes
+## 3. 工作产出路由
 
-Add:
+添加：
 
 - `GET /issues/:id/work-products`
 - `POST /issues/:id/work-products`
 - `PATCH /work-products/:id`
 - `DELETE /work-products/:id`
 
-### V1 mutation permissions
+### V1 变更权限
 
-- board can create/update/delete all
-- agents can create/update for issues they are assigned or currently executing
-- deletion should generally archive rather than hard-delete once linked to historical output
+- 看板可以创建/更新/删除所有
+- 智能体可以为其被分配或当前执行的任务创建/更新
+- 删除在链接到历史输出后通常应归档而非硬删除
 
-## 4. Issue routes
+## 4. 任务路由
 
-Extend existing create/update payloads to accept:
+扩展现有创建/更新载荷以接受：
 
 - `projectWorkspaceId`
 - `executionWorkspacePreference`
 - `executionWorkspaceId`
 
-Extend `GET /issues/:id` to return:
+扩展 `GET /issues/:id` 以返回：
 
 - `projectWorkspaceId`
 - `executionWorkspaceId`
@@ -578,155 +578,155 @@ Extend `GET /issues/:id` to return:
 - `currentExecutionWorkspace`
 - `workProducts[]`
 
-## 5. Instance settings routes
+## 5. 实例设置路由
 
-Add support for:
+添加支持：
 
-- reading/writing `experimental.workspaces`
+- 读写 `experimental.workspaces`
 
-This is a UI gate only.
+这仅是 UI 门控。
 
-If there is no generic instance settings storage yet, the first slice can store this in the existing config/instance settings mechanism used by `/instance/settings`.
+如果还没有通用的实例设置存储，第一个切片可以将其存储在 `/instance/settings` 使用的现有配置/实例设置机制中。
 
-## UI Changes
+## UI 变更
 
 ## 1. `/instance/settings`
 
-Add section:
+添加部分：
 
-- `Experimental`
-  - `Enable Workspaces`
+- `实验性`
+  - `启用工作区`
 
-When off:
+关闭时：
 
-- hide new workspace-specific affordances
-- do not alter existing project or issue behavior
+- 隐藏新的工作区特定功能
+- 不改变现有项目或任务行为
 
-## 2. Project properties
+## 2. 项目属性
 
-Do not create a separate `Code` tab yet.
-Ship inside existing project properties first.
+暂不创建单独的 `代码` 标签页。
+先在现有项目属性中发布。
 
-### Add or re-enable sections
+### 添加或重新启用的部分
 
-- `Project Workspaces`
-- `Execution Defaults`
-- `Provisioning`
-- `Pull Requests`
-- `Previews and Runtime`
-- `Cleanup`
+- `项目工作区`
+- `执行默认值`
+- `预配置`
+- `Pull Request`
+- `预览和运行时`
+- `清理`
 
-### Display rules
+### 显示规则
 
-- only show when `experimental.workspaces=true`
-- keep wording generic enough for local and remote setups
-- only show git-specific fields when `sourceType=git_repo`
-- only show local-path-specific fields when not `remote_managed`
+- 仅在 `experimental.workspaces=true` 时显示
+- 措辞足够通用以适用于本地和远程设置
+- 仅在 `sourceType=git_repo` 时显示 git 特定字段
+- 非 `remote_managed` 时才显示本地路径特定字段
 
-## 3. Issue create dialog
+## 3. 任务创建对话框
 
-When the workspace experimental flag is on and the selected project has workspace automation or workspaces:
+当工作区实验标志开启且选定项目有工作区自动化或工作区时：
 
-### Basic fields
+### 基础字段
 
-- `Codebase`
-  - select from project workspaces
-  - default to policy default or primary workspace
-- `Execution mode`
-  - `Project default`
-  - `Shared workspace`
-  - `Isolated workspace`
-  - `Operator branch`
+- `代码库`
+  - 从项目工作区中选择
+  - 默认为策略默认或主工作区
+- `执行模式`
+  - `项目默认`
+  - `共享工作区`
+  - `隔离工作区`
+  - `操作者分支`
 
-### Advanced section
+### 高级部分
 
-- `Reuse existing execution workspace`
+- `复用现有执行工作区`
 
-This control should query only:
+此控件应仅查询：
 
-- same project
-- same codebase if selected
-- active/recent workspaces
-- compact labels with branch or workspace name
+- 同一项目
+- 如果选定了则同一代码库
+- 活跃/近期工作区
+- 带分支或工作区名称的紧凑标签
 
-Do not expose all execution workspaces in a noisy unfiltered list.
+不要在嘈杂的未过滤列表中公开所有执行工作区。
 
-## 4. Issue detail
+## 4. 任务详情
 
-Add a `Work Product` tab when:
+当以下条件满足时添加 `工作产出` 标签页：
 
-- the experimental flag is on, or
-- the issue already has work products
+- 实验标志开启，或
+- 任务已有工作产出
 
-### Show
+### 显示
 
-- current execution workspace summary
-- PR cards
-- preview cards
-- branch/commit rows
-- artifacts/documents
+- 当前执行工作区摘要
+- PR 卡片
+- 预览卡片
+- 分支/提交行
+- 产物/文档
 
-Add compact header chips:
+添加紧凑的页头标签：
 
-- codebase
-- workspace
-- PR count/status
-- preview status
+- 代码库
+- 工作区
+- PR 数量/状态
+- 预览状态
 
-## 5. Execution workspace detail page
+## 5. 执行工作区详情页面
 
-Add a detail route but no nav item.
+添加详情路由但无导航项。
 
-Linked from:
+从以下链接：
 
-- issue work product tab
-- project workspace/execution panels
+- 任务工作产出标签页
+- 项目工作区/执行面板
 
-### Show
+### 显示
 
-- identity and status
-- project workspace origin
-- source issue
-- linked issues
-- branch/ref/provider info
-- runtime services
-- work products
-- cleanup state
+- 身份和状态
+- 项目工作区来源
+- 源任务
+- 链接的任务
+- 分支/引用/提供商信息
+- 运行时服务
+- 工作产出
+- 清理状态
 
-## Runtime and Adapter Behavior
+## 运行时和适配器行为
 
-## 1. Local adapters
+## 1. 本地适配器
 
-For local adapters:
+对于本地适配器：
 
-- continue to use existing cwd/worktree realization paths
-- persist the result as execution workspaces
-- attach runtime services and work product to the execution workspace and issue
+- 继续使用现有的 cwd/worktree 实现路径
+- 将结果持久化为执行工作区
+- 将运行时服务和工作产出附加到执行工作区和任务
 
-## 2. Remote or cloud adapters
+## 2. 远程或云适配器
 
-For remote adapters:
+对于远程适配器：
 
-- allow execution workspaces with null `cwd`
-- require provider metadata sufficient to identify the remote workspace/session
-- allow work product creation without any host-local process ownership
+- 允许 `cwd` 为 null 的执行工作区
+- 要求足以识别远程工作区/会话的提供商元数据
+- 允许在无任何主机本地进程所有权的情况下创建工作产出
 
-Examples:
+示例：
 
-- cloud coding agent opens a branch and PR on GitHub
-- Vercel preview URL is reported back as a preview work product
-- remote sandbox emits artifact URLs
+- 云编码智能体在 GitHub 上打开分支和 PR
+- Vercel 预览 URL 作为预览工作产出报告回来
+- 远程沙箱发出产物 URL
 
-## 3. Approval-aware PR workflow
+## 3. 审批感知的 PR 工作流
 
-V1 should support richer PR state tracking, but not a full review engine.
+V1 应支持更丰富的 PR 状态跟踪，但不是完整的审查引擎。
 
-### Required actions
+### 必需操作
 
 - `open_pr`
 - `mark_ready`
 
-### Required review states
+### 必需审查状态
 
 - `draft`
 - `ready_for_review`
@@ -735,148 +735,148 @@ V1 should support richer PR state tracking, but not a full review engine.
 - `merged`
 - `closed`
 
-### Storage approach
+### 存储方案
 
-- represent these as `issue_work_products` with `type='pull_request'`
-- use `status` and `review_state`
-- store provider-specific details in `metadata`
+- 将这些表示为 `type='pull_request'` 的 `issue_work_products`
+- 使用 `status` 和 `review_state`
+- 在 `metadata` 中存储提供商特定细节
 
-## Migration Plan
+## 迁移计划
 
-## 1. Existing installs
+## 1. 现有安装
 
-The migration posture is backward-compatible by default.
+迁移姿态默认向后兼容。
 
-### Guarantees
+### 保证
 
-- no existing project must be edited before it keeps working
-- no existing issue flow should start requiring workspace input
-- all new nullable columns must preserve current behavior when absent
+- 现有项目在继续工作前不需要编辑
+- 现有任务流程不应开始要求工作区输入
+- 所有新的可空列在缺失时必须保留当前行为
 
-## 2. Project workspace migration
+## 2. 项目工作区迁移
 
-Migrate `project_workspaces` in place.
+就地迁移 `project_workspaces`。
 
-### Backfill
+### 回填
 
-- derive `source_type`
-- copy `repo_ref` to `default_ref`
-- leave new optional fields null
+- 派生 `source_type`
+- 将 `repo_ref` 复制到 `default_ref`
+- 新的可选字段留 null
 
-## 3. Issue migration
+## 3. 任务迁移
 
-Do not backfill `project_workspace_id` or `execution_workspace_id` on all existing issues.
+不要在所有现有任务上回填 `project_workspace_id` 或 `execution_workspace_id`。
 
-Reason:
+原因：
 
-- the safest migration is to preserve current runtime behavior and bind explicitly only when new workspace-aware flows are used
+- 最安全的迁移是保留当前运行时行为，仅在使用新的工作区感知流程时显式绑定
 
-Interpret old issues as:
+将旧任务解释为：
 
 - `executionWorkspacePreference = inherit`
-- compatibility/shared behavior
+- 兼容/共享行为
 
-## 4. Runtime history migration
+## 4. 运行时历史迁移
 
-Do not attempt a perfect historical reconstruction of execution workspaces in the migration itself.
+不要在迁移本身中尝试完美的执行工作区历史重建。
 
-Instead:
+相反：
 
-- create execution workspace records forward from first new run
-- optionally add a later backfill tool for recent runtime services if it proves valuable
+- 从第一次新运行开始向前创建执行工作区记录
+- 如果证明有价值，可选地后续为近期运行时服务添加回填工具
 
-## Rollout Order
+## 上线顺序
 
-## Phase 1: Schema and shared contracts
+## 阶段 1：数据库和共享契约
 
-1. extend `project_workspaces`
-2. add `execution_workspaces`
-3. add `issue_work_products`
-4. extend `issues`
-5. extend `workspace_runtime_services`
-6. update shared types and validators
+1. 扩展 `project_workspaces`
+2. 添加 `execution_workspaces`
+3. 添加 `issue_work_products`
+4. 扩展 `issues`
+5. 扩展 `workspace_runtime_services`
+6. 更新共享类型和校验器
 
-## Phase 2: Service wiring
+## 阶段 2：服务接线
 
-1. update project workspace CRUD
-2. update issue create/update resolution
-3. refactor workspace realization to persist execution workspaces
-4. attach runtime services to execution workspaces
-5. add work product service and persistence
+1. 更新项目工作区 CRUD
+2. 更新任务创建/更新解析
+3. 重构工作区实现以持久化执行工作区
+4. 将运行时服务附加到执行工作区
+5. 添加工作产出服务和持久化
 
-## Phase 3: API and UI
+## 阶段 3：API 和 UI
 
-1. add execution workspace routes
-2. add work product routes
-3. add instance experimental settings toggle
-4. re-enable and revise project workspace UI behind the flag
-5. add issue create/update controls behind the flag
-6. add issue work product tab
-7. add execution workspace detail page
+1. 添加执行工作区路由
+2. 添加工作产出路由
+3. 添加实例实验性设置切换
+4. 在标志后面重新启用和修订项目工作区 UI
+5. 在标志后面添加任务创建/更新控制
+6. 添加任务工作产出标签页
+7. 添加执行工作区详情页面
 
-## Phase 4: Provider integrations
+## 阶段 4：提供商集成
 
-1. GitHub PR reporting
-2. preview URL reporting
-3. runtime-service-to-work-product linking
-4. remote/cloud provider references
+1. GitHub PR 报告
+2. 预览 URL 报告
+3. 运行时服务到工作产出链接
+4. 远程/云提供商引用
 
-## Acceptance Criteria
+## 验收标准
 
-1. Existing installs continue to behave predictably with no required reconfiguration.
-2. Projects can define local, git, non-git, and remote-managed project workspaces.
-3. Issues can explicitly select a project workspace and execution preference.
-4. Each issue can point to one current execution workspace.
-5. Multiple issues can intentionally reuse the same execution workspace.
-6. Execution workspaces are persisted for both local and remote execution flows.
-7. Work products can be attached to issues with optional execution workspace linkage.
-8. GitHub PRs can be represented with richer lifecycle states.
-9. The main UI remains simple when the experimental flag is off.
-10. No top-level workspace navigation is required for this first slice.
+1. 现有安装继续可预测地运行，无需重新配置。
+2. 项目可以定义本地、git、非 git 和远程管理的项目工作区。
+3. 任务可以显式选择项目工作区和执行偏好。
+4. 每个任务可以指向一个当前执行工作区。
+5. 多个任务可以有意复用同一执行工作区。
+6. 执行工作区对本地和远程执行流程都持久化。
+7. 工作产出可以附加到任务，可选链接执行工作区。
+8. GitHub PR 可以用更丰富的生命周期状态表示。
+9. 实验标志关闭时主 UI 保持简单。
+10. 此首个切片不需要顶级工作区导航。
 
-## Risks and Mitigations
+## 风险和缓解
 
-## Risk: too many overlapping workspace concepts
+## 风险：过多重叠的工作区概念
 
-Mitigation:
+缓解：
 
-- keep issue UI to `Codebase` and `Execution mode`
-- reserve execution workspace details for advanced pages
+- 将任务 UI 限制在 `代码库` 和 `执行模式`
+- 将执行工作区细节保留给高级页面
 
-## Risk: breaking current projects on upgrade
+## 风险：升级时破坏当前项目
 
-Mitigation:
+缓解：
 
-- nullable schema additions
-- in-place `project_workspaces` migration
-- compatibility defaults
+- 可空的数据库增列
+- 就地 `project_workspaces` 迁移
+- 兼容默认值
 
-## Risk: local-only assumptions leaking into cloud mode
+## 风险：仅本地假设泄漏到云模式
 
-Mitigation:
+缓解：
 
-- make `cwd` optional for execution workspaces
-- use `provider_type` and `provider_ref`
-- use `PAPERCLIP_EXECUTION_TOPOLOGY` as a defaulting guardrail
+- 使执行工作区的 `cwd` 可选
+- 使用 `provider_type` 和 `provider_ref`
+- 使用 `PAPERCLIP_EXECUTION_TOPOLOGY` 作为默认护栏
 
-## Risk: turning PRs into a bespoke subsystem too early
+## 风险：过早将 PR 变成定制子系统
 
-Mitigation:
+缓解：
 
-- represent PRs as work products in V1
-- keep provider-specific details in metadata
-- defer a dedicated PR table unless usage proves it necessary
+- V1 中将 PR 表示为工作产出
+- 在 metadata 中保留提供商特定细节
+- 除非使用证明有必要，否则推迟专用 PR 表
 
-## Recommended First Engineering Slice
+## 推荐的首个工程切片
 
-If we want the narrowest useful implementation:
+如果我们想要最窄的有用实现：
 
-1. extend `project_workspaces`
-2. add `execution_workspaces`
-3. extend `issues` with explicit workspace fields
-4. persist execution workspaces from existing local workspace realization
-5. add `issue_work_products`
-6. show project workspace controls and issue workspace controls behind the experimental flag
-7. add issue `Work Product` tab with PR/preview/runtime service display
+1. 扩展 `project_workspaces`
+2. 添加 `execution_workspaces`
+3. 用显式工作区字段扩展 `issues`
+4. 从现有本地工作区实现中持久化执行工作区
+5. 添加 `issue_work_products`
+6. 在实验标志后面显示项目工作区控制和任务工作区控制
+7. 添加带 PR/预览/运行时服务显示的任务 `工作产出` 标签页
 
-This slice is enough to validate the model without yet building every provider integration or cleanup workflow.
+此切片足以验证模型，而无需构建每个提供商集成或清理工作流。

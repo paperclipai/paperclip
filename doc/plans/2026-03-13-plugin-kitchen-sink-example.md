@@ -1,61 +1,61 @@
-# Kitchen Sink Plugin Plan
+# 厨房水槽插件计划
 
-## Goal
+## 目标
 
-Add a new first-party example plugin, `Kitchen Sink (Example)`, that demonstrates every currently implemented Paperclip plugin API surface in one place.
+添加一个新的第一方示例插件 `Kitchen Sink (Example)`，在一个地方演示当前已实现的每个 Paperclip 插件 API 表面。
 
-This plugin is meant to be:
+此插件旨在：
 
-- a living reference implementation for contributors
-- a manual test harness for the plugin runtime
-- a discoverable demo of what plugins can actually do today
+- 为贡献者提供活的参考实现
+- 为插件运行时提供手动测试工具
+- 可发现地展示插件今天实际能做什么
 
-It is not meant to be a polished end-user product plugin.
+它不旨在成为打磨的最终用户产品插件。
 
-## Why
+## 为什么
 
-The current plugin system has a real API surface, but it is spread across:
+当前插件系统有真实的 API 表面，但分散在：
 
-- SDK docs
-- SDK types
-- plugin spec prose
-- two example plugins that each show only a narrow slice
+- SDK 文档
+- SDK 类型
+- 插件规格散文
+- 两个各自只展示窄范围切片的示例插件
 
-That makes it hard to answer basic questions like:
+这使得难以回答基本问题，如：
 
-- what can plugins render?
-- what can plugin workers actually do?
-- which surfaces are real versus aspirational?
-- how should a new plugin be structured in this repo?
+- 插件能渲染什么？
+- 插件 worker 实际能做什么？
+- 哪些界面是真实的，哪些是愿景性的？
+- 在此仓库中新插件应如何结构化？
 
-The kitchen-sink plugin should answer those questions by example.
+厨房水槽插件应通过示例回答这些问题。
 
-## Success Criteria
+## 成功标准
 
-The plugin is successful if a contributor can install it and, without reading the SDK first, discover and exercise the current plugin runtime surface area from inside Paperclip.
+如果贡献者可以安装它并在不先阅读 SDK 的情况下，从 Paperclip 内部发现和体验当前插件运行时的表面区域，则该插件是成功的。
 
-Concretely:
+具体而言：
 
-- it installs from the bundled examples list
-- it exposes at least one demo for every implemented worker API surface
-- it exposes at least one demo for every host-mounted UI surface
-- it clearly labels local-only / trusted-only demos
-- it is safe enough for local development by default
-- it doubles as a regression harness for plugin runtime changes
+- 它从捆绑示例列表安装
+- 它为每个已实现的 worker API 表面至少暴露一个演示
+- 它为每个宿主挂载的 UI 表面至少暴露一个演示
+- 它清楚标记仅本地 / 仅受信的演示
+- 它对本地开发默认足够安全
+- 它兼作插件运行时变更的回归工具
 
-## Constraints
+## 约束
 
-- Keep it instance-installed, not company-installed.
-- Treat this as a trusted/local example plugin.
-- Do not rely on cloud-safe runtime assumptions.
-- Avoid destructive defaults.
-- Avoid irreversible mutations unless they are clearly labeled and easy to undo.
+- 保持为实例安装，而非公司安装。
+- 视为受信/本地示例插件。
+- 不依赖云安全运行时假设。
+- 避免破坏性默认值。
+- 避免不可逆变更，除非它们被清楚标记且易于撤销。
 
-## Source Of Truth For This Plan
+## 本计划的事实来源
 
-This plan is based on the currently implemented SDK/types/runtime, not only the long-horizon spec.
+本计划基于当前已实现的 SDK/类型/运行时，而不仅是长期规格。
 
-Primary references:
+主要引用：
 
 - `packages/plugins/sdk/README.md`
 - `packages/plugins/sdk/src/types.ts`
@@ -63,11 +63,11 @@ Primary references:
 - `packages/shared/src/constants.ts`
 - `packages/shared/src/types/plugin.ts`
 
-## Current Surface Inventory
+## 当前表面清单
 
-### Worker/runtime APIs to demonstrate
+### 需要演示的 Worker/运行时 API
 
-These are the concrete `ctx` clients currently exposed by the SDK:
+这些是 SDK 当前暴露的具体 `ctx` 客户端：
 
 - `ctx.config`
 - `ctx.events`
@@ -91,9 +91,9 @@ These are the concrete `ctx` clients currently exposed by the SDK:
 - `ctx.metrics`
 - `ctx.logger`
 
-### UI surfaces to demonstrate
+### 需要演示的 UI 表面
 
-Surfaces defined in the SDK:
+SDK 中定义的表面：
 
 - `page`
 - `settingsPage`
@@ -108,367 +108,367 @@ Surfaces defined in the SDK:
 - `commentAnnotation`
 - `commentContextMenuItem`
 
-### Current host confidence
+### 当前宿主支持状况
 
-Confirmed or strongly indicated as mounted in the current app:
+已确认或强烈表明在当前应用中已挂载的：
 
 - `page`
 - `settingsPage`
 - `dashboardWidget`
 - `detailTab`
 - `projectSidebarItem`
-- comment surfaces
-- launcher infrastructure
+- 评论表面
+- 启动器基础设施
 
-Need explicit validation before claiming full demo coverage:
+在声称完整演示覆盖前需要显式验证的：
 
 - `sidebar`
 - `sidebarPanel`
 - `taskDetailView`
-- `toolbarButton` as direct slot, distinct from launcher placement
-- `contextMenuItem` as direct slot, distinct from comment menu and launcher placement
+- `toolbarButton` 作为直接插槽，区别于启动器放置
+- `contextMenuItem` 作为直接插槽，区别于评论菜单和启动器放置
 
-The implementation should keep a small validation checklist for these before we call the plugin "complete".
+实现应在这些项上保留一个小的验证检查清单，然后才能称该插件为"完整"。
 
-## Plugin Concept
+## 插件概念
 
-The plugin should be named:
+插件应命名为：
 
-- display name: `Kitchen Sink (Example)`
-- package: `@paperclipai/plugin-kitchen-sink-example`
-- plugin id: `paperclip.kitchen-sink-example` or `paperclip-kitchen-sink-example`
+- 显示名称：`Kitchen Sink (Example)`
+- 包名：`@paperclipai/plugin-kitchen-sink-example`
+- 插件 id：`paperclip.kitchen-sink-example` 或 `paperclip-kitchen-sink-example`
 
-Recommendation: use `paperclip-kitchen-sink-example` to match current in-repo example naming style.
+建议：使用 `paperclip-kitchen-sink-example` 以匹配当前仓库内示例的命名风格。
 
-Category mix:
+分类组合：
 
 - `ui`
 - `automation`
 - `workspace`
 - `connector`
 
-That is intentionally broad because the point is coverage.
+这是有意宽泛的，因为目的是覆盖面。
 
-## UX Shape
+## UX 形态
 
-The plugin should have one main full-page demo console plus smaller satellites on other surfaces.
+插件应有一个主要的全页面演示控制台加上其他表面上的小型卫星。
 
-### 1. Plugin page
+### 1. 插件页面
 
-Primary route: the plugin `page` surface should be the central dashboard for all demos.
+主要路由：插件 `page` 表面应是所有演示的中央仪表盘。
 
-Recommended page sections:
+推荐的页面部分：
 
-- `Overview`
-  - what this plugin demonstrates
-  - current capabilities granted
-  - current host context
-- `UI Surfaces`
-  - links explaining where each other surface should appear
-- `Data + Actions`
-  - buttons and forms for bridge-driven worker demos
-- `Events + Streams`
-  - emit event
-  - watch event log
-  - stream demo output
-- `Paperclip Domain APIs`
-  - companies
-  - projects/workspaces
-  - issues
-  - goals
-  - agents
-- `Local Workspace + Process`
-  - file listing
-  - file read/write scratch area
-  - child process demo
-- `Jobs + Webhooks + Tools`
-  - job status
-  - webhook URL and recent deliveries
-  - declared tools
-- `State + Entities + Assets`
-  - scoped state editor
-  - plugin entity inspector
-  - upload/generated asset demo
-- `Observability`
-  - metrics written
-  - activity log samples
-  - latest worker logs
+- `概览`
+  - 此插件演示什么
+  - 当前授予的能力
+  - 当前宿主上下文
+- `UI 表面`
+  - 解释每个其他表面应出现在哪里的链接
+- `数据 + 操作`
+  - 用于桥接驱动的 worker 演示的按钮和表单
+- `事件 + 流`
+  - 发送事件
+  - 观察事件日志
+  - 流式演示输出
+- `Paperclip 领域 API`
+  - 公司
+  - 项目/工作区
+  - 任务
+  - 目标
+  - 智能体
+- `本地工作区 + 进程`
+  - 文件列表
+  - 文件读/写暂存区
+  - 子进程演示
+- `任务 + Webhook + 工具`
+  - 任务状态
+  - webhook URL 和最近的投递
+  - 声明的工具
+- `状态 + 实体 + 资源`
+  - 范围化状态编辑器
+  - 插件实体检查器
+  - 上传/生成的资源演示
+- `可观测性`
+  - 已写入的指标
+  - 活动日志样本
+  - 最新 worker 日志
 
-### 2. Dashboard widget
+### 2. 仪表盘小部件
 
-A compact widget on the main dashboard should show:
+主仪表盘上的紧凑小部件应显示：
 
-- plugin health
-- count of demos exercised
-- recent event/stream activity
-- shortcut to the full plugin page
+- 插件健康状况
+- 已体验的演示数量
+- 最近的事件/流活动
+- 到完整插件页面的快捷方式
 
-### 3. Project sidebar item
+### 3. 项目侧边栏项
 
-Add a `Kitchen Sink` link under each project that deep-links into a project-scoped plugin tab.
+在每个项目下添加一个 `Kitchen Sink` 链接，深层链接到项目范围的插件标签页。
 
-### 4. Detail tabs
+### 4. 详情标签页
 
-Use detail tabs to demonstrate entity-context rendering on:
+使用详情标签页在以下实体上下文中演示渲染：
 
 - `project`
 - `issue`
 - `agent`
 - `goal`
 
-Each tab should show:
+每个标签页应显示：
 
-- the host context it received
-- the relevant entity fetch via worker bridge
-- one small action scoped to that entity
+- 它接收到的宿主上下文
+- 通过 worker 桥接获取的相关实体
+- 一个范围限定于该实体的小操作
 
-### 5. Comment surfaces
+### 5. 评论表面
 
-Use issue comment demos to prove comment-specific extension points:
+使用任务评论演示来证明评论特定的扩展点：
 
 - `commentAnnotation`
-  - render parsed metadata below each comment
-  - show comment id, issue id, and a small derived status
+  - 在每条评论下渲染解析的元数据
+  - 显示评论 id、任务 id 和一个小的衍生状态
 - `commentContextMenuItem`
-  - add a menu action like `Copy Context To Kitchen Sink`
-  - action writes a plugin entity or state record for later inspection
+  - 添加一个菜单操作如 `复制上下文到 Kitchen Sink`
+  - 操作写入一个插件实体或状态记录供后续检查
 
-### 6. Settings page
+### 6. 设置页面
 
-Custom `settingsPage` should be intentionally simple and operational:
+自定义 `settingsPage` 应有意保持简单和操作性：
 
-- `About`
-- `Danger / Trust Model`
-- demo toggles
-- local process defaults
-- workspace scratch-path behavior
-- secret reference inputs
-- event/job/webhook sample config
+- `关于`
+- `危险 / 信任模型`
+- 演示开关
+- 本地进程默认值
+- 工作区暂存路径行为
+- 密钥引用输入
+- 事件/任务/webhook 示例配置
 
-This plugin should also keep the generic plugin settings `Status` tab useful by writing health, logs, and metrics.
+此插件还应通过写入健康、日志和指标来保持通用插件设置 `Status` 标签页的有用性。
 
-## Feature Matrix
+## 功能矩阵
 
-Each implemented worker API should have a visible demo.
+每个已实现的 worker API 应有一个可见的演示。
 
 ### `ctx.config`
 
-Demo:
+演示：
 
-- read live config
-- show config JSON
-- react to config changes without restart where possible
+- 读取实时配置
+- 显示配置 JSON
+- 在可能的情况下不重启即响应配置变更
 
 ### `ctx.events`
 
-Demos:
+演示：
 
-- emit a plugin event
-- subscribe to plugin events
-- subscribe to a core Paperclip event such as `issue.created`
-- show recent received events in a timeline
+- 发送一个插件事件
+- 订阅插件事件
+- 订阅一个核心 Paperclip 事件如 `issue.created`
+- 在时间线中显示最近接收的事件
 
 ### `ctx.jobs`
 
-Demos:
+演示：
 
-- one scheduled heartbeat-style demo job
-- one manual run button from the UI if host supports manual job trigger
-- show last run result and timestamps
+- 一个调度的心跳式演示任务
+- 如果宿主支持手动任务触发，从 UI 提供一个手动运行按钮
+- 显示上次运行结果和时间戳
 
 ### `ctx.launchers`
 
-Demos:
+演示：
 
-- declare launchers in manifest
-- optionally register one runtime launcher from the worker
-- show launcher metadata on the plugin page
+- 在清单中声明启动器
+- 可选地从 worker 注册一个运行时启动器
+- 在插件页面显示启动器元数据
 
 ### `ctx.http`
 
-Demo:
+演示：
 
-- make a simple outbound GET request to a safe endpoint
-- show status code, latency, and JSON result
+- 向一个安全端点发起简单的出站 GET 请求
+- 显示状态码、延迟和 JSON 结果
 
-Recommendation: default to a Paperclip-local endpoint or a stable public echo endpoint to avoid flaky docs.
+建议：默认使用 Paperclip 本地端点或稳定的公共回显端点以避免不稳定的文档。
 
 ### `ctx.secrets`
 
-Demo:
+演示：
 
-- operator enters a secret reference in config
-- plugin resolves it on demand
-- UI only shows masked result length / success status, never raw secret
+- 操作者在配置中输入密钥引用
+- 插件按需解析
+- UI 仅显示掩码后的结果长度/成功状态，永不显示原始密钥
 
 ### `ctx.assets`
 
-Demos:
+演示：
 
-- generate a text asset from the UI
-- optionally upload a tiny JSON blob or screenshot-like text file
-- show returned asset URL
+- 从 UI 生成文本资源
+- 可选上传一个小 JSON blob 或截图式文本文件
+- 显示返回的资源 URL
 
 ### `ctx.activity`
 
-Demo:
+演示：
 
-- button to write a plugin activity log entry against current company/entity
+- 按钮写入一条针对当前公司/实体的插件活动日志条目
 
 ### `ctx.state`
 
-Demos:
+演示：
 
-- instance-scoped state
-- company-scoped state
-- project-scoped state
-- issue-scoped state
-- delete/reset controls
+- 实例范围状态
+- 公司范围状态
+- 项目范围状态
+- 任务范围状态
+- 删除/重置控制
 
-Use a small state inspector/editor on the plugin page.
+在插件页面使用小型状态检查器/编辑器。
 
 ### `ctx.entities`
 
-Demos:
+演示：
 
-- create plugin-owned sample records
-- list/filter them
-- show one realistic use case such as "copied comments" or "demo sync records"
+- 创建插件拥有的示例记录
+- 列出/过滤它们
+- 展示一个现实用例如"已复制的评论"或"演示同步记录"
 
 ### `ctx.projects`
 
-Demos:
+演示：
 
-- list projects
-- list project workspaces
-- resolve primary workspace
-- resolve workspace for issue
+- 列出项目
+- 列出项目工作区
+- 解析主工作区
+- 解析任务的工作区
 
 ### `ctx.companies`
 
-Demo:
+演示：
 
-- list companies and show current selected company
+- 列出公司并显示当前选择的公司
 
 ### `ctx.issues`
 
-Demos:
+演示：
 
-- list issues in current company
-- create issue
-- update issue status/title
-- list comments
-- create comment
+- 列出当前公司的任务
+- 创建任务
+- 更新任务状态/标题
+- 列出评论
+- 创建评论
 
 ### `ctx.agents`
 
-Demos:
+演示：
 
-- list agents
-- invoke one agent with a test prompt
-- pause/resume where safe
+- 列出智能体
+- 用测试 prompt 调用一个智能体
+- 在安全的情况下暂停/恢复
 
-Agent mutation controls should be behind an explicit warning.
+智能体变更控制应在显式警告后面。
 
 ### `ctx.agents.sessions`
 
-Demos:
+演示：
 
-- create agent chat session
-- send message
-- stream events back to the UI
-- close session
+- 创建智能体聊天会话
+- 发送消息
+- 将事件流式传输回 UI
+- 关闭会话
 
-This is a strong candidate for the best "wow" demo on the plugin page.
+这是插件页面上最佳"哇"演示的有力候选。
 
 ### `ctx.goals`
 
-Demos:
+演示：
 
-- list goals
-- create goal
-- update status/title
+- 列出目标
+- 创建目标
+- 更新状态/标题
 
 ### `ctx.data`
 
-Use throughout the plugin for all read-side bridge demos.
+在整个插件中用于所有读取侧桥接演示。
 
 ### `ctx.actions`
 
-Use throughout the plugin for all mutation-side bridge demos.
+在整个插件中用于所有变更侧桥接演示。
 
 ### `ctx.streams`
 
-Demos:
+演示：
 
-- live event log stream
-- token-style stream from an agent session relay
-- fake progress stream for a long-running action
+- 实时事件日志流
+- 来自智能体会话中继的 token 式流
+- 长时运行操作的伪进度流
 
 ### `ctx.tools`
 
-Demos:
+演示：
 
-- declare 2-3 simple agent tools
-- tool 1: echo/diagnostics
-- tool 2: project/workspace summary
-- tool 3: create issue or write plugin state
+- 声明 2-3 个简单的智能体工具
+- 工具 1：回显/诊断
+- 工具 2：项目/工作区摘要
+- 工具 3：创建任务或写入插件状态
 
-The plugin page should list declared tools and show example input payloads.
+插件页面应列出声明的工具并显示示例输入负载。
 
 ### `ctx.metrics`
 
-Demo:
+演示：
 
-- write a sample metric on each major demo action
-- surface a small recent metrics table in the plugin page
+- 在每个主要演示操作上写入一个样本指标
+- 在插件页面展示一个小的最近指标表
 
 ### `ctx.logger`
 
-Demo:
+演示：
 
-- every action logs structured entries
-- plugin settings `Status` page then doubles as the log viewer
+- 每个操作记录结构化条目
+- 插件设置 `Status` 页面随后兼作日志查看器
 
-## Local Workspace And Process Demos
+## 本地工作区和进程演示
 
-The plugin SDK intentionally leaves file/process operations to the plugin itself once it has workspace metadata.
+插件 SDK 有意将文件/进程操作留给插件本身，一旦它有了工作区元数据。
 
-The kitchen-sink plugin should demonstrate that explicitly.
+厨房水槽插件应明确演示这一点。
 
-### Workspace demos
+### 工作区演示
 
-- list files from a selected workspace
-- read a file
-- write to a plugin-owned scratch file
-- optionally search files with `rg` if available
+- 列出所选工作区的文件
+- 读取一个文件
+- 写入一个插件拥有的暂存文件
+- 如果可用，可选使用 `rg` 搜索文件
 
-### Process demos
+### 进程演示
 
-- run a short-lived command like `pwd`, `ls`, or `git status`
-- stream stdout/stderr back to UI
-- show exit code and timing
+- 运行一个短命命令如 `pwd`、`ls` 或 `git status`
+- 将 stdout/stderr 流式传输回 UI
+- 显示退出码和时间
 
-Important safeguards:
+重要安全措施：
 
-- default commands must be read-only
-- no shell interpolation from arbitrary free-form input in v1
-- provide a curated command list or a strongly validated command form
-- clearly label this area as local-only and trusted-only
+- 默认命令必须是只读的
+- v1 中不从任意自由形式输入进行 shell 插值
+- 提供一个精选命令列表或一个强验证的命令表单
+- 清楚标记此区域为仅本地和仅受信
 
-## Proposed Manifest Coverage
+## 提议的清单覆盖
 
-The plugin should aim to declare:
+插件应旨在声明：
 
 - `page`
 - `settingsPage`
 - `dashboardWidget`
-- `detailTab` for `project`, `issue`, `agent`, `goal`
+- `detailTab` 用于 `project`、`issue`、`agent`、`goal`
 - `projectSidebarItem`
 - `commentAnnotation`
 - `commentContextMenuItem`
 
-Then, after host validation, add if supported:
+然后，在宿主验证后，如果支持则添加：
 
 - `sidebar`
 - `sidebarPanel`
@@ -476,15 +476,15 @@ Then, after host validation, add if supported:
 - `toolbarButton`
 - `contextMenuItem`
 
-It should also declare one or more `ui.launchers` entries to exercise launcher behavior independently of slot rendering.
+它还应声明一个或多个 `ui.launchers` 条目以独立于插槽渲染来体验启动器行为。
 
-## Proposed Package Layout
+## 提议的包布局
 
-New package:
+新包：
 
 - `packages/plugins/examples/plugin-kitchen-sink-example/`
 
-Expected files:
+预期文件：
 
 - `package.json`
 - `README.md`
@@ -496,37 +496,37 @@ Expected files:
 - `src/ui/components/...`
 - `src/ui/hooks/...`
 - `src/lib/...`
-- optional `scripts/build-ui.mjs` if UI bundling needs esbuild
+- 可选的 `scripts/build-ui.mjs`（如果 UI 打包需要 esbuild）
 
-## Proposed Internal Architecture
+## 提议的内部架构
 
-### Worker modules
+### Worker 模块
 
-Recommended split:
+推荐拆分：
 
 - `src/worker.ts`
-  - plugin definition and wiring
+  - 插件定义和连接
 - `src/worker/data.ts`
   - `ctx.data.register(...)`
 - `src/worker/actions.ts`
   - `ctx.actions.register(...)`
 - `src/worker/events.ts`
-  - event subscriptions and event log buffer
+  - 事件订阅和事件日志缓冲区
 - `src/worker/jobs.ts`
-  - scheduled job handlers
+  - 调度任务处理器
 - `src/worker/tools.ts`
-  - tool declarations and handlers
+  - 工具声明和处理器
 - `src/worker/local-runtime.ts`
-  - file/process demos
+  - 文件/进程演示
 - `src/worker/demo-store.ts`
-  - helpers for state/entities/assets/metrics
+  - 状态/实体/资源/指标的辅助工具
 
-### UI modules
+### UI 模块
 
-Recommended split:
+推荐拆分：
 
 - `src/ui/index.tsx`
-  - exported slot components
+  - 导出的插槽组件
 - `src/ui/page/KitchenSinkPage.tsx`
 - `src/ui/settings/KitchenSinkSettingsPage.tsx`
 - `src/ui/widgets/KitchenSinkDashboardWidget.tsx`
@@ -538,11 +538,11 @@ Recommended split:
 - `src/ui/comments/KitchenSinkCommentMenuItem.tsx`
 - `src/ui/shared/...`
 
-## Configuration Schema
+## 配置架构
 
-The plugin should have a substantial but understandable `instanceConfigSchema`.
+插件应有一个实质性但可理解的 `instanceConfigSchema`。
 
-Recommended config fields:
+推荐的配置字段：
 
 - `enableDangerousDemos`
 - `enableWorkspaceDemos`
@@ -553,42 +553,42 @@ Recommended config fields:
 - `showCommentAnnotation`
 - `showCommentContextMenuItem`
 - `showToolbarLauncher`
-- `defaultDemoCompanyId` optional
+- `defaultDemoCompanyId` 可选
 - `secretRefExample`
 - `httpDemoUrl`
 - `processAllowedCommands`
 - `workspaceScratchSubdir`
 
-Defaults should keep risky behavior off.
+默认值应保持高风险行为关闭。
 
-## Safety Defaults
+## 安全默认值
 
-Default posture:
+默认姿态：
 
-- UI and read-only demos on
-- mutating domain demos on but explicitly labeled
-- process demos off by default
-- no arbitrary shell input by default
-- no raw secret rendering ever
+- UI 和只读演示开启
+- 变更领域演示开启但明确标记
+- 进程演示默认关闭
+- 默认无任意 shell 输入
+- 永不渲染原始密钥
 
-## Phased Build Plan
+## 分阶段构建计划
 
-### Phase 1: Core plugin skeleton
+### 第一阶段：核心插件骨架
 
-- scaffold package
-- add manifest, worker, UI entrypoints
-- add README
-- make it appear in bundled examples list
+- 脚手架包
+- 添加清单、worker、UI 入口点
+- 添加 README
+- 使其出现在捆绑示例列表中
 
-### Phase 2: Core, confirmed UI surfaces
+### 第二阶段：核心已确认 UI 表面
 
-- plugin page
-- settings page
-- dashboard widget
-- project sidebar item
-- detail tabs
+- 插件页面
+- 设置页面
+- 仪表盘小部件
+- 项目侧边栏项
+- 详情标签页
 
-### Phase 3: Core worker APIs
+### 第三阶段：核心 worker API
 
 - config
 - state
@@ -597,103 +597,103 @@ Default posture:
 - data/actions
 - metrics/logger/activity
 
-### Phase 4: Real-time and automation APIs
+### 第四阶段：实时和自动化 API
 
 - streams
 - events
 - jobs
 - webhooks
-- agent sessions
+- 智能体会话
 - tools
 
-### Phase 5: Local trusted runtime demos
+### 第五阶段：本地受信运行时演示
 
-- workspace file demos
-- child process demos
-- guarded by config
+- 工作区文件演示
+- 子进程演示
+- 由配置保护
 
-### Phase 6: Secondary UI surfaces
+### 第六阶段：次要 UI 表面
 
-- comment annotation
-- comment context menu item
-- launchers
+- 评论注解
+- 评论上下文菜单项
+- 启动器
 
-### Phase 7: Validation-only surfaces
+### 第七阶段：仅验证的表面
 
-Validate whether the current host truly mounts:
+验证当前宿主是否真正挂载了：
 
 - `sidebar`
 - `sidebarPanel`
 - `taskDetailView`
-- direct-slot `toolbarButton`
-- direct-slot `contextMenuItem`
+- 直接插槽 `toolbarButton`
+- 直接插槽 `contextMenuItem`
 
-If mounted, add demos.
-If not mounted, document them as SDK-defined but host-pending.
+如果已挂载，添加演示。
+如果未挂载，将其记录为 SDK 定义但宿主待实现。
 
-## Documentation Deliverables
+## 文档交付物
 
-The plugin should ship with a README that includes:
+插件应附带一个 README，包含：
 
-- what it demonstrates
-- which surfaces are local-only
-- how to install it
-- where each UI surface should appear
-- a mapping from demo card to SDK API
+- 它演示了什么
+- 哪些表面是仅本地的
+- 如何安装
+- 每个 UI 表面应出现在哪里
+- 从演示卡片到 SDK API 的映射
 
-It should also be referenced from plugin docs as the "reference everything plugin".
+它还应从插件文档中被引用为"全面参考插件"。
 
-## Testing And Verification
+## 测试与验证
 
-Minimum verification:
+最低验证：
 
-- package typecheck/build
-- install from bundled example list
-- page loads
-- widget appears
-- project tab appears
-- comment surfaces render
-- settings page loads
-- key actions succeed
+- 包类型检查/构建
+- 从捆绑示例列表安装
+- 页面加载
+- 小部件显示
+- 项目标签页显示
+- 评论表面渲染
+- 设置页面加载
+- 关键操作成功
 
-Recommended manual checklist:
+推荐的手动检查清单：
 
-- create issue from plugin
-- create goal from plugin
-- emit and receive plugin event
-- stream action output
-- open agent session and receive streamed reply
-- upload an asset
-- write plugin activity log
-- run a safe local process demo
+- 从插件创建任务
+- 从插件创建目标
+- 发送并接收插件事件
+- 流式操作输出
+- 打开智能体会话并接收流式回复
+- 上传一个资源
+- 写入插件活动日志
+- 运行一个安全的本地进程演示
 
-## Open Questions
+## 开放问题
 
-1. Should the process demo remain curated-command-only in the first pass?
-   Recommendation: yes.
+1. 进程演示在第一轮中是否应保持仅精选命令？
+   建议：是的。
 
-2. Should the plugin create throwaway "kitchen sink demo" issues/goals automatically?
-   Recommendation: no. Make creation explicit.
+2. 插件是否应自动创建临时的"厨房水槽演示"任务/目标？
+   建议：不。使创建显式化。
 
-3. Should we expose unsupported-but-typed surfaces in the UI even if host mounting is not wired?
-   Recommendation: yes, but label them as `SDK-defined / host validation pending`.
+3. 我们是否应在 UI 中暴露不受支持但已定义类型的表面，即使宿主挂载未连接？
+   建议：是的，但标记为 `SDK 已定义 / 宿主验证待完成`。
 
-4. Should agent mutation demos include pause/resume by default?
-   Recommendation: probably yes, but behind a warning block.
+4. 智能体变更演示是否应默认包含暂停/恢复？
+   建议：可能是的，但要在警告块后面。
 
-5. Should this plugin be treated as a supported regression harness in CI later?
-   Recommendation: yes. Long term, this should be the plugin-runtime smoke test package.
+5. 此插件是否应在后续被视为 CI 中支持的回归工具？
+   建议：是的。长期来看，这应该是插件运行时的烟雾测试包。
 
-## Recommended Next Step
+## 推荐的下一步
 
-If this plan looks right, the next implementation pass should start by building only:
+如果此计划看起来正确，下一个实现轮次应仅从以下开始构建：
 
-- package skeleton
-- page
-- settings page
-- dashboard widget
-- one project detail tab
-- one issue detail tab
-- the basic worker/action/data/state/event scaffolding
+- 包骨架
+- 页面
+- 设置页面
+- 仪表盘小部件
+- 一个项目详情标签页
+- 一个任务详情标签页
+- 基本的 worker/action/data/state/event 脚手架
 
-That is enough to lock the architecture before filling in every demo surface.
+这足以在填充每个演示表面之前锁定架构。

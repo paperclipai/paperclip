@@ -1,424 +1,424 @@
-# Docker Release Browser E2E Plan
+# Docker 发布浏览器端到端测试计划
 
-## Context
+## 背景
 
-Today release smoke testing for published Paperclip packages is manual and shell-driven:
+目前针对已发布 Paperclip 包的发布冒烟测试是手动和基于 shell 的：
 
 ```sh
 HOST_PORT=3232 DATA_DIR=./data/release-smoke-canary PAPERCLIPAI_VERSION=canary ./scripts/docker-onboard-smoke.sh
 HOST_PORT=3233 DATA_DIR=./data/release-smoke-stable PAPERCLIPAI_VERSION=latest ./scripts/docker-onboard-smoke.sh
 ```
 
-That is useful because it exercises the same public install surface users hit:
+这很有用，因为它执行了用户会接触的相同公开安装流程：
 
 - Docker
 - `npx paperclipai@canary`
 - `npx paperclipai@latest`
-- authenticated bootstrap flow
+- 认证引导流程
 
-But it still leaves the most important release questions to a human with a browser:
+但它仍然将最重要的发布问题留给了拿着浏览器的人：
 
-- can I sign in with the smoke credentials?
-- do I land in onboarding?
-- can I complete onboarding?
-- does the initial CEO agent actually get created and run?
+- 我能用冒烟凭证登录吗？
+- 我是否进入了引导流程？
+- 我能完成引导流程吗？
+- 初始 CEO 智能体是否真的被创建并运行了？
 
-The repo already has two adjacent pieces:
+仓库已经有两个相邻的部分：
 
-- `tests/e2e/onboarding.spec.ts` covers the onboarding wizard against the local source tree
-- `scripts/docker-onboard-smoke.sh` boots a published Docker install and auto-bootstraps authenticated mode, but only verifies the API/session layer
+- `tests/e2e/onboarding.spec.ts` 针对本地源码树覆盖了引导向导
+- `scripts/docker-onboard-smoke.sh` 启动已发布的 Docker 安装并自动引导认证模式，但只验证 API/会话层
 
-What is missing is one deterministic browser test that joins those two paths.
+缺少的是一个确定性的浏览器测试来连接这两条路径。
 
-## Goal
+## 目标
 
-Add a release-grade Docker-backed browser E2E that validates the published `canary` and `latest` installs end to end:
+添加一个发布级别的 Docker 支持的浏览器端到端测试，端到端验证已发布的 `canary` 和 `latest` 安装：
 
-1. boot the published package in Docker
-2. sign in with known smoke credentials
-3. verify the user is routed into onboarding
-4. complete onboarding in the browser
-5. verify the first CEO agent exists
-6. verify the initial CEO run was triggered and reached a terminal or active state
+1. 在 Docker 中启动已发布的包
+2. 用已知的冒烟凭证登录
+3. 验证用户被路由到引导流程
+4. 在浏览器中完成引导流程
+5. 验证第一个 CEO 智能体存在
+6. 验证初始 CEO 运行被触发并达到终态或活跃状态
 
-Then wire that test into GitHub Actions so release validation is no longer manual-only.
+然后将该测试接入 GitHub Actions，使发布验证不再仅依赖手动。
 
-## Recommendation In One Sentence
+## 一句话建议
 
-Turn the current Docker smoke script into a machine-friendly test harness, add a dedicated Playwright release-smoke spec that drives the authenticated browser flow against published Docker installs, and run it in GitHub Actions for both `canary` and `latest`.
+将当前的 Docker 冒烟脚本转变为机器友好的测试工具，添加一个专用的 Playwright 发布冒烟规格来驱动针对已发布 Docker 安装的认证浏览器流程，并在 GitHub Actions 中为 `canary` 和 `latest` 运行它。
 
-## What We Have Today
+## 今天已有的
 
-### Existing local browser coverage
+### 现有的本地浏览器覆盖
 
-`tests/e2e/onboarding.spec.ts` already proves the onboarding wizard can:
+`tests/e2e/onboarding.spec.ts` 已经证明引导向导可以：
 
-- create a company
-- create a CEO agent
-- create an initial issue
-- optionally observe task progress
+- 创建公司
+- 创建 CEO 智能体
+- 创建初始任务
+- 可选地观察任务进度
 
-That is a good base, but it does not validate the public npm package, Docker path, authenticated login flow, or release dist-tags.
+这是一个好的基础，但它不验证公开的 npm 包、Docker 路径、认证登录流程或发布 dist-tag。
 
-### Existing Docker smoke coverage
+### 现有的 Docker 冒烟覆盖
 
-`scripts/docker-onboard-smoke.sh` already does useful setup work:
+`scripts/docker-onboard-smoke.sh` 已经做了有用的设置工作：
 
-- builds `Dockerfile.onboard-smoke`
-- runs `paperclipai@${PAPERCLIPAI_VERSION}` inside Docker
-- waits for health
-- signs up or signs in a smoke admin user
-- generates and accepts the bootstrap CEO invite in authenticated mode
-- verifies a board session and `/api/companies`
+- 构建 `Dockerfile.onboard-smoke`
+- 在 Docker 内运行 `paperclipai@${PAPERCLIPAI_VERSION}`
+- 等待健康检查
+- 注册或登录一个冒烟管理员用户
+- 在认证模式下生成并接受引导 CEO 邀请
+- 验证看板会话和 `/api/companies`
 
-That means the hard bootstrap problem is mostly solved already. The main gap is that the script is human-oriented and never hands control to a browser test.
+这意味着困难的引导问题大部分已经解决。主要缺口是脚本面向人工操作，从未将控制权交给浏览器测试。
 
-### Existing CI shape
+### 现有的 CI 形态
 
-The repo already has:
+仓库已经有：
 
-- `.github/workflows/e2e.yml` for manual Playwright runs against local source
-- `.github/workflows/release.yml` for canary publish on `master` and manual stable promotion
+- `.github/workflows/e2e.yml` 用于针对本地源码的手动 Playwright 运行
+- `.github/workflows/release.yml` 用于 `master` 上的 canary 发布和手动稳定版升级
 
-So the right move is to extend the current test/release system, not create a parallel one.
+所以正确的做法是扩展当前的测试/发布系统，而不是创建一个并行系统。
 
-## Product Decision
+## 产品决策
 
-### 1. The release smoke should stay deterministic and token-free
+### 1. 发布冒烟应保持确定性且不需要 token
 
-The first version should not require OpenAI, Anthropic, or external agent credentials.
+第一个版本不应需要 OpenAI、Anthropic 或外部智能体凭证。
 
-Use the onboarding flow with a deterministic adapter that can run on a stock GitHub runner and inside the published Docker install. The existing `process` adapter with a trivial command is the right base path for this release gate.
+使用引导流程配合确定性适配器，该适配器可以在标准 GitHub runner 和已发布的 Docker 安装内运行。现有的 `process` 适配器配合简单命令是此发布门禁的正确基础路径。
 
-That keeps this test focused on:
+这使测试专注于：
 
-- release packaging
-- auth/bootstrap
-- UI routing
-- onboarding contract
-- agent creation
-- heartbeat invocation plumbing
+- 发布打包
+- 认证/引导
+- UI 路由
+- 引导契约
+- 智能体创建
+- 心跳调用管道
 
-Later we can add a second credentialed smoke lane for real model-backed agents.
+后续我们可以为真实模型支持的智能体添加第二条带凭证的冒烟通道。
 
-### 2. Smoke credentials become an explicit test contract
+### 2. 冒烟凭证成为显式测试契约
 
-The current defaults in `scripts/docker-onboard-smoke.sh` should be treated as stable test fixtures:
+`scripts/docker-onboard-smoke.sh` 中的当前默认值应视为稳定的测试固件：
 
 - email: `smoke-admin@paperclip.local`
 - password: `paperclip-smoke-password`
 
-The browser test should log in with those exact values unless overridden by env vars.
+浏览器测试应使用这些确切值登录，除非被环境变量覆盖。
 
-### 3. Published-package smoke and source-tree E2E stay separate
+### 3. 已发布包冒烟和源码树端到端测试保持分离
 
-Keep two lanes:
+保持两条通道：
 
-- source-tree E2E for feature development
-- published Docker release smoke for release confidence
+- 源码树端到端测试用于功能开发
+- 已发布的 Docker 发布冒烟用于发布信心
 
-They overlap on onboarding assertions, but they guard different failure classes.
+它们在引导断言上重叠，但它们守护不同的失败类别。
 
-## Proposed Design
+## 建议设计
 
-## 1. Add a CI-friendly Docker smoke harness
+## 1. 添加 CI 友好的 Docker 冒烟工具
 
-Refactor `scripts/docker-onboard-smoke.sh` so it can run in two modes:
+重构 `scripts/docker-onboard-smoke.sh` 使其可以在两种模式下运行：
 
-- interactive mode
-  - current behavior
-  - streams logs and waits in foreground for manual inspection
-- CI mode
-  - starts the container
-  - waits for health and authenticated bootstrap
-  - prints machine-readable metadata
-  - exits while leaving the container running for Playwright
+- 交互模式
+  - 当前行为
+  - 流式输出日志并在前台等待手动检查
+- CI 模式
+  - 启动容器
+  - 等待健康检查和认证引导
+  - 打印机器可读的元数据
+  - 退出同时保持容器运行供 Playwright 使用
 
-Recommended shape:
+推荐形态：
 
-- keep `scripts/docker-onboard-smoke.sh` as the public entry point
-- add a `SMOKE_DETACH=true` or `--detach` mode
-- emit a JSON blob or `.env` file containing:
+- 保持 `scripts/docker-onboard-smoke.sh` 作为公开入口
+- 添加 `SMOKE_DETACH=true` 或 `--detach` 模式
+- 发出包含以下内容的 JSON 或 `.env` 文件：
   - `SMOKE_BASE_URL`
   - `SMOKE_ADMIN_EMAIL`
   - `SMOKE_ADMIN_PASSWORD`
   - `SMOKE_CONTAINER_NAME`
   - `SMOKE_DATA_DIR`
 
-The workflow and Playwright tests can then consume the emitted metadata instead of scraping logs.
+工作流和 Playwright 测试随后可以消费发出的元数据，而非解析日志。
 
-### Why this matters
+### 为什么这很重要
 
-The current script always tails logs and then blocks on `wait "$LOG_PID"`. That is convenient for manual smoke testing, but it is the wrong shape for CI orchestration.
+当前脚本总是尾随日志然后阻塞在 `wait "$LOG_PID"` 上。这对手动冒烟测试很方便，但对 CI 编排来说形态不对。
 
-## 2. Add a dedicated Playwright release-smoke spec
+## 2. 添加专用的 Playwright 发布冒烟规格
 
-Create a second Playwright entry point specifically for published Docker installs, for example:
+为已发布的 Docker 安装创建第二个 Playwright 入口，例如：
 
 - `tests/release-smoke/playwright.config.ts`
 - `tests/release-smoke/docker-auth-onboarding.spec.ts`
 
-This suite should not use Playwright `webServer`, because the app server will already be running inside Docker.
+此套件不应使用 Playwright `webServer`，因为应用服务器已在 Docker 内运行。
 
-### Browser scenario
+### 浏览器场景
 
-The first release-smoke scenario should validate:
+第一个发布冒烟场景应验证：
 
-1. open `/`
-2. unauthenticated user is redirected to `/auth`
-3. sign in using the smoke credentials
-4. authenticated user lands on onboarding when no companies exist
-5. onboarding wizard appears with the expected step labels
-6. create a company
-7. create the first agent using `process`
-8. create the initial issue
-9. finish onboarding and open the created issue
-10. verify via API:
-    - company exists
-    - CEO agent exists
-    - issue exists and is assigned to the CEO
-11. verify the first heartbeat run was triggered:
-    - either by checking issue status changed from initial state, or
-    - by checking agent/runs API shows a run for the CEO, or
-    - both
+1. 打开 `/`
+2. 未认证用户被重定向到 `/auth`
+3. 使用冒烟凭证登录
+4. 没有公司时认证用户进入引导流程
+5. 引导向导出现并显示预期的步骤标签
+6. 创建公司
+7. 使用 `process` 创建第一个智能体
+8. 创建初始任务
+9. 完成引导并打开创建的任务
+10. 通过 API 验证：
+    - 公司存在
+    - CEO 智能体存在
+    - 任务存在并分配给 CEO
+11. 验证第一次心跳运行被触发：
+    - 通过检查任务状态是否从初始状态改变，或
+    - 通过检查智能体/运行 API 是否显示 CEO 的运行，或
+    - 两者都检查
 
-The test should tolerate the run completing quickly. For this reason, the assertion should accept:
+测试应容忍运行快速完成。因此，断言应接受：
 
 - `queued`
 - `running`
 - `succeeded`
 
-and similarly for issue progression if the issue status changes before the assertion runs.
+类似地，如果任务状态在断言运行前就已改变，也应接受任务的进展。
 
-### Why a separate spec instead of reusing `tests/e2e/onboarding.spec.ts`
+### 为什么用单独的规格而非复用 `tests/e2e/onboarding.spec.ts`
 
-The local-source test and release-smoke test have different assumptions:
+本地源码测试和发布冒烟测试有不同的假设：
 
-- different server lifecycle
-- different auth path
-- different deployment mode
-- published npm package instead of local workspace code
+- 不同的服务器生命周期
+- 不同的认证路径
+- 不同的部署模式
+- 已发布的 npm 包而非本地工作区代码
 
-Trying to force both through one spec will make both worse.
+试图将两者强制通过一个规格会使两者都更差。
 
-## 3. Add a release-smoke workflow in GitHub Actions
+## 3. 在 GitHub Actions 中添加发布冒烟工作流
 
-Add a workflow dedicated to this surface, ideally reusable:
+添加专门针对此场景的工作流，最好是可复用的：
 
 - `.github/workflows/release-smoke.yml`
 
-Recommended triggers:
+推荐的触发器：
 
 - `workflow_dispatch`
 - `workflow_call`
 
-Recommended inputs:
+推荐的输入：
 
 - `paperclip_version`
-  - `canary` or `latest`
+  - `canary` 或 `latest`
 - `host_port`
-  - optional, default runner-safe port
+  - 可选，默认为 runner 安全端口
 - `artifact_name`
-  - optional for clearer uploads
+  - 可选，用于更清晰的上传
 
-### Job outline
+### 任务大纲
 
-1. checkout repo
-2. install Node/pnpm
-3. install Playwright browser dependencies
-4. launch Docker smoke harness in detached mode with the chosen dist-tag
-5. run the release-smoke Playwright suite against the returned base URL
-6. always collect diagnostics:
-   - Playwright report
-   - screenshots
+1. 检出仓库
+2. 安装 Node/pnpm
+3. 安装 Playwright 浏览器依赖
+4. 以分离模式用选定的 dist-tag 启动 Docker 冒烟工具
+5. 针对返回的 base URL 运行发布冒烟 Playwright 套件
+6. 始终收集诊断信息：
+   - Playwright 报告
+   - 截图
    - trace
    - `docker logs`
-   - harness metadata file
-7. stop and remove container
+   - 工具元数据文件
+7. 停止并移除容器
 
-### Why a reusable workflow
+### 为什么使用可复用工作流
 
-This lets us:
+这让我们可以：
 
-- run the smoke manually on demand
-- call it from `release.yml`
-- reuse the same job for both `canary` and `latest`
+- 按需手动运行冒烟
+- 从 `release.yml` 调用它
+- 对 `canary` 和 `latest` 复用相同的任务
 
-## 4. Integrate it into release automation incrementally
+## 4. 增量集成到发布自动化
 
-### Phase A: Manual workflow only
+### 阶段 A：仅手动工作流
 
-First ship the workflow as manual-only so the harness and test can be stabilized without blocking releases.
+首先作为仅手动的工作流发布，以便在不阻断发布的情况下稳定工具和测试。
 
-### Phase B: Run automatically after canary publish
+### 阶段 B：canary 发布后自动运行
 
-After `publish_canary` succeeds in `.github/workflows/release.yml`, call the reusable release-smoke workflow with:
+在 `.github/workflows/release.yml` 中 `publish_canary` 成功后，调用可复用的发布冒烟工作流：
 
 - `paperclip_version=canary`
 
-This proves the just-published public canary really boots and onboards.
+这证明刚发布的公开 canary 确实能启动和引导。
 
-### Phase C: Run automatically after stable publish
+### 阶段 C：稳定版发布后自动运行
 
-After `publish_stable` succeeds, call the same workflow with:
+在 `publish_stable` 成功后，用以下参数调用相同的工作流：
 
 - `paperclip_version=latest`
 
-This gives us post-publish confirmation that the stable dist-tag is healthy.
+这给我们发布后确认稳定版 dist-tag 是健康的。
 
-### Important nuance
+### 重要细微差别
 
-Testing `latest` from npm cannot happen before stable publish, because the package under test does not exist under `latest` yet. So the `latest` smoke is a post-publish verification, not a pre-publish gate.
+在稳定版发布之前无法从 npm 测试 `latest`，因为被测的包在 `latest` 下还不存在。所以 `latest` 冒烟是发布后验证，而非发布前门禁。
 
-If we later want a true pre-publish stable gate, that should be a separate source-ref or locally built package smoke job.
+如果我们后续想要真正的稳定版发布前门禁，那应该是一个基于源码引用或本地构建包的冒烟任务。
 
-## 5. Make diagnostics first-class
+## 5. 使诊断成为一等公民
 
-This workflow is only valuable if failures are fast to debug.
+此工作流只有在失败时能快速调试才有价值。
 
-Always capture:
+始终捕获：
 
-- Playwright HTML report
-- Playwright trace on failure
-- final screenshot on failure
-- full `docker logs` output
-- emitted smoke metadata
-- optional `curl /api/health` snapshot
+- Playwright HTML 报告
+- 失败时的 Playwright trace
+- 失败时的最终截图
+- 完整的 `docker logs` 输出
+- 发出的冒烟元数据
+- 可选的 `curl /api/health` 快照
 
-Without that, the test will become a flaky black box and people will stop trusting it.
+没有这些，测试将变成不稳定的黑盒，人们将不再信任它。
 
-## Implementation Plan
+## 实现计划
 
-## Phase 1: Harness refactor
+## 阶段 1：工具重构
 
-Files:
+文件：
 
 - `scripts/docker-onboard-smoke.sh`
-- optionally `scripts/lib/docker-onboard-smoke.sh` or similar helper
+- 可选的 `scripts/lib/docker-onboard-smoke.sh` 或类似辅助脚本
 - `doc/DOCKER.md`
 - `doc/RELEASING.md`
 
-Tasks:
+任务：
 
-1. Add detached/CI mode to the Docker smoke script.
-2. Make the script emit machine-readable connection metadata.
-3. Keep the current interactive manual mode intact.
-4. Add reliable cleanup commands for CI.
+1. 为 Docker 冒烟脚本添加分离/CI 模式。
+2. 使脚本发出机器可读的连接元数据。
+3. 保持当前的交互手动模式不变。
+4. 为 CI 添加可靠的清理命令。
 
-Acceptance:
+验收：
 
-- a script invocation can start the published Docker app, auto-bootstrap it, and return control to the caller with enough metadata for browser automation
+- 一次脚本调用可以启动已发布的 Docker 应用、自动引导它，并将控制权返回给调用者，附带足够的元数据用于浏览器自动化
 
-## Phase 2: Browser release-smoke suite
+## 阶段 2：浏览器发布冒烟套件
 
-Files:
+文件：
 
 - `tests/release-smoke/playwright.config.ts`
 - `tests/release-smoke/docker-auth-onboarding.spec.ts`
-- root `package.json`
+- 根 `package.json`
 
-Tasks:
+任务：
 
-1. Add a dedicated Playwright config for external server testing.
-2. Implement login + onboarding + CEO creation flow.
-3. Assert a CEO run was created or completed.
-4. Add a root script such as:
+1. 为外部服务器测试添加专用的 Playwright 配置。
+2. 实现登录 + 引导 + CEO 创建流程。
+3. 断言 CEO 运行已创建或完成。
+4. 添加根脚本，如：
    - `test:release-smoke`
 
-Acceptance:
+验收：
 
-- the suite passes locally against both:
+- 套件在本地针对以下两者都通过：
   - `PAPERCLIPAI_VERSION=canary`
   - `PAPERCLIPAI_VERSION=latest`
 
-## Phase 3: GitHub Actions workflow
+## 阶段 3：GitHub Actions 工作流
 
-Files:
+文件：
 
 - `.github/workflows/release-smoke.yml`
 
-Tasks:
+任务：
 
-1. Add manual and reusable workflow entry points.
-2. Install Chromium and runner dependencies.
-3. Start Docker smoke in detached mode.
-4. Run the release-smoke Playwright suite.
-5. Upload diagnostics artifacts.
+1. 添加手动和可复用的工作流入口。
+2. 安装 Chromium 和 runner 依赖。
+3. 以分离模式启动 Docker 冒烟。
+4. 运行发布冒烟 Playwright 套件。
+5. 上传诊断产物。
 
-Acceptance:
+验收：
 
-- a maintainer can run the workflow manually for either `canary` or `latest`
+- 维护者可以手动为 `canary` 或 `latest` 运行工作流
 
-## Phase 4: Release workflow integration
+## 阶段 4：发布工作流集成
 
-Files:
+文件：
 
 - `.github/workflows/release.yml`
 - `doc/RELEASING.md`
 
-Tasks:
+任务：
 
-1. Trigger release smoke automatically after canary publish.
-2. Trigger release smoke automatically after stable publish.
-3. Document expected behavior and failure handling.
+1. canary 发布后自动触发发布冒烟。
+2. 稳定版发布后自动触发发布冒烟。
+3. 文档化预期行为和失败处理。
 
-Acceptance:
+验收：
 
-- canary releases automatically produce a published-package browser smoke result
-- stable releases automatically produce a `latest` browser smoke result
+- canary 发布自动产生已发布包的浏览器冒烟结果
+- 稳定版发布自动产生 `latest` 的浏览器冒烟结果
 
-## Phase 5: Future extension for real model-backed agent validation
+## 阶段 5：未来扩展——真实模型支持的智能体验证
 
-Not part of the first implementation, but this should be the next layer after the deterministic lane is stable.
+不是首次实现的一部分，但这应是确定性通道稳定后的下一层。
 
-Possible additions:
+可能的添加：
 
-- a second Playwright project gated on repo secrets
-- real `claude_local` or `codex_local` adapter validation in Docker-capable environments
-- assertion that the CEO posts a real task/comment artifact
-- stable release holdback until the credentialed lane passes
+- 第二个受仓库密钥门控的 Playwright 项目
+- 在支持 Docker 的环境中验证真实的 `claude_local` 或 `codex_local` 适配器
+- 断言 CEO 发布了真实的任务/评论产物
+- 在带凭证的通道通过之前保留稳定版发布
 
-This should stay optional until the token-free lane is trustworthy.
+在无 token 通道可信之前，这应保持可选。
 
-## Acceptance Criteria
+## 验收标准
 
-The plan is complete when the implemented system can demonstrate all of the following:
+当实现的系统可以展示以下所有内容时，计划即为完成：
 
-1. A published `paperclipai@canary` Docker install can be smoke-tested by Playwright in CI.
-2. A published `paperclipai@latest` Docker install can be smoke-tested by Playwright in CI.
-3. The test logs into authenticated mode with the smoke credentials.
-4. The test sees onboarding for a fresh instance.
-5. The test completes onboarding in the browser.
-6. The test verifies the initial CEO agent was created.
-7. The test verifies at least one CEO heartbeat run was triggered.
-8. Failures produce actionable artifacts rather than just a red job.
+1. 已发布的 `paperclipai@canary` Docker 安装可以在 CI 中被 Playwright 冒烟测试。
+2. 已发布的 `paperclipai@latest` Docker 安装可以在 CI 中被 Playwright 冒烟测试。
+3. 测试使用冒烟凭证登录认证模式。
+4. 测试为全新实例看到引导流程。
+5. 测试在浏览器中完成引导流程。
+6. 测试验证初始 CEO 智能体已创建。
+7. 测试验证至少一次 CEO 心跳运行已触发。
+8. 失败产生可操作的产物而非仅是一个红色任务。
 
-## Risks And Decisions To Make
+## 风险和需做的决策
 
-### 1. Fast process runs may finish before the UI visibly updates
+### 1. 快速进程运行可能在 UI 可见更新前完成
 
-That is expected. The assertions should prefer API polling for run existence/status rather than only visual indicators.
+这是预期的。断言应优先通过 API 轮询运行存在/状态，而非仅依赖视觉指示器。
 
-### 2. `latest` smoke is post-publish, not preventive
+### 2. `latest` 冒烟是发布后的，非预防性的
 
-This is a real limitation of testing the published dist-tag itself. It is still valuable, but it should not be confused with a pre-publish gate.
+这是测试已发布 dist-tag 本身的真实局限。它仍然有价值，但不应与发布前门禁混淆。
 
-### 3. We should not overcouple the test to cosmetic onboarding text
+### 3. 不应将测试过度耦合到引导的装饰性文本
 
-The important contract is flow success, created entities, and run creation. Use visible labels sparingly and prefer stable semantic selectors where possible.
+重要的契约是流程成功、创建的实体和运行创建。谨慎使用可见标签，尽可能优先使用稳定的语义选择器。
 
-### 4. Keep the smoke adapter path boring
+### 4. 保持冒烟适配器路径无趣
 
-For release safety, the first test should use the most boring runnable adapter possible. This is not the place to validate every adapter.
+为了发布安全，第一个测试应使用最无趣的可运行适配器。这不是验证每个适配器的地方。
 
-## Recommended First Slice
+## 推荐的首个切片
 
-If we want the fastest path to value, ship this in order:
+如果我们想要最快产生价值的路径，按此顺序交付：
 
-1. add detached mode to `scripts/docker-onboard-smoke.sh`
-2. add one Playwright spec for authenticated login + onboarding + CEO run verification
-3. add manual `release-smoke.yml`
-4. once stable, wire canary into `release.yml`
-5. after that, wire stable `latest` smoke into `release.yml`
+1. 为 `scripts/docker-onboard-smoke.sh` 添加分离模式
+2. 添加一个认证登录 + 引导 + CEO 运行验证的 Playwright 规格
+3. 添加手动 `release-smoke.yml`
+4. 稳定后，将 canary 接入 `release.yml`
+5. 之后，将稳定版 `latest` 冒烟接入 `release.yml`
 
-That gives release confidence quickly without turning the first version into a large CI redesign.
+这快速提供发布信心，而不会将第一个版本变成大规模的 CI 重新设计。

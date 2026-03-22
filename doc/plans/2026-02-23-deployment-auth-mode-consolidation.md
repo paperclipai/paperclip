@@ -1,223 +1,222 @@
-# Deployment/Auth Mode Consolidation Plan
+# 部署/认证模式整合计划
 
-Status: Proposal  
-Owner: Server + CLI + UI  
-Date: 2026-02-23
+状态：提案
+负责方：Server + CLI + UI
+日期：2026-02-23
 
-## Goal
+## 目标
 
-Keep Paperclip low-friction while making the mode model simpler and safer:
+保持 Paperclip 低摩擦的同时使模式模型更简单、更安全：
 
-1. `local_trusted` remains the default and easiest path.
-2. one authenticated runtime mode supports both private-network local use and public cloud use.
-3. onboarding/configure/doctor stay primarily interactive and flagless.
-4. Board identity is represented by a real user row in the database, with explicit role/membership integration points.
+1. `local_trusted` 仍然是默认且最简单的路径。
+2. 一个认证运行时模式同时支持私有网络本地使用和公共云使用。
+3. 入职/配置/诊断主要保持交互式且无需标志。
+4. Board 身份由数据库中的真实用户行表示，具有显式的角色/成员资格集成点。
 
-## Product Constraints (From Review)
+## 产品约束（来自评审）
 
-1. `onboard` default flow is interactive (no flags required).
-2. first mode choice defaults to `local_trusted`, with clear UX copy.
-3. authenticated flow gives guidance for private vs public exposure.
-4. `doctor` should also be flagless by default (read config and evaluate the selected mode/profile).
-5. do not add backward-compatibility alias layers for abandoned mode names.
-6. plan must explicitly cover how users/Board are represented in DB and how that affects task assignment and permissions.
+1. `onboard` 默认流程是交互式的（不需要标志）。
+2. 首次模式选择默认为 `local_trusted`，配有清晰的 UX 文案。
+3. 认证流程为私有与公共暴露提供指引。
+4. `doctor` 也应默认无标志（读取配置并评估选定的模式/配置文件）。
+5. 不要为已废弃的模式名称添加向后兼容别名层。
+6. 计划必须明确涵盖用户/Board 如何在数据库中表示，以及这如何影响任务分配和权限。
 
-## Current Implementation Audit (As Of 2026-02-23)
+## 当前实现审计（截至 2026-02-23）
 
-## Runtime/Auth
+## 运行时/认证
 
-- Runtime deployment modes are currently `local_trusted | cloud_hosted` (`packages/shared/src/constants.ts`).
-- `local_trusted` actor is currently synthetic:
-  - `req.actor = { type: "board", userId: "local-board", source: "local_implicit" }` (`server/src/middleware/auth.ts`).
-  - this is not a real auth user row by default.
-- `cloud_hosted` uses Better Auth sessions and `authUsers` rows (`server/src/auth/better-auth.ts`, `packages/db/src/schema/auth.ts`).
+- 运行时部署模式当前为 `local_trusted | cloud_hosted`（`packages/shared/src/constants.ts`）。
+- `local_trusted` actor 当前是合成的：
+  - `req.actor = { type: "board", userId: "local-board", source: "local_implicit" }`（`server/src/middleware/auth.ts`）。
+  - 默认情况下这不是真实的认证用户行。
+- `cloud_hosted` 使用 Better Auth 会话和 `authUsers` 行（`server/src/auth/better-auth.ts`、`packages/db/src/schema/auth.ts`）。
 
-## Bootstrap/Admin
+## 引导/管理
 
-- `cloud_hosted` requires `BETTER_AUTH_SECRET` and reports bootstrap status from `instance_user_roles` (`server/src/index.ts`, `server/src/routes/health.ts`).
-- bootstrap invite acceptance promotes the signed-in user to `instance_admin` (`server/src/routes/access.ts`, `server/src/services/access.ts`).
+- `cloud_hosted` 需要 `BETTER_AUTH_SECRET` 并从 `instance_user_roles` 报告引导状态（`server/src/index.ts`、`server/src/routes/health.ts`）。
+- 引导邀请接受将已登录用户提升为 `instance_admin`（`server/src/routes/access.ts`、`server/src/services/access.ts`）。
 
-## Membership/Assignment Integration
+## 成员资格/分配集成
 
-- User task assignment requires active `company_memberships` entry for that user (`server/src/services/issues.ts`).
-- Local implicit board identity is not automatically a real membership principal; this is a gap for “board as assignable user” semantics.
+- 用户任务分配需要该用户的活跃 `company_memberships` 条目（`server/src/services/issues.ts`）。
+- 本地隐式 board 身份不会自动成为真实的成员资格主体；这是"board 作为可分配用户"语义的一个缺口。
 
-## Proposed Runtime Model
+## 提议的运行时模型
 
-## Modes
+## 模式
 
 1. `local_trusted`
-- no login required
-- localhost/loopback only
-- optimized for single-operator local setup
+- 不需要登录
+- 仅 localhost/回环
+- 为单操作员本地设置优化
 
 2. `authenticated`
-- login required for human actions
-- same auth stack for both private and public deployments
+- 人类操作需要登录
+- 相同的认证栈适用于私有和公共部署
 
-## Exposure Policy (Within `authenticated`)
+## 暴露策略（在 `authenticated` 内）
 
 1. `private`
-- private-network deployments (LAN, VPN, Tailscale)
-- low-friction URL handling (`auto` base URL)
-- strict host allow policy for private targets
+- 私有网络部署（LAN、VPN、Tailscale）
+- 低摩擦 URL 处理（`auto` 基础 URL）
+- 对私有目标的严格主机允许策略
 
 2. `public`
-- internet-facing deployments
-- explicit public base URL required
-- stricter deployment checks in doctor
+- 面向互联网的部署
+- 需要显式的公共基础 URL
+- 诊断中更严格的部署检查
 
-This is one authenticated mode with two safety policies, not two different auth systems.
+这是一个认证模式加两种安全策略，而非两个不同的认证系统。
 
-## UX Contract
+## UX 合约
 
-## Onboard (Primary Path: Interactive)
+## 入职（主要路径：交互式）
 
-Default command remains:
+默认命令保持不变：
 
 ```sh
 pnpm paperclipai onboard
 ```
 
-Interactive server step:
+交互式服务器步骤：
 
-1. ask mode with default selection `local_trusted`
-2. copy for options:
-- `local_trusted`: "Easiest for local setup (no login, localhost-only)"
-- `authenticated`: "Login required; use for private network or public hosting"
-3. if `authenticated`, ask exposure:
-- `private`: "Private network access (for example Tailscale), lower setup friction"
-- `public`: "Internet-facing deployment, stricter security requirements"
-4. only if `authenticated + public`, ask for explicit public URL
+1. 询问模式，默认选择 `local_trusted`
+2. 选项文案：
+- `local_trusted`："最简单的本地设置（无需登录，仅 localhost）"
+- `authenticated`："需要登录；用于私有网络或公共托管"
+3. 如果选择 `authenticated`，询问暴露方式：
+- `private`："私有网络访问（例如 Tailscale），较低的设置摩擦"
+- `public`："面向互联网的部署，更严格的安全要求"
+4. 仅当 `authenticated + public` 时，要求提供显式的公共 URL
 
-Flags are optional power-user overrides, not required for normal setup.
+标志是可选的高级用户覆盖，正常设置不需要。
 
-## Configure
+## 配置
 
-Default command remains interactive:
+默认命令保持交互式：
 
 ```sh
 pnpm paperclipai configure --section server
 ```
 
-Same mode/exposure questions and defaults as onboarding.
+与入职相同的模式/暴露问题和默认值。
 
-## Doctor
+## 诊断
 
-Default command remains flagless:
+默认命令保持无标志：
 
 ```sh
 pnpm paperclipai doctor
 ```
 
-Doctor reads configured mode/exposure and applies relevant checks.
-Optional flags may exist for override/testing, but are not required for normal operation.
+诊断读取配置的模式/暴露并应用相关检查。可选标志可能用于覆盖/测试，但正常操作不需要。
 
-## Board/User Data Model Integration (Required)
+## Board/用户数据模型集成（必需）
 
-## Requirement
+## 需求
 
-Board must be a real DB user principal so user-centric features (task assignment, membership, audit identity) work consistently.
+Board 必须是真实的数据库用户主体，这样以用户为中心的功能（任务分配、成员资格、审计身份）才能一致工作。
 
-## Target Behavior
+## 目标行为
 
 1. `local_trusted`
-- seed/ensure a deterministic local board user row in `authUsers` during setup/startup.
-- actor middleware uses that real user id instead of synthetic-only identity.
-- ensure:
-  - `instance_user_roles` includes `instance_admin` for this user.
-  - company membership can be created/maintained for this user where needed.
+- 在设置/启动期间 seed/确保 `authUsers` 中有一个确定性的本地 board 用户行。
+- actor 中间件使用该真实用户 ID 而非仅合成的身份。
+- 确保：
+  - `instance_user_roles` 包含该用户的 `instance_admin`。
+  - 可以在需要时为该用户创建/维护公司成员资格。
 
 2. `authenticated`
-- Better Auth sign-up creates user row.
-- bootstrap/admin flow promotes that real user to `instance_admin`.
-- first company creation flow should ensure creator membership is active.
+- Better Auth 注册创建用户行。
+- 引导/管理流程将该真实用户提升为 `instance_admin`。
+- 首次公司创建流程应确保创建者成员资格是活跃的。
 
-## Why This Matters
+## 为什么这很重要
 
-- `assigneeUserId` validation checks company membership.
-- without a real board user + membership path, assigning tasks to board user is inconsistent.
+- `assigneeUserId` 验证检查公司成员资格。
+- 如果没有真实的 board 用户 + 成员资格路径，将任务分配给 board 用户是不一致的。
 
-## Configuration Contract (Target)
+## 配置合约（目标）
 
-- `server.mode`: `local_trusted | authenticated`
-- `server.exposure`: `private | public` (required when mode is `authenticated`)
-- `auth.baseUrlMode`: `auto | explicit`
-- `auth.publicBaseUrl`: required when `authenticated + public`
+- `server.mode`：`local_trusted | authenticated`
+- `server.exposure`：`private | public`（当 mode 为 `authenticated` 时必需）
+- `auth.baseUrlMode`：`auto | explicit`
+- `auth.publicBaseUrl`：当 `authenticated + public` 时必需
 
-No compatibility aliases for discarded naming variants.
+不为已丢弃的命名变体设置兼容别名。
 
-## No Backward-Compatibility Layer
+## 无向后兼容层
 
-This change is a clean cut:
+这是一次干净的切换：
 
-- remove use of old split terminology in code and prompts.
-- config schema uses only canonical fields/values above.
-- existing dev instances can rerun onboarding or update config once.
+- 在代码和 prompt 中移除旧的拆分术语的使用。
+- 配置 schema 仅使用上述规范字段/值。
+- 现有开发实例可以重新运行入职或更新一次配置。
 
-## Implementation Phases
+## 实施阶段
 
-## Phase 1: Shared Schema + Config Surface
+## 第一阶段：共享 Schema + 配置界面
 
-- `packages/shared/src/constants.ts`: define canonical mode/exposure constants.
-- `packages/shared/src/config-schema.ts`: add mode/exposure/auth URL fields.
-- `server/src/config.ts` and CLI config types: consume canonical fields only.
+- `packages/shared/src/constants.ts`：定义规范的模式/暴露常量。
+- `packages/shared/src/config-schema.ts`：添加模式/暴露/认证 URL 字段。
+- `server/src/config.ts` 和 CLI 配置类型：仅使用规范字段。
 
-## Phase 2: CLI Interactive UX
+## 第二阶段：CLI 交互式 UX
 
-- `cli/src/prompts/server.ts`: implement defaulted mode prompt and authenticated exposure guidance copy.
-- `cli/src/commands/onboard.ts`: keep interactive-first flow; optional overrides only.
-- `cli/src/commands/configure.ts`: same behavior for server section.
-- `cli/src/commands/doctor.ts`: mode-aware checks from config, flagless default flow.
+- `cli/src/prompts/server.ts`：实现带默认值的模式提示和认证暴露指引文案。
+- `cli/src/commands/onboard.ts`：保持交互优先流程；仅可选覆盖。
+- `cli/src/commands/configure.ts`：服务器部分相同行为。
+- `cli/src/commands/doctor.ts`：从配置读取模式感知检查，默认无标志流程。
 
-## Phase 3: Runtime/Auth Policy
+## 第三阶段：运行时/认证策略
 
-- `server/src/index.ts`: enforce mode-specific startup constraints.
-- `server/src/auth/better-auth.ts`: implement `auto` vs `explicit` base URL behavior.
-- host/origin trust helper for `authenticated + private`.
+- `server/src/index.ts`：强制模式特定的启动约束。
+- `server/src/auth/better-auth.ts`：实现 `auto` vs `explicit` 基础 URL 行为。
+- `authenticated + private` 的主机/来源信任辅助函数。
 
-## Phase 4: Board Principal Integration
+## 第四阶段：Board 主体集成
 
-- add ensure-board-user startup/setup step:
-  - real local board user row
-  - instance admin role row
-- ensure first-company creation path grants creator membership.
-- remove synthetic-only assumptions where they break user assignment/membership semantics.
+- 添加确保 board 用户的启动/设置步骤：
+  - 真实的本地 board 用户行
+  - 实例管理员角色行
+- 确保首次公司创建路径授予创建者成员资格。
+- 移除仅合成身份在用户分配/成员资格语义中导致问题的假设。
 
-## Phase 5: UI + Docs
+## 第五阶段：UI + 文档
 
-- update UI labels/help text around mode and exposure guidance.
-- update docs:
+- 更新围绕模式和暴露指引的 UI 标签/帮助文本。
+- 更新文档：
   - `doc/DEPLOYMENT-MODES.md`
   - `doc/DEVELOPING.md`
   - `doc/CLI.md`
   - `doc/SPEC-implementation.md`
 
-## Test Plan
+## 测试计划
 
-- config schema tests for canonical mode/exposure/auth fields.
-- CLI prompt tests for default interactive selections and copy.
-- doctor tests by mode/exposure.
-- runtime tests:
-  - authenticated/private works without explicit URL
-  - authenticated/public requires explicit URL
-  - private host policy rejects untrusted hosts
-- Board principal tests:
-  - local_trusted board user exists as real DB user
-  - board can be assigned tasks via `assigneeUserId` after membership setup
-  - creator membership behavior for authenticated flows
+- 规范模式/暴露/认证字段的配置 schema 测试。
+- 默认交互选择和文案的 CLI 提示测试。
+- 按模式/暴露的诊断测试。
+- 运行时测试：
+  - authenticated/private 无需显式 URL 即可工作
+  - authenticated/public 需要显式 URL
+  - 私有主机策略拒绝不受信主机
+- Board 主体测试：
+  - local_trusted board 用户作为真实数据库用户存在
+  - 成员资格设置后 board 可以通过 `assigneeUserId` 被分配任务
+  - 认证流程的创建者成员资格行为
 
-## Acceptance Criteria
+## 验收标准
 
-1. `pnpm paperclipai onboard` is interactive-first and defaults to `local_trusted`.
-2. authenticated mode is one runtime mode with `private/public` exposure guidance.
-3. `pnpm paperclipai doctor` works flagless with mode-aware checks.
-4. no extra compatibility aliases for dropped naming variants.
-5. Board identity is represented by real DB user/role/membership integration points, enabling consistent task assignment and permission behavior.
+1. `pnpm paperclipai onboard` 是交互优先的，默认为 `local_trusted`。
+2. 认证模式是一个运行时模式加 `private/public` 暴露指引。
+3. `pnpm paperclipai doctor` 无标志工作，带模式感知检查。
+4. 没有为已废弃命名变体设置额外的兼容别名。
+5. Board 身份由真实的数据库用户/角色/成员资格集成点表示，实现一致的任务分配和权限行为。
 
-## Verification Gate
+## 验证门禁
 
-Before merge:
+合并前：
 
 ```sh
 pnpm -r typecheck

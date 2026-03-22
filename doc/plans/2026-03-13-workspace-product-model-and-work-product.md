@@ -1,191 +1,191 @@
-# Workspace Product Model, Work Product, and PR Flow
+# 工作区产品模型、工作成果与 PR 流程
 
-## Context
+## 背景
 
-Paperclip needs to support two very different but equally valid ways of working:
+Paperclip 需要支持两种非常不同但同样有效的工作方式：
 
-- a solo developer working directly on `master`, or in a folder that is not even a git repo
-- a larger engineering workflow with isolated branches, previews, pull requests, and cleanup automation
+- 单独开发者直接在 `master` 上工作，或在一个甚至不是 git 仓库的文件夹中工作
+- 更大的工程工作流，带有隔离的分支、预览、Pull Request 和清理自动化
 
-Today, Paperclip already has the beginnings of this model:
+今天，Paperclip 已经有了这个模型的雏形：
 
-- `projects` can carry execution workspace policy
-- `project_workspaces` already exist as a durable project-scoped object
-- issues can carry execution workspace settings
-- runtime services can be attached to a workspace or issue
+- `projects` 可以携带执行工作区策略
+- `project_workspaces` 已作为持久的项目范围对象存在
+- 任务可以携带执行工作区设置
+- 运行时服务可以附加到工作区或任务
 
-What is missing is a clear product model and UI that make these capabilities understandable and operable.
+缺失的是一个清晰的产品模型和 UI，使这些能力可理解和可操作。
 
-The main product risk is overloading one concept to do too much:
+主要产品风险是一个概念承载过多：
 
-- making subissues do the job of branches or PRs
-- making projects too infrastructure-heavy
-- making workspaces so hidden that users cannot form a mental model
-- making Paperclip feel like a code review tool instead of a control plane
+- 让子任务承担分支或 PR 的职责
+- 让项目变得过于基础设施化
+- 让工作区隐藏到用户无法形成心智模型
+- 让 Paperclip 感觉像代码审查工具而不是控制平面
 
-## Goals
+## 目标
 
-1. Keep `project` lightweight enough to remain a planning container.
-2. Make workspace behavior understandable for both git and non-git projects.
-3. Support three real workflows without forcing one:
-   - shared workspace / direct-edit workflows
-   - isolated issue workspace workflows
-   - long-lived branch or operator integration workflows
-4. Provide a first-class place to see the outputs of work:
-   - previews
-   - PRs
-   - branches
-   - commits
-   - documents and artifacts
-5. Keep the main navigation and task board simple.
-6. Seamlessly upgrade existing Paperclip users to the new model without forcing disruptive reconfiguration.
-7. Support cloud-hosted Paperclip deployments where execution happens in remote or adapter-managed environments rather than local workers.
+1. 保持 `project` 足够轻量，使其仍然是规划容器。
+2. 使工作区行为对 git 和非 git 项目都可理解。
+3. 支持三种真实工作流而不强制其中一种：
+   - 共享工作区 / 直接编辑工作流
+   - 隔离的任务工作区工作流
+   - 长期分支或操作者集成工作流
+4. 提供一等的位置来查看工作产出：
+   - 预览
+   - PR
+   - 分支
+   - 提交
+   - 文档和工件
+5. 保持主导航和任务板简洁。
+6. 无缝升级现有 Paperclip 用户到新模型，而不强制破坏性的重新配置。
+7. 支持云托管的 Paperclip 部署，其中执行发生在远程或适配器管理的环境中而不是本地 worker。
 
-## Non-Goals
+## 非目标
 
-- Turning Paperclip into a full code review product
-- Requiring every issue to have its own branch or PR
-- Requiring every project to configure code/workspace automation
-- Making workspaces a top-level global navigation primitive in V1
-- Requiring a local filesystem path or local git checkout to use workspace-aware execution
+- 将 Paperclip 变成完整的代码审查产品
+- 要求每个任务都有自己的分支或 PR
+- 要求每个项目都配置代码/工作区自动化
+- 在 V1 中将工作区作为顶层全局导航原语
+- 要求本地文件系统路径或本地 git checkout 才能使用工作区感知执行
 
-## Core Product Decisions
+## 核心产品决策
 
-### 1. Project stays the planning object
+### 1. 项目保持规划对象
 
-A `project` remains the thing that groups work around a deliverable or initiative.
+`项目` 仍然是围绕交付物或倡议分组工作的东西。
 
-It may have:
+它可能有：
 
-- no code at all
-- one default codebase/workspace
-- several codebases/workspaces
+- 完全没有代码
+- 一个默认代码库/工作区
+- 多个代码库/工作区
 
-Projects are not required to become heavyweight.
+项目不需要变得重量级。
 
-### 2. Project workspace is a first-class object, but scoped under project
+### 2. 项目工作区是一等对象，但范围限定在项目下
 
-A `project workspace` is the durable codebase or root environment for a project.
+`项目工作区` 是项目的持久代码库或根环境。
 
-Examples:
+示例：
 
-- a local folder on disk
-- a git repo checkout
-- a monorepo package root
-- a non-git design/doc folder
-- a remote adapter-managed codebase reference
+- 磁盘上的本地文件夹
+- git 仓库 checkout
+- monorepo 包根
+- 非 git 的设计/文档文件夹
+- 远程适配器管理的代码库引用
 
-This is the stable anchor that operators configure once.
+这是操作者配置一次的稳定锚点。
 
-It should not be a top-level sidebar item in the main app. It should live under the project experience.
+它不应成为主应用中的顶层侧边栏项。它应存在于项目体验中。
 
-### 3. Execution workspace is a first-class runtime object
+### 3. 执行工作区是一等运行时对象
 
-An `execution workspace` is where a specific run or issue actually executes.
+`执行工作区` 是特定运行或任务实际执行的地方。
 
-Examples:
+示例：
 
-- the shared project workspace itself
-- an isolated git worktree
-- a long-lived operator branch checkout
-- an adapter-managed remote sandbox
-- a cloud agent provider's isolated branch/session environment
+- 共享项目工作区本身
+- 隔离的 git worktree
+- 长期的操作者分支 checkout
+- 适配器管理的远程沙箱
+- 云智能体提供者的隔离分支/会话环境
 
-This object must be recorded explicitly so that Paperclip can:
+此对象必须被显式记录，以便 Paperclip 能够：
 
-- show where work happened
-- attach previews and runtime services
-- link PRs and branches
-- decide cleanup behavior
-- support reuse across multiple related issues
+- 显示工作发生在哪里
+- 附加预览和运行时服务
+- 链接 PR 和分支
+- 决定清理行为
+- 支持跨多个相关任务的复用
 
-### 4. PRs are work product, not the core issue model
+### 4. PR 是工作成果，不是核心任务模型
 
-A PR is an output of work, not the planning unit.
+PR 是工作的输出，不是规划单元。
 
-Paperclip should treat PRs as a type of work product linked back to:
+Paperclip 应将 PR 视为一种工作成果类型，链接回：
 
-- the issue
-- the execution workspace
-- optionally the project workspace
+- 任务
+- 执行工作区
+- 可选的项目工作区
 
-Git-specific automation should live under workspace policy, not under the core issue abstraction.
+Git 特定的自动化应存在于工作区策略下，而不是核心任务抽象下。
 
-### 5. Existing users must upgrade automatically
+### 5. 现有用户必须自动升级
 
-Paperclip already has users and existing project/task data. Any new model must preserve continuity.
+Paperclip 已有用户和现有的项目/任务数据。任何新模型必须保持连续性。
 
-The product should default existing installs into a sensible compatibility mode:
+产品应将现有安装默认设为合理的兼容模式：
 
-- existing projects without workspace configuration continue to work unchanged
-- existing `project_workspaces` become the durable `project workspace` objects
-- existing project execution workspace policy is mapped forward rather than discarded
-- issues without explicit workspace fields continue to inherit current behavior
+- 没有工作区配置的现有项目继续正常工作
+- 现有 `project_workspaces` 成为持久的 `项目工作区` 对象
+- 现有项目执行工作区策略被向前映射而不是丢弃
+- 没有显式工作区字段的任务继续继承当前行为
 
-This migration should feel additive, not like a mandatory re-onboarding flow.
+此迁移应感觉像是增量添加，而不是强制的重新入门流程。
 
-### 6. Cloud-hosted Paperclip must be a first-class deployment mode
+### 6. 云托管的 Paperclip 必须是一等部署模式
 
-Paperclip cannot assume that it is running on the same machine as the code.
+Paperclip 不能假设它运行在与代码相同的机器上。
 
-In cloud deployments, Paperclip may:
+在云部署中，Paperclip 可能：
 
-- run on Vercel or another serverless host
-- have no long-lived local worker process
-- delegate execution to a remote coding agent or provider-managed sandbox
-- receive back a branch, PR, preview URL, or artifact from that remote environment
+- 运行在 Vercel 或另一个 serverless 主机上
+- 没有长期运行的本地 worker 进程
+- 将执行委托给远程编码智能体或提供者管理的沙箱
+- 从该远程环境接收回分支、PR、预览 URL 或工件
 
-The model therefore must be portable:
+因此模型必须是可移植的：
 
-- `project workspace` may be remote-managed, not local
-- `execution workspace` may have no local `cwd`
-- `runtime services` may be tracked by provider reference and URL rather than a host process
-- work product harvesting must handle externally owned previews and PRs
+- `项目工作区` 可能是远程管理的，而非本地
+- `执行工作区` 可能没有本地 `cwd`
+- `运行时服务` 可能通过提供者引用和 URL 跟踪，而不是宿主进程
+- 工作成果采集必须处理外部拥有的预览和 PR
 
-### 7. Subissues remain planning and ownership structure
+### 7. 子任务仍然是规划和所有权结构
 
-Subissues are for decomposition and parallel ownership.
+子任务用于分解和并行所有权。
 
-They are not the same thing as:
+它们不等同于：
 
-- a branch
-- a worktree
-- a PR
-- a preview
+- 分支
+- worktree
+- PR
+- 预览
 
-They may correlate with those things, but they should not be overloaded to mean them.
+它们可能与这些相关联，但不应被重载为这些含义。
 
-## Terminology
+## 术语
 
-Use these terms consistently in product copy:
+在产品文案中一致使用这些术语：
 
-- `Project`: planning container
-- `Project workspace`: durable configured codebase/root
-- `Execution workspace`: actual runtime workspace used for issue execution
-- `Isolated issue workspace`: user-facing term for an issue-specific derived workspace
-- `Work product`: previews, PRs, branches, commits, artifacts, docs
-- `Runtime service`: a process or service Paperclip owns or tracks for a workspace
+- `项目`：规划容器
+- `项目工作区`：持久配置的代码库/根
+- `执行工作区`：用于任务执行的实际运行时工作区
+- `隔离的任务工作区`：面向用户的术语，指任务特定的派生工作区
+- `工作成果`：预览、PR、分支、提交、工件、文档
+- `运行时服务`：Paperclip 拥有或跟踪的工作区进程或服务
 
-Use these terms consistently in migration and deployment messaging:
+在迁移和部署消息中一致使用这些术语：
 
-- `Compatible mode`: existing behavior preserved without new workspace automation
-- `Adapter-managed workspace`: workspace realized by a remote or cloud execution provider
+- `兼容模式`：无新工作区自动化情况下保留现有行为
+- `适配器管理的工作区`：由远程或云执行提供者实现的工作区
 
-Avoid teaching users that "workspace" always means "git worktree on my machine".
+避免教用户"工作区"总是意味着"我机器上的 git worktree"。
 
-## Product Object Model
+## 产品对象模型
 
-## 1. Project
+## 1. 项目
 
-Existing object. No fundamental change in role.
+现有对象。角色无根本变化。
 
-### Required behavior
+### 必需行为
 
-- can exist without code/workspace configuration
-- can have zero or more project workspaces
-- can define execution defaults that new issues inherit
+- 可以在没有代码/工作区配置的情况下存在
+- 可以有零个或多个项目工作区
+- 可以定义新任务继承的执行默认值
 
-### Proposed fields
+### 提议的字段
 
 - `id`
 - `companyId`
@@ -199,26 +199,26 @@ Existing object. No fundamental change in role.
 - `workspaces[]`
 - `primaryWorkspace`
 
-## 2. Project Workspace
+## 2. 项目工作区
 
-Durable, configured, project-scoped codebase/root object.
+持久的、已配置的、项目范围的代码库/根对象。
 
-This should evolve from the current `project_workspaces` table into a more explicit product object.
+这应从当前 `project_workspaces` 表演进为更明确的产品对象。
 
-### Motivation
+### 动机
 
-This separates:
+这分离了：
 
-- "what codebase/root does this project use?"
+- "这个项目使用什么代码库/根？"
 
-from:
+与：
 
-- "what temporary execution environment did this issue run in?"
+- "这个任务运行在什么临时执行环境中？"
 
-That keeps the model simple for solo users while still supporting advanced automation.
-It also lets cloud-hosted Paperclip deployments point at codebases and remotes without pretending the Paperclip host has direct filesystem access.
+这使模型对单独用户保持简单，同时仍支持高级自动化。
+它也让云托管的 Paperclip 部署可以指向代码库和远程而不假装 Paperclip 主机有直接的文件系统访问。
 
-### Proposed fields
+### 提议的字段
 
 - `id`
 - `companyId`
@@ -242,31 +242,31 @@ It also lets cloud-hosted Paperclip deployments point at codebases and remotes w
 - `createdAt`
 - `updatedAt`
 
-### Notes
+### 说明
 
-- `sourceType=non_git_path` is important so non-git projects are first-class.
-- `setupCommand` and `cleanupCommand` should be allowed here for workspace-root bootstrap, even when isolated execution is not used.
-- For a monorepo, multiple project workspaces may point at different roots or packages under one repo.
-- `sourceType=remote_managed` is important for cloud deployments where the durable codebase is defined by provider/repo metadata rather than a local checkout path.
+- `sourceType=non_git_path` 很重要，使非 git 项目成为一等公民。
+- 即使不使用隔离执行，这里也应允许 `setupCommand` 和 `cleanupCommand` 用于工作区根引导。
+- 对于 monorepo，多个项目工作区可能指向一个仓库下的不同根或包。
+- `sourceType=remote_managed` 对于云部署很重要，其中持久代码库由提供者/仓库元数据定义而不是本地 checkout 路径。
 
-## 3. Project Execution Workspace Policy
+## 3. 项目执行工作区策略
 
-Project-level defaults for how issues execute.
+项目级别的任务执行默认值。
 
-This is the main operator-facing configuration surface.
+这是主要的面向操作者的配置表面。
 
-### Motivation
+### 动机
 
-This lets Paperclip support:
+这让 Paperclip 支持：
 
-- direct editing in a shared workspace
-- isolated workspaces for issue parallelism
-- long-lived integration branch workflows
-- remote cloud-agent execution that returns a branch or PR
+- 在共享工作区中直接编辑
+- 用于任务并行的隔离工作区
+- 长期集成分支工作流
+- 返回分支或 PR 的远程云智能体执行
 
-without forcing every issue or agent to expose low-level runtime configuration.
+而不强迫每个任务或智能体暴露低级运行时配置。
 
-### Proposed fields
+### 提议的字段
 
 - `enabled: boolean`
 - `defaultMode`
@@ -314,23 +314,23 @@ without forcing every issue or agent to expose low-level runtime configuration.
   - `keepWhilePreviewHealthy`
   - `keepWhileOpenPrExists`
 
-## 4. Issue Workspace Binding
+## 4. 任务工作区绑定
 
-Issue-level selection of execution behavior.
+任务级别的执行行为选择。
 
-This should remain lightweight in the normal case and only surface richer controls when relevant.
+在正常情况下应保持轻量，仅在相关时展示更丰富的控制。
 
-### Motivation
+### 动机
 
-Not every issue in a code project should create a new derived workspace.
+不是代码项目中的每个任务都应创建新的派生工作区。
 
-Examples:
+示例：
 
-- a tiny fix can run in the shared workspace
-- three related issues may intentionally share one integration branch
-- a solo operator may be working directly on `master`
+- 一个小修复可以在共享工作区中运行
+- 三个相关任务可能有意共享一个集成分支
+- 单独操作者可能直接在 `master` 上工作
 
-### Proposed fields on `issues`
+### 提议的 `issues` 字段
 
 - `projectWorkspaceId: uuid | null`
 - `executionWorkspacePreference`
@@ -341,37 +341,37 @@ Examples:
   - `reuse_existing`
 - `preferredExecutionWorkspaceId: uuid | null`
 - `executionWorkspaceSettings`
-  - keep advanced per-issue override fields here
+  - 高级的每任务覆盖字段保留在这里
 
-### Rules
+### 规则
 
-- if the project has no workspace automation, these fields may all be null
-- if the project has one primary workspace, issue creation should default to it silently
-- `reuse_existing` is advanced-only and should target active execution workspaces, not the whole workspace universe
-- existing issues without these fields should behave as `inherit` during migration
+- 如果项目没有工作区自动化，这些字段可能全部为 null
+- 如果项目有一个主工作区，任务创建应静默默认使用它
+- `reuse_existing` 仅限高级用户，应针对活跃的执行工作区而不是整个工作区范围
+- 迁移期间没有这些字段的现有任务应表现为 `inherit`
 
-## 5. Execution Workspace
+## 5. 执行工作区
 
-A durable record for a shared or derived runtime workspace.
+共享或派生运行时工作区的持久记录。
 
-This is the missing object that makes cleanup, previews, PRs, and branch reuse tractable.
+这是使清理、预览、PR 和分支复用可处理的缺失对象。
 
-### Motivation
+### 动机
 
-Without an explicit `execution workspace` record, Paperclip has nowhere stable to attach:
+没有显式的 `执行工作区` 记录，Paperclip 没有稳定的位置来附加：
 
-- derived branch/worktree identity
-- active preview ownership
-- PR linkage
-- cleanup state
-- "reuse this existing integration branch" behavior
-- remote provider session identity
+- 派生的分支/worktree 身份
+- 活跃的预览所有权
+- PR 链接
+- 清理状态
+- "复用此现有集成分支"行为
+- 远程提供者会话身份
 
-### Proposed new object
+### 提议的新对象
 
 `execution_workspaces`
 
-### Proposed fields
+### 提议的字段
 
 - `id`
 - `companyId`
@@ -414,27 +414,27 @@ Without an explicit `execution workspace` record, Paperclip has nowhere stable t
 - `createdAt`
 - `updatedAt`
 
-### Notes
+### 说明
 
-- `sourceIssueId` is the issue that originally caused the workspace to be created, not necessarily the only issue linked to it later.
-- multiple issues may link to the same execution workspace in a long-lived branch workflow.
-- `cwd` may be null for remote execution workspaces; provider identity and work product links still make the object useful.
+- `sourceIssueId` 是最初导致工作区创建的任务，不一定是后来链接到它的唯一任务。
+- 多个任务可能在长期分支工作流中链接到同一个执行工作区。
+- 对于远程执行工作区，`cwd` 可能为 null；提供者身份和工作成果链接仍使该对象有用。
 
-## 6. Issue-to-Execution Workspace Link
+## 6. 任务到执行工作区的链接
 
-An issue may need to link to one or more execution workspaces over time.
+一个任务可能需要随时间链接到一个或多个执行工作区。
 
-Examples:
+示例：
 
-- an issue begins in a shared workspace and later moves to an isolated one
-- a failed attempt is archived and a new workspace is created
-- several issues intentionally share one operator branch workspace
+- 一个任务在共享工作区中开始，后来移到隔离的工作区
+- 一次失败的尝试被归档，创建了新的工作区
+- 多个任务有意共享一个操作者分支工作区
 
-### Proposed object
+### 提议的对象
 
 `issue_execution_workspaces`
 
-### Proposed fields
+### 提议的字段
 
 - `issueId`
 - `executionWorkspaceId`
@@ -445,31 +445,31 @@ Examples:
 - `createdAt`
 - `updatedAt`
 
-### UI simplification
+### UI 简化
 
-Most issues should only show one current workspace in the main UI. Historical links belong in advanced/history views.
+大多数任务在主 UI 中应只显示一个当前工作区。历史链接属于高级/历史视图。
 
-## 7. Work Product
+## 7. 工作成果
 
-User-facing umbrella concept for outputs of work.
+面向用户的工作产出总括概念。
 
-### Motivation
+### 动机
 
-Paperclip needs a single place to show:
+Paperclip 需要一个单一位置来显示：
 
-- "here is the preview"
-- "here is the PR"
-- "here is the branch"
-- "here is the commit"
-- "here is the artifact/report/doc"
+- "这是预览"
+- "这是 PR"
+- "这是分支"
+- "这是提交"
+- "这是工件/报告/文档"
 
-without turning issues into a raw dump of adapter details.
+而不将任务变成适配器细节的原始转储。
 
-### Proposed new object
+### 提议的新对象
 
 `issue_work_products`
 
-### Proposed fields
+### 提议的字段
 
 - `id`
 - `companyId`
@@ -518,609 +518,609 @@ without turning issues into a raw dump of adapter details.
 - `createdAt`
 - `updatedAt`
 
-### Behavior
+### 行为
 
-- PRs are stored here as `type=pull_request`
-- previews are stored here as `type=preview_url` or `runtime_service`
-- Paperclip-owned processes should update health/status automatically
-- external providers should at least store link, provider, external id, and latest known state
-- cloud agents should be able to create work product records without Paperclip owning the execution host
+- PR 作为 `type=pull_request` 存储在这里
+- 预览作为 `type=preview_url` 或 `runtime_service` 存储在这里
+- Paperclip 拥有的进程应自动更新健康/状态
+- 外部提供者应至少存储链接、提供者、外部 id 和最新已知状态
+- 云智能体应能够在 Paperclip 不拥有执行主机的情况下创建工作成果记录
 
-## Page and UI Model
+## 页面和 UI 模型
 
-## 1. Global Navigation
+## 1. 全局导航
 
-Do not add `Workspaces` as a top-level sidebar item in V1.
+V1 中不要将 `工作区` 添加为顶层侧边栏项。
 
-### Motivation
+### 动机
 
-That would make the whole product feel infra-heavy, even for companies that do not use code automation.
+这会使整个产品感觉基础设施化，即使对于不使用代码自动化的公司也是如此。
 
-### Global nav remains
+### 全局导航保持
 
-- Dashboard
-- Inbox
-- Companies
-- Agents
-- Goals
-- Projects
-- Issues
-- Approvals
+- 仪表盘
+- 收件箱
+- 公司
+- 智能体
+- 目标
+- 项目
+- 任务
+- 审批
 
-Workspaces and work product should be surfaced through project and issue detail views.
+工作区和工作成果应通过项目和任务详情视图展示。
 
-## 2. Project Detail
+## 2. 项目详情
 
-Add a project sub-navigation that keeps planning first and code second.
+添加项目子导航，保持规划优先、代码在后。
 
-### Tabs
+### 标签页
 
-- `Overview`
-- `Issues`
-- `Code`
-- `Activity`
+- `概览`
+- `任务`
+- `代码`
+- `活动`
 
-Optional future:
+可选未来：
 
-- `Outputs`
+- `产出`
 
-### `Overview` tab
+### `概览` 标签页
 
-Planning-first summary:
+规划优先的摘要：
 
-- project status
-- goals
-- lead
-- issue counts
-- top-level progress
-- latest major work product summaries
+- 项目状态
+- 目标
+- 负责人
+- 任务计数
+- 顶层进度
+- 最新重要工作成果摘要
 
-### `Issues` tab
+### `任务` 标签页
 
-- default to top-level issues only
-- show parent issue rollups:
-  - child count
-  - `x/y` done
-  - active preview/PR badges
-- optional toggle: `Show subissues`
+- 默认仅显示顶层任务
+- 显示父任务汇总：
+  - 子任务数量
+  - `x/y` 已完成
+  - 活跃的预览/PR 徽章
+- 可选切换：`显示子任务`
 
-### `Code` tab
+### `代码` 标签页
 
-This is the main workspace configuration and visibility surface.
+这是主要的工作区配置和可见性界面。
 
-#### Section: `Project Workspaces`
+#### 部分：`项目工作区`
 
-List durable project workspaces for the project.
+列出项目的持久项目工作区。
 
-Card/list columns:
+卡片/列表列：
 
-- workspace name
-- source type
-- path or repo
-- default ref
-- primary/default badge
-- active execution workspaces count
-- active issue count
-- active preview count
-- hosting type / provider when remote-managed
+- 工作区名称
+- 源类型
+- 路径或仓库
+- 默认引用
+- 主/默认徽章
+- 活跃执行工作区数量
+- 活跃任务数量
+- 活跃预览数量
+- 远程管理时的托管类型 / 提供者
 
-Actions:
+操作：
 
-- `Add workspace`
-- `Edit`
-- `Set default`
-- `Archive`
+- `添加工作区`
+- `编辑`
+- `设为默认`
+- `归档`
 
-#### Section: `Execution Defaults`
+#### 部分：`执行默认值`
 
-Fields:
+字段：
 
-- `Enable workspace automation`
-- `Default issue execution mode`
-  - `Shared workspace`
-  - `Isolated workspace`
-  - `Operator branch`
-  - `Adapter default`
-- `Default codebase`
-- `Allow issue override`
+- `启用工作区自动化`
+- `默认任务执行模式`
+  - `共享工作区`
+  - `隔离工作区`
+  - `操作者分支`
+  - `适配器默认`
+- `默认代码库`
+- `允许任务覆盖`
 
-#### Section: `Provisioning`
+#### 部分：`配置`
 
-Fields:
+字段：
 
-- `Setup command`
-- `Cleanup command`
-- `Implementation`
-  - `Shared workspace`
+- `设置命令`
+- `清理命令`
+- `实现方式`
+  - `共享工作区`
   - `Git worktree`
-  - `Adapter-managed`
-- `Base ref`
-- `Branch naming template`
-- `Derived workspace parent directory`
+  - `适配器管理`
+- `基础引用`
+- `分支命名模板`
+- `派生工作区父目录`
 
-Hide git-specific fields when the selected workspace is not git-backed.
-Hide local-path-specific fields when the selected workspace is remote-managed.
+当所选工作区不是 git 支持的时，隐藏 git 特定字段。
+当所选工作区是远程管理的时，隐藏本地路径特定字段。
 
-#### Section: `Pull Requests`
+#### 部分：`Pull Request`
 
-Fields:
+字段：
 
-- `PR workflow`
-  - `Disabled`
-  - `Manual`
-  - `Agent may open draft PR`
-  - `Approval required to open PR`
-  - `Approval required to mark ready`
-- `Default base branch`
-- `PR title template`
-- `PR body template`
+- `PR 工作流`
+  - `禁用`
+  - `手动`
+  - `智能体可以打开草稿 PR`
+  - `打开 PR 需要审批`
+  - `标记就绪需要审批`
+- `默认基础分支`
+- `PR 标题模板`
+- `PR 正文模板`
 
-#### Section: `Previews and Runtime`
+#### 部分：`预览和运行时`
 
-Fields:
+字段：
 
-- `Allow workspace runtime services`
-- `Default services profile`
-- `Harvest owned preview URLs`
-- `Track external preview URLs`
+- `允许工作区运行时服务`
+- `默认服务配置`
+- `采集拥有的预览 URL`
+- `跟踪外部预览 URL`
 
-#### Section: `Cleanup`
+#### 部分：`清理`
 
-Fields:
+字段：
 
-- `Cleanup mode`
-  - `Manual`
-  - `When issue is terminal`
-  - `When PR closes`
-  - `After retention window`
-- `Retention window`
-- `Keep while preview is active`
-- `Keep while PR is open`
+- `清理模式`
+  - `手动`
+  - `当任务终态时`
+  - `当 PR 关闭时`
+  - `保留窗口后`
+- `保留窗口`
+- `预览活跃时保留`
+- `PR 开放时保留`
 
-## 3. Add Project Workspace Flow
+## 3. 添加项目工作区流程
 
-Entry point: `Project > Code > Add workspace`
+入口点：`项目 > 代码 > 添加工作区`
 
-### Form fields
+### 表单字段
 
-- `Name`
-- `Source type`
-  - `Local folder`
-  - `Git repo`
-  - `Non-git folder`
-  - `Remote managed`
-- `Local path`
-- `Repository URL`
-- `Remote provider`
-- `Remote workspace reference`
-- `Default ref`
-- `Set as default workspace`
-- `Setup command`
-- `Cleanup command`
+- `名称`
+- `源类型`
+  - `本地文件夹`
+  - `Git 仓库`
+  - `非 git 文件夹`
+  - `远程管理`
+- `本地路径`
+- `仓库 URL`
+- `远程提供者`
+- `远程工作区引用`
+- `默认引用`
+- `设为默认工作区`
+- `设置命令`
+- `清理命令`
 
-### Behavior
+### 行为
 
-- if source type is non-git, hide branch/PR-specific setup
-- if source type is git, show ref and optional advanced branch fields
-- if source type is remote-managed, show provider/reference fields and hide local-path-only configuration
-- for simple solo users, this can be one path field and one save button
+- 如果源类型是非 git，隐藏分支/PR 特定设置
+- 如果源类型是 git，显示引用和可选的高级分支字段
+- 如果源类型是远程管理，显示提供者/引用字段并隐藏仅本地路径配置
+- 对于简单的单独用户，这可以是一个路径字段和一个保存按钮
 
-## 4. Issue Create Flow
+## 4. 任务创建流程
 
-Issue creation should stay simple by default.
+任务创建默认应保持简单。
 
-### Default behavior
+### 默认行为
 
-If the selected project:
+如果所选项目：
 
-- has no workspace automation: show no workspace UI
-- has one default project workspace and default execution mode: inherit silently
+- 没有工作区自动化：不显示工作区 UI
+- 有一个默认项目工作区和默认执行模式：静默继承
 
-### Show a `Workspace` section only when relevant
+### 仅在相关时显示 `工作区` 部分
 
-#### Basic fields
+#### 基本字段
 
-- `Codebase`
-  - default selected project workspace
-- `Execution mode`
-  - `Project default`
-  - `Shared workspace`
-  - `Isolated workspace`
-  - `Operator branch`
+- `代码库`
+  - 默认选中的项目工作区
+- `执行模式`
+  - `项目默认`
+  - `共享工作区`
+  - `隔离工作区`
+  - `操作者分支`
 
-#### Advanced-only field
+#### 仅高级字段
 
-- `Reuse existing execution workspace`
+- `复用现有执行工作区`
 
-This dropdown should show only active execution workspaces for the selected project workspace, with labels like:
+此下拉应仅显示所选项目工作区的活跃执行工作区，标签如：
 
 - `dotta/integration-branch`
 - `PAP-447-add-worktree-support`
-- `shared primary workspace`
+- `共享主工作区`
 
-### Important rule
+### 重要规则
 
-Do not show a picker containing every possible workspace object by default.
+不要默认显示包含每个可能工作区对象的选择器。
 
-The normal flow should feel like:
+正常流程应感觉像：
 
-- choose project
-- optionally choose codebase
-- optionally choose execution mode
+- 选择项目
+- 可选选择代码库
+- 可选选择执行模式
 
-not:
+而不是：
 
-- choose from a long mixed list of roots, derived worktrees, previews, and branch names
+- 从根、派生 worktree、预览和分支名称的长混合列表中选择
 
-### Migration rule
+### 迁移规则
 
-For existing users, issue creation should continue to look the same until a project explicitly enables richer workspace behavior.
+对于现有用户，任务创建应继续看起来相同，直到项目显式启用更丰富的工作区行为。
 
-## 5. Issue Detail
+## 5. 任务详情
 
-Issue detail should expose workspace and work product clearly, but without becoming a code host UI.
+任务详情应清晰地展示工作区和工作成果，但不变成代码托管 UI。
 
-### Header chips
+### 标题芯片
 
-Show compact summary chips near the title/status area:
+在标题/状态区域附近显示紧凑的摘要芯片：
 
-- `Codebase: Web App`
-- `Workspace: Shared`
-- `Workspace: PAP-447-add-worktree-support`
-- `PR: Open`
-- `Preview: Healthy`
+- `代码库: Web App`
+- `工作区: 共享`
+- `工作区: PAP-447-add-worktree-support`
+- `PR: 开放`
+- `预览: 健康`
 
-### Tabs
+### 标签页
 
-- `Comments`
-- `Subissues`
-- `Work Product`
-- `Activity`
+- `评论`
+- `子任务`
+- `工作成果`
+- `活动`
 
-### `Work Product` tab
+### `工作成果` 标签页
 
-Sections:
+部分：
 
-- `Current workspace`
-- `Previews`
-- `Pull requests`
-- `Branches and commits`
-- `Artifacts and documents`
+- `当前工作区`
+- `预览`
+- `Pull Request`
+- `分支和提交`
+- `工件和文档`
 
-#### Current workspace panel
+#### 当前工作区面板
 
-Fields:
+字段：
 
-- workspace name
-- mode
-- branch
-- base ref
-- last used
-- linked issues count
-- cleanup status
+- 工作区名称
+- 模式
+- 分支
+- 基础引用
+- 上次使用
+- 关联任务数量
+- 清理状态
 
-Actions:
+操作：
 
-- `Open workspace details`
-- `Mark in review`
-- `Request cleanup`
+- `打开工作区详情`
+- `标记为审查中`
+- `请求清理`
 
-#### Pull request cards
+#### Pull Request 卡片
 
-Fields:
+字段：
 
-- title
-- provider
-- status
-- review state
-- linked branch
-- open/ready/merged timestamps
+- 标题
+- 提供者
+- 状态
+- 审查状态
+- 关联分支
+- 打开/就绪/合并时间戳
 
-Actions:
+操作：
 
-- `Open PR`
-- `Refresh status`
-- `Request board review`
+- `打开 PR`
+- `刷新状态`
+- `请求 board 审查`
 
-#### Preview cards
+#### 预览卡片
 
-Fields:
+字段：
 
-- title
+- 标题
 - URL
-- provider
-- health
-- ownership
-- updated at
+- 提供者
+- 健康状况
+- 所有权
+- 更新时间
 
-Actions:
+操作：
 
-- `Open preview`
-- `Refresh`
-- `Archive`
+- `打开预览`
+- `刷新`
+- `归档`
 
-## 6. Execution Workspace Detail
+## 6. 执行工作区详情
 
-This can be reached from a project code tab or an issue work product tab.
+可从项目代码标签页或任务工作成果标签页到达。
 
-It does not need to be in the main sidebar.
+不需要在主侧边栏中。
 
-### Sections
+### 部分
 
-- identity
-- source issue
-- linked issues
-- branch/ref
-- provider/session identity
-- active runtime services
-- previews
-- PRs
-- cleanup state
-- event/activity history
+- 身份
+- 源任务
+- 关联任务
+- 分支/引用
+- 提供者/会话身份
+- 活跃运行时服务
+- 预览
+- PR
+- 清理状态
+- 事件/活动历史
 
-### Motivation
+### 动机
 
-This is where advanced users go when they need to inspect the mechanics. Most users should not need it in normal flow.
+这是高级用户需要检查机制时去的地方。大多数用户在正常流程中不应需要它。
 
-## 7. Inbox Behavior
+## 7. 收件箱行为
 
-Inbox should surface actionable work product events, not every implementation detail.
+收件箱应展示可操作的工作成果事件，而不是每个实现细节。
 
-### Show inbox items for
+### 显示收件箱项目
 
-- issue assigned or updated
-- PR needs board review
-- PR opened or marked ready
-- preview unhealthy
-- workspace cleanup failed
-- runtime service failed
-- remote cloud-agent run returned PR or preview that needs review
+- 任务被分配或更新
+- PR 需要 board 审查
+- PR 被打开或标记为就绪
+- 预览不健康
+- 工作区清理失败
+- 运行时服务失败
+- 远程云智能体运行返回了需要审查的 PR 或预览
 
-### Do not show by default
+### 默认不显示
 
-- every workspace heartbeat
-- every branch update
-- every derived workspace creation
+- 每次工作区心跳
+- 每次分支更新
+- 每次派生工作区创建
 
-### Display style
+### 显示风格
 
-If the inbox item is about a preview or PR, show issue context with it:
+如果收件箱项目关于预览或 PR，显示任务上下文：
 
-- issue identifier and title
-- parent issue if this is a subissue
-- workspace name if relevant
+- 任务标识符和标题
+- 如果是子任务则显示父任务
+- 相关时显示工作区名称
 
-## 8. Issues List and Kanban
+## 8. 任务列表和看板
 
-Keep list and board planning-first.
+保持列表和看板以规划为先。
 
-### Default behavior
+### 默认行为
 
-- show top-level issues by default
-- show parent rollups for subissues
-- do not flatten every child execution detail into the main board
+- 默认显示顶层任务
+- 显示子任务的父任务汇总
+- 不将每个子级执行细节扁平化到主看板
 
-### Row/card adornments
+### 行/卡片装饰
 
-For issues with linked work product, show compact badges:
+对于有关联工作成果的任务，显示紧凑徽章：
 
 - `1 PR`
-- `2 previews`
-- `shared workspace`
-- `isolated workspace`
+- `2 预览`
+- `共享工作区`
+- `隔离工作区`
 
-### Optional advanced filters
+### 可选高级过滤器
 
-- `Has PR`
-- `Has preview`
-- `Workspace mode`
-- `Codebase`
+- `有 PR`
+- `有预览`
+- `工作区模式`
+- `代码库`
 
-## Upgrade and Migration Plan
+## 升级和迁移计划
 
-## 1. Product-level migration stance
+## 1. 产品级迁移立场
 
-Migration must be silent-by-default and compatibility-preserving.
+迁移必须默认静默且保持兼容性。
 
-Existing users should not be forced to:
+现有用户不应被强迫：
 
-- create new workspace objects by hand before they can keep working
-- re-tag old issues
-- learn new workspace concepts before basic issue flows continue to function
+- 在继续工作前手动创建新的工作区对象
+- 重新标记旧任务
+- 在基本任务流程继续运行之前学习新的工作区概念
 
-## 2. Existing project migration
+## 2. 现有项目迁移
 
-On upgrade:
+升级时：
 
-- existing `project_workspaces` records are retained and shown as `Project Workspaces`
-- the current primary workspace remains the default codebase
-- existing project execution workspace policy is mapped into the new `Project Execution Workspace Policy` surface
-- projects with no execution workspace policy stay in compatible/shared mode
+- 现有 `project_workspaces` 记录被保留并显示为 `项目工作区`
+- 当前主工作区保持为默认代码库
+- 现有项目执行工作区策略被映射到新的 `项目执行工作区策略` 界面
+- 没有执行工作区策略的项目保持兼容/共享模式
 
-## 3. Existing issue migration
+## 3. 现有任务迁移
 
-On upgrade:
+升级时：
 
-- existing issues default to `executionWorkspacePreference=inherit`
-- if an issue already has execution workspace settings, map them forward directly
-- if an issue has no explicit workspace data, preserve existing behavior and do not force a user-visible choice
+- 现有任务默认为 `executionWorkspacePreference=inherit`
+- 如果任务已有执行工作区设置，直接向前映射
+- 如果任务没有显式工作区数据，保留现有行为且不强制用户可见的选择
 
-## 4. Existing run/runtime migration
+## 4. 现有运行/运行时迁移
 
-On upgrade:
+升级时：
 
-- active or recent runtime services can be backfilled into execution workspace history where feasible
-- missing history should not block rollout; forward correctness matters more than perfect historical reconstruction
+- 活跃或最近的运行时服务可以在可行的情况下回填到执行工作区历史中
+- 缺失的历史不应阻塞推出；前向正确性比完美的历史重建更重要
 
-## 5. Rollout UX
+## 5. 推出 UX
 
-Use additive language in the UI:
+在 UI 中使用增量语言：
 
-- `Code`
-- `Workspace automation`
-- `Optional`
-- `Advanced`
+- `代码`
+- `工作区自动化`
+- `可选`
+- `高级`
 
-Avoid migration copy that implies users were previously using the product "wrong".
+避免暗示用户以前"错误地"使用产品的迁移文案。
 
-## Cloud Deployment Requirements
+## 云部署要求
 
-## 1. Paperclip host and execution host must be decoupled
+## 1. Paperclip 主机和执行主机必须解耦
 
-Paperclip may run:
+Paperclip 可能运行在：
 
-- locally with direct filesystem access
-- in a cloud app host such as Vercel
-- in a hybrid setup with external job runners
+- 本地，有直接文件系统访问
+- 云应用主机如 Vercel
+- 混合设置，有外部任务运行器
 
-The workspace model must work in all three.
+工作区模型必须在所有三种情况下工作。
 
-## 2. Remote execution must support first-class work product reporting
+## 2. 远程执行必须支持一等工作成果报告
 
-A cloud agent should be able to:
+云智能体应能够：
 
-- resolve a project workspace
-- realize an adapter-managed execution workspace remotely
-- produce a branch
-- open or update a PR
-- emit preview URLs
-- register artifacts
+- 解析项目工作区
+- 远程实现适配器管理的执行工作区
+- 产生分支
+- 打开或更新 PR
+- 发布预览 URL
+- 注册工件
 
-without the Paperclip host itself running local git or local preview processes.
+而 Paperclip 主机本身不运行本地 git 或本地预览进程。
 
-## 3. Local-only assumptions must be optional
+## 3. 仅本地假设必须是可选的
 
-The following must be optional, not required:
+以下必须是可选的，而非必需：
 
-- local `cwd`
-- local git CLI
-- host-managed worktree directories
-- host-owned long-lived preview processes
+- 本地 `cwd`
+- 本地 git CLI
+- 宿主管理的 worktree 目录
+- 宿主拥有的长期运行预览进程
 
-## 4. Same product surface, different provider behavior
+## 4. 相同产品界面，不同提供者行为
 
-The UI should not split into "local mode" and "cloud mode" products.
+UI 不应分裂为"本地模式"和"云模式"产品。
 
-Instead:
+取而代之：
 
-- local projects show path/git implementation details
-- cloud projects show provider/reference details
-- both surface the same high-level objects:
-  - project workspace
-  - execution workspace
-  - work product
-  - runtime service or preview
+- 本地项目显示路径/git 实现细节
+- 云项目显示提供者/引用细节
+- 两者都展示相同的高层对象：
+  - 项目工作区
+  - 执行工作区
+  - 工作成果
+  - 运行时服务或预览
 
-## Behavior Rules
+## 行为规则
 
-## 1. Cleanup must not depend on agents remembering `in_review`
+## 1. 清理不得依赖智能体记住 `in_review`
 
-Agents may still use `in_review`, but cleanup behavior must be governed by policy and observed state.
+智能体仍可使用 `in_review`，但清理行为必须由策略和观察到的状态治理。
 
-### Keep an execution workspace alive while any of these are true
+### 在以下任一条件为真时保持执行工作区存活
 
-- a linked issue is non-terminal
-- a linked PR is open
-- a linked preview/runtime service is active
-- the workspace is still within retention window
+- 关联任务非终态
+- 关联 PR 处于开放状态
+- 关联预览/运行时服务处于活跃状态
+- 工作区仍在保留窗口内
 
-### Hide instead of deleting aggressively
+### 隐藏而非积极删除
 
-Archived or idle workspaces should be hidden from default lists before they are hard-cleaned up.
+归档或空闲的工作区应在硬清理之前从默认列表中隐藏。
 
-## 2. Multiple issues may intentionally share one execution workspace
+## 2. 多个任务可以有意共享一个执行工作区
 
-This is how Paperclip supports:
+这是 Paperclip 支持以下场景的方式：
 
-- solo dev on a shared branch
-- operator integration branches
-- related features batched into one PR
+- 在共享分支上的单独开发
+- 操作者集成分支
+- 相关功能批量打包到一个 PR 中
 
-This is the key reason not to force 1 issue = 1 workspace = 1 PR.
+这是不强制 1 个任务 = 1 个工作区 = 1 个 PR 的关键原因。
 
-## 3. Isolated issue workspaces remain opt-in
+## 3. 隔离的任务工作区保持可选
 
-Even in a git-heavy project, isolated workspaces should be optional.
+即使在 git 密集型项目中，隔离工作区也应是可选的。
 
-Examples where shared mode is valid:
+共享模式有效的示例：
 
-- tiny bug fixes
-- branchless prototyping
-- non-git projects
-- single-user local workflows
+- 小型 bug 修复
+- 无分支的原型开发
+- 非 git 项目
+- 单用户本地工作流
 
-## 4. PR policy belongs to git-backed workspace policy
+## 4. PR 策略属于 git 支持的工作区策略
 
-PR automation decisions should be made at the project/workspace policy layer.
+PR 自动化决策应在项目/工作区策略层做出。
 
-The issue should only:
+任务应仅：
 
-- surface the resulting PR
-- route approvals/review requests
-- show status and review state
+- 展示结果 PR
+- 路由审批/审查请求
+- 显示状态和审查状态
 
-## 5. Work product is the user-facing unifier
+## 5. 工作成果是面向用户的统一器
 
-Previews, PRs, commits, and artifacts should all be discoverable through one consistent issue-level affordance.
+预览、PR、提交和工件都应通过一个一致的任务级别界面可发现。
 
-That keeps Paperclip focused on coordination and visibility instead of splitting outputs across many hidden subsystems.
+这使 Paperclip 专注于协调和可见性，而不是将产出分散在许多隐藏的子系统中。
 
-## Recommended Implementation Order
+## 推荐的实现顺序
 
-## Phase 1: Clarify current objects in UI
+## 第一阶段：在 UI 中明确当前对象
 
-1. Surface `Project > Code` tab
-2. Show existing project workspaces there
-3. Re-enable project-level execution workspace policy with revised copy
-4. Keep issue creation simple with inherited defaults
+1. 展示 `项目 > 代码` 标签页
+2. 在那里显示现有项目工作区
+3. 用修订的文案重新启用项目级执行工作区策略
+4. 保持任务创建简单，使用继承的默认值
 
-## Phase 2: Add explicit execution workspace record
+## 第二阶段：添加显式执行工作区记录
 
-1. Add `execution_workspaces`
-2. Link runs, issues, previews, and PRs to it
-3. Add simple execution workspace detail page
-4. Make `cwd` optional and ensure provider-managed remote workspaces are supported from day one
+1. 添加 `execution_workspaces`
+2. 将运行、任务、预览和 PR 链接到它
+3. 添加简单的执行工作区详情页面
+4. 使 `cwd` 可选并确保从第一天起支持提供者管理的远程工作区
 
-## Phase 3: Add work product model
+## 第三阶段：添加工作成果模型
 
-1. Add `issue_work_products`
-2. Ingest PRs, previews, branches, commits
-3. Add issue `Work Product` tab
-4. Add inbox items for actionable work product state changes
-5. Support remote agent-created PR/preview reporting without local ownership
+1. 添加 `issue_work_products`
+2. 摄入 PR、预览、分支、提交
+3. 添加任务 `工作成果` 标签页
+4. 为可操作的工作成果状态变更添加收件箱项目
+5. 支持远程智能体创建的 PR/预览报告而无需本地所有权
 
-## Phase 4: Add advanced reuse and cleanup workflows
+## 第四阶段：添加高级复用和清理工作流
 
-1. Add `reuse existing execution workspace`
-2. Add cleanup lifecycle UI
-3. Add operator branch workflow shortcuts
-4. Add richer external preview harvesting
-5. Add migration tooling/backfill where it improves continuity for existing users
+1. 添加 `复用现有执行工作区`
+2. 添加清理生命周期 UI
+3. 添加操作者分支工作流快捷方式
+4. 添加更丰富的外部预览采集
+5. 在改善现有用户连续性的地方添加迁移工具/回填
 
-## Why This Model Is Right
+## 为什么这个模型是正确的
 
-This model keeps the product balanced:
+这个模型保持了产品的平衡：
 
-- simple enough for solo users
-- strong enough for real engineering teams
-- flexible for non-git projects
-- explicit enough to govern PRs and previews
+- 对单独用户足够简单
+- 对真实工程团队足够强大
+- 对非 git 项目足够灵活
+- 对治理 PR 和预览足够明确
 
-Most importantly, it keeps the abstractions clean:
+最重要的是，它保持了抽象的干净：
 
-- projects plan the work
-- project workspaces define the durable codebases
-- execution workspaces define where work ran
-- work product defines what came out of the work
-- PRs remain outputs, not the core task model
+- 项目规划工作
+- 项目工作区定义持久代码库
+- 执行工作区定义工作运行的位置
+- 工作成果定义工作产出了什么
+- PR 保持为输出，不是核心任务模型
 
-It also keeps the rollout practical:
+它还使推出切实可行：
 
-- existing users can upgrade without workflow breakage
-- local-first installs stay simple
-- cloud-hosted Paperclip deployments remain first-class
+- 现有用户可以升级而不破坏工作流
+- 本地优先安装保持简单
+- 云托管的 Paperclip 部署保持一等
 
-That is a better fit for Paperclip than either extreme:
+这比任何极端都更适合 Paperclip：
 
-- hiding workspace behavior until nobody understands it
-- or making the whole app revolve around code-host mechanics
+- 隐藏工作区行为直到没人理解
+- 或让整个应用围绕代码托管机制旋转

@@ -1,738 +1,737 @@
-# Paperclip UI Spec
+# Paperclip UI 规格说明
 
-Status: Draft
-Date: 2026-02-17
+状态：草案
+日期：2026-02-17
 
-## 1. Design Philosophy
+## 1. 设计理念
 
-Paperclip's UI is a professional-grade control plane, not a toy dashboard. It should feel like the kind of tool you live in all day — fast, keyboard-driven, information-dense without being cluttered, dark-themed by default. Every pixel should earn its place.
+Paperclip 的 UI 是专业级的控制平面，而非玩具仪表盘。它应该像那种你整天离不开的工具一样——快速、键盘驱动、信息密度高但不杂乱、默认暗色主题。每个像素都应物尽其用。
 
-Design principles:
+设计原则：
 
-- **Dense but scannable.** Show maximum information without requiring clicks to reveal it. Use whitespace to separate, not to pad.
-- **Keyboard-first.** Global shortcuts for search (Cmd+K), new issue (C), navigation. Power users should rarely touch the mouse.
-- **Contextual, not modal.** Inline editing over dialog boxes. Dropdowns over page navigations. The user's mental context should never be broken unnecessarily.
-- **Dark theme default.** Neutral grays, not pure black. Accent colors used sparingly for status and priority. Text is the primary visual element.
+- **密集但可扫描。** 展示最大信息量而无需点击才能查看。使用留白来分隔，而非用于填充。
+- **键盘优先。** 搜索（Cmd+K）、新建任务（C）、导航都有全局快捷键。高级用户应该很少需要用鼠标。
+- **上下文化，而非模态化。** 行内编辑优于对话框。下拉菜单优于页面跳转。不应无故打断用户的心智上下文。
+- **默认暗色主题。** 中性灰色，而非纯黑。强调色谨慎用于状态和优先级。文本是主要的视觉元素。
 
-### Color System
+### 色彩系统
 
-- **Background:** `hsl(220, 13%, 10%)` (dark charcoal, not pure black)
-- **Surface/Card:** `hsl(220, 13%, 13%)`
-- **Border:** `hsl(220, 10%, 18%)`
-- **Text primary:** `hsl(220, 10%, 90%)`
-- **Text secondary:** `hsl(220, 10%, 55%)`
-- **Accent (interactive):** `hsl(220, 80%, 60%)` (muted blue)
+- **背景：** `hsl(220, 13%, 10%)`（深炭灰色，非纯黑）
+- **表面/卡片：** `hsl(220, 13%, 13%)`
+- **边框：** `hsl(220, 10%, 18%)`
+- **主要文本：** `hsl(220, 10%, 90%)`
+- **次要文本：** `hsl(220, 10%, 55%)`
+- **强调色（交互）：** `hsl(220, 80%, 60%)`（柔和蓝色）
 
-Status colors (consistent across all entities):
-- **Backlog:** gray `hsl(220, 10%, 45%)`
-- **Todo:** gray-blue `hsl(220, 20%, 55%)`
-- **In Progress:** yellow `hsl(45, 90%, 55%)`
-- **In Review:** violet `hsl(270, 60%, 60%)`
-- **Done:** green `hsl(140, 60%, 50%)`
-- **Cancelled:** gray `hsl(220, 10%, 40%)`
-- **Blocked:** amber `hsl(25, 90%, 55%)`
+状态颜色（所有实体统一使用）：
+- **待办列表（Backlog）：** 灰色 `hsl(220, 10%, 45%)`
+- **待办（Todo）：** 灰蓝色 `hsl(220, 20%, 55%)`
+- **进行中（In Progress）：** 黄色 `hsl(45, 90%, 55%)`
+- **审查中（In Review）：** 紫色 `hsl(270, 60%, 60%)`
+- **已完成（Done）：** 绿色 `hsl(140, 60%, 50%)`
+- **已取消（Cancelled）：** 灰色 `hsl(220, 10%, 40%)`
+- **已阻塞（Blocked）：** 琥珀色 `hsl(25, 90%, 55%)`
 
-Priority indicators:
-- **Critical:** red circle, filled
-- **High:** orange circle, half-filled
-- **Medium:** yellow circle, outline
-- **Low:** gray circle, outline, dashed
+优先级指示器：
+- **紧急：** 红色实心圆
+- **高：** 橙色半填充圆
+- **中：** 黄色空心圆
+- **低：** 灰色虚线空心圆
 
-### Typography
+### 排版
 
-- **Font:** System font stack (Inter if loaded, else `-apple-system, BlinkMacSystemFont, 'Segoe UI'`)
-- **Body:** 13px / 1.5 line-height
-- **Labels/metadata:** 11px / uppercase tracking
-- **Headings:** 14-18px / semi-bold, never all-caps
+- **字体：** 系统字体栈（优先加载 Inter，否则使用 `-apple-system, BlinkMacSystemFont, 'Segoe UI'`）
+- **正文：** 13px / 1.5 行高
+- **标签/元数据：** 11px / 大写字母间距
+- **标题：** 14-18px / 半粗体，绝不全大写
 
-### Icons
+### 图标
 
-Use `lucide-react` throughout. Every sidebar item, every status indicator, every action button should have an icon. Icons are 16px in nav, 14px inline.
+全局使用 `lucide-react`。每个侧边栏项、每个状态指示器、每个操作按钮都应有图标。导航中图标为 16px，行内为 14px。
 
 ---
 
-## 2. Application Shell
+## 2. 应用外壳
 
-The app is a three-zone layout:
+应用采用三区布局：
 
 ```
 ┌──────────┬────────────────────────────────────────────────┐
-│          │  Breadcrumb bar                                │
-│ Sidebar  ├──────────────────────────┬─────────────────────┤
-│ (240px)  │  Main content            │  Properties panel   │
-│          │  (flex-1)                │  (320px, optional)  │
+│          │  面包屑导航栏                                    │
+│ 侧边栏   ├──────────────────────────┬─────────────────────┤
+│ (240px)  │  主要内容                │  属性面板            │
+│          │  (flex-1)                │  (320px, 可选)       │
 │          │                          │                     │
 └──────────┴──────────────────────────┴─────────────────────┘
 ```
 
-- **Sidebar:** Fixed left, 240px. Collapsible to icon-only (48px) via toggle or keyboard shortcut.
-- **Breadcrumb bar:** Spans the full width above main+properties. Shows navigation path, entity actions, and view controls.
-- **Main content:** Scrollable. Contains the primary view (list, detail, chart, etc).
-- **Properties panel:** Right side, 320px. Shown on detail views (issue detail, project detail, agent detail). Hidden on list views and dashboard. Resizable.
+- **侧边栏：** 固定左侧，240px。可通过按钮或快捷键折叠为仅图标模式（48px）。
+- **面包屑导航栏：** 横跨主内容和属性面板的上方全宽。显示导航路径、实体操作和视图控件。
+- **主要内容：** 可滚动。包含主视图（列表、详情、图表等）。
+- **属性面板：** 右侧，320px。在详情视图（任务详情、项目详情、智能体详情）中显示。在列表视图和仪表盘中隐藏。可调整大小。
 
-The properties panel slides in when you click into a detail view and slides out when you go back to a list. It is NOT a sidebar — it's contextual to the selected entity.
+属性面板在你点击进入详情视图时滑入，返回列表时滑出。它不是侧边栏——它是所选实体的上下文面板。
 
 ---
 
-## 3. Sidebar
+## 3. 侧边栏
 
-The sidebar is the primary navigation. It is grouped into logical sections with collapsible headers.
+侧边栏是主要导航。它按逻辑分组排列，组标题可折叠。
 
-### 3.1 Company Header
+### 3.1 公司头部
 
-Top of sidebar. Always visible.
+侧边栏顶部。始终可见。
 
 ```
 ┌─────────────────────────┐
-│ [icon] Acme Corp      ▼ │  ← Company switcher dropdown
+│ [icon] Acme Corp      ▼ │  ← 公司切换下拉菜单
 ├─────────────────────────┤
-│ [🔍]  [✏️]              │  ← Search + New Issue
+│ [🔍]  [✏️]              │  ← 搜索 + 新建任务
 └─────────────────────────┘
 ```
 
-**Company switcher** is a dropdown button that occupies the full width of the sidebar header. It shows:
-- Company icon (first letter avatar with company color, or uploaded icon)
-- Company name (truncated with ellipsis if long)
-- Chevron-down icon
+**公司切换器**是一个占据侧边栏头部全宽的下拉按钮。它显示：
+- 公司图标（首字母头像加公司颜色，或上传的图标）
+- 公司名称（过长时用省略号截断）
+- 向下箭头图标
 
-Clicking opens a dropdown with:
-- List of all companies (with status dot: green=active, yellow=paused, gray=archived)
-- Search field at top of dropdown (for users with many companies)
-- Divider
-- `+ Create company` action at the bottom
+点击后打开一个下拉菜单，包含：
+- 所有公司列表（带状态点：绿色=活跃，黄色=暂停，灰色=已归档）
+- 下拉菜单顶部的搜索框（适用于拥有多家公司的用户）
+- 分隔线
+- 底部的 `+ 创建公司` 操作
 
-Below the company name, a row of icon buttons:
-- **Search** (magnifying glass icon) — opens Cmd+K search modal
-- **New Issue** (pencil/square-pen icon) — opens new issue modal in the current company context
+公司名称下方有一行图标按钮：
+- **搜索**（放大镜图标）— 打开 Cmd+K 搜索模态框
+- **新建任务**（笔/方形笔图标）— 在当前公司上下文中打开新建任务模态框
 
-### 3.2 Personal Section
+### 3.2 个人区域
 
-No section header — these are always at the top, below the company header.
-
-```
-  Inbox                    3
-  My Issues
-```
-
-- **Inbox** — items requiring the board operator's attention. Badge count on the right. Includes: pending approvals, budget alerts, failed heartbeats. The number is the total unread/unresolved count.
-- **My Issues** — issues created by or assigned to the board operator.
-
-### 3.3 Work Section
-
-Section header: **Work** (collapsible, with a chevron toggle)
+无区域标题 — 始终显示在公司头部下方的顶部。
 
 ```
-  Work                     ▼
-    Issues
-    Projects
-    Goals
-    Views
+  收件箱                    3
+  我的任务
 ```
 
-- **Issues** — main task list for the selected company. This is the workhorse view.
-- **Projects** — project list. Projects group issues and link to goals.
-- **Goals** — company goal hierarchy.
-- **Views** — saved filter/sort configurations (e.g., "Critical bugs", "Unassigned tasks", "CEO's tasks"). Users can create, name, and pin custom views here.
+- **收件箱** — 需要董事会操作员关注的事项。右侧显示角标计数。包括：待审批、预算警报、心跳失败。数字是未读/未解决总数。
+- **我的任务** — 由董事会操作员创建或分配给他的任务。
 
-### 3.4 Company Section
+### 3.3 工作区域
 
-Section header: **Company** (collapsible)
+区域标题：**工作**（可折叠，带箭头开关）
 
 ```
-  Company                  ▼
-    Dashboard
-    Org Chart
-    Agents
-    Costs
-    Activity
+  工作                       ▼
+    任务
+    项目
+    目标
+    视图
 ```
 
-- **Dashboard** — company health overview: agent statuses, task velocity, cost burn, pending approvals count.
-- **Org Chart** — interactive tree visualization of the agent reporting hierarchy.
-- **Agents** — flat list of all agents with status, role, last heartbeat, spend.
-- **Costs** — cost dashboard with breakdowns by agent, project, model, time.
-- **Activity** — audit log of all system events.
+- **任务** — 所选公司的主要任务列表。这是核心工作视图。
+- **项目** — 项目列表。项目将任务分组并关联到目标。
+- **目标** — 公司目标层级。
+- **视图** — 保存的筛选/排序配置（例如"紧急 bug"、"未分配的任务"、"CEO 的任务"）。用户可以在此创建、命名和固定自定义视图。
 
-Note: Approvals do not have a top-level sidebar entry. They are surfaced through the **Inbox** (primary interaction point), **Dashboard** (pending count metric), and **inline on entity pages** (e.g., an agent detail page shows the approval that authorized its hire). The `/approvals` route still exists and is reachable via "See all approvals" links in Inbox and Dashboard, but it is not in the sidebar navigation.
+### 3.4 公司区域
 
-### 3.5 Section Behavior
+区域标题：**公司**（可折叠）
 
-- Each section header is clickable to collapse/expand its children.
-- Collapsed state persists in localStorage.
-- Active nav item is highlighted with a left-border accent and background tint.
-- Hovering a nav item shows a subtle background highlight.
-- Badge counts are right-aligned, rendered as small pills (e.g., `3` in a rounded rect).
-- Icons are 16px, left-aligned, with 8px gap to label text.
+```
+  公司                       ▼
+    仪表盘
+    组织架构图
+    智能体
+    成本
+    活动
+```
 
-### 3.6 Sidebar Icons
+- **仪表盘** — 公司健康概览：智能体状态、任务速度、成本消耗、待审批数量。
+- **组织架构图** — 智能体汇报层级的交互式树形可视化。
+- **智能体** — 所有智能体的平铺列表，包含状态、角色、上次心跳、支出。
+- **成本** — 成本仪表盘，按智能体、项目、模型、时间细分。
+- **活动** — 所有系统事件的审计日志。
 
-Each nav item has a distinctive icon (lucide-react):
+注意：审批没有顶级侧边栏入口。它们通过**收件箱**（主要交互入口）、**仪表盘**（待处理计数指标）和**实体页面行内展示**（例如，智能体详情页显示授权其招聘的审批）来呈现。`/approvals` 路由仍然存在，可通过收件箱和仪表盘中的"查看所有审批"链接访问，但它不在侧边栏导航中。
 
-| Item | Icon |
+### 3.5 区域行为
+
+- 每个区域标题可点击以折叠/展开其子项。
+- 折叠状态持久保存在 localStorage 中。
+- 活动导航项通过左边框强调色和背景色调高亮显示。
+- 悬停导航项时显示微妙的背景高亮。
+- 角标计数右对齐，渲染为小药丸形状（例如圆角矩形中的 `3`）。
+- 图标为 16px，左对齐，与标签文本间隔 8px。
+
+### 3.6 侧边栏图标
+
+每个导航项都有独特的图标（lucide-react）：
+
+| 项目 | 图标 |
 |------|------|
-| Inbox | `Inbox` |
-| My Issues | `CircleUser` |
-| Issues | `CircleDot` |
-| Projects | `Hexagon` |
-| Goals | `Target` |
-| Views | `LayoutList` |
-| Dashboard | `LayoutDashboard` |
-| Org Chart | `GitBranch` |
-| Agents | `Bot` |
-| Costs | `DollarSign` |
-| Activity | `History` |
+| 收件箱 | `Inbox` |
+| 我的任务 | `CircleUser` |
+| 任务 | `CircleDot` |
+| 项目 | `Hexagon` |
+| 目标 | `Target` |
+| 视图 | `LayoutList` |
+| 仪表盘 | `LayoutDashboard` |
+| 组织架构图 | `GitBranch` |
+| 智能体 | `Bot` |
+| 成本 | `DollarSign` |
+| 活动 | `History` |
 
 ---
 
-## 4. Breadcrumb Bar
+## 4. 面包屑导航栏
 
-The breadcrumb bar sits above the main content and properties panel. It serves as both navigation and context indicator.
+面包屑导航栏位于主内容和属性面板上方。它同时作为导航和上下文指示器。
 
-### 4.1 Structure
+### 4.1 结构
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│ Projects › Paperclip › Issues › CLIP-42  [⭐] [···]     [🔔] [⬜] │
+│ 项目 › Paperclip › 任务 › CLIP-42  [⭐] [···]     [🔔] [⬜] │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-**Left side:**
-- Breadcrumb segments, separated by `›` chevrons.
-- Each segment is clickable to navigate to that level.
-- Current segment is non-clickable, slightly bolder text.
-- Star icon to favorite/pin the current entity.
-- Three-dot menu for entity actions (delete, archive, duplicate, copy link, etc.)
+**左侧：**
+- 面包屑段，以 `›` 分隔。
+- 每个段可点击以导航到该级别。
+- 当前段不可点击，文本稍粗。
+- 星标图标用于收藏/固定当前实体。
+- 三点菜单用于实体操作（删除、归档、复制、复制链接等）。
 
-**Right side:**
-- Notification bell (if in a detail view — subscribe to changes on this entity)
-- Panel toggle (show/hide the right properties panel)
+**右侧：**
+- 通知铃铛（在详情视图中 — 订阅此实体的变更通知）
+- 面板切换（显示/隐藏右侧属性面板）
 
-### 4.2 View-Specific Tabs
+### 4.2 视图特定标签页
 
-On certain detail pages, the breadcrumb bar also contains a tab row below the breadcrumbs:
+在某些详情页面上，面包屑导航栏还在面包屑下方包含标签页行：
 
-**Project detail:**
+**项目详情：**
 ```
-  Overview    Updates    Issues    Settings
-```
-
-**Agent detail:**
-```
-  Overview    Heartbeats    Issues    Costs
+  概览    更新    任务    设置
 ```
 
-Tabs are rendered as pill-shaped buttons. Active tab has a subtle background fill.
+**智能体详情：**
+```
+  概览    心跳    任务    成本
+```
+
+标签页渲染为药丸形按钮。活动标签页有微妙的背景填充。
 
 ---
 
-## 5. Issues (Task Management)
+## 5. 任务（任务管理）
 
-Issues are the core work unit. This section details the full issue experience.
+任务是核心工作单元。本节详细介绍完整的任务体验。
 
-### 5.1 Issue List View
+### 5.1 任务列表视图
 
-The issue list is the default view when clicking "Issues" in the sidebar.
+任务列表是点击侧边栏"任务"时的默认视图。
 
-**Layout:**
+**布局：**
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│ [All Issues] [Active] [Backlog]  [⚙ Settings]    [≡ Filter]  [Display ▼] │
+│ [全部任务] [活跃] [待办列表]  [⚙ 设置]    [≡ 筛选]  [显示 ▼] │
 ├─────────────────────────────────────────────────────────────────┤
-│ ▼ Todo                                                3    [+] │
-│ ☐ --- CLIP-5  ○ Implement user auth          @CTO    Feb 16  │
-│ ☐ --- CLIP-3  ○ Set up CI pipeline           @DevOps Feb 16  │
-│ ☐ --- CLIP-8  ○ Write API documentation      @Writer Feb 17  │
+│ ▼ 待办                                                3    [+] │
+│ ☐ --- CLIP-5  ○ 实现用户认证            @CTO    Feb 16  │
+│ ☐ --- CLIP-3  ○ 搭建 CI 流水线          @DevOps Feb 16  │
+│ ☐ --- CLIP-8  ○ 编写 API 文档           @Writer Feb 17  │
 │                                                                 │
-│ ▼ In Progress                                         2    [+] │
-│ ☐ !!! CLIP-1  ◐ Build landing page           @FE     Feb 15  │
-│ ☐ --- CLIP-4  ◐ Database schema design       @CTO    Feb 14  │
+│ ▼ 进行中                                               2    [+] │
+│ ☐ !!! CLIP-1  ◐ 构建着陆页              @FE     Feb 15  │
+│ ☐ --- CLIP-4  ◐ 数据库架构设计          @CTO    Feb 14  │
 │                                                                 │
-│ ▼ Backlog                                             5    [+] │
-│ ☐ --- CLIP-9  ◌ Research competitors                  Feb 17  │
+│ ▼ 待办列表                                             5    [+] │
+│ ☐ --- CLIP-9  ◌ 竞品调研                         Feb 17  │
 │ ...                                                             │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-**Top toolbar:**
-- **Status tabs:** `All Issues`, `Active` (todo + in_progress + in_review + blocked), `Backlog`. Each tab shows a status icon and count. Active tab is filled, others outlined.
-- **Settings gear:** Configure issue display defaults, custom fields.
-- **Filter button:** Opens a filter bar below the toolbar.
-- **Display dropdown:** Toggle between grouping modes (by status, by priority, by assignee, by project, none) and layout modes (list, board/kanban).
+**顶部工具栏：**
+- **状态标签页：** `全部任务`、`活跃`（待办 + 进行中 + 审查中 + 已阻塞）、`待办列表`。每个标签页显示状态图标和计数。活动标签页为填充样式，其他为轮廓样式。
+- **设置齿轮：** 配置任务显示默认值、自定义字段。
+- **筛选按钮：** 在工具栏下方展开筛选栏。
+- **显示下拉菜单：** 在分组模式（按状态、按优先级、按指派人、按项目、无分组）和布局模式（列表、看板）之间切换。
 
-**Grouping:**
-- Issues are grouped by status by default (matching the reference screenshots).
-- Each group header shows: collapse chevron, status icon, status name, count, and a `+` button to create a new issue in that status.
-- Groups are collapsible. Collapsed groups show just the header with count.
+**分组：**
+- 任务默认按状态分组（与参考截图一致）。
+- 每个组标题显示：折叠箭头、状态图标、状态名称、计数，以及一个 `+` 按钮用于在该状态下创建新任务。
+- 组可折叠。折叠的组仅显示标题和计数。
 
-**Issue rows:**
-Each row contains, left to right:
-1. **Checkbox** — for bulk selection. Hidden by default, appears on hover (left of priority).
-2. **Priority indicator** — icon representing critical/high/medium/low (see Color System above). Always visible.
-3. **Issue key** — e.g., `CLIP-5`. Monospace, muted color. The prefix is derived from the project (or company if no project).
-4. **Status circle** — clickable to open status change dropdown (same as reference screenshot). The circle's fill/color reflects current status.
-5. **Title** — primary text, truncated with ellipsis if too long.
-6. **Assignee** — avatar (agent icon) + agent name, right-aligned. If unassigned, shows a dashed circle placeholder.
-7. **Date** — creation date or target date, muted text, far right.
+**任务行：**
+每行从左到右包含：
+1. **复选框** — 用于批量选择。默认隐藏，悬停时出现（在优先级左侧）。
+2. **优先级指示器** — 表示紧急/高/中/低的图标（见上方色彩系统）。始终可见。
+3. **任务键** — 例如 `CLIP-5`。等宽字体，柔和颜色。前缀来源于项目（如无项目则来源于公司）。
+4. **状态圆点** — 可点击以打开状态变更下拉菜单（与参考截图相同）。圆点的填充/颜色反映当前状态。
+5. **标题** — 主要文本，过长时用省略号截断。
+6. **指派人** — 头像（智能体图标）+ 智能体名称，右对齐。如未指派，显示虚线圆圈占位符。
+7. **日期** — 创建日期或目标日期，柔和文本，最右侧。
 
-**Row interactions:**
-- Click row → navigate to issue detail view.
-- Click status circle → opens inline status dropdown (Backlog, Todo, In Progress, In Review, Done, Cancelled) with keyboard numbers as shortcuts (1-6).
-- Click checkbox → selects for bulk actions. When any checkbox is selected, a bulk action bar appears at the bottom of the list.
-- Hover → shows checkbox, and row gets subtle background highlight.
-- Right-click → context menu (same actions as three-dot menu).
+**行交互：**
+- 点击行 → 导航到任务详情视图。
+- 点击状态圆点 → 打开行内状态下拉菜单（待办列表、待办、进行中、审查中、已完成、已取消），数字键 1-6 作为快捷键。
+- 点击复选框 → 选中用于批量操作。当任何复选框被选中时，列表底部出现批量操作栏。
+- 悬停 → 显示复选框，行获得微妙的背景高亮。
+- 右键 → 上下文菜单（与三点菜单操作相同）。
 
-**Bulk action bar:**
-When one or more issues are selected, a floating bar appears at the bottom:
+**批量操作栏：**
+当选中一个或多个任务时，底部出现浮动栏：
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  3 selected    [Status ▼] [Priority ▼] [Assignee ▼] [Project ▼]  [🗑 Delete]  [✕ Cancel] │
+│  已选 3 项    [状态 ▼] [优先级 ▼] [指派人 ▼] [项目 ▼]  [🗑 删除]  [✕ 取消] │
 └─────────────────────────────────────────────────────────┘
 ```
 
-### 5.2 Issue Filter Bar
+### 5.2 任务筛选栏
 
-Clicking "Filter" reveals a filter bar below the toolbar:
+点击"筛选"后在工具栏下方展开筛选栏：
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│ [+ Add filter]  Status is Todo, In Progress  [×]        │
-│                 Priority is Critical, High    [×]        │
-│                 Assignee is CTO-Agent         [×]        │
+│ [+ 添加筛选]  状态为 待办, 进行中  [×]                    │
+│               优先级为 紧急, 高    [×]                    │
+│               指派人为 CTO-Agent   [×]                    │
 └─────────────────────────────────────────────────────────┘
 ```
 
-- Each filter is a chip showing `field operator value`.
-- Click a chip to edit it.
-- `×` removes the filter.
-- `+ Add filter` opens a dropdown of available fields: Status, Priority, Assignee, Project, Goal, Created date, Labels, Creator.
-- Filters are AND-composed.
-- Active filters persist in the URL query string so they're shareable/bookmarkable.
+- 每个筛选条件是一个显示 `字段 运算符 值` 的标签。
+- 点击标签可编辑。
+- `×` 移除该筛选条件。
+- `+ 添加筛选` 打开可用字段的下拉菜单：状态、优先级、指派人、项目、目标、创建日期、标签、创建者。
+- 筛选条件之间为 AND 组合。
+- 活动筛选条件持久保存在 URL 查询字符串中，因此可以分享/书签。
 
-### 5.3 Issue Detail View (Three-Pane)
+### 5.3 任务详情视图（三栏式）
 
-Clicking an issue opens the detail view. The main content area splits into two zones, with the sidebar still visible on the left.
+点击任务后打开详情视图。主内容区域分为两个区域，侧边栏仍在左侧可见。
 
 ```
 ┌──────────┬────────────────────────────────┬──────────────────────┐
-│          │ Issues › CLIP-42               │                      │
-│ Sidebar  │                                │   Properties     [+] │
-│          │ Fix user authentication bug    │                      │
-│          │ Implement proper token...      │   Status    In Progress │
-│          │                                │   Priority  High     │
-│          │ ┌──────────────────────────┐   │   Assignee  CTO      │
-│          │ │ Properties bar (inline)  │   │   Project   Auth     │
-│          │ │ In Progress · High ·     │   │   Goal      Security │
-│          │ │ CTO · Auth project · ... │   │   Labels    bug, auth│
-│          │ └──────────────────────────┘   │   Start     Feb 15   │
-│          │                                │   Target    Feb 20   │
-│          │ Description                    │   Created   Feb 14   │
+│          │ 任务 › CLIP-42                │                      │
+│ 侧边栏   │                                │   属性           [+] │
+│          │ 修复用户认证 bug               │                      │
+│          │ 实现正确的令牌...              │   状态    进行中     │
+│          │                                │   优先级  高         │
+│          │ ┌──────────────────────────┐   │   指派人  CTO        │
+│          │ │ 属性栏（行内）           │   │   项目   Auth        │
+│          │ │ 进行中 · 高 ·           │   │   目标   安全性      │
+│          │ │ CTO · Auth 项目 · ...   │   │   标签   bug, auth   │
+│          │ └──────────────────────────┘   │   开始   Feb 15      │
+│          │                                │   截止   Feb 20      │
+│          │ 描述                           │   创建   Feb 14      │
 │          │ ─────────────────              │                      │
-│          │ The current authentication     │   ─────────────────  │
-│          │ system has a token refresh...  │   Activity           │
-│          │                                │   CTO commented 2h   │
-│          │ Comments                       │   Status → In Prog   │
-│          │ ─────────────────              │   Created by Board   │
-│          │ [avatar] CTO · 2 hours ago     │                      │
-│          │ I've identified the root...    │                      │
+│          │ 当前认证系统存在令牌刷新...    │   ─────────────────   │
+│          │                                │   活动               │
+│          │ 评论                           │   CTO 2小时前评论    │
+│          │ ─────────────────              │   状态 → 进行中      │
+│          │ [avatar] CTO · 2 小时前       │   由董事会创建        │
+│          │ 我已确定了根本原因...          │                      │
 │          │                                │                      │
-│          │ [avatar] DevOps · 1 hour ago   │                      │
-│          │ The CI is set up to run...     │                      │
+│          │ [avatar] DevOps · 1 小时前    │                      │
+│          │ CI 已配置为运行...            │                      │
 │          │                                │                      │
 │          │ ┌──────────────────────────┐   │                      │
-│          │ │ Write a comment...       │   │                      │
+│          │ │ 写评论...               │   │                      │
 │          │ └──────────────────────────┘   │                      │
 └──────────┴────────────────────────────────┴──────────────────────┘
 ```
 
-#### Middle Pane (Main Content)
+#### 中间栏（主内容）
 
-**Header area:**
-- Issue title, large (18px, semi-bold), editable on click (inline editing).
-- Subtitle: issue key `CLIP-42` in muted text.
-- Below the title: inline properties bar showing key properties as clickable chips (same pattern as reference screenshots): `[○ In Progress] [!!! High] [👤 CTO] [📅 Target date] [📁 Auth] [···]`. Each chip is clickable to change that property inline.
+**头部区域：**
+- 任务标题，大号（18px，半粗体），点击可编辑（行内编辑）。
+- 副标题：任务键 `CLIP-42`，柔和颜色文本。
+- 标题下方：行内属性栏，以可点击的标签形式显示关键属性（与参考截图相同模式）：`[○ 进行中] [!!! 高] [👤 CTO] [📅 截止日期] [📁 Auth] [···]`。每个标签可点击以行内修改该属性。
 
-**Description:**
-- Markdown-rendered description.
-- Click to edit — opens a markdown editor in-place.
-- Support for headings, lists, code blocks, links, images.
+**描述：**
+- Markdown 渲染的描述。
+- 点击可编辑 — 就地打开 Markdown 编辑器。
+- 支持标题、列表、代码块、链接、图片。
 
-**Subtasks (if any):**
-- Listed below description as a collapsible section.
-- Each subtask is a mini issue row (status circle + title + assignee).
-- `+ Add subtask` button at the bottom.
+**子任务（如有）：**
+- 在描述下方以可折叠区域列出。
+- 每个子任务是一个迷你任务行（状态圆点 + 标题 + 指派人）。
+- 底部有 `+ 添加子任务` 按钮。
 
-**Comments:**
-- Chronological list of comments.
-- Each comment shows: author avatar/icon, author name, timestamp, body (markdown rendered).
-- Comment input at the bottom — a text area with markdown support and a "Comment" button.
-- Comments from agents show a bot icon; comments from the board show a user icon.
+**评论：**
+- 按时间顺序排列的评论列表。
+- 每条评论显示：作者头像/图标、作者名称、时间戳、正文（Markdown 渲染）。
+- 底部有评论输入框 — 支持 Markdown 的文本区域和"评论"按钮。
+- 智能体的评论显示机器人图标；董事会的评论显示用户图标。
 
-#### Right Pane (Properties Panel)
+#### 右栏（属性面板）
 
-**Header:** "Properties" label with a `+` button to add a custom field.
+**头部：** "属性"标签，带 `+` 按钮用于添加自定义字段。
 
-**Property list:** Each property is a row with label on the left and editable value on the right.
+**属性列表：** 每个属性是一行，左侧为标签，右侧为可编辑值。
 
-| Property | Control |
+| 属性 | 控件 |
 |----------|---------|
-| Status | Dropdown with status options + colored dot |
-| Priority | Dropdown with priority options + icon |
-| Assignee | Agent picker dropdown with search |
-| Project | Project picker dropdown |
-| Goal | Goal picker dropdown |
-| Labels | Multi-select tag input |
-| Lead | Agent picker |
-| Members | Multi-select agent picker |
-| Start date | Date picker |
-| Target date | Date picker |
-| Created by | Read-only text |
-| Created | Read-only timestamp |
-| Billing code | Text input |
+| 状态 | 带状态选项和彩色圆点的下拉菜单 |
+| 优先级 | 带优先级选项和图标的下拉菜单 |
+| 指派人 | 带搜索的智能体选择器下拉菜单 |
+| 项目 | 项目选择器下拉菜单 |
+| 目标 | 目标选择器下拉菜单 |
+| 标签 | 多选标签输入 |
+| 负责人 | 智能体选择器 |
+| 成员 | 多选智能体选择器 |
+| 开始日期 | 日期选择器 |
+| 截止日期 | 日期选择器 |
+| 创建者 | 只读文本 |
+| 创建时间 | 只读时间戳 |
+| 计费代码 | 文本输入 |
 
-Below properties, a divider, then:
+属性下方有分隔线，然后是：
 
-**Activity section:**
-- "Activity" header with "See all" link.
-- Compact timeline of recent events: status changes, assignment changes, comments, etc.
-- Each entry: icon + description + relative timestamp.
+**活动区域：**
+- "活动"标题，带"查看全部"链接。
+- 近期事件的紧凑时间线：状态变更、指派变更、评论等。
+- 每条记录：图标 + 描述 + 相对时间戳。
 
-### 5.4 New Issue Modal
+### 5.4 新建任务模态框
 
-Triggered by the sidebar pencil icon, keyboard shortcut `C`, or the `+` buttons in the issue list.
+通过侧边栏的笔图标、键盘快捷键 `C` 或任务列表中的 `+` 按钮触发。
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│ [📁 CLIP] › New issue               [Save as draft] [↗] [×] │
+│ [📁 CLIP] › 新建任务               [保存为草稿] [↗] [×] │
 ├─────────────────────────────────────────────────────────┤
 │                                                         │
-│ Issue title                                             │
+│ 任务标题                                                │
 │ ___________________________________________________     │
 │                                                         │
-│ Add a description...                                    │
+│ 添加描述...                                             │
 │                                                         │
 │                                                         │
 │                                                         │
 │                                                         │
 ├─────────────────────────────────────────────────────────┤
-│ [○ Todo] [--- Priority] [👤 Assignee] [📁 Project]     │
-│ [🏷 Labels] [···]                                       │
+│ [○ 待办] [--- 优先级] [👤 指派人] [📁 项目]             │
+│ [🏷 标签] [···]                                         │
 ├─────────────────────────────────────────────────────────┤
-│ [📎]                    [◻ Create more] [Create issue]  │
+│ [📎]                    [◻ 继续创建] [创建任务]          │
 └─────────────────────────────────────────────────────────┘
 ```
 
-**Top bar:**
-- Breadcrumb showing context: project key (or company key) `›` "New issue".
-- "Save as draft" button.
-- Expand icon (open as full page instead of modal).
-- Close `×`.
+**顶部栏：**
+- 面包屑显示上下文：项目键（或公司键）`›` "新建任务"。
+- "保存为草稿"按钮。
+- 展开图标（以全页面而非模态框打开）。
+- 关闭 `×`。
 
-**Body:**
-- Title field: large input, placeholder "Issue title". Auto-focused on open.
-- Description: markdown editor below, placeholder "Add a description...". Expandable.
+**正文：**
+- 标题字段：大输入框，占位符"任务标题"。打开时自动聚焦。
+- 描述：下方的 Markdown 编辑器，占位符"添加描述..."。可展开。
 
-**Property chips (bottom bar):**
-- Compact row of property buttons. Each opens a dropdown to set that property.
-- Default chips shown: Status (defaults to Todo), Priority, Assignee, Project, Labels.
-- `···` more button reveals: Goal, Start date, Target date, Billing code, Parent issue.
+**属性标签（底部栏）：**
+- 紧凑的属性按钮行。每个打开一个下拉菜单来设置该属性。
+- 默认显示的标签：状态（默认为待办）、优先级、指派人、项目、标签。
+- `···` 更多按钮展开：目标、开始日期、截止日期、计费代码、父任务。
 
-**Footer:**
-- Attachment button (paperclip icon).
-- "Create more" toggle — when on, creating an issue clears the form and stays open for rapid entry.
-- "Create issue" primary button.
+**底栏：**
+- 附件按钮（回形针图标）。
+- "继续创建"开关 — 开启后，创建任务后清空表单并保持打开，便于快速录入。
+- "创建任务"主按钮。
 
-**Behavior:**
-- `Cmd+Enter` submits the form.
-- If opened from within a project context, the project is pre-filled.
-- If opened from a specific status group's `+` button, that status is pre-filled.
-- The slug/key is auto-generated from the project prefix + incrementing number (shown in breadcrumb).
+**行为：**
+- `Cmd+Enter` 提交表单。
+- 如果从项目上下文中打开，项目会预填充。
+- 如果从特定状态组的 `+` 按钮打开，该状态会预填充。
+- 标识/键由项目前缀 + 递增数字自动生成（显示在面包屑中）。
 
-### 5.5 Issue Board View (Kanban)
+### 5.5 任务看板视图（看板）
 
-Accessible via Display dropdown → Board layout.
+通过显示下拉菜单 → 看板布局访问。
 
-Columns represent statuses: Backlog | Todo | In Progress | In Review | Done
+列表示状态：待办列表 | 待办 | 进行中 | 审查中 | 已完成
 
-Each card shows:
-- Issue key (muted)
-- Title (primary text)
-- Priority icon (bottom-left)
-- Assignee avatar (bottom-right)
+每张卡片显示：
+- 任务键（柔和颜色）
+- 标题（主要文本）
+- 优先级图标（左下角）
+- 指派人头像（右下角）
 
-Cards are draggable between columns. Dragging a card to a new column changes its status (with transition validation — invalid transitions show an error toast).
+卡片可在列之间拖拽。将卡片拖到新列会更改其状态（带转换验证 — 无效转换显示错误提示）。
 
-Each column header has a `+` button to create a new issue in that status.
+每列标题有一个 `+` 按钮用于在该状态下创建新任务。
 
 ---
 
-## 6. Projects
+## 6. 项目
 
-### 6.1 Project List View
+### 6.1 项目列表视图
 
-Similar to the issue list but for projects.
+与任务列表类似，但用于项目。
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│ Projects                                [+ New project] │
+│ 项目                                    [+ 新建项目]     │
 ├─────────────────────────────────────────────────────────┤
-│ [icon] Paperclip Auth     Backlog     CTO     Feb 20   │
-│ [icon] Marketing Site     In Progress CMO     Mar 01   │
-│ [icon] API v2             Planned     CTO     Mar 15   │
+│ [icon] Paperclip Auth     待办列表   CTO     Feb 20     │
+│ [icon] Marketing Site     进行中     CMO     Mar 01     │
+│ [icon] API v2             已规划     CTO     Mar 15     │
 └─────────────────────────────────────────────────────────┘
 ```
 
-Each row: project icon (colored hexagon), name, status badge, lead agent, target date.
+每行：项目图标（彩色六边形）、名称、状态标签、负责智能体、截止日期。
 
-### 6.2 Project Detail View (Three-Pane)
+### 6.2 项目详情视图（三栏式）
 
-Uses the same three-pane layout as issue detail.
+使用与任务详情相同的三栏布局。
 
-**Breadcrumb tabs:** Overview | Updates | Issues | Settings
+**面包屑标签页：** 概览 | 更新 | 任务 | 设置
 
-**Overview tab (middle pane):**
-- Project icon + name (editable)
-- Description (markdown, editable)
-- Inline properties bar: `[◌ Backlog] [--- No priority] [👤 Lead] [📅 Target date] [🏢 Team] [···]`
-- "Resources" section: linked documents, URLs
-- "Write first project update" CTA (for project updates/status posts)
-- Description (markdown body)
-- Milestones section (collapsible): list of milestone markers with date and status
+**概览标签页（中间栏）：**
+- 项目图标 + 名称（可编辑）
+- 描述（Markdown，可编辑）
+- 行内属性栏：`[◌ 待办列表] [--- 无优先级] [👤 负责人] [📅 截止日期] [🏢 团队] [···]`
+- "资源"区域：关联的文档、URL
+- "撰写首个项目更新"号召按钮（用于项目更新/状态发布）
+- 描述（Markdown 正文）
+- 里程碑区域（可折叠）：带日期和状态的里程碑标记列表
 
-**Issues tab:** filtered issue list showing only issues in this project. Same controls as the main issues view.
+**任务标签页：** 仅显示此项目中的任务的筛选任务列表。控件与主任务视图相同。
 
-**Right pane (properties):** Status, Priority, Lead, Members, Start date, Target date, Teams, Labels, Goal link.
+**右栏（属性）：** 状态、优先级、负责人、成员、开始日期、截止日期、团队、标签、目标关联。
 
-**Activity section:** at the bottom of the properties panel.
+**活动区域：** 位于属性面板底部。
 
 ---
 
-## 7. Goals
+## 7. 目标
 
-### 7.1 Goal List View
+### 7.1 目标列表视图
 
-Goals are displayed as a hierarchical tree, since goals have parent-child relationships.
+目标以层级树形式显示，因为目标具有父子关系。
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│ Goals                                    [+ New goal]   │
+│ 目标                                     [+ 新建目标]    │
 ├─────────────────────────────────────────────────────────┤
-│ ▼ 🎯 Build the #1 AI note-taking app    Company  Active│
-│   ▼ 🎯 Grow signups to 10k              Team     Active│
-│       🎯 Launch marketing campaign       Agent  Planned │
-│       🎯 Optimize onboarding funnel      Agent  Planned │
-│   ▼ 🎯 Ship v2.0 with AI features       Team     Active│
-│       🎯 Implement smart search          Task   Planned │
-│       🎯 Build auto-summarization        Task   Planned │
+│ ▼ 🎯 打造第一 AI 笔记应用               公司    活跃    │
+│   ▼ 🎯 将注册量增长到 1 万              团队    活跃    │
+│       🎯 启动营销活动                    智能体  已规划  │
+│       🎯 优化入门引导漏斗               智能体  已规划  │
+│   ▼ 🎯 发布带 AI 功能的 v2.0            团队    活跃    │
+│       🎯 实现智能搜索                    任务    已规划  │
+│       🎯 构建自动摘要功能               任务    已规划  │
 └─────────────────────────────────────────────────────────┘
 ```
 
-Each row: expand chevron (if has children), target icon, title, level badge (Company/Team/Agent/Task), status badge.
+每行：展开箭头（如有子项）、靶心图标、标题、级别标签（公司/团队/智能体/任务）、状态标签。
 
-Indentation reflects hierarchy. Clicking a goal opens its detail view.
+缩进反映层级。点击目标打开其详情视图。
 
-### 7.2 Goal Detail View
+### 7.2 目标详情视图
 
-Three-pane layout. Middle pane shows title, description, child goals, and linked projects. Right pane shows properties (level, status, owner agent, parent goal) and activity.
+三栏布局。中间栏显示标题、描述、子目标和关联项目。右栏显示属性（级别、状态、负责智能体、父目标）和活动。
 
 ---
 
-## 8. Dashboard
+## 8. 仪表盘
 
-The dashboard is the company health overview. Shown when clicking "Dashboard" in the Company section.
+仪表盘是公司健康概览。点击公司区域中的"仪表盘"时显示。
 
-### 8.1 Layout
+### 8.1 布局
 
 ```
 ┌──────────┬──────────────────────────────────────────────┐
-│          │ Dashboard                                     │
-│ Sidebar  │                                               │
+│          │ 仪表盘                                        │
+│ 侧边栏   │                                               │
 │          │ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌──────┐│
-│          │ │ Agents   │ │ Tasks   │ │ Costs   │ │Apprvl││
-│          │ │ 12 total │ │ 47 open │ │ $234.50 │ │ 3    ││
-│          │ │ 8 active │ │ 12 prog │ │ 67% bud │ │pending│
-│          │ │ 2 paused │ │ 3 block │ │         │ │      ││
-│          │ │ 1 error  │ │ 28 done │ │         │ │      ││
+│          │ │ 智能体   │ │ 任务    │ │ 成本    │ │审批  ││
+│          │ │ 共 12 个 │ │ 47 未完 │ │ $234.50 │ │ 3    ││
+│          │ │ 8 活跃   │ │ 12 进行 │ │ 67% 预算│ │待处理││
+│          │ │ 2 暂停   │ │ 3 阻塞  │ │         │ │      ││
+│          │ │ 1 错误   │ │ 28 完成 │ │         │ │      ││
 │          │ └─────────┘ └─────────┘ └─────────┘ └──────┘│
 │          │                                               │
 │          │ ┌────────────────────┐ ┌─────────────────────┐│
-│          │ │ Recent Activity    │ │ Stale Tasks          ││
+│          │ │ 近期活动           │ │ 停滞任务             ││
 │          │ │ ...                │ │ ...                   ││
 │          │ └────────────────────┘ └─────────────────────┘│
 └──────────┴──────────────────────────────────────────────┘
 ```
 
-**Top row: Metric cards** (4 across)
-1. **Agents** — total, active, running, paused, error counts. Each with colored dots.
-2. **Tasks** — open, in progress, blocked, done counts.
-3. **Costs** — month-to-date spend in dollars, budget utilization percentage with a mini progress bar.
-4. **Approvals** — pending count (clickable to navigate to Inbox, which is the primary approval interaction point).
+**顶部行：指标卡片**（横排 4 个）
+1. **智能体** — 总数、活跃、运行中、暂停、错误计数。每个带彩色圆点。
+2. **任务** — 未完成、进行中、已阻塞、已完成计数。
+3. **成本** — 本月至今支出（美元），预算利用率百分比，带迷你进度条。
+4. **审批** — 待处理计数（可点击导航到收件箱，这是主要的审批交互入口）。
 
-**Bottom row: Detail panels** (2 across)
-5. **Recent Activity** — last ~10 activity log entries, compact timeline format.
-6. **Stale Tasks** — tasks that have been in progress for too long without updates. Each shows issue key, title, assignee, time since last activity.
+**底部行：详情面板**（横排 2 个）
+5. **近期活动** — 最近约 10 条活动日志条目，紧凑时间线格式。
+6. **停滞任务** — 长时间处于进行中但没有更新的任务。每条显示任务键、标题、指派人、距上次活动的时间。
 
-All cards and panels are clickable to navigate to their respective full pages.
+所有卡片和面板均可点击导航到各自的完整页面。
 
 ---
 
-## 9. Org Chart
+## 9. 组织架构图
 
-Interactive visualization of the agent reporting hierarchy.
+智能体汇报层级的交互式可视化。
 
-### 9.1 Tree View
+### 9.1 树形视图
 
 ```
                     ┌─────────┐
                     │ CEO     │
-                    │ running │
+                    │ 运行中   │
                     └────┬────┘
             ┌────────────┼────────────┐
        ┌────┴────┐  ┌────┴────┐  ┌───┴─────┐
        │ CTO     │  │ CMO     │  │ CFO     │
-       │ active  │  │ idle    │  │ paused  │
+       │ 活跃    │  │ 空闲    │  │ 暂停    │
        └────┬────┘  └────┬────┘  └─────────┘
        ┌────┴────┐  ┌────┴────┐
        │ Dev-1   │  │ Mktg-1  │
-       │ running │  │ idle    │
+       │ 运行中   │  │ 空闲    │
        └─────────┘  └─────────┘
 ```
 
-Each node shows:
-- Agent name
-- Role/title (smaller text)
-- Status dot (colored by agent status)
-- Agent avatar (bot icon with unique color per agent)
+每个节点显示：
+- 智能体名称
+- 角色/职位（较小文本）
+- 状态圆点（按智能体状态着色）
+- 智能体头像（机器人图标，每个智能体有唯一颜色）
 
-Nodes are clickable to navigate to agent detail.
+节点可点击导航到智能体详情。
 
-### 9.2 Interactions
+### 9.2 交互
 
-- Zoom/pan with mouse wheel and drag.
-- Click a node to select it — shows a brief tooltip with key info (last heartbeat, current task, spend).
-- Double-click a node to navigate to agent detail page.
-- Right-click node for context menu: View, Pause, Resume, Invoke heartbeat, Edit.
+- 使用鼠标滚轮和拖拽进行缩放/平移。
+- 点击节点选中 — 显示简要提示框，包含关键信息（上次心跳、当前任务、支出）。
+- 双击节点导航到智能体详情页。
+- 右键节点打开上下文菜单：查看、暂停、恢复、触发心跳、编辑。
 
 ---
 
-## 10. Agents
+## 10. 智能体
 
-### 10.1 Agent List View
+### 10.1 智能体列表视图
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│ Agents                                          [+ New agent]   │
+│ 智能体                                          [+ 新建智能体]  │
 ├─────────────────────────────────────────────────────────────────┤
-│ [🤖] CEO           ceo        ● Running   $45.20/$100   2m ago │
-│ [🤖] CTO           cto        ● Active    $23.10/$100   5m ago │
-│ [🤖] Dev-1         engineer   ○ Idle      $12.40/$50   15m ago │
-│ [🤖] CMO           marketing  ○ Idle      $8.30/$50    30m ago │
-│ [🤖] DevOps        devops     ⚠ Paused    $31.00/$50    1h ago │
+│ [🤖] CEO           ceo        ● 运行中  $45.20/$100   2分钟前  │
+│ [🤖] CTO           cto        ● 活跃    $23.10/$100   5分钟前  │
+│ [🤖] Dev-1         engineer   ○ 空闲    $12.40/$50   15分钟前  │
+│ [🤖] CMO           marketing  ○ 空闲    $8.30/$50    30分钟前  │
+│ [🤖] DevOps        devops     ⚠ 暂停    $31.00/$50    1小时前  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-Columns: Avatar/icon, Name, Role, Status (with colored dot), Cost (spent/budget this month), Last Heartbeat (relative time).
+列：头像/图标、名称、角色、状态（带彩色圆点）、成本（本月已花费/预算）、上次心跳（相对时间）。
 
-Clicking a row navigates to agent detail.
+点击行导航到智能体详情。
 
-### 10.2 Agent Detail View (Three-Pane)
+### 10.2 智能体详情视图（三栏式）
 
-**Breadcrumb tabs:** Overview | Heartbeats | Issues | Costs
+**面包屑标签页：** 概览 | 心跳 | 任务 | 成本
 
-**Overview (middle pane):**
-- Agent name + role
-- Capabilities description
-- Adapter type + config summary
-- Current task (if any)
-- Reports to: [clickable agent name]
-- Direct reports: list of agents
+**概览（中间栏）：**
+- 智能体名称 + 角色
+- 能力描述
+- 适配器类型 + 配置摘要
+- 当前任务（如有）
+- 上级：[可点击的智能体名称]
+- 直属下级：智能体列表
 
-**Heartbeats tab:** table of heartbeat runs — time, source (manual/scheduler), status, duration, error (if any). Invoke button at top.
+**心跳标签页：** 心跳运行表格 — 时间、来源（手动/调度器）、状态、持续时间、错误（如有）。顶部有触发按钮。
 
-**Issues tab:** issues assigned to this agent.
+**任务标签页：** 分配给此智能体的任务。
 
-**Costs tab:** cost breakdown for this agent — by model, by time period, with budget progress bar.
+**成本标签页：** 此智能体的成本明细 — 按模型、按时间段，带预算进度条。
 
-**Right pane properties:** Status, Role, Title, Reports To, Adapter Type, Context Mode, Budget (monthly), Spent (monthly), Last Heartbeat.
+**右栏属性：** 状态、角色、职位、上级、适配器类型、上下文模式、预算（月度）、已花费（月度）、上次心跳。
 
-**Quick actions** in breadcrumb bar: [Pause] [Resume] [Invoke Heartbeat] [···]
+**快捷操作** 在面包屑导航栏中：[暂停] [恢复] [触发心跳] [···]
 
 ---
 
-## 11. Approvals (Contextual, Not Standalone)
+## 11. 审批（上下文化，非独立页面）
 
-Approvals are governance gates — decisions the board must make (hire an agent, approve a CEO strategy). They are NOT work items. Their data model stays separate from issues (different status machine, side-effect triggers, unstructured payload). But they don't need their own top-level nav entry.
+审批是治理关卡 — 董事会必须做出的决策（招聘智能体、批准 CEO 战略）。它们不是工作项。其数据模型与任务分开（不同的状态机、副作用触发器、非结构化载荷）。但它们不需要自己的顶级导航入口。
 
-### 11.1 Where Approvals Surface
+### 11.1 审批呈现位置
 
-**1. Inbox (primary).** Pending approvals are the highest-priority inbox items. The board operator sees them front and center with inline approve/reject actions (see Section 14).
+**1. 收件箱（主要）。** 待审批项是收件箱中最高优先级的项目。董事会操作员可以在前端直接看到它们，并带有行内批准/拒绝操作（见第 14 节）。
 
-**2. Dashboard metric card.** The "Pending Approvals" card shows the count and links to the full approvals list.
+**2. 仪表盘指标卡片。** "待审批"卡片显示计数并链接到完整的审批列表。
 
-**3. Inline on entity pages.** When an entity was created via an approval, the detail page shows a contextual banner:
-- Agent detail page: `"Hired via approval — requested by CEO on Feb 15"` with a link to the approval record.
-- An agent in `pending` status (not yet created) could show: `"Pending approval — requested by CEO"` with approve/reject actions inline.
+**3. 实体页面行内展示。** 当一个实体是通过审批创建的，详情页会显示上下文横幅：
+- 智能体详情页：`"通过审批招聘 — 由 CEO 于 Feb 15 申请"`，并附审批记录链接。
+- 处于 `pending` 状态（尚未创建）的智能体可显示：`"待审批 — 由 CEO 申请"`，并附行内批准/拒绝操作。
 
-**4. Activity log.** Approval events (created, approved, rejected) appear in the activity timeline like any other event.
+**4. 活动日志。** 审批事件（创建、批准、拒绝）像其他事件一样出现在活动时间线中。
 
-### 11.2 Approvals List Page (`/approvals`)
+### 11.2 审批列表页面 (`/approvals`)
 
-This page still exists — it's the "See all" destination from Inbox and Dashboard. But it's not in the sidebar.
+此页面仍然存在 — 它是收件箱和仪表盘中"查看全部"的目标页面。但它不在侧边栏中。
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│ Approvals    [Pending] [Approved] [Rejected] [All]      │
+│ 审批    [待处理] [已批准] [已拒绝] [全部]                 │
 ├─────────────────────────────────────────────────────────┤
-│ 🟡 Hire Agent: "Marketing Analyst"    CEO    2h ago     │
-│ 🟡 CEO Strategy: "Q2 Growth Plan"    CEO    4h ago     │
-│ 🟢 Hire Agent: "DevOps Engineer"     CTO    1d ago     │
+│ 🟡 招聘智能体："营销分析师"         CEO    2小时前       │
+│ 🟡 CEO 战略："Q2 增长计划"         CEO    4小时前       │
+│ 🟢 招聘智能体："DevOps 工程师"     CTO    1天前         │
 └─────────────────────────────────────────────────────────┘
 ```
 
-Status tabs filter by approval status. Each row: status dot, type, title/summary (from payload), requester, relative time.
+状态标签页按审批状态筛选。每行：状态圆点、类型、标题/摘要（来自载荷）、申请人、相对时间。
 
-### 11.3 Approval Detail View
+### 11.3 审批详情视图
 
-Three-pane layout. Middle pane renders the approval payload nicely based on type:
+三栏布局。中间栏根据类型美化渲染审批载荷：
 
-**`hire_agent` type:** Shows proposed agent name, role, title, reports-to, capabilities, adapter config, budget. Essentially a preview of the agent that will be created.
+**`hire_agent` 类型：** 显示拟招聘智能体的名称、角色、职位、上级、能力、适配器配置、预算。本质上是将要创建的智能体的预览。
 
-**`approve_ceo_strategy` type:** Shows the strategy text, proposed goal breakdown, initial task structure.
+**`approve_ceo_strategy` 类型：** 显示战略文本、拟议的目标分解、初始任务结构。
 
-For pending approvals, prominent action buttons at the top of the middle pane:
+对于待处理的审批，中间栏顶部有醒目的操作按钮：
 ```
 ┌─────────────────────────────────────────────────────────┐
 │ ┌─────────────────────────────────────────────────────┐ │
-│ │ Decision note (optional): _________________________ │ │
-│ │                          [✕ Reject]  [✓ Approve]    │ │
+│ │ 决策说明（可选）：_________________________ │ │
+│ │                          [✕ 拒绝]  [✓ 批准]    │ │
 │ └─────────────────────────────────────────────────────┘ │
 │                                                         │
-│ Hire Agent Request                                      │
+│ 招聘智能体申请                                          │
 │ ─────────────────                                       │
-│ Name: Marketing Analyst                                 │
-│ Role: marketing                                         │
-│ Reports to: CMO                                         │
-│ Budget: $100/month                                      │
+│ 名称：营销分析师                                        │
+│ 角色：marketing                                         │
+│ 上级：CMO                                               │
+│ 预算：$100/月                                           │
 │ ...                                                     │
 └─────────────────────────────────────────────────────────┘
 ```
 
-Right pane: Type, Status, Requested by, Requested at, Decided by, Decided at, Decision note. Activity timeline below.
+右栏：类型、状态、申请人、申请时间、决策者、决策时间、决策说明。下方为活动时间线。
 
 ---
 
-## 12. Costs
+## 12. 成本
 
-### 12.1 Cost Dashboard
+### 12.1 成本仪表盘
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│ Costs                               Feb 2026            │
+│ 成本                                  Feb 2026           │
 ├─────────────────────────────────────────────────────────┤
 │ ┌──────────────────────────────────────────────────────┐│
-│ │ Month-to-date: $234.50 / $500.00  [====-------] 47% ││
+│ │ 本月至今：$234.50 / $500.00  [====-------] 47%      ││
 │ └──────────────────────────────────────────────────────┘│
 │                                                         │
-│ By Agent                              By Project        │
+│ 按智能体                                按项目          │
 │ ┌──────────────────────┐  ┌──────────────────────┐      │
 │ │ CEO        $45.20    │  │ Auth       $67.30    │      │
 │ │ CTO        $23.10    │  │ Marketing  $34.50    │      │
@@ -740,262 +739,262 @@ Right pane: Type, Status, Requested by, Requested at, Decided by, Decided at, De
 │ │ ...                  │  │ ...                  │      │
 │ └──────────────────────┘  └──────────────────────┘      │
 │                                                         │
-│ Recent Cost Events                                      │
+│ 近期成本事件                                             │
 │ ┌──────────────────────────────────────────────────────┐│
-│ │ CEO  openai/gpt-5  1,234 in / 567 out  $0.89  2m ago│
+│ │ CEO  openai/gpt-5  1,234 入 / 567 出  $0.89  2分钟前│
 │ │ ...                                                   │
 │ └──────────────────────────────────────────────────────┘│
 └─────────────────────────────────────────────────────────┘
 ```
 
-Top: company-wide budget progress bar (large, prominent).
+顶部：公司级预算进度条（大号、醒目）。
 
-Two side-by-side tables: breakdown by agent and by project. Each row shows entity name and spend amount.
+两个并排表格：按智能体和按项目细分。每行显示实体名称和支出金额。
 
-Bottom: recent cost events table with agent, provider/model, token counts, cost, and timestamp.
+底部：近期成本事件表格，包含智能体、供应商/模型、令牌数量、成本和时间戳。
 
 ---
 
-## 13. Activity Log
+## 13. 活动日志
 
-A chronological, filterable audit trail.
+按时间顺序排列的可筛选审计追踪。
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│ Activity                            [Filter by type ▼]  │
+│ 活动                                [按类型筛选 ▼]       │
 ├─────────────────────────────────────────────────────────┤
-│ 🤖 CEO created issue CLIP-12 "Fix auth"      2 min ago │
-│ 👤 Board approved hire "Marketing Analyst"    5 min ago │
-│ 🤖 CTO changed CLIP-8 status → In Progress  10 min ago │
-│ ⚙  System paused agent DevOps (budget limit) 15 min ago│
-│ 🤖 Dev-1 commented on CLIP-5                30 min ago │
+│ 🤖 CEO 创建了任务 CLIP-12 "修复认证"         2 分钟前  │
+│ 👤 董事会批准了招聘"营销分析师"              5 分钟前  │
+│ 🤖 CTO 将 CLIP-8 状态改为 → 进行中        10 分钟前  │
+│ ⚙  系统暂停了智能体 DevOps（预算限制）     15 分钟前  │
+│ 🤖 Dev-1 评论了 CLIP-5                    30 分钟前  │
 │ ...                                                     │
 └─────────────────────────────────────────────────────────┘
 ```
 
-Each entry: actor icon (bot for agent, user for board, gear for system), actor name, action description with entity links, relative timestamp.
+每条记录：操作者图标（机器人代表智能体、用户代表董事会、齿轮代表系统）、操作者名称、带实体链接的操作描述、相对时间戳。
 
-Filterable by: actor type (agent/user/system), entity type (issue/agent/project/etc), action type, time range.
+可按以下条件筛选：操作者类型（智能体/用户/系统）、实体类型（任务/智能体/项目等）、操作类型、时间范围。
 
-Infinite scroll with "Load more" fallback.
+无限滚动，带"加载更多"回退。
 
 ---
 
-## 14. Inbox
+## 14. 收件箱
 
-The inbox is the board operator's primary action center. It aggregates everything that needs human attention, with approvals as the highest-priority category.
+收件箱是董事会操作员的主要操作中心。它汇集了所有需要人工关注的事项，审批是最高优先级类别。
 
-### 14.1 Inbox List View
+### 14.1 收件箱列表视图
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│ Inbox                               [Mark all read]     │
+│ 收件箱                               [全部标为已读]      │
 ├─────────────────────────────────────────────────────────┤
-│ APPROVALS                        See all approvals →    │
-│ ● 🛡 Hire Agent: "Marketing Analyst"                    │
-│ │  Requested by CEO · 2h ago                            │
-│ │  Role: marketing · Reports to: CMO · Budget: $100/mo  │
-│ │  [✕ Reject]  [✓ Approve]                              │
+│ 审批                               查看所有审批 →        │
+│ ● 🛡 招聘智能体："营销分析师"                             │
+│ │  由 CEO 申请 · 2小时前                                 │
+│ │  角色：marketing · 上级：CMO · 预算：$100/月           │
+│ │  [✕ 拒绝]  [✓ 批准]                                   │
 │ │                                                       │
-│ ● 🛡 CEO Strategy: "Q2 Growth Plan"                     │
-│ │  Requested by CEO · 4h ago                            │
-│ │  [View details →]                                     │
+│ ● 🛡 CEO 战略："Q2 增长计划"                              │
+│ │  由 CEO 申请 · 4小时前                                 │
+│ │  [查看详情 →]                                          │
 │                                                         │
-│ ALERTS                                                  │
-│ ● 🔴 Agent Error: DevOps heartbeat failed       1h ago  │
-│ ● ⚠  Budget Alert: CEO at 80% monthly budget   3h ago  │
+│ 警报                                                    │
+│ ● 🔴 智能体错误：DevOps 心跳失败               1小时前   │
+│ ● ⚠  预算警报：CEO 已使用月度预算的 80%       3小时前   │
 │                                                         │
-│ STALE WORK                                              │
-│   ⏰ CLIP-3 "Set up CI pipeline" — no update in 24h     │
-│   ⏰ CLIP-7 "Write tests" — no update in 36h            │
+│ 停滞工作                                                │
+│   ⏰ CLIP-3 "搭建 CI 流水线" — 24小时无更新              │
+│   ⏰ CLIP-7 "编写测试" — 36小时无更新                    │
 └─────────────────────────────────────────────────────────┘
 ```
 
-### 14.2 Inbox Categories
+### 14.2 收件箱类别
 
-Items are grouped by category, with the most actionable items first:
+项目按类别分组，最需要操作的项目排在最前：
 
-**Approvals pending** (top priority). Each approval item shows:
-- Shield icon + approval type + title
-- Requester + relative timestamp
-- Key payload summary (1 line — agent name/role for hires, plan title for strategies)
-- Inline **[Approve]** and **[Reject]** buttons for simple approvals (hire_agent). Clicking Approve/Reject shows a brief confirmation with an optional decision note field.
-- **[View details →]** link for complex approvals (approve_ceo_strategy) that need full review before deciding.
-- "See all approvals →" link in the category header navigates to `/approvals`.
+**待审批**（最高优先级）。每个审批项显示：
+- 盾牌图标 + 审批类型 + 标题
+- 申请人 + 相对时间戳
+- 关键载荷摘要（1 行 — 招聘时为智能体名称/角色，战略时为计划标题）
+- 行内 **[批准]** 和 **[拒绝]** 按钮，用于简单审批（hire_agent）。点击批准/拒绝后显示简短确认，并附可选的决策说明字段。
+- **[查看详情 →]** 链接，用于需要在决策前进行完整审查的复杂审批（approve_ceo_strategy）。
+- 类别标题中的"查看所有审批 →"链接导航到 `/approvals`。
 
-**Alerts.** Agent errors (failed heartbeats, error status) and budget alerts (agents or company approaching 80% or 100% limits). Each links to the relevant agent or cost page.
+**警报。** 智能体错误（心跳失败、错误状态）和预算警报（智能体或公司接近 80% 或 100% 限额）。每条链接到相关的智能体或成本页面。
 
-**Stale work.** Tasks in `in_progress` or `todo` with no activity (no comments, no status changes) beyond a configurable threshold (default: 24h). Each shows issue key, title, and time since last activity. Clicking navigates to the issue.
+**停滞工作。** 处于 `in_progress` 或 `todo` 状态但超过可配置阈值（默认：24小时）没有活动（无评论、无状态变更）的任务。每条显示任务键、标题和距上次活动的时间。点击导航到该任务。
 
-### 14.3 Inbox Behavior
+### 14.3 收件箱行为
 
-- Unread items have a filled blue dot indicator on the left.
-- Clicking an item marks it as read.
-- Approvals disappear from the inbox once approved/rejected (they move to the resolved state).
-- Alerts disappear when the underlying condition is resolved (agent resumed, budget increased).
-- The sidebar badge count reflects total unresolved inbox items.
-- Inbox is computed from live data (pending approvals query + alert conditions), not a separate notification table. This keeps it simple for V1.
+- 未读项目左侧有蓝色实心圆点指示器。
+- 点击项目标记为已读。
+- 审批批准/拒绝后从收件箱消失（转为已解决状态）。
+- 当底层条件解决后（智能体恢复、预算增加），警报消失。
+- 侧边栏角标计数反映未解决的收件箱项目总数。
+- 收件箱从实时数据计算（待审批查询 + 警报条件），而非单独的通知表。这使 V1 保持简单。
 
 ---
 
-## 15. Search (Cmd+K Modal)
+## 15. 搜索（Cmd+K 模态框）
 
-Global search accessible via `Cmd+K` or the sidebar search icon.
+全局搜索，通过 `Cmd+K` 或侧边栏搜索图标访问。
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│ 🔍 Search issues, agents, projects...                   │
+│ 🔍 搜索任务、智能体、项目...                              │
 ├─────────────────────────────────────────────────────────┤
-│ Recent                                                  │
-│   📋 CLIP-42 Fix user authentication bug                │
+│ 最近                                                    │
+│   📋 CLIP-42 修复用户认证 bug                            │
 │   🤖 CEO                                                │
-│   📁 Auth project                                       │
+│   📁 Auth 项目                                          │
 ├─────────────────────────────────────────────────────────┤
-│ Actions                                                 │
-│   ✏️  Create new issue                         C        │
-│   🤖 Create new agent                                   │
-│   📁 Create new project                                 │
+│ 操作                                                    │
+│   ✏️  创建新任务                                C        │
+│   🤖 创建新智能体                                        │
+│   📁 创建新项目                                          │
 └─────────────────────────────────────────────────────────┘
 ```
 
-- Type-ahead search across all entity types (issues, agents, projects, goals).
-- Results grouped by type with icons.
-- Recent items shown when input is empty.
-- Quick actions section at the bottom.
-- Arrow keys to navigate, Enter to select, Escape to close.
+- 跨所有实体类型（任务、智能体、项目、目标）的即时搜索。
+- 结果按类型分组并带图标。
+- 输入为空时显示最近的项目。
+- 底部有快捷操作区域。
+- 方向键导航，Enter 选择，Escape 关闭。
 
 ---
 
-## 16. Keyboard Shortcuts
+## 16. 键盘快捷键
 
-| Shortcut | Action |
+| 快捷键 | 操作 |
 |----------|--------|
-| `Cmd+K` | Open search |
-| `C` | Create new issue |
-| `Cmd+Enter` | Submit form (in modals) |
-| `Escape` | Close modal / deselect |
-| `[` | Toggle sidebar collapsed |
-| `]` | Toggle properties panel |
-| `J` / `K` | Navigate up/down in lists |
-| `Enter` | Open selected item |
-| `Backspace` | Go back |
-| `S` | Toggle status on selected issue |
-| `X` | Toggle checkbox selection |
-| `Cmd+A` | Select all (in list context) |
+| `Cmd+K` | 打开搜索 |
+| `C` | 创建新任务 |
+| `Cmd+Enter` | 提交表单（在模态框中） |
+| `Escape` | 关闭模态框 / 取消选择 |
+| `[` | 切换侧边栏折叠 |
+| `]` | 切换属性面板 |
+| `J` / `K` | 在列表中上/下导航 |
+| `Enter` | 打开选中项 |
+| `Backspace` | 返回 |
+| `S` | 切换选中任务的状态 |
+| `X` | 切换复选框选择 |
+| `Cmd+A` | 全选（在列表上下文中） |
 
 ---
 
-## 17. Responsive Behavior
+## 17. 响应式行为
 
-- **>1400px:** Full three-pane layout (sidebar + main + properties).
-- **1024-1400px:** Sidebar collapses to icons. Properties panel available via toggle.
-- **<1024px:** Sidebar hidden (hamburger menu). Properties panel hidden (toggle or tab).
+- **>1400px：** 完整三栏布局（侧边栏 + 主内容 + 属性）。
+- **1024-1400px：** 侧边栏折叠为图标。属性面板通过切换按钮可用。
+- **<1024px：** 侧边栏隐藏（汉堡菜单）。属性面板隐藏（切换或标签页）。
 
-The properties panel is always dismissible — it should never block the main content.
-
----
-
-## 18. Empty States
-
-Every list view should have a thoughtful empty state:
-
-- **No issues:** "No issues yet. Create your first issue to start tracking work." with a `[Create issue]` button.
-- **No agents:** "No agents in this company. Create an agent to start building your team." with a `[Create agent]` button.
-- **No company selected:** "Select a company to get started." with a company switcher or `[Create company]` button.
-
-Empty states should use a muted illustration (simple line art, not cartoons) and a single call-to-action.
+属性面板始终可关闭 — 它不应阻挡主内容。
 
 ---
 
-## 19. Loading and Error States
+## 18. 空状态
 
-- **Loading:** Skeleton placeholders matching the layout of the expected content (not spinners). Skeleton blocks animate with a subtle shimmer.
-- **Error:** Inline error message with a retry button. Never a full-page error unless the app itself is broken.
-- **Conflict (409):** Toast notification: "This issue was updated by another user. Refresh to see changes." with a [Refresh] action.
-- **Optimistic updates:** Status changes and property edits should update immediately in the UI, with rollback on failure.
+每个列表视图应有精心设计的空状态：
+
+- **无任务：** "暂无任务。创建你的第一个任务以开始跟踪工作。"并附 `[创建任务]` 按钮。
+- **无智能体：** "此公司暂无智能体。创建一个智能体以开始组建团队。"并附 `[创建智能体]` 按钮。
+- **未选择公司：** "选择一家公司以开始。"并附公司切换器或 `[创建公司]` 按钮。
+
+空状态应使用柔和的插图（简单线条画，非卡通），以及单个行动号召按钮。
 
 ---
 
-## 20. Component Library
+## 19. 加载和错误状态
 
-Build on top of shadcn/ui components with these customizations:
+- **加载：** 与预期内容布局匹配的骨架占位符（非旋转器）。骨架块以微妙的微光动画效果。
+- **错误：** 行内错误消息并附重试按钮。除非应用本身崩溃，否则绝不使用全页错误。
+- **冲突（409）：** Toast 通知："此任务已被其他用户更新。请刷新查看变更。"并附 [刷新] 操作。
+- **乐观更新：** 状态变更和属性编辑应在 UI 中立即更新，失败时回滚。
 
-| Component | Base | Customization |
+---
+
+## 20. 组件库
+
+基于 shadcn/ui 组件构建，并做以下定制：
+
+| 组件 | 基础 | 定制说明 |
 |-----------|------|---------------|
-| StatusBadge | Badge | Colored dot + label, entity-specific palettes |
-| PriorityIcon | custom | SVG circles with fills matching priority |
-| EntityRow | custom | Standardized list row with hover/select states |
-| PropertyEditor | custom | Label + inline-editable value with dropdown |
-| CommentThread | custom | Avatar + author + timestamp + markdown body |
-| BreadcrumbBar | Breadcrumb | Integrated with router, tabs, and entity actions |
-| CommandPalette | Dialog | Cmd+K search with type-ahead and actions |
-| FilterBar | custom | Composable filter chips with add/remove |
-| SidebarNav | custom | Grouped, collapsible, badge-supporting nav |
+| StatusBadge | Badge | 彩色圆点 + 标签，实体特定调色板 |
+| PriorityIcon | custom | 根据优先级填充的 SVG 圆形 |
+| EntityRow | custom | 标准化列表行，带悬停/选中状态 |
+| PropertyEditor | custom | 标签 + 行内可编辑值，带下拉菜单 |
+| CommentThread | custom | 头像 + 作者 + 时间戳 + Markdown 正文 |
+| BreadcrumbBar | Breadcrumb | 与路由器、标签页和实体操作集成 |
+| CommandPalette | Dialog | Cmd+K 搜索，带即时搜索和操作 |
+| FilterBar | custom | 可组合的筛选标签，支持添加/移除 |
+| SidebarNav | custom | 分组、可折叠、支持角标的导航 |
 
 ---
 
-## 21. URL Structure
+## 21. URL 结构
 
-All routes are company-scoped after company selection (company context stored in React context, not URL):
+所有路由在公司选择后都限定在公司范围内（公司上下文存储在 React context 中，而非 URL）：
 
 ```
-/                           → redirects to /dashboard
-/dashboard                  → company dashboard
-/inbox                      → inbox / attention items
-/my-issues                  → board operator's issues
-/issues                     → issue list
-/issues/:issueId            → issue detail
-/projects                   → project list
-/projects/:projectId        → project detail (overview tab)
-/projects/:projectId/issues → project issues
-/goals                      → goal hierarchy
-/goals/:goalId              → goal detail
-/org                        → org chart
-/agents                     → agent list
-/agents/:agentId            → agent detail
-/approvals                  → approval list
-/approvals/:approvalId      → approval detail
-/costs                      → cost dashboard
-/activity                   → activity log
-/companies                  → company management (list/create)
-/settings                   → company settings
+/                           → 重定向到 /dashboard
+/dashboard                  → 公司仪表盘
+/inbox                      → 收件箱 / 待处理事项
+/my-issues                  → 董事会操作员的任务
+/issues                     → 任务列表
+/issues/:issueId            → 任务详情
+/projects                   → 项目列表
+/projects/:projectId        → 项目详情（概览标签页）
+/projects/:projectId/issues → 项目任务
+/goals                      → 目标层级
+/goals/:goalId              → 目标详情
+/org                        → 组织架构图
+/agents                     → 智能体列表
+/agents/:agentId            → 智能体详情
+/approvals                  → 审批列表
+/approvals/:approvalId      → 审批详情
+/costs                      → 成本仪表盘
+/activity                   → 活动日志
+/companies                  → 公司管理（列表/创建）
+/settings                   → 公司设置
 ```
 
 ---
 
-## 22. Implementation Priority
+## 22. 实施优先级
 
-### Phase 1: Shell and Navigation
-1. Sidebar redesign (grouped sections, icons, company switcher, badges)
-2. Breadcrumb bar component
-3. Three-pane layout system
-4. Cmd+K search modal
-5. Install `lucide-react`
+### 阶段 1：外壳和导航
+1. 侧边栏重新设计（分组区域、图标、公司切换器、角标）
+2. 面包屑导航栏组件
+3. 三栏布局系统
+4. Cmd+K 搜索模态框
+5. 安装 `lucide-react`
 
-### Phase 2: Issue Management (Core)
-6. Issue list view with grouping, filtering, status circles
-7. Issue detail view (three-pane with properties panel)
-8. New issue modal
-9. Issue comments
-10. Bulk selection and actions
-11. Kanban board view
+### 阶段 2：任务管理（核心）
+6. 任务列表视图，带分组、筛选、状态圆点
+7. 任务详情视图（三栏式带属性面板）
+8. 新建任务模态框
+9. 任务评论
+10. 批量选择和操作
+11. 看板视图
 
-### Phase 3: Entity Detail Views
-12. Project list + detail view
-13. Goal hierarchy view
-14. Agent list + detail view
+### 阶段 3：实体详情视图
+12. 项目列表 + 详情视图
+13. 目标层级视图
+14. 智能体列表 + 详情视图
 
-### Phase 4: Company-Level Views
-15. Inbox with inline approval actions (primary approval UX)
-16. Dashboard redesign with metric cards
-17. Org chart interactive visualization
-18. Cost dashboard
-19. Activity log with filtering
-20. Approvals list page (accessed via Inbox "See all", not sidebar)
+### 阶段 4：公司级视图
+15. 收件箱，带行内审批操作（主要审批 UX）
+16. 仪表盘重新设计，带指标卡片
+17. 组织架构图交互式可视化
+18. 成本仪表盘
+19. 活动日志，带筛选
+20. 审批列表页面（通过收件箱"查看全部"访问，非侧边栏）
 
-### Phase 5: Polish
-21. Keyboard shortcuts
-22. Responsive behavior
-23. Empty states and loading skeletons
-24. Error handling and toasts
-25. Saved views (custom filters)
+### 阶段 5：打磨
+21. 键盘快捷键
+22. 响应式行为
+23. 空状态和加载骨架
+24. 错误处理和 Toast 提示
+25. 保存的视图（自定义筛选）

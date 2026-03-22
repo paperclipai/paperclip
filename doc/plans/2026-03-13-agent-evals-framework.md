@@ -1,26 +1,26 @@
-# Agent Evals Framework Plan
+# 智能体评估框架计划
 
-Date: 2026-03-13
+日期：2026-03-13
 
-## Context
+## 背景
 
-We need evals for the thing Paperclip actually ships:
+我们需要对 Paperclip 实际交付的内容进行评估：
 
-- agent behavior produced by adapter config
-- prompt templates and bootstrap prompts
-- skill sets and skill instructions
-- model choice
-- runtime policy choices that affect outcomes and cost
+- 由适配器配置产生的智能体行为
+- prompt 模板和引导 prompt
+- 技能集和技能指令
+- 模型选择
+- 影响结果和成本的运行时策略选择
 
-We do **not** primarily need a fine-tuning pipeline.
-We need a regression framework that can answer:
+我们**不**主要需要一个微调管线。
+我们需要一个回归框架来回答：
 
-- if we change prompts or skills, do agents still do the right thing?
-- if we switch models, what got better, worse, or more expensive?
-- if we optimize tokens, did we preserve task outcomes?
-- can we grow the suite over time from real Paperclip usage?
+- 如果我们更改 prompt 或技能，智能体是否仍然做正确的事？
+- 如果我们切换模型，什么变好了、变差了、还是变贵了？
+- 如果我们优化 token，是否保留了任务结果？
+- 我们能否随着时间从真实的 Paperclip 使用中扩展测试套件？
 
-This plan is based on:
+本计划基于：
 
 - `doc/GOAL.md`
 - `doc/PRODUCT.md`
@@ -28,192 +28,192 @@ This plan is based on:
 - `docs/agents-runtime.md`
 - `doc/plans/2026-03-13-TOKEN-OPTIMIZATION-PLAN.md`
 - Discussion #449: <https://github.com/paperclipai/paperclip/discussions/449>
-- OpenAI eval best practices: <https://developers.openai.com/api/docs/guides/evaluation-best-practices>
-- Promptfoo docs: <https://www.promptfoo.dev/docs/configuration/test-cases/> and <https://www.promptfoo.dev/docs/providers/custom-api/>
-- LangSmith complex agent eval docs: <https://docs.langchain.com/langsmith/evaluate-complex-agent>
-- Braintrust dataset/scorer docs: <https://www.braintrust.dev/docs/annotate/datasets> and <https://www.braintrust.dev/docs/evaluate/write-scorers>
+- OpenAI 评估最佳实践: <https://developers.openai.com/api/docs/guides/evaluation-best-practices>
+- Promptfoo 文档: <https://www.promptfoo.dev/docs/configuration/test-cases/> 和 <https://www.promptfoo.dev/docs/providers/custom-api/>
+- LangSmith 复杂智能体评估文档: <https://docs.langchain.com/langsmith/evaluate-complex-agent>
+- Braintrust 数据集/评分器文档: <https://www.braintrust.dev/docs/annotate/datasets> 和 <https://www.braintrust.dev/docs/evaluate/write-scorers>
 
-## Recommendation
+## 建议
 
-Paperclip should take a **two-stage approach**:
+Paperclip 应采取**两阶段方法**：
 
-1. **Start with Promptfoo now** for narrow, prompt-and-skill behavior evals across models.
-2. **Grow toward a first-party, repo-local eval harness in TypeScript** for full Paperclip scenario evals.
+1. **现在先用 Promptfoo** 做跨模型的窄范围 prompt 和技能行为评估。
+2. **逐步发展为仓库本地的 TypeScript 第一方评估框架**，用于完整的 Paperclip 场景评估。
 
-So the recommendation is no longer “skip Promptfoo.” It is:
+因此建议不再是"跳过 Promptfoo"，而是：
 
-- use Promptfoo as the fastest bootstrap layer
-- keep eval cases and fixtures in this repo
-- avoid making Promptfoo config the deepest long-term abstraction
+- 使用 Promptfoo 作为最快的引导层
+- 将评估用例和测试数据保存在本仓库中
+- 避免将 Promptfoo 配置作为最深层的长期抽象
 
-More specifically:
+更具体地说：
 
-1. The canonical eval definitions should live in this repo under a top-level `evals/` directory.
-2. `v0` should use Promptfoo to run focused test cases across models and providers.
-3. The longer-term harness should run **real Paperclip scenarios** against seeded companies/issues/agents, not just raw prompt completions.
-4. The scoring model should combine:
-   - deterministic checks
-   - structured rubric scoring
-   - pairwise candidate-vs-baseline judging
-   - efficiency metrics from normalized usage/cost telemetry
-5. The framework should compare **bundles**, not just models.
+1. 规范的评估定义应存放在本仓库顶层 `evals/` 目录下。
+2. `v0` 应使用 Promptfoo 跨模型和提供商运行聚焦的测试用例。
+3. 长期框架应运行**真实的 Paperclip 场景**，针对预置的公司/任务/智能体，而不仅是原始 prompt 补全。
+4. 评分模型应结合：
+   - 确定性检查
+   - 结构化评分标准打分
+   - 候选方案与基线的成对判断
+   - 来自规范化用量/成本遥测的效率指标
+5. 框架应比较**包（bundle）**，而不仅是模型。
 
-A bundle is:
+一个包（bundle）包含：
 
-- adapter type
-- model id
-- prompt template(s)
-- bootstrap prompt template
-- skill allowlist / skill content version
-- relevant runtime flags
+- 适配器类型
+- 模型 id
+- prompt 模板
+- 引导 prompt 模板
+- 技能允许列表 / 技能内容版本
+- 相关运行时标志
 
-That is the right unit because that is what actually changes behavior in Paperclip.
+这是正确的评估单元，因为这才是 Paperclip 中真正改变行为的东西。
 
-## Why This Is The Right Shape
+## 为什么这是正确的形态
 
-### 1. We need to evaluate system behavior, not only prompt output
+### 1. 我们需要评估系统行为，而不仅是 prompt 输出
 
-Prompt-only tools are useful, but Paperclip’s real failure modes are often:
+纯 prompt 工具有用，但 Paperclip 的真实失败模式通常是：
 
-- wrong issue chosen
-- wrong API call sequence
-- bad delegation
-- failure to respect approval boundaries
-- stale session behavior
-- over-reading context
-- claiming completion without producing artifacts or comments
+- 选错了任务
+- 错误的 API 调用序列
+- 不当的委派
+- 未遵守审批边界
+- 过时会话行为
+- 过度读取上下文
+- 声称完成但未产出工件或评论
 
-Those are control-plane behaviors. They require scenario setup, execution, and trace inspection.
+这些是控制平面行为。它们需要场景设置、执行和追踪检查。
 
-### 2. The repo is already TypeScript-first
+### 2. 仓库已经是 TypeScript 为主
 
-The existing monorepo already uses:
+现有 monorepo 已使用：
 
 - `pnpm`
 - `tsx`
 - `vitest`
-- TypeScript across server, UI, shared contracts, and adapters
+- TypeScript 覆盖 server、UI、共享合约和适配器
 
-A TypeScript-first harness will fit the repo and CI better than introducing a Python-first test subsystem as the default path.
+TypeScript 优先的框架比引入 Python 优先的测试子系统更适合仓库和 CI。
 
-Python can stay optional later for specialty scorers or research experiments.
+Python 可以在后续作为可选项用于专业评分器或研究实验。
 
-### 3. We need provider/model comparison without vendor lock-in
+### 3. 我们需要跨提供商/模型比较而不锁定厂商
 
-OpenAI’s guidance is directionally right:
+OpenAI 的指导方向是正确的：
 
-- eval early and often
-- use task-specific evals
-- log everything
-- prefer pairwise/comparison-style judging over open-ended scoring
+- 尽早且频繁地评估
+- 使用任务特定的评估
+- 记录一切
+- 偏好成对/比较式判断而非开放式评分
 
-But OpenAI’s Evals API is not the right control plane for Paperclip as the primary system because our target is explicitly multi-model and multi-provider.
+但 OpenAI 的 Evals API 不适合作为 Paperclip 的主要控制平面，因为我们的目标明确是多模型、多提供商。
 
-### 4. Hosted eval products are useful, and Promptfoo is the right bootstrap tool
+### 4. 托管评估产品有用，Promptfoo 是正确的引导工具
 
-The current tradeoff:
+当前权衡：
 
-- Promptfoo is very good for local, repo-based prompt/provider matrices and CI integration.
-- LangSmith is strong on trajectory-style agent evals.
-- Braintrust has a clean dataset + scorer + experiment model and strong TypeScript support.
+- Promptfoo 非常擅长本地的、仓库级别的 prompt/提供商矩阵和 CI 集成。
+- LangSmith 在轨迹式智能体评估方面很强。
+- Braintrust 有干净的数据集 + 评分器 + 实验模型，以及强大的 TypeScript 支持。
 
-The community suggestion is directionally right:
+社区建议的方向是正确的：
 
-- Promptfoo lets us start small
-- it supports simple assertions like contains / not-contains / regex / custom JS
-- it can run the same cases across multiple models
-- it supports OpenRouter
-- it can move into CI later
+- Promptfoo 让我们可以从小处开始
+- 它支持简单的断言如 contains / not-contains / regex / 自定义 JS
+- 它可以跨多个模型运行相同的用例
+- 它支持 OpenRouter
+- 它后续可以集成到 CI
 
-That makes it the best `v0` tool for “did this prompt/skill/model change obviously regress?”
+这使它成为"这个 prompt/技能/模型变更是否明显导致回归？"的最佳 `v0` 工具。
 
-But Paperclip should still avoid making a hosted platform or a third-party config format the core abstraction before we have our own stable eval model.
+但 Paperclip 仍应避免在我们自己的评估模型稳定之前，将托管平台或第三方配置格式作为核心抽象。
 
-The right move is:
+正确的做法是：
 
-- start with Promptfoo for quick wins
-- keep the data portable and repo-owned
-- build a thin first-party harness around Paperclip concepts as the system grows
-- optionally export to or integrate with other tools later if useful
+- 先用 Promptfoo 快速获胜
+- 保持数据可移植且由仓库拥有
+- 随着系统增长，围绕 Paperclip 概念构建薄的第一方框架
+- 后续可选择导出到或集成其他工具
 
-## What We Should Evaluate
+## 我们应该评估什么
 
-We should split evals into four layers.
+我们应将评估分为四个层次。
 
-### Layer 1: Deterministic contract evals
+### 第一层：确定性合约评估
 
-These should require no judge model.
+这些不需要裁判模型。
 
-Examples:
+示例：
 
-- agent comments on the assigned issue
-- no mutation outside the agent’s company
-- approval-required actions do not bypass approval flow
-- task transitions are legal
-- output contains required structured fields
-- artifact links exist when the task required an artifact
-- no full-thread refetch on delta-only cases once the API supports it
+- 智能体在分配的任务上发表评论
+- 不在智能体所属公司之外进行变更
+- 需要审批的操作不绕过审批流程
+- 任务状态转换是合法的
+- 输出包含必需的结构化字段
+- 当任务需要工件时存在工件链接
+- 在 API 支持增量后，增量场景不进行全线程重新获取
 
-These are cheap, reliable, and should be the first line of defense.
+这些检查便宜、可靠，应是第一道防线。
 
-### Layer 2: Single-step behavior evals
+### 第二层：单步行为评估
 
-These test narrow behaviors in isolation.
+这些在隔离环境中测试窄范围行为。
 
-Examples:
+示例：
 
-- chooses the correct issue from inbox
-- writes a reasonable first status comment
-- decides to ask for approval instead of acting directly
-- delegates to the correct report
-- recognizes blocked state and reports it clearly
+- 从收件箱中选择正确的任务
+- 写出合理的首条状态评论
+- 决定请求审批而非直接行动
+- 委派给正确的下属
+- 识别阻塞状态并清晰报告
 
-These are the closest thing to prompt evals, but still framed in Paperclip terms.
+这些最接近 prompt 评估，但仍以 Paperclip 术语构建。
 
-### Layer 3: End-to-end scenario evals
+### 第三层：端到端场景评估
 
-These run a full heartbeat or short sequence of heartbeats against a seeded scenario.
+这些针对预置场景运行完整的心跳或短序列心跳。
 
-Examples:
+示例：
 
-- new assignment pickup
-- long-thread continuation
-- mention-triggered clarification
-- approval-gated hire request
-- manager escalation
-- workspace coding task that must leave a meaningful issue update
+- 新分配任务接收
+- 长线程延续
+- 提及触发的澄清
+- 需要审批的招聘请求
+- 经理级别升级
+- 必须留下有意义任务更新的工作区编码任务
 
-These should evaluate both final state and trace quality.
+这些应评估最终状态和追踪质量。
 
-### Layer 4: Efficiency and regression evals
+### 第四层：效率和回归评估
 
-These are not “did the answer look good?” evals. They are “did we preserve quality while improving cost/latency?” evals.
+这些不是"答案看起来好不好"的评估。而是"我们是否在改善成本/延迟的同时保持了质量？"的评估。
 
-Examples:
+示例：
 
-- normalized input tokens per successful heartbeat
-- normalized tokens per completed issue
-- session reuse rate
-- full-thread reload rate
-- wall-clock duration
-- cost per successful scenario
+- 每次成功心跳的规范化输入 token
+- 每个完成任务的规范化 token
+- 会话复用率
+- 全线程重新加载率
+- 挂钟时间
+- 每个成功场景的成本
 
-This layer is especially important for token optimization work.
+此层对 token 优化工作尤为重要。
 
-## Core Design
+## 核心设计
 
-## 1. Canonical object: `EvalCase`
+## 1. 规范对象：`EvalCase`
 
-Each eval case should define:
+每个评估用例应定义：
 
-- scenario setup
-- target bundle(s)
-- execution mode
-- expected invariants
-- scoring rubric
-- tags/metadata
+- 场景设置
+- 目标包
+- 执行模式
+- 预期不变量
+- 评分标准
+- 标签/元数据
 
-Suggested shape:
+建议的结构：
 
 ```ts
 type EvalCase = {
@@ -235,11 +235,11 @@ type EvalCase = {
 };
 ```
 
-The important part is that the case is about a Paperclip scenario, not a standalone prompt string.
+重要的是，用例是关于 Paperclip 场景的，而不是独立的 prompt 字符串。
 
-## 2. Canonical object: `EvalBundle`
+## 2. 规范对象：`EvalBundle`
 
-Suggested shape:
+建议的结构：
 
 ```ts
 type EvalBundle = {
@@ -253,159 +253,159 @@ type EvalBundle = {
 };
 ```
 
-Every comparison run should say which bundle was tested.
+每次比较运行都应说明测试了哪个包。
 
-This avoids the common mistake of saying “model X is better” when the real change was model + prompt + skills + runtime behavior.
+这避免了常见错误——说"模型 X 更好"，而实际变更是模型 + prompt + 技能 + 运行时行为。
 
-## 3. Canonical output: `EvalTrace`
+## 3. 规范输出：`EvalTrace`
 
-We should capture a normalized trace for scoring:
+我们应捕获规范化的追踪用于评分：
 
-- run ids
-- prompts actually sent
-- session reuse metadata
-- issue mutations
-- comments created
-- approvals requested
-- artifacts created
-- token/cost telemetry
-- timing
-- raw outputs
+- 运行 id
+- 实际发送的 prompt
+- 会话复用元数据
+- 任务变更
+- 创建的评论
+- 请求的审批
+- 创建的工件
+- token/成本遥测
+- 时间
+- 原始输出
 
-The scorer layer should never need to scrape ad hoc logs.
+评分层不应需要抓取临时日志。
 
-## Scoring Framework
+## 评分框架
 
-## 1. Hard checks first
+## 1. 先做硬性检查
 
-Every eval should start with pass/fail checks that can invalidate the run immediately.
+每个评估应首先进行通过/失败检查，可以立即使运行失效。
 
-Examples:
+示例：
 
-- touched wrong company
-- skipped required approval
-- no issue update produced
-- returned malformed structured output
-- marked task done without required artifact
+- 触及了错误的公司
+- 跳过了必需的审批
+- 未产生任务更新
+- 返回了格式错误的结构化输出
+- 在缺少必需工件的情况下将任务标记为完成
 
-If a hard check fails, the scenario fails regardless of style or judge score.
+如果硬性检查失败，无论风格或裁判评分如何，场景都算失败。
 
-## 2. Rubric scoring second
+## 2. 其次是评分标准打分
 
-Rubric scoring should use narrow criteria, not vague “how good was this?” prompts.
+评分标准打分应使用窄范围的标准，而不是模糊的"这个有多好？"prompt。
 
-Good rubric dimensions:
+好的评分维度：
 
-- task understanding
-- governance compliance
-- useful progress communication
-- correct delegation
-- evidence of completion
-- concision / unnecessary verbosity
+- 任务理解
+- 治理合规性
+- 有用的进度沟通
+- 正确的委派
+- 完成证据
+- 简洁性 / 不必要的冗长
 
-Each rubric should be a small 0-1 or 0-2 decision, not a mushy 1-10 scale.
+每个评分标准应是小范围的 0-1 或 0-2 决策，而不是模糊的 1-10 等级。
 
-## 3. Pairwise judging for candidate vs baseline
+## 3. 候选方案与基线的成对判断
 
-OpenAI’s eval guidance is right that LLMs are better at discrimination than open-ended generation.
+OpenAI 的评估指导是正确的，LLM 在辨别方面比开放式生成更好。
 
-So for non-deterministic quality checks, the default pattern should be:
+因此对于非确定性质量检查，默认模式应为：
 
-- run baseline bundle on the case
-- run candidate bundle on the same case
-- ask a judge model which is better on explicit criteria
-- allow `baseline`, `candidate`, or `tie`
+- 在用例上运行基线包
+- 在相同用例上运行候选包
+- 让裁判模型根据明确标准判断哪个更好
+- 允许 `baseline`、`candidate` 或 `tie`
 
-This is better than asking a judge for an absolute quality score with no anchor.
+这比让裁判在没有锚点的情况下给出绝对质量分数要好。
 
-## 4. Efficiency scoring is separate
+## 4. 效率评分独立进行
 
-Do not bury efficiency inside a single blended quality score.
+不要将效率隐藏在单个混合质量分数中。
 
-Record it separately:
+单独记录：
 
-- quality score
-- cost score
-- latency score
+- 质量分数
+- 成本分数
+- 延迟分数
 
-Then compute a summary decision such as:
+然后计算汇总决策，例如：
 
-- candidate is acceptable only if quality is non-inferior and efficiency is improved
+- 候选方案仅在质量不劣且效率改善时才可接受
 
-That is much easier to reason about than one magic number.
+这比一个神奇的单一数字更容易推理。
 
-## Suggested Decision Rule
+## 建议的决策规则
 
-For PR gating:
+用于 PR 门控：
 
-1. No hard-check regressions.
-2. No significant regression on required scenario pass rate.
-3. No significant regression on key rubric dimensions.
-4. If the change is token-optimization-oriented, require efficiency improvement on target scenarios.
+1. 无硬性检查回归。
+2. 必需场景通过率无显著回归。
+3. 关键评分维度无显著回归。
+4. 如果变更面向 token 优化，要求目标场景的效率改善。
 
-For deeper comparison reports, show:
+用于更深层的比较报告，展示：
 
-- pass rate
-- pairwise wins/losses/ties
-- median normalized tokens
-- median wall-clock time
-- cost deltas
+- 通过率
+- 成对胜/负/平
+- 中位规范化 token
+- 中位挂钟时间
+- 成本差异
 
-## Dataset Strategy
+## 数据集策略
 
-We should explicitly build the dataset from three sources.
+我们应明确从三个来源构建数据集。
 
-### 1. Hand-authored seed cases
+### 1. 手工编写的种子用例
 
-Start here.
+从这里开始。
 
-These should cover core product invariants:
+这些应覆盖核心产品不变量：
 
-- assignment pickup
-- status update
-- blocked reporting
-- delegation
-- approval request
-- cross-company access denial
-- issue comment follow-up
+- 分配任务接收
+- 状态更新
+- 阻塞报告
+- 委派
+- 审批请求
+- 跨公司访问拒绝
+- 任务评论跟进
 
-These are small, clear, and stable.
+这些小巧、清晰且稳定。
 
-### 2. Production-derived cases
+### 2. 生产环境衍生用例
 
-Per OpenAI’s guidance, we should log everything and mine real usage for eval cases.
+按照 OpenAI 的指导，我们应记录一切并从真实使用中挖掘评估用例。
 
-Paperclip should grow eval coverage by promoting real runs into cases when we see:
+Paperclip 应通过将真实运行提升为用例来扩展评估覆盖，当我们看到：
 
-- regressions
-- interesting failures
-- edge cases
-- high-value success patterns worth preserving
+- 回归
+- 有意义的失败
+- 边界情况
+- 值得保留的高价值成功模式
 
-The initial version can be manual:
+初始版本可以是手动的：
 
-- take a real run
-- redact/normalize it
-- convert it into an `EvalCase`
+- 获取一个真实运行
+- 脱敏/规范化
+- 转换为 `EvalCase`
 
-Later we can automate trace-to-case generation.
+后续我们可以自动化追踪到用例的生成。
 
-### 3. Adversarial and guardrail cases
+### 3. 对抗性和护栏用例
 
-These should intentionally probe failure modes:
+这些应有意探测失败模式：
 
-- approval bypass attempts
-- wrong-company references
-- stale context traps
-- irrelevant long threads
-- misleading instructions in comments
-- verbosity traps
+- 审批绕过尝试
+- 跨公司引用
+- 过时上下文陷阱
+- 无关的长线程
+- 评论中的误导性指令
+- 冗长陷阱
 
-This is where promptfoo-style red-team ideas can become useful later, but it is not the first slice.
+这是 Promptfoo 式红队思想后续可以派上用场的地方，但不是第一批次。
 
-## Repo Layout
+## 仓库布局
 
-Recommended initial layout:
+推荐的初始布局：
 
 ```text
 evals/
@@ -443,59 +443,59 @@ evals/
     .gitignore
 ```
 
-Why top-level `evals/`:
+为什么选择顶层 `evals/`：
 
-- it makes evals feel first-class
-- it avoids hiding them inside `server/` even though they span adapters and runtime behavior
-- it leaves room for both TS and optional Python helpers later
-- it gives us a clean place for Promptfoo `v0` config plus the later first-party runner
+- 让评估感觉是一等公民
+- 避免将它们隐藏在 `server/` 中，即使它们跨越适配器和运行时行为
+- 为后续的 TS 和可选 Python 辅助工具留出空间
+- 为 Promptfoo `v0` 配置加上后续的第一方运行器提供干净的位置
 
-## Execution Model
+## 执行模型
 
-The harness should support three modes.
+框架应支持三种模式。
 
-### Mode A: Cheap local smoke
+### 模式 A：低成本本地烟雾测试
 
-Purpose:
+目的：
 
-- run on PRs
-- keep cost low
-- catch obvious regressions
+- 在 PR 上运行
+- 保持低成本
+- 捕获明显的回归
 
-Characteristics:
+特征：
 
-- 5 to 20 cases
-- 1 or 2 bundles
-- mostly hard checks and narrow rubrics
+- 5 到 20 个用例
+- 1 或 2 个包
+- 主要是硬性检查和窄范围评分标准
 
-### Mode B: Candidate vs baseline compare
+### 模式 B：候选与基线比较
 
-Purpose:
+目的：
 
-- evaluate a prompt/skill/model change before merge
+- 在合并前评估 prompt/技能/模型变更
 
-Characteristics:
+特征：
 
-- paired runs
-- pairwise judging enabled
-- quality + efficiency diff report
+- 成对运行
+- 启用成对判断
+- 质量 + 效率差异报告
 
-### Mode C: Nightly broader matrix
+### 模式 C：每晚更广泛的矩阵
 
-Purpose:
+目的：
 
-- compare multiple models and bundles
-- grow historical benchmark data
+- 比较多个模型和包
+- 积累历史基准数据
 
-Characteristics:
+特征：
 
-- larger case set
-- multiple models
-- more expensive rubric/pairwise judging
+- 更大的用例集
+- 多个模型
+- 更昂贵的评分标准/成对判断
 
-## CI and Developer Workflow
+## CI 和开发者工作流
 
-Suggested commands:
+建议的命令：
 
 ```sh
 pnpm evals:smoke
@@ -503,200 +503,200 @@ pnpm evals:compare --baseline baseline/codex-default --candidate experiments/cod
 pnpm evals:nightly
 ```
 
-PR behavior:
+PR 行为：
 
-- run `evals:smoke` on prompt/skill/adapter/runtime changes
-- optionally trigger `evals:compare` for labeled PRs or manual runs
+- 对 prompt/技能/适配器/运行时变更运行 `evals:smoke`
+- 可选择对标记的 PR 或手动运行触发 `evals:compare`
 
-Nightly behavior:
+每晚行为：
 
-- run larger matrix
-- save report artifact
-- surface trend lines on pass rate, pairwise wins, and efficiency
+- 运行更大的矩阵
+- 保存报告工件
+- 展示通过率、成对胜出和效率的趋势线
 
-## Framework Comparison
+## 框架比较
 
 ## Promptfoo
 
-Best use for Paperclip:
+对 Paperclip 的最佳用途：
 
-- prompt-level micro-evals
-- provider/model comparison
-- quick local CI integration
-- custom JS assertions and custom providers
-- bootstrap-layer evals for one skill or one agent workflow
+- prompt 级别的微评估
+- 提供商/模型比较
+- 快速本地 CI 集成
+- 自定义 JS 断言和自定义提供商
+- 单个技能或单个智能体工作流的引导层评估
 
-What changed in this recommendation:
+本次建议中的变化：
 
-- Promptfoo is now the recommended **starting point**
-- especially for “one skill, a handful of cases, compare across models”
+- Promptfoo 现在是推荐的**起点**
+- 特别适用于"一个技能、几个用例、跨模型比较"
 
-Why it still should not be the only long-term system:
+为什么它仍然不应是唯一的长期系统：
 
-- its primary abstraction is still prompt/provider/test-case oriented
-- Paperclip needs scenario setup, control-plane state inspection, and multi-step traces as first-class concepts
+- 它的主要抽象仍然是 prompt/提供商/测试用例导向的
+- Paperclip 需要场景设置、控制平面状态检查和多步追踪作为一等概念
 
-Recommendation:
+建议：
 
-- use Promptfoo first
-- store Promptfoo config and cases in-repo under `evals/promptfoo/`
-- use custom JS/TS assertions and, if needed later, a custom provider that calls Paperclip scenario runners
-- do not make Promptfoo YAML the only canonical Paperclip eval format once we outgrow prompt-level evals
+- 首先使用 Promptfoo
+- 将 Promptfoo 配置和用例存储在仓库的 `evals/promptfoo/` 下
+- 使用自定义 JS/TS 断言，必要时使用调用 Paperclip 场景运行器的自定义提供商
+- 一旦我们超越 prompt 级别的评估，不要将 Promptfoo YAML 作为唯一的规范 Paperclip 评估格式
 
 ## LangSmith
 
-What it gets right:
+它做对的地方：
 
-- final response evals
-- trajectory evals
-- single-step evals
+- 最终响应评估
+- 轨迹评估
+- 单步评估
 
-Why not the primary system today:
+为什么今天不作为主要系统：
 
-- stronger fit for teams already centered on LangChain/LangGraph
-- introduces hosted/external workflow gravity before our own eval model is stable
+- 更适合已经以 LangChain/LangGraph 为中心的团队
+- 在我们自己的评估模型稳定之前引入了托管/外部工作流引力
 
-Recommendation:
+建议：
 
-- copy the trajectory/final/single-step taxonomy
-- do not adopt the platform as the default requirement
+- 复制其轨迹/最终/单步分类法
+- 不将该平台作为默认要求采用
 
 ## Braintrust
 
-What it gets right:
+它做对的地方：
 
-- TypeScript support
-- clean dataset/task/scorer model
-- production logging to datasets
-- experiment comparison over time
+- TypeScript 支持
+- 干净的数据集/任务/评分器模型
+- 生产日志到数据集
+- 随时间的实验比较
 
-Why not the primary system today:
+为什么今天不作为主要系统：
 
-- still externalizes the canonical dataset and review workflow
-- we are not yet at the maturity where hosted experiment management should define the shape of the system
+- 仍将规范数据集和审查工作流外部化
+- 我们尚未达到托管实验管理应定义系统形态的成熟度
 
-Recommendation:
+建议：
 
-- borrow its dataset/scorer/experiment mental model
-- revisit once we want hosted review and experiment history at scale
+- 借鉴其数据集/评分器/实验心智模型
+- 在我们需要大规模托管审查和实验历史时重新评估
 
 ## OpenAI Evals / Evals API
 
-What it gets right:
+它做对的地方：
 
-- strong eval principles
-- emphasis on task-specific evals
-- continuous evaluation mindset
+- 强大的评估原则
+- 强调任务特定的评估
+- 持续评估心态
 
-Why not the primary system:
+为什么不作为主要系统：
 
-- Paperclip must compare across models/providers
-- we do not want our primary eval runner coupled to one model vendor
+- Paperclip 必须跨模型/提供商进行比较
+- 我们不希望主要评估运行器耦合到一个模型厂商
 
-Recommendation:
+建议：
 
-- use the guidance
-- do not use it as the core Paperclip eval runtime
+- 使用其指导
+- 不将其作为核心 Paperclip 评估运行时
 
-## First Implementation Slice
+## 首个实现切片
 
-The first version should be intentionally small.
+第一个版本应有意保持小巧。
 
-## Phase 0: Promptfoo bootstrap
+## 第零阶段：Promptfoo 引导
 
-Build:
+构建：
 
 - `evals/promptfoo/promptfooconfig.yaml`
-- 5 to 10 focused cases for one skill or one agent workflow
-- model matrix using the providers we care about most
-- mostly deterministic assertions:
+- 5 到 10 个聚焦于一个技能或一个智能体工作流的用例
+- 使用我们最关心的提供商的模型矩阵
+- 主要是确定性断言：
   - contains
   - not-contains
   - regex
-  - custom JS assertions
+  - 自定义 JS 断言
 
-Target scope:
+目标范围：
 
-- one skill, or one narrow workflow such as assignment pickup / first status update
-- compare a small set of bundles across several models
+- 一个技能，或一个窄工作流如分配任务接收 / 首条状态更新
+- 跨多个模型比较少量的包
 
-Success criteria:
+成功标准：
 
-- we can run one command and compare outputs across models
-- prompt/skill regressions become visible quickly
-- the team gets signal before building heavier infrastructure
+- 我们可以运行一个命令并跨模型比较输出
+- prompt/技能回归快速变得可见
+- 团队在构建更重基础设施之前获得信号
 
-## Phase 1: Skeleton and core cases
+## 第一阶段：骨架和核心用例
 
-Build:
+构建：
 
-- `evals/` scaffold
-- `EvalCase`, `EvalBundle`, `EvalTrace` types
-- scenario runner for seeded local cases
-- 10 hand-authored core cases
-- hard checks only
+- `evals/` 脚手架
+- `EvalCase`、`EvalBundle`、`EvalTrace` 类型
+- 用于预置本地用例的场景运行器
+- 10 个手工编写的核心用例
+- 仅硬性检查
 
-Target cases:
+目标用例：
 
-- assigned issue pickup
-- write progress comment
-- ask for approval when required
-- respect company boundary
-- report blocked state
-- avoid marking done without artifact/comment evidence
+- 分配任务接收
+- 写进度评论
+- 需要时请求审批
+- 遵守公司边界
+- 报告阻塞状态
+- 避免在没有工件/评论证据的情况下标记为完成
 
-Success criteria:
+成功标准：
 
-- a developer can run a local smoke suite
-- prompt/skill changes can fail the suite deterministically
-- Promptfoo `v0` cases either migrate into or coexist with this layer cleanly
+- 开发者可以运行本地烟雾测试套件
+- prompt/技能变更可以确定性地使套件失败
+- Promptfoo `v0` 用例可以干净地迁移到或与此层共存
 
-## Phase 2: Pairwise and rubric layer
+## 第二阶段：成对判断和评分标准层
 
-Build:
+构建：
 
-- rubric scorer interface
-- pairwise judge runner
-- candidate vs baseline compare command
-- markdown/html report output
+- 评分标准评分器接口
+- 成对裁判运行器
+- 候选与基线比较命令
+- markdown/html 报告输出
 
-Success criteria:
+成功标准：
 
-- model/prompt bundle changes produce a readable diff report
-- we can tell “better”, “worse”, or “same” on curated scenarios
+- 模型/prompt 包变更产生可读的差异报告
+- 我们可以在精选场景上判断"更好"、"更差"或"相同"
 
-## Phase 3: Efficiency integration
+## 第三阶段：效率集成
 
-Build:
+构建：
 
-- normalized token/cost metrics into eval traces
-- cost and latency comparisons
-- efficiency gates for token optimization work
+- 规范化 token/成本指标纳入评估追踪
+- 成本和延迟比较
+- token 优化工作的效率门控
 
-Dependency:
+依赖：
 
-- this should align with the telemetry normalization work in `2026-03-13-TOKEN-OPTIMIZATION-PLAN.md`
+- 这应与 `2026-03-13-TOKEN-OPTIMIZATION-PLAN.md` 中的遥测规范化工作对齐
 
-Success criteria:
+成功标准：
 
-- quality and efficiency can be judged together
-- token-reduction work no longer relies on anecdotal improvements
+- 质量和效率可以一起判断
+- token 减少工作不再依赖于主观改善
 
-## Phase 4: Production-case ingestion
+## 第四阶段：生产用例摄入
 
-Build:
+构建：
 
-- tooling to promote real runs into new eval cases
-- metadata tagging
-- failure corpus growth process
+- 将真实运行提升为新评估用例的工具
+- 元数据标记
+- 失败语料库增长流程
 
-Success criteria:
+成功标准：
 
-- the eval suite grows from real product behavior instead of staying synthetic
+- 评估套件从真实产品行为中增长，而不是停留在合成数据
 
-## Initial Case Categories
+## 初始用例分类
 
-We should start with these categories:
+我们应从以下分类开始：
 
 1. `core.assignment_pickup`
 2. `core.progress_update`
@@ -707,69 +707,69 @@ We should start with these categories:
 7. `threads.long_context_followup`
 8. `efficiency.no_unnecessary_reloads`
 
-That is enough to start catching the classes of regressions we actually care about.
+这足以开始捕获我们真正关心的回归类别。
 
-## Important Guardrails
+## 重要护栏
 
-### 1. Do not rely on judge models alone
+### 1. 不要仅依赖裁判模型
 
-Every important scenario needs deterministic checks first.
+每个重要场景首先需要确定性检查。
 
-### 2. Do not gate PRs on a single noisy score
+### 2. 不要用单个嘈杂的分数来门控 PR
 
-Use pass/fail invariants plus a small number of stable rubric or pairwise checks.
+使用通过/失败不变量加少量稳定的评分标准或成对检查。
 
-### 3. Do not confuse benchmark score with product quality
+### 3. 不要将基准分数与产品质量混淆
 
-The suite must keep growing from real runs, otherwise it will become a toy benchmark.
+套件必须从真实运行中持续增长，否则它会变成玩具基准。
 
-### 4. Do not evaluate only final output
+### 4. 不要仅评估最终输出
 
-Trajectory matters for agents:
+轨迹对智能体很重要：
 
-- did they call the right Paperclip APIs?
-- did they ask for approval?
-- did they communicate progress?
-- did they choose the right issue?
+- 它们是否调用了正确的 Paperclip API？
+- 它们是否请求了审批？
+- 它们是否沟通了进度？
+- 它们是否选择了正确的任务？
 
-### 5. Do not make the framework vendor-shaped
+### 5. 不要让框架受厂商约束
 
-Our eval model should survive changes in:
+我们的评估模型应能在以下变更中存续：
 
-- judge provider
-- candidate provider
-- adapter implementation
-- hosted tooling choices
+- 裁判提供商
+- 候选提供商
+- 适配器实现
+- 托管工具选择
 
-## Open Questions
+## 开放问题
 
-1. Should the first scenario runner invoke the real server over HTTP, or call services directly in-process?
-   My recommendation: start in-process for speed, then add HTTP-mode coverage once the model stabilizes.
+1. 第一个场景运行器应该通过 HTTP 调用真实服务器，还是直接在进程内调用服务？
+   我的建议：先从进程内开始以求速度，模型稳定后再添加 HTTP 模式覆盖。
 
-2. Should we support Python scorers in v1?
-   My recommendation: no. Keep v1 all-TypeScript.
+2. 我们应该在 v1 中支持 Python 评分器吗？
+   我的建议：不。保持 v1 全 TypeScript。
 
-3. Should we commit baseline outputs?
-   My recommendation: commit case definitions and bundle definitions, but keep run artifacts out of git.
+3. 我们应该提交基线输出吗？
+   我的建议：提交用例定义和包定义，但将运行工件排除在 git 之外。
 
-4. Should we add hosted experiment tracking immediately?
-   My recommendation: no. Revisit after the local harness proves useful.
+4. 我们应该立即添加托管实验跟踪吗？
+   我的建议：不。在本地框架证明有用后再重新评估。
 
-## Final Recommendation
+## 最终建议
 
-Start with Promptfoo for immediate, narrow model-and-prompt comparisons, then grow into a first-party `evals/` framework in TypeScript that evaluates **Paperclip scenarios and bundles**, not just prompts.
+先用 Promptfoo 进行即时的、窄范围的模型和 prompt 比较，然后发展为 TypeScript 的第一方 `evals/` 框架，评估 **Paperclip 场景和包**，而不仅是 prompt。
 
-Use this structure:
+使用这种结构：
 
-- Promptfoo for `v0` bootstrap
-- deterministic hard checks as the foundation
-- rubric and pairwise judging for non-deterministic quality
-- normalized efficiency metrics as a separate axis
-- repo-local datasets that grow from real runs
+- Promptfoo 用于 `v0` 引导
+- 确定性硬性检查作为基础
+- 评分标准和成对判断用于非确定性质量
+- 规范化效率指标作为独立轴
+- 仓库本地的数据集从真实运行中增长
 
-Use external tools selectively:
+有选择地使用外部工具：
 
-- Promptfoo as the initial path for narrow prompt/provider tests
-- Braintrust or LangSmith later if we want hosted experiment management
+- Promptfoo 作为窄范围 prompt/提供商测试的初始路径
+- Braintrust 或 LangSmith 在我们需要托管实验管理时使用
 
-But keep the canonical eval model inside the Paperclip repo and aligned to Paperclip’s actual control-plane behaviors.
+但将规范的评估模型保留在 Paperclip 仓库内，并与 Paperclip 的实际控制平面行为对齐。

@@ -1,180 +1,180 @@
-# Budget Policies and Enforcement
+# 预算策略与执行
 
-## Context
+## 背景
 
-Paperclip already treats budgets as a core control-plane responsibility:
+Paperclip 已经将预算视为核心控制面的职责：
 
-- `doc/SPEC.md` gives the Board authority to set budgets, pause agents, pause work, and override any budget.
-- `doc/SPEC-implementation.md` says V1 must support monthly UTC budget windows, soft alerts, and hard auto-pause.
-- the current code only partially implements that intent.
+- `doc/SPEC.md` 赋予看板设置预算、暂停智能体、暂停工作和覆盖任何预算的权限。
+- `doc/SPEC-implementation.md` 规定 V1 必须支持 UTC 月度预算窗口、软告警和硬自动暂停。
+- 当前代码仅部分实现了该意图。
 
-Today the system has narrow money-budget behavior:
+目前系统具有狭窄的资金预算行为：
 
-- companies track `budgetMonthlyCents` and `spentMonthlyCents`
-- agents track `budgetMonthlyCents` and `spentMonthlyCents`
-- `cost_events` ingestion increments those counters
-- when an agent exceeds its monthly budget, the agent is paused
+- 公司跟踪 `budgetMonthlyCents` 和 `spentMonthlyCents`
+- 智能体跟踪 `budgetMonthlyCents` 和 `spentMonthlyCents`
+- `cost_events` 摄入时递增这些计数器
+- 当智能体超出其月度预算时，智能体被暂停
 
-That leaves major product gaps:
+这留下了重大产品缺口：
 
-- no project budget model
-- no approval generated when budget is hit
-- no generic budget policy system
-- no project pause semantics tied to budget
-- no durable incident tracking to prevent duplicate alerts
-- no separation between enforceable spend budgets and advisory usage quotas
+- 没有项目预算模型
+- 预算达到时不会生成审批
+- 没有通用预算策略系统
+- 没有与预算关联的项目暂停语义
+- 没有持久的事件跟踪来防止重复告警
+- 没有区分可执行的支出预算和建议性用量配额
 
-This plan defines the concrete budgeting model Paperclip should implement next.
+本计划定义了 Paperclip 下一步应实现的具体预算模型。
 
-## Product Goals
+## 产品目标
 
-Paperclip should let operators:
+Paperclip 应让运营人员能够：
 
-1. Set budgets on agents and projects.
-2. Understand whether a budget is based on money or usage.
-3. Be warned before a budget is exhausted.
-4. Automatically pause work when a hard budget is hit.
-5. Approve, raise, or resume from a budget stop using obvious UI.
-6. See budget state on the dashboard, `/costs`, and scope detail pages.
+1. 在智能体和项目上设置预算。
+2. 了解预算是基于资金还是用量。
+3. 在预算耗尽前收到警告。
+4. 当硬预算触发时自动暂停工作。
+5. 通过明显的 UI 批准、提高或恢复预算停止。
+6. 在仪表盘、`/costs` 和范围详情页面查看预算状态。
 
-The system should make one thing very clear:
+系统应非常清楚地表明：
 
-- budgets are policy controls
-- quotas are usage visibility
+- 预算是策略控制
+- 配额是用量可见性
 
-They are related, but they are not the same concept.
+它们相关，但不是同一概念。
 
-## Product Decisions
+## 产品决策
 
-### V1 Budget Defaults
+### V1 预算默认值
 
-For the next implementation pass, Paperclip should enforce these defaults:
+对于下一轮实现，Paperclip 应执行以下默认值：
 
-- agent budgets are recurring monthly budgets
-- project budgets are lifetime total budgets
-- hard-stop enforcement uses billed dollars, not tokens
-- monthly windows use UTC calendar months
-- project total budgets do not reset automatically
+- 智能体预算是循环月度预算
+- 项目预算是生命周期总额预算
+- 硬停止执行使用计费美元而非 token
+- 月度窗口使用 UTC 日历月
+- 项目总额预算不会自动重置
 
-This gives a clean mental model:
+这提供了一个清晰的心智模型：
 
-- agents are ongoing workers, so monthly recurring budget is natural
-- projects are bounded workstreams, so lifetime cap is natural
+- 智能体是持续运行的工作者，所以月度循环预算是自然的
+- 项目是有限的工作流，所以生命周期上限是自然的
 
-### Metric To Enforce First
+### 首先执行的指标
 
-The first enforceable metric should be `billed_cents`.
+首个可执行指标应为 `billed_cents`。
 
-Reasoning:
+原因：
 
-- it works across providers, billers, and models
-- it maps directly to real financial risk
-- it handles overage and metered usage consistently
-- it avoids cross-provider token normalization problems
-- it applies cleanly even when future finance events are not token-based
+- 跨提供商、计费方和模型都能工作
+- 直接映射到真实的财务风险
+- 一致地处理超额和计量用量
+- 避免跨提供商的 token 规范化问题
+- 即使未来的财务事件不是基于 token 的也能干净地应用
 
-Token budgets should not be the first hard-stop policy.
-They should come later as advisory usage controls once the money-based system is solid.
+Token 预算不应是首个硬停止策略。
+它们应在资金预算系统稳固后，作为建议性用量控制加入。
 
-### Subscription Usage Decision
+### 订阅用量决策
 
-Paperclip should separate subscription-included usage from billed spend:
+Paperclip 应将订阅包含用量与计费支出分开：
 
 - `subscription_included`
-  - visible in reporting
-  - visible in usage summaries
-  - does not count against money budget
+  - 在报表中可见
+  - 在用量摘要中可见
+  - 不计入资金预算
 - `subscription_overage`
-  - visible in reporting
-  - counts against money budget
+  - 在报表中可见
+  - 计入资金预算
 - `metered_api`
-  - visible in reporting
-  - counts against money budget
+  - 在报表中可见
+  - 计入资金预算
 
-This keeps the budget system honest:
+这使预算系统保持诚实：
 
-- users should not see "spend" rise for usage that did not incur marginal billed cost
-- users should still see the token usage and provider quota state
+- 用户不应看到"支出"因未产生边际计费成本的用量而上升
+- 用户仍应看到 token 用量和提供商配额状态
 
-### Soft Alert Versus Hard Stop
+### 软告警与硬停止
 
-Paperclip should have two threshold classes:
+Paperclip 应有两类阈值：
 
-- soft alert
-  - creates visible notification state
-  - does not create an approval
-  - does not pause work
-- hard stop
-  - pauses the affected scope automatically
-  - creates an approval requiring human resolution
-  - prevents additional heartbeats or task pickup in that scope
+- 软告警
+  - 创建可见的通知状态
+  - 不创建审批
+  - 不暂停工作
+- 硬停止
+  - 自动暂停受影响的范围
+  - 创建需要人工解决的审批
+  - 阻止该范围内额外的心跳或任务拾取
 
-Default thresholds:
+默认阈值：
 
-- soft alert at `80%`
-- hard stop at `100%`
+- 软告警在 `80%`
+- 硬停止在 `100%`
 
-These should be configurable per policy later, but they are good defaults now.
+这些后续应可按策略配置，但目前是好的默认值。
 
-## Scope Model
+## 范围模型
 
-### Supported Scope Types
+### 支持的范围类型
 
-Budget policies should support:
+预算策略应支持：
 
 - `company`
 - `agent`
 - `project`
 
-This plan focuses on finishing `agent` and `project` first while preserving the existing company budget behavior.
+本计划重点是先完成 `agent` 和 `project`，同时保留现有的公司预算行为。
 
-### Recommended V1.5 Policy Presets
+### 推荐的 V1.5 策略预设
 
-- Company
-  - metric: `billed_cents`
-  - window: `calendar_month_utc`
-- Agent
-  - metric: `billed_cents`
-  - window: `calendar_month_utc`
-- Project
-  - metric: `billed_cents`
-  - window: `lifetime`
+- 公司
+  - 指标：`billed_cents`
+  - 窗口：`calendar_month_utc`
+- 智能体
+  - 指标：`billed_cents`
+  - 窗口：`calendar_month_utc`
+- 项目
+  - 指标：`billed_cents`
+  - 窗口：`lifetime`
 
-Future extensions can add:
+未来扩展可以添加：
 
-- token advisory policies
-- daily or weekly spend windows
-- provider- or biller-scoped budgets
-- inherited delegated budgets down the org tree
+- token 建议性策略
+- 每日或每周支出窗口
+- 按提供商或计费方范围的预算
+- 沿组织树向下继承的委托预算
 
-## Current Implementation Baseline
+## 当前实现基线
 
-The current codebase is not starting from zero, but the existing shape is too ad hoc to extend safely.
+当前代码库并非从零开始，但现有形态太临时化，无法安全扩展。
 
-### What Exists Today
+### 今天已有的
 
-- company and agent monthly cents counters
-- cost ingestion that updates those counters
-- agent hard-stop pause on monthly budget overrun
+- 公司和智能体月度美分计数器
+- 更新这些计数器的成本摄入
+- 智能体月度预算超支时的硬停止暂停
 
-### What Is Missing
+### 缺失的
 
-- project budgets
-- generic budget policy persistence
-- generic threshold crossing detection
-- incident deduplication per scope/window
-- approval creation on hard-stop
-- project execution blocking
-- budget timeline and incident UI
-- distinction between advisory quota and enforceable budget
+- 项目预算
+- 通用预算策略持久化
+- 通用阈值越界检测
+- 按范围/窗口的事件去重
+- 硬停止时创建审批
+- 项目执行阻断
+- 预算时间线和事件 UI
+- 区分建议性配额和可执行预算
 
-## Proposed Data Model
+## 建议的数据模型
 
 ### 1. `budget_policies`
 
-Create a new table for canonical budget definitions.
+为规范预算定义创建新表。
 
-Suggested fields:
+建议字段：
 
 - `id`
 - `company_id`
@@ -192,19 +192,19 @@ Suggested fields:
 - `created_at`
 - `updated_at`
 
-Notes:
+说明：
 
-- `scope_type` is one of `company | agent | project`
-- `scope_id` is nullable only for company-level policy if company is implied; otherwise keep it explicit
-- `metric` should start with `billed_cents`
-- `window_kind` starts with `calendar_month_utc | lifetime`
-- `amount` is stored in the natural unit of the metric
+- `scope_type` 是 `company | agent | project` 之一
+- `scope_id` 仅当公司级策略隐含公司时可为空；否则保持显式
+- `metric` 应从 `billed_cents` 开始
+- `window_kind` 从 `calendar_month_utc | lifetime` 开始
+- `amount` 以指标的自然单位存储
 
 ### 2. `budget_incidents`
 
-Create a durable record of threshold crossings.
+创建阈值越界的持久记录。
 
-Suggested fields:
+建议字段：
 
 - `id`
 - `company_id`
@@ -225,129 +225,129 @@ Suggested fields:
 - `created_at`
 - `updated_at`
 
-Notes:
+说明：
 
-- `threshold_type`: `soft | hard`
-- `status`: `open | acknowledged | resolved | dismissed`
-- one open incident per policy per threshold per window prevents duplicate approvals and alert spam
+- `threshold_type`：`soft | hard`
+- `status`：`open | acknowledged | resolved | dismissed`
+- 每个策略每个阈值每个窗口一个开放事件，防止重复审批和告警轰炸
 
-### 3. Project Pause State
+### 3. 项目暂停状态
 
-Projects need explicit pause semantics.
+项目需要显式的暂停语义。
 
-Recommended approach:
+推荐方案：
 
-- extend project status or add a pause field so a project can be blocked by budget
-- preserve whether the project is paused due to budget versus manually paused
+- 扩展项目状态或添加暂停字段，使项目可以被预算阻断
+- 保留项目因预算暂停与手动暂停的区分
 
-Preferred shape:
+推荐形态：
 
-- keep project workflow status as-is
-- add execution-state fields:
-  - `execution_status`: `active | paused | archived`
-  - `pause_reason`: `manual | budget | system | null`
+- 保持项目工作流状态不变
+- 添加执行状态字段：
+  - `execution_status`：`active | paused | archived`
+  - `pause_reason`：`manual | budget | system | null`
 
-If that is too large for the immediate pass, a smaller version is:
+如果对即时实现来说范围过大，较小版本是：
 
-- add `paused_at`
-- add `pause_reason`
+- 添加 `paused_at`
+- 添加 `pause_reason`
 
-The key requirement is behavioral, not cosmetic:
-Paperclip must know that a project is budget-paused and enforce it.
+关键要求是行为性的，而非外观性的：
+Paperclip 必须知道项目因预算被暂停，并加以执行。
 
-### 4. Compatibility With Existing Budget Columns
+### 4. 与现有预算列的兼容性
 
-Existing company and agent monthly budget columns should remain temporarily for compatibility.
+现有的公司和智能体月度预算列应暂时保留以保持兼容。
 
-Migration plan:
+迁移计划：
 
-1. keep reading existing columns during transition
-2. create equivalent `budget_policies` rows
-3. switch enforcement and UI to policies
-4. later remove or deprecate legacy columns
+1. 在过渡期间继续读取现有列
+2. 创建等价的 `budget_policies` 行
+3. 将执行和 UI 切换到策略
+4. 后续移除或弃用遗留列
 
-## Budget Engine
+## 预算引擎
 
-Budget enforcement should move into a dedicated service.
+预算执行应移入专用服务。
 
-Current logic is buried inside cost ingestion.
-That is too narrow because budget checks must apply at more than one execution boundary.
+当前逻辑埋在成本摄入内部。
+这太狭窄了，因为预算检查必须在多个执行边界处应用。
 
-### Responsibilities
+### 职责
 
-New service: `budgetService`
+新服务：`budgetService`
 
-Responsibilities:
+职责：
 
-- resolve applicable policies for a cost event
-- compute current window totals
-- detect threshold crossings
-- create incidents, activities, and approvals
-- pause affected scopes on hard-stop
-- provide preflight enforcement checks for execution entry points
+- 为成本事件解析适用的策略
+- 计算当前窗口总额
+- 检测阈值越界
+- 创建事件、活动和审批
+- 在硬停止时暂停受影响的范围
+- 为执行入口点提供预检执行检查
 
-### Canonical Evaluation Flow
+### 规范评估流程
 
-When a new `cost_event` is written:
+当写入新的 `cost_event` 时：
 
-1. persist the `cost_event`
-2. identify affected scopes
-   - company
-   - agent
-   - project
-3. fetch active policies for those scopes
-4. compute current observed amount for each policy window
-5. compare to thresholds
-6. create soft incident if soft threshold crossed for first time in window
-7. create hard incident if hard threshold crossed for first time in window
-8. if hard incident:
-   - pause the scope
-   - create approval
-   - create activity event
-   - emit notification state
+1. 持久化 `cost_event`
+2. 识别受影响的范围
+   - 公司
+   - 智能体
+   - 项目
+3. 获取这些范围的活跃策略
+4. 计算每个策略窗口的当前观察金额
+5. 与阈值比较
+6. 如果在窗口内首次越过软阈值，创建软事件
+7. 如果在窗口内首次越过硬阈值，创建硬事件
+8. 如果是硬事件：
+   - 暂停该范围
+   - 创建审批
+   - 创建活动事件
+   - 发出通知状态
 
-### Preflight Enforcement Checks
+### 预检执行检查
 
-Budget enforcement cannot rely only on post-hoc cost ingestion.
+预算执行不能仅依赖事后的成本摄入。
 
-Paperclip must also block execution before new work starts.
+Paperclip 还必须在新工作开始前阻断执行。
 
-Add budget checks to:
+在以下位置添加预算检查：
 
-- scheduler heartbeat dispatch
-- manual invoke endpoints
-- assignment-driven wakeups
-- queued run promotion
-- issue checkout or pickup paths where applicable
+- 调度器心跳分发
+- 手动调用端点
+- 分配驱动的唤醒
+- 排队运行的提升
+- 任务签出或拾取路径（如适用）
 
-If a scope is budget-paused:
+如果范围因预算被暂停：
 
-- do not start a new heartbeat
-- do not let the agent pick up additional work
-- present a clear reason in API and UI
+- 不启动新的心跳
+- 不让智能体拾取额外工作
+- 在 API 和 UI 中呈现清晰的原因
 
-### Active Run Behavior
+### 活跃运行行为
 
-When a hard-stop is triggered while a run is already active:
+当硬停止在运行已经活跃时触发：
 
-- mark scope paused immediately for future work
-- request graceful cancellation of the current run
-- allow normal cancellation timeout behavior
-- write activity explaining that pause came from budget enforcement
+- 立即标记范围为暂停以阻止未来工作
+- 请求当前运行优雅取消
+- 允许正常的取消超时行为
+- 写入活动说明暂停来自预算执行
 
-This mirrors the general pause semantics already expected by the product.
+这与产品已预期的通用暂停语义一致。
 
-## Approval Model
+## 审批模型
 
-Budget hard-stops should create a first-class approval.
+预算硬停止应创建一等审批。
 
-### New Approval Type
+### 新审批类型
 
-Add approval type:
+添加审批类型：
 
 - `budget_override_required`
 
-Payload should include:
+载荷应包含：
 
 - `scopeType`
 - `scopeId`
@@ -362,173 +362,173 @@ Payload should include:
 - `topDrivers`
 - `paused`
 
-### Resolution Actions
+### 解决操作
 
-The approval UI should support:
+审批 UI 应支持：
 
-- raise budget and resume
-- resume once without changing policy
-- keep paused
+- 提高预算并恢复
+- 恢复一次但不更改策略
+- 保持暂停
 
-Optional later action:
+可选的后续操作：
 
-- disable budget policy
+- 禁用预算策略
 
-### Soft Alerts Do Not Need Approval
+### 软告警不需要审批
 
-Soft alerts should create:
+软告警应创建：
 
-- activity event
-- dashboard alert
-- inbox notification or similar board-visible signal
+- 活动事件
+- 仪表盘告警
+- 收件箱通知或类似的看板可见信号
 
-They should not create an approval by default.
+默认情况下不应创建审批。
 
-## Notification And Activity Model
+## 通知和活动模型
 
-Budget events need obvious operator visibility.
+预算事件需要明显的运营人员可见性。
 
-Required outputs:
+必需的输出：
 
-- activity log entry on threshold crossings
-- dashboard surface for active budget incidents
-- detail page banner on paused agent or project
-- `/costs` summary of active incidents and policy health
+- 阈值越界时的活动日志条目
+- 活跃预算事件的仪表盘展示
+- 被暂停智能体或项目详情页面的横幅
+- `/costs` 上活跃事件和策略健康状况的摘要
 
-Later channels:
+后续渠道：
 
-- email
+- 邮件
 - webhook
-- Slack or other integrations
+- Slack 或其他集成
 
-## API Plan
+## API 计划
 
-### Policy Management
+### 策略管理
 
-Add routes for:
+添加以下路由：
 
-- list budget policies for company
-- create budget policy
-- update budget policy
-- archive or disable budget policy
+- 列出公司的预算策略
+- 创建预算策略
+- 更新预算策略
+- 归档或禁用预算策略
 
-### Incident Surfaces
+### 事件展示
 
-Add routes for:
+添加以下路由：
 
-- list active budget incidents
-- list incident history
-- get incident detail for a scope
+- 列出活跃的预算事件
+- 列出事件历史
+- 获取范围的事件详情
 
-### Approval Resolution
+### 审批解决
 
-Budget approvals should use the existing approval system once the new approval type is added.
+预算审批应在添加新审批类型后使用现有的审批系统。
 
-Expected flows:
+预期流程：
 
-- create approval on hard-stop
-- resolve approval by changing policy and resuming
-- resolve approval by resuming once
+- 硬停止时创建审批
+- 通过更改策略并恢复来解决审批
+- 通过恢复一次来解决审批
 
-### Execution Errors
+### 执行错误
 
-When work is blocked by budget, the API should return explicit errors.
+当工作被预算阻断时，API 应返回明确的错误。
 
-Examples:
+示例：
 
-- agent invocation blocked because agent budget is paused
-- issue execution blocked because project budget is paused
+- 智能体调用被阻断，因为智能体预算已暂停
+- 任务执行被阻断，因为项目预算已暂停
 
-Do not silently no-op.
+不要静默无操作。
 
-## UI Plan
+## UI 计划
 
-Budgeting should be visible in the places where operators make decisions.
+预算应在运营人员做决策的地方可见。
 
 ### `/costs`
 
-Add a budget section that includes:
+添加预算部分，包含：
 
-- active budget incidents
-- policy list with scope, window, metric, and threshold state
-- progress bars for current period or total
-- clear distinction between:
-  - spend budget
-  - subscription quota
-- quick actions:
-  - raise budget
-  - open approval
-  - resume scope if permitted
+- 活跃的预算事件
+- 带范围、窗口、指标和阈值状态的策略列表
+- 当前周期或总额的进度条
+- 清晰区分：
+  - 支出预算
+  - 订阅配额
+- 快捷操作：
+  - 提高预算
+  - 打开审批
+  - 恢复范围（如果允许）
 
-The page should make this visual distinction obvious:
+页面应使以下视觉区分显而易见：
 
-- Budget
-  - enforceable spend policy
-- Quota
-  - provider or subscription usage window
+- 预算
+  - 可执行的支出策略
+- 配额
+  - 提供商或订阅用量窗口
 
-### Agent Detail
+### 智能体详情
 
-Add an agent budget card:
+添加智能体预算卡片：
 
-- monthly budget amount
-- current month spend
-- remaining spend
-- status
-- warning or paused banner
-- link to approval if blocked
+- 月度预算金额
+- 当月支出
+- 剩余支出
+- 状态
+- 警告或暂停横幅
+- 如果被阻断则链接到审批
 
-### Project Detail
+### 项目详情
 
-Add a project budget card:
+添加项目预算卡片：
 
-- total budget amount
-- total spend to date
-- remaining spend
-- pause status
-- approval link
+- 总预算金额
+- 截至目前的总支出
+- 剩余支出
+- 暂停状态
+- 审批链接
 
-Project detail should also show if issue execution is blocked because the project is budget-paused.
+项目详情还应显示任务执行是否因项目预算暂停而被阻断。
 
-### Dashboard
+### 仪表盘
 
-Add a high-signal budget section:
+添加高信号的预算部分：
 
-- active budget breaches
-- upcoming soft alerts
-- counts of paused agents and paused projects due to budget
+- 活跃的预算违规
+- 即将到来的软告警
+- 因预算而暂停的智能体和项目数量
 
-The operator should not have to visit `/costs` to learn that work has stopped.
+运营人员不应必须访问 `/costs` 才能得知工作已停止。
 
-## Budget Math
+## 预算计算
 
-### What Counts Toward Budget
+### 什么计入预算
 
-For V1.5 enforcement, include:
+对于 V1.5 执行，包含：
 
-- `metered_api` cost events
-- `subscription_overage` cost events
-- any future request-scoped cost event with non-zero billed cents
+- `metered_api` 成本事件
+- `subscription_overage` 成本事件
+- 任何未来有非零计费美分的请求范围成本事件
 
-Do not include:
+不包含：
 
-- `subscription_included` cost events with zero billed cents
-- advisory quota rows
-- account-level finance events unless and until company-level financial budgets are added explicitly
+- 零计费美分的 `subscription_included` 成本事件
+- 建议性配额行
+- 账户级财务事件，除非且直到明确添加公司级财务预算
 
-### Why Not Tokens First
+### 为什么不先用 Token
 
-Token budgets should not be the first hard-stop because:
+Token 预算不应是首个硬停止，因为：
 
-- providers count tokens differently
-- cached tokens complicate simple totals
-- some future charges are not token-based
-- subscription tokens do not necessarily imply spend
-- money remains the cleanest cross-provider enforcement metric
+- 提供商计算 token 的方式不同
+- 缓存 token 使简单合计变得复杂
+- 某些未来费用不是基于 token 的
+- 订阅 token 不一定意味着支出
+- 资金仍然是最干净的跨提供商执行指标
 
-### Future Budget Metrics
+### 未来的预算指标
 
-Future policy metrics can include:
+未来的策略指标可以包含：
 
 - `total_tokens`
 - `input_tokens`
@@ -536,76 +536,76 @@ Future policy metrics can include:
 - `requests`
 - `finance_amount_cents`
 
-But they should enter only after the money-budget path is stable.
+但它们应在资金预算路径稳定后才加入。
 
-## Migration Plan
+## 迁移计划
 
-### Phase 1: Foundation
+### 阶段 1：基础
 
-- add `budget_policies`
-- add `budget_incidents`
-- add new approval type
-- add project pause metadata
+- 添加 `budget_policies`
+- 添加 `budget_incidents`
+- 添加新的审批类型
+- 添加项目暂停元数据
 
-### Phase 2: Compatibility
+### 阶段 2：兼容性
 
-- backfill policies from existing company and agent monthly budget columns
-- keep legacy columns readable during migration
+- 从现有公司和智能体月度预算列回填策略
+- 在迁移期间保持遗留列可读
 
-### Phase 3: Enforcement
+### 阶段 3：执行
 
-- move budget logic into dedicated service
-- add hard-stop incident creation
-- add activity and approval creation
-- add execution guards on heartbeat and invoke paths
+- 将预算逻辑移入专用服务
+- 添加硬停止事件创建
+- 添加活动和审批创建
+- 在心跳和调用路径上添加执行守卫
 
-### Phase 4: UI
+### 阶段 4：UI
 
-- `/costs` budget section
-- agent detail budget card
-- project detail budget card
-- dashboard incident summary
+- `/costs` 预算部分
+- 智能体详情预算卡片
+- 项目详情预算卡片
+- 仪表盘事件摘要
 
-### Phase 5: Cleanup
+### 阶段 5：清理
 
-- move all reads/writes to `budget_policies`
-- reduce legacy column reliance
-- decide whether to remove old budget columns
+- 将所有读写迁移到 `budget_policies`
+- 减少对遗留列的依赖
+- 决定是否移除旧预算列
 
-## Tests
+## 测试
 
-Required coverage:
+必需覆盖：
 
-- agent monthly budget soft alert at 80%
-- agent monthly budget hard-stop at 100%
-- project lifetime budget soft alert
-- project lifetime budget hard-stop
-- `subscription_included` usage does not consume money budget
-- `subscription_overage` does consume money budget
-- hard-stop creates one incident per threshold per window
-- hard-stop creates approval and pauses correct scope
-- paused project blocks new issue execution
-- paused agent blocks new heartbeat dispatch
-- policy update and resume clears or resolves active incident correctly
-- dashboard and `/costs` surface active incidents
+- 智能体月度预算在 80% 时软告警
+- 智能体月度预算在 100% 时硬停止
+- 项目生命周期预算软告警
+- 项目生命周期预算硬停止
+- `subscription_included` 用量不消耗资金预算
+- `subscription_overage` 消耗资金预算
+- 硬停止每个阈值每个窗口创建一个事件
+- 硬停止创建审批并暂停正确的范围
+- 被暂停的项目阻断新的任务执行
+- 被暂停的智能体阻断新的心跳分发
+- 策略更新和恢复正确清除或解决活跃事件
+- 仪表盘和 `/costs` 展示活跃事件
 
-## Open Questions
+## 开放问题
 
-These should be explicitly deferred unless they block implementation:
+这些应明确延后，除非它们阻断实现：
 
-- Should project budgets also support monthly mode, or is lifetime enough for the first release?
-- Should company-level budgets eventually include `finance_events` such as OpenRouter top-up fees and Bedrock provisioned charges?
-- Should delegated budget editing be limited by org hierarchy in V1, or remain board-only in the UI even if the data model can support delegation later?
-- Do we need "resume once" immediately, or can first approval resolution be "raise budget and resume" plus "keep paused"?
+- 项目预算是否也应支持月度模式，还是首次发布只需要生命周期就够了？
+- 公司级预算最终是否应包含 `finance_events`，如 OpenRouter 充值费和 Bedrock 预留费用？
+- 委托预算编辑在 V1 中是否应受组织层级限制，还是在 UI 中保持仅看板可用，即使数据模型后续可以支持委托？
+- 我们是否需要立即支持"恢复一次"，还是首次审批解决可以是"提高预算并恢复"加"保持暂停"？
 
-## Recommendation
+## 建议
 
-Implement the first coherent budgeting system with these rules:
+实现首个连贯的预算系统，遵循以下规则：
 
-- Agent budget = monthly billed dollars
-- Project budget = lifetime billed dollars
-- Hard-stop = auto-pause + approval
-- Soft alert = visible warning, no approval
-- Subscription usage = visible quota and token reporting, not money-budget enforcement
+- 智能体预算 = 月度计费美元
+- 项目预算 = 生命周期计费美元
+- 硬停止 = 自动暂停 + 审批
+- 软告警 = 可见警告，无审批
+- 订阅用量 = 可见配额和 token 报表，非资金预算执行
 
-This solves the real operator problem without mixing together spend control, provider quota windows, and token accounting.
+这解决了真正的运营人员问题，而不会将支出控制、提供商配额窗口和 token 核算混在一起。

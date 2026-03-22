@@ -1,186 +1,186 @@
-# Paperclip Skill Tightening Plan
+# Paperclip 技能精简计划
 
-## Status
+## 状态
 
-Deferred follow-up. Do not include in the current token-optimization PR beyond documenting the plan.
+延迟跟进。不要在当前 token 优化 PR 中包含，仅记录计划。
 
-## Why This Is Deferred
+## 为什么延迟
 
-The `paperclip` skill is part of the critical control-plane safety surface. Tightening it may reduce fresh-session token use, but it also carries prompt-regression risk. We do not yet have evals that would let us safely prove behavior preservation across assignment handling, checkout rules, comment etiquette, approval workflows, and escalation paths.
+`paperclip` 技能是关键的控制平面安全表面的一部分。精简它可能减少新会话的 token 使用量，但也带来 prompt 回归风险。我们尚没有评估手段来安全地证明在分配处理、checkout 规则、评论礼仪、审批工作流和升级路径方面的行为保持不变。
 
-The current PR should ship the lower-risk infrastructure wins first:
+当前 PR 应先交付低风险的基础设施收益：
 
-- telemetry normalization
-- safe session reuse
-- incremental issue/comment context
-- bootstrap versus heartbeat prompt separation
-- Codex worktree isolation
+- 遥测规范化
+- 安全的会话复用
+- 增量任务/评论上下文
+- 引导 prompt 与心跳 prompt 的分离
+- Codex worktree 隔离
 
-## Current Problem
+## 当前问题
 
-Fresh runs still spend substantial input tokens even after the context-path fixes. The remaining large startup cost appears to come from loading the full `paperclip` skill and related instruction surface into context at run start.
+即使在上下文路径修复之后，新会话运行仍然花费大量输入 token。剩余的大启动成本似乎来自在运行启动时将完整的 `paperclip` 技能和相关指令表面加载到上下文中。
 
-The skill currently mixes three kinds of content in one file:
+该技能目前在一个文件中混合了三种内容：
 
-- hot-path heartbeat procedure used on nearly every run
-- critical policy and safety invariants
-- rare workflow/reference material that most runs do not need
+- 几乎每次运行都使用的热路径心跳过程
+- 关键的策略和安全不变量
+- 大多数运行不需要的低频工作流/参考材料
 
-That structure is safe but expensive.
+这种结构是安全的但昂贵的。
 
-## Goals
+## 目标
 
-- reduce first-run instruction tokens without weakening agent safety
-- preserve all current Paperclip control-plane capabilities
-- keep common heartbeat behavior explicit and easy for agents to follow
-- move rare workflows and reference material out of the hot path
-- create a structure that can later be evaluated systematically
+- 在不削弱智能体安全性的前提下减少首次运行的指令 token
+- 保留所有当前 Paperclip 控制平面能力
+- 保持常见心跳行为明确且易于智能体遵循
+- 将低频工作流和参考材料移出热路径
+- 创建后续可以系统性评估的结构
 
-## Non-Goals
+## 非目标
 
-- changing Paperclip API semantics
-- removing required governance rules
-- deleting rare workflows
-- changing agent defaults in the current PR
+- 改变 Paperclip API 语义
+- 移除必需的治理规则
+- 删除低频工作流
+- 在当前 PR 中改变智能体默认值
 
-## Recommended Direction
+## 推荐方向
 
-### 1. Split Hot Path From Lookup Material
+### 1. 将热路径与查找材料分离
 
-Restructure the skill into:
+将技能重构为：
 
-- an always-loaded core section for the common heartbeat loop
-- on-demand material for infrequent workflows and deep reference
+- 用于常见心跳循环的始终加载的核心部分
+- 用于低频工作流和深度参考的按需材料
 
-The core should cover only what is needed on nearly every wake:
+核心应仅覆盖几乎每次唤醒所需的内容：
 
-- auth and required headers
-- inbox-first assignment retrieval
-- mandatory checkout behavior
-- `heartbeat-context` first
-- incremental comment retrieval rules
-- mention/self-assign exception
-- blocked-task dedup
-- status/comment/release expectations before exit
+- 认证和必需的请求头
+- 收件箱优先的分配检索
+- 强制 checkout 行为
+- 优先使用 `heartbeat-context`
+- 增量评论检索规则
+- 提及/自分配例外
+- 阻塞任务去重
+- 退出前的状态/评论/释放预期
 
-### 2. Normalize The Skill Around One Canonical Procedure
+### 2. 围绕一个规范过程标准化技能
 
-The same rules are currently expressed multiple times across:
+相同的规则目前在以下位置被多次表述：
 
-- heartbeat steps
-- critical rules
-- endpoint reference
-- workflow examples
+- 心跳步骤
+- 关键规则
+- 端点参考
+- 工作流示例
 
-Refactor so each operational fact has one primary home:
+重构使每个操作事实有一个主要归属位置：
 
-- procedure
-- invariant list
-- appendix/reference
+- 过程
+- 不变量列表
+- 附录/参考
 
-This reduces prompt weight and lowers the chance of internal instruction drift.
+这减少了 prompt 权重并降低了内部指令漂移的机会。
 
-### 3. Compress Prose Into High-Signal Instruction Forms
+### 3. 将散文压缩为高信号的指令形式
 
-Rewrite the hot path using compact operational forms:
+使用紧凑的操作形式重写热路径：
 
-- short ordered checklist
-- flat invariant list
-- minimal examples only where ambiguity would be risky
+- 简短的有序检查清单
+- 扁平的不变量列表
+- 仅在歧义有风险时使用最少的示例
 
-Reduce:
+减少：
 
-- narrative explanation
-- repeated warnings already covered elsewhere
-- large example payloads for common operations
-- long endpoint matrices in the main body
+- 叙述性解释
+- 其他地方已覆盖的重复警告
+- 常见操作的大型示例负载
+- 主体中的长端点矩阵
 
-### 4. Move Rare Workflows Behind Explicit Triggers
+### 4. 将低频工作流移到显式触发器后面
 
-These workflows should remain available but should not dominate fresh-run context:
+以下工作流应保持可用但不应主导新运行的上下文：
 
-- OpenClaw invite flow
-- project setup flow
-- planning `<plan/>` writeback flow
-- instructions-path update flow
-- detailed link-formatting examples
+- OpenClaw 邀请流程
+- 项目设置流程
+- 计划 `<plan/>` 回写流程
+- 指令路径更新流程
+- 详细的链接格式化示例
 
-Recommended approach:
+推荐方法：
 
-- keep a short pointer in the main skill
-- move detailed procedures into sibling skills or referenced docs that agents read only when needed
+- 在主技能中保留简短指针
+- 将详细过程移到伴随技能或引用文档中，智能体仅在需要时读取
 
-### 5. Separate Policy From Reference
+### 5. 将策略与参考分离
 
-The skill should distinguish:
+技能应区分：
 
-- mandatory operating rules
-- endpoint lookup/reference
-- business-process playbooks
+- 强制性操作规则
+- 端点查找/参考
+- 业务流程手册
 
-That separation makes it easier to evaluate prompt changes later and lets adapters or orchestration choose what must always be loaded.
+这种分离使后续评估 prompt 变更更容易，并让适配器或编排层选择什么必须始终加载。
 
-## Proposed Target Structure
+## 提议的目标结构
 
-1. Purpose and authentication
-2. Compact heartbeat procedure
-3. Hard invariants
-4. Required comment/update style
-5. Triggered workflow index
-6. Appendix/reference
+1. 目的和认证
+2. 紧凑的心跳过程
+3. 硬性不变量
+4. 必需的评论/更新风格
+5. 触发式工作流索引
+6. 附录/参考
 
-## Rollout Plan
+## 推出计划
 
-### Phase 1. Inventory And Measure
+### 第一阶段：盘点与度量
 
-- annotate the current skill by section and estimate token weight
-- identify which sections are truly hot-path versus rare
-- capture representative runs to compare before/after prompt size and behavior
+- 按部分注解当前技能并估计 token 权重
+- 识别哪些部分是真正的热路径，哪些是低频的
+- 捕获代表性运行以比较前后的 prompt 大小和行为
 
-### Phase 2. Structural Refactor Without Semantic Changes
+### 第二阶段：无语义变更的结构重构
 
-- rewrite the main skill into the target structure
-- preserve all existing rules and capabilities
-- move rare workflow details into referenced companion material
-- keep wording changes conservative
+- 将主技能重写为目标结构
+- 保留所有现有规则和能力
+- 将低频工作流细节移到引用的伴随材料中
+- 保持措辞变更保守
 
-### Phase 3. Validate Against Real Scenarios
+### 第三阶段：针对真实场景验证
 
-Run scenario checks for:
+对以下场景进行检查：
 
-- normal assigned heartbeat
-- comment-triggered wake
-- blocked-task dedup behavior
-- approval-resolution wake
-- delegation/subtask creation
-- board handoff back to user
-- plan-request handling
+- 正常的分配心跳
+- 评论触发的唤醒
+- 阻塞任务去重行为
+- 审批解决唤醒
+- 委派/子任务创建
+- board 交回用户
+- 计划请求处理
 
-### Phase 4. Decide Default Loading Strategy
+### 第四阶段：决定默认加载策略
 
-After validation, decide whether:
+验证后决定是否：
 
-- the entire main skill still loads by default, or
-- only the compact core loads by default and rare sections are fetched on demand
+- 整个主技能仍默认加载，或
+- 仅紧凑核心默认加载，低频部分按需获取
 
-Do not change this loading policy without validation.
+不要在没有验证的情况下改变此加载策略。
 
-## Risks
+## 风险
 
-- prompt degradation on control-plane safety rules
-- agents forgetting rare but important workflows
-- accidental removal of repeated wording that was carrying useful behavior
-- introducing ambiguous instruction precedence between the core skill and companion materials
+- 控制平面安全规则的 prompt 退化
+- 智能体遗忘低频但重要的工作流
+- 意外移除了承载有用行为的重复措辞
+- 在核心技能和伴随材料之间引入模糊的指令优先级
 
-## Preconditions Before Implementation
+## 实现前的先决条件
 
-- define acceptance scenarios for control-plane correctness
-- add at least lightweight eval or scripted scenario coverage for key Paperclip flows
-- confirm how adapter/bootstrap layering should load skill content versus references
+- 定义控制平面正确性的验收场景
+- 为关键 Paperclip 流程添加至少轻量级的评估或脚本化场景覆盖
+- 确认适配器/引导分层应如何加载技能内容与引用
 
-## Success Criteria
+## 成功标准
 
-- materially lower first-run input tokens for Paperclip-coordinated agents
-- no regression in checkout discipline, issue updates, blocked handling, or delegation
-- no increase in malformed API usage or ownership mistakes
-- agents still complete rare workflows correctly when explicitly asked
+- Paperclip 协调的智能体首次运行输入 token 实质性降低
+- checkout 纪律、任务更新、阻塞处理或委派无回归
+- 格式错误的 API 使用或所有权错误无增加
+- 智能体在被明确要求时仍能正确完成低频工作流

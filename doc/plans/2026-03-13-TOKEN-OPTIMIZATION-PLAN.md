@@ -1,397 +1,397 @@
-# Token Optimization Plan
+# Token 优化计划
 
-Date: 2026-03-13  
-Related discussion: https://github.com/paperclipai/paperclip/discussions/449
+日期：2026-03-13
+相关讨论：https://github.com/paperclipai/paperclip/discussions/449
 
-## Goal
+## 目标
 
-Reduce token consumption materially without reducing agent capability, control-plane visibility, or task completion quality.
+在不降低智能体能力、控制平面可见性或任务完成质量的前提下，实质性减少 token 消耗。
 
-This plan is based on:
+本计划基于：
 
-- the current V1 control-plane design
-- the current adapter and heartbeat implementation
-- the linked user discussion
-- local runtime data from the default Paperclip instance on 2026-03-13
+- 当前 V1 控制平面设计
+- 当前适配器和心跳实现
+- 关联的用户讨论
+- 2026-03-13 默认 Paperclip 实例的本地运行时数据
 
-## Executive Summary
+## 执行摘要
 
-The discussion is directionally right about two things:
+讨论在两个方面的方向是正确的：
 
-1. We should preserve session and prompt-cache locality more aggressively.
-2. We should separate stable startup instructions from per-heartbeat dynamic context.
+1. 我们应该更积极地保持会话和 prompt 缓存的局部性。
+2. 我们应该将稳定的启动指令与每次心跳的动态上下文分离。
 
-But that is not enough on its own.
+但这本身还不够。
 
-After reviewing the code and local run data, the token problem appears to have four distinct causes:
+在审查代码和本地运行数据后，token 问题似乎有四个不同的原因：
 
-1. **Measurement inflation on sessioned adapters.** Some token counters, especially for `codex_local`, appear to be recorded as cumulative session totals instead of per-heartbeat deltas.
-2. **Avoidable session resets.** Task sessions are intentionally reset on timer wakes and manual wakes, which destroys cache locality for common heartbeat paths.
-3. **Repeated context reacquisition.** The `paperclip` skill tells agents to re-fetch assignments, issue details, ancestors, and full comment threads on every heartbeat. The API does not currently offer efficient delta-oriented alternatives.
-4. **Large static instruction surfaces.** Agent instruction files and globally injected skills are reintroduced at startup even when most of that content is unchanged and not needed for the current task.
+1. **会话适配器上的测量膨胀。** 某些 token 计数器，特别是 `codex_local`，似乎记录的是累计会话总量而非每次心跳的增量。
+2. **可避免的会话重置。** 任务会话在定时唤醒和手动唤醒时被有意重置，这破坏了常见心跳路径的缓存局部性。
+3. **重复的上下文重新获取。** `paperclip` 技能告诉智能体在每次心跳时重新获取分配、任务详情、祖先链和完整评论线程。API 目前没有提供高效的增量导向替代方案。
+4. **大型静态指令面。** 智能体指令文件和全局注入的技能在启动时被重新引入，即使大部分内容未变且当前任务不需要。
 
-The correct approach is:
+正确的方法是：
 
-1. fix telemetry so we can trust the numbers
-2. preserve reuse where it is safe
-3. make context retrieval incremental
-4. add session compaction/rotation so long-lived sessions do not become progressively more expensive
+1. 修复遥测使我们可以信任数字
+2. 在安全的地方保持复用
+3. 使上下文检索增量化
+4. 添加会话压缩/轮换，使长期会话不会变得越来越昂贵
 
-## Validated Findings
+## 已验证的发现
 
-### 1. Token telemetry is at least partly overstated today
+### 1. Token 遥测至少在今天部分被高估了
 
-Observed from the local default instance:
+从本地默认实例观察到：
 
-- `heartbeat_runs`: 11,360 runs between 2026-02-18 and 2026-03-13
-- summed `usage_json.inputTokens`: `2,272,142,368,952`
-- summed `usage_json.cachedInputTokens`: `2,217,501,559,420`
+- `heartbeat_runs`：2026-02-18 到 2026-03-13 之间有 11,360 次运行
+- `usage_json.inputTokens` 合计：`2,272,142,368,952`
+- `usage_json.cachedInputTokens` 合计：`2,217,501,559,420`
 
-Those totals are not credible as true per-heartbeat usage for the observed prompt sizes.
+这些总量作为观察到的 prompt 大小的真实每次心跳使用量是不可信的。
 
-Supporting evidence:
+支持证据：
 
-- `adapter.invoke.payload.prompt` averages were small:
-  - `codex_local`: ~193 chars average, 6,067 chars max
-  - `claude_local`: ~160 chars average, 1,160 chars max
-- despite that, many `codex_local` runs report millions of input tokens
-- one reused Codex session in local data spans 3,607 runs and recorded `inputTokens` growing up to `1,155,283,166`
+- `adapter.invoke.payload.prompt` 的平均值很小：
+  - `codex_local`：平均约 193 字符，最大 6,067 字符
+  - `claude_local`：平均约 160 字符，最大 1,160 字符
+- 尽管如此，许多 `codex_local` 运行报告了数百万的输入 token
+- 本地数据中一个复用的 Codex 会话跨越 3,607 次运行，并记录 `inputTokens` 增长到 `1,155,283,166`
 
-Interpretation:
+解释：
 
-- for sessioned adapters, especially Codex, we are likely storing usage reported by the runtime as a **session total**, not a **per-run delta**
-- this makes trend reporting, optimization work, and customer trust worse
+- 对于会话适配器，特别是 Codex，我们可能将运行时报告的用量存储为**会话总量**，而非**每次运行的增量**
+- 这使得趋势报告、优化工作和客户信任变得更差
 
-This does **not** mean there is no real token problem. It means we need a trustworthy baseline before we can judge optimization impact.
+这**不**意味着没有真实的 token 问题。它意味着我们需要一个可信的基线，然后才能判断优化影响。
 
-### 2. Timer wakes currently throw away reusable task sessions
+### 2. 定时唤醒当前丢弃了可复用的任务会话
 
-In `server/src/services/heartbeat.ts`, `shouldResetTaskSessionForWake(...)` returns `true` for:
+在 `server/src/services/heartbeat.ts` 中，`shouldResetTaskSessionForWake(...)` 对以下情况返回 `true`：
 
 - `wakeReason === "issue_assigned"`
 - `wakeSource === "timer"`
-- manual on-demand wakes
+- 手动按需唤醒
 
-That means many normal heartbeats skip saved task-session resume even when the workspace is stable.
+这意味着许多正常心跳即使工作区稳定也跳过了保存的任务会话恢复。
 
-Local data supports the impact:
+本地数据支持其影响：
 
-- `timer/system` runs: 6,587 total
-- only 976 had a previous session
-- only 963 ended with the same session
+- `timer/system` 运行：共 6,587 次
+- 仅 976 次有先前会话
+- 仅 963 次以相同会话结束
 
-So timer wakes are the largest heartbeat path and are mostly not resuming prior task state.
+所以定时唤醒是最大的心跳路径，并且大多数没有恢复先前的任务状态。
 
-### 3. We repeatedly ask agents to reload the same task context
+### 3. 我们反复要求智能体重新加载相同的任务上下文
 
-The `paperclip` skill currently tells agents to do this on essentially every heartbeat:
+`paperclip` 技能目前告诉智能体在基本每次心跳时都要做这些：
 
-- fetch assignments
-- fetch issue details
-- fetch ancestor chain
-- fetch full issue comments
+- 获取分配
+- 获取任务详情
+- 获取祖先链
+- 获取完整的任务评论
 
-Current API shape reinforces that pattern:
+当前 API 形状强化了这个模式：
 
-- `GET /api/issues/:id/comments` returns the full thread
-- there is no `since`, cursor, digest, or summary endpoint for heartbeat consumption
-- `GET /api/issues/:id` returns full enriched issue context, not a minimal delta payload
+- `GET /api/issues/:id/comments` 返回完整线程
+- 没有 `since`、游标、摘要或为心跳消费准备的摘要端点
+- `GET /api/issues/:id` 返回完整的丰富任务上下文，而非最小增量负载
 
-This is safe but expensive. It forces the model to repeatedly consume unchanged information.
+这是安全的但昂贵的。它迫使模型反复消费未变的信息。
 
-### 4. Static instruction payloads are not separated cleanly from dynamic heartbeat prompts
+### 4. 静态指令负载没有从动态心跳 prompt 中干净地分离
 
-The user discussion suggested a bootstrap prompt. That is the right direction.
+用户讨论建议了一个引导 prompt。这是正确的方向。
 
-Current state:
+当前状态：
 
-- the UI exposes `bootstrapPromptTemplate`
-- adapter execution paths do not currently use it
-- several adapters prepend `instructionsFilePath` content directly into the per-run prompt or system prompt
+- UI 暴露了 `bootstrapPromptTemplate`
+- 适配器执行路径目前没有使用它
+- 多个适配器将 `instructionsFilePath` 内容直接前置到每次运行的 prompt 或系统 prompt 中
 
-Result:
+结果：
 
-- stable instructions are re-sent or re-applied in the same path as dynamic heartbeat content
-- we are not deliberately optimizing for provider prompt caching
+- 稳定的指令与动态心跳内容在同一路径中被重新发送或重新应用
+- 我们没有刻意为提供者 prompt 缓存进行优化
 
-### 5. We inject more skill surface than most agents need
+### 5. 我们注入了比大多数智能体需要的更多的技能面
 
-Local adapters inject repo skills into runtime skill directories.
+本地适配器将仓库技能注入到运行时技能目录中。
 
-Important `codex_local` nuance:
+重要的 `codex_local` 细微差别：
 
-- Codex does not read skills directly from the active worktree.
-- Paperclip discovers repo skills from the current checkout, then symlinks them into `$CODEX_HOME/skills` or `~/.codex/skills`.
-- If an existing Paperclip skill symlink already points at another live checkout, the current implementation skips it instead of repointing it.
-- This can leave Codex using stale skill content from a different worktree even after Paperclip-side skill changes land.
-- That is both a correctness risk and a token-analysis risk, because runtime behavior may not reflect the instructions in the checkout being tested.
+- Codex 不直接从活跃的 worktree 读取技能。
+- Paperclip 从当前 checkout 发现仓库技能，然后将它们符号链接到 `$CODEX_HOME/skills` 或 `~/.codex/skills`。
+- 如果现有的 Paperclip 技能符号链接已经指向另一个活跃的 checkout，当前实现会跳过它而不是重新指向。
+- 这可能导致 Codex 使用来自不同 worktree 的过时技能内容，即使 Paperclip 端的技能更改已经落地。
+- 这既是正确性风险也是 token 分析风险，因为运行时行为可能不反映正在测试的 checkout 中的指令。
 
-Current repo skill sizes:
+当前仓库技能大小：
 
-- `skills/paperclip/SKILL.md`: 17,441 bytes
-- `.agents/skills/create-agent-adapter/SKILL.md`: 31,832 bytes
-- `skills/paperclip-create-agent/SKILL.md`: 4,718 bytes
-- `skills/para-memory-files/SKILL.md`: 3,978 bytes
+- `skills/paperclip/SKILL.md`：17,441 字节
+- `.agents/skills/create-agent-adapter/SKILL.md`：31,832 字节
+- `skills/paperclip-create-agent/SKILL.md`：4,718 字节
+- `skills/para-memory-files/SKILL.md`：3,978 字节
 
-That is nearly 58 KB of skill markdown before any company-specific instructions.
+这是在任何公司特定指令之前将近 58 KB 的技能 markdown。
 
-Not all of that is necessarily loaded into model context every run, but it increases startup surface area and should be treated as a token budget concern.
+并非所有这些都必然在每次运行时加载到模型上下文中，但它增加了启动面积，应该被视为 token 预算关注点。
 
-## Principles
+## 原则
 
-We should optimize tokens under these rules:
+我们应该在以下规则下优化 token：
 
-1. **Do not lose functionality.** Agents must still be able to resume work safely, understand why tasks exist, and act within governance rules.
-2. **Prefer stable context over repeated context.** Unchanged instructions should not be resent through the most expensive path.
-3. **Prefer deltas over full reloads.** Heartbeats should consume only what changed since the last useful run.
-4. **Measure normalized deltas, not raw adapter claims.** Especially for sessioned CLIs.
-5. **Keep escape hatches.** Board/manual runs may still want a forced fresh session.
+1. **不丢失功能。** 智能体必须仍能安全恢复工作、理解任务存在的原因，并在治理规则内行动。
+2. **优先稳定上下文而非重复上下文。** 未变的指令不应通过最昂贵的路径重新发送。
+3. **优先增量而非全量重新加载。** 心跳应仅消费自上次有用运行以来变化的内容。
+4. **测量规范化增量，而非原始适配器声明。** 特别是对于会话 CLI。
+5. **保留逃生口。** Board/手动运行可能仍想要强制刷新会话。
 
-## Plan
+## 计划
 
-## Phase 1: Make token telemetry trustworthy
+## 第一阶段：使 token 遥测可信
 
-This should happen first.
+这应该首先完成。
 
-### Changes
+### 变更
 
-- Store both:
-  - raw adapter-reported usage
-  - Paperclip-normalized per-run usage
-- For sessioned adapters, compute normalized deltas against prior usage for the same persisted session.
-- Add explicit fields for:
+- 同时存储：
+  - 原始适配器报告的用量
+  - Paperclip 规范化的每次运行用量
+- 对于会话适配器，从同一持久化会话的先前用量计算规范化增量。
+- 添加显式字段：
   - `sessionReused`
   - `taskSessionReused`
   - `promptChars`
   - `instructionsChars`
   - `hasInstructionsFile`
-  - `skillSetHash` or skill count
-  - `contextFetchMode` (`full`, `delta`, `summary`)
-- Add per-adapter parser tests that distinguish cumulative-session counters from per-run counters.
+  - `skillSetHash` 或技能计数
+  - `contextFetchMode`（`full`、`delta`、`summary`）
+- 添加每适配器的解析器测试来区分累计会话计数器和每次运行计数器。
 
-### Why
+### 原因
 
-Without this, we cannot tell whether a reduction came from a real optimization or a reporting artifact.
+没有这个，我们无法判断减少是来自真实优化还是报告偏差。
 
-### Success criteria
+### 成功标准
 
-- per-run token totals stop exploding on long-lived sessions
-- a resumed session’s usage curve is believable and monotonic at the session level, but not double-counted at the run level
-- cost pages can show both raw and normalized numbers while we migrate
+- 每次运行的 token 总量在长期会话上停止爆炸
+- 恢复会话的用量曲线在会话层面可信且单调，但不在运行层面重复计算
+- 成本页面可以在迁移期间同时显示原始和规范化数字
 
-## Phase 2: Preserve safe session reuse by default
+## 第二阶段：默认保持安全的会话复用
 
-This is the highest-leverage behavior change.
+这是最高杠杆的行为变更。
 
-### Changes
+### 变更
 
-- Stop resetting task sessions on ordinary timer wakes.
-- Keep resetting on:
-  - explicit manual “fresh run” invocations
-  - assignment changes
-  - workspace mismatch
-  - model mismatch / invalid resume errors
-- Add an explicit wake flag like `forceFreshSession: true` when the board wants a reset.
-- Record why a session was reused or reset in run metadata.
+- 停止在普通定时唤醒时重置任务会话。
+- 保留在以下情况下重置：
+  - 显式的手动"全新运行"调用
+  - 分配变更
+  - 工作区不匹配
+  - 模型不匹配/无效恢复错误
+- 当 board 想要重置时添加显式唤醒标志如 `forceFreshSession: true`。
+- 在运行元数据中记录会话为什么被复用或重置。
 
-### Why
+### 原因
 
-Timer wakes are the dominant heartbeat path. Resetting them destroys both session continuity and prompt cache reuse.
+定时唤醒是主要的心跳路径。重置它们破坏了会话连续性和 prompt 缓存复用。
 
-### Success criteria
+### 成功标准
 
-- timer wakes resume the prior task session in the large majority of stable-workspace cases
-- no increase in stale-session failures
-- lower normalized input tokens per timer heartbeat
+- 定时唤醒在大多数稳定工作区情况下恢复先前的任务会话
+- 过时会话失败不增加
+- 每次定时心跳的规范化输入 token 降低
 
-## Phase 3: Separate static bootstrap context from per-heartbeat context
+## 第三阶段：将静态引导上下文从每次心跳上下文中分离
 
-This is the right version of the discussion’s bootstrap idea.
+这是讨论中引导想法的正确版本。
 
-### Changes
+### 变更
 
-- Implement `bootstrapPromptTemplate` in adapter execution paths.
-- Use it only when starting a fresh session, not on resumed sessions.
-- Keep `promptTemplate` intentionally small and stable:
-  - who I am
-  - what triggered this wake
-  - which task/comment/approval to prioritize
-- Move long-lived setup text out of recurring per-run prompts where possible.
-- Add UI guidance and warnings when `promptTemplate` contains high-churn or large inline content.
+- 在适配器执行路径中实现 `bootstrapPromptTemplate`。
+- 仅在启动全新会话时使用，恢复会话时不使用。
+- 保持 `promptTemplate` 刻意小巧且稳定：
+  - 我是谁
+  - 什么触发了这次唤醒
+  - 哪个任务/评论/审批需要优先处理
+- 在可能的地方将长期设置文本移出循环的每次运行 prompt。
+- 当 `promptTemplate` 包含高变化率或大型内联内容时添加 UI 指引和警告。
 
-### Why
+### 原因
 
-Static instructions and dynamic wake context have different cache behavior and should be modeled separately.
+静态指令和动态唤醒上下文有不同的缓存行为，应该分别建模。
 
-For `codex_local`, this also requires isolating the Codex skill home per worktree or teaching Paperclip to repoint its own skill symlinks when the source checkout changes. Otherwise prompt and skill improvements in the active worktree may not reach the running agent.
+对于 `codex_local`，这还需要按 worktree 隔离 Codex 技能主目录，或者教会 Paperclip 在源 checkout 变化时重新指向其自己的技能符号链接。否则活跃 worktree 中的 prompt 和技能改进可能不会到达运行中的智能体。
 
-### Success criteria
+### 成功标准
 
-- fresh-session prompts can remain richer without inflating every resumed heartbeat
-- resumed prompts become short and structurally stable
-- cache hit rates improve for session-preserving adapters
+- 全新会话 prompt 可以保持更丰富而不膨胀每次恢复的心跳
+- 恢复 prompt 变得短小且结构稳定
+- 会话保持适配器的缓存命中率提高
 
-## Phase 4: Make issue/task context incremental
+## 第四阶段：使任务上下文增量化
 
-This is the biggest product change and likely the biggest real token saver after session reuse.
+这是最大的产品变更，可能是会话复用之后最大的真实 token 节省。
 
-### Changes
+### 变更
 
-Add heartbeat-oriented endpoints and skill behavior:
+添加面向心跳的端点和技能行为：
 
 - `GET /api/agents/me/inbox-lite`
-  - minimal assignment list
-  - issue id, identifier, status, priority, updatedAt, lastExternalCommentAt
+  - 最小分配列表
+  - 任务 id、标识符、状态、优先级、updatedAt、lastExternalCommentAt
 - `GET /api/issues/:id/heartbeat-context`
-  - compact issue state
-  - parent-chain summary
-  - latest execution summary
-  - change markers
-- `GET /api/issues/:id/comments?after=<cursor>` or `?since=<timestamp>`
-  - return only new comments
-- optional `GET /api/issues/:id/context-digest`
-  - server-generated compact summary for heartbeat use
+  - 精简的任务状态
+  - 父链摘要
+  - 最新执行摘要
+  - 变更标记
+- `GET /api/issues/:id/comments?after=<cursor>` 或 `?since=<timestamp>`
+  - 仅返回新评论
+- 可选 `GET /api/issues/:id/context-digest`
+  - 服务器生成的精简摘要用于心跳消费
 
-Update the `paperclip` skill so the default pattern becomes:
+更新 `paperclip` 技能使默认模式变为：
 
-1. fetch compact inbox
-2. fetch compact task context
-3. fetch only new comments unless this is the first read, a mention-triggered wake, or a cache miss
-4. fetch full thread only on demand
+1. 获取精简收件箱
+2. 获取精简任务上下文
+3. 仅获取新评论，除非这是首次读取、提及触发的唤醒或缓存未命中
+4. 仅按需获取完整线程
 
-### Why
+### 原因
 
-Today we are using full-fidelity board APIs as heartbeat APIs. That is convenient but token-inefficient.
+今天我们将全保真度的 board API 作为心跳 API 使用。这虽然方便但 token 低效。
 
-### Success criteria
+### 成功标准
 
-- after first task acquisition, most heartbeats consume only deltas
-- repeated blocked-task or long-thread work no longer replays the whole comment history
-- mention-triggered wakes still have enough context to respond correctly
+- 首次任务获取后，大多数心跳仅消费增量
+- 重复的阻塞任务或长线程工作不再重放整个评论历史
+- 提及触发的唤醒仍然有足够的上下文来正确响应
 
-## Phase 5: Add session compaction and controlled rotation
+## 第五阶段：添加会话压缩和受控轮换
 
-This protects against long-lived session bloat.
+这防止长期会话膨胀。
 
-### Changes
+### 变更
 
-- Add rotation thresholds per adapter/session:
-  - turns
-  - normalized input tokens
-  - age
-  - cache hit degradation
-- Before rotating, produce a structured carry-forward summary:
-  - current objective
-  - work completed
-  - open decisions
-  - blockers
-  - files/artifacts touched
-  - next recommended action
-- Persist that summary in task session state or runtime state.
-- Start the next session with:
-  - bootstrap prompt
-  - compact carry-forward summary
-  - current wake trigger
+- 添加每适配器/会话的轮换阈值：
+  - 轮次
+  - 规范化输入 token
+  - 年龄
+  - 缓存命中退化
+- 轮换前，生成结构化的延续摘要：
+  - 当前目标
+  - 已完成工作
+  - 未决定事项
+  - 阻塞项
+  - 涉及的文件/工件
+  - 下一步推荐操作
+- 将该摘要持久化到任务会话状态或运行时状态中。
+- 用以下内容启动下一个会话：
+  - 引导 prompt
+  - 精简的延续摘要
+  - 当前唤醒触发器
 
-### Why
+### 原因
 
-Even when reuse is desirable, some sessions become too expensive to keep alive indefinitely.
+即使复用是可取的，某些会话变得过于昂贵而无法无限期保持存活。
 
-### Success criteria
+### 成功标准
 
-- very long sessions stop growing without bound
-- rotating a session does not cause loss of task continuity
-- successful task completion rate stays flat or improves
+- 非常长的会话停止无限增长
+- 轮换会话不导致任务连续性丢失
+- 成功的任务完成率保持平稳或提高
 
-## Phase 6: Reduce unnecessary skill surface
+## 第六阶段：减少不必要的技能面
 
-### Changes
+### 变更
 
-- Move from “inject all repo skills” to an allowlist per agent or per adapter.
-- Default local runtime skill set should likely be:
+- 从"注入所有仓库技能"改为每智能体或每适配器的允许列表。
+- 默认本地运行时技能集应该可能是：
   - `paperclip`
-- Add opt-in skills for specialized agents:
+- 为专业智能体添加选择加入技能：
   - `paperclip-create-agent`
   - `para-memory-files`
   - `create-agent-adapter`
-- Expose active skill set in agent config and run metadata.
-- For `codex_local`, either:
-  - run with a worktree-specific `CODEX_HOME`, or
-  - treat Paperclip-owned Codex skill symlinks as repairable when they point at a different checkout
+- 在智能体配置和运行元数据中暴露活跃技能集。
+- 对于 `codex_local`，选择：
+  - 使用 worktree 特定的 `CODEX_HOME` 运行，或
+  - 当 Paperclip 拥有的 Codex 技能符号链接指向不同 checkout 时将其视为可修复
 
-### Why
+### 原因
 
-Most agents do not need adapter-authoring or memory-system skills on every run.
+大多数智能体不需要在每次运行时加载适配器编写或记忆系统技能。
 
-### Success criteria
+### 成功标准
 
-- smaller startup instruction surface
-- no loss of capability for specialist agents that explicitly need extra skills
+- 更小的启动指令面
+- 明确需要额外技能的专业智能体不丢失能力
 
-## Rollout Order
+## 推出顺序
 
-Recommended order:
+推荐顺序：
 
-1. telemetry normalization
-2. timer-wake session reuse
-3. bootstrap prompt implementation
-4. heartbeat delta APIs + `paperclip` skill rewrite
-5. session compaction/rotation
-6. skill allowlists
+1. 遥测规范化
+2. 定时唤醒会话复用
+3. 引导 prompt 实现
+4. 心跳增量 API + `paperclip` 技能重写
+5. 会话压缩/轮换
+6. 技能允许列表
 
-## Acceptance Metrics
+## 验收指标
 
-We should treat this plan as successful only if we improve both efficiency and task outcomes.
+我们应该仅在效率和任务结果都有改善时才视本计划为成功。
 
-Primary metrics:
+主要指标：
 
-- normalized input tokens per successful heartbeat
-- normalized input tokens per completed issue
-- cache-hit ratio for sessioned adapters
-- session reuse rate by invocation source
-- fraction of heartbeats that fetch full comment threads
+- 每次成功心跳的规范化输入 token
+- 每个完成任务的规范化输入 token
+- 会话适配器的缓存命中率
+- 按调用来源的会话复用率
+- 获取完整评论线程的心跳比例
 
-Guardrail metrics:
+保护指标：
 
-- task completion rate
-- blocked-task rate
-- stale-session failure rate
-- manual intervention rate
-- issue reopen rate after agent completion
+- 任务完成率
+- 阻塞任务率
+- 过时会话失败率
+- 人工干预率
+- 智能体完成后的任务重新打开率
 
-Initial targets:
+初始目标：
 
-- 30% to 50% reduction in normalized input tokens per successful resumed heartbeat
-- 80%+ session reuse on stable timer wakes
-- 80%+ reduction in full-thread comment reloads after first task read
-- no statistically meaningful regression in completion rate or failure rate
+- 每次成功恢复心跳的规范化输入 token 减少 30% 到 50%
+- 稳定定时唤醒上 80%+ 的会话复用
+- 首次任务读取后完整线程评论重新加载减少 80%+
+- 完成率或失败率无统计学显著回归
 
-## Concrete Engineering Tasks
+## 具体工程任务
 
-1. Add normalized usage fields and migration support for run analytics.
-2. Patch sessioned adapter accounting to compute deltas from prior session totals.
-3. Change `shouldResetTaskSessionForWake(...)` so timer wakes do not reset by default.
-4. Implement `bootstrapPromptTemplate` end-to-end in adapter execution.
-5. Add compact heartbeat context and incremental comment APIs.
-6. Rewrite `skills/paperclip/SKILL.md` around delta-fetch behavior.
-7. Add session rotation with carry-forward summaries.
-8. Replace global skill injection with explicit allowlists.
-9. Fix `codex_local` skill resolution so worktree-local skill changes reliably reach the runtime.
+1. 添加规范化用量字段和运行分析的迁移支持。
+2. 修补会话适配器计费，从先前会话总量计算增量。
+3. 更改 `shouldResetTaskSessionForWake(...)` 使定时唤醒默认不重置。
+4. 在适配器执行中端到端实现 `bootstrapPromptTemplate`。
+5. 添加精简心跳上下文和增量评论 API。
+6. 围绕增量获取行为重写 `skills/paperclip/SKILL.md`。
+7. 添加带延续摘要的会话轮换。
+8. 用显式允许列表替换全局技能注入。
+9. 修复 `codex_local` 技能解析，使 worktree 本地的技能更改可靠地到达运行时。
 
-## Recommendation
+## 建议
 
-Treat this as a two-track effort:
+将此作为双轨工作：
 
-- **Track A: correctness and no-regret wins**
-  - telemetry normalization
-  - timer-wake session reuse
-  - bootstrap prompt implementation
-- **Track B: structural token reduction**
-  - delta APIs
-  - skill rewrite
-  - session compaction
-  - skill allowlists
+- **轨道 A：正确性和无风险收益**
+  - 遥测规范化
+  - 定时唤醒会话复用
+  - 引导 prompt 实现
+- **轨道 B：结构性 token 减少**
+  - 增量 API
+  - 技能重写
+  - 会话压缩
+  - 技能允许列表
 
-If we only do Track A, we will improve things, but agents will still re-read too much unchanged task context.
+如果我们只做轨道 A，会有改善，但智能体仍然会重复读取太多未变的任务上下文。
 
-If we only do Track B without fixing telemetry first, we will not be able to prove the gains cleanly.
+如果我们只做轨道 B 而不先修复遥测，我们将无法干净地证明收益。

@@ -1,190 +1,190 @@
-# Billing Ledger and Reporting
+# 计费台账与报表
 
-## Context
+## 背景
 
-Paperclip currently stores model spend in `cost_events` and operational run state in `heartbeat_runs`.
-That split is fine, but the current reporting code tries to infer billing semantics by mixing both tables:
+Paperclip 目前将模型支出存储在 `cost_events` 中，将运行运营状态存储在 `heartbeat_runs` 中。
+这种拆分本身没问题，但当前的报表代码试图通过混合两张表来推断计费语义：
 
-- `cost_events` knows provider, model, tokens, and dollars
-- `heartbeat_runs.usage_json` knows some per-run billing metadata
-- `heartbeat_runs.usage_json` does **not** currently carry enough normalized billing dimensions to support honest provider-level reporting
+- `cost_events` 知道提供商、模型、token 数和美元数
+- `heartbeat_runs.usage_json` 知道部分按运行的计费元数据
+- `heartbeat_runs.usage_json` 目前 **不** 携带足够规范化的计费维度来支持诚实的提供商级报表
 
-This becomes incorrect as soon as a company uses more than one provider, more than one billing channel, or more than one billing mode.
+一旦公司使用多个提供商、多个计费渠道或多种计费模式，这就会变得不正确。
 
-Examples:
+示例：
 
-- direct OpenAI API usage
-- Claude subscription usage with zero marginal dollars
-- subscription overage with dollars and tokens
-- OpenRouter billing where the biller is OpenRouter but the upstream provider is Anthropic or OpenAI
+- 直接使用 OpenAI API
+- Claude 订阅用量，零边际美元成本
+- 订阅超额使用，涉及美元和 token
+- OpenRouter 计费，计费方是 OpenRouter，但上游提供商是 Anthropic 或 OpenAI
 
-The system needs to support:
+系统需要支持：
 
-- dollar reporting
-- token reporting
-- subscription-included usage
-- subscription overage
-- direct metered API usage
-- future aggregator billing such as OpenRouter
+- 美元报表
+- token 报表
+- 订阅包含用量
+- 订阅超额
+- 直接计量 API 用量
+- 未来的聚合器计费（如 OpenRouter）
 
-## Product Decision
+## 产品决策
 
-`cost_events` becomes the canonical billing and usage ledger for reporting.
+`cost_events` 成为报表的规范计费和用量台账。
 
-`heartbeat_runs` remains an operational execution log. It may keep mirrored billing metadata for debugging and transcripts, but reporting must not reconstruct billing semantics from `heartbeat_runs.usage_json`.
+`heartbeat_runs` 保留为运营执行日志。它可以保留镜像的计费元数据用于调试和记录回放，但报表不得从 `heartbeat_runs.usage_json` 重建计费语义。
 
-## Decision: One Ledger Or Two
+## 决策：一个台账还是两个
 
-We do **not** need two tables to solve the current PR's problem.
-For request-level inference reporting, `cost_events` is enough if it carries the right dimensions:
+我们 **不** 需要两张表来解决当前 PR 的问题。
+对于请求级推理报表，只要 `cost_events` 携带正确的维度就够了：
 
-- upstream provider
-- biller
-- billing type
-- model
-- token fields
-- billed amount
+- 上游提供商
+- 计费方
+- 计费类型
+- 模型
+- token 字段
+- 计费金额
 
-That is why the first implementation pass extends `cost_events` instead of introducing a second table immediately.
+这就是为什么第一轮实现扩展 `cost_events` 而不是立即引入第二张表。
 
-However, if Paperclip needs to account for the full billing surface of aggregators and managed AI platforms, then `cost_events` alone is not enough.
-Some charges are not cleanly representable as a single model inference event:
+但是，如果 Paperclip 需要覆盖聚合器和托管 AI 平台的完整计费面，那么仅靠 `cost_events` 是不够的。
+有些费用无法干净地表示为单个模型推理事件：
 
-- account top-ups and credit purchases
-- platform fees charged at purchase time
-- BYOK platform fees that are account-level or threshold-based
-- prepaid credit expirations, refunds, and adjustments
-- provisioned throughput commitments
-- fine-tuning, training, model import, and storage charges
-- gateway logging or other platform overhead that is not attributable to one prompt/response pair
+- 账户充值和积分购买
+- 购买时收取的平台费
+- BYOK 平台费（账户级或阈值制）
+- 预付积分过期、退款和调整
+- 预留吞吐量承诺
+- 微调、训练、模型导入和存储费用
+- 网关日志记录或其他不可归因于单个请求/响应对的平台开销
 
-So the decision is:
+所以决策是：
 
-- near term: keep `cost_events` as the inference and usage ledger
-- next phase: add `finance_events` for non-inference financial events
+- 近期：保持 `cost_events` 作为推理和用量台账
+- 下一阶段：为非推理财务事件添加 `finance_events`
 
-This is a deliberate split between:
+这是刻意区分：
 
-- usage and inference accounting
-- account-level and platform-level financial accounting
+- 用量和推理核算
+- 账户级和平台级财务核算
 
-That separation keeps request reporting honest without forcing us to fake invoice semantics onto rows that were never request-scoped.
+这种分离使请求报表保持诚实，而无需将发票语义强加到本来就不是请求范围的行上。
 
-## External Motivation And Sources
+## 外部动机和来源
 
-The need for this model is not theoretical.
-It follows directly from the billing systems of providers and aggregators Paperclip needs to support.
+这个模型的需求并非理论推导。
+它直接来源于 Paperclip 需要支持的提供商和聚合器的计费系统。
 
 ### OpenRouter
 
-Source URLs:
+来源 URL：
 
 - https://openrouter.ai/docs/faq#credit-and-billing-systems
 - https://openrouter.ai/pricing
 
-Relevant billing behavior as of March 14, 2026:
+截至 2026 年 3 月 14 日的相关计费行为：
 
-- OpenRouter passes through underlying inference pricing and deducts request cost from purchased credits.
-- OpenRouter charges a 5.5% fee with a $0.80 minimum when purchasing credits.
-- Crypto payments are charged a 5% fee.
-- BYOK has its own fee model after a free request threshold.
-- OpenRouter billing is aggregated at the OpenRouter account level even when the upstream provider is Anthropic, OpenAI, Google, or another provider.
+- OpenRouter 传递底层推理定价并从购买的积分中扣除请求费用。
+- OpenRouter 在购买积分时收取 5.5% 的费用，最低 $0.80。
+- 加密货币支付收取 5% 的费用。
+- BYOK 在免费请求阈值之后有自己的费用模型。
+- OpenRouter 计费在 OpenRouter 账户级别聚合，即使上游提供商是 Anthropic、OpenAI、Google 或其他提供商。
 
-Implication for Paperclip:
+对 Paperclip 的影响：
 
-- request usage belongs in `cost_events`
-- credit purchases, purchase fees, BYOK fees, refunds, and expirations belong in `finance_events`
-- `biller=openrouter` must remain distinct from `provider=anthropic|openai|google|...`
+- 请求用量属于 `cost_events`
+- 积分购买、购买费用、BYOK 费用、退款和过期属于 `finance_events`
+- `biller=openrouter` 必须与 `provider=anthropic|openai|google|...` 保持区分
 
-### Cloudflare AI Gateway Unified Billing
+### Cloudflare AI Gateway 统一计费
 
-Source URL:
+来源 URL：
 
 - https://developers.cloudflare.com/ai-gateway/features/unified-billing/
 
-Relevant billing behavior as of March 14, 2026:
+截至 2026 年 3 月 14 日的相关计费行为：
 
-- Unified Billing lets users call multiple upstream providers while receiving a single Cloudflare bill.
-- Usage is paid from Cloudflare-loaded credits.
-- Cloudflare supports manual top-ups and auto top-up thresholds.
-- Spend limits can stop request processing on daily, weekly, or monthly boundaries.
-- Unified Billing traffic can use Cloudflare-managed credentials rather than the user's direct provider key.
+- 统一计费允许用户调用多个上游提供商，同时接收单一 Cloudflare 账单。
+- 用量从 Cloudflare 充值的积分中支付。
+- Cloudflare 支持手动充值和自动充值阈值。
+- 消费限额可以按日、周或月边界停止请求处理。
+- 统一计费流量可以使用 Cloudflare 托管的凭证，而非用户的直接提供商密钥。
 
-Implication for Paperclip:
+对 Paperclip 的影响：
 
-- request usage needs `biller=cloudflare`
-- upstream provider still needs to be preserved separately
-- Cloudflare credit loads and related account-level events are not inference rows and should not be forced into `cost_events`
-- quota and limits reporting must support biller-level controls, not just upstream provider limits
+- 请求用量需要 `biller=cloudflare`
+- 上游提供商仍需单独保留
+- Cloudflare 积分充值和相关账户级事件不是推理行，不应强制塞入 `cost_events`
+- 配额和限额报表必须支持计费方级别的控制，而不仅仅是上游提供商限额
 
 ### Amazon Bedrock
 
-Source URL:
+来源 URL：
 
 - https://aws.amazon.com/bedrock/pricing/
 
-Relevant billing behavior as of March 14, 2026:
+截至 2026 年 3 月 14 日的相关计费行为：
 
-- Bedrock supports on-demand and batch pricing.
-- Bedrock pricing varies by region.
-- some pricing tiers add premiums or discounts relative to standard pricing
-- provisioned throughput is commitment-based rather than request-based
-- custom model import uses Custom Model Units billed per minute, with monthly storage charges
-- imported model copies are billed in 5-minute windows once active
-- customization and fine-tuning introduce training and hosted-model charges beyond normal inference
+- Bedrock 支持按需和批量定价。
+- Bedrock 定价因区域而异。
+- 某些定价层级相对标准定价有溢价或折扣
+- 预留吞吐量是基于承诺的，而非基于请求的
+- 自定义模型导入使用按分钟计费的自定义模型单元（Custom Model Units），并有月度存储费
+- 导入的模型副本一旦激活后按 5 分钟窗口计费
+- 定制和微调在正常推理之外引入了训练和托管模型费用
 
-Implication for Paperclip:
+对 Paperclip 的影响：
 
-- normal tokenized inference fits in `cost_events`
-- provisioned throughput, custom model unit charges, training, and storage charges require `finance_events`
-- region and pricing tier need to be first-class dimensions in the financial model
+- 正常的 token 化推理适合放在 `cost_events`
+- 预留吞吐量、自定义模型单元费用、训练和存储费用需要 `finance_events`
+- 区域和定价层级需要在财务模型中作为一等维度
 
-## Ledger Boundary
+## 台账边界
 
-To keep the system coherent, the table boundary should be explicit.
+为了保持系统一致性，表的边界应该是明确的。
 
 ### `cost_events`
 
-Use `cost_events` for request-scoped usage and inference charges:
+将 `cost_events` 用于请求范围的用量和推理费用：
 
-- one row per billable or usage-bearing run event
+- 每个可计费或有用量的运行事件一行
 - provider/model/biller/billingType/tokens/cost
-- optionally tied to `heartbeat_run_id`
-- supports direct APIs, subscriptions, overage, OpenRouter-routed inference, Cloudflare-routed inference, and Bedrock on-demand inference
+- 可选关联 `heartbeat_run_id`
+- 支持直接 API、订阅、超额、OpenRouter 路由推理、Cloudflare 路由推理和 Bedrock 按需推理
 
 ### `finance_events`
 
-Use `finance_events` for account-scoped or platform-scoped financial events:
+将 `finance_events` 用于账户范围或平台范围的财务事件：
 
-- credit purchase
-- top-up
-- refund
-- fee
-- expiry
-- provisioned capacity
-- training
-- model import
-- storage
-- invoice adjustment
+- 积分购买
+- 充值
+- 退款
+- 费用
+- 过期
+- 预留容量
+- 训练
+- 模型导入
+- 存储
+- 发票调整
 
-These rows may or may not have a related model, provider, or run id.
-Trying to force them into `cost_events` would either create fake request rows or create null-heavy rows that mean something fundamentally different from inference usage.
+这些行可能有也可能没有相关的模型、提供商或运行 ID。
+试图将它们强制塞入 `cost_events` 会创建虚假请求行，或创建含大量空值的行，其含义与推理用量根本不同。
 
-## Canonical Billing Dimensions
+## 规范计费维度
 
-Every persisted billing event should model four separate axes:
+每个持久化的计费事件应建模四个独立轴：
 
-1. Usage provider
-   The upstream provider whose model performed the work.
-   Examples: `openai`, `anthropic`, `google`.
+1. 用量提供商
+   执行工作的上游提供商。
+   示例：`openai`、`anthropic`、`google`。
 
-2. Biller
-   The system that charged for the usage.
-   Examples: `openai`, `anthropic`, `openrouter`, `cursor`, `chatgpt`.
+2. 计费方
+   收取用量费用的系统。
+   示例：`openai`、`anthropic`、`openrouter`、`cursor`、`chatgpt`。
 
-3. Billing type
-   The pricing mode applied to the event.
-   Initial canonical values:
+3. 计费类型
+   应用于事件的定价模式。
+   初始规范值：
    - `metered_api`
    - `subscription_included`
    - `subscription_overage`
@@ -192,43 +192,43 @@ Every persisted billing event should model four separate axes:
    - `fixed`
    - `unknown`
 
-4. Measures
-   Usage and billing must both be storable:
+4. 度量
+   用量和计费必须都可存储：
    - `input_tokens`
    - `output_tokens`
    - `cached_input_tokens`
    - `cost_cents`
 
-These dimensions are independent.
-For example, an event may be:
+这些维度是独立的。
+例如，一个事件可以是：
 
 - provider: `anthropic`
 - biller: `openrouter`
 - billing type: `metered_api`
-- tokens: non-zero
-- cost cents: non-zero
+- tokens: 非零
+- cost cents: 非零
 
-Or:
+或：
 
 - provider: `anthropic`
 - biller: `anthropic`
 - billing type: `subscription_included`
-- tokens: non-zero
+- tokens: 非零
 - cost cents: `0`
 
-## Schema Changes
+## 数据库变更
 
-Extend `cost_events` with:
+扩展 `cost_events`：
 
 - `heartbeat_run_id uuid null references heartbeat_runs.id`
 - `biller text not null default 'unknown'`
 - `billing_type text not null default 'unknown'`
 - `cached_input_tokens int not null default 0`
 
-Keep `provider` as the upstream usage provider.
-Do not overload `provider` to mean biller.
+保持 `provider` 作为上游用量提供商。
+不要将 `provider` 重载为计费方。
 
-Add a future `finance_events` table for account-level financial events with fields along these lines:
+为账户级财务事件添加未来的 `finance_events` 表，字段大致如下：
 
 - `company_id`
 - `occurred_at`
@@ -250,219 +250,219 @@ Add a future `finance_events` table for account-level financial events with fiel
 - `external_invoice_id nullable`
 - `metadata_json nullable`
 
-Add indexes:
+添加索引：
 
 - `(company_id, biller, occurred_at)`
 - `(company_id, provider, occurred_at)`
-- `(company_id, heartbeat_run_id)` if distinct-run reporting remains common
+- `(company_id, heartbeat_run_id)` 如果按运行去重报表仍然常见
 
-## Shared Contract Changes
+## 共享契约变更
 
-### Shared types
+### 共享类型
 
-Add a shared billing type union and enrich cost types with:
-
-- `heartbeatRunId`
-- `biller`
-- `billingType`
-- `cachedInputTokens`
-
-Update reporting response types so the provider breakdown reflects the ledger directly rather than inferred run metadata.
-
-### Validators
-
-Extend `createCostEventSchema` to accept:
+添加共享计费类型联合并用以下字段丰富 cost 类型：
 
 - `heartbeatRunId`
 - `biller`
 - `billingType`
 - `cachedInputTokens`
 
-Defaults:
+更新报表响应类型，使提供商明细直接反映台账数据，而非推断的运行元数据。
 
-- `biller` defaults to `provider`
-- `billingType` defaults to `unknown`
-- `cachedInputTokens` defaults to `0`
+### 校验器
 
-## Adapter Contract Changes
+扩展 `createCostEventSchema` 以接受：
 
-Extend adapter execution results so they can report:
+- `heartbeatRunId`
+- `biller`
+- `billingType`
+- `cachedInputTokens`
+
+默认值：
+
+- `biller` 默认为 `provider`
+- `billingType` 默认为 `unknown`
+- `cachedInputTokens` 默认为 `0`
+
+## 适配器契约变更
+
+扩展适配器执行结果，使其可以报告：
 
 - `biller`
-- richer billing type values
+- 更丰富的计费类型值
 
-Backwards compatibility:
+向后兼容：
 
-- existing adapter values `api` and `subscription` are treated as legacy aliases
-- map `api -> metered_api`
-- map `subscription -> subscription_included`
+- 现有适配器值 `api` 和 `subscription` 视为遗留别名
+- 映射 `api -> metered_api`
+- 映射 `subscription -> subscription_included`
 
-Future adapters may emit the canonical values directly.
+未来的适配器可以直接发出规范值。
 
-OpenRouter support will use:
+OpenRouter 支持将使用：
 
-- `provider` = upstream provider when known
+- `provider` = 已知时为上游提供商
 - `biller` = `openrouter`
-- `billingType` = `metered_api` unless OpenRouter later exposes another billing mode
+- `billingType` = `metered_api`，除非 OpenRouter 后续公开另一种计费模式
 
-Cloudflare Unified Billing support will use:
+Cloudflare 统一计费支持将使用：
 
-- `provider` = upstream provider when known
+- `provider` = 已知时为上游提供商
 - `biller` = `cloudflare`
-- `billingType` = `credits` or `metered_api` depending on the normalized request billing contract
+- `billingType` = `credits` 或 `metered_api`，取决于规范化的请求计费契约
 
-Bedrock support will use:
+Bedrock 支持将使用：
 
-- `provider` = upstream provider or `aws_bedrock` depending on adapter shape
+- `provider` = 上游提供商或 `aws_bedrock`，取决于适配器形态
 - `biller` = `aws_bedrock`
-- `billingType` = request-scoped mode for inference rows
-- `finance_events` for provisioned, training, import, and storage charges
+- `billingType` = 推理行的请求范围模式
+- `finance_events` 用于预留、训练、导入和存储费用
 
-## Write Path Changes
+## 写入路径变更
 
-### Heartbeat-created events
+### 心跳创建的事件
 
-When a heartbeat run produces usage or spend:
+当一次心跳运行产生用量或支出时：
 
-1. normalize adapter billing metadata
-2. write a ledger row to `cost_events`
-3. attach `heartbeat_run_id`
-4. set `provider`, `biller`, `billing_type`, token fields, and `cost_cents`
+1. 规范化适配器计费元数据
+2. 向 `cost_events` 写入一条台账行
+3. 附加 `heartbeat_run_id`
+4. 设置 `provider`、`biller`、`billing_type`、token 字段和 `cost_cents`
 
-The write path should no longer depend on later inference from `heartbeat_runs`.
+写入路径不应再依赖后续从 `heartbeat_runs` 进行的推断。
 
-### Manual API-created events
+### 手动 API 创建的事件
 
-Manual cost event creation remains supported.
-These events may have `heartbeatRunId = null`.
+手动创建 cost event 仍然受支持。
+这些事件可能有 `heartbeatRunId = null`。
 
-Rules:
+规则：
 
-- `provider` remains required
-- `biller` defaults to `provider`
-- `billingType` defaults to `unknown`
+- `provider` 仍然是必需的
+- `biller` 默认为 `provider`
+- `billingType` 默认为 `unknown`
 
-## Reporting Changes
+## 报表变更
 
-### Server
+### 服务端
 
-Refactor reporting queries to use `cost_events` only.
+重构报表查询，仅使用 `cost_events`。
 
 #### `summary`
 
-- sum `cost_cents`
+- 合计 `cost_cents`
 
 #### `by-agent`
 
-- sum costs and token fields from `cost_events`
-- use `count(distinct heartbeat_run_id)` filtered by billing type for run counts
-- use token sums filtered by billing type for subscription usage
+- 从 `cost_events` 合计费用和 token 字段
+- 使用 `count(distinct heartbeat_run_id)` 按计费类型过滤来统计运行次数
+- 使用按计费类型过滤的 token 合计来统计订阅用量
 
 #### `by-provider`
 
-- group by `provider`, `model`
-- sum costs and token fields directly from the ledger
-- derive billing-type slices from `cost_events.billing_type`
-- never pro-rate from unrelated `heartbeat_runs`
+- 按 `provider`、`model` 分组
+- 直接从台账合计费用和 token 字段
+- 从 `cost_events.billing_type` 派生计费类型切片
+- 绝不从无关的 `heartbeat_runs` 进行按比例分摊
 
-#### future `by-biller`
+#### 未来的 `by-biller`
 
-- group by `biller`
-- this is the right view for invoice and subscription accountability
+- 按 `biller` 分组
+- 这是发票和订阅问责的正确视图
 
 #### `window-spend`
 
-- continue to use `cost_events`
+- 继续使用 `cost_events`
 
-#### project attribution
+#### 项目归属
 
-Keep current project attribution logic for now, but prefer `cost_events.heartbeat_run_id` as the join anchor whenever possible.
+目前保持当前的项目归属逻辑，但尽可能优先使用 `cost_events.heartbeat_run_id` 作为关联锚点。
 
-## UI Changes
+## UI 变更
 
-### Principles
+### 原则
 
-- Spend, usage, and quota are related but distinct
-- a missing quota fetch is not the same as “no quota”
-- provider and biller are different dimensions
+- 支出、用量和配额是相关但不同的概念
+- 配额获取缺失不等同于"没有配额"
+- 提供商和计费方是不同的维度
 
-### Immediate UI changes
+### 即时 UI 变更
 
-1. Keep the current costs page structure.
-2. Make the provider cards accurate by reading only ledger-backed values.
-3. Show provider quota fetch errors explicitly instead of dropping them.
+1. 保持当前成本页面结构。
+2. 仅通过读取台账支撑的值使提供商卡片准确。
+3. 明确显示提供商配额获取错误，而非丢弃它们。
 
-### Follow-up UI direction
+### 后续 UI 方向
 
-The long-term board UI should expose:
+长期看板 UI 应公开：
 
-- Spend
-  Dollars by biller, provider, model, agent, project
-- Usage
-  Tokens by provider, model, agent, project
-- Quotas
-  Live provider or biller limits, credits, and reset windows
-- Financial events
-  Credit purchases, top-ups, fees, refunds, commitments, storage, and other non-inference charges
+- 支出
+  按计费方、提供商、模型、智能体、项目的美元数
+- 用量
+  按提供商、模型、智能体、项目的 token 数
+- 配额
+  实时提供商或计费方限额、积分和重置窗口
+- 财务事件
+  积分购买、充值、费用、退款、承诺、存储和其他非推理费用
 
-## Migration Plan
+## 迁移计划
 
-Migration behavior:
+迁移行为：
 
-- add new non-destructive columns with defaults
-- backfill existing rows:
+- 添加带默认值的非破坏性新列
+- 回填现有行：
   - `biller = provider`
   - `billing_type = 'unknown'`
   - `cached_input_tokens = 0`
   - `heartbeat_run_id = null`
 
-Do **not** attempt to backfill historical provider-level subscription attribution from `heartbeat_runs`.
-That data was never stored with the required dimensions.
+**不要** 尝试从 `heartbeat_runs` 回填历史提供商级订阅归属。
+那些数据从未以所需维度存储。
 
-## Testing Plan
+## 测试计划
 
-Add or update tests for:
+添加或更新以下测试：
 
-1. heartbeat-created ledger rows persist `heartbeatRunId`, `biller`, `billingType`, and cached tokens
-2. legacy adapter billing values map correctly
-3. provider reporting uses ledger data only
-4. mixed-provider companies do not cross-attribute subscription usage
-5. zero-dollar subscription usage still appears in token reporting
-6. quota fetch failures render explicit UI state
-7. manual cost events still validate and write correctly
-8. biller reporting keeps upstream provider breakdowns separate
-9. OpenRouter-style rows can show `biller=openrouter` with non-OpenRouter upstream providers
-10. Cloudflare-style rows can show `biller=cloudflare` with preserved upstream provider identity
-11. future `finance_events` aggregation handles non-request charges without requiring a model or run id
+1. 心跳创建的台账行持久化 `heartbeatRunId`、`biller`、`billingType` 和缓存 token
+2. 遗留适配器计费值正确映射
+3. 提供商报表仅使用台账数据
+4. 多提供商公司不会交叉归属订阅用量
+5. 零美元订阅用量仍出现在 token 报表中
+6. 配额获取失败渲染明确的 UI 状态
+7. 手动 cost event 仍然正确校验和写入
+8. 计费方报表保持上游提供商明细分离
+9. OpenRouter 样式的行可以显示 `biller=openrouter` 并使用非 OpenRouter 的上游提供商
+10. Cloudflare 样式的行可以显示 `biller=cloudflare` 并保留上游提供商身份
+11. 未来的 `finance_events` 聚合在不需要模型或运行 ID 的情况下处理非请求费用
 
-## Delivery Plan
+## 交付计划
 
-### Step 1
+### 步骤 1
 
-- land the ledger contract and query rewrite
-- make the current costs page correct
+- 落地台账契约和查询重写
+- 使当前成本页面正确
 
-### Step 2
+### 步骤 2
 
-- add biller-oriented reporting endpoints and UI
+- 添加面向计费方的报表端点和 UI
 
-### Step 3
+### 步骤 3
 
-- wire OpenRouter and any future aggregator adapters to the same contract
+- 将 OpenRouter 和任何未来聚合器适配器接入同一契约
 
-### Step 4
+### 步骤 4
 
-- add `executionAdapterType` to persisted cost reporting if adapter-level grouping becomes a product requirement
+- 如果适配器级分组成为产品需求，则将 `executionAdapterType` 添加到持久化的成本报表中
 
-### Step 5
+### 步骤 5
 
-- introduce `finance_events`
-- add non-inference accounting endpoints
-- add UI for platform/account charges alongside inference spend and usage
+- 引入 `finance_events`
+- 添加非推理核算端点
+- 在推理支出和用量旁边添加平台/账户费用 UI
 
-## Non-Goals For This Change
+## 本次变更的非目标
 
-- multi-currency support
-- invoice reconciliation
-- provider-specific cost estimation beyond persisted billed cost
-- replacing `heartbeat_runs` as the operational run record
+- 多币种支持
+- 发票对账
+- 超出持久化计费成本的提供商特定成本估算
+- 替换 `heartbeat_runs` 作为运营运行记录

@@ -1,245 +1,245 @@
-# Paperclip Plugin System Specification
+# Paperclip 插件系统规范
 
-Status: proposed complete spec for the post-V1 plugin system
+状态：为 V1 后插件系统提议的完整规范
 
-This document is the complete specification for Paperclip's plugin and extension architecture.
-It expands the brief plugin notes in [doc/SPEC.md](../SPEC.md) and should be read alongside the comparative analysis in [doc/plugins/ideas-from-opencode.md](./ideas-from-opencode.md).
+本文档是 Paperclip 插件和扩展架构的完整规范。
+它扩展了 [doc/SPEC.md](../SPEC.md) 中关于插件的简要说明，应与 [doc/plugins/ideas-from-opencode.md](./ideas-from-opencode.md) 中的对比分析一起阅读。
 
-This is not part of the V1 implementation contract in [doc/SPEC-implementation.md](../SPEC-implementation.md).
-It is the full target architecture for the plugin system that should follow V1.
+本规范不属于 [doc/SPEC-implementation.md](../SPEC-implementation.md) 中的 V1 实现范围。
+它是 V1 之后插件系统的完整目标架构。
 
-## Current implementation caveats
+## 当前实现的注意事项
 
-The code in this repo now includes an early plugin runtime and admin UI, but it does not yet deliver the full deployment model described in this spec.
+本仓库中的代码现已包含早期插件运行时和管理界面，但尚未实现本规范中描述的完整部署模型。
 
-Today, the practical deployment model is:
+目前实际的部署模型是：
 
-- single-tenant
-- self-hosted
-- single-node or otherwise filesystem-persistent
+- 单租户
+- 自托管
+- 单节点或其他文件系统持久化方式
 
-Current limitations to keep in mind:
+需要注意的当前限制：
 
-- Plugin UI bundles currently run as same-origin JavaScript inside the main Paperclip app. Treat plugin UI as trusted code, not a sandboxed frontend capability boundary.
-- Manifest capabilities currently gate worker-side host RPC calls. They do not prevent plugin UI code from calling ordinary Paperclip HTTP APIs directly.
-- Runtime installs assume a writable local filesystem for the plugin package directory and plugin data directory.
-- Runtime npm installs assume `npm` is available in the running environment and that the host can reach the configured package registry.
-- Published npm packages are the intended install artifact for deployed plugins.
-- The repo example plugins under `packages/plugins/examples/` are development conveniences. They work from a source checkout and should not be assumed to exist in a generic published build unless they are explicitly shipped with that build.
-- Dynamic plugin install is not yet cloud-ready for horizontally scaled or ephemeral deployments. There is no shared artifact store, install coordination, or cross-node distribution layer yet.
-- The current runtime does not yet ship a real host-provided plugin UI component kit, and it does not support plugin asset uploads/reads. Treat those as future-scope ideas in this spec, not current implementation promises.
+- 插件 UI 包目前作为同源 JavaScript 在 Paperclip 主应用内运行。请将插件 UI 视为受信任的代码，而非沙箱化的前端能力边界。
+- 清单中的能力声明目前仅限制 worker 端的宿主 RPC 调用。它们无法阻止插件 UI 代码直接调用普通的 Paperclip HTTP API。
+- 运行时安装假设存在可写的本地文件系统用于插件包目录和插件数据目录。
+- 运行时 npm 安装假设运行环境中有可用的 `npm`，且宿主可以访问配置的包注册中心。
+- 已发布的 npm 包是已部署插件的预期安装产物。
+- 仓库中 `packages/plugins/examples/` 下的示例插件是开发便利工具。它们在源码检出时可用，不应假设在通用发布构建中存在，除非该构建明确包含了它们。
+- 动态插件安装尚未为水平扩展或临时部署提供云端就绪支持。目前没有共享产物存储、安装协调或跨节点分发层。
+- 当前运行时尚未提供真正的宿主端插件 UI 组件套件，也不支持插件资产上传/读取。请将本规范中的这些内容视为未来功能构想，而非当前实现承诺。
 
-In practice, that means the current implementation is a good fit for local development and self-hosted persistent deployments, but not yet for multi-instance cloud plugin distribution.
+实际上，这意味着当前实现适合本地开发和自托管持久化部署，但尚不适合多实例云端插件分发。
 
-## 1. Scope
+## 1. 范围
 
-This spec covers:
+本规范涵盖：
 
-- plugin packaging and installation
-- runtime model
-- trust model
-- capability system
-- UI extension surfaces
-- plugin settings UI
-- agent tool contributions
-- event, job, and webhook surfaces
-- plugin-to-plugin communication
-- local tooling approach for workspace plugins
-- Postgres persistence for extensions
-- uninstall and data lifecycle
-- plugin observability
-- plugin development and testing
-- operator workflows
-- hot plugin lifecycle (no server restart)
-- SDK versioning and compatibility rules
+- 插件打包和安装
+- 运行时模型
+- 信任模型
+- 能力系统
+- UI 扩展界面
+- 插件设置 UI
+- 智能体工具贡献
+- 事件、作业和 webhook 界面
+- 插件间通信
+- 工作区插件的本地工具方案
+- Postgres 扩展持久化
+- 卸载和数据生命周期
+- 插件可观测性
+- 插件开发和测试
+- 操作员工作流
+- 热插件生命周期（无需服务器重启）
+- SDK 版本管理和兼容性规则
 
-This spec does not cover:
+本规范不涵盖：
 
-- a public marketplace
-- cloud/SaaS multi-tenancy
-- arbitrary third-party schema migrations in the first plugin version
-- iframe-sandboxed plugin UI in the first plugin version (plugins render as ES modules in host extension slots)
+- 公共市场
+- 云端/SaaS 多租户
+- 第一版插件中的任意第三方 schema 迁移
+- 第一版插件中的 iframe 沙箱化插件 UI（插件作为 ES 模块在宿主扩展槽中渲染）
 
-## 2. Core Assumptions
+## 2. 核心假设
 
-Paperclip plugin design is based on the following assumptions:
+Paperclip 插件设计基于以下假设：
 
-1. Paperclip is single-tenant and self-hosted.
-2. Plugin installation is global to the instance.
-3. "Companies" remain core Paperclip business objects, but they are not plugin trust boundaries.
-4. Board governance, approval gates, budget hard-stops, and core task invariants remain owned by Paperclip core.
-5. Projects already have a real workspace model via `project_workspaces`, and local/runtime plugins should build on that instead of inventing a separate workspace abstraction.
+1. Paperclip 是单租户、自托管的。
+2. 插件安装对整个实例全局生效。
+3. "公司"仍然是 Paperclip 的核心业务对象，但它们不是插件信任边界。
+4. 董事会治理、审批门禁、预算硬限制和核心任务不变量仍由 Paperclip 核心拥有。
+5. 项目已经通过 `project_workspaces` 拥有真实的工作区模型，本地/运行时插件应基于此构建，而不是发明单独的工作区抽象。
 
-## 3. Goals
+## 3. 目标
 
-The plugin system must:
+插件系统必须：
 
-1. Let operators install global instance-wide plugins.
-2. Let plugins add major capabilities without editing Paperclip core.
-3. Keep core governance and auditing intact.
-4. Support both local/runtime plugins and external SaaS connectors.
-5. Support future plugin categories such as:
-   - new agent adapters
-   - revenue tracking
-   - knowledge base
-   - issue tracker sync
-   - metrics/dashboards
-   - file/project tooling
-6. Use simple, explicit, typed contracts.
-7. Keep failures isolated so one plugin does not crash the entire instance.
+1. 允许操作员安装全局实例级插件。
+2. 允许插件在不编辑 Paperclip 核心的情况下添加主要功能。
+3. 保持核心治理和审计完整。
+4. 同时支持本地/运行时插件和外部 SaaS 连接器。
+5. 支持未来的插件类别，例如：
+   - 新的智能体适配器
+   - 收入跟踪
+   - 知识库
+   - 任务跟踪器同步
+   - 指标/仪表盘
+   - 文件/项目工具
+6. 使用简单、明确、类型化的契约。
+7. 保持故障隔离，使一个插件不会导致整个实例崩溃。
 
-## 4. Non-Goals
+## 4. 非目标
 
-The first plugin system must not:
+第一版插件系统不得：
 
-1. Allow arbitrary plugins to override core routes or core invariants.
-2. Allow arbitrary plugins to mutate approval, auth, issue checkout, or budget enforcement logic.
-3. Allow arbitrary third-party plugins to run free-form DB migrations.
-4. Depend on project-local plugin folders such as `.paperclip/plugins`.
-5. Depend on automatic install-and-execute behavior at server startup from arbitrary config files.
+1. 允许任意插件覆盖核心路由或核心不变量。
+2. 允许任意插件修改审批、认证、任务检出或预算执行逻辑。
+3. 允许任意第三方插件运行自由形式的数据库迁移。
+4. 依赖项目本地插件目录，如 `.paperclip/plugins`。
+5. 依赖服务器启动时从任意配置文件自动安装并执行的行为。
 
-## 5. Terminology
+## 5. 术语
 
-### 5.1 Instance
+### 5.1 实例
 
-The single Paperclip deployment an operator installs and controls.
+操作员安装和控制的单个 Paperclip 部署。
 
-### 5.2 Company
+### 5.2 公司
 
-A first-class Paperclip business object inside the instance.
+实例中的一等 Paperclip 业务对象。
 
-### 5.3 Project Workspace
+### 5.3 项目工作区
 
-A workspace attached to a project through `project_workspaces`.
-Plugins resolve workspace paths from this model to locate local directories for file, terminal, git, and process operations.
+通过 `project_workspaces` 附加到项目的工作区。
+插件通过此模型解析工作区路径，以定位用于文件、终端、git 和进程操作的本地目录。
 
-### 5.4 Platform Module
+### 5.4 平台模块
 
-A trusted in-process extension loaded directly by Paperclip core.
+由 Paperclip 核心直接加载的受信任进程内扩展。
 
-Examples:
+示例：
 
-- agent adapters
-- storage providers
-- secret providers
-- run-log backends
+- 智能体适配器
+- 存储提供者
+- 密钥提供者
+- 运行日志后端
 
-### 5.5 Plugin
+### 5.5 插件
 
-An installable instance-wide extension package loaded through the Paperclip plugin runtime.
+通过 Paperclip 插件运行时加载的可安装实例级扩展包。
 
-Examples:
+示例：
 
-- Linear sync
-- GitHub Issues sync
-- Grafana widgets
-- Stripe revenue sync
-- file browser
-- terminal
-- git workflow
+- Linear 同步
+- GitHub Issues 同步
+- Grafana 小组件
+- Stripe 收入同步
+- 文件浏览器
+- 终端
+- git 工作流
 
-### 5.6 Plugin Worker
+### 5.6 插件 Worker
 
-The runtime process used for a plugin.
-In this spec, third-party plugins run out-of-process by default.
+用于插件的运行时进程。
+在本规范中，第三方插件默认在进程外运行。
 
-### 5.7 Capability
+### 5.7 能力
 
-A named permission the host grants to a plugin.
-Plugins may only call host APIs that are covered by granted capabilities.
+宿主授予插件的命名权限。
+插件只能调用已授权能力覆盖的宿主 API。
 
-## 6. Extension Classes
+## 6. 扩展类别
 
-Paperclip has two extension classes.
+Paperclip 有两种扩展类别。
 
-## 6.1 Platform Modules
+## 6.1 平台模块
 
-Platform modules are:
+平台模块的特点：
 
-- trusted
-- in-process
-- host-integrated
-- low-level
+- 受信任
+- 进程内运行
+- 与宿主集成
+- 底层
 
-They use explicit registries, not the general plugin worker protocol.
+它们使用显式注册表，而不是通用插件 worker 协议。
 
-Platform module surfaces:
+平台模块接口：
 
 - `registerAgentAdapter()`
 - `registerStorageProvider()`
 - `registerSecretProvider()`
 - `registerRunLogStore()`
 
-Platform modules are the right place for:
+平台模块适用于：
 
-- new agent adapter packages
-- new storage backends
-- new secret backends
-- other host-internal systems that need direct process or DB integration
+- 新的智能体适配器包
+- 新的存储后端
+- 新的密钥后端
+- 其他需要直接进程或数据库集成的宿主内部系统
 
-## 6.2 Plugins
+## 6.2 插件
 
-Plugins are:
+插件的特点：
 
-- globally installed per instance
-- loaded through the plugin runtime
-- additive
-- capability-gated
-- isolated from core via a stable SDK and host protocol
+- 每个实例全局安装
+- 通过插件运行时加载
+- 累加式
+- 能力受限
+- 通过稳定的 SDK 和宿主协议与核心隔离
 
-Plugin categories:
+插件类别：
 
 - `connector`
 - `workspace`
 - `automation`
 - `ui`
 
-A plugin may declare more than one category.
+一个插件可以声明多个类别。
 
-## 7. Project Workspaces
+## 7. 项目工作区
 
-Paperclip already has a concrete workspace model:
+Paperclip 已经拥有一个具体的工作区模型：
 
-- projects expose `workspaces`
-- projects expose `primaryWorkspace`
-- the database contains `project_workspaces`
-- project routes already manage workspaces
+- 项目暴露 `workspaces`
+- 项目暴露 `primaryWorkspace`
+- 数据库包含 `project_workspaces`
+- 项目路由已经管理工作区
 
-Plugins that need local tooling (file browsing, git, terminals, process tracking) can resolve workspace paths through the project workspace APIs and then operate on the filesystem, spawn processes, and run git commands directly. The host does not wrap these operations — plugins own their own implementations.
+需要本地工具（文件浏览、git、终端、进程跟踪）的插件可以通过项目工作区 API 解析工作区路径，然后直接操作文件系统、生成进程和运行 git 命令。宿主不包装这些操作——插件拥有自己的实现。
 
-## 8. Installation Model
+## 8. 安装模型
 
-Plugin installation is global and operator-driven.
+插件安装是全局的，由操作员驱动。
 
-There is no per-company install table and no per-company enable/disable switch.
+没有按公司的安装表，也没有按公司的启用/禁用开关。
 
-If a plugin needs business-object-specific mappings, those are stored as plugin configuration or plugin state.
+如果插件需要业务对象级别的映射，这些映射作为插件配置或插件状态存储。
 
-Examples:
+示例：
 
-- one global Linear plugin install
-- mappings from company A to Linear team X and company B to Linear team Y
-- one global git plugin install
-- per-project workspace state stored under `project_workspace`
+- 全局安装一个 Linear 插件
+- 将公司 A 映射到 Linear 团队 X，将公司 B 映射到 Linear 团队 Y
+- 全局安装一个 git 插件
+- 按项目工作区状态存储在 `project_workspace` 下
 
-## 8.1 On-Disk Layout
+## 8.1 磁盘布局
 
-Plugins live under the Paperclip instance directory.
+插件位于 Paperclip 实例目录下。
 
-Suggested layout:
+建议布局：
 
 - `~/.paperclip/instances/default/plugins/package.json`
 - `~/.paperclip/instances/default/plugins/node_modules/`
 - `~/.paperclip/instances/default/plugins/.cache/`
 - `~/.paperclip/instances/default/data/plugins/<plugin-id>/`
 
-The package install directory and the plugin data directory are separate.
+包安装目录和插件数据目录是分开的。
 
-This on-disk model is the reason the current implementation expects a persistent writable host filesystem. Cloud-safe artifact replication is future work.
+这个磁盘模型就是当前实现要求持久化可写宿主文件系统的原因。云端安全的产物复制是未来工作。
 
-## 8.2 Operator Commands
+## 8.2 操作员命令
 
-Paperclip should add CLI commands:
+Paperclip 应添加 CLI 命令：
 
 - `pnpm paperclipai plugin list`
 - `pnpm paperclipai plugin install <package[@version]>`
@@ -247,51 +247,51 @@ Paperclip should add CLI commands:
 - `pnpm paperclipai plugin upgrade <plugin-id> [version]`
 - `pnpm paperclipai plugin doctor <plugin-id>`
 
-These commands are instance-level operations.
+这些命令是实例级操作。
 
-## 8.3 Install Process
+## 8.3 安装流程
 
-The install process is:
+安装流程是：
 
-1. Resolve npm package and version.
-2. Install into the instance plugin directory.
-3. Read and validate plugin manifest.
-4. Reject incompatible plugin API versions.
-5. Display requested capabilities to the operator.
-6. Persist install record in Postgres.
-7. Start plugin worker and run health/validation.
-8. Mark plugin `ready` or `error`.
+1. 解析 npm 包和版本。
+2. 安装到实例插件目录。
+3. 读取并验证插件清单。
+4. 拒绝不兼容的插件 API 版本。
+5. 向操作员显示请求的能力。
+6. 将安装记录持久化到 Postgres。
+7. 启动插件 worker 并运行健康/验证检查。
+8. 将插件标记为 `ready` 或 `error`。
 
-For the current implementation, this install flow should be read as a single-host workflow. A successful install writes packages to the local host, and other app nodes will not automatically receive that plugin unless a future shared distribution mechanism is added.
+对于当前实现，此安装流程应视为单主机工作流。成功的安装将包写入本地主机，其他应用节点不会自动接收该插件，除非未来添加共享分发机制。
 
-## 9. Load Order And Precedence
+## 9. 加载顺序和优先级
 
-Load order must be deterministic.
+加载顺序必须是确定性的。
 
-1. core platform modules
-2. built-in first-party plugins
-3. installed plugins sorted by:
-   - explicit operator-configured order if present
-   - otherwise manifest `id`
+1. 核心平台模块
+2. 内置第一方插件
+3. 已安装插件，排序依据：
+   - 如果存在操作员配置的显式顺序
+   - 否则按清单 `id`
 
-Rules:
+规则：
 
-- plugin contributions are additive by default
-- plugins may not override core routes or core actions by name collision
-- UI slot IDs are automatically namespaced by plugin ID (e.g. `@paperclip/plugin-linear:sync-health-widget`), so cross-plugin collisions are structurally impossible
-- if a single plugin declares duplicate slot IDs within its own manifest, the host must reject at install time
+- 插件贡献默认是累加式的
+- 插件不得通过名称冲突覆盖核心路由或核心操作
+- UI 槽位 ID 自动按插件 ID 命名空间化（例如 `@paperclip/plugin-linear:sync-health-widget`），因此跨插件冲突在结构上是不可能的
+- 如果单个插件在自己的清单中声明了重复的槽位 ID，宿主必须在安装时拒绝
 
-## 10. Package Contract
+## 10. 包契约
 
-Each plugin package must export a manifest, a worker entrypoint, and optionally a UI bundle.
+每个插件包必须导出一个清单、一个 worker 入口点，以及可选的 UI 包。
 
-Suggested package layout:
+建议的包布局：
 
 - `dist/manifest.js`
 - `dist/worker.js`
-- `dist/ui/` (optional, contains the plugin's frontend bundle)
+- `dist/ui/`（可选，包含插件的前端包）
 
-Suggested `package.json` keys:
+建议的 `package.json` 键：
 
 ```json
 {
@@ -305,9 +305,9 @@ Suggested `package.json` keys:
 }
 ```
 
-## 10.1 Manifest Shape
+## 10.1 清单结构
 
-Normative manifest shape:
+规范性清单结构：
 
 ```ts
 export interface PaperclipPluginManifestV1 {
@@ -337,32 +337,32 @@ export interface PaperclipPluginManifestV1 {
       type: "page" | "detailTab" | "dashboardWidget" | "sidebar" | "settingsPage";
       id: string;
       displayName: string;
-      /** Which export name in the UI bundle provides this component */
+      /** UI 包中提供此组件的导出名称 */
       exportName: string;
-      /** For detailTab: which entity types this tab appears on */
+      /** 对于 detailTab：此标签页出现在哪些实体类型上 */
       entityTypes?: Array<"project" | "issue" | "agent" | "goal" | "run">;
     }>;
   };
 }
 ```
 
-Rules:
+规则：
 
-- `id` must be globally unique
-- `id` should normally equal the npm package name
-- `apiVersion` must match the host-supported plugin API version
-- `capabilities` must be static and install-time visible
-- config schema must be JSON Schema compatible
-- `entrypoints.ui` points to the directory containing the built UI bundle
-- `ui.slots` declares which extension slots the plugin fills, so the host knows what to mount without loading the bundle eagerly; each slot references an `exportName` from the UI bundle
+- `id` 必须全局唯一
+- `id` 通常应等于 npm 包名
+- `apiVersion` 必须与宿主支持的插件 API 版本匹配
+- `capabilities` 必须是静态的，且在安装时可见
+- 配置 schema 必须兼容 JSON Schema
+- `entrypoints.ui` 指向包含已构建 UI 包的目录
+- `ui.slots` 声明插件填充哪些扩展槽位，以便宿主无需急切加载包即可知道挂载什么；每个槽位引用 UI 包中的一个 `exportName`
 
-## 11. Agent Tools
+## 11. 智能体工具
 
-Plugins may contribute tools that Paperclip agents can use during runs.
+插件可以贡献 Paperclip 智能体在运行期间可使用的工具。
 
-### 11.1 Tool Declaration
+### 11.1 工具声明
 
-Plugins declare tools in their manifest:
+插件在清单中声明工具：
 
 ```ts
 tools?: Array<{
@@ -373,108 +373,108 @@ tools?: Array<{
 }>;
 ```
 
-Tool names are automatically namespaced by plugin ID at runtime (e.g. `linear:search-issues`), so plugins cannot shadow core tools or each other's tools.
+工具名称在运行时自动按插件 ID 命名空间化（例如 `linear:search-issues`），因此插件无法遮蔽核心工具或其他插件的工具。
 
-### 11.2 Tool Execution
+### 11.2 工具执行
 
-When an agent invokes a plugin tool during a run, the host routes the call to the plugin worker via a `executeTool` RPC method:
+当智能体在运行期间调用插件工具时，宿主通过 `executeTool` RPC 方法将调用路由到插件 worker：
 
-- `executeTool(input)` — receives tool name, parsed parameters, and run context (agent ID, run ID, company ID, project ID)
+- `executeTool(input)` — 接收工具名称、解析后的参数和运行上下文（智能体 ID、运行 ID、公司 ID、项目 ID）
 
-The worker executes the tool logic and returns a typed result. The host enforces capability gates — a plugin must declare `agent.tools.register` to contribute tools, and individual tools may require additional capabilities (e.g. `http.outbound` for tools that call external APIs).
+worker 执行工具逻辑并返回类型化结果。宿主强制执行能力门禁——插件必须声明 `agent.tools.register` 才能贡献工具，单个工具可能需要额外的能力（例如调用外部 API 的工具需要 `http.outbound`）。
 
-### 11.3 Tool Availability
+### 11.3 工具可用性
 
-By default, plugin tools are available to all agents. The operator may restrict tool availability per agent or per project through plugin configuration.
+默认情况下，插件工具对所有智能体可用。操作员可以通过插件配置按智能体或按项目限制工具可用性。
 
-Plugin tools appear in the agent's tool list alongside core tools but are visually distinguished in the UI as plugin-contributed.
+插件工具与核心工具一起出现在智能体的工具列表中，但在 UI 中作为插件贡献的工具有视觉区分。
 
-### 11.4 Constraints
+### 11.4 约束
 
-- Plugin tools must not override or shadow core tools by name.
-- Plugin tools must be idempotent where possible.
-- Tool execution is subject to the same timeout and resource limits as other plugin worker calls.
-- Tool results are included in run logs.
+- 插件工具不得按名称覆盖或遮蔽核心工具。
+- 插件工具应尽可能保持幂等性。
+- 工具执行受与其他插件 worker 调用相同的超时和资源限制约束。
+- 工具结果包含在运行日志中。
 
-## 12. Runtime Model
+## 12. 运行时模型
 
-## 12.1 Process Model
+## 12.1 进程模型
 
-Third-party plugins run out-of-process by default.
+第三方插件默认在进程外运行。
 
-Default runtime:
+默认运行时：
 
-- Paperclip server starts one worker process per installed plugin
-- the worker process is a Node process
-- host and worker communicate over JSON-RPC on stdio
+- Paperclip 服务器为每个已安装的插件启动一个 worker 进程
+- worker 进程是一个 Node 进程
+- 宿主和 worker 通过 stdio 上的 JSON-RPC 通信
 
-This design provides:
+这种设计提供了：
 
-- failure isolation
-- clearer logging boundaries
-- easier resource limits
-- a cleaner trust boundary than arbitrary in-process execution
+- 故障隔离
+- 更清晰的日志边界
+- 更容易的资源限制
+- 比任意进程内执行更清晰的信任边界
 
-## 12.2 Host Responsibilities
+## 12.2 宿主职责
 
-The host is responsible for:
+宿主负责：
 
-- package install
-- manifest validation
-- capability enforcement
-- process supervision
-- job scheduling
-- webhook routing
-- activity log writes
-- secret resolution
-- UI route registration
+- 包安装
+- 清单验证
+- 能力执行
+- 进程监管
+- 作业调度
+- webhook 路由
+- 活动日志写入
+- 密钥解析
+- UI 路由注册
 
-## 12.3 Worker Responsibilities
+## 12.3 Worker 职责
 
-The plugin worker is responsible for:
+插件 worker 负责：
 
-- validating its own config
-- handling domain events
-- handling scheduled jobs
-- handling webhooks
-- serving data and handling actions for the plugin's own UI via `getData` and `performAction`
-- invoking host services through the SDK
-- reporting health information
+- 验证自身配置
+- 处理域事件
+- 处理定时作业
+- 处理 webhook
+- 通过 `getData` 和 `performAction` 为插件自身 UI 提供数据和处理操作
+- 通过 SDK 调用宿主服务
+- 报告健康信息
 
-## 12.4 Failure Policy
+## 12.4 故障策略
 
-If a worker fails:
+如果 worker 失败：
 
-- mark plugin status `error`
-- surface error in plugin health UI
-- keep the rest of the instance running
-- retry start with bounded backoff
-- do not drop other plugins or core services
+- 将插件状态标记为 `error`
+- 在插件健康 UI 中显示错误
+- 保持实例其余部分正常运行
+- 使用有界退避重试启动
+- 不影响其他插件或核心服务
 
-## 12.5 Graceful Shutdown Policy
+## 12.5 优雅关闭策略
 
-When the host needs to stop a plugin worker (for upgrade, uninstall, or instance shutdown):
+当宿主需要停止插件 worker 时（用于升级、卸载或实例关闭）：
 
-1. The host sends `shutdown()` to the worker.
-2. The worker has 10 seconds to finish in-flight work and exit cleanly.
-3. If the worker does not exit within the deadline, the host sends SIGTERM.
-4. If the worker does not exit within 5 seconds after SIGTERM, the host sends SIGKILL.
-5. Any in-flight job runs are marked `cancelled` with a note indicating forced shutdown.
-6. Any in-flight `getData` or `performAction` calls return an error to the bridge.
+1. 宿主向 worker 发送 `shutdown()`。
+2. worker 有 10 秒时间完成进行中的工作并正常退出。
+3. 如果 worker 在截止时间内未退出，宿主发送 SIGTERM。
+4. 如果 worker 在 SIGTERM 后 5 秒内未退出，宿主发送 SIGKILL。
+5. 任何进行中的作业运行被标记为 `cancelled`，并附注说明是强制关闭。
+6. 任何进行中的 `getData` 或 `performAction` 调用向桥接返回错误。
 
-The shutdown deadline should be configurable per-plugin in plugin config for plugins that need longer drain periods.
+关闭截止时间应可在每个插件的配置中配置，以适应需要更长排空时间的插件。
 
-## 13. Host-Worker Protocol
+## 13. 宿主-Worker 协议
 
-The host must support the following worker RPC methods.
+宿主必须支持以下 worker RPC 方法。
 
-Required methods:
+必需方法：
 
 - `initialize(input)`
 - `health()`
 - `shutdown()`
 
-Optional methods:
+可选方法：
 
 - `validateConfig(input)`
 - `configChanged(input)`
@@ -487,120 +487,120 @@ Optional methods:
 
 ### 13.1 `initialize`
 
-Called once on worker startup.
+在 worker 启动时调用一次。
 
-Input includes:
+输入包括：
 
-- plugin manifest
-- resolved plugin config
-- instance info
-- host API version
+- 插件清单
+- 已解析的插件配置
+- 实例信息
+- 宿主 API 版本
 
 ### 13.2 `health`
 
-Returns:
+返回：
 
-- status
-- current error if any
-- optional plugin-reported diagnostics
+- 状态
+- 当前错误（如有）
+- 可选的插件报告诊断信息
 
 ### 13.3 `validateConfig`
 
-Runs after config changes and startup.
+在配置变更和启动后运行。
 
-Returns:
+返回：
 
 - `ok`
-- warnings
-- errors
+- 警告
+- 错误
 
 ### 13.4 `configChanged`
 
-Called when the operator updates the plugin's instance config at runtime.
+当操作员在运行时更新插件的实例配置时调用。
 
-Input includes:
+输入包括：
 
-- new resolved config
+- 新的已解析配置
 
-If the worker implements this method, it applies the new config without restarting. If the worker does not implement this method, the host restarts the worker process with the new config (graceful shutdown then restart).
+如果 worker 实现了此方法，它会在不重启的情况下应用新配置。如果 worker 未实现此方法，宿主将使用新配置重启 worker 进程（优雅关闭后重启）。
 
 ### 13.5 `onEvent`
 
-Receives one typed Paperclip domain event.
+接收一个类型化的 Paperclip 域事件。
 
-Delivery semantics:
+投递语义：
 
-- at least once
-- plugin must be idempotent
-- no global ordering guarantee across all event types
-- per-entity ordering is best effort but not guaranteed after retries
+- 至少一次
+- 插件必须保持幂等性
+- 不保证所有事件类型的全局排序
+- 按实体排序尽力而为，但在重试后不保证
 
 ### 13.6 `runJob`
 
-Runs a declared scheduled job.
+运行已声明的定时作业。
 
-The host provides:
+宿主提供：
 
-- job key
-- trigger source
-- run id
-- schedule metadata
+- 作业键
+- 触发来源
+- 运行 ID
+- 调度元数据
 
 ### 13.7 `handleWebhook`
 
-Receives inbound webhook payload routed by the host.
+接收由宿主路由的入站 webhook 载荷。
 
-The host provides:
+宿主提供：
 
-- endpoint key
-- headers
-- raw body
-- parsed body if applicable
-- request id
+- 端点键
+- 头部
+- 原始正文
+- 解析后的正文（如适用）
+- 请求 ID
 
 ### 13.8 `getData`
 
-Returns plugin data requested by the plugin's own UI components.
+返回插件自身 UI 组件请求的插件数据。
 
-The plugin UI calls the host bridge, which forwards the request to the worker. The worker returns typed JSON that the plugin's own frontend components render.
+插件 UI 调用宿主桥接，桥接将请求转发给 worker。worker 返回类型化的 JSON，由插件自身的前端组件渲染。
 
-Input includes:
+输入包括：
 
-- data key (plugin-defined, e.g. `"sync-health"`, `"issue-detail"`)
-- context (company id, project id, entity id, etc.)
-- optional query parameters
+- 数据键（插件定义的，例如 `"sync-health"`、`"issue-detail"`）
+- 上下文（公司 ID、项目 ID、实体 ID 等）
+- 可选查询参数
 
 ### 13.9 `performAction`
 
-Runs an explicit plugin action initiated by the board UI.
+运行由仪表盘 UI 发起的显式插件操作。
 
-Examples:
+示例：
 
-- "resync now"
-- "link GitHub issue"
-- "create branch from issue"
-- "restart process"
+- "立即重新同步"
+- "关联 GitHub 任务"
+- "从任务创建分支"
+- "重启进程"
 
 ### 13.10 `executeTool`
 
-Runs a plugin-contributed agent tool during a run.
+在运行期间运行插件贡献的智能体工具。
 
-The host provides:
+宿主提供：
 
-- tool name (without plugin namespace prefix)
-- parsed parameters matching the tool's declared schema
-- run context: agent ID, run ID, company ID, project ID
+- 工具名称（不含插件命名空间前缀）
+- 匹配工具已声明 schema 的解析后参数
+- 运行上下文：智能体 ID、运行 ID、公司 ID、项目 ID
 
-The worker executes the tool and returns a typed result (string content, structured data, or error).
+worker 执行工具并返回类型化结果（字符串内容、结构化数据或错误）。
 
-## 14. SDK Surface
+## 14. SDK 接口
 
-Plugins do not talk to the DB directly.
-Plugins do not read raw secret material from persisted config.
+插件不直接与数据库通信。
+插件不从持久化配置中读取原始密钥材料。
 
-The SDK exposed to workers must provide typed host clients.
+暴露给 worker 的 SDK 必须提供类型化的宿主客户端。
 
-Required SDK clients:
+必需的 SDK 客户端：
 
 - `ctx.config`
 - `ctx.events`
@@ -620,17 +620,17 @@ Required SDK clients:
 - `ctx.tools`
 - `ctx.logger`
 
-`ctx.data` and `ctx.actions` register handlers that the plugin's own UI calls through the host bridge. `ctx.data.register(key, handler)` backs `usePluginData(key)` on the frontend. `ctx.actions.register(key, handler)` backs `usePluginAction(key)`.
+`ctx.data` 和 `ctx.actions` 注册处理程序，供插件自身 UI 通过宿主桥接调用。`ctx.data.register(key, handler)` 支撑前端的 `usePluginData(key)`。`ctx.actions.register(key, handler)` 支撑 `usePluginAction(key)`。
 
-Plugins that need filesystem, git, terminal, or process operations handle those directly using standard Node APIs or libraries. The host provides project workspace metadata through `ctx.projects` so plugins can resolve workspace paths, but the host does not proxy low-level OS operations.
+需要文件系统、git、终端或进程操作的插件使用标准 Node API 或库直接处理这些操作。宿主通过 `ctx.projects` 提供项目工作区元数据，以便插件可以解析工作区路径，但宿主不代理底层 OS 操作。
 
-## 14.1 Example SDK Shape
+## 14.1 示例 SDK 结构
 
 ```ts
-/** Top-level helper for defining a plugin with type checking */
+/** 用于定义插件并进行类型检查的顶层辅助函数 */
 export function definePlugin(definition: PluginDefinition): PaperclipPlugin;
 
-/** Re-exported from Zod for config schema definitions */
+/** 从 Zod 重新导出，用于配置 schema 定义 */
 export { z } from "zod";
 
 export interface PluginContext {
@@ -680,16 +680,16 @@ export interface EventFilter {
 }
 ```
 
-## 15. Capability Model
+## 15. 能力模型
 
-Capabilities are mandatory and static.
-Every plugin declares them up front.
+能力是强制性的和静态的。
+每个插件都预先声明它们。
 
-The host enforces capabilities in the SDK layer and refuses calls outside the granted set.
+宿主在 SDK 层强制执行能力，并拒绝已授权集合之外的调用。
 
-## 15.1 Capability Categories
+## 15.1 能力类别
 
-### Data Read
+### 数据读取
 
 - `companies.read`
 - `projects.read`
@@ -701,7 +701,7 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `activity.read`
 - `costs.read`
 
-### Data Write
+### 数据写入
 
 - `issues.create`
 - `issues.update`
@@ -711,12 +711,12 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `activity.log.write`
 - `metrics.write`
 
-### Plugin State
+### 插件状态
 
 - `plugin.state.read`
 - `plugin.state.write`
 
-### Runtime / Integration
+### 运行时 / 集成
 
 - `events.subscribe`
 - `events.emit`
@@ -725,7 +725,7 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `http.outbound`
 - `secrets.read-ref`
 
-### Agent Tools
+### 智能体工具
 
 - `agent.tools.register`
 
@@ -738,29 +738,29 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `ui.dashboardWidget.register`
 - `ui.action.register`
 
-## 15.2 Forbidden Capabilities
+## 15.2 禁止的能力
 
-The host must not expose capabilities for:
+宿主不得暴露以下能力：
 
-- approval decisions
-- budget override
-- auth bypass
-- issue checkout lock override
-- direct DB access
+- 审批决策
+- 预算覆盖
+- 认证绕过
+- 任务检出锁覆盖
+- 直接数据库访问
 
-## 15.3 Upgrade Rules
+## 15.3 升级规则
 
-If a plugin upgrade adds capabilities:
+如果插件升级添加了能力：
 
-1. the host must mark the plugin `upgrade_pending`
-2. the operator must explicitly approve the new capability set
-3. the new version does not become `ready` until approval completes
+1. 宿主必须将插件标记为 `upgrade_pending`
+2. 操作员必须明确批准新的能力集
+3. 新版本在审批完成前不会变为 `ready`
 
-## 16. Event System
+## 16. 事件系统
 
-The host must emit typed domain events that plugins may subscribe to.
+宿主必须发出类型化的域事件供插件订阅。
 
-Minimum event set:
+最小事件集：
 
 - `company.created`
 - `company.updated`
@@ -784,92 +784,92 @@ Minimum event set:
 - `cost_event.created`
 - `activity.logged`
 
-Each event must include:
+每个事件必须包含：
 
-- event id
-- event type
-- occurred at
-- actor metadata when applicable
-- primary entity metadata
-- typed payload
+- 事件 ID
+- 事件类型
+- 发生时间
+- 操作者元数据（如适用）
+- 主要实体元数据
+- 类型化载荷
 
-### 16.1 Event Filtering
+### 16.1 事件过滤
 
-Plugins may provide an optional filter when subscribing to events. The filter is evaluated by the host before dispatching to the worker, so filtered-out events never cross the process boundary.
+插件在订阅事件时可以提供可选的过滤器。过滤器由宿主在分发给 worker 之前评估，因此被过滤掉的事件永远不会跨越进程边界。
 
-Supported filter fields:
+支持的过滤字段：
 
-- `projectId` — only receive events for a specific project
-- `companyId` — only receive events for a specific company
-- `agentId` — only receive events for a specific agent
+- `projectId` — 仅接收特定项目的事件
+- `companyId` — 仅接收特定公司的事件
+- `agentId` — 仅接收特定智能体的事件
 
-Filters are optional. If omitted, the plugin receives all events of the subscribed type. Filters may be combined (e.g. filter by both company and project).
+过滤器是可选的。如果省略，插件接收已订阅类型的所有事件。过滤器可以组合使用（例如同时按公司和项目过滤）。
 
-### 16.2 Plugin-to-Plugin Events
+### 16.2 插件间事件
 
-Plugins may emit custom events using `ctx.events.emit(name, payload)`. Plugin-emitted events use a namespaced event type: `plugin.<pluginId>.<eventName>`.
+插件可以使用 `ctx.events.emit(name, payload)` 发出自定义事件。插件发出的事件使用命名空间化的事件类型：`plugin.<pluginId>.<eventName>`。
 
-Other plugins may subscribe to these events using the same `ctx.events.on()` API:
+其他插件可以使用相同的 `ctx.events.on()` API 订阅这些事件：
 
 ```ts
 ctx.events.on("plugin.@paperclip/plugin-git.push-detected", async (event) => {
-  // react to the git plugin detecting a push
+  // 响应 git 插件检测到的推送
 });
 ```
 
-Rules:
+规则：
 
-- Plugin events require the `events.emit` capability.
-- Plugin events are not core domain events — they do not appear in the core activity log unless the emitting plugin explicitly logs them.
-- Plugin events follow the same at-least-once delivery semantics as core events.
-- The host must not allow plugins to emit events in the core namespace (events without the `plugin.` prefix).
+- 插件事件需要 `events.emit` 能力。
+- 插件事件不是核心域事件——除非发出插件明确记录它们，否则不会出现在核心活动日志中。
+- 插件事件遵循与核心事件相同的至少一次投递语义。
+- 宿主不得允许插件在核心命名空间（不带 `plugin.` 前缀的事件）中发出事件。
 
-## 17. Scheduled Jobs
+## 17. 定时作业
 
-Plugins may declare scheduled jobs in their manifest.
+插件可以在清单中声明定时作业。
 
-Job rules:
+作业规则：
 
-1. Each job has a stable `job_key`.
-2. The host is the scheduler of record.
-3. The host prevents overlapping execution of the same plugin/job combination unless explicitly allowed later.
-4. Every job run is recorded in Postgres.
-5. Failed jobs are retryable.
+1. 每个作业有一个稳定的 `job_key`。
+2. 宿主是记录调度器。
+3. 除非后续明确允许，宿主阻止同一插件/作业组合的重叠执行。
+4. 每次作业运行都记录在 Postgres 中。
+5. 失败的作业可以重试。
 
-## 18. Webhooks
+## 18. Webhook
 
-Plugins may declare webhook endpoints in their manifest.
+插件可以在清单中声明 webhook 端点。
 
-Webhook route shape:
+Webhook 路由格式：
 
 - `POST /api/plugins/:pluginId/webhooks/:endpointKey`
 
-Rules:
+规则：
 
-1. The host owns the public route.
-2. The worker receives the request body through `handleWebhook`.
-3. Signature verification happens in plugin code using secret refs resolved by the host.
-4. Every delivery is recorded.
-5. Webhook handling must be idempotent.
+1. 宿主拥有公共路由。
+2. worker 通过 `handleWebhook` 接收请求正文。
+3. 签名验证在插件代码中使用宿主解析的密钥引用进行。
+4. 每次投递都会被记录。
+5. Webhook 处理必须是幂等的。
 
-## 19. UI Extension Model
+## 19. UI 扩展模型
 
-Plugins ship their own frontend UI as a bundled React module. The host loads plugin UI into designated extension slots and provides a bridge for the plugin frontend to communicate with its own worker backend and with host APIs.
+插件以打包的 React 模块形式发布自己的前端 UI。宿主将插件 UI 加载到指定的扩展槽位中，并提供桥接供插件前端与其自身的 worker 后端和宿主 API 通信。
 
-### How Plugin UI Publishing Works In Practice
+### 插件 UI 发布的实际工作方式
 
-A plugin's `dist/ui/` directory contains a built React bundle. The host serves this bundle and loads it into the page when the user navigates to a plugin surface (a plugin page, a detail tab, a dashboard widget, etc.).
+插件的 `dist/ui/` 目录包含已构建的 React 包。宿主提供此包的服务，并在用户导航到插件界面（插件页面、详情标签页、仪表盘小组件等）时将其加载到页面中。
 
-**The host provides, the plugin renders:**
+**宿主提供，插件渲染：**
 
-1. The host defines **extension slots** — designated mount points in the UI where plugin components can appear (pages, tabs, widgets, sidebar entries, action bars).
-2. The plugin's UI bundle exports named components for each slot it wants to fill.
-3. The host mounts the plugin component into the slot, passing it a **host bridge** object.
-4. The plugin component uses the bridge to fetch data from its own worker (via `getData`), call actions (via `performAction`), read host context (current company, project, entity), and use shared host UI primitives (design tokens, common components).
+1. 宿主定义**扩展槽位**——UI 中插件组件可以出现的指定挂载点（页面、标签页、小组件、侧边栏入口、操作栏）。
+2. 插件的 UI 包为其要填充的每个槽位导出命名组件。
+3. 宿主将插件组件挂载到槽位中，传递一个**宿主桥接**对象。
+4. 插件组件使用桥接从其自身 worker 获取数据（通过 `getData`）、调用操作（通过 `performAction`）、读取宿主上下文（当前公司、项目、实体），以及使用共享的宿主 UI 原语（设计令牌、通用组件）。
 
-**Concrete example: a Linear plugin ships a dashboard widget.**
+**具体示例：Linear 插件发布一个仪表盘小组件。**
 
-The plugin's UI bundle exports:
+插件的 UI 包导出：
 
 ```tsx
 // dist/ui/index.tsx
@@ -893,124 +893,124 @@ export function DashboardWidget({ context }: PluginWidgetProps) {
 }
 ```
 
-**What happens at runtime:**
+**运行时发生的事情：**
 
-1. User opens the dashboard. The host sees that the Linear plugin registered a `DashboardWidget` export.
-2. The host mounts the plugin's `DashboardWidget` component into the dashboard widget slot, passing `context` (current company, user, etc.) and the bridge.
-3. `usePluginData("sync-health", ...)` calls through the bridge → host → plugin worker's `getData` RPC → returns JSON → the plugin component renders it however it wants.
-4. When the user clicks "Resync Now", `usePluginAction("resync")` calls through the bridge → host → plugin worker's `performAction` RPC.
+1. 用户打开仪表盘。宿主看到 Linear 插件注册了一个 `DashboardWidget` 导出。
+2. 宿主将插件的 `DashboardWidget` 组件挂载到仪表盘小组件槽位中，传递 `context`（当前公司、用户等）和桥接。
+3. `usePluginData("sync-health", ...)` 通过桥接调用 → 宿主 → 插件 worker 的 `getData` RPC → 返回 JSON → 插件组件按其需要渲染。
+4. 当用户点击"立即重新同步"时，`usePluginAction("resync")` 通过桥接调用 → 宿主 → 插件 worker 的 `performAction` RPC。
 
-**What the host controls:**
+**宿主控制的内容：**
 
-- The host decides **where** plugin components appear (which slots exist and when they mount).
-- The host provides the **bridge** — plugin UI cannot make arbitrary network requests or access host internals directly.
-- The host enforces **capability gates** — if a plugin's worker does not have a capability, the bridge rejects the call even if the UI requests it.
-- The host provides **design tokens and shared components** via `@paperclipai/plugin-sdk/ui` so plugins can match the host's visual language without being forced to.
+- 宿主决定插件组件**出现在哪里**（存在哪些槽位以及何时挂载）。
+- 宿主提供**桥接**——插件 UI 不能直接发出任意网络请求或访问宿主内部。
+- 宿主强制执行**能力门禁**——如果插件的 worker 没有某个能力，即使 UI 请求，桥接也会拒绝调用。
+- 宿主通过 `@paperclipai/plugin-sdk/ui` 提供**设计令牌和共享组件**，以便插件可以匹配宿主的视觉语言而不被强制要求。
 
-**What the plugin controls:**
+**插件控制的内容：**
 
-- The plugin decides **how** to render its data — it owns its React components, layout, interactions, and state management.
-- The plugin decides **what data** to fetch and **what actions** to expose.
-- The plugin can use any React patterns (hooks, context, third-party component libraries) inside its bundle.
+- 插件决定**如何**渲染其数据——它拥有自己的 React 组件、布局、交互和状态管理。
+- 插件决定**获取什么数据**和**暴露什么操作**。
+- 插件可以在其包内使用任何 React 模式（hooks、context、第三方组件库）。
 
-### 19.0.1 Plugin UI SDK (`@paperclipai/plugin-sdk/ui`)
+### 19.0.1 插件 UI SDK（`@paperclipai/plugin-sdk/ui`）
 
-The SDK includes a `ui` subpath export that plugin frontends import. This subpath provides:
+SDK 包含一个 `ui` 子路径导出，供插件前端导入。此子路径提供：
 
-- **Bridge hooks**: `usePluginData(key, params)`, `usePluginAction(key)`, `useHostContext()`
-- **Design tokens**: colors, spacing, typography, shadows matching the host theme
-- **Shared components**: `MetricCard`, `StatusBadge`, `DataTable`, `LogView`, `ActionBar`, `Spinner`, etc.
-- **Type definitions**: `PluginPageProps`, `PluginWidgetProps`, `PluginDetailTabProps`
+- **桥接 hooks**：`usePluginData(key, params)`、`usePluginAction(key)`、`useHostContext()`
+- **设计令牌**：颜色、间距、排版、阴影，匹配宿主主题
+- **共享组件**：`MetricCard`、`StatusBadge`、`DataTable`、`LogView`、`ActionBar`、`Spinner` 等
+- **类型定义**：`PluginPageProps`、`PluginWidgetProps`、`PluginDetailTabProps`
 
-Plugins are encouraged but not required to use the shared components. A plugin may render entirely custom UI as long as it communicates through the bridge.
+鼓励但不强制插件使用共享组件。插件可以渲染完全自定义的 UI，只要通过桥接通信即可。
 
-### 19.0.2 Bundle Isolation
+### 19.0.2 包隔离
 
-Plugin UI bundles are loaded as standard ES modules, not iframed. This gives plugins full rendering performance and access to the host's design tokens.
+插件 UI 包作为标准 ES 模块加载，不使用 iframe。这让插件拥有完整的渲染性能和对宿主设计令牌的访问权限。
 
-Isolation rules:
+隔离规则：
 
-- Plugin bundles must not import from host internals. They may only import from `@paperclipai/plugin-sdk/ui` and their own dependencies.
-- Plugin bundles must not access `window.fetch` or `XMLHttpRequest` directly for host API calls. All host communication goes through the bridge.
-- The host may enforce Content Security Policy rules that restrict plugin network access to the bridge endpoint only.
-- Plugin bundles must be statically analyzable — no dynamic `import()` of URLs outside the plugin's own bundle.
+- 插件包不得从宿主内部导入。它们只能从 `@paperclipai/plugin-sdk/ui` 和其自身的依赖项导入。
+- 插件包不得直接使用 `window.fetch` 或 `XMLHttpRequest` 进行宿主 API 调用。所有宿主通信都通过桥接进行。
+- 宿主可以强制执行内容安全策略规则，将插件网络访问限制为仅桥接端点。
+- 插件包必须是静态可分析的——不允许动态 `import()` 插件自身包之外的 URL。
 
-If stronger isolation is needed later, the host can move to iframe-based mounting for untrusted plugins without changing the plugin's source code (the bridge API stays the same).
+如果以后需要更强的隔离，宿主可以为不受信任的插件切换到基于 iframe 的挂载，而无需更改插件的源代码（桥接 API 保持不变）。
 
-### 19.0.3 Bundle Serving
+### 19.0.3 包服务
 
-Plugin UI bundles must be pre-built ESM. The host does not compile or transform plugin UI code at runtime.
+插件 UI 包必须是预构建的 ESM。宿主不会在运行时编译或转换插件 UI 代码。
 
-The host serves the plugin's `dist/ui/` directory as static assets under a namespaced path:
+宿主在命名空间化的路径下将插件的 `dist/ui/` 目录作为静态资源提供服务：
 
 - `/_plugins/:pluginId/ui/*`
 
-When the host renders an extension slot, it dynamically imports the plugin's UI entry module from this path, resolves the named export declared in `ui.slots[].exportName`, and mounts it into the slot.
+当宿主渲染扩展槽位时，它从此路径动态导入插件的 UI 入口模块，解析 `ui.slots[].exportName` 中声明的命名导出，并将其挂载到槽位中。
 
-In development, the host may support a `devUiUrl` override in plugin config that points to a local dev server (e.g. Vite) so plugin authors can use hot-reload during development without rebuilding.
+在开发中，宿主可以支持插件配置中的 `devUiUrl` 覆盖，指向本地开发服务器（例如 Vite），以便插件作者可以在开发过程中使用热重载而无需重新构建。
 
-## 19.1 Global Operator Routes
+## 19.1 全局操作员路由
 
 - `/settings/plugins`
 - `/settings/plugins/:pluginId`
 
-These routes are instance-level.
+这些路由是实例级的。
 
-## 19.2 Company-Context Routes
+## 19.2 公司上下文路由
 
 - `/:companyPrefix/plugins/:pluginId`
 
-These routes exist because the board UI is organized around companies even though plugin installation is global.
+这些路由存在是因为仪表盘 UI 围绕公司组织，即使插件安装是全局的。
 
-## 19.3 Detail Tabs
+## 19.3 详情标签页
 
-Plugins may add tabs to:
+插件可以向以下页面添加标签页：
 
-- project detail
-- issue detail
-- agent detail
-- goal detail
-- run detail
+- 项目详情
+- 任务详情
+- 智能体详情
+- 目标详情
+- 运行详情
 
-Recommended route pattern:
+推荐的路由模式：
 
 - `/:companyPrefix/<entity>/:id?tab=<plugin-tab-id>`
 
-## 19.4 Dashboard Widgets
+## 19.4 仪表盘小组件
 
-Plugins may add cards or sections to the dashboard.
+插件可以向仪表盘添加卡片或区块。
 
-## 19.5 Sidebar Entries
+## 19.5 侧边栏入口
 
-Plugins may add sidebar links to:
+插件可以添加侧边栏链接到：
 
-- global plugin settings
-- company-context plugin pages
+- 全局插件设置
+- 公司上下文插件页面
 
-## 19.6 Shared Components In `@paperclipai/plugin-sdk/ui`
+## 19.6 `@paperclipai/plugin-sdk/ui` 中的共享组件
 
-The host SDK ships shared components that plugins can import to quickly build UIs that match the host's look and feel. These are convenience building blocks, not a requirement.
+宿主 SDK 提供共享组件，插件可以导入以快速构建匹配宿主外观的 UI。这些是便利的构建模块，不是强制要求。
 
-| Component | What it renders | Typical use |
+| 组件 | 渲染内容 | 典型用途 |
 |---|---|---|
-| `MetricCard` | Single number with label, optional trend/sparkline | KPIs, counts, rates |
-| `StatusBadge` | Inline status indicator (ok/warning/error/info) | Sync health, connection status |
-| `DataTable` | Rows and columns with optional sorting and pagination | Issue lists, job history, process lists |
-| `TimeseriesChart` | Line or bar chart with timestamped data points | Revenue trends, sync volume, error rates |
-| `MarkdownBlock` | Rendered markdown text | Descriptions, help text, notes |
-| `KeyValueList` | Label/value pairs in a definition-list layout | Entity metadata, config summary |
-| `ActionBar` | Row of buttons wired to `usePluginAction` | Resync, create branch, restart process |
-| `LogView` | Scrollable log output with timestamps | Webhook deliveries, job output, process logs |
-| `JsonTree` | Collapsible JSON tree for debugging | Raw API responses, plugin state inspection |
-| `Spinner` | Loading indicator | Data fetch states |
+| `MetricCard` | 带标签的单个数字，可选趋势/迷你图 | KPI、计数、比率 |
+| `StatusBadge` | 内联状态指示器（ok/warning/error/info） | 同步健康状态、连接状态 |
+| `DataTable` | 带可选排序和分页的行列表格 | 任务列表、作业历史、进程列表 |
+| `TimeseriesChart` | 带时间戳数据点的折线图或柱状图 | 收入趋势、同步量、错误率 |
+| `MarkdownBlock` | 渲染的 markdown 文本 | 描述、帮助文本、备注 |
+| `KeyValueList` | 定义列表布局中的标签/值对 | 实体元数据、配置摘要 |
+| `ActionBar` | 连接到 `usePluginAction` 的按钮行 | 重新同步、创建分支、重启进程 |
+| `LogView` | 带时间戳的可滚动日志输出 | Webhook 投递、作业输出、进程日志 |
+| `JsonTree` | 可折叠的 JSON 树，用于调试 | 原始 API 响应、插件状态检查 |
+| `Spinner` | 加载指示器 | 数据获取状态 |
 
-Plugins may also use entirely custom components. The shared components exist to reduce boilerplate and keep visual consistency, not to limit what plugins can render.
+插件也可以使用完全自定义的组件。共享组件的存在是为了减少样板代码并保持视觉一致性，而不是限制插件可以渲染的内容。
 
-## 19.7 Error Propagation Through The Bridge
+## 19.7 通过桥接的错误传播
 
-The bridge hooks must return structured errors so plugin UI can handle failures gracefully.
+桥接 hooks 必须返回结构化错误，以便插件 UI 可以优雅地处理失败。
 
-`usePluginData` returns:
+`usePluginData` 返回：
 
 ```ts
 {
@@ -1020,73 +1020,73 @@ The bridge hooks must return structured errors so plugin UI can handle failures 
 }
 ```
 
-`usePluginAction` returns an async function that either resolves with the result or throws a `PluginBridgeError`.
+`usePluginAction` 返回一个异步函数，要么以结果解析，要么抛出 `PluginBridgeError`。
 
-`PluginBridgeError` shape:
+`PluginBridgeError` 结构：
 
 ```ts
 interface PluginBridgeError {
   code: "WORKER_UNAVAILABLE" | "CAPABILITY_DENIED" | "WORKER_ERROR" | "TIMEOUT" | "UNKNOWN";
   message: string;
-  /** Original error details from the worker, if available */
+  /** 来自 worker 的原始错误详情（如可用） */
   details?: unknown;
 }
 ```
 
-Error codes:
+错误码：
 
-- `WORKER_UNAVAILABLE` — the plugin worker is not running (crashed, shutting down, not yet started)
-- `CAPABILITY_DENIED` — the plugin does not have the required capability for this operation
-- `WORKER_ERROR` — the worker returned an error from its `getData` or `performAction` handler
-- `TIMEOUT` — the worker did not respond within the configured timeout
-- `UNKNOWN` — unexpected bridge-level failure
+- `WORKER_UNAVAILABLE` — 插件 worker 未运行（崩溃、正在关闭、尚未启动）
+- `CAPABILITY_DENIED` — 插件没有此操作所需的能力
+- `WORKER_ERROR` — worker 从其 `getData` 或 `performAction` 处理程序返回了错误
+- `TIMEOUT` — worker 在配置的超时时间内未响应
+- `UNKNOWN` — 意外的桥接级故障
 
-The `@paperclipai/plugin-sdk/ui` subpath should also export an `ErrorBoundary` component that plugin authors can use to catch rendering errors without crashing the host page.
+`@paperclipai/plugin-sdk/ui` 子路径还应导出一个 `ErrorBoundary` 组件，供插件作者用于捕获渲染错误而不会导致宿主页面崩溃。
 
-## 19.8 Plugin Settings UI
+## 19.8 插件设置 UI
 
-Each plugin that declares an `instanceConfigSchema` in its manifest gets an auto-generated settings form at `/settings/plugins/:pluginId`. The host renders the form from the JSON Schema.
+每个在清单中声明了 `instanceConfigSchema` 的插件都会在 `/settings/plugins/:pluginId` 获得一个自动生成的设置表单。宿主根据 JSON Schema 渲染表单。
 
-The auto-generated form supports:
+自动生成的表单支持：
 
-- text inputs, number inputs, toggles, select dropdowns derived from schema types and enums
-- nested objects rendered as fieldsets
-- arrays rendered as repeatable field groups with add/remove controls
-- secret ref fields: any schema property annotated with `"format": "secret-ref"` renders as a secret picker that resolves through the Paperclip secret provider system rather than a plain text input
-- validation messages derived from schema constraints (`required`, `minLength`, `pattern`, `minimum`, etc.)
-- a "Test Connection" action if the plugin declares a `validateConfig` RPC method — the host calls it and displays the result inline
+- 从 schema 类型和枚举派生的文本输入、数字输入、开关、下拉选择
+- 嵌套对象渲染为字段集
+- 数组渲染为带添加/删除控件的可重复字段组
+- 密钥引用字段：任何用 `"format": "secret-ref"` 注解的 schema 属性渲染为密钥选择器，通过 Paperclip 密钥提供者系统解析，而不是普通文本输入
+- 从 schema 约束派生的验证消息（`required`、`minLength`、`pattern`、`minimum` 等）
+- 如果插件声明了 `validateConfig` RPC 方法，则有"测试连接"操作——宿主调用它并内联显示结果
 
-For plugins that need richer settings UX beyond what JSON Schema can express, the plugin may declare a `settingsPage` slot in `ui.slots`. When present, the host renders the plugin's own React component instead of the auto-generated form. The plugin component communicates with its worker through the standard bridge to read and write config.
+对于需要超出 JSON Schema 表达能力的更丰富设置 UX 的插件，插件可以在 `ui.slots` 中声明一个 `settingsPage` 槽位。存在时，宿主渲染插件自己的 React 组件而不是自动生成的表单。插件组件通过标准桥接与其 worker 通信以读写配置。
 
-Both approaches coexist: a plugin can use the auto-generated form for simple config and add a custom settings page slot for advanced configuration or operational dashboards.
+两种方式共存：插件可以使用自动生成的表单进行简单配置，并添加自定义设置页面槽位用于高级配置或运营仪表盘。
 
-## 20. Local Tooling
+## 20. 本地工具
 
-Plugins that need filesystem, git, terminal, or process operations implement those directly. The host does not wrap or proxy these operations.
+需要文件系统、git、终端或进程操作的插件直接实现这些操作。宿主不包装或代理这些操作。
 
-The host provides workspace metadata through `ctx.projects` (list workspaces, get primary workspace, resolve workspace from issue or agent/run). Plugins use this metadata to resolve local paths and then operate on the filesystem, spawn processes, shell out to `git`, or open PTY sessions using standard Node APIs or any libraries they choose.
+宿主通过 `ctx.projects` 提供工作区元数据（列出工作区、获取主要工作区、从任务或智能体/运行解析工作区）。插件使用此元数据解析本地路径，然后使用标准 Node API 或其选择的任何库操作文件系统、生成进程、执行 `git` 命令或打开 PTY 会话。
 
-This keeps the host lean — it does not need to maintain a parallel API surface for every OS-level operation a plugin might need. Plugins own their own logic for file browsing, git workflows, terminal sessions, and process management.
+这保持了宿主的精简——它不需要为插件可能需要的每个 OS 级操作维护并行 API 接口。插件拥有自己的文件浏览、git 工作流、终端会话和进程管理逻辑。
 
-## 21. Persistence And Postgres
+## 21. 持久化和 Postgres
 
-## 21.1 Database Principles
+## 21.1 数据库原则
 
-1. Core Paperclip data stays in first-party tables.
-2. Most plugin-owned data starts in generic extension tables.
-3. Plugin data should scope to existing Paperclip objects before new tables are introduced.
-4. Arbitrary third-party schema migrations are out of scope for the first plugin system.
+1. 核心 Paperclip 数据保留在第一方表中。
+2. 大多数插件拥有的数据从通用扩展表开始。
+3. 插件数据在引入新表之前应先限定到现有 Paperclip 对象。
+4. 任意第三方 schema 迁移不在第一版插件系统的范围内。
 
-## 21.2 Core Table Reuse
+## 21.2 核心表复用
 
-If data becomes part of the actual Paperclip product model, it should become a first-party table.
+如果数据成为实际 Paperclip 产品模型的一部分，它应该成为第一方表。
 
-Examples:
+示例：
 
-- `project_workspaces` is already first-party
-- if Paperclip later decides git state is core product data, it should become a first-party table too
+- `project_workspaces` 已经是第一方表
+- 如果 Paperclip 后来决定 git 状态是核心产品数据，它也应该成为第一方表
 
-## 21.3 Required Tables
+## 21.3 必需表
 
 ### `plugins`
 
@@ -1103,7 +1103,7 @@ Examples:
 - `updated_at` timestamptz not null
 - `last_error` text null
 
-Indexes:
+索引：
 
 - unique `plugin_key`
 - `status`
@@ -1128,17 +1128,17 @@ Indexes:
 - `value_json` jsonb not null
 - `updated_at` timestamptz not null
 
-Constraints:
+约束：
 
 - unique `(plugin_id, scope_kind, scope_id, namespace, state_key)`
 
-Examples:
+示例：
 
-- Linear external IDs keyed by `issue`
-- GitHub sync cursors keyed by `project`
-- file browser preferences keyed by `project_workspace`
-- git branch metadata keyed by `project_workspace`
-- process metadata keyed by `project_workspace` or `run`
+- 按 `issue` 键控的 Linear 外部 ID
+- 按 `project` 键控的 GitHub 同步游标
+- 按 `project_workspace` 键控的文件浏览器偏好
+- 按 `project_workspace` 键控的 git 分支元数据
+- 按 `project_workspace` 或 `run` 键控的进程元数据
 
 ### `plugin_jobs`
 
@@ -1155,7 +1155,7 @@ Examples:
 - `last_succeeded_at` timestamptz null
 - `last_error` text null
 
-Constraints:
+约束：
 
 - unique `(plugin_id, scope_kind, scope_id, job_key)`
 
@@ -1171,7 +1171,7 @@ Constraints:
 - `error` text null
 - `details_json` jsonb null
 
-Indexes:
+索引：
 
 - `(plugin_id, started_at desc)`
 - `(plugin_job_id, started_at desc)`
@@ -1192,12 +1192,12 @@ Indexes:
 - `response_code` int null
 - `error` text null
 
-Indexes:
+索引：
 
 - `(plugin_id, received_at desc)`
 - `(plugin_id, endpoint_key, received_at desc)`
 
-### `plugin_entities` (optional but recommended)
+### `plugin_entities`（可选但推荐）
 
 - `id` uuid pk
 - `plugin_id` uuid fk `plugins.id` not null
@@ -1211,251 +1211,251 @@ Indexes:
 - `created_at` timestamptz not null
 - `updated_at` timestamptz not null
 
-Indexes:
+索引：
 
-- `(plugin_id, entity_type, external_id)` unique when `external_id` is not null
+- `(plugin_id, entity_type, external_id)` 当 `external_id` 不为 null 时唯一
 - `(plugin_id, scope_kind, scope_id, entity_type)`
 
-Use cases:
+用例：
 
-- imported Linear issues
-- imported GitHub issues
-- plugin-owned process records
-- plugin-owned external metric bindings
+- 导入的 Linear 任务
+- 导入的 GitHub 任务
+- 插件拥有的进程记录
+- 插件拥有的外部指标绑定
 
-## 21.4 Activity Log Changes
+## 21.4 活动日志变更
 
-The activity log should extend `actor_type` to include `plugin`.
+活动日志应扩展 `actor_type` 以包含 `plugin`。
 
-New actor enum:
+新的操作者枚举：
 
 - `agent`
 - `user`
 - `system`
 - `plugin`
 
-Plugin-originated mutations should write:
+插件发起的变更操作应写入：
 
 - `actor_type = plugin`
 - `actor_id = <plugin-id>`
 
-## 21.5 Plugin Migrations
+## 21.5 插件迁移
 
-The first plugin system does not allow arbitrary third-party migrations.
+第一版插件系统不允许任意第三方迁移。
 
-Later, if custom tables become necessary, the system may add a trusted-module-only migration path.
+以后如果需要自定义表，系统可能会添加仅限受信任模块的迁移路径。
 
-## 22. Secrets
+## 22. 密钥
 
-Plugin config must never persist raw secret values.
+插件配置绝不能持久化原始密钥值。
 
-Rules:
+规则：
 
-1. Plugin config stores secret refs only.
-2. Secret refs resolve through the existing Paperclip secret provider system.
-3. Plugin workers receive resolved secrets only at execution time.
-4. Secret values must never be written to:
-   - plugin config JSON
-   - activity logs
-   - webhook delivery rows
-   - error messages
+1. 插件配置仅存储密钥引用。
+2. 密钥引用通过现有的 Paperclip 密钥提供者系统解析。
+3. 插件 worker 仅在执行时接收已解析的密钥。
+4. 密钥值绝不能写入：
+   - 插件配置 JSON
+   - 活动日志
+   - webhook 投递行
+   - 错误消息
 
-## 23. Auditing
+## 23. 审计
 
-All plugin-originated mutating actions must be auditable.
+所有插件发起的变更操作必须可审计。
 
-Minimum requirements:
+最低要求：
 
-- activity log entry for every mutation
-- job run history
-- webhook delivery history
-- plugin health page
-- install/upgrade history in `plugins`
+- 每次变更操作的活动日志条目
+- 作业运行历史
+- webhook 投递历史
+- 插件健康页面
+- `plugins` 中的安装/升级历史
 
-## 24. Operator UX
+## 24. 操作员用户体验
 
-## 24.1 Global Settings
+## 24.1 全局设置
 
-Global plugin settings page must show:
+全局插件设置页面必须显示：
 
-- installed plugins
-- versions
-- status
-- requested capabilities
-- current errors
-- install/upgrade/remove actions
+- 已安装的插件
+- 版本
+- 状态
+- 请求的能力
+- 当前错误
+- 安装/升级/移除操作
 
-## 24.2 Plugin Settings Page
+## 24.2 插件设置页面
 
-Each plugin may expose:
+每个插件可以暴露：
 
-- config form derived from `instanceConfigSchema`
-- health details
-- recent job history
-- recent webhook history
-- capability list
+- 从 `instanceConfigSchema` 派生的配置表单
+- 健康详情
+- 最近作业历史
+- 最近 webhook 历史
+- 能力列表
 
-Route:
+路由：
 
 - `/settings/plugins/:pluginId`
 
-## 24.3 Company-Context Plugin Page
+## 24.3 公司上下文插件页面
 
-Each plugin may expose a company-context main page:
+每个插件可以暴露一个公司上下文主页面：
 
 - `/:companyPrefix/plugins/:pluginId`
 
-This page is where board users do most day-to-day work.
+此页面是仪表盘用户执行大部分日常工作的地方。
 
-## 25. Uninstall And Data Lifecycle
+## 25. 卸载和数据生命周期
 
-When a plugin is uninstalled, the host must handle plugin-owned data explicitly.
+当插件被卸载时，宿主必须显式处理插件拥有的数据。
 
-### 25.1 Uninstall Process
+### 25.1 卸载流程
 
-1. The host sends `shutdown()` to the worker and follows the graceful shutdown policy.
-2. The host marks the plugin status `uninstalled` in the `plugins` table (soft delete).
-3. Plugin-owned data (`plugin_state`, `plugin_entities`, `plugin_jobs`, `plugin_job_runs`, `plugin_webhook_deliveries`, `plugin_config`) is retained for a configurable grace period (default: 30 days).
-4. During the grace period, the operator can reinstall the same plugin and recover its state.
-5. After the grace period, the host purges all plugin-owned data for the uninstalled plugin.
-6. The operator may force-purge immediately via CLI: `pnpm paperclipai plugin purge <plugin-id>`.
+1. 宿主向 worker 发送 `shutdown()` 并遵循优雅关闭策略。
+2. 宿主在 `plugins` 表中将插件状态标记为 `uninstalled`（软删除）。
+3. 插件拥有的数据（`plugin_state`、`plugin_entities`、`plugin_jobs`、`plugin_job_runs`、`plugin_webhook_deliveries`、`plugin_config`）在可配置的宽限期内保留（默认：30 天）。
+4. 在宽限期内，操作员可以重新安装同一插件并恢复其状态。
+5. 宽限期结束后，宿主清除已卸载插件的所有插件拥有数据。
+6. 操作员可以通过 CLI 立即强制清除：`pnpm paperclipai plugin purge <plugin-id>`。
 
-### 25.2 Upgrade Data Considerations
+### 25.2 升级数据注意事项
 
-Plugin upgrades do not automatically migrate plugin state. If a plugin's `value_json` shape changes between versions:
+插件升级不会自动迁移插件状态。如果插件的 `value_json` 结构在版本间发生变化：
 
-- The plugin worker is responsible for migrating its own state on first access after upgrade.
-- The host does not run plugin-defined schema migrations.
-- Plugins should version their state keys or use a schema version field inside `value_json` to detect and handle format changes.
+- 插件 worker 负责在升级后首次访问时迁移自己的状态。
+- 宿主不运行插件定义的 schema 迁移。
+- 插件应对其状态键进行版本管理或在 `value_json` 内使用 schema 版本字段来检测和处理格式变更。
 
-### 25.3 Upgrade Lifecycle
+### 25.3 升级生命周期
 
-When upgrading a plugin:
+升级插件时：
 
-1. The host sends `shutdown()` to the old worker.
-2. The host waits for the old worker to drain in-flight work (respecting the shutdown deadline).
-3. Any in-flight jobs that do not complete within the deadline are marked `cancelled`.
-4. The host installs the new version and starts the new worker.
-5. If the new version adds capabilities, the plugin enters `upgrade_pending` and the operator must approve before the new worker becomes `ready`.
+1. 宿主向旧 worker 发送 `shutdown()`。
+2. 宿主等待旧 worker 排空进行中的工作（遵守关闭截止时间）。
+3. 在截止时间内未完成的进行中作业被标记为 `cancelled`。
+4. 宿主安装新版本并启动新 worker。
+5. 如果新版本添加了能力，插件进入 `upgrade_pending`，操作员必须在新 worker 变为 `ready` 之前批准。
 
-### 25.4 Hot Plugin Lifecycle
+### 25.4 热插件生命周期
 
-Plugin install, uninstall, upgrade, and config changes **must** take effect without restarting the Paperclip server. This is a normative requirement, not optional.
+插件安装、卸载、升级和配置变更**必须**在不重启 Paperclip 服务器的情况下生效。这是规范性要求，不是可选的。
 
-The architecture already supports this — plugins run as out-of-process workers with dynamic ESM imports, IPC bridges, and host-managed routing tables. This section makes the requirement explicit so implementations do not regress.
+架构已经支持这一点——插件作为进程外 worker 运行，具有动态 ESM 导入、IPC 桥接和宿主管理的路由表。本节明确了这一要求，以便实现不会退化。
 
-#### 25.4.1 Hot Install
+#### 25.4.1 热安装
 
-When a plugin is installed at runtime:
+当插件在运行时安装时：
 
-1. The host resolves and validates the manifest without stopping existing services.
-2. The host spawns a new worker process for the plugin.
-3. The host registers the plugin's event subscriptions, job schedules, webhook endpoints, and agent tool declarations in the live routing tables.
-4. The host loads the plugin's UI bundle path into the extension slot registry so the frontend can discover it on the next navigation or via a live notification.
-5. The plugin enters `ready` status (or `upgrade_pending` if capability approval is required).
+1. 宿主在不停止现有服务的情况下解析和验证清单。
+2. 宿主为插件生成一个新的 worker 进程。
+3. 宿主在活跃路由表中注册插件的事件订阅、作业调度、webhook 端点和智能体工具声明。
+4. 宿主将插件的 UI 包路径加载到扩展槽位注册表中，以便前端可以在下次导航时或通过实时通知发现它。
+5. 插件进入 `ready` 状态（或如果需要能力审批则为 `upgrade_pending`）。
 
-No other plugin or host service is interrupted.
+不影响任何其他插件或宿主服务。
 
-#### 25.4.2 Hot Uninstall
+#### 25.4.2 热卸载
 
-When a plugin is uninstalled at runtime:
+当插件在运行时卸载时：
 
-1. The host sends `shutdown()` and follows the graceful shutdown policy (Section 12.5).
-2. The host removes the plugin's event subscriptions, job schedules, webhook endpoints, and agent tool declarations from the live routing tables.
-3. The host removes the plugin's UI bundle from the extension slot registry. Any currently mounted plugin UI components are unmounted and replaced with a placeholder or removed entirely.
-4. The host marks the plugin `uninstalled` and starts the data retention grace period (Section 25.1).
+1. 宿主发送 `shutdown()` 并遵循优雅关闭策略（第 12.5 节）。
+2. 宿主从活跃路由表中移除插件的事件订阅、作业调度、webhook 端点和智能体工具声明。
+3. 宿主从扩展槽位注册表中移除插件的 UI 包。任何当前挂载的插件 UI 组件被卸载并替换为占位符或完全移除。
+4. 宿主将插件标记为 `uninstalled` 并开始数据保留宽限期（第 25.1 节）。
 
-No server restart is needed.
+无需服务器重启。
 
-#### 25.4.3 Hot Upgrade
+#### 25.4.3 热升级
 
-When a plugin is upgraded at runtime:
+当插件在运行时升级时：
 
-1. The host follows the upgrade lifecycle (Section 25.3) — shut down old worker, start new worker.
-2. If the new version changes event subscriptions, job schedules, webhook endpoints, or agent tools, the host atomically swaps the old registrations for the new ones.
-3. If the new version ships an updated UI bundle, the host invalidates any cached bundle assets and notifies the frontend to reload plugin UI components. Active users see the updated UI on next navigation or via a live refresh notification.
-4. If the manifest `apiVersion` is unchanged and no new capabilities are added, the upgrade completes without operator interaction.
+1. 宿主遵循升级生命周期（第 25.3 节）——关闭旧 worker，启动新 worker。
+2. 如果新版本更改了事件订阅、作业调度、webhook 端点或智能体工具，宿主原子性地将旧注册替换为新注册。
+3. 如果新版本提供了更新的 UI 包，宿主使所有缓存的包资产失效，并通知前端重新加载插件 UI 组件。活跃用户在下次导航时或通过实时刷新通知看到更新的 UI。
+4. 如果清单 `apiVersion` 未更改且未添加新能力，升级无需操作员交互即可完成。
 
-#### 25.4.4 Hot Config Change
+#### 25.4.4 热配置变更
 
-When an operator updates a plugin's instance config at runtime:
+当操作员在运行时更新插件的实例配置时：
 
-1. The host writes the new config to `plugin_config`.
-2. The host sends a `configChanged` notification to the running worker via IPC.
-3. The worker receives the new config through `ctx.config` and applies it without restarting. If the plugin needs to re-initialize connections (e.g. a new API token), it does so internally.
-4. If the plugin does not handle `configChanged`, the host restarts the worker process with the new config (graceful shutdown then restart).
+1. 宿主将新配置写入 `plugin_config`。
+2. 宿主通过 IPC 向运行中的 worker 发送 `configChanged` 通知。
+3. worker 通过 `ctx.config` 接收新配置并在不重启的情况下应用。如果插件需要重新初始化连接（例如新的 API 令牌），它在内部执行。
+4. 如果插件不处理 `configChanged`，宿主使用新配置重启 worker 进程（优雅关闭后重启）。
 
-#### 25.4.5 Frontend Cache Invalidation
+#### 25.4.5 前端缓存失效
 
-The host must version plugin UI bundle URLs (e.g. `/_plugins/:pluginId/ui/:version/*` or content-hash-based paths) so that browser caches do not serve stale bundles after upgrade or reinstall.
+宿主必须对插件 UI 包 URL 进行版本化（例如 `/_plugins/:pluginId/ui/:version/*` 或基于内容哈希的路径），以便浏览器缓存在升级或重新安装后不会提供过时的包。
 
-The host should emit a `plugin.ui.updated` event that the frontend listens for to trigger re-import of updated plugin modules without a full page reload.
+宿主应发出 `plugin.ui.updated` 事件，前端监听该事件以触发重新导入更新的插件模块，而无需完整页面重新加载。
 
-#### 25.4.6 Worker Process Management
+#### 25.4.6 Worker 进程管理
 
-The host's plugin process manager must support:
+宿主的插件进程管理器必须支持：
 
-- starting a worker for a newly installed plugin without affecting other workers
-- stopping a worker for an uninstalled plugin without affecting other workers
-- replacing a worker during upgrade (stop old, start new) atomically from the routing table's perspective
-- restarting a worker after crash without operator intervention (with backoff)
+- 为新安装的插件启动 worker 而不影响其他 worker
+- 为已卸载的插件停止 worker 而不影响其他 worker
+- 在升级期间替换 worker（停止旧的，启动新的），从路由表的角度原子性地进行
+- 崩溃后无需操作员干预重启 worker（带退避）
 
-Each worker process is independent. There is no shared process pool or batch restart mechanism.
+每个 worker 进程是独立的。没有共享进程池或批量重启机制。
 
-## 26. Plugin Observability
+## 26. 插件可观测性
 
-### 26.1 Logging
+### 26.1 日志
 
-Plugin workers use `ctx.logger` to emit structured logs. The host captures these logs and stores them in a queryable format.
+插件 worker 使用 `ctx.logger` 发出结构化日志。宿主捕获这些日志并以可查询的格式存储。
 
-Log storage rules:
+日志存储规则：
 
-- Plugin logs are stored in a `plugin_logs` table or appended to a log file under the plugin's data directory.
-- Each log entry includes: plugin ID, timestamp, level, message, and optional structured metadata.
-- Logs are queryable from the plugin settings page in the UI.
-- Logs have a configurable retention period (default: 7 days).
-- The host captures `stdout` and `stderr` from the worker process as fallback logs even if the worker does not use `ctx.logger`.
+- 插件日志存储在 `plugin_logs` 表中或追加到插件数据目录下的日志文件中。
+- 每个日志条目包含：插件 ID、时间戳、级别、消息和可选的结构化元数据。
+- 日志可从 UI 中的插件设置页面查询。
+- 日志有可配置的保留期限（默认：7 天）。
+- 即使 worker 不使用 `ctx.logger`，宿主也会捕获 worker 进程的 `stdout` 和 `stderr` 作为后备日志。
 
-### 26.2 Health Dashboard
+### 26.2 健康仪表盘
 
-The plugin settings page must show:
+插件设置页面必须显示：
 
-- current worker status (running, error, stopped)
-- uptime since last restart
-- recent log entries
-- job run history with success/failure rates
-- webhook delivery history with success/failure rates
-- last health check result and diagnostics
-- resource usage if available (memory, CPU)
+- 当前 worker 状态（运行中、错误、已停止）
+- 自上次重启以来的运行时间
+- 最近日志条目
+- 带成功/失败率的作业运行历史
+- 带成功/失败率的 webhook 投递历史
+- 最近健康检查结果和诊断
+- 资源使用情况（如可用，包括内存、CPU）
 
-### 26.3 Alerting
+### 26.3 告警
 
-The host should emit internal events when plugin health degrades. These use the `plugin.*` namespace (not core domain events) and do not appear in the core activity log:
+宿主应在插件健康状态恶化时发出内部事件。这些事件使用 `plugin.*` 命名空间（不是核心域事件），不会出现在核心活动日志中：
 
-- `plugin.health.degraded` — worker reporting errors or failing health checks
-- `plugin.health.recovered` — worker recovered from error state
-- `plugin.worker.crashed` — worker process exited unexpectedly
-- `plugin.worker.restarted` — worker restarted after crash
+- `plugin.health.degraded` — worker 报告错误或健康检查失败
+- `plugin.health.recovered` — worker 从错误状态恢复
+- `plugin.worker.crashed` — worker 进程意外退出
+- `plugin.worker.restarted` — worker 在崩溃后重启
 
-These events can be consumed by other plugins (e.g. a notification plugin) or surfaced in the dashboard.
+这些事件可以被其他插件（例如通知插件）消费或在仪表盘中展示。
 
-## 27. Plugin Development And Testing
+## 27. 插件开发和测试
 
 ### 27.1 `@paperclipai/plugin-test-harness`
 
-The host should publish a test harness package that plugin authors use for local development and testing.
+宿主应发布一个测试工具包，供插件作者用于本地开发和测试。
 
-The test harness provides:
+测试工具包提供：
 
-- a mock host that implements the full SDK interface (`ctx.config`, `ctx.events`, `ctx.state`, etc.)
-- ability to send synthetic events and verify handler responses
-- ability to trigger job runs and verify side effects
-- ability to simulate `getData` and `performAction` calls as if coming from the UI bridge
-- ability to simulate `executeTool` calls as if coming from an agent run
-- in-memory state and entity stores for assertions
-- configurable capability sets for testing capability denial paths
+- 实现完整 SDK 接口的模拟宿主（`ctx.config`、`ctx.events`、`ctx.state` 等）
+- 发送合成事件并验证处理程序响应的能力
+- 触发作业运行并验证副作用的能力
+- 模拟 `getData` 和 `performAction` 调用（如同来自 UI 桥接）的能力
+- 模拟 `executeTool` 调用（如同来自智能体运行）的能力
+- 用于断言的内存状态和实体存储
+- 可配置的能力集，用于测试能力拒绝路径
 
-Example usage:
+示例用法：
 
 ```ts
 import { createTestHarness } from "@paperclipai/plugin-test-harness";
@@ -1465,42 +1465,42 @@ import { register } from "../dist/worker.js";
 const harness = createTestHarness({ manifest, capabilities: manifest.capabilities });
 await register(harness.ctx);
 
-// Simulate an event
+// 模拟事件
 await harness.emit("issue.created", { issueId: "iss-1", projectId: "proj-1" });
 
-// Verify state was written
+// 验证状态已写入
 const state = await harness.state.get({ pluginId: manifest.id, scopeKind: "issue", scopeId: "iss-1", namespace: "sync", stateKey: "external-id" });
 expect(state).toBeDefined();
 
-// Simulate a UI data request
+// 模拟 UI 数据请求
 const data = await harness.getData("sync-health", { companyId: "comp-1" });
 expect(data.syncedCount).toBeGreaterThan(0);
 ```
 
-### 27.2 Local Plugin Development
+### 27.2 本地插件开发
 
-For developing a plugin against a running Paperclip instance:
+针对运行中的 Paperclip 实例开发插件：
 
-- The operator installs the plugin from a local path: `pnpm paperclipai plugin install ./path/to/plugin`
-- The host watches the plugin directory for changes and restarts the worker on rebuild.
-- `devUiUrl` in plugin config can point to a local Vite dev server for UI hot-reload.
-- The plugin settings page shows real-time logs from the worker for debugging.
+- 操作员从本地路径安装插件：`pnpm paperclipai plugin install ./path/to/plugin`
+- 宿主监视插件目录的变更，并在重新构建时重启 worker。
+- 插件配置中的 `devUiUrl` 可以指向本地 Vite 开发服务器以实现 UI 热重载。
+- 插件设置页面显示来自 worker 的实时日志以用于调试。
 
-### 27.3 Plugin Starter Template
+### 27.3 插件入门模板
 
-The host should publish a starter template (`create-paperclip-plugin`) that scaffolds:
+宿主应发布一个入门模板（`create-paperclip-plugin`），用于搭建：
 
-- `package.json` with correct `paperclipPlugin` keys
-- manifest with placeholder values
-- worker entry with SDK type imports and example event handler
-- UI entry with example `DashboardWidget` using bridge hooks
-- test file using the test harness
-- build configuration (esbuild or similar) for both worker and UI bundles
-- `.gitignore` and `tsconfig.json`
+- 包含正确 `paperclipPlugin` 键的 `package.json`
+- 包含占位值的清单
+- 包含 SDK 类型导入和示例事件处理程序的 worker 入口
+- 包含使用桥接 hooks 的示例 `DashboardWidget` 的 UI 入口
+- 使用测试工具包的测试文件
+- 用于 worker 和 UI 包的构建配置（esbuild 或类似工具）
+- `.gitignore` 和 `tsconfig.json`
 
-## 28. Example Mappings
+## 28. 示例映射
 
-This spec directly supports the following plugin types:
+本规范直接支持以下插件类型：
 
 - `@paperclip/plugin-workspace-files`
 - `@paperclip/plugin-terminal`
@@ -1511,134 +1511,134 @@ This spec directly supports the following plugin types:
 - `@paperclip/plugin-runtime-processes`
 - `@paperclip/plugin-stripe`
 
-## 29. Compatibility And Versioning
+## 29. 兼容性和版本管理
 
-### 29.1 API Version Rules
+### 29.1 API 版本规则
 
-1. Host supports one or more explicit plugin API versions.
-2. Plugin manifest declares exactly one `apiVersion`.
-3. Host rejects unsupported versions at install time.
-4. Plugin upgrades are explicit operator actions.
-5. Capability expansion requires explicit operator approval.
+1. 宿主支持一个或多个明确的插件 API 版本。
+2. 插件清单声明恰好一个 `apiVersion`。
+3. 宿主在安装时拒绝不支持的版本。
+4. 插件升级是明确的操作员操作。
+5. 能力扩展需要明确的操作员审批。
 
-### 29.2 SDK Versioning
+### 29.2 SDK 版本管理
 
-The host publishes a single SDK package for plugin authors:
+宿主为插件作者发布单个 SDK 包：
 
-- `@paperclipai/plugin-sdk` — the complete plugin SDK
+- `@paperclipai/plugin-sdk` — 完整的插件 SDK
 
-The package uses subpath exports to separate worker and UI concerns:
+该包使用子路径导出来分离 worker 和 UI 关注点：
 
-- `@paperclipai/plugin-sdk` — worker-side SDK (context, events, state, tools, logger, `definePlugin`, `z`)
-- `@paperclipai/plugin-sdk/ui` — frontend SDK (bridge hooks, shared components, design tokens)
+- `@paperclipai/plugin-sdk` — worker 端 SDK（context、events、state、tools、logger、`definePlugin`、`z`）
+- `@paperclipai/plugin-sdk/ui` — 前端 SDK（桥接 hooks、共享组件、设计令牌）
 
-A single package simplifies dependency management for plugin authors — one dependency, one version, one changelog. The subpath exports keep bundle separation clean: worker code imports from the root, UI code imports from `/ui`. Build tools tree-shake accordingly so the worker bundle does not include React components and the UI bundle does not include worker-only code.
+单个包简化了插件作者的依赖管理——一个依赖、一个版本、一个更新日志。子路径导出保持包分离的清晰：worker 代码从根导入，UI 代码从 `/ui` 导入。构建工具相应地进行摇树优化，使 worker 包不包含 React 组件，UI 包不包含仅 worker 的代码。
 
-Versioning rules:
+版本管理规则：
 
-1. **Semver**: The SDK follows strict semantic versioning. Major version bumps indicate breaking changes to either the worker or UI surface; minor versions add new features backwards-compatibly; patch versions are bug fixes only.
-2. **Tied to API version**: Each major SDK version corresponds to exactly one plugin `apiVersion`. When `@paperclipai/plugin-sdk@2.x` ships, it targets `apiVersion: 2`. Plugins built with SDK 1.x continue to declare `apiVersion: 1`.
-3. **Host multi-version support**: The host must support at least the current and one previous `apiVersion` simultaneously. This means plugins built against the previous SDK major version continue to work without modification. The host maintains separate IPC protocol handlers for each supported API version.
-4. **Minimum SDK version in manifest**: Plugins declare `sdkVersion` in the manifest as a semver range (e.g. `">=1.4.0 <2.0.0"`). The host validates this at install time and warns if the plugin's declared range is outside the host's supported SDK versions.
-5. **Deprecation timeline**: When a new `apiVersion` ships, the previous version enters a deprecation period of at least 6 months. During this period:
-   - The host continues to load plugins targeting the deprecated version.
-   - The host logs a deprecation warning at plugin startup.
-   - The plugin settings page shows a banner indicating the plugin should be upgraded.
-   - After the deprecation period ends, the host may drop support for the old version in a future release.
-6. **SDK changelog and migration guides**: Each major SDK release must include a migration guide documenting every breaking change, the new API surface, and a step-by-step upgrade path for plugin authors.
-7. **UI surface stability**: Breaking changes to shared UI components (removing a component, changing required props) or design tokens require a major version bump just like worker API changes. The single-package model means both surfaces are versioned together, avoiding drift between worker and UI compatibility.
+1. **语义化版本**：SDK 遵循严格的语义化版本规范。主版本号升级表示 worker 或 UI 接口的破坏性变更；次版本号向后兼容地添加新功能；补丁版本仅修复错误。
+2. **绑定 API 版本**：每个 SDK 主版本对应恰好一个插件 `apiVersion`。当 `@paperclipai/plugin-sdk@2.x` 发布时，它针对 `apiVersion: 2`。使用 SDK 1.x 构建的插件继续声明 `apiVersion: 1`。
+3. **宿主多版本支持**：宿主必须同时支持至少当前和一个之前的 `apiVersion`。这意味着针对前一个 SDK 主版本构建的插件无需修改即可继续工作。宿主为每个支持的 API 版本维护单独的 IPC 协议处理程序。
+4. **清单中的最低 SDK 版本**：插件在清单中将 `sdkVersion` 声明为 semver 范围（例如 `">=1.4.0 <2.0.0"`）。宿主在安装时验证此范围，如果插件声明的范围超出宿主支持的 SDK 版本则发出警告。
+5. **弃用时间线**：当新 `apiVersion` 发布时，前一个版本进入至少 6 个月的弃用期。在此期间：
+   - 宿主继续加载针对已弃用版本的插件。
+   - 宿主在插件启动时记录弃用警告。
+   - 插件设置页面显示一个横幅，表示插件应升级。
+   - 弃用期结束后，宿主可以在未来版本中移除对旧版本的支持。
+6. **SDK 更新日志和迁移指南**：每个 SDK 主版本发布必须包含迁移指南，记录每个破坏性变更、新的 API 接口和插件作者的逐步升级路径。
+7. **UI 接口稳定性**：共享 UI 组件的破坏性变更（移除组件、更改必需属性）或设计令牌需要主版本号升级，就像 worker API 变更一样。单包模型意味着两个接口一起版本管理，避免 worker 和 UI 兼容性之间的偏差。
 
-### 29.3 Version Compatibility Matrix
+### 29.3 版本兼容性矩阵
 
-The host should publish a compatibility matrix:
+宿主应发布兼容性矩阵：
 
-| Host Version | Supported API Versions | SDK Range |
+| 宿主版本 | 支持的 API 版本 | SDK 范围 |
 |---|---|---|
 | 1.0 | 1 | 1.x |
 | 2.0 | 1, 2 | 1.x, 2.x |
 | 3.0 | 2, 3 | 2.x, 3.x |
 
-This matrix is published in the host docs and queryable via `GET /api/plugins/compatibility`.
+此矩阵在宿主文档中发布，并可通过 `GET /api/plugins/compatibility` 查询。
 
-### 29.4 Plugin Author Workflow
+### 29.4 插件作者工作流
 
-When a new SDK version is released:
+当新 SDK 版本发布时：
 
-1. Plugin author updates `@paperclipai/plugin-sdk` dependency.
-2. Plugin author follows the migration guide to update code.
-3. Plugin author updates `apiVersion` and `sdkVersion` in the manifest.
-4. Plugin author publishes a new plugin version.
-5. Operators upgrade the plugin on their instances. The old version continues to work until explicitly upgraded.
+1. 插件作者更新 `@paperclipai/plugin-sdk` 依赖。
+2. 插件作者按照迁移指南更新代码。
+3. 插件作者更新清单中的 `apiVersion` 和 `sdkVersion`。
+4. 插件作者发布新的插件版本。
+5. 操作员在其实例上升级插件。旧版本在明确升级之前继续工作。
 
-## 30. Recommended Delivery Order
+## 30. 推荐交付顺序
 
-## Phase 1
+## 第 1 阶段
 
-- plugin manifest
-- install/list/remove/upgrade CLI
-- global settings UI
-- plugin process manager
-- capability enforcement
-- `plugins`, `plugin_config`, `plugin_state`, `plugin_jobs`, `plugin_job_runs`, `plugin_webhook_deliveries`
-- event bus
-- jobs
-- webhooks
-- settings page
-- plugin UI bundle loading, host bridge, and `@paperclipai/plugin-sdk/ui`
-- extension slot mounting for pages, tabs, widgets, sidebar entries
-- bridge error propagation (`PluginBridgeError`)
-- auto-generated settings form from `instanceConfigSchema`
-- plugin-contributed agent tools
-- plugin-to-plugin events (`plugin.<pluginId>.*` namespace)
-- event filtering
-- graceful shutdown with configurable deadlines
-- plugin logging and health dashboard
+- 插件清单
+- 安装/列出/移除/升级 CLI
+- 全局设置 UI
+- 插件进程管理器
+- 能力执行
+- `plugins`、`plugin_config`、`plugin_state`、`plugin_jobs`、`plugin_job_runs`、`plugin_webhook_deliveries`
+- 事件总线
+- 作业
+- webhook
+- 设置页面
+- 插件 UI 包加载、宿主桥接和 `@paperclipai/plugin-sdk/ui`
+- 页面、标签页、小组件、侧边栏入口的扩展槽位挂载
+- 桥接错误传播（`PluginBridgeError`）
+- 从 `instanceConfigSchema` 自动生成设置表单
+- 插件贡献的智能体工具
+- 插件间事件（`plugin.<pluginId>.*` 命名空间）
+- 事件过滤
+- 带可配置截止时间的优雅关闭
+- 插件日志和健康仪表盘
 - `@paperclipai/plugin-test-harness`
-- `create-paperclip-plugin` starter template
-- uninstall with data retention grace period
-- hot plugin lifecycle (install, uninstall, upgrade, config change without server restart)
-- SDK versioning with multi-version host support and deprecation policy
+- `create-paperclip-plugin` 入门模板
+- 带数据保留宽限期的卸载
+- 热插件生命周期（安装、卸载、升级、配置变更无需服务器重启）
+- SDK 版本管理，支持多版本宿主和弃用策略
 
-This phase is enough for:
+此阶段足以支持：
 
 - Linear
 - GitHub Issues
 - Grafana
 - Stripe
-- file browser
-- terminal
-- git workflow
-- process/server tracking
+- 文件浏览器
+- 终端
+- git 工作流
+- 进程/服务器跟踪
 
-Workspace plugins (file browser, terminal, git, process tracking) do not require additional host APIs — they resolve workspace paths through `ctx.projects` and handle filesystem, git, PTY, and process operations directly.
+工作区插件（文件浏览器、终端、git、进程跟踪）不需要额外的宿主 API——它们通过 `ctx.projects` 解析工作区路径，并直接处理文件系统、git、PTY 和进程操作。
 
-## Phase 2
+## 第 2 阶段
 
-- optional `plugin_entities`
-- richer action systems
-- trusted-module migration path if truly needed
-- iframe-based isolation for untrusted plugin UI bundles
-- plugin ecosystem/distribution work
+- 可选的 `plugin_entities`
+- 更丰富的操作系统
+- 受信任模块迁移路径（如确实需要）
+- 不受信任插件 UI 包的 iframe 隔离
+- 插件生态/分发工作
 
-## 31. Final Design Decision
+## 31. 最终设计决策
 
-Paperclip should not implement a generic in-process hook bag modeled directly after local coding tools.
+Paperclip 不应实现直接模仿本地编码工具的通用进程内 hook 包。
 
-Paperclip should implement:
+Paperclip 应实现：
 
-- trusted platform modules for low-level host integration
-- globally installed out-of-process plugins for additive instance-wide capabilities
-- plugin-contributed agent tools (namespaced, capability-gated)
-- plugin-shipped UI bundles rendered in host extension slots via a typed bridge with structured error propagation
-- auto-generated settings UI from config schema, with custom settings pages as an option
-- plugin-to-plugin events for cross-plugin coordination
-- server-side event filtering for efficient event routing
-- plugins own their local tooling logic (filesystem, git, terminal, processes) directly
-- generic extension tables for most plugin state
-- graceful shutdown, uninstall data lifecycle, and plugin observability
-- hot plugin lifecycle — install, uninstall, upgrade, and config changes without server restart
-- SDK versioning with multi-version host support and a clear deprecation policy
-- test harness and starter template for low authoring friction
-- strict preservation of core governance and audit rules
+- 用于底层宿主集成的受信任平台模块
+- 用于累加式实例级功能的全局安装的进程外插件
+- 插件贡献的智能体工具（命名空间化、能力受限）
+- 通过类型化桥接在宿主扩展槽位中渲染的插件发布 UI 包，具有结构化错误传播
+- 从配置 schema 自动生成设置 UI，并提供自定义设置页面选项
+- 用于跨插件协调的插件间事件
+- 用于高效事件路由的服务端事件过滤
+- 插件直接拥有其本地工具逻辑（文件系统、git、终端、进程）
+- 用于大多数插件状态的通用扩展表
+- 优雅关闭、卸载数据生命周期和插件可观测性
+- 热插件生命周期——安装、卸载、升级和配置变更无需服务器重启
+- SDK 版本管理，支持多版本宿主和明确的弃用策略
+- 测试工具包和入门模板，降低编写门槛
+- 严格保护核心治理和审计规则
 
-That is the complete target design for the Paperclip plugin system.
+这就是 Paperclip 插件系统的完整目标设计。

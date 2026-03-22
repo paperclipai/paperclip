@@ -1,118 +1,118 @@
-# 2026-03-13 Company Import / Export V2 Plan
+# 2026-03-13 公司导入/导出 V2 计划
 
-Status: Proposed implementation plan
-Date: 2026-03-13
-Audience: Product and engineering
-Supersedes for package-format direction:
-- `doc/plans/2026-02-16-module-system.md` sections that describe company templates as JSON-only
-- `docs/specs/cliphub-plan.md` assumptions about blueprint bundle shape where they conflict with the markdown-first package model
+状态：提议的实现计划
+日期：2026-03-13
+受众：产品和工程
+在包格式方向上取代：
+- `doc/plans/2026-02-16-module-system.md` 中将公司模板描述为仅 JSON 的部分
+- `docs/specs/cliphub-plan.md` 中关于蓝图包形态的假设（与 markdown 优先的包模型冲突的部分）
 
-## 1. Purpose
+## 1. 目的
 
-This document defines the next-stage plan for Paperclip company import/export.
+本文档定义了 Paperclip 公司导入/导出的下一阶段计划。
 
-The core shift is:
+核心转变是：
 
-- move from a Paperclip-specific JSON-first portability package toward a markdown-first package format
-- make GitHub repositories first-class package sources
-- treat the company package model as an extension of the existing Agent Skills ecosystem instead of inventing a separate skill format
-- support company, team, agent, and skill reuse without requiring a central registry
+- 从 Paperclip 专有的 JSON 优先可移植包转向 markdown 优先的包格式
+- 将 GitHub 仓库作为一等包源
+- 将公司包模型视为现有 Agent Skills 生态系统的扩展，而不是发明单独的技能格式
+- 支持公司、团队、智能体和技能的复用，无需中央注册中心
 
-The normative package format draft lives in:
+规范的包格式草案在：
 
 - `docs/companies/companies-spec.md`
 
-This plan is about implementation and rollout inside Paperclip.
+本计划关于 Paperclip 内部的实现和推出。
 
-Adapter-wide skill rollout details live in:
+适配器范围的技能推出细节在：
 
 - `doc/plans/2026-03-14-adapter-skill-sync-rollout.md`
 
-## 2. Executive Summary
+## 2. 执行摘要
 
-Paperclip already has portability primitives in the repo:
+Paperclip 仓库中已有可移植性原语：
 
-- server import/export/preview APIs
-- CLI import/export commands
-- shared portability types and validators
+- 服务器导入/导出/预览 API
+- CLI 导入/导出命令
+- 共享的可移植性类型和验证器
 
-Those primitives are being cut over to the new package model rather than extended for backward compatibility.
+这些原语正被切换到新的包模型，而不是为向后兼容而扩展。
 
-The new direction is:
+新方向是：
 
-1. markdown-first package authoring
-2. GitHub repo or local folder as the default source of truth
-3. a vendor-neutral base package spec for agent-company runtimes, not just Paperclip
-4. the company package model is explicitly an extension of Agent Skills
-5. no future dependency on `paperclip.manifest.json`
-6. implicit folder discovery by convention for the common case
-7. an always-emitted `.paperclip.yaml` sidecar for high-fidelity Paperclip-specific details
-8. package graph resolution at import time
-9. entity-level import UI with dependency-aware tree selection
-10. `skills.sh` compatibility is a V1 requirement for skill packages and skill installation flows
-11. adapter-aware skill sync surfaces so Paperclip can read, diff, enable, disable, and reconcile skills where the adapter supports it
+1. markdown 优先的包编写
+2. GitHub 仓库或本地文件夹作为默认的事实来源
+3. 一个厂商中立的基础包规范，面向智能体公司运行时，而不仅是 Paperclip
+4. 公司包模型明确是 Agent Skills 的扩展
+5. 未来不依赖 `paperclip.manifest.json`
+6. 通用场景通过约定的隐式文件夹发现
+7. 始终生成的 `.paperclip.yaml` 附属文件用于高保真的 Paperclip 特定细节
+8. 导入时的包图解析
+9. 带依赖感知树选择的实体级导入 UI
+10. `skills.sh` 兼容性是技能包和技能安装流程的 V1 要求
+11. 适配器感知的技能同步界面，使 Paperclip 能在适配器支持的情况下读取、对比、启用、禁用和协调技能
 
-## 3. Product Goals
+## 3. 产品目标
 
-### 3.1 Goals
+### 3.1 目标
 
-- A user can point Paperclip at a local folder or GitHub repo and import a company package without any registry.
-- A package is readable and writable by humans with normal git workflows.
-- A package can contain:
-  - company definition
-  - org subtree / team definition
-  - agent definitions
-  - optional starter projects and tasks
-  - reusable skills
-- V1 skill support is compatible with the existing `skills.sh` / Agent Skills ecosystem.
-- A user can import into:
-  - a new company
-  - an existing company
-- Import preview shows:
-  - what will be created
-  - what will be updated
-  - what is skipped
-  - what is referenced externally
-  - what needs secrets or approvals
-- Export preserves attribution, licensing, and pinned upstream references.
-- Export produces a clean vendor-neutral package plus a Paperclip sidecar.
-- `companies.sh` can later act as a discovery/index layer over repos implementing this format.
+- 用户可以将 Paperclip 指向本地文件夹或 GitHub 仓库，无需注册中心即可导入公司包。
+- 包对人类可读可写，使用正常的 git 工作流。
+- 包可以包含：
+  - 公司定义
+  - 组织子树 / 团队定义
+  - 智能体定义
+  - 可选的启动项目和任务
+  - 可复用的技能
+- V1 技能支持与现有的 `skills.sh` / Agent Skills 生态系统兼容。
+- 用户可以导入到：
+  - 新公司
+  - 现有公司
+- 导入预览显示：
+  - 将要创建的内容
+  - 将要更新的内容
+  - 跳过的内容
+  - 外部引用的内容
+  - 需要密钥或审批的内容
+- 导出保留归属、许可证和固定的上游引用。
+- 导出产生干净的厂商中立包加上 Paperclip 附属文件。
+- `companies.sh` 后续可作为实现此格式的仓库的发现/索引层。
 
-### 3.2 Non-Goals
+### 3.2 非目标
 
-- No central registry is required for package validity.
-- This is not full database backup/restore.
-- This does not attempt to export runtime state like:
-  - heartbeat runs
-  - API keys
-  - spend totals
-  - run sessions
-  - transient workspaces
-- This does not require a first-class runtime `teams` table before team portability ships.
+- 包有效性不需要中央注册中心。
+- 这不是完整的数据库备份/恢复。
+- 这不尝试导出运行时状态，如：
+  - 心跳运行
+  - API 密钥
+  - 花费总额
+  - 运行会话
+  - 临时工作区
+- 这不要求在团队可移植性发布前有一等运行时 `teams` 表。
 
-## 4. Current State In Repo
+## 4. 仓库中的当前状态
 
-Current implementation exists here:
+当前实现位于：
 
-- shared types: `packages/shared/src/types/company-portability.ts`
-- shared validators: `packages/shared/src/validators/company-portability.ts`
-- server routes: `server/src/routes/companies.ts`
-- server service: `server/src/services/company-portability.ts`
-- CLI commands: `cli/src/commands/client/company.ts`
+- 共享类型：`packages/shared/src/types/company-portability.ts`
+- 共享验证器：`packages/shared/src/validators/company-portability.ts`
+- 服务器路由：`server/src/routes/companies.ts`
+- 服务器服务：`server/src/services/company-portability.ts`
+- CLI 命令：`cli/src/commands/client/company.ts`
 
-Current product limitations:
+当前产品限制：
 
-1. Import/export UX still needs deeper tree-selection and skill/package management polish.
-2. Adapter-specific skill sync remains uneven across adapters and must degrade cleanly when unsupported.
-3. Projects and starter tasks should stay opt-in on export rather than default package content.
-4. Import/export still needs stronger coverage around attribution, pin verification, and executable-package warnings.
-5. The current markdown frontmatter parser is intentionally lightweight and should stay constrained to the documented shape.
+1. 导入/导出 UX 仍需更深层的树选择和技能/包管理打磨。
+2. 适配器特定的技能同步在不同适配器间仍不均匀，且必须在不支持时优雅降级。
+3. 项目和启动任务应在导出时保持可选，而不是默认包内容。
+4. 导入/导出仍需在归属、固定验证和可执行包警告方面加强覆盖。
+5. 当前的 markdown frontmatter 解析器有意保持轻量，应保持受限于文档化的形态。
 
-## 5. Canonical Package Direction
+## 5. 规范包方向
 
-### 5.1 Canonical Authoring Format
+### 5.1 规范编写格式
 
-The canonical authoring format becomes a markdown-first package rooted in one of:
+规范编写格式变为以 markdown 优先的包，根文件为以下之一：
 
 - `COMPANY.md`
 - `TEAM.md`
@@ -121,248 +121,249 @@ The canonical authoring format becomes a markdown-first package rooted in one of
 - `TASK.md`
 - `SKILL.md`
 
-The normative draft is:
+规范草案为：
 
 - `docs/companies/companies-spec.md`
 
-### 5.2 Relationship To Agent Skills
+### 5.2 与 Agent Skills 的关系
 
-Paperclip must not redefine `SKILL.md`.
+Paperclip 不得重新定义 `SKILL.md`。
 
-Rules:
+规则：
 
-- `SKILL.md` stays Agent Skills compatible
-- the company package model is an extension of Agent Skills
-- the base package is vendor-neutral and intended for any agent-company runtime
-- Paperclip-specific fidelity lives in `.paperclip.yaml`
-- Paperclip may resolve and install `SKILL.md` packages, but it must not require a Paperclip-only skill format
-- `skills.sh` compatibility is a V1 requirement, not a future nice-to-have
+- `SKILL.md` 保持 Agent Skills 兼容
+- 公司包模型是 Agent Skills 的扩展
+- 基础包是厂商中立的，面向任何智能体公司运行时
+- Paperclip 特定的高保真信息存放在 `.paperclip.yaml` 中
+- Paperclip 可以解析和安装 `SKILL.md` 包，但不得要求 Paperclip 专有的技能格式
+- `skills.sh` 兼容性是 V1 要求，而不是未来的锦上添花
 
-### 5.3 Agent-To-Skill Association
+### 5.3 智能体到技能的关联
 
-`AGENTS.md` should associate skills by skill shortname or slug, not by verbose path in the common case.
+`AGENTS.md` 应通过技能简称或 slug 关联技能，而不是在通用场景下使用冗长的路径。
 
-Preferred example:
+首选示例：
 
 - `skills: [review, react-best-practices]`
 
-Resolution model:
+解析模型：
 
-- `review` resolves to `skills/review/SKILL.md` by package convention
-- if the skill is external or referenced, the skill package owns that complexity
-- exporters should prefer shortname-based associations in `AGENTS.md`
-- importers should resolve the shortname against local package skills first, then referenced or installed company skills
-### 5.4 Base Package Vs Paperclip Extension
+- `review` 按包约定解析为 `skills/review/SKILL.md`
+- 如果技能是外部的或被引用的，技能包负责处理该复杂性
+- 导出器应在 `AGENTS.md` 中优先使用简称关联
+- 导入器应先在本地包技能中解析简称，然后是引用的或已安装的公司技能
 
-The repo format should have two layers:
+### 5.4 基础包与 Paperclip 扩展
 
-- base package:
-  - minimal, readable, social, vendor-neutral
-  - implicit folder discovery by convention
-  - no Paperclip-only runtime fields by default
-- Paperclip extension:
+仓库格式应有两层：
+
+- 基础包：
+  - 最小化、可读、社交化、厂商中立
+  - 按约定的隐式文件夹发现
+  - 默认无 Paperclip 专有运行时字段
+- Paperclip 扩展：
   - `.paperclip.yaml`
-  - adapter/runtime/permissions/budget/workspace fidelity
-  - emitted by Paperclip tools as a sidecar while the base package stays readable
+  - 适配器/运行时/权限/预算/工作区的高保真信息
+  - 由 Paperclip 工具作为附属文件生成，同时基础包保持可读
 
-### 5.5 Relationship To Current V1 Manifest
+### 5.5 与当前 V1 清单的关系
 
-`paperclip.manifest.json` is not part of the future package direction.
+`paperclip.manifest.json` 不属于未来包方向。
 
-This should be treated as a hard cutover in product direction.
+这应被视为产品方向的硬切换。
 
-- markdown-first repo layout is the target
-- no new work should deepen investment in the old manifest model
-- future portability APIs and UI should target the markdown-first model only
+- markdown 优先的仓库布局是目标
+- 新工作不应加深对旧清单模型的投入
+- 未来的可移植性 API 和 UI 应仅面向 markdown 优先模型
 
-## 6. Package Graph Model
+## 6. 包图模型
 
-### 6.1 Entity Kinds
+### 6.1 实体类型
 
-Paperclip import/export should support these entity kinds:
+Paperclip 导入/导出应支持以下实体类型：
 
-- company
-- team
-- agent
-- project
-- task
-- skill
+- 公司
+- 团队
+- 智能体
+- 项目
+- 任务
+- 技能
 
-### 6.2 Team Semantics
+### 6.2 团队语义
 
-`team` is a package concept first, not a database-table requirement.
+`团队` 首先是一个包概念，而不是数据库表的要求。
 
-In Paperclip V2 portability:
+在 Paperclip V2 可移植性中：
 
-- a team is an importable org subtree
-- it is rooted at a manager agent
-- it can be attached under a target manager in an existing company
+- 团队是一个可导入的组织子树
+- 它以一个经理智能体为根
+- 它可以挂载到现有公司中的目标经理下
 
-This avoids blocking portability on a future runtime `teams` model.
+这避免了将可移植性阻塞在未来的运行时 `teams` 模型上。
 
-Imported-team tracking should initially be package/provenance-based:
+导入团队的跟踪应初始基于包/来源追溯：
 
-- if a team package was imported, the imported agents should carry enough provenance to reconstruct that grouping
-- Paperclip can treat “this set of agents came from team package X” as the imported-team model
-- provenance grouping is the intended near- and medium-term team model for import/export
-- only add a first-class runtime `teams` table later if product needs move beyond what provenance grouping can express
+- 如果导入了团队包，导入的智能体应携带足够的来源信息以重建该分组
+- Paperclip 可以将"这组智能体来自团队包 X"作为导入团队模型
+- 来源追溯分组是导入/导出的近期和中期团队模型
+- 仅在产品需求超出来源追溯分组表达能力时，才添加一等运行时 `teams` 表
 
-### 6.3 Dependency Graph
+### 6.3 依赖图
 
-Import should operate on an entity graph, not raw file selection.
+导入应操作实体图，而不是原始文件选择。
 
-Examples:
+示例：
 
-- selecting an agent auto-selects its required docs and skill refs
-- selecting a team auto-selects its subtree
-- selecting a company auto-selects all included entities by default
-- selecting a project auto-selects its starter tasks
+- 选择一个智能体自动选择其所需文档和技能引用
+- 选择一个团队自动选择其子树
+- 选择一个公司默认自动选择所有包含的实体
+- 选择一个项目自动选择其启动任务
 
-The preview output should reflect graph resolution explicitly.
+预览输出应明确反映图解析结果。
 
-## 7. External References, Pinning, And Attribution
+## 7. 外部引用、固定和归属
 
-### 7.1 Why This Matters
+### 7.1 为什么这很重要
 
-Some packages will:
+某些包会：
 
-- reference upstream files we do not want to republish
-- include third-party work where attribution must remain visible
-- need protection from branch hot-swapping
+- 引用我们不想重新发布的上游文件
+- 包含必须保持归属可见的第三方作品
+- 需要防止分支热切换的保护
 
-### 7.2 Policy
+### 7.2 策略
 
-Paperclip should support source references in package metadata with:
+Paperclip 应支持包元数据中的源引用，包含：
 
-- repo
-- path
+- 仓库
+- 路径
 - commit sha
-- optional blob sha
-- optional sha256
-- attribution
-- license
-- usage mode
+- 可选的 blob sha
+- 可选的 sha256
+- 归属
+- 许可证
+- 使用模式
 
-Usage modes:
+使用模式：
 
 - `vendored`
 - `referenced`
 - `mirrored`
 
-Default exporter behavior for third-party content should be:
+第三方内容的默认导出行为应为：
 
-- prefer `referenced`
-- preserve attribution
-- do not silently inline third-party content into exports
+- 优先 `referenced`
+- 保留归属
+- 不静默地将第三方内容内联到导出中
 
-### 7.3 Trust Model
+### 7.3 信任模型
 
-Imported package content should be classified by trust level:
+导入的包内容应按信任级别分类：
 
-- markdown-only
-- markdown + assets
-- markdown + scripts/executables
+- 仅 markdown
+- markdown + 资源文件
+- markdown + 脚本/可执行文件
 
-The UI and CLI should surface this clearly before apply.
+UI 和 CLI 应在应用前清楚地展示这一信息。
 
-## 8. Import Behavior
+## 8. 导入行为
 
-### 8.1 Supported Sources
+### 8.1 支持的源
 
-- local folder
-- local package root file
-- GitHub repo URL
-- GitHub subtree URL
-- direct URL to markdown/package root
+- 本地文件夹
+- 本地包根文件
+- GitHub 仓库 URL
+- GitHub 子树 URL
+- markdown/包根的直接 URL
 
-Registry-based discovery may be added later, but must remain optional.
+基于注册中心的发现可在后续添加，但必须保持可选。
 
-### 8.2 Import Targets
+### 8.2 导入目标
 
-- new company
-- existing company
+- 新公司
+- 现有公司
 
-For existing company imports, the preview must support:
+对于现有公司的导入，预览必须支持：
 
-- collision handling
-- attach-point selection for team imports
-- selective entity import
+- 冲突处理
+- 团队导入的挂载点选择
+- 选择性实体导入
 
-### 8.3 Collision Strategy
+### 8.3 冲突策略
 
-Current `rename | skip | replace` support remains, but matching should improve over time.
+当前的 `rename | skip | replace` 支持保留，但匹配应随时间改进。
 
-Preferred matching order:
+首选匹配顺序：
 
-1. prior install provenance
-2. stable package entity identity
+1. 先前安装来源追溯
+2. 稳定的包实体标识
 3. slug
-4. human name as weak fallback
+4. 人类名称作为弱后备
 
-Slug-only matching is acceptable only as a transitional strategy.
+仅 slug 匹配仅作为过渡策略可接受。
 
-### 8.4 Required Preview Output
+### 8.4 必需的预览输出
 
-Every import preview should surface:
+每次导入预览应展示：
 
-- target company action
-- entity-level create/update/skip plan
-- referenced external content
-- missing files
-- hash mismatch or pinning issues
-- env inputs, including required vs optional and default values when present
-- unsupported content types
-- trust/licensing warnings
+- 目标公司操作
+- 实体级别的创建/更新/跳过计划
+- 引用的外部内容
+- 缺失的文件
+- 哈希不匹配或固定问题
+- 环境输入，包括必需与可选以及存在时的默认值
+- 不支持的内容类型
+- 信任/许可证警告
 
-### 8.5 Adapter Skill Sync Surface
+### 8.5 适配器技能同步界面
 
-People want skill management in the UI, but skills are adapter-dependent.
+用户希望在 UI 中管理技能，但技能是适配器相关的。
 
-That means portability and UI planning must include an adapter capability model for skills.
+这意味着可移植性和 UI 规划必须包含技能的适配器能力模型。
 
-Paperclip should define a new adapter surface area around skills:
+Paperclip 应围绕技能定义新的适配器表面区域：
 
-- list currently enabled skills for an agent
-- report how those skills are represented by the adapter
-- install or enable a skill
-- disable or remove a skill
-- report sync state between desired package config and actual adapter state
+- 列出智能体当前启用的技能
+- 报告这些技能在适配器中的表示方式
+- 安装或启用技能
+- 禁用或移除技能
+- 报告期望包配置与实际适配器状态之间的同步状态
 
-Examples:
+示例：
 
-- Claude Code / Codex style adapters may manage skills as local filesystem packages or adapter-owned skill directories
-- OpenClaw-style adapters may expose currently enabled skills through an API or a reflected config surface
-- some adapters may be read-only and only report what they have
+- Claude Code / Codex 风格的适配器可能将技能管理为本地文件系统包或适配器拥有的技能目录
+- OpenClaw 风格的适配器可能通过 API 或反射的配置界面暴露当前启用的技能
+- 某些适配器可能是只读的，仅报告其拥有的内容
 
-Planned adapter capability shape:
+计划的适配器能力形态：
 
 - `supportsSkillRead`
 - `supportsSkillWrite`
 - `supportsSkillRemove`
 - `supportsSkillSync`
-- `skillStorageKind` such as `filesystem`, `remote_api`, `inline_config`, or `unknown`
+- `skillStorageKind` 如 `filesystem`、`remote_api`、`inline_config` 或 `unknown`
 
-Baseline adapter interface:
+基线适配器接口：
 
 - `listSkills(agent)`
 - `applySkills(agent, desiredSkills)`
-- `removeSkill(agent, skillId)` optional
-- `getSkillSyncState(agent, desiredSkills)` optional
+- `removeSkill(agent, skillId)` 可选
+- `getSkillSyncState(agent, desiredSkills)` 可选
 
-Planned Paperclip behavior:
+计划的 Paperclip 行为：
 
-- if an adapter supports read, Paperclip should show current skills in the UI
-- if an adapter supports write, Paperclip should let the user enable/disable imported skills
-- if an adapter supports sync, Paperclip should compute desired vs actual state and offer reconcile actions
-- if an adapter does not support these capabilities, the UI should still show the package-level desired skills but mark them unmanaged
+- 如果适配器支持读取，Paperclip 应在 UI 中显示当前技能
+- 如果适配器支持写入，Paperclip 应让用户启用/禁用导入的技能
+- 如果适配器支持同步，Paperclip 应计算期望与实际状态并提供协调操作
+- 如果适配器不支持这些能力，UI 仍应显示包级别的期望技能，但标记为未托管
 
-## 9. Export Behavior
+## 9. 导出行为
 
-### 9.1 Default Export Target
+### 9.1 默认导出目标
 
-Default export target should become a markdown-first folder structure.
+默认导出目标应变为 markdown 优先的文件夹结构。
 
-Example:
+示例：
 
 ```text
 my-company/
@@ -372,69 +373,69 @@ my-company/
 └── skills/
 ```
 
-### 9.2 Export Rules
+### 9.2 导出规则
 
-Exports should:
+导出应：
 
-- omit machine-local ids
-- omit timestamps and counters unless explicitly needed
-- omit secret values
-- omit local absolute paths
-- omit duplicated inline prompt content from `.paperclip.yaml` when `AGENTS.md` already carries the instructions
-- preserve references and attribution
-- emit `.paperclip.yaml` alongside the base package
-- express adapter env/secrets as portable env input declarations rather than exported secret binding ids
-- preserve compatible `SKILL.md` content as-is
+- 省略机器本地 id
+- 省略时间戳和计数器，除非明确需要
+- 省略密钥值
+- 省略本地绝对路径
+- 当 `AGENTS.md` 已携带指令时，省略 `.paperclip.yaml` 中重复的内联 prompt 内容
+- 保留引用和归属
+- 在基础包旁生成 `.paperclip.yaml`
+- 将适配器环境/密钥表示为可移植的环境输入声明，而不是导出的密钥绑定 id
+- 按原样保留兼容的 `SKILL.md` 内容
 
-Projects and issues should not be exported by default.
+项目和任务默认不应导出。
 
-They should be opt-in through selectors such as:
+它们应通过选择器选择加入，如：
 
 - `--projects project-shortname-1,project-shortname-2`
 - `--issues PAP-1,PAP-3`
 - `--project-issues project-shortname-1,project-shortname-2`
 
-This supports “clean public company package” workflows where a maintainer exports a follower-facing company package without bundling active work items every time.
+这支持"干净的公开公司包"工作流，维护者可以导出面向关注者的公司包而不必每次都捆绑活跃的工作项。
 
-### 9.3 Export Units
+### 9.3 导出单元
 
-Initial export units:
+初始导出单元：
 
-- company package
-- team package
-- single agent package
+- 公司包
+- 团队包
+- 单个智能体包
 
-Later optional units:
+后续可选单元：
 
-- skill pack export
-- seed projects/tasks bundle
+- 技能包导出
+- 种子项目/任务捆绑
 
-## 10. Storage Model Inside Paperclip
+## 10. Paperclip 内部的存储模型
 
-### 10.1 Short-Term
+### 10.1 短期
 
-In the first phase, imported entities can continue mapping onto current runtime tables:
+在第一阶段，导入的实体可以继续映射到当前运行时表：
 
-- company -> companies
-- agent -> agents
-- team -> imported agent subtree attachment plus package provenance grouping
-- skill -> company-scoped reusable package metadata plus agent-scoped desired-skill attachment state where supported
+- 公司 -> companies
+- 智能体 -> agents
+- 团队 -> 导入的智能体子树挂载加上包来源追溯分组
+- 技能 -> 公司范围的可复用包元数据加上适配器支持情况下的智能体范围期望技能挂载状态
 
-### 10.2 Medium-Term
+### 10.2 中期
 
-Paperclip should add managed package/provenance records so imports are not anonymous one-off copies.
+Paperclip 应添加托管的包/来源追溯记录，使导入不再是匿名的一次性复制。
 
-Needed capabilities:
+需要的能力：
 
-- remember install origin
-- support re-import / upgrade
-- distinguish local edits from upstream package state
-- preserve external refs and package-level metadata
-- preserve imported team grouping without requiring a runtime `teams` table immediately
-- preserve desired-skill state separately from adapter runtime state
-- support both company-scoped reusable skills and agent-scoped skill attachments
+- 记住安装来源
+- 支持重新导入 / 升级
+- 区分本地编辑和上游包状态
+- 保留外部引用和包级元数据
+- 保留导入团队分组而不要求立即有运行时 `teams` 表
+- 将期望技能状态与适配器运行时状态分开保留
+- 支持公司范围的可复用技能和智能体范围的技能挂载
 
-Suggested future tables:
+建议的未来表：
 
 - package_installs
 - package_install_entities
@@ -442,203 +443,203 @@ Suggested future tables:
 - agent_skill_desires
 - adapter_skill_snapshots
 
-This is not required for phase 1 UI, but it is required for a robust long-term system.
+这对第一阶段 UI 不是必需的，但对健壮的长期系统是必需的。
 
-## 11. API Plan
+## 11. API 计划
 
-### 11.1 Keep Existing Endpoints Initially
+### 11.1 初始保留现有端点
 
-Retain:
+保留：
 
 - `POST /api/companies/:companyId/export`
 - `POST /api/companies/import/preview`
 - `POST /api/companies/import`
 
-But evolve payloads toward the markdown-first graph model.
+但将负载向 markdown 优先的图模型演进。
 
-### 11.2 New API Capabilities
+### 11.2 新 API 能力
 
-Add support for:
+添加支持：
 
-- package root resolution from local/GitHub inputs
-- graph resolution preview
-- source pin and hash verification results
-- entity-level selection
-- team attach target selection
-- provenance-aware collision planning
+- 从本地/GitHub 输入的包根解析
+- 图解析预览
+- 源固定和哈希验证结果
+- 实体级选择
+- 团队挂载目标选择
+- 来源追溯感知的冲突规划
 
-### 11.3 Parsing Changes
+### 11.3 解析变更
 
-Replace the current ad hoc markdown frontmatter parser with a real parser that can handle:
+将当前临时的 markdown frontmatter 解析器替换为能处理以下内容的真正解析器：
 
-- nested YAML
-- arrays/objects reliably
-- consistent round-tripping
+- 嵌套 YAML
+- 数组/对象可靠解析
+- 一致的往返转换
 
-This is a prerequisite for the new package model.
+这是新包模型的先决条件。
 
-## 12. CLI Plan
+## 12. CLI 计划
 
-The CLI should continue to support direct import/export without a registry.
+CLI 应继续支持无需注册中心的直接导入/导出。
 
-Target commands:
+目标命令：
 
 - `paperclipai company export <company-id> --out <path>`
 - `paperclipai company import --from <path-or-url> --dry-run`
 - `paperclipai company import --from <path-or-url> --target existing -C <company-id>`
 
-Planned additions:
+计划添加：
 
 - `--package-kind company|team|agent`
-- `--attach-under <agent-id-or-slug>` for team imports
+- `--attach-under <agent-id-or-slug>` 用于团队导入
 - `--strict-pins`
 - `--allow-unpinned`
 - `--materialize-references`
 - `--sync-skills`
 
-## 13. UI Plan
+## 13. UI 计划
 
-### 13.1 Company Settings Import / Export
+### 13.1 公司设置导入/导出
 
-Add a real import/export section to Company Settings.
+在公司设置中添加真正的导入/导出部分。
 
-Export UI:
+导出 UI：
 
-- export package kind selector
-- include options
-- local download/export destination guidance
-- attribution/reference summary
+- 导出包类型选择器
+- 包含选项
+- 本地下载/导出目标指引
+- 归属/引用摘要
 
-Import UI:
+导入 UI：
 
-- source entry:
-  - upload/folder where supported
+- 源输入：
+  - 支持上传/文件夹
   - GitHub URL
-  - generic URL
-- preview pane with:
-  - resolved package root
-  - dependency tree
-  - checkboxes by entity
-  - trust/licensing warnings
-  - secrets requirements
-  - collision plan
+  - 通用 URL
+- 预览面板包含：
+  - 解析的包根
+  - 依赖树
+  - 按实体的复选框
+  - 信任/许可证警告
+  - 密钥要求
+  - 冲突计划
 
-### 13.2 Team Import UX
+### 13.2 团队导入 UX
 
-If importing a team into an existing company:
+如果将团队导入到现有公司：
 
-- show the subtree structure
-- require the user to choose where to attach it
-- preview manager/reporting updates before apply
-- preserve imported-team provenance so the UI can later say “these agents came from team package X”
+- 显示子树结构
+- 要求用户选择挂载位置
+- 在应用前预览经理/汇报关系更新
+- 保留导入团队来源追溯，以便 UI 后续可以说"这些智能体来自团队包 X"
 
-### 13.3 Skills UX
+### 13.3 技能 UX
 
-See also:
+另请参见：
 
 - `doc/plans/2026-03-14-skills-ui-product-plan.md`
 
-If importing skills:
+如果导入技能：
 
-- show whether each skill is local, vendored, or referenced
-- show whether it contains scripts/assets
-- preserve Agent Skills compatibility in presentation and export
-- preserve `skills.sh` compatibility in both import and install flows
-- show agent skill attachments by shortname/slug rather than noisy file paths
-- treat agent skills as a dedicated agent tab, not just another subsection of configuration
-- show current adapter-reported skills when supported
-- show desired package skills separately from actual adapter state
-- offer reconcile actions when the adapter supports sync
+- 显示每个技能是本地的、vendored 的还是引用的
+- 显示是否包含脚本/资源文件
+- 在展示和导出中保留 Agent Skills 兼容性
+- 在导入和安装流程中保留 `skills.sh` 兼容性
+- 通过简称/slug 显示智能体技能挂载，而不是嘈杂的文件路径
+- 将智能体技能作为专用的智能体标签页，而不仅是配置的一个子部分
+- 在支持的情况下显示当前适配器报告的技能
+- 将期望包技能与实际适配器状态分开显示
+- 在适配器支持同步时提供协调操作
 
-## 14. Rollout Phases
+## 14. 推出阶段
 
-### Phase 1: Stabilize Current V1 Portability
+### 第一阶段：稳定当前 V1 可移植性
 
-- add tests for current portability flows
-- replace the frontmatter parser
-- add Company Settings UI for current import/export capabilities
-- start cutover work toward the markdown-first package reader
+- 为当前可移植性流程添加测试
+- 替换 frontmatter 解析器
+- 为当前导入/导出能力添加公司设置 UI
+- 开始向 markdown 优先包读取器的切换工作
 
-### Phase 2: Markdown-First Package Reader
+### 第二阶段：Markdown 优先包读取器
 
-- support `COMPANY.md` / `TEAM.md` / `AGENTS.md` root detection
-- build internal graph from markdown-first packages
-- support local folder and GitHub repo inputs natively
-- support agent skill references by shortname/slug
-- resolve local `skills/<slug>/SKILL.md` packages by convention
-- support `skills.sh`-compatible skill repos as V1 package sources
+- 支持 `COMPANY.md` / `TEAM.md` / `AGENTS.md` 根检测
+- 从 markdown 优先包构建内部图
+- 原生支持本地文件夹和 GitHub 仓库输入
+- 支持通过简称/slug 引用智能体技能
+- 按约定解析本地 `skills/<slug>/SKILL.md` 包
+- 支持 `skills.sh` 兼容的技能仓库作为 V1 包源
 
-### Phase 3: Graph-Based Import UX And Skill Surfaces
+### 第三阶段：基于图的导入 UX 和技能界面
 
-- entity tree preview
-- checkbox selection
-- team subtree attach flow
-- licensing/trust/reference warnings
-- company skill library groundwork
-- dedicated agent `Skills` tab groundwork
-- adapter skill read/sync UI groundwork
+- 实体树预览
+- 复选框选择
+- 团队子树挂载流程
+- 许可证/信任/引用警告
+- 公司技能库基础工作
+- 专用智能体 `Skills` 标签页基础工作
+- 适配器技能读取/同步 UI 基础工作
 
-### Phase 4: New Export Model
+### 第四阶段：新导出模型
 
-- export markdown-first folder structure by default
+- 默认导出 markdown 优先的文件夹结构
 
-### Phase 5: Provenance And Upgrades
+### 第五阶段：来源追溯和升级
 
-- persist install provenance
-- support package-aware re-import and upgrades
-- improve collision matching beyond slug-only
-- add imported-team provenance grouping
-- add desired-vs-actual skill sync state
+- 持久化安装来源追溯
+- 支持包感知的重新导入和升级
+- 改进超越仅 slug 的冲突匹配
+- 添加导入团队来源追溯分组
+- 添加期望与实际技能同步状态
 
-### Phase 6: Optional Seed Content
+### 第六阶段：可选种子内容
 
-- goals
-- projects
-- starter issues/tasks
+- 目标
+- 项目
+- 启动任务
 
-This phase is intentionally after the structural model is stable.
+此阶段有意安排在结构模型稳定之后。
 
-## 15. Documentation Plan
+## 15. 文档计划
 
-Primary docs:
+主要文档：
 
-- `docs/companies/companies-spec.md` as the package-format draft
-- this implementation plan for rollout sequencing
+- `docs/companies/companies-spec.md` 作为包格式草案
+- 本实现计划用于推出排序
 
-Docs to update later as implementation lands:
+随实现落地后续更新的文档：
 
 - `doc/SPEC-implementation.md`
 - `docs/api/companies.md`
 - `docs/cli/control-plane-commands.md`
-- board operator docs for Company Settings import/export
+- 面向 board 操作者的公司设置导入/导出文档
 
-## 16. Open Questions
+## 16. 开放问题
 
-1. Should imported skill packages be stored as managed package files in Paperclip storage, or only referenced at import time?
-   Decision: managed package files should support both company-scoped reuse and agent-scoped attachment.
-2. What is the minimum adapter skill interface needed to make the UI useful across Claude Code, Codex, OpenClaw, and future adapters?
-   Decision: use the baseline interface in section 8.5.
-3. Should Paperclip support direct local folder selection in the web UI, or keep that CLI-only initially?
-4. Do we want optional generated lock files in phase 2, or defer them until provenance work?
-5. How strict should pinning be by default for GitHub references:
-   - warn on unpinned
-   - or block in normal mode
-6. Is package-provenance grouping enough for imported teams, or do we expect product requirements soon that would justify a first-class runtime `teams` table?
-   Decision: provenance grouping is enough for the import/export product model for now.
+1. 导入的技能包应作为托管包文件存储在 Paperclip 存储中，还是仅在导入时引用？
+   决定：托管包文件应同时支持公司范围的复用和智能体范围的挂载。
+2. 使 UI 在 Claude Code、Codex、OpenClaw 和未来适配器间有用所需的最小适配器技能接口是什么？
+   决定：使用第 8.5 节中的基线接口。
+3. Paperclip 是否应该在 Web UI 中支持直接本地文件夹选择，还是初始保持仅 CLI？
+4. 我们是否希望在第二阶段使用可选的生成锁文件，还是推迟到来源追溯工作？
+5. GitHub 引用的固定默认应多严格：
+   - 对未固定的发出警告
+   - 还是在正常模式下阻止
+6. 包来源追溯分组对导入团队是否足够，还是我们预期很快会有产品需求来证明一等运行时 `teams` 表的合理性？
+   决定：对于当前的导入/导出产品模型，来源追溯分组足够。
 
-## 17. Recommendation
+## 17. 建议
 
-Engineering should treat this as the current plan of record for company import/export beyond the existing V1 portability feature.
+工程团队应将此视为公司导入/导出在现有 V1 可移植性功能之后的当前记录计划。
 
-Immediate next steps:
+立即的下一步：
 
-1. accept `docs/companies/companies-spec.md` as the package-format draft
-2. implement phase 1 stabilization work
-3. build phase 2 markdown-first package reader before expanding ClipHub or `companies.sh`
-4. treat the old manifest-based format as deprecated and not part of the future surface
+1. 接受 `docs/companies/companies-spec.md` 作为包格式草案
+2. 实现第一阶段稳定工作
+3. 在扩展 ClipHub 或 `companies.sh` 之前构建第二阶段 markdown 优先包读取器
+4. 将旧的基于清单的格式视为已弃用且不属于未来表面
 
-This keeps Paperclip aligned with:
+这使 Paperclip 保持与以下方向对齐：
 
-- GitHub-native distribution
-- Agent Skills compatibility
-- a registry-optional ecosystem model
+- GitHub 原生分发
+- Agent Skills 兼容性
+- 注册中心可选的生态系统模型

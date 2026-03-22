@@ -1,329 +1,329 @@
-# Agent Chat UI and Issue-Backed Conversations
+# 智能体聊天 UI 和基于任务的对话
 
-## Context
+## 背景
 
-`PAP-475` asks two related questions:
+`PAP-475` 提出了两个相关问题：
 
-1. What UI kit should Paperclip use if we add a chat surface with an agent?
-2. How should chat fit the product without breaking the current issue-centric model?
+1. 如果我们添加与智能体的聊天界面，Paperclip 应该使用什么 UI 套件？
+2. 聊天应该如何融入产品，而不破坏当前以任务为中心的模型？
 
-This is not only a component-library decision. In Paperclip today:
+这不仅仅是组件库的选择。在当前的 Paperclip 中：
 
-- V1 explicitly says communication is `tasks + comments only`, with no separate chat system.
-- Issues already carry assignment, audit trail, billing code, project linkage, goal linkage, and active run linkage.
-- Live run streaming already exists on issue detail pages.
-- Agent sessions already persist by `taskKey`, and today `taskKey` falls back to `issueId`.
-- The OpenClaw gateway adapter already supports an issue-scoped session key strategy.
+- V1 明确表示通信是"仅任务 + 评论"，没有单独的聊天系统。
+- 任务已经承载了分配、审计跟踪、计费代码、项目关联、目标关联和活跃运行关联。
+- 实时运行流已经存在于任务详情页面上。
+- 智能体会话已经按 `taskKey` 持久化，而目前 `taskKey` 回退到 `issueId`。
+- OpenClaw 网关适配器已经支持任务范围的会话键策略。
 
-That means the cheapest useful path is not "add a second messaging product inside Paperclip." It is "add a better conversational UI on top of issue and run primitives we already have."
+这意味着最低成本的有用路径不是"在 Paperclip 内添加第二个消息产品"，而是"在我们已有的任务和运行原语之上添加更好的对话 UI"。
 
-## Current Constraints From the Codebase
+## 来自代码库的当前约束
 
-### Durable work object
+### 持久化工作对象
 
-The durable object in Paperclip is the issue, not a chat thread.
+Paperclip 中的持久化对象是任务，而非聊天线程。
 
-- `IssueDetail` already combines comments, linked runs, live runs, and activity into one timeline.
-- `CommentThread` already renders markdown comments and supports reply/reassignment flows.
-- `LiveRunWidget` already renders streaming assistant/tool/system output for active runs.
+- `IssueDetail` 已经将评论、关联运行、实时运行和活动组合成一个时间线。
+- `CommentThread` 已经渲染 markdown 评论并支持回复/重新分配流程。
+- `LiveRunWidget` 已经为活跃运行渲染流式的 assistant/tool/system 输出。
 
-### Session behavior
+### 会话行为
 
-Session continuity is already task-shaped.
+会话连续性已经是任务形状的。
 
-- `heartbeat.ts` derives `taskKey` from `taskKey`, then `taskId`, then `issueId`.
-- `agent_task_sessions` stores session state per company + agent + adapter + task key.
-- OpenClaw gateway supports `sessionKeyStrategy=issue|fixed|run`, and `issue` already matches the Paperclip mental model well.
+- `heartbeat.ts` 从 `taskKey` 派生 `taskKey`，然后是 `taskId`，然后是 `issueId`。
+- `agent_task_sessions` 按公司 + 智能体 + 适配器 + 任务键存储会话状态。
+- OpenClaw 网关支持 `sessionKeyStrategy=issue|fixed|run`，其中 `issue` 已经很好地匹配了 Paperclip 的心智模型。
 
-That means "chat with the CEO about this issue" naturally maps to one durable session per issue today without inventing a second session system.
+这意味着"与 CEO 讨论这个任务"自然映射到每个任务一个持久会话，无需发明第二个会话系统。
 
-### Billing behavior
+### 计费行为
 
-Billing is already issue-aware.
+计费已经是任务感知的。
 
-- `cost_events` can attach to `issueId`, `projectId`, `goalId`, and `billingCode`.
-- heartbeat context already propagates issue linkage into runs and cost rollups.
+- `cost_events` 可以附加到 `issueId`、`projectId`、`goalId` 和 `billingCode`。
+- 心跳上下文已经将任务关联传播到运行和成本汇总中。
 
-If chat leaves the issue model, Paperclip would need a second billing story. That is avoidable.
+如果聊天离开任务模型，Paperclip 将需要第二套计费方案。这是可以避免的。
 
-## UI Kit Recommendation
+## UI 套件推荐
 
-## Recommendation: `assistant-ui`
+## 推荐：`assistant-ui`
 
-Use `assistant-ui` as the chat presentation layer.
+使用 `assistant-ui` 作为聊天呈现层。
 
-Why it fits Paperclip:
+为什么它适合 Paperclip：
 
-- It is a real chat UI kit, not just a hook.
-- It is composable and aligned with shadcn-style primitives, which matches the current UI stack well.
-- It explicitly supports custom backends, which matters because Paperclip talks to agents through issue comments, heartbeats, and run streams rather than direct provider calls.
-- It gives us polished chat affordances quickly: message list, composer, streaming text, attachments, thread affordances, and markdown-oriented rendering.
+- 它是一个真正的聊天 UI 套件，不只是一个 hook。
+- 它是可组合的，并与 shadcn 风格的原语对齐，这很好地匹配了当前的 UI 栈。
+- 它明确支持自定义后端，这很重要，因为 Paperclip 通过任务评论、心跳和运行流与智能体通信，而不是直接的提供者调用。
+- 它快速提供精致的聊天功能：消息列表、编辑器、流式文本、附件、线程功能和面向 markdown 的渲染。
 
-Why not make "the Vercel one" the primary choice:
+为什么不将"Vercel 方案"作为首选：
 
-- Vercel AI SDK is stronger today than the older "just `useChat` over `/api/chat`" framing. Its transport layer is flexible and can support custom protocols.
-- But AI SDK is still better understood here as a transport/runtime protocol layer than as the best end-user chat surface for Paperclip.
-- Paperclip does not need Vercel to own message state, persistence, or the backend contract. Paperclip already has its own issue, run, and session model.
+- Vercel AI SDK 今天比旧的"只是在 `/api/chat` 上使用 `useChat`"要强大得多。它的传输层很灵活，可以支持自定义协议。
+- 但 AI SDK 在这里更适合被理解为传输/运行时协议层，而非 Paperclip 最好的终端用户聊天界面。
+- Paperclip 不需要 Vercel 来拥有消息状态、持久化或后端合约。Paperclip 已经有自己的任务、运行和会话模型。
 
-So the clean split is:
+所以清晰的分工是：
 
-- `assistant-ui` for UI primitives
-- Paperclip-owned runtime/store for state, persistence, and transport
-- optional AI SDK usage later only if we want its stream protocol or client transport abstraction
+- `assistant-ui` 用于 UI 原语
+- Paperclip 自有的运行时/存储用于状态、持久化和传输
+- 仅在我们需要其流协议或客户端传输抽象时，后续可选使用 AI SDK
 
-## Product Options
+## 产品选项
 
-### Option A: Separate chat object
+### 选项 A：独立的聊天对象
 
-Create a new top-level chat/thread model unrelated to issues.
+创建一个与任务无关的新顶层聊天/线程模型。
 
-Pros:
+优势：
 
-- clean mental model if users want freeform conversation
-- easy to hide from issue boards
+- 如果用户想要自由形式对话，心智模型清晰
+- 容易从任务看板中隐藏
 
-Cons:
+劣势：
 
-- breaks the current V1 product decision that communication is issue-centric
-- needs new persistence, billing, session, permissions, activity, and wakeup rules
-- creates a second "why does this exist?" object beside issues
-- makes "pick up an old chat" a separate retrieval problem
+- 打破了当前 V1 产品决策——通信是以任务为中心的
+- 需要新的持久化、计费、会话、权限、活动和唤醒规则
+- 在任务旁边创建第二个"这为什么存在？"的对象
+- 使"找回旧聊天"成为一个单独的检索问题
 
-Verdict: not recommended for V1.
+结论：不推荐用于 V1。
 
-### Option B: Every chat is an issue
+### 选项 B：每次聊天都是一个任务
 
-Treat chat as a UI mode over an issue. The issue remains the durable record.
+将聊天视为任务上的 UI 模式。任务仍然是持久化记录。
 
-Pros:
+优势：
 
-- matches current product spec
-- billing, runs, comments, approvals, and activity already work
-- sessions already resume on issue identity
-- works with all adapters, including OpenClaw, without new agent auth or a second API surface
+- 匹配当前产品规格
+- 计费、运行、评论、审批和活动已经可用
+- 会话已经在任务标识上恢复
+- 适用于所有适配器，包括 OpenClaw，无需新的智能体认证或第二个 API 界面
 
-Cons:
+劣势：
 
-- some chats are not really "tasks" in a board sense
-- onboarding and review conversations may clutter normal issue lists
+- 某些聊天在看板意义上不是真正的"任务"
+- 入职和评审对话可能会混淆正常的任务列表
 
-Verdict: best V1 foundation.
+结论：最佳 V1 基础。
 
-### Option C: Hybrid with hidden conversation issues
+### 选项 C：带隐藏对话任务的混合方案
 
-Back every conversation with an issue, but allow a conversation-flavored issue mode that is hidden from default execution boards unless promoted.
+用任务支撑每次对话，但允许对话风格的任务模式，默认情况下从执行看板中隐藏，除非被提升。
 
-Pros:
+优势：
 
-- preserves the issue-centric backend
-- gives onboarding/review chat a cleaner UX
-- preserves billing and session continuity
+- 保留以任务为中心的后端
+- 为入职/评审聊天提供更清晰的 UX
+- 保留计费和会话连续性
 
-Cons:
+劣势：
 
-- requires extra UI rules and possibly a small schema or filtering addition
-- can become a disguised second system if not kept narrow
+- 需要额外的 UI 规则，可能还需要小的 schema 或过滤添加
+- 如果不保持窄范围，可能会变成一个伪装的第二系统
 
-Verdict: likely the right product shape after a basic issue-backed MVP.
+结论：在基本的任务支撑 MVP 之后，可能是正确的产品形态。
 
-## Recommended Product Model
+## 推荐产品模型
 
-### Phase 1 product decision
+### 第一阶段产品决策
 
-For the first implementation, chat should be issue-backed.
+首次实现中，聊天应该是任务支撑的。
 
-More specifically:
+更具体地说：
 
-- the board opens a chat surface for an issue
-- sending a message is a comment mutation on that issue
-- the assigned agent is woken through the existing issue-comment flow
-- streaming output comes from the existing live run stream for that issue
-- durable assistant output remains comments and run history, not an extra transcript store
+- board 为一个任务打开聊天界面
+- 发送消息是该任务上的评论变更
+- 通过现有的任务评论流程唤醒分配的智能体
+- 流式输出来自该任务的现有实时运行流
+- 持久化的 assistant 输出保留为评论和运行历史，而非额外的对话存储
 
-This keeps Paperclip honest about what it is:
+这保持了 Paperclip 对自身定位的诚实：
 
-- the control plane stays issue-centric
-- chat is a better way to interact with issue work, not a new collaboration product
+- 控制平面保持以任务为中心
+- 聊天是与任务工作交互的更好方式，而非新的协作产品
 
-### Onboarding and CEO conversations
+### 入职和 CEO 对话
 
-For onboarding, weekly reviews, and "chat with the CEO", use a conversation issue rather than a global chat tab.
+对于入职、每周评审和"与 CEO 聊天"，使用对话任务而非全局聊天标签。
 
-Suggested shape:
+建议形态：
 
-- create a board-initiated issue assigned to the CEO
-- mark it as conversation-flavored in UI treatment
-- optionally hide it from normal issue boards by default later
-- keep all cost/run/session linkage on that issue
+- 创建一个 board 发起的、分配给 CEO 的任务
+- 在 UI 处理中标记为对话风格
+- 后续可选择默认从正常任务看板中隐藏
+- 在该任务上保持所有成本/运行/会话关联
 
-This solves several concerns at once:
+这一次解决了几个问题：
 
-- no separate API key or direct provider wiring is needed
-- the same CEO adapter is used
-- old conversations are recovered through normal issue history
-- the CEO can still create or update real child issues from the conversation
+- 不需要单独的 API 密钥或直接的提供者接线
+- 使用相同的 CEO 适配器
+- 通过正常的任务历史恢复旧对话
+- CEO 仍然可以从对话中创建或更新真实的子任务
 
-## Session Model
+## 会话模型
 
 ### V1
 
-Use one durable conversation session per issue.
+每个任务使用一个持久化对话会话。
 
-That already matches current behavior:
+这已经匹配当前行为：
 
-- adapter task sessions persist against `taskKey`
-- `taskKey` already falls back to `issueId`
-- OpenClaw already supports an issue-scoped session key
+- 适配器任务会话按 `taskKey` 持久化
+- `taskKey` 已经回退到 `issueId`
+- OpenClaw 已经支持任务范围的会话键
 
-This means "resume the CEO conversation later" works by reopening the same issue and waking the same agent on the same issue.
+这意味着"稍后恢复 CEO 对话"可以通过重新打开同一任务并在同一任务上唤醒同一智能体来工作。
 
-### What not to add yet
+### 暂时不要添加的内容
 
-Do not add multi-thread-per-issue chat in the first pass.
+第一轮不要添加每个任务的多线程聊天。
 
-If Paperclip later needs several parallel threads on one issue, then add an explicit conversation identity and derive:
+如果 Paperclip 后来需要一个任务上的多个并行线程，那时添加一个显式的对话标识并派生：
 
 - `taskKey = issue:<issueId>:conversation:<conversationId>`
 - OpenClaw `sessionKey = paperclip:conversation:<conversationId>`
 
-Until that requirement becomes real, one issue == one durable conversation is the simpler and better rule.
+在该需求变为真实之前，一个任务 == 一个持久化对话是更简单且更好的规则。
 
-## Billing Model
+## 计费模型
 
-Chat should not invent a separate billing pipeline.
+聊天不应发明一个单独的计费管道。
 
-All chat cost should continue to roll up through the issue:
+所有聊天成本应继续通过任务汇总：
 
 - `cost_events.issueId`
-- project and goal rollups through existing relationships
-- issue `billingCode` when present
+- 通过现有关系的项目和目标汇总
+- 存在时的任务 `billingCode`
 
-If a conversation is important enough to exist, it is important enough to have a durable issue-backed audit and cost trail.
+如果一个对话重要到需要存在，那它就重要到需要一个持久化的任务支撑的审计和成本跟踪。
 
-This is another reason ephemeral freeform chat should not be the default.
+这是临时的自由形式聊天不应成为默认的另一个原因。
 
-## UI Architecture
+## UI 架构
 
-### Recommended stack
+### 推荐栈
 
-1. Keep Paperclip as the source of truth for message history and run state.
-2. Add `assistant-ui` as the rendering/composer layer.
-3. Build a Paperclip runtime adapter that maps:
-   - issue comments -> user/assistant messages
-   - live run deltas -> streaming assistant messages
-   - issue attachments -> chat attachments
-4. Keep current markdown rendering and code-block support where possible.
+1. 保持 Paperclip 作为消息历史和运行状态的真实来源。
+2. 添加 `assistant-ui` 作为渲染/编辑器层。
+3. 构建一个 Paperclip 运行时适配器来映射：
+   - 任务评论 -> 用户/assistant 消息
+   - 实时运行增量 -> 流式 assistant 消息
+   - 任务附件 -> 聊天附件
+4. 在可能的地方保持当前的 markdown 渲染和代码块支持。
 
-### Interaction flow
+### 交互流程
 
-1. Board opens issue detail in "Chat" mode.
-2. Existing comment history is mapped into chat messages.
-3. When the board sends a message:
+1. Board 以"聊天"模式打开任务详情。
+2. 现有评论历史被映射为聊天消息。
+3. 当 board 发送消息时：
    - `POST /api/issues/{id}/comments`
-   - optionally interrupt the active run if the UX wants "send and replace current response"
-4. Existing issue comment wakeup logic wakes the assignee.
-5. Existing `/issues/{id}/live-runs` and `/issues/{id}/active-run` data feeds drive streaming.
-6. When the run completes, durable state remains in comments/runs/activity as it does now.
+   - 如果 UX 想要"发送并替换当前响应"则可选中断活跃运行
+4. 现有的任务评论唤醒逻辑唤醒受理人。
+5. 现有的 `/issues/{id}/live-runs` 和 `/issues/{id}/active-run` 数据 feed 驱动流式传输。
+6. 运行完成后，持久化状态像现在一样保留在评论/运行/活动中。
 
-### Why this fits the current code
+### 为什么这适合当前代码
 
-Paperclip already has most of the backend pieces:
+Paperclip 已经有大部分后端部件：
 
-- issue comments
-- run timeline
-- run log and event streaming
-- markdown rendering
-- attachment support
-- assignee wakeups on comments
+- 任务评论
+- 运行时间线
+- 运行日志和事件流
+- markdown 渲染
+- 附件支持
+- 评论时的受理人唤醒
 
-The missing piece is mostly the presentation and the mapping layer, not a new backend domain.
+缺失的部分主要是呈现和映射层，而非新的后端领域。
 
-## Agent Scope
+## 智能体范围
 
-Do not launch this as "chat with every agent."
+不要将此作为"与每个智能体聊天"来推出。
 
-Start narrower:
+从更窄的范围开始：
 
-- onboarding chat with CEO
-- workflow/review chat with CEO
-- maybe selected exec roles later
+- 与 CEO 的入职聊天
+- 与 CEO 的工作流/评审聊天
+- 后续可能是选定的执行角色
 
-Reasons:
+原因：
 
-- it keeps the feature from becoming a second inbox/chat product
-- it limits permission and UX questions early
-- it matches the stated product demand
+- 防止该功能变成第二个收件箱/聊天产品
+- 在早期限制权限和 UX 问题
+- 匹配既定的产品需求
 
-If direct chat with other agents becomes useful later, the same issue-backed pattern can expand cleanly.
+如果后来与其他智能体的直接聊天变得有用，同样的任务支撑模式可以干净地扩展。
 
-## Recommended Delivery Phases
+## 推荐交付阶段
 
-### Phase 1: Chat UI on existing issues
+### 第一阶段：现有任务上的聊天 UI
 
-- add a chat presentation mode to issue detail
-- use `assistant-ui`
-- map comments + live runs into the chat surface
-- no schema change
-- no new API surface
+- 在任务详情中添加聊天呈现模式
+- 使用 `assistant-ui`
+- 将评论 + 实时运行映射到聊天界面
+- 无 schema 变更
+- 无新 API 界面
 
-This is the highest-leverage step because it tests whether the UX is actually useful before product model expansion.
+这是最高杠杆的步骤，因为它在产品模型扩展之前测试了 UX 是否实际有用。
 
-### Phase 2: Conversation-flavored issues for CEO chat
+### 第二阶段：CEO 聊天的对话风格任务
 
-- add a lightweight conversation classification
-- support creation of CEO conversation issues from onboarding and workflow entry points
-- optionally hide these from normal backlog/board views by default
+- 添加轻量级的对话分类
+- 支持从入职和工作流入口点创建 CEO 对话任务
+- 可选默认从正常待办/看板视图中隐藏
 
-The smallest implementation could be a label or issue metadata flag. If it becomes important enough, then promote it to a first-class issue subtype later.
+最小实现可以是标签或任务元数据标志。如果它变得足够重要，后续再提升为一等公民的任务子类型。
 
-### Phase 3: Promotion and thread splitting only if needed
+### 第三阶段：仅在需要时的提升和线程拆分
 
-Only if we later see a real need:
+仅当我们后来看到真实需求时：
 
-- allow promoting a conversation to a formal task issue
-- allow several threads per issue with explicit conversation identity
+- 允许将对话提升为正式任务
+- 允许每个任务有多个线程，带显式的对话标识
 
-This should be demand-driven, not designed up front.
+这应该是需求驱动的，而非预先设计。
 
-## Clear Recommendation
+## 明确推荐
 
-If the question is "what should we use?", the answer is:
+如果问题是"我们应该用什么？"，答案是：
 
-- use `assistant-ui` for the chat UI
-- do not treat raw Vercel AI SDK UI hooks as the main product answer
-- keep chat issue-backed in V1
-- use the current issue comment + run + session + billing model rather than inventing a parallel chat subsystem
+- 使用 `assistant-ui` 作为聊天 UI
+- 不要将原始的 Vercel AI SDK UI hook 作为主要产品答案
+- 在 V1 中保持聊天以任务为支撑
+- 使用当前的任务评论 + 运行 + 会话 + 计费模型，而非发明一个并行的聊天子系统
 
-If the question is "how should we think about chat in Paperclip?", the answer is:
+如果问题是"我们应该如何看待 Paperclip 中的聊天？"，答案是：
 
-- chat is a mode of interacting with issue-backed agent work
-- not a separate product silo
-- not an excuse to stop tracing work, cost, and session history back to the issue
+- 聊天是与任务支撑的智能体工作交互的一种模式
+- 不是一个独立的产品竖井
+- 不是停止将工作、成本和会话历史追溯到任务的借口
 
-## Implementation Notes
+## 实现说明
 
-### Immediate implementation target
+### 立即实现目标
 
-The most defensible first build is:
+最可防御的首次构建是：
 
-- add a chat tab or chat-focused layout on issue detail
-- back it with the currently assigned agent on that issue
-- use `assistant-ui` primitives over existing comments and live run events
+- 在任务详情上添加聊天标签或聊天聚焦布局
+- 用该任务上当前分配的智能体支撑它
+- 在现有评论和实时运行事件之上使用 `assistant-ui` 原语
 
-### Defer these until proven necessary
+### 推迟到证明有必要时
 
-- standalone global chat objects
-- multi-thread chat inside one issue
-- chat with every agent in the org
-- a second persistence layer for message history
-- separate cost tracking for chats
+- 独立的全局聊天对象
+- 一个任务内的多线程聊天
+- 与组织中每个智能体聊天
+- 第二个消息历史持久化层
+- 聊天的单独成本跟踪
 
-## References
+## 参考
 
-- V1 communication model: `doc/SPEC-implementation.md`
-- Current issue/comment/run UI: `ui/src/pages/IssueDetail.tsx`, `ui/src/components/CommentThread.tsx`, `ui/src/components/LiveRunWidget.tsx`
-- Session persistence and task key derivation: `server/src/services/heartbeat.ts`, `packages/db/src/schema/agent_task_sessions.ts`
-- OpenClaw session routing: `packages/adapters/openclaw-gateway/README.md`
-- assistant-ui docs: <https://www.assistant-ui.com/docs>
-- assistant-ui repo: <https://github.com/assistant-ui/assistant-ui>
-- AI SDK transport docs: <https://ai-sdk.dev/docs/ai-sdk-ui/transport>
+- V1 通信模型：`doc/SPEC-implementation.md`
+- 当前任务/评论/运行 UI：`ui/src/pages/IssueDetail.tsx`、`ui/src/components/CommentThread.tsx`、`ui/src/components/LiveRunWidget.tsx`
+- 会话持久化和任务键派生：`server/src/services/heartbeat.ts`、`packages/db/src/schema/agent_task_sessions.ts`
+- OpenClaw 会话路由：`packages/adapters/openclaw-gateway/README.md`
+- assistant-ui 文档：<https://www.assistant-ui.com/docs>
+- assistant-ui 仓库：<https://github.com/assistant-ui/assistant-ui>
+- AI SDK 传输文档：<https://ai-sdk.dev/docs/ai-sdk-ui/transport>
