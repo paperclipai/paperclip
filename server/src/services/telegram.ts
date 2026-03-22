@@ -1,8 +1,8 @@
-import type { LiveEvent } from "@paperclipai/shared";
+import type { LiveEvent, TelegramNotificationLevel } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { subscribeAllLiveEvents } from "./live-events.js";
 import type { Db } from "@paperclipai/db";
-import { companies, telegramThreadMappings, agents } from "@paperclipai/db";
+import { companies, telegramThreadMappings, agents, heartbeatRuns, issues } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 
 const TELEGRAM_API = "https://api.telegram.org";
@@ -20,15 +20,26 @@ function getConfig(): TelegramConfig | null {
 }
 
 // ---------------------------------------------------------------------------
-// Per-company chat ID resolution (cached)
+// Per-company telegram settings resolution (cached)
 // ---------------------------------------------------------------------------
 
-const companyChatIdCache = new Map<string, { chatId: string | null; expiresAt: number }>();
+interface CompanyTelegramCache {
+  chatId: string | null;
+  notificationLevel: TelegramNotificationLevel;
+  expiresAt: number;
+}
+
+const companyChatIdCache = new Map<string, CompanyTelegramCache>();
 const CACHE_TTL_MS = 60_000; // 1 minute
 
-async function getCompanyChatId(db: Db, companyId: string): Promise<string | null> {
+async function getCompanyTelegramSettings(
+  db: Db,
+  companyId: string,
+): Promise<{ chatId: string | null; notificationLevel: TelegramNotificationLevel }> {
   const cached = companyChatIdCache.get(companyId);
-  if (cached && cached.expiresAt > Date.now()) return cached.chatId;
+  if (cached && cached.expiresAt > Date.now()) {
+    return { chatId: cached.chatId, notificationLevel: cached.notificationLevel };
+  }
 
   try {
     const rows = await db
@@ -37,14 +48,36 @@ async function getCompanyChatId(db: Db, companyId: string): Promise<string | nul
       .where(eq(companies.id, companyId))
       .limit(1);
     const settings = rows[0]?.settings as Record<string, unknown> | undefined;
-    const telegram = settings?.telegram as { chatId?: string } | undefined;
+    const telegram = settings?.telegram as {
+      chatId?: string;
+      notificationLevel?: TelegramNotificationLevel;
+    } | undefined;
     const chatId = telegram?.chatId?.trim() || null;
-    companyChatIdCache.set(companyId, { chatId, expiresAt: Date.now() + CACHE_TTL_MS });
-    return chatId;
+    const notificationLevel = telegram?.notificationLevel ?? "important";
+    companyChatIdCache.set(companyId, {
+      chatId,
+      notificationLevel,
+      expiresAt: Date.now() + CACHE_TTL_MS,
+    });
+    return { chatId, notificationLevel };
   } catch (err) {
-    logger.warn({ err, companyId }, "Failed to look up company telegram chatId");
-    return null;
+    logger.warn({ err, companyId }, "Failed to look up company telegram settings");
+    return { chatId: null, notificationLevel: "important" };
   }
+}
+
+async function getCompanyChatId(db: Db, companyId: string): Promise<string | null> {
+  const { chatId } = await getCompanyTelegramSettings(db, companyId);
+  return chatId;
+}
+
+async function getCompanyNotificationLevel(
+  db: Db,
+  companyId: string | undefined,
+): Promise<TelegramNotificationLevel> {
+  if (!companyId) return "important";
+  const { notificationLevel } = await getCompanyTelegramSettings(db, companyId);
+  return notificationLevel;
 }
 
 // ---------------------------------------------------------------------------
@@ -224,6 +257,7 @@ async function handleActivityLogged(
   const action = p.action;
   if (!action) return;
 
+  const notificationLevel = await getCompanyNotificationLevel(db, event.companyId);
   const details = p.details ?? {};
   const identifier = (details.identifier as string) ?? p.entityId ?? "";
 
@@ -242,10 +276,36 @@ async function handleActivityLogged(
       }
     }
 
-    // Still send to the notification chat (existing behavior)
+    // --- Notification filtering for comment notifications ---
+    // "critical" level: never send comment notifications
+    if (notificationLevel === "critical") return;
+
     const bodySnippet = (details.bodySnippet as string) ?? "";
     const issueTitle = (details.issueTitle as string) ?? "";
     const hasMention = /\B@[^\s@,!?.]+/.test(bodySnippet);
+
+    // "important" level (default): only notify when a human is involved
+    if (notificationLevel !== "all") {
+      // Check if the comment actor is a human
+      const isHumanActor = p.actorType === "user";
+      // Check if a human is watching the issue (assigneeUserId set)
+      let hasHumanAssignee = false;
+      if (p.entityId) {
+        try {
+          const issueRows = await db
+            .select({ assigneeUserId: issues.assigneeUserId })
+            .from(issues)
+            .where(eq(issues.id, p.entityId))
+            .limit(1);
+          hasHumanAssignee = !!issueRows[0]?.assigneeUserId;
+        } catch {
+          // best-effort lookup
+        }
+      }
+      const isHumanInvolved = isHumanActor || hasHumanAssignee || hasMention;
+      if (!isHumanInvolved) return;
+    }
+
     const mentionTag = hasMention ? " (has @mention)" : "";
     const actorLabel = p.agentId ?? p.actorId ?? "someone";
     const lines = [
@@ -262,6 +322,9 @@ async function handleActivityLogged(
   if (action === "issue.updated") {
     const newStatus = details.status as string | undefined;
     if (newStatus === "blocked" || newStatus === "in_review") {
+      // "critical" level: only blocked issues pass through
+      if (notificationLevel === "critical" && newStatus !== "blocked") return;
+
       const issueTitle = (details.issueTitle as string) ?? (details.title as string) ?? "";
       const lines = [
         `\u{1F514} <b>${escapeHtml(identifier)} is now ${escapeHtml(newStatus)}</b>`,
@@ -274,6 +337,7 @@ async function handleActivityLogged(
   }
 
   if (action === "approval.created") {
+    // Approvals are always sent at "important" and above; always sent at "critical"
     const approvalType = (details.type as string) ?? "unknown";
     const lines = [
       `\u{2705} <b>Approval requested</b>`,
@@ -287,6 +351,9 @@ async function handleActivityLogged(
   }
 
   if (action === "approval.comment_added") {
+    // "critical" level: skip approval comments
+    if (notificationLevel === "critical") return;
+
     const lines = [
       `\u{1F4AC} <b>Comment on approval ${escapeHtml(p.entityId ?? "")}</b>`,
     ];
@@ -306,8 +373,31 @@ async function handleHeartbeatRunStatus(
   const status = p.status as string | undefined;
   if (status !== "failed") return;
 
-  const agentId = (p.agentId as string) ?? "unknown";
+  const notificationLevel = await getCompanyNotificationLevel(db, event.companyId);
+
+  // "critical" level: skip run failure notifications entirely
+  if (notificationLevel === "critical") return;
+
   const runId = (p.runId as string) ?? "";
+
+  // "important" level (default): only notify for failures tied to an issue
+  if (notificationLevel !== "all" && runId) {
+    try {
+      const runRows = await db
+        .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .limit(1);
+      const ctx = runRows[0]?.contextSnapshot as Record<string, unknown> | null | undefined;
+      const issueId = ctx?.issueId as string | undefined;
+      // Skip notification for routine heartbeat failures without issue context
+      if (!issueId) return;
+    } catch {
+      // best-effort lookup; if we can't check, send the notification
+    }
+  }
+
+  const agentId = (p.agentId as string) ?? "unknown";
   const error = (p.error as string) ?? "";
   const errorCode = (p.errorCode as string) ?? "";
 

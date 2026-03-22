@@ -14,6 +14,7 @@ export const companySettingsSchema = z.object({
     chatId: z.string().optional(),
     forumChatId: z.string().optional(),
     defaultAssigneeAgentId: z.string().uuid().optional(),
+    notificationLevel: z.enum(["all", "important", "critical"]).optional(),
   }).optional(),
 }).optional();
 

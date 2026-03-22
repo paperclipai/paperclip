@@ -1,10 +1,13 @@
 import type { CompanyStatus } from "../constants.js";
 
+export type TelegramNotificationLevel = "all" | "important" | "critical";
+
 export interface CompanySettings {
   telegram?: {
     chatId?: string;
     forumChatId?: string;
     defaultAssigneeAgentId?: string;
+    notificationLevel?: TelegramNotificationLevel;
   };
 }
 

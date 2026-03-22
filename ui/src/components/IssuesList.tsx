@@ -5,6 +5,7 @@ import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { useHasPermission } from "../hooks/usePermissions";
 import { issuesApi } from "../api/issues";
+import { projectsApi } from "../api/projects";
 import { queryKeys } from "../lib/queryKeys";
 import { groupBy } from "../lib/groupBy";
 import { formatDate, cn } from "../lib/utils";
@@ -38,9 +39,10 @@ export type IssueViewState = {
   priorities: string[];
   assignees: string[];
   labels: string[];
+  projects: string[];
   sortField: "status" | "priority" | "title" | "created" | "updated";
   sortDir: "asc" | "desc";
-  groupBy: "status" | "priority" | "assignee" | "none";
+  groupBy: "status" | "priority" | "assignee" | "project" | "none";
   viewMode: "list" | "board";
   collapsedGroups: string[];
 };
@@ -50,6 +52,7 @@ const defaultViewState: IssueViewState = {
   priorities: [],
   assignees: [],
   labels: [],
+  projects: [],
   sortField: "updated",
   sortDir: "desc",
   groupBy: "none",
@@ -93,6 +96,7 @@ function applyFilters(issues: Issue[], state: IssueViewState): Issue[] {
   if (state.priorities.length > 0) result = result.filter((i) => state.priorities.includes(i.priority));
   if (state.assignees.length > 0) result = result.filter((i) => i.assigneeAgentId != null && state.assignees.includes(i.assigneeAgentId));
   if (state.labels.length > 0) result = result.filter((i) => (i.labelIds ?? []).some((id) => state.labels.includes(id)));
+  if (state.projects.length > 0) result = result.filter((i) => i.projectId && state.projects.includes(i.projectId));
   return result;
 }
 
@@ -124,6 +128,7 @@ function countActiveFilters(state: IssueViewState): number {
   if (state.priorities.length > 0) count++;
   if (state.assignees.length > 0) count++;
   if (state.labels.length > 0) count++;
+  if (state.projects.length > 0) count++;
   return count;
 }
 
@@ -233,6 +238,12 @@ export function IssuesList({
     enabled: !!selectedCompanyId,
   });
 
+  const { data: projects } = useQuery({
+    queryKey: queryKeys.projects.list(selectedCompanyId!),
+    queryFn: () => projectsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
   const activeFilterCount = countActiveFilters(viewState);
 
   const [showScrollBottom, setShowScrollBottom] = useState(false);
@@ -269,6 +280,14 @@ export function IssuesList({
         .filter((p) => groups[p]?.length)
         .map((p) => ({ key: p, label: statusLabel(p), items: groups[p]! }));
     }
+    if (viewState.groupBy === "project") {
+      const groups = groupBy(filtered, (i) => i.projectId ?? "__no-project");
+      return Object.keys(groups).map((key) => ({
+        key,
+        label: key === "__no-project" ? "No Project" : (projects?.find((p) => p.id === key)?.name ?? key.slice(0, 8)),
+        items: groups[key]!,
+      }));
+    }
     // assignee
     const groups = groupBy(filtered, (i) => i.assigneeAgentId ?? "__unassigned");
     return Object.keys(groups).map((key) => ({
@@ -276,7 +295,7 @@ export function IssuesList({
       label: key === "__unassigned" ? "Unassigned" : (agentName(key) ?? key.slice(0, 8)),
       items: groups[key]!,
     }));
-  }, [filtered, viewState.groupBy, agents]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [filtered, viewState.groupBy, agents, projects]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const newIssueDefaults = (groupKey?: string) => {
     const defaults: Record<string, string> = {};
@@ -354,7 +373,7 @@ export function IssuesList({
                     className="h-3 w-3 ml-1 hidden sm:block"
                     onClick={(e) => {
                       e.stopPropagation();
-                      updateView({ statuses: [], priorities: [], assignees: [], labels: [] });
+                      updateView({ statuses: [], priorities: [], assignees: [], labels: [], projects: [] });
                     }}
                   />
                 )}
@@ -367,7 +386,7 @@ export function IssuesList({
                   {activeFilterCount > 0 && (
                     <button
                       className="text-xs text-muted-foreground hover:text-foreground"
-                      onClick={() => updateView({ statuses: [], priorities: [], assignees: [], labels: [] })}
+                      onClick={() => updateView({ statuses: [], priorities: [], assignees: [], labels: [], projects: [] })}
                     >
                       Clear
                     </button>
@@ -472,6 +491,24 @@ export function IssuesList({
                         </div>
                       </div>
                     )}
+
+                    {projects && projects.length > 0 && (
+                      <div className="space-y-1">
+                        <span className="text-xs text-muted-foreground">Projects</span>
+                        <div className="space-y-0.5 max-h-32 overflow-y-auto">
+                          {projects.map((project) => (
+                            <label key={project.id} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
+                              <Checkbox
+                                checked={viewState.projects.includes(project.id)}
+                                onCheckedChange={() => updateView({ projects: toggleInArray(viewState.projects, project.id) })}
+                              />
+                              <span className="h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: project.color ?? "#6366f1" }} />
+                              <span className="text-sm">{project.name}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -537,6 +574,7 @@ export function IssuesList({
                     ["status", "Status"],
                     ["priority", "Priority"],
                     ["assignee", "Assignee"],
+                    ["project", "Project"],
                     ["none", "None"],
                   ] as const).map(([value, label]) => (
                     <button
@@ -626,6 +664,15 @@ export function IssuesList({
                     {issue.identifier ?? issue.id.slice(0, 8)}
                   </span>
                   <span className="truncate flex-1 min-w-0">{issue.title}</span>
+                  {issue.projectId && projects && (() => {
+                    const project = projects.find((p) => p.id === issue.projectId);
+                    return project ? (
+                      <span className="hidden md:inline-flex items-center gap-1 shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-medium"
+                        style={{ borderColor: project.color ?? "#6366f1", color: project.color ?? "#6366f1", backgroundColor: `${project.color ?? "#6366f1"}1f` }}>
+                        {project.name}
+                      </span>
+                    ) : null;
+                  })()}
                   {(issue.labels ?? []).length > 0 && (
                     <div className="hidden md:flex items-center gap-1 max-w-[240px] overflow-hidden">
                       {(issue.labels ?? []).slice(0, 3).map((label) => (

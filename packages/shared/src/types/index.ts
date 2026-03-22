@@ -1,4 +1,4 @@
-export type { Company, CompanySettings } from "./company.js";
+export type { Company, CompanySettings, TelegramNotificationLevel } from "./company.js";
 export type {
   Agent,
   AgentPermissions,

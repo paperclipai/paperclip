@@ -14,7 +14,7 @@ import {
   ToggleField,
   HintIcon
 } from "../components/agent-config-primitives";
-import type { CompanySettings as CompanySettingsType, CompanyMembership, CredentialType, JoinRequest, PermissionKey, ProviderCredential } from "@paperclipai/shared";
+import type { CompanySettings as CompanySettingsType, CompanyMembership, CredentialType, JoinRequest, PermissionKey, ProviderCredential, TelegramNotificationLevel } from "@paperclipai/shared";
 import { PERMISSION_KEYS, ROLE_PRESETS } from "@paperclipai/shared";
 
 type AgentSnippetInput = {
@@ -38,6 +38,7 @@ export function CompanySettings() {
   const [description, setDescription] = useState("");
   const [brandColor, setBrandColor] = useState("");
   const [telegramChatId, setTelegramChatId] = useState("");
+  const [telegramNotificationLevel, setTelegramNotificationLevel] = useState<TelegramNotificationLevel>("important");
 
   // Sync local state from selected company
   useEffect(() => {
@@ -47,6 +48,7 @@ export function CompanySettings() {
     setBrandColor(selectedCompany.brandColor ?? "");
     const s = selectedCompany.settings as CompanySettingsType | undefined;
     setTelegramChatId(s?.telegram?.chatId ?? "");
+    setTelegramNotificationLevel(s?.telegram?.notificationLevel ?? "important");
   }, [selectedCompany]);
 
   const [inviteError, setInviteError] = useState<string | null>(null);
@@ -321,6 +323,9 @@ export function CompanySettings() {
         telegramChatId={telegramChatId}
         setTelegramChatId={setTelegramChatId}
         savedChatId={(selectedCompany.settings as CompanySettingsType | undefined)?.telegram?.chatId ?? ""}
+        notificationLevel={telegramNotificationLevel}
+        setNotificationLevel={setTelegramNotificationLevel}
+        savedNotificationLevel={(selectedCompany.settings as CompanySettingsType | undefined)?.telegram?.notificationLevel ?? "important"}
       />
 
       {/* Credentials */}
@@ -1287,25 +1292,40 @@ function CredentialsSection({ companyId }: { companyId: string }) {
   );
 }
 
+const NOTIFICATION_LEVEL_OPTIONS: { value: TelegramNotificationLevel; label: string; description: string }[] = [
+  { value: "all", label: "All", description: "Every comment, status change, and run failure" },
+  { value: "important", label: "Important", description: "Human-directed comments, blocked/review issues, approval requests, issue-related run failures" },
+  { value: "critical", label: "Critical only", description: "Only blocked issues and approval requests" },
+];
+
 function TelegramSection({
   companyId,
   telegramChatId,
   setTelegramChatId,
   savedChatId,
+  notificationLevel,
+  setNotificationLevel,
+  savedNotificationLevel,
 }: {
   companyId: string;
   telegramChatId: string;
   setTelegramChatId: (v: string) => void;
   savedChatId: string;
+  notificationLevel: TelegramNotificationLevel;
+  setNotificationLevel: (v: TelegramNotificationLevel) => void;
+  savedNotificationLevel: TelegramNotificationLevel;
 }) {
   const queryClient = useQueryClient();
-  const dirty = telegramChatId !== savedChatId;
+  const dirty = telegramChatId !== savedChatId || notificationLevel !== savedNotificationLevel;
 
   const saveMutation = useMutation({
     mutationFn: () =>
       companiesApi.update(companyId, {
         settings: {
-          telegram: { chatId: telegramChatId.trim() || undefined },
+          telegram: {
+            chatId: telegramChatId.trim() || undefined,
+            notificationLevel,
+          },
         },
       }),
     onSuccess: () => {
@@ -1333,6 +1353,22 @@ function TelegramSection({
               placeholder="-100xxxxxxxxxx"
             />
           </div>
+        </Field>
+        <Field
+          label="Notification level"
+          hint="Controls which events send Telegram notifications. 'Important' filters out agent-to-agent chatter and routine heartbeat failures."
+        >
+          <select
+            className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+            value={notificationLevel}
+            onChange={(e) => setNotificationLevel(e.target.value as TelegramNotificationLevel)}
+          >
+            {NOTIFICATION_LEVEL_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label} — {opt.description}
+              </option>
+            ))}
+          </select>
         </Field>
         {dirty && (
           <div className="flex items-center gap-2">
