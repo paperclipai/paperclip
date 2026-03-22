@@ -385,6 +385,24 @@ export function agentRoutes(db: Db) {
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
   ) {
+    if (!adapterType) return;
+
+    // Validate model compatibility with adapter
+    const model = typeof adapterConfig.model === "string" ? adapterConfig.model.trim() : "";
+    if (model) {
+      const knownModels = await listAdapterModels(adapterType);
+      if (knownModels.length > 0) {
+        const isKnown = knownModels.some((m) => m.id === model);
+        if (!isKnown) {
+          const suggestions = knownModels.slice(0, 5).map((m) => m.id).join(", ");
+          throw unprocessable(
+            `Model '${model}' is not compatible with adapter '${adapterType}'. ` +
+            `Available models: ${suggestions}${knownModels.length > 5 ? `, ... (${knownModels.length} total)` : ""}`,
+          );
+        }
+      }
+    }
+
     if (adapterType !== "opencode_local") return;
     const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(companyId, adapterConfig);
     const runtimeEnv = asRecord(runtimeConfig.env) ?? {};
@@ -1747,7 +1765,7 @@ export function agentRoutes(db: Db) {
       );
       patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
     }
-    if (touchesAdapterConfiguration && requestedAdapterType === "opencode_local") {
+    if (touchesAdapterConfiguration) {
       const effectiveAdapterConfig = asRecord(patchData.adapterConfig) ?? {};
       await assertAdapterConfigConstraints(
         existing.companyId,
