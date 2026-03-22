@@ -1,7 +1,7 @@
 CREATE TABLE "saved_views" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"company_id" uuid NOT NULL,
-	"name" text NOT NULL,
+	"name" varchar(255) NOT NULL,
 	"filters" jsonb NOT NULL,
 	"group_by" text DEFAULT 'none' NOT NULL,
 	"sort_field" text DEFAULT 'updated' NOT NULL,
