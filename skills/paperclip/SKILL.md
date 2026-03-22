@@ -73,6 +73,11 @@ If you are blocked at any point, you MUST update the issue to `blocked` before e
 
 When writing issue descriptions or comments, follow the ticket-linking rule in **Comment Style** below.
 
+**Ticket completion gate (WAT-329):** Before setting any ticket to `done` that involved code changes, your closing comment MUST include:
+1. A **PR link** (e.g., `gh pr create` output) — the PR to `origin/main` (or `origin/dev`).
+2. Confirmation that the feature branch was **merged into `paperclip/main`** and pushed.
+If either is missing, do NOT mark the ticket `done`. Instead, complete the missing step first. If you cannot (e.g., no push access), set the ticket to `blocked` with a comment explaining what's missing.
+
 ```json
 PATCH /api/issues/{issueId}
 Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
