@@ -89,7 +89,7 @@ export async function ensureKiroSkillsInjected(
   );
   for (const skillName of removedSkills) {
     await onLog(
-      "stderr",
+      "stdout",
       `[paperclip] Removed maintainer-only Kiro skill "${skillName}" from ${skillsHome}\n`,
     );
   }
@@ -106,7 +106,7 @@ export async function ensureKiroSkillsInjected(
       const isManaged = await fs.stat(managedMarker).then(() => true).catch(() => false);
       if (skillExists && !isManaged) {
         await onLog(
-          "stderr",
+          "stdout",
           `[paperclip] Skipping Kiro skill "${entry.runtimeName}" — ${skillDir} already exists and is not Paperclip-managed\n`,
         );
         continue;
@@ -173,7 +173,7 @@ ${skillContent}
       await fs.writeFile(skillFile, kiroSkillMd, "utf8");
       await fs.writeFile(managedMarker, `${entry.runtimeName}\n`, "utf8");
       await onLog(
-        "stderr",
+        "stdout",
         `[paperclip] Injected Kiro skill: ${entry.runtimeName}\n`,
       );
     } catch (err) {
@@ -211,7 +211,7 @@ export async function cleanupKiroSkills(
       if (isManaged) {
         await fs.rm(skillDir, { recursive: true, force: true });
         await onLog(
-          "stderr",
+          "stdout",
           `[paperclip] Cleaned up Kiro skill: ${entry.runtimeName}\n`,
         );
       }
