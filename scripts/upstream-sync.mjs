@@ -487,6 +487,13 @@ function pushOrPr() {
     return;
   }
 
+  // Configure git to use GH_TOKEN for push auth (self-hosted runners have stale cached creds)
+  const ghToken = process.env.GH_TOKEN;
+  if (ghToken) {
+    run(`git remote set-url origin https://x-access-token:${ghToken}@github.com/wopr-network/paperclip.git`);
+    log("Configured origin remote with GH_TOKEN for push auth.");
+  }
+
   if (AUTO_PUSH) {
     log("Force-pushing to origin/master...");
     run("git push --force-with-lease origin master");
