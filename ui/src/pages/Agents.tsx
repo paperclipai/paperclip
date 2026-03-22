@@ -33,13 +33,14 @@ const adapterLabels: Record<string, string> = {
 
 const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 
-type FilterTab = "all" | "active" | "paused" | "error";
+type FilterTab = "all" | "active" | "paused" | "pending" | "error";
 
 function matchesFilter(status: string, tab: FilterTab, showTerminated: boolean): boolean {
   if (status === "terminated") return showTerminated;
-  if (tab === "all") return true;
+  if (tab === "all") return status !== "terminated";
   if (tab === "active") return status === "active" || status === "running" || status === "idle";
   if (tab === "paused") return status === "paused";
+  if (tab === "pending") return status === "pending_approval";
   if (tab === "error") return status === "error";
   return true;
 }
@@ -66,8 +67,15 @@ export function Agents() {
   const location = useLocation();
   const { isMobile } = useSidebar();
   const pathSegment = location.pathname.split("/").pop() ?? "all";
-  const tab: FilterTab = (pathSegment === "all" || pathSegment === "active" || pathSegment === "paused" || pathSegment === "error") ? pathSegment : "all";
-  const [view, setView] = useState<"list" | "org">("org");
+  const tab: FilterTab = (pathSegment === "all" || pathSegment === "active" || pathSegment === "paused" || pathSegment === "pending" || pathSegment === "error") ? pathSegment : "all";
+  const [view, setView] = useState<"list" | "org">(() => {
+    try {
+      const saved = localStorage.getItem("agents:viewPreference");
+      return (saved === "list" || saved === "org") ? saved : "org";
+    } catch {
+      return "org";
+    }
+  });
   const forceListView = isMobile;
   const effectiveView: "list" | "org" = forceListView ? "list" : view;
   const [showTerminated, setShowTerminated] = useState(false);
@@ -127,6 +135,7 @@ export function Agents() {
 
   const filtered = filterAgents(agents ?? [], tab, showTerminated);
   const filteredOrg = filterOrgTree(orgTree ?? [], tab, showTerminated);
+  const pendingCount = (agents ?? []).filter((a) => a.status === "pending_approval").length;
 
   return (
     <div className="space-y-4">
@@ -137,6 +146,19 @@ export function Agents() {
               { value: "all", label: "All" },
               { value: "active", label: "Active" },
               { value: "paused", label: "Paused" },
+              {
+                value: "pending",
+                label: (
+                  <span className="flex items-center gap-1">
+                    Pending
+                    {pendingCount > 0 && (
+                      <span className="px-1 py-0 rounded text-[10px] bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300 font-medium">
+                        {pendingCount}
+                      </span>
+                    )}
+                  </span>
+                ),
+              },
               { value: "error", label: "Error" },
             ]}
             value={tab}
@@ -182,7 +204,7 @@ export function Agents() {
                   "p-1.5 transition-colors",
                   effectiveView === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
                 )}
-                onClick={() => setView("list")}
+                onClick={() => { setView("list"); try { localStorage.setItem("agents:viewPreference", "list"); } catch {} }}
               >
                 <List className="h-3.5 w-3.5" />
               </button>
@@ -191,7 +213,7 @@ export function Agents() {
                   "p-1.5 transition-colors",
                   effectiveView === "org" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
                 )}
-                onClick={() => setView("org")}
+                onClick={() => { setView("org"); try { localStorage.setItem("agents:viewPreference", "org"); } catch {} }}
               >
                 <GitBranch className="h-3.5 w-3.5" />
               </button>
