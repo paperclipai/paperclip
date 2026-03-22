@@ -1,0 +1,59 @@
+---
+schema_version: "1.0.0"
+mode: finalize
+date: 2026-03-22T22:55:10.450Z
+session: "bd-2te-fix-pi-local-process-lost-zombies"
+outcome: "SUCCEEDED"
+primary_bead: "bd-2te"
+---
+
+goal: "Fix 3 compounding bugs causing pi_local agents to permanently get stuck with process_lost after server restart"
+now: "Implementation complete, Codex-verified, rebased onto upstream/master, and proven end-to-end with live zombie scenario test"
+
+done_this_session:
+  - "Verified all implementation code matches plan (4 code commits from prior session)"
+  - "Ran typecheck, tests (191 pass), and build — all green"
+  - "Created implement-receipt.md with baseline/end SHAs"
+  - "Submitted to Codex code-verify: REVISE round 1 (missing behavioral tests), APPROVED round 2"
+  - "Extracted filterZombieCoalesceTarget as pure function + 8 behavioral tests (13 total)"
+  - "Ran manual verification: startup reap fires on fresh start (reaped 8), fires again on restart (reaped 0)"
+  - "Fetched upstream (722 commits ahead), updated origin/master, rebased branch onto upstream/master"
+  - "Resolved 3 merge conflicts: index.ts (kept await+retry, added resumeQueuedRuns), AgentConfigForm.tsx (merged gemini_local + pi_local, removed duplicates), pnpm-lock.yaml (took upstream)"
+  - "Post-rebase verification: typecheck clean, 581 tests pass, build succeeds"
+  - "Full end-to-end zombie test: created agent, triggered run, killed server mid-run, restarted — startup reap reaped 5 orphans including the zombie, agent resumed new work"
+
+final_solutions:
+  - "Bug 1 (immortal zombies): Coalescing now checks isZombieRun() before merging wakeups into existing runs. Zombie runs (running in DB, no live process) are skipped, so updatedAt stops refreshing and the periodic reaper can catch them."
+  - "Bug 2 (silent startup reap): Changed void fire-and-forget to await with retry (max 2 attempts). Startup reap now completes before setInterval timer starts. Logs reaped count."
+  - "Bug 3 (maxConcurrentRuns blocking): Fixed by Bugs 1+2 — zombies get reaped, freeing the concurrency slot for new runs."
+  - "Bug 4 (pi_local UI): pi_local added to isLocal gate — model dropdown, cwd, thinking effort, command placeholder all visible."
+
+final_decisions:
+  - "Extracted isZombieRun and filterZombieCoalesceTarget as pure exported functions (follows existing shouldResetTaskSessionForWake pattern)"
+  - "No periodic reaper code changes needed — existing staleness logic works once coalescing stops refreshing updatedAt on zombies"
+  - "Preserved upstream resumeQueuedRuns() during rebase — called after startup reap completes"
+  - "DB integration tests deferred — no DB test infrastructure exists in this project"
+
+artifacts_produced:
+  - "specs/001-pi-local-process-lost-bugs/ (spec, plan, tasks, log, implement-receipt, code-verify, workflow-state)"
+  - "server/src/services/heartbeat.ts — isZombieRun(), filterZombieCoalesceTarget(), coalescing guards"
+  - "server/src/index.ts — synchronous startup reap with retry"
+  - "server/src/__tests__/heartbeat-zombie-guard.test.ts — 13 tests"
+  - "ui/src/components/AgentConfigForm.tsx — pi_local config fields"
+
+test:
+  command: "pnpm test:run"
+  result: "581 passed, 1 skipped (1 pre-existing upstream worktree failure)"
+  zombie_guard_tests: "13 passed"
+
+files:
+  - "server/src/index.ts"
+  - "server/src/services/heartbeat.ts"
+  - "server/src/__tests__/heartbeat-zombie-guard.test.ts"
+  - "ui/src/components/AgentConfigForm.tsx"
+
+git:
+  branch: "fix/pi-local-process-lost"
+  commit: "68457e381636fdaa09e374e59ae001dac6a61b14"
+  remote: "https://github.com/carmandale/paperclip.git"
+  commits_on_branch: 12
