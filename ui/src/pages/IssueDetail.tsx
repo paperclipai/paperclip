@@ -960,7 +960,7 @@ export function IssueDetail() {
                   className="text-muted-foreground hover:text-destructive"
                   onClick={() => deleteAttachment.mutate(attachment.id)}
                   disabled={deleteAttachment.isPending}
-                  title="Delete attachment"
+                  aria-label="Delete attachment"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
