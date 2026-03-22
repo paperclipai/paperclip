@@ -37,6 +37,7 @@ export function CompanySecrets() {
     setNewName("");
     setNewValue("");
     setNewDescription("");
+    setNewProvider("local_encrypted");
     setEditingId(null);
     setConfirmDeleteId(null);
   }, []);
@@ -95,7 +96,11 @@ export function CompanySecrets() {
         description: description.trim() || null,
       });
       if (value) {
-        await secretsApi.rotate(id, { value });
+        try {
+          await secretsApi.rotate(id, { value });
+        } catch {
+          throw new Error("Secret name/description saved, but value rotation failed.");
+        }
       }
       return updated;
     },
@@ -362,7 +367,7 @@ export function CompanySecrets() {
                       <Button
                         size="sm"
                         variant="ghost"
-                        onClick={() => setEditingId(null)}
+                        onClick={() => { setEditingId(null); updateMutation.reset(); }}
                       >
                         Cancel
                       </Button>
