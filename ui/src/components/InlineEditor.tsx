@@ -240,7 +240,15 @@ export function InlineEditor({
         !value && "text-muted-foreground italic",
         className,
       )}
+      role="button"
+      tabIndex={0}
       onClick={() => setEditing(true)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          setEditing(true);
+        }
+      }}
     >
       {value || placeholder}
     </DisplayTag>
