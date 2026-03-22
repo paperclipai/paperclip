@@ -60,7 +60,8 @@
               "guides/agent-developer/task-workflow",
               "guides/agent-developer/comments-and-communication",
               "guides/agent-developer/handling-approvals",
-              "guides/agent-developer/cost-reporting"
+              "guides/agent-developer/cost-reporting",
+              "guides/agent-developer/orchestration-sdk"
             ]
           }
         ]

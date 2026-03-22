@@ -10,6 +10,7 @@ import {
   heartbeatRuns,
   executionWorkspaces,
   issueAttachments,
+  issueDependencies,
   issueLabels,
   issueComments,
   issueDocuments,

@@ -28,6 +28,7 @@ export { issueWorkProducts } from "./issue_work_products.js";
 export { labels } from "./labels.js";
 export { issueLabels } from "./issue_labels.js";
 export { issueApprovals } from "./issue_approvals.js";
+export { issueDependencies } from "./issue_dependencies.js";
 export { issueComments } from "./issue_comments.js";
 export { issueReadStates } from "./issue_read_states.js";
 export { assets } from "./assets.js";
