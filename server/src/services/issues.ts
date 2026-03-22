@@ -115,6 +115,78 @@ function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
 }
 
+function clearIssueExecutionLockFields(patch: Partial<typeof issues.$inferInsert>) {
+  patch.executionRunId = null;
+  patch.executionAgentNameKey = null;
+  patch.executionLockedAt = null;
+  return patch;
+}
+
+function didAssigneeChange(
+  existing: Pick<IssueRow, "assigneeAgentId" | "assigneeUserId">,
+  issueData: Partial<typeof issues.$inferInsert>,
+) {
+  return (
+    (issueData.assigneeAgentId !== undefined && issueData.assigneeAgentId !== existing.assigneeAgentId)
+    || (issueData.assigneeUserId !== undefined && issueData.assigneeUserId !== existing.assigneeUserId)
+  );
+}
+
+export function shouldClearIssueExecutionLockForUpdate(
+  existing: Pick<IssueRow, "status" | "assigneeAgentId" | "assigneeUserId">,
+  issueData: Partial<typeof issues.$inferInsert>,
+) {
+  return (issueData.status !== undefined && issueData.status !== "in_progress")
+    || didAssigneeChange(existing, issueData);
+}
+
+function isMentionBoundary(char: string | undefined) {
+  if (!char) return true;
+  return /\s|[.,!?;:()[\]{}<>/\\'"`~*_+-]/.test(char);
+}
+
+function isMentionPrefixBoundary(char: string | undefined) {
+  if (!char) return true;
+  return !/[A-Za-z0-9_]/.test(char);
+}
+
+export function findMentionedAgentIdsInBody(
+  body: string,
+  candidateAgents: Array<{ id: string; name: string | null | undefined }>,
+) {
+  if (typeof body !== "string" || body.length === 0) return [];
+
+  const candidates = candidateAgents
+    .map((agent) => ({
+      id: agent.id,
+      name: typeof agent.name === "string" ? agent.name.trim() : "",
+    }))
+    .filter((agent) => agent.name.length > 0)
+    .sort((left, right) => right.name.length - left.name.length);
+
+  if (candidates.length === 0) return [];
+
+  const lowerBody = body.toLowerCase();
+  const found = new Set<string>();
+
+  for (let index = 0; index < lowerBody.length; index += 1) {
+    if (lowerBody[index] !== "@") continue;
+    if (!isMentionPrefixBoundary(lowerBody[index - 1])) continue;
+
+    const mentionStart = index + 1;
+    for (const candidate of candidates) {
+      const lowerName = candidate.name.toLowerCase();
+      if (!lowerBody.startsWith(lowerName, mentionStart)) continue;
+      if (!isMentionBoundary(lowerBody[mentionStart + lowerName.length])) continue;
+      found.add(candidate.id);
+      index = mentionStart + lowerName.length - 1;
+      break;
+    }
+  }
+
+  return [...found];
+}
+
 function touchedByUserCondition(companyId: string, userId: string) {
   return sql<boolean>`
     (
@@ -425,6 +497,29 @@ export function issueService(db: Db) {
     );
   }
 
+  async function assertParentIssueBelongsToCompany(
+    companyId: string,
+    parentId: string | null | undefined,
+    currentIssueId?: string,
+    dbOrTx: any = db,
+  ) {
+    if (!parentId) return;
+    if (currentIssueId && parentId === currentIssueId) {
+      throw unprocessable("Issue cannot be its own parent");
+    }
+    const parent = await dbOrTx
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+      })
+      .from(issues)
+      .where(eq(issues.id, parentId))
+      .then((rows: Array<{ id: string; companyId: string }>) => rows[0] ?? null);
+    if (!parent || parent.companyId !== companyId) {
+      throw unprocessable("Parent issue does not belong to company");
+    }
+  }
+
   async function isTerminalOrMissingHeartbeatRun(runId: string) {
     const run = await db
       .select({ status: heartbeatRuns.status })
@@ -695,6 +790,9 @@ export function issueService(db: Db) {
       if (data.assigneeUserId) {
         await assertAssignableUser(companyId, data.assigneeUserId);
       }
+      if (data.parentId) {
+        await assertParentIssueBelongsToCompany(companyId, data.parentId);
+      }
       if (data.projectWorkspaceId) {
         await assertValidProjectWorkspace(companyId, data.projectId, data.projectWorkspaceId);
       }
@@ -825,6 +923,9 @@ export function issueService(db: Db) {
       if (issueData.assigneeUserId) {
         await assertAssignableUser(existing.companyId, issueData.assigneeUserId);
       }
+      if (issueData.parentId !== undefined) {
+        await assertParentIssueBelongsToCompany(existing.companyId, issueData.parentId, id);
+      }
       const nextProjectId = issueData.projectId !== undefined ? issueData.projectId : existing.projectId;
       const nextProjectWorkspaceId =
         issueData.projectWorkspaceId !== undefined ? issueData.projectWorkspaceId : existing.projectWorkspaceId;
@@ -847,11 +948,11 @@ export function issueService(db: Db) {
       if (issueData.status && issueData.status !== "in_progress") {
         patch.checkoutRunId = null;
       }
-      if (
-        (issueData.assigneeAgentId !== undefined && issueData.assigneeAgentId !== existing.assigneeAgentId) ||
-        (issueData.assigneeUserId !== undefined && issueData.assigneeUserId !== existing.assigneeUserId)
-      ) {
+      if (didAssigneeChange(existing, issueData)) {
         patch.checkoutRunId = null;
+      }
+      if (shouldClearIssueExecutionLockForUpdate(existing, issueData)) {
+        clearIssueExecutionLockFields(patch);
       }
 
       return db.transaction(async (tx) => {
@@ -971,6 +1072,49 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (!current) throw notFound("Issue not found");
+
+      if (
+        current.executionRunId
+        && current.executionRunId !== checkoutRunId
+        && await isTerminalOrMissingHeartbeatRun(current.executionRunId)
+      ) {
+        await db
+          .update(issues)
+          .set({
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(issues.id, id), eq(issues.executionRunId, current.executionRunId)));
+
+        const recovered = await db
+          .update(issues)
+          .set({
+            assigneeAgentId: agentId,
+            assigneeUserId: null,
+            checkoutRunId,
+            executionRunId: checkoutRunId,
+            status: "in_progress",
+            startedAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(issues.id, id),
+              inArray(issues.status, expectedStatuses),
+              or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
+              executionLockCondition,
+            ),
+          )
+          .returning()
+          .then((rows) => rows[0] ?? null);
+
+        if (recovered) {
+          const [enriched] = await withIssueLabels(db, [recovered]);
+          return enriched;
+        }
+      }
 
       if (
         current.assigneeAgentId === agentId &&
@@ -1094,7 +1238,17 @@ export function issueService(db: Db) {
       });
     },
 
-    release: async (id: string, actorAgentId?: string, actorRunId?: string | null) => {
+    release: async (
+      id: string,
+      options?: {
+        actorAgentId?: string;
+        actorRunId?: string | null;
+        bypassAssigneeCheck?: boolean;
+      },
+    ) => {
+      const actorAgentId = options?.actorAgentId;
+      const actorRunId = options?.actorRunId ?? null;
+      const bypassAssigneeCheck = options?.bypassAssigneeCheck === true;
       const existing = await db
         .select()
         .from(issues)
@@ -1102,10 +1256,11 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (!existing) return null;
-      if (actorAgentId && existing.assigneeAgentId && existing.assigneeAgentId !== actorAgentId) {
+      if (!bypassAssigneeCheck && actorAgentId && existing.assigneeAgentId && existing.assigneeAgentId !== actorAgentId) {
         throw conflict("Only assignee can release issue");
       }
       if (
+        !bypassAssigneeCheck &&
         actorAgentId &&
         existing.status === "in_progress" &&
         existing.assigneeAgentId === actorAgentId &&
@@ -1126,6 +1281,9 @@ export function issueService(db: Db) {
           status: "todo",
           assigneeAgentId: null,
           checkoutRunId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
           updatedAt: new Date(),
         })
         .where(eq(issues.id, id))
@@ -1443,14 +1601,9 @@ export function issueService(db: Db) {
       }),
 
     findMentionedAgents: async (companyId: string, body: string) => {
-      const re = /\B@([^\s@,!?.]+)/g;
-      const tokens = new Set<string>();
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(body)) !== null) tokens.add(m[1].toLowerCase());
-      if (tokens.size === 0) return [];
       const rows = await db.select({ id: agents.id, name: agents.name })
         .from(agents).where(eq(agents.companyId, companyId));
-      return rows.filter(a => tokens.has(a.name.toLowerCase())).map(a => a.id);
+      return findMentionedAgentIdsInBody(body, rows);
     },
 
     findMentionedProjectIds: async (issueId: string) => {

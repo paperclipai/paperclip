@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { Request, RequestHandler } from "express";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentApiKeys, agents, companyMemberships, instanceUserRoles } from "@paperclipai/db";
+import { agentApiKeys, agents, companyMemberships, heartbeatRuns, instanceUserRoles } from "@paperclipai/db";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
@@ -18,6 +18,29 @@ interface ActorMiddlewareOptions {
 }
 
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
+  async function resolveActiveAgentRunId(
+    agentId: string,
+    companyId: string,
+    runId: string | null | undefined,
+  ) {
+    const normalizedRunId = runId?.trim();
+    if (!normalizedRunId) return undefined;
+    const run = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.id, normalizedRunId),
+          eq(heartbeatRuns.agentId, agentId),
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.status, "running"),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    if (!run) return undefined;
+    return run.id;
+  }
+
   return async (req, _res, next) => {
     req.actor =
       opts.deploymentMode === "local_trusted"
@@ -110,12 +133,30 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         return;
       }
 
+      if (claims.run_id && runIdHeader && runIdHeader !== claims.run_id) {
+        logger.warn(
+          {
+            agentId: claims.sub,
+            companyId: claims.company_id,
+            claimedRunId: claims.run_id,
+            headerRunId: runIdHeader,
+          },
+          "Ignoring agent JWT run id override header",
+        );
+      }
+
+      const runId = await resolveActiveAgentRunId(
+        claims.sub,
+        claims.company_id,
+        claims.run_id || runIdHeader || undefined,
+      );
+
       req.actor = {
         type: "agent",
         agentId: claims.sub,
         companyId: claims.company_id,
         keyId: undefined,
-        runId: runIdHeader || claims.run_id || undefined,
+        runId,
         source: "agent_jwt",
       };
       next();
@@ -138,12 +179,14 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
+    const runId = await resolveActiveAgentRunId(key.agentId, key.companyId, runIdHeader);
+
     req.actor = {
       type: "agent",
       agentId: key.agentId,
       companyId: key.companyId,
       keyId: key.id,
-      runId: runIdHeader || undefined,
+      runId,
       source: "agent_key",
     };
 

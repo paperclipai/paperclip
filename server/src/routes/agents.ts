@@ -601,6 +601,8 @@ export function agentRoutes(db: Db) {
         projectId: issue.projectId,
         goalId: issue.goalId,
         parentId: issue.parentId,
+        assigneeAgentId: issue.assigneeAgentId,
+        assigneeUserId: issue.assigneeUserId,
         updatedAt: issue.updatedAt,
         activeRun: issue.activeRun,
       })),

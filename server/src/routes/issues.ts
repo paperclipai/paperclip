@@ -87,56 +87,109 @@ export function issueRoutes(db: Db, storage: StorageService) {
     return false;
   }
 
-  function canCreateAgentsLegacy(agent: { permissions: Record<string, unknown> | null | undefined; role: string }) {
+  function hasManagerAgentPrivileges(agent: { permissions: Record<string, unknown> | null | undefined; role: string }) {
     if (agent.role === "ceo") return true;
     if (!agent.permissions || typeof agent.permissions !== "object") return false;
     return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
   }
 
-  async function assertCanAssignTasks(req: Request, companyId: string) {
+  async function actorCanManageCompanyTasks(req: Request, companyId: string) {
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "board") {
-      if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
-      const allowed = await access.canUser(companyId, req.actor.userId, "tasks:assign");
-      if (!allowed) throw forbidden("Missing permission: tasks:assign");
-      return;
+      if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
+      return access.canUser(companyId, req.actor.userId, "tasks:assign");
     }
     if (req.actor.type === "agent") {
-      if (!req.actor.agentId) throw forbidden("Agent authentication required");
+      if (!req.actor.agentId) return false;
       const allowedByGrant = await access.hasPermission(companyId, "agent", req.actor.agentId, "tasks:assign");
-      if (allowedByGrant) return;
+      if (allowedByGrant) return true;
       const actorAgent = await agentsSvc.getById(req.actor.agentId);
-      if (actorAgent && actorAgent.companyId === companyId && canCreateAgentsLegacy(actorAgent)) return;
+      return Boolean(actorAgent && actorAgent.companyId === companyId && hasManagerAgentPrivileges(actorAgent));
+    }
+    return false;
+  }
+
+  async function actorCanAssignTasks(req: Request, companyId: string) {
+    return actorCanManageCompanyTasks(req, companyId);
+  }
+
+  async function actorCanManageAnyIssueInCompany(req: Request, companyId: string) {
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type === "board") return true;
+    return actorCanManageCompanyTasks(req, companyId);
+  }
+
+  async function assertCanAssignTasks(req: Request, companyId: string) {
+    if (await actorCanAssignTasks(req, companyId)) return;
+    if (req.actor.type === "board" || req.actor.type === "agent") {
       throw forbidden("Missing permission: tasks:assign");
     }
     throw unauthorized();
   }
 
-  function isAgentAssigningToSelf(
+  function hasParentIssue(parentId: string | null | undefined): parentId is string {
+    return typeof parentId === "string" && parentId.length > 0;
+  }
+
+  function isAgentAssigningToOtherAgent(
     req: Request,
     assigneeAgentId: string | null | undefined,
     assigneeUserId: string | null | undefined,
   ) {
     return req.actor.type === "agent"
       && !!req.actor.agentId
-      && assigneeAgentId === req.actor.agentId
+      && typeof assigneeAgentId === "string"
+      && assigneeAgentId.length > 0
+      && assigneeAgentId !== req.actor.agentId
       && (assigneeUserId === null || assigneeUserId === undefined);
   }
 
-  function canAgentSelfAssignOwnUnassignedIssue(
+  async function getValidatedParentIssue(
+    res: Response,
+    companyId: string,
+    parentId: string,
+  ) {
+    const parentIssue = await svc.getById(parentId);
+    if (!parentIssue || parentIssue.companyId !== companyId) {
+      res.status(422).json({ error: "Parent issue does not belong to company" });
+      return null;
+    }
+    return parentIssue;
+  }
+
+  async function assertAgentCanDelegateFromParentIssue(
+    req: Request,
+    res: Response,
+    companyId: string,
+    parentId: string,
+  ) {
+    const parentIssue = await getValidatedParentIssue(res, companyId, parentId);
+    if (!parentIssue) return null;
+    if (!(await assertCanMutateAssignedIssue(req, res, parentIssue))) return null;
+    return parentIssue;
+  }
+
+  function canAgentAssignOwnUnassignedChildIssueWithoutAssignPermission(
     req: Request,
     issue: {
       createdByAgentId: string | null;
+      parentId: string | null;
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
     },
     assigneeAgentId: string | null | undefined,
     assigneeUserId: string | null | undefined,
   ) {
-    return isAgentAssigningToSelf(req, assigneeAgentId, assigneeUserId)
-      && issue.createdByAgentId === req.actor.agentId
-      && issue.assigneeAgentId === null
-      && issue.assigneeUserId === null;
+    if (req.actor.type !== "agent" || !req.actor.agentId) return false;
+    if (
+      issue.createdByAgentId !== req.actor.agentId
+      || issue.assigneeAgentId !== null
+      || issue.assigneeUserId !== null
+    ) {
+      return false;
+    }
+    return hasParentIssue(issue.parentId)
+      && isAgentAssigningToOtherAgent(req, assigneeAgentId, assigneeUserId);
   }
 
   function requireAgentRunId(req: Request, res: Response) {
@@ -145,6 +198,11 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (runId) return runId;
     res.status(401).json({ error: "Agent run id required" });
     return null;
+  }
+
+  function assertAgentMutationRunContext(req: Request, res: Response) {
+    if (req.actor.type !== "agent") return true;
+    return Boolean(requireAgentRunId(req, res));
   }
 
   async function assertAgentRunCheckoutOwnership(
@@ -158,11 +216,14 @@ export function issueRoutes(db: Db, storage: StorageService) {
       res.status(403).json({ error: "Agent authentication required" });
       return false;
     }
-    if (issue.status !== "in_progress" || issue.assigneeAgentId !== actorAgentId) {
+    if (issue.assigneeAgentId !== actorAgentId) {
       return true;
     }
     const runId = requireAgentRunId(req, res);
     if (!runId) return false;
+    if (issue.status !== "in_progress") {
+      return true;
+    }
     const ownership = await svc.assertCheckoutOwner(issue.id, actorAgentId, runId);
     if (ownership.adoptedFromRunId) {
       const actor = getActorInfo(req);
@@ -183,6 +244,102 @@ export function issueRoutes(db: Db, storage: StorageService) {
       });
     }
     return true;
+  }
+
+  function isAgentAssignedIssue(
+    req: Request,
+    issue: { assigneeAgentId: string | null },
+  ) {
+    return req.actor.type === "agent"
+      && !!req.actor.agentId
+      && issue.assigneeAgentId === req.actor.agentId;
+  }
+
+  function isAgentCreatedUnassignedIssue(
+    req: Request,
+    issue: {
+      createdByAgentId: string | null;
+      assigneeAgentId: string | null;
+      assigneeUserId: string | null;
+    },
+  ) {
+    return req.actor.type === "agent"
+      && !!req.actor.agentId
+      && issue.createdByAgentId === req.actor.agentId
+      && issue.assigneeAgentId === null
+      && issue.assigneeUserId === null;
+  }
+
+  async function isMentionWakeForIssue(req: Request, issueId: string) {
+    if (req.actor.type !== "agent" || !req.actor.agentId) return false;
+    const runId = req.actor.runId?.trim();
+    if (!runId) return false;
+    const run = await heartbeat.getRun(runId);
+    if (!run || run.agentId !== req.actor.agentId) return false;
+    const context = run.contextSnapshot;
+    if (!context || typeof context !== "object" || Array.isArray(context)) return false;
+    const snapshot = context as Record<string, unknown>;
+    const contextIssueId = typeof snapshot.issueId === "string" ? snapshot.issueId : null;
+    const wakeReason = typeof snapshot.wakeReason === "string" ? snapshot.wakeReason : null;
+    const wakeCommentId = typeof snapshot.wakeCommentId === "string" ? snapshot.wakeCommentId : null;
+    return run.status === "running"
+      && contextIssueId === issueId
+      && wakeReason === "issue_comment_mentioned"
+      && Boolean(wakeCommentId);
+  }
+
+  async function assertCanMutateIssue(
+    req: Request,
+    res: Response,
+    issue: {
+      id: string;
+      companyId: string;
+      status: string;
+      assigneeAgentId: string | null;
+      assigneeUserId: string | null;
+      createdByAgentId: string | null;
+    },
+    options?: {
+      allowCreatedUnassignedIssue?: boolean;
+      allowMentionComment?: boolean;
+    },
+  ) {
+    if (req.actor.type === "board") return true;
+    if (isAgentAssignedIssue(req, issue)) {
+      return assertAgentRunCheckoutOwnership(req, res, issue);
+    }
+    if (await actorCanManageAnyIssueInCompany(req, issue.companyId)) {
+      return assertAgentMutationRunContext(req, res);
+    }
+    if (options?.allowCreatedUnassignedIssue && isAgentCreatedUnassignedIssue(req, issue)) {
+      return assertAgentMutationRunContext(req, res);
+    }
+    if (options?.allowMentionComment && await isMentionWakeForIssue(req, issue.id)) {
+      return true;
+    }
+    res.status(403).json({ error: "Agents can only mutate their own assigned issues" });
+    return false;
+  }
+
+  async function assertCanMutateAssignedIssue(
+    req: Request,
+    res: Response,
+    issue: {
+      id: string;
+      companyId: string;
+      status: string;
+      assigneeAgentId: string | null;
+    },
+  ) {
+    if (req.actor.type === "board") return true;
+    if (isAgentAssignedIssue(req, issue)) {
+      return assertAgentRunCheckoutOwnership(req, res, issue);
+    }
+    if (await actorCanManageAnyIssueInCompany(req, issue.companyId)) {
+      return assertAgentMutationRunContext(req, res);
+    }
+    res.status(403).json({ error: "Agents can only mutate their own assigned issues" });
+    return false;
   }
 
   async function normalizeIssueIdentifier(rawId: string): Promise<string> {
@@ -492,6 +649,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
       return;
     }
+    if (!(await assertCanMutateIssue(req, res, issue, { allowCreatedUnassignedIssue: true }))) return;
 
     const actor = getActorInfo(req);
     const result = await documentsSvc.upsertIssueDocument({
@@ -594,6 +752,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (!(await assertCanMutateIssue(req, res, issue, { allowCreatedUnassignedIssue: true }))) return;
     const product = await workProductsSvc.createForIssue(issue.id, issue.companyId, {
       ...req.body,
       projectId: req.body.projectId ?? issue.projectId ?? null,
@@ -625,6 +784,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    const issue = await svc.getById(existing.issueId);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    if (!(await assertCanMutateIssue(req, res, issue, { allowCreatedUnassignedIssue: true }))) return;
     const product = await workProductsSvc.update(id, req.body);
     if (!product) {
       res.status(404).json({ error: "Work product not found" });
@@ -653,6 +818,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    const issue = await svc.getById(existing.issueId);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    if (!(await assertCanMutateIssue(req, res, issue, { allowCreatedUnassignedIssue: true }))) return;
     const removed = await workProductsSvc.remove(id);
     if (!removed) {
       res.status(404).json({ error: "Work product not found" });
@@ -779,13 +950,28 @@ export function issueRoutes(db: Db, storage: StorageService) {
   router.post("/companies/:companyId/issues", validate(createIssueSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const isAgentCreatingIssueAssignedToSelf = isAgentAssigningToSelf(
-      req,
-      req.body.assigneeAgentId,
-      req.body.assigneeUserId,
-    );
-    if ((req.body.assigneeAgentId || req.body.assigneeUserId) && !isAgentCreatingIssueAssignedToSelf) {
-      await assertCanAssignTasks(req, companyId);
+    if (!assertAgentMutationRunContext(req, res)) return;
+    const canAssignTasks = await actorCanAssignTasks(req, companyId);
+    let canAgentCreateDelegatedChildIssueWithoutAssignPermission = false;
+
+    if (req.actor.type === "agent" && !canAssignTasks) {
+      if (!hasParentIssue(req.body.parentId)) {
+        res.status(403).json({ error: "Missing permission: tasks:assign" });
+        return;
+      }
+      if (!(await assertAgentCanDelegateFromParentIssue(req, res, companyId, req.body.parentId))) return;
+      canAgentCreateDelegatedChildIssueWithoutAssignPermission = true;
+    }
+
+    if (!canAssignTasks && (req.body.assigneeAgentId || req.body.assigneeUserId)) {
+      const validDelegatedChildAssignee = isAgentAssigningToOtherAgent(
+        req,
+        req.body.assigneeAgentId,
+        req.body.assigneeUserId,
+      );
+      if (!canAgentCreateDelegatedChildIssueWithoutAssignPermission || !validDelegatedChildAssignee) {
+        throw forbidden("Missing permission: tasks:assign");
+      }
     }
 
     const actor = getActorInfo(req);
@@ -832,9 +1018,13 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    if (!(await assertCanMutateIssue(req, res, existing, { allowCreatedUnassignedIssue: true }))) return;
     const assigneeWillChange =
       (req.body.assigneeAgentId !== undefined && req.body.assigneeAgentId !== existing.assigneeAgentId) ||
       (req.body.assigneeUserId !== undefined && req.body.assigneeUserId !== existing.assigneeUserId);
+    const canAssignTasks = assigneeWillChange
+      ? await actorCanAssignTasks(req, existing.companyId)
+      : false;
 
     const isAgentReturningIssueToCreator =
       req.actor.type === "agent" &&
@@ -844,19 +1034,26 @@ export function issueRoutes(db: Db, storage: StorageService) {
       typeof req.body.assigneeUserId === "string" &&
       !!existing.createdByUserId &&
       req.body.assigneeUserId === existing.createdByUserId;
-    const isAgentSelfAssigningOwnUnassignedIssue = canAgentSelfAssignOwnUnassignedIssue(
+    const canAgentAssignOwnUnassignedChildIssue = canAgentAssignOwnUnassignedChildIssueWithoutAssignPermission(
       req,
       existing,
       req.body.assigneeAgentId,
       req.body.assigneeUserId,
     );
+    if (canAgentAssignOwnUnassignedChildIssue) {
+      if (!(await assertAgentCanDelegateFromParentIssue(
+        req,
+        res,
+        existing.companyId,
+        existing.parentId!,
+      ))) return;
+    }
 
     if (assigneeWillChange) {
-      if (!isAgentReturningIssueToCreator && !isAgentSelfAssigningOwnUnassignedIssue) {
-        await assertCanAssignTasks(req, existing.companyId);
+      if (!isAgentReturningIssueToCreator && !canAssignTasks && !canAgentAssignOwnUnassignedChildIssue) {
+        throw forbidden("Missing permission: tasks:assign");
       }
     }
-    if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
 
     const { comment: commentBody, hiddenAt: hiddenAtRaw, ...updateFields } = req.body;
     if (hiddenAtRaw !== undefined) {
@@ -1030,6 +1227,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Board authentication required" });
+      return;
+    }
     const attachments = await svc.listAttachments(id);
 
     const issue = await svc.remove(id);
@@ -1137,14 +1338,22 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
-    if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
+    if (!(await assertCanMutateAssignedIssue(req, res, existing))) return;
     const actorRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !actorRunId) return;
+    const bypassAssigneeCheck =
+      req.actor.type === "agent"
+      && !!req.actor.agentId
+      && existing.assigneeAgentId !== req.actor.agentId
+      && await actorCanManageAnyIssueInCompany(req, existing.companyId);
 
     const released = await svc.release(
       id,
-      req.actor.type === "agent" ? req.actor.agentId : undefined,
-      actorRunId,
+      {
+        actorAgentId: req.actor.type === "agent" ? req.actor.agentId : undefined,
+        actorRunId,
+        bypassAssigneeCheck,
+      },
     );
     if (!released) {
       res.status(404).json({ error: "Issue not found" });
@@ -1225,11 +1434,18 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    if (!(await assertAgentRunCheckoutOwnership(req, res, issue))) return;
 
     const actor = getActorInfo(req);
     const reopenRequested = req.body.reopen === true;
     const interruptRequested = req.body.interrupt === true;
+    if (reopenRequested) {
+      if (!(await assertCanMutateAssignedIssue(req, res, issue))) return;
+    } else if (!(await assertCanMutateIssue(req, res, issue, {
+      allowCreatedUnassignedIssue: true,
+      allowMentionComment: true,
+    }))) {
+      return;
+    }
     const isClosed = issue.status === "done" || issue.status === "cancelled";
     let reopened = false;
     let reopenFromStatus: string | null = null;
@@ -1455,6 +1671,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       res.status(422).json({ error: "Issue does not belong to company" });
       return;
     }
+    if (!(await assertCanMutateIssue(req, res, issue, { allowCreatedUnassignedIssue: true }))) return;
 
     try {
       await runSingleFileUpload(req, res);
@@ -1563,6 +1780,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, attachment.companyId);
+    const issue = await svc.getById(attachment.issueId);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    if (!(await assertCanMutateIssue(req, res, issue, { allowCreatedUnassignedIssue: true }))) return;
 
     try {
       await storage.deleteObject(attachment.companyId, attachment.objectKey);

@@ -18,6 +18,14 @@ Env vars auto-injected: `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, `PAPERCLIP
 
 Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>` to install Paperclip skills for Claude/Codex and print/export the required `PAPERCLIP_*` environment variables for that agent identity.
 
+If `PAPERCLIP_API_KEY` is missing during a `local_trusted` heartbeat, recover it through the local board path instead of leaving the workspace:
+
+- `POST /api/agents/{PAPERCLIP_AGENT_ID}/keys` with no bearer token and a JSON body such as `{ "name": "heartbeat-$PAPERCLIP_RUN_ID" }`
+- read the returned `token` and use it as `Authorization: Bearer $PAPERCLIP_API_KEY` for agent-authenticated calls
+- keep the returned `id` and revoke it before exit with `DELETE /api/agents/{PAPERCLIP_AGENT_ID}/keys/{keyId}` without a bearer token
+
+Do not use `paperclipai agent local-cli`, `pnpm paperclipai`, `/tmp`, or other external directories to bootstrap auth from inside a heartbeat. That fallback is for manual local CLI work, not for sandboxed local agent heartbeats.
+
 **Run audit trail:** You MUST include `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
 
 ## The Heartbeat Procedure
@@ -45,6 +53,8 @@ If that mentioned comment explicitly asks you to take the task, you may self-ass
 If the comment asks for input/review but not ownership, respond in comments if useful, then continue with assigned work.
 If the comment does not direct you to take ownership, do not self-assign.
 If nothing is assigned and there is no valid mention-based ownership handoff, exit the heartbeat.
+
+Management exception: if your role/permissions give you company task-routing authority (for example CEO or an agent explicitly granted `tasks:assign`), you may also inspect `backlog` and unassigned company tasks for triage and routing. That authority is for company queue control, not for bypassing checkout ownership on work you are actively executing yourself.
 
 **Step 5 — Checkout.** You MUST checkout before doing any work. Include the run ID header:
 
@@ -82,8 +92,9 @@ Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 ```
 
 Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
+Do not use `assigneeAgentId` to hand off an already-assigned issue to another agent. Normal cross-agent delegation is a new child issue under the current task.
 
-**Step 9 — Delegate if needed.** Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. Set `billingCode` for cross-team work.
+**Step 9 — Delegate if needed.** Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. Set `billingCode` for cross-team work. If another agent needs to execute your recommendation, create a child task for them instead of PATCHing the current issue's assignee.
 
 ## Project Setup Workflow (CEO/Manager Common Path)
 
@@ -128,8 +139,10 @@ Access control:
 
 - **Always checkout** before working. Never PATCH to `in_progress` manually.
 - **Never retry a 409.** The task belongs to someone else.
-- **Never look for unassigned work.**
+- **Worker agents without company task-routing authority must never look for unassigned work.** Management agents with queue-control authority may inspect backlog/unassigned tasks when triaging and routing work for the company.
+- **Management agents may perform company queue control.** CEO agents and agents with explicit `tasks:assign` authority may reprioritize, reassign, release, reopen, or otherwise mutate company issues beyond their own assignment when doing queue governance. This does not waive checkout ownership for work they themselves currently have checked out.
 - **Self-assign only for explicit @-mention handoff.** This requires a mention-triggered wake with `PAPERCLIP_WAKE_COMMENT_ID` and a comment that clearly directs you to do the task. Use checkout (never direct assignee patch). Otherwise, no assignments = exit.
+- **Delegate by child issue, not direct reassignment.** Keep your current issue as the record of your own work. When another agent needs to act, create a new child issue with `parentId` (and usually `goalId`) and assign that subtask to them.
 - **Honor "send it back to me" requests from board users.** If a board/user asks for review handoff (e.g. "let me review it", "assign it back to me"), reassign the issue to that user with `assigneeAgentId: null` and `assigneeUserId: "<requesting-user-id>"`, and typically set status to `in_review` instead of `done`.
   Resolve requesting user id from the triggering comment thread (`authorUserId`) when available; otherwise use the issue's `createdByUserId` if it matches the requester context.
 - **Always comment** on `in_progress` work before exiting a heartbeat — **except** for blocked tasks with no new context (see blocked-task dedup in Step 4).
