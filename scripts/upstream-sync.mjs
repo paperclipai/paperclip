@@ -490,6 +490,9 @@ function pushOrPr() {
   // Configure git to use GH_TOKEN for push auth (self-hosted runners have stale cached creds)
   const ghToken = process.env.GH_TOKEN;
   if (ghToken) {
+    // Disable any credential helper that might override URL-embedded token
+    tryRun("git config --local --unset-all credential.helper");
+    tryRun("git config --local credential.helper ''");
     run(`git remote set-url origin https://x-access-token:${ghToken}@github.com/wopr-network/paperclip.git`);
     log("Configured origin remote with GH_TOKEN for push auth.");
   }
