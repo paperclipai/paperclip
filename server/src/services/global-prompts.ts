@@ -1,4 +1,4 @@
-import { and, eq, isNull, asc } from "drizzle-orm";
+import { and, eq, isNull, asc, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { globalPrompts, agentPromptOverrides } from "@paperclipai/db";
 import { notFound } from "../errors.js";
@@ -86,38 +86,53 @@ export function globalPromptService(db: Db) {
     data: UpsertPromptData,
     actor: Actor,
   ) {
-    const existing = await getCompanyPrompt(companyId, key);
-    if (existing) {
-      const rows = await db
-        .update(globalPrompts)
-        .set({
-          title: data.title ?? existing.title,
+    return db.transaction(async (tx) => {
+      // Lock the row if it exists to prevent concurrent insert race
+      const existing = await tx
+        .select()
+        .from(globalPrompts)
+        .where(
+          and(
+            eq(globalPrompts.companyId, companyId),
+            isNull(globalPrompts.projectId),
+            eq(globalPrompts.key, key),
+          ),
+        )
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+
+      if (existing) {
+        const rows = await tx
+          .update(globalPrompts)
+          .set({
+            title: data.title ?? existing.title,
+            body: data.body,
+            enabled: data.enabled ?? existing.enabled,
+            sortOrder: data.sortOrder ?? existing.sortOrder,
+            updatedByAgentId: actor.agentId ?? null,
+            updatedByUserId: actor.userId ?? null,
+            updatedAt: new Date(),
+          })
+          .where(eq(globalPrompts.id, existing.id))
+          .returning();
+        return { prompt: rows[0]!, created: false };
+      }
+      const rows = await tx
+        .insert(globalPrompts)
+        .values({
+          companyId,
+          projectId: null,
+          key,
+          title: data.title ?? null,
           body: data.body,
-          enabled: data.enabled ?? existing.enabled,
-          sortOrder: data.sortOrder ?? existing.sortOrder,
-          updatedByAgentId: actor.agentId ?? null,
-          updatedByUserId: actor.userId ?? null,
-          updatedAt: new Date(),
+          enabled: data.enabled ?? true,
+          sortOrder: data.sortOrder ?? 0,
+          createdByAgentId: actor.agentId ?? null,
+          createdByUserId: actor.userId ?? null,
         })
-        .where(eq(globalPrompts.id, existing.id))
         .returning();
-      return { prompt: rows[0]!, created: false };
-    }
-    const rows = await db
-      .insert(globalPrompts)
-      .values({
-        companyId,
-        projectId: null,
-        key,
-        title: data.title ?? null,
-        body: data.body,
-        enabled: data.enabled ?? true,
-        sortOrder: data.sortOrder ?? 0,
-        createdByAgentId: actor.agentId ?? null,
-        createdByUserId: actor.userId ?? null,
-      })
-      .returning();
-    return { prompt: rows[0]!, created: true };
+      return { prompt: rows[0]!, created: true };
+    });
   }
 
   async function deleteCompanyPrompt(companyId: string, key: string) {
@@ -156,38 +171,46 @@ export function globalPromptService(db: Db) {
     data: UpsertPromptData,
     actor: Actor,
   ) {
-    const existing = await getProjectPrompt(projectId, key);
-    if (existing) {
-      const rows = await db
-        .update(globalPrompts)
-        .set({
-          title: data.title ?? existing.title,
+    return db.transaction(async (tx) => {
+      const existing = await tx
+        .select()
+        .from(globalPrompts)
+        .where(and(eq(globalPrompts.projectId, projectId), eq(globalPrompts.key, key)))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+
+      if (existing) {
+        const rows = await tx
+          .update(globalPrompts)
+          .set({
+            title: data.title ?? existing.title,
+            body: data.body,
+            enabled: data.enabled ?? existing.enabled,
+            sortOrder: data.sortOrder ?? existing.sortOrder,
+            updatedByAgentId: actor.agentId ?? null,
+            updatedByUserId: actor.userId ?? null,
+            updatedAt: new Date(),
+          })
+          .where(eq(globalPrompts.id, existing.id))
+          .returning();
+        return { prompt: rows[0]!, created: false };
+      }
+      const rows = await tx
+        .insert(globalPrompts)
+        .values({
+          companyId,
+          projectId,
+          key,
+          title: data.title ?? null,
           body: data.body,
-          enabled: data.enabled ?? existing.enabled,
-          sortOrder: data.sortOrder ?? existing.sortOrder,
-          updatedByAgentId: actor.agentId ?? null,
-          updatedByUserId: actor.userId ?? null,
-          updatedAt: new Date(),
+          enabled: data.enabled ?? true,
+          sortOrder: data.sortOrder ?? 0,
+          createdByAgentId: actor.agentId ?? null,
+          createdByUserId: actor.userId ?? null,
         })
-        .where(eq(globalPrompts.id, existing.id))
         .returning();
-      return { prompt: rows[0]!, created: false };
-    }
-    const rows = await db
-      .insert(globalPrompts)
-      .values({
-        companyId,
-        projectId,
-        key,
-        title: data.title ?? null,
-        body: data.body,
-        enabled: data.enabled ?? true,
-        sortOrder: data.sortOrder ?? 0,
-        createdByAgentId: actor.agentId ?? null,
-        createdByUserId: actor.userId ?? null,
-      })
-      .returning();
-    return { prompt: rows[0]!, created: true };
+      return { prompt: rows[0]!, created: true };
+    });
   }
 
   async function deleteProjectPrompt(projectId: string, key: string) {

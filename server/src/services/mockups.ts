@@ -34,16 +34,11 @@ export function mockupService(db: Db) {
       if (!issue) throw notFound("Issue not found");
 
       return db.transaction(async (tx) => {
-        // Auto-increment version per (issueId, title)
+        // Auto-increment version per issue (matches unique index on company_id, issue_id, version)
         const maxVersionRow = await tx
           .select({ maxVersion: sql<number>`coalesce(max(${issueMockups.version}), 0)` })
           .from(issueMockups)
-          .where(
-            and(
-              eq(issueMockups.issueId, input.issueId),
-              eq(issueMockups.title, input.title),
-            ),
-          )
+          .where(eq(issueMockups.issueId, input.issueId))
           .then((rows) => rows[0]);
         const nextVersion = (maxVersionRow?.maxVersion ?? 0) + 1;
 
