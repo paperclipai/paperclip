@@ -531,6 +531,7 @@ function AdapterPickerList({
                   </span>
                   <ArrowRight className="h-3 w-3 shrink-0 text-muted-foreground" />
                   <select
+                    aria-label={`Adapter type for ${agent.name}`}
                     className="min-w-0 flex-1 rounded-md border border-border bg-transparent px-2 py-1 text-xs outline-none focus:border-foreground"
                     value={selectedType}
                     onChange={(e) => onChangeAdapter(agent.slug, e.target.value)}
@@ -1120,6 +1121,7 @@ export function CompanyImport() {
 
         <Field label="Target" hint="Import into this company or create a new one.">
           <select
+            aria-label="Import target"
             className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
             value={targetMode}
             onChange={(e) => {
@@ -1154,6 +1156,7 @@ export function CompanyImport() {
           hint="Board imports can rename, skip, or replace matching company content."
         >
           <select
+            aria-label="Collision strategy"
             className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
             value={collisionStrategy}
             onChange={(e) => {
