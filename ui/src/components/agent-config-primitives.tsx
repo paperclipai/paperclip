@@ -117,6 +117,10 @@ export function ToggleField({
         {hint && <HintIcon text={hint} />}
       </div>
       <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={label}
         className={cn(
           "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
           checked ? "bg-green-600" : "bg-muted"
@@ -165,6 +169,10 @@ export function ToggleWithNumber({
           {hint && <HintIcon text={hint} />}
         </div>
         <button
+          type="button"
+          role="switch"
+          aria-checked={checked}
+          aria-label={label}
           className={cn(
             "relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0",
             checked ? "bg-green-600" : "bg-muted"
@@ -184,6 +192,7 @@ export function ToggleWithNumber({
           {numberPrefix && <span>{numberPrefix}</span>}
           <input
             type="number"
+            aria-label={`${label} value in ${numberLabel}`}
             className="w-16 rounded-md border border-border px-2 py-0.5 bg-transparent outline-none text-xs font-mono text-center"
             value={number}
             onChange={(e) => onNumberChange(Number(e.target.value))}
