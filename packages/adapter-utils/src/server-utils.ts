@@ -793,7 +793,7 @@ export async function runChildProcess(
             : null;
 
         child.stdout?.on("data", (chunk: unknown) => {
-          const text = String(chunk);
+          const text = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
           stdout = appendWithCap(stdout, text);
           logChain = logChain
             .then(() => opts.onLog("stdout", text))
@@ -801,7 +801,7 @@ export async function runChildProcess(
         });
 
         child.stderr?.on("data", (chunk: unknown) => {
-          const text = String(chunk);
+          const text = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
           stderr = appendWithCap(stderr, text);
           logChain = logChain
             .then(() => opts.onLog("stderr", text))
