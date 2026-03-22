@@ -32,6 +32,7 @@ WORKDIR /app
 COPY --from=deps /app /app
 COPY . .
 RUN pnpm --filter @paperclipai/ui build
+RUN pnpm --filter @paperclipai/plugin-sdk build
 RUN rm -rf server/dist server/*.tsbuildinfo && pnpm --filter @paperclipai/server build
 RUN cat server/dist/routes/health.js | grep -q 'hostedMode: opts' || (echo "ERROR: health.js missing hostedMode in res.json" && exit 1)
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)

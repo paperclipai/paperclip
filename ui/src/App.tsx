@@ -1,4 +1,5 @@
 import { Navigate, Outlet, Route, Routes, useLocation, useParams } from "@/lib/router";
+import { useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Layout } from "./components/Layout";
@@ -83,14 +84,15 @@ function CloudAccessGate() {
   });
 
   const isAuthenticatedMode = healthQuery.data?.deploymentMode === "authenticated";
+  const isHostedProxy = healthQuery.data?.hostedMode === true;
   const sessionQuery = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
-    enabled: isAuthenticatedMode,
+    enabled: isAuthenticatedMode && !isHostedProxy,
     retry: false,
   });
 
-  if (healthQuery.isLoading || (isAuthenticatedMode && sessionQuery.isLoading)) {
+  if (healthQuery.isLoading || (isAuthenticatedMode && !isHostedProxy && sessionQuery.isLoading)) {
     return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
   }
 
@@ -110,7 +112,7 @@ function CloudAccessGate() {
     return <BootstrapPendingPage hasActiveInvite={healthQuery.data.bootstrapInviteActive} />;
   }
 
-  if (isAuthenticatedMode && !sessionQuery.data) {
+  if (isAuthenticatedMode && !isHostedProxy && !sessionQuery.data) {
     const next = encodeURIComponent(`${location.pathname}${location.search}`);
     return <Navigate to={`/auth?next=${next}`} replace />;
   }
@@ -246,7 +248,7 @@ function CompanyRootRedirect() {
 
   // Keep the first-run onboarding mounted until it completes.
   if (!isHosted && onboardingOpen) {
-    return <NoCompaniesStartPage autoOpen={false} />;
+    return <NoCompaniesStartPage />;
   }
 
   const targetCompany = selectedCompany ?? companies[0] ?? null;
