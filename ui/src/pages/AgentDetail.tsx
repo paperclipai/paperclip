@@ -1253,11 +1253,11 @@ function CostsSection({
           <table className="w-full text-xs">
             <thead>
               <tr className="border-b border-border bg-accent/20">
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Date</th>
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Run</th>
-                <th className="text-right px-3 py-2 font-medium text-muted-foreground">Input</th>
-                <th className="text-right px-3 py-2 font-medium text-muted-foreground">Output</th>
-                <th className="text-right px-3 py-2 font-medium text-muted-foreground">Cost</th>
+                <th scope="col" className="text-left px-3 py-2 font-medium text-muted-foreground">Date</th>
+                <th scope="col" className="text-left px-3 py-2 font-medium text-muted-foreground">Run</th>
+                <th scope="col" className="text-right px-3 py-2 font-medium text-muted-foreground">Input</th>
+                <th scope="col" className="text-right px-3 py-2 font-medium text-muted-foreground">Output</th>
+                <th scope="col" className="text-right px-3 py-2 font-medium text-muted-foreground">Cost</th>
               </tr>
             </thead>
             <tbody>
