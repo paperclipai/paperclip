@@ -90,9 +90,34 @@ export function HireAgentPayload({ payload }: { payload: Record<string, unknown>
 
 export function CeoStrategyPayload({ payload }: { payload: Record<string, unknown> }) {
   const plan = payload.plan ?? payload.description ?? payload.strategy ?? payload.text;
+  const imageUrl = typeof payload.imageUrl === "string" ? payload.imageUrl : null;
+  const imageAlt = typeof payload.imageAlt === "string" ? payload.imageAlt : "Approval image";
+  const imageLicense = typeof payload.imageLicense === "string" ? payload.imageLicense : null;
+
   return (
     <div className="mt-3 space-y-1.5 text-sm">
       <PayloadField label="Title" value={payload.title} />
+      <PayloadField label="Channel" value={payload.channel} />
+      <PayloadField label="Category" value={payload.category} />
+      <PayloadField label="Publish" value={payload.targetPublishAt} />
+
+      {imageUrl && (
+        <div className="mt-2 rounded-md border border-border/70 p-2 bg-background/40 space-y-2">
+          <img
+            src={imageUrl}
+            alt={imageAlt}
+            loading="lazy"
+            className="w-full max-h-72 object-cover rounded-md border border-border/60"
+          />
+          <div className="space-y-1">
+            <p className="text-xs text-muted-foreground">{imageAlt}</p>
+            {imageLicense && (
+              <p className="text-[11px] text-muted-foreground">License/source: {imageLicense}</p>
+            )}
+          </div>
+        </div>
+      )}
+
       {!!plan && (
         <div className="mt-2 rounded-md bg-muted/40 px-3 py-2 text-sm text-muted-foreground whitespace-pre-wrap font-mono text-xs max-h-48 overflow-y-auto">
           {String(plan)}
