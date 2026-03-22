@@ -178,6 +178,111 @@ async function resolveChatId(
   return config.defaultChatId;
 }
 
+/** Resolve the forum chatId for a company (forumChatId or chatId fallback). */
+async function resolveForumChatId(
+  db: Db,
+  config: TelegramConfig,
+  companyId: string,
+): Promise<string> {
+  try {
+    const rows = await db
+      .select({ settings: companies.settings })
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .limit(1);
+    const settings = rows[0]?.settings as Record<string, unknown> | undefined;
+    const telegram = settings?.telegram as Record<string, unknown> | undefined;
+    const forumChatId = (telegram?.forumChatId as string)?.trim();
+    if (forumChatId) return forumChatId;
+    const chatId = (telegram?.chatId as string)?.trim();
+    if (chatId) return chatId;
+  } catch {
+    // best-effort
+  }
+  return config.defaultChatId;
+}
+
+type ThreadTarget = { chatId: string; threadId: string } | null;
+
+/**
+ * Resolve an existing thread for an issue, or lazily create one.
+ * Returns { chatId, threadId } if a thread exists/was created, null otherwise.
+ */
+async function resolveOrCreateIssueThread(
+  db: Db,
+  config: TelegramConfig,
+  companyId: string,
+  issueId: string,
+  issueIdentifier: string,
+  issueTitle: string,
+): Promise<ThreadTarget> {
+  // Check for existing mapping
+  const existing = await db
+    .select({
+      chatId: telegramThreadMappings.chatId,
+      messageThreadId: telegramThreadMappings.messageThreadId,
+    })
+    .from(telegramThreadMappings)
+    .where(eq(telegramThreadMappings.issueId, issueId))
+    .limit(1);
+
+  if (existing[0]) {
+    return { chatId: existing[0].chatId, threadId: existing[0].messageThreadId };
+  }
+
+  // No thread yet — try to auto-create in forum chat
+  const forumChatId = await resolveForumChatId(db, config, companyId);
+  const topicName = `${issueIdentifier}: ${issueTitle}`.slice(0, 128);
+  const threadId = await createForumTopic(config.botToken, forumChatId, topicName);
+  if (!threadId) return null; // Chat might not be a forum, or bot isn't admin
+
+  // Save the mapping
+  try {
+    await db.insert(telegramThreadMappings).values({
+      companyId,
+      chatId: forumChatId,
+      messageThreadId: threadId,
+      issueId,
+    });
+  } catch {
+    // unique constraint violation = another process created it
+  }
+
+  return { chatId: forumChatId, threadId };
+}
+
+/**
+ * Send an issue-related notification: route to per-issue thread if possible,
+ * fall back to general chat.
+ */
+async function sendIssueNotification(
+  db: Db,
+  config: TelegramConfig,
+  companyId: string | undefined,
+  issueId: string | undefined,
+  issueIdentifier: string,
+  issueTitle: string,
+  text: string,
+): Promise<void> {
+  // Try to route to issue thread
+  if (companyId && issueId) {
+    try {
+      const thread = await resolveOrCreateIssueThread(
+        db, config, companyId, issueId, issueIdentifier, issueTitle,
+      );
+      if (thread) {
+        void sendMessageToThread(config.botToken, thread.chatId, thread.threadId, text);
+        return;
+      }
+    } catch (err) {
+      logger.warn({ err, issueId }, "Failed to resolve/create issue thread, falling back to general");
+    }
+  }
+  // Fallback: send to general chat
+  const chatId = await resolveChatId(db, config, companyId);
+  void sendMessage(config.botToken, chatId, text);
+}
+
 function escapeHtml(text: string): string {
   return text
     .replace(/&/g, "&amp;")
@@ -314,8 +419,7 @@ async function handleActivityLogged(
     ];
     if (issueTitle) lines.push(`<i>${escapeHtml(truncate(issueTitle, 100))}</i>`);
     lines.push(`by ${escapeHtml(actorLabel)}`);
-    const chatId = await resolveChatId(db, config, event.companyId);
-    void sendMessage(config.botToken, chatId, lines.join("\n"));
+    void sendIssueNotification(db, config, event.companyId, p.entityId, identifier, issueTitle, lines.join("\n"));
     return;
   }
 
@@ -330,8 +434,7 @@ async function handleActivityLogged(
         `\u{1F514} <b>${escapeHtml(identifier)} is now ${escapeHtml(newStatus)}</b>`,
       ];
       if (issueTitle) lines.push(`<i>${escapeHtml(truncate(issueTitle, 100))}</i>`);
-      const chatId = await resolveChatId(db, config, event.companyId);
-      void sendMessage(config.botToken, chatId, lines.join("\n"));
+      void sendIssueNotification(db, config, event.companyId, p.entityId, identifier, issueTitle, lines.join("\n"));
     }
     return;
   }
