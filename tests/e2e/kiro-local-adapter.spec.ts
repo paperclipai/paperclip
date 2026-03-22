@@ -464,7 +464,7 @@ test.describe("kiro_local adapter — Existing Agent Config Validation", () => {
           // Allow empty string as a pre-existing data issue (not new code bug)
           // but flag non-empty stale values as failures
           if (cfg[field] !== "" && cfg[field] !== undefined) {
-            expect.fail(
+            throw new Error(
               `Agent "${agent.name}" has non-empty stale field "${field}": ${JSON.stringify(cfg[field])}`
             );
           }
