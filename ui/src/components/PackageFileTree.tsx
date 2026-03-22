@@ -297,6 +297,7 @@ export function PackageFileTree({
                   type="checkbox"
                   checked={checked}
                   onChange={() => onToggleCheck?.(node.path, "file")}
+                  aria-label={`Select file: ${node.name}`}
                   className="mr-2 accent-foreground"
                 />
               </label>
