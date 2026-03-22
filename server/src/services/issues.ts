@@ -106,6 +106,8 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
 }
 
 const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
+/** Queued runs older than this are considered stale and their issue lock can be superseded (GH #1390). */
+const STALE_QUEUED_RUN_THRESHOLD_MS = 5 * 60 * 1000;
 
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
@@ -430,12 +432,20 @@ export function issueService(db: Db) {
 
   async function isTerminalOrMissingHeartbeatRun(runId: string) {
     const run = await db
-      .select({ status: heartbeatRuns.status })
+      .select({ status: heartbeatRuns.status, createdAt: heartbeatRuns.createdAt })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
     if (!run) return true;
-    return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
+    if (TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return true;
+    // A queued run that never started within 5 minutes is considered stale.
+    // This prevents permanently locked issues when a queued run is orphaned
+    // due to adapter timeout, server restart, or scheduling race (GH #1390).
+    if (run.status === "queued") {
+      const ageMs = Date.now() - new Date(run.createdAt).getTime();
+      if (ageMs > STALE_QUEUED_RUN_THRESHOLD_MS) return true;
+    }
+    return false;
   }
 
   async function adoptStaleCheckoutRun(input: {
