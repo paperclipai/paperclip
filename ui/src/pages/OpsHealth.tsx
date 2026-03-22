@@ -7,7 +7,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { EmptyState } from "../components/EmptyState";
-import { ShieldCheck, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { ShieldCheck, CheckCircle2, Clock3, Siren, ActivitySquare } from "lucide-react";
 
 type RoutineJob = {
   name: string;
@@ -37,12 +37,19 @@ const routineJobs: RoutineJob[] = [
 
 function ragFromAgent(agent: { schedulerActive: boolean; heartbeatEnabled: boolean; lastHeartbeatAt: string | null }) {
   if (!agent.heartbeatEnabled || !agent.schedulerActive) {
-    return { emoji: "🟠", label: "At risk" };
+    return { emoji: "🟠", label: "At risk", className: "bg-amber-500/10 text-amber-600 border-amber-500/30" };
   }
   if (!agent.lastHeartbeatAt) {
-    return { emoji: "🟠", label: "Waiting" };
+    return { emoji: "🟠", label: "Waiting", className: "bg-amber-500/10 text-amber-600 border-amber-500/30" };
   }
-  return { emoji: "🟢", label: "Healthy" };
+  return { emoji: "🟢", label: "Healthy", className: "bg-emerald-500/10 text-emerald-600 border-emerald-500/30" };
+}
+
+function laneEmoji(lane: RoutineJob["lane"]) {
+  if (lane === "Marketing") return "📣";
+  if (lane === "Trading") return "📈";
+  if (lane === "Memory") return "🧠";
+  return "⚙️";
 }
 
 export function OpsHealth() {
@@ -79,86 +86,116 @@ export function OpsHealth() {
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 md:grid-cols-5">
-        <div className="rounded-lg border bg-card p-3">
-          <p className="text-xs text-muted-foreground">Open tasks</p>
-          <p className="text-xl font-semibold">{dashboard?.tasks.open ?? 0}</p>
+      <section className="rounded-lg border bg-card p-3">
+        <div className="flex items-center gap-2 mb-2">
+          <ActivitySquare className="h-4 w-4 text-cyan-500" />
+          <h2 className="text-sm font-semibold">📊 Control Tower Snapshot</h2>
         </div>
-        <div className="rounded-lg border bg-card p-3">
-          <p className="text-xs text-muted-foreground">Blocked tasks</p>
-          <p className="text-xl font-semibold">{dashboard?.tasks.blocked ?? 0}</p>
+        <div className="grid gap-3 md:grid-cols-5">
+          <div className="rounded-lg border bg-background p-3">
+            <p className="text-xs text-muted-foreground">🧾 Open Tasks</p>
+            <p className="text-xl font-semibold">{dashboard?.tasks.open ?? 0}</p>
+          </div>
+          <div className="rounded-lg border bg-background p-3">
+            <p className="text-xs text-muted-foreground">⛔ Blocked</p>
+            <p className="text-xl font-semibold text-amber-600">{dashboard?.tasks.blocked ?? 0}</p>
+          </div>
+          <div className="rounded-lg border bg-background p-3">
+            <p className="text-xs text-muted-foreground">✅ Pending Approvals</p>
+            <p className="text-xl font-semibold">{dashboard?.pendingApprovals ?? 0}</p>
+          </div>
+          <div className="rounded-lg border bg-background p-3">
+            <p className="text-xs text-muted-foreground">🧩 Routine Jobs</p>
+            <p className="text-xl font-semibold">{routineJobs.length}</p>
+          </div>
+          <div className="rounded-lg border bg-background p-3">
+            <p className="text-xs text-muted-foreground">🔥 High Critical</p>
+            <p className="text-xl font-semibold text-rose-600">{highCriticalCount}</p>
+          </div>
         </div>
-        <div className="rounded-lg border bg-card p-3">
-          <p className="text-xs text-muted-foreground">Pending approvals</p>
-          <p className="text-xl font-semibold">{dashboard?.pendingApprovals ?? 0}</p>
-        </div>
-        <div className="rounded-lg border bg-card p-3">
-          <p className="text-xs text-muted-foreground">Routine jobs tracked</p>
-          <p className="text-xl font-semibold">{routineJobs.length}</p>
-        </div>
-        <div className="rounded-lg border bg-card p-3">
-          <p className="text-xs text-muted-foreground">High criticality jobs</p>
-          <p className="text-xl font-semibold">{highCriticalCount}</p>
-        </div>
-      </div>
+      </section>
 
       <div className="rounded-lg border bg-card p-3 text-xs text-muted-foreground flex items-center gap-2">
         <CheckCircle2 className="h-4 w-4 text-emerald-500" />
-        This page now tracks all routine Felix/Katya/topic jobs used to run operations. Scheduler heartbeat data is live; routine-job registry is policy-backed coverage.
+        Includes all routine Felix/Katya/topic jobs. Live heartbeat + coverage registry in one view.
       </div>
 
       {companyAgents.length === 0 ? (
         <EmptyState icon={ShieldCheck} message="No scheduler heartbeat agents found for this company." />
       ) : (
-        <div className="rounded-lg border bg-card">
-          <div className="border-b px-3 py-2 text-sm font-medium">Scheduler heartbeat (live)</div>
+        <section className="rounded-lg border bg-card overflow-hidden">
+          <div className="border-b px-3 py-2 text-sm font-semibold">🫀 Scheduler Heartbeat (Live)</div>
+          <div className="grid grid-cols-12 gap-2 px-3 py-2 text-[11px] uppercase tracking-wide text-muted-foreground border-b bg-muted/20">
+            <div className="col-span-2">RAG</div>
+            <div className="col-span-4">Agent</div>
+            <div className="col-span-2">Adapter</div>
+            <div className="col-span-4 text-right">Last Heartbeat</div>
+          </div>
           <div className="divide-y">
             {companyAgents.map((agent) => {
               const rag = ragFromAgent(agent as any);
               return (
-                <div key={agent.id} className="flex items-center gap-3 px-3 py-2 text-sm">
-                  <span className="w-16 text-xs">{rag.emoji} {rag.label}</span>
-                  <span className="min-w-[180px] font-medium">{agent.agentName}</span>
-                  <span className="text-muted-foreground">{agent.adapterType}</span>
-                  <span className="ml-auto text-xs text-muted-foreground">
-                    last heartbeat: {agent.lastHeartbeatAt ? new Date(agent.lastHeartbeatAt).toLocaleString() : "never"}
-                  </span>
+                <div key={agent.id} className="grid grid-cols-12 gap-2 px-3 py-2 text-sm items-center">
+                  <div className="col-span-2">
+                    <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs ${rag.className}`}>
+                      {rag.emoji} {rag.label}
+                    </span>
+                  </div>
+                  <div className="col-span-4 font-medium">{agent.agentName}</div>
+                  <div className="col-span-2 text-muted-foreground">{agent.adapterType}</div>
+                  <div className="col-span-4 text-right text-xs text-muted-foreground">
+                    {agent.lastHeartbeatAt ? new Date(agent.lastHeartbeatAt).toLocaleString() : "never"}
+                  </div>
                 </div>
               );
             })}
           </div>
-        </div>
+        </section>
       )}
 
-      <div className="rounded-lg border bg-card">
-        <div className="border-b px-3 py-2 text-sm font-medium">Routine jobs registry (Felix + Katya + Topics)</div>
+      <section className="rounded-lg border bg-card overflow-hidden">
+        <div className="border-b px-3 py-2 text-sm font-semibold">🗂️ Routine Jobs Registry (Felix + Katya + Topics)</div>
+        <div className="grid grid-cols-12 gap-2 px-3 py-2 text-[11px] uppercase tracking-wide text-muted-foreground border-b bg-muted/20">
+          <div className="col-span-4">Job</div>
+          <div className="col-span-2">Owner</div>
+          <div className="col-span-2">Lane</div>
+          <div className="col-span-2">Topic</div>
+          <div className="col-span-1">Cadence</div>
+          <div className="col-span-1 text-right">Priority</div>
+        </div>
         <div className="divide-y">
           {routineJobs.map((job) => (
             <div key={job.name} className="grid grid-cols-12 gap-2 px-3 py-2 text-xs items-center">
-              <div className="col-span-5 font-medium truncate">{job.name}</div>
+              <div className="col-span-4 font-medium truncate">{job.name}</div>
               <div className="col-span-2 text-muted-foreground">{job.owner}</div>
+              <div className="col-span-2">
+                <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px]">
+                  <span>{laneEmoji(job.lane)}</span>
+                  <span>{job.lane}</span>
+                </span>
+              </div>
               <div className="col-span-2 text-muted-foreground">{job.topic}</div>
-              <div className="col-span-2 text-muted-foreground">{job.cadence}</div>
+              <div className="col-span-1 text-muted-foreground truncate" title={job.cadence}>{job.cadence}</div>
               <div className="col-span-1 text-right">
                 {job.criticality === "high" ? (
-                  <span className="inline-flex items-center gap-1 text-amber-600"><AlertTriangle className="h-3 w-3" />H</span>
+                  <span className="inline-flex items-center gap-1 text-rose-600"><Siren className="h-3 w-3" />H</span>
                 ) : (
-                  <span className="text-muted-foreground">M</span>
+                  <span className="inline-flex items-center gap-1 text-muted-foreground"><Clock3 className="h-3 w-3" />M</span>
                 )}
               </div>
             </div>
           ))}
         </div>
-      </div>
+      </section>
 
-      <div className="rounded-lg border bg-card p-3 text-xs text-muted-foreground">
-        <p className="font-medium text-foreground mb-1">Quick operator focus</p>
+      <section className="rounded-lg border bg-card p-3 text-xs text-muted-foreground">
+        <p className="font-semibold text-foreground mb-1">🎯 Quick Operator Focus</p>
         <ul className="list-disc ml-4 space-y-1">
-          <li>Marketing automation jobs tracked: {marketingCount}</li>
-          <li>Review blocked tasks + pending approvals first for fastest unblocks</li>
-          <li>If any high-criticality routine drifts, escalate immediately in handoff</li>
+          <li>📣 Marketing automation jobs tracked: {marketingCount}</li>
+          <li>⚡ Review blocked tasks + pending approvals first for fastest unblocks</li>
+          <li>🔥 If any high-criticality routine drifts, escalate immediately in handoff</li>
         </ul>
-      </div>
+      </section>
     </div>
   );
 }
