@@ -61,12 +61,9 @@ export function parseOpenCodeJsonl(stdout: string) {
     }
 
     if (type === "tool_use") {
-      const part = parseObject(event.part);
-      const state = parseObject(part.state);
-      if (asString(state.status, "") === "error") {
-        const text = asString(state.error, "").trim();
-        if (text) errors.push(text);
-      }
+      // Tool errors are part of the normal LLM interaction loop and should not 
+      // cause the entire adapter run to fail with 'adapter_failed'.
+      // Only fatal execution errors (type === "error") should be collected.
       continue;
     }
 
