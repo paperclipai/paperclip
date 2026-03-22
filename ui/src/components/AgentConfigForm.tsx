@@ -44,6 +44,7 @@ import { ClaudeLocalAdvancedFields } from "../adapters/claude-local/config-field
 import { MarkdownEditor } from "./MarkdownEditor";
 import { ChoosePathButton } from "./PathInstructionsModal";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
+import { shouldShowLegacyWorkingDirectoryField } from "../lib/legacy-agent-config";
 
 /* ---- Create mode values ---- */
 
@@ -60,6 +61,12 @@ type AgentConfigFormProps = {
   onSaveActionChange?: (save: (() => void) | null) => void;
   onCancelActionChange?: (cancel: (() => void) | null) => void;
   hideInlineSave?: boolean;
+  showAdapterTypeField?: boolean;
+  showAdapterTestEnvironmentButton?: boolean;
+  showCreateRunPolicySection?: boolean;
+  hideInstructionsFile?: boolean;
+  /** Hide the prompt template field from the Identity section (used when it's shown in a separate Prompts tab). */
+  hidePromptTemplate?: boolean;
   /** "cards" renders each section as heading + bordered card (for settings pages). Default: "inline" (border-b dividers). */
   sectionLayout?: "inline" | "cards";
   /** When true, hide adapter type, model, command, and thinking effort controls — backend controls inference. */
@@ -165,6 +172,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const { mode, adapterModels: externalModels } = props;
   const isCreate = mode === "create";
   const cards = props.sectionLayout === "cards";
+  const showAdapterTypeField = props.showAdapterTypeField ?? true;
+  const showAdapterTestEnvironmentButton = props.showAdapterTestEnvironmentButton ?? true;
+  const showCreateRunPolicySection = props.showCreateRunPolicySection ?? true;
+  const hideInstructionsFile = props.hideInstructionsFile ?? false;
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
 
@@ -287,7 +298,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     adapterType === "codex_local" ||
     adapterType === "gemini_local" ||
     adapterType === "opencode_local" ||
+    adapterType === "pi_local" ||
     adapterType === "cursor";
+  const showLegacyWorkingDirectoryField =
+    isLocal && shouldShowLegacyWorkingDirectoryField({ isCreate, adapterConfig: config });
   const uiAdapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
 
   // Fetch adapter models for the effective adapter type
@@ -314,6 +328,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     eff: eff as <T>(group: "adapterConfig", field: string, original: T) => T,
     mark: mark as (group: "adapterConfig", field: string, value: unknown) => void,
     models,
+    hideInstructionsFile,
   };
 
   // Section toggle state — advanced always starts collapsed
@@ -385,7 +400,26 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const codexSearchEnabled = adapterType === "codex_local"
     ? (isCreate ? Boolean(val!.search) : eff("adapterConfig", "search", Boolean(config.search)))
     : false;
-
+  const effectiveRuntimeConfig = useMemo(() => {
+    if (isCreate) {
+      return {
+        heartbeat: {
+          enabled: val!.heartbeatEnabled,
+          intervalSec: val!.intervalSec,
+        },
+      };
+    }
+    const mergedHeartbeat = {
+      ...(runtimeConfig.heartbeat && typeof runtimeConfig.heartbeat === "object"
+        ? runtimeConfig.heartbeat as Record<string, unknown>
+        : {}),
+      ...overlay.heartbeat,
+    };
+    return {
+      ...runtimeConfig,
+      heartbeat: mergedHeartbeat,
+    };
+  }, [isCreate, overlay.heartbeat, runtimeConfig, val]);
   return (
     <div className={cn("relative", cards && "space-y-6")}>
       {/* ---- Floating Save button (edit mode, when dirty) ---- */}
@@ -445,7 +479,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 }}
               />
             </Field>
-            {isLocal && (
+            {isLocal && !props.hidePromptTemplate && (
               <>
                 <Field label="Prompt Template" hint={help.promptTemplate}>
                   <MarkdownEditor
@@ -480,69 +514,73 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? <h3 className="text-sm font-medium">Adapter</h3>
             : <span className="text-xs font-medium text-muted-foreground">Adapter</span>
           }
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-7 px-2.5 text-xs"
-            onClick={() => testEnvironment.mutate()}
-            disabled={testEnvironment.isPending || !selectedCompanyId}
-          >
-            {testEnvironment.isPending ? "Testing..." : "Test environment"}
-          </Button>
+          {showAdapterTestEnvironmentButton && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 px-2.5 text-xs"
+              onClick={() => testEnvironment.mutate()}
+              disabled={testEnvironment.isPending || !selectedCompanyId}
+            >
+              {testEnvironment.isPending ? "Testing..." : "Test environment"}
+            </Button>
+          )}
         </div>
         <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
-          <Field label="Adapter type" hint={help.adapterType}>
-            <AdapterTypeDropdown
-              value={adapterType}
-              onChange={(t) => {
-                if (isCreate) {
-                  // Reset all adapter-specific fields to defaults when switching adapter type
-                  const { adapterType: _at, ...defaults } = defaultCreateValues;
-                  const nextValues: CreateConfigValues = { ...defaults, adapterType: t };
-                  if (t === "codex_local") {
-                    nextValues.model = DEFAULT_CODEX_LOCAL_MODEL;
-                    nextValues.dangerouslyBypassSandbox =
-                      DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
-                  } else if (t === "gemini_local") {
-                    nextValues.model = DEFAULT_GEMINI_LOCAL_MODEL;
-                  } else if (t === "cursor") {
-                    nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
-                  } else if (t === "opencode_local") {
-                    nextValues.model = "";
+          {showAdapterTypeField && (
+            <Field label="Adapter type" hint={help.adapterType}>
+              <AdapterTypeDropdown
+                value={adapterType}
+                onChange={(t) => {
+                  if (isCreate) {
+                    // Reset all adapter-specific fields to defaults when switching adapter type
+                    const { adapterType: _at, ...defaults } = defaultCreateValues;
+                    const nextValues: CreateConfigValues = { ...defaults, adapterType: t };
+                    if (t === "codex_local") {
+                      nextValues.model = DEFAULT_CODEX_LOCAL_MODEL;
+                      nextValues.dangerouslyBypassSandbox =
+                        DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
+                    } else if (t === "gemini_local") {
+                      nextValues.model = DEFAULT_GEMINI_LOCAL_MODEL;
+                    } else if (t === "cursor") {
+                      nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
+                    } else if (t === "opencode_local") {
+                      nextValues.model = "";
+                    }
+                    set!(nextValues);
+                  } else {
+                    // Clear all adapter config and explicitly blank out model + effort/mode keys
+                    // so the old adapter's values don't bleed through via eff()
+                    setOverlay((prev) => ({
+                      ...prev,
+                      adapterType: t,
+                      adapterConfig: {
+                        model:
+                          t === "codex_local"
+                            ? DEFAULT_CODEX_LOCAL_MODEL
+                            : t === "gemini_local"
+                              ? DEFAULT_GEMINI_LOCAL_MODEL
+                            : t === "cursor"
+                              ? DEFAULT_CURSOR_LOCAL_MODEL
+                            : "",
+                        effort: "",
+                        modelReasoningEffort: "",
+                        variant: "",
+                        mode: "",
+                        ...(t === "codex_local"
+                          ? {
+                              dangerouslyBypassApprovalsAndSandbox:
+                                DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
+                            }
+                          : {}),
+                      },
+                    }));
                   }
-                  set!(nextValues);
-                } else {
-                  // Clear all adapter config and explicitly blank out model + effort/mode keys
-                  // so the old adapter's values don't bleed through via eff()
-                  setOverlay((prev) => ({
-                    ...prev,
-                    adapterType: t,
-                    adapterConfig: {
-                      model:
-                        t === "codex_local"
-                          ? DEFAULT_CODEX_LOCAL_MODEL
-                          : t === "gemini_local"
-                            ? DEFAULT_GEMINI_LOCAL_MODEL
-                          : t === "cursor"
-                            ? DEFAULT_CURSOR_LOCAL_MODEL
-                          : "",
-                      effort: "",
-                      modelReasoningEffort: "",
-                      variant: "",
-                      mode: "",
-                      ...(t === "codex_local"
-                        ? {
-                            dangerouslyBypassApprovalsAndSandbox:
-                              DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
-                          }
-                        : {}),
-                    },
-                  }));
-                }
-              }}
-            />
-          </Field>
+                }}
+              />
+            </Field>
+          )}
 
           {testEnvironment.error && (
             <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
@@ -557,8 +595,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           )}
 
           {/* Working directory */}
-          {isLocal && (
-            <Field label="Working directory" hint={help.cwd}>
+          {showLegacyWorkingDirectoryField && (
+            <Field label="Working directory (deprecated)" hint={help.cwd}>
               <div className="flex items-center gap-2 rounded-md border border-border px-2.5 py-1.5">
                 <FolderOpen className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                 <DraftInput
@@ -636,8 +674,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       ? "codex"
                       : adapterType === "gemini_local"
                         ? "gemini"
-                      : adapterType === "cursor"
-                        ? "agent"
+                        : adapterType === "pi_local"
+                          ? "pi"
+                        : adapterType === "cursor"
+                          ? "agent"
                         : adapterType === "opencode_local"
                           ? "opencode"
                           : "claude"
@@ -689,36 +729,32 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     )}
                 </>
               )}
-              <Field label="Bootstrap prompt (first run)" hint={help.bootstrapPrompt}>
-                <MarkdownEditor
-                  value={
-                    isCreate
-                      ? val!.bootstrapPrompt
-                      : eff(
-                          "adapterConfig",
-                          "bootstrapPromptTemplate",
-                          String(config.bootstrapPromptTemplate ?? ""),
-                        )
-                  }
-                  onChange={(v) =>
-                    isCreate
-                      ? set!({ bootstrapPrompt: v })
-                      : mark("adapterConfig", "bootstrapPromptTemplate", v || undefined)
-                  }
-                  placeholder="Optional initial setup prompt for the first run"
-                  contentClassName="min-h-[44px] text-sm font-mono"
-                  imageUploadHandler={async (file) => {
-                    const namespace = isCreate
-                      ? "agents/drafts/bootstrap-prompt"
-                      : `agents/${props.agent.id}/bootstrap-prompt`;
-                    const asset = await uploadMarkdownImage.mutateAsync({ file, namespace });
-                    return asset.contentPath;
-                  }}
-                />
-              </Field>
-              <div className="rounded-md border border-sky-500/25 bg-sky-500/10 px-3 py-2 text-xs text-sky-100">
-                Bootstrap prompt is only sent for fresh sessions. Put stable setup, habits, and longer reusable guidance here. Frequent changes reduce the value of session reuse because new sessions must replay it.
-              </div>
+              {!isCreate && typeof config.bootstrapPromptTemplate === "string" && config.bootstrapPromptTemplate && (
+                <>
+                  <Field label="Bootstrap prompt (legacy)" hint={help.bootstrapPrompt}>
+                    <MarkdownEditor
+                      value={eff(
+                        "adapterConfig",
+                        "bootstrapPromptTemplate",
+                        String(config.bootstrapPromptTemplate ?? ""),
+                      )}
+                      onChange={(v) =>
+                        mark("adapterConfig", "bootstrapPromptTemplate", v || undefined)
+                      }
+                      placeholder="Optional initial setup prompt for the first run"
+                      contentClassName="min-h-[44px] text-sm font-mono"
+                      imageUploadHandler={async (file) => {
+                        const namespace = `agents/${props.agent.id}/bootstrap-prompt`;
+                        const asset = await uploadMarkdownImage.mutateAsync({ file, namespace });
+                        return asset.contentPath;
+                      }}
+                    />
+                  </Field>
+                  <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                    Bootstrap prompt is legacy and will be removed in a future release. Consider moving this content into the agent&apos;s prompt template or instructions file instead.
+                  </div>
+                </>
+              )}
               {adapterType === "claude_local" && (
                 <ClaudeLocalAdvancedFields {...adapterFieldProps} />
               )}
@@ -796,7 +832,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       )}
 
       {/* ---- Run Policy ---- */}
-      {isCreate ? (
+      {isCreate && showCreateRunPolicySection ? (
         <div className={cn(!cards && "border-b border-border")}>
           {cards
             ? <h3 className="text-sm font-medium flex items-center gap-2 mb-3"><Heart className="h-3 w-3" /> Run Policy</h3>
@@ -817,7 +853,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             />
           </div>
         </div>
-      ) : (
+      ) : !isCreate ? (
         <div className={cn(!cards && "border-b border-border")}>
           {cards
             ? <h3 className="text-sm font-medium flex items-center gap-2 mb-3"><Heart className="h-3 w-3" /> Run Policy</h3>
@@ -883,7 +919,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           </CollapsibleSection>
           </div>
         </div>
-      )}
+      ) : null}
 
     </div>
   );
@@ -926,7 +962,7 @@ function AdapterEnvironmentResult({ result }: { result: AdapterEnvironmentTestRe
 
 /* ---- Internal sub-components ---- */
 
-const ENABLED_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "gemini_local", "opencode_local", "cursor"]);
+const ENABLED_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "gemini_local", "opencode_local", "pi_local", "cursor"]);
 
 /** Display list includes all real adapter types plus UI-only coming-soon entries. */
 const ADAPTER_DISPLAY_LIST: { value: string; label: string; comingSoon: boolean }[] = [

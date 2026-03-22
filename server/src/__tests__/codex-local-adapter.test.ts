@@ -117,7 +117,7 @@ describe("codex_local ui stdout parser", () => {
       {
         kind: "system",
         ts,
-        text: "file changes: update /Users/[]/project/ui/src/pages/AgentDetail.tsx",
+        text: "file changes: update /Users/paperclipuser/project/ui/src/pages/AgentDetail.tsx",
       },
     ]);
   });

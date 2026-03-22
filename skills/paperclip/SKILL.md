@@ -71,6 +71,8 @@ Read enough ancestor/comment context to understand _why_ the task exists and wha
 **Step 8 — Update status and communicate.** Always include the run ID header.
 If you are blocked at any point, you MUST update the issue to `blocked` before exiting the heartbeat, with a comment that explains the blocker and who needs to act.
 
+When writing issue descriptions or comments, follow the ticket-linking rule in **Comment Style** below.
+
 ```json
 PATCH /api/issues/{issueId}
 Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
@@ -124,6 +126,17 @@ Access control:
 
 4. After OpenClaw submits the join request, monitor approvals and continue onboarding (approval + API key claim + skill install).
 
+## Company Skills Workflow
+
+Authorized managers can install company skills independently of hiring, then assign or remove those skills on agents.
+
+- Install and inspect company skills with the company skills API.
+- Assign skills to existing agents with `POST /api/agents/{agentId}/skills/sync`.
+- When hiring or creating an agent, include optional `desiredSkills` so the same assignment model is applied on day one.
+
+If you are asked to install a skill for the company or an agent you MUST read:
+`skills/paperclip/references/company-skills.md`
+
 ## Critical Rules
 
 - **Always checkout** before working. Never PATCH to `in_progress` manually.
@@ -144,11 +157,18 @@ Access control:
 
 ## Comment Style (Required)
 
-When posting issue comments, use concise markdown with:
+When posting issue comments or writing issue descriptions, use concise markdown with:
 
 - a short status line
 - bullets for what changed / what is blocked
 - links to related entities when available
+
+**Ticket references are links (required):** If you mention another issue identifier such as `PAP-224`, `ZED-24`, or any `{PREFIX}-{NUMBER}` ticket id inside a comment body or issue description, wrap it in a Markdown link:
+
+- `[PAP-224](/PAP/issues/PAP-224)`
+- `[ZED-24](/ZED/issues/ZED-24)`
+
+Never leave bare ticket ids in issue descriptions or comments when a clickable internal link can be provided.
 
 **Company-prefixed URLs (required):** All internal links MUST include the company prefix. Derive the prefix from any issue identifier you have (e.g., `PAP-315` → prefix is `PAP`). Use this prefix in all UI links:
 
@@ -171,7 +191,8 @@ Submitted CTO hire request and linked it for board review.
 
 - Approval: [ca6ba09d](/PAP/approvals/ca6ba09d-b558-4a53-a552-e7ef87e54a1b)
 - Pending agent: [CTO draft](/PAP/agents/cto)
-- Source issue: [PC-142](/PAP/issues/PC-142)
+- Source issue: [PAP-142](/PAP/issues/PAP-142)
+- Depends on: [PAP-224](/PAP/issues/PAP-224)
 ```
 
 ## Planning (Required when planning requested)
@@ -230,32 +251,67 @@ PATCH /api/agents/{agentId}/instructions-path
 
 ## Key Endpoints (Quick Reference)
 
-| Action                                | Endpoint                                                                                   |
-| ------------------------------------- | ------------------------------------------------------------------------------------------ |
-| My identity                           | `GET /api/agents/me`                                                                       |
-| My compact inbox                      | `GET /api/agents/me/inbox-lite`                                                            |
-| My assignments                        | `GET /api/companies/:companyId/issues?assigneeAgentId=:id&status=todo,in_progress,blocked` |
-| Checkout task                         | `POST /api/issues/:issueId/checkout`                                                       |
-| Get task + ancestors                  | `GET /api/issues/:issueId`                                                                 |
-| List issue documents                  | `GET /api/issues/:issueId/documents`                                                       |
-| Get issue document                    | `GET /api/issues/:issueId/documents/:key`                                                  |
-| Create/update issue document          | `PUT /api/issues/:issueId/documents/:key`                                                  |
-| Get issue document revisions          | `GET /api/issues/:issueId/documents/:key/revisions`                                        |
-| Get compact heartbeat context         | `GET /api/issues/:issueId/heartbeat-context`                                               |
-| Get comments                          | `GET /api/issues/:issueId/comments`                                                        |
-| Get comment delta                     | `GET /api/issues/:issueId/comments?after=:commentId&order=asc`                             |
-| Get specific comment                  | `GET /api/issues/:issueId/comments/:commentId`                                             |
-| Update task                           | `PATCH /api/issues/:issueId` (optional `comment` field)                                    |
-| Add comment                           | `POST /api/issues/:issueId/comments`                                                       |
-| Create subtask                        | `POST /api/companies/:companyId/issues`                                                    |
-| Generate OpenClaw invite prompt (CEO) | `POST /api/companies/:companyId/openclaw/invite-prompt`                                    |
-| Create project                        | `POST /api/companies/:companyId/projects`                                                  |
-| Create project workspace              | `POST /api/projects/:projectId/workspaces`                                                 |
-| Set instructions path                 | `PATCH /api/agents/:agentId/instructions-path`                                             |
-| Release task                          | `POST /api/issues/:issueId/release`                                                        |
-| List agents                           | `GET /api/companies/:companyId/agents`                                                     |
-| Dashboard                             | `GET /api/companies/:companyId/dashboard`                                                  |
-| Search issues                         | `GET /api/companies/:companyId/issues?q=search+term`                                       |
+| Action                                    | Endpoint                                                                                   |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------ |
+| My identity                               | `GET /api/agents/me`                                                                       |
+| My compact inbox                          | `GET /api/agents/me/inbox-lite`                                                            |
+| My assignments                            | `GET /api/companies/:companyId/issues?assigneeAgentId=:id&status=todo,in_progress,blocked` |
+| Checkout task                             | `POST /api/issues/:issueId/checkout`                                                       |
+| Get task + ancestors                      | `GET /api/issues/:issueId`                                                                 |
+| List issue documents                      | `GET /api/issues/:issueId/documents`                                                       |
+| Get issue document                        | `GET /api/issues/:issueId/documents/:key`                                                  |
+| Create/update issue document              | `PUT /api/issues/:issueId/documents/:key`                                                  |
+| Get issue document revisions              | `GET /api/issues/:issueId/documents/:key/revisions`                                        |
+| Get compact heartbeat context             | `GET /api/issues/:issueId/heartbeat-context`                                               |
+| Get comments                              | `GET /api/issues/:issueId/comments`                                                        |
+| Get comment delta                         | `GET /api/issues/:issueId/comments?after=:commentId&order=asc`                             |
+| Get specific comment                      | `GET /api/issues/:issueId/comments/:commentId`                                             |
+| Update task                               | `PATCH /api/issues/:issueId` (optional `comment` field)                                    |
+| Add comment                               | `POST /api/issues/:issueId/comments`                                                       |
+| Create subtask                            | `POST /api/companies/:companyId/issues`                                                    |
+| Generate OpenClaw invite prompt (CEO)     | `POST /api/companies/:companyId/openclaw/invite-prompt`                                    |
+| Create project                            | `POST /api/companies/:companyId/projects`                                                  |
+| Create project workspace                  | `POST /api/projects/:projectId/workspaces`                                                 |
+| Set instructions path                     | `PATCH /api/agents/:agentId/instructions-path`                                             |
+| Release task                              | `POST /api/issues/:issueId/release`                                                        |
+| List agents                               | `GET /api/companies/:companyId/agents`                                                     |
+| List company skills                       | `GET /api/companies/:companyId/skills`                                                     |
+| Import company skills                     | `POST /api/companies/:companyId/skills/import`                                             |
+| Scan project workspaces for skills        | `POST /api/companies/:companyId/skills/scan-projects`                                      |
+| Sync agent desired skills                 | `POST /api/agents/:agentId/skills/sync`                                                    |
+| Preview CEO-safe company import          | `POST /api/companies/:companyId/imports/preview`                                           |
+| Apply CEO-safe company import            | `POST /api/companies/:companyId/imports/apply`                                             |
+| Preview company export                   | `POST /api/companies/:companyId/exports/preview`                                           |
+| Build company export                     | `POST /api/companies/:companyId/exports`                                                   |
+| Dashboard                                 | `GET /api/companies/:companyId/dashboard`                                                  |
+| Search issues                             | `GET /api/companies/:companyId/issues?q=search+term`                                       |
+| Upload attachment (multipart, field=file) | `POST /api/companies/:companyId/issues/:issueId/attachments`                               |
+| List issue attachments                    | `GET /api/issues/:issueId/attachments`                                                     |
+| Get attachment content                    | `GET /api/attachments/:attachmentId/content`                                               |
+| Delete attachment                         | `DELETE /api/attachments/:attachmentId`                                                    |
+
+## Company Import / Export
+
+Use the company-scoped routes when a CEO agent needs to inspect or move package content.
+
+- CEO-safe imports:
+  - `POST /api/companies/{companyId}/imports/preview`
+  - `POST /api/companies/{companyId}/imports/apply`
+- Allowed callers: board users and the CEO agent of that same company.
+- Safe import rules:
+  - existing-company imports are non-destructive
+  - `replace` is rejected
+  - collisions resolve with `rename` or `skip`
+  - issues are always created as new issues
+- CEO agents may use the safe routes with `target.mode = "new_company"` to create a new company directly. Paperclip copies active user memberships from the source company so the new company is not orphaned.
+
+For export, preview first and keep tasks explicit:
+
+- `POST /api/companies/{companyId}/exports/preview`
+- `POST /api/companies/{companyId}/exports`
+- Export preview defaults to `issues: false`
+- Add `issues` or `projectIssues` only when you intentionally need task files
+- Use `selectedFiles` to narrow the final package to specific agents, skills, projects, or tasks after you inspect the preview inventory
 
 ## Searching Issues
 

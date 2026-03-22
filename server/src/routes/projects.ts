@@ -116,7 +116,11 @@ export function projectRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
-    const project = await svc.update(id, req.body);
+    const body = { ...req.body };
+    if (typeof body.archivedAt === "string") {
+      body.archivedAt = new Date(body.archivedAt);
+    }
+    const project = await svc.update(id, body);
     if (!project) {
       res.status(404).json({ error: "Project not found" });
       return;

@@ -11,6 +11,7 @@ import { heartbeatsApi } from "../api/heartbeats";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { AgentIcon } from "./AgentIconPicker";
+import { BudgetSidebarMarker } from "./BudgetSidebarMarker";
 import {
   Collapsible,
   CollapsibleContent,
@@ -81,8 +82,10 @@ export function SidebarAgents() {
     return sortByHierarchy(filtered);
   }, [agents]);
 
-  const agentMatch = location.pathname.match(/^\/(?:[^/]+\/)?agents\/([^/]+)/);
+  const agentMatch = location.pathname.match(/^\/(?:[^/]+\/)?agents\/([^/]+)(?:\/([^/]+))?/);
   const activeAgentId = agentMatch?.[1] ?? null;
+  const activeTab = agentMatch?.[2] ?? null;
+
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
@@ -119,7 +122,7 @@ export function SidebarAgents() {
             return (
               <NavLink
                 key={agent.id}
-                to={agentUrl(agent)}
+                to={activeTab ? `${agentUrl(agent)}/${activeTab}` : agentUrl(agent)}
                 onClick={() => {
                   if (isMobile) setSidebarOpen(false);
                 }}
@@ -132,15 +135,22 @@ export function SidebarAgents() {
               >
                 <AgentIcon icon={agent.icon} className="shrink-0 h-3.5 w-3.5 text-muted-foreground" />
                 <span className="flex-1 truncate">{agent.name}</span>
-                {runCount > 0 && (
+                {(agent.pauseReason === "budget" || runCount > 0) && (
                   <span className="ml-auto flex items-center gap-1.5 shrink-0">
-                    <span className="relative flex h-2 w-2">
-                      <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-                      <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
-                    </span>
-                    <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">
-                      {runCount} live
-                    </span>
+                    {agent.pauseReason === "budget" ? (
+                      <BudgetSidebarMarker title="Agent paused by budget" />
+                    ) : null}
+                    {runCount > 0 ? (
+                      <span className="relative flex h-2 w-2">
+                        <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+                      </span>
+                    ) : null}
+                    {runCount > 0 ? (
+                      <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">
+                        {runCount} live
+                      </span>
+                    ) : null}
                   </span>
                 )}
               </NavLink>

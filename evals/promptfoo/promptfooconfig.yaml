@@ -1,0 +1,36 @@
+# Paperclip Agent Evals - Phase 0: Promptfoo Bootstrap
+#
+# Tests narrow heartbeat behaviors across models with deterministic assertions.
+# Test cases are organized by category in tests/*.yaml files.
+# See doc/plans/2026-03-13-agent-evals-framework.md for the full framework plan.
+#
+# Usage:
+#   cd evals/promptfoo && promptfoo eval
+#   promptfoo view  # open results in browser
+#
+# Validate config before committing:
+#   promptfoo validate
+#
+# Requires OPENROUTER_API_KEY or individual provider keys.
+
+description: "Paperclip heartbeat behavior evals"
+
+prompts:
+  - file://prompts/heartbeat-system.txt
+
+providers:
+  - id: openrouter:anthropic/claude-sonnet-4-20250514
+    label: claude-sonnet-4
+  - id: openrouter:openai/gpt-4.1
+    label: gpt-4.1
+  - id: openrouter:openai/codex-5.4
+    label: codex-5.4
+  - id: openrouter:google/gemini-2.5-pro
+    label: gemini-2.5-pro
+
+defaultTest:
+  options:
+    transformVars: "{ ...vars, apiUrl: 'http://localhost:18080', runId: 'run-eval-001' }"
+
+tests:
+  - file://tests/*.yaml

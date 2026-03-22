@@ -27,6 +27,20 @@ console.log(JSON.stringify({
   return commandPath;
 }
 
+async function writeQuotaGeminiCommand(binDir: string): Promise<string> {
+  const commandPath = path.join(binDir, "gemini");
+  const script = `#!/usr/bin/env node
+if (process.argv.includes("--help")) {
+  process.exit(0);
+}
+console.error("429 RESOURCE_EXHAUSTED: You exceeded your current quota and billing details.");
+process.exit(1);
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+  return commandPath;
+}
+
 describe("gemini_local environment diagnostics", () => {
   it("creates a missing working directory when cwd is absolute", async () => {
     const cwd = path.join(
@@ -86,6 +100,35 @@ describe("gemini_local environment diagnostics", () => {
     expect(args).toContain("gemini-2.5-pro");
     expect(args).toContain("--approval-mode");
     expect(args).toContain("yolo");
+    expect(args).toContain("--prompt");
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("classifies quota exhaustion as a quota warning instead of a generic failure", async () => {
+    const root = path.join(
+      os.tmpdir(),
+      `paperclip-gemini-local-quota-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
+    const binDir = path.join(root, "bin");
+    const cwd = path.join(root, "workspace");
+    await fs.mkdir(binDir, { recursive: true });
+    await writeQuotaGeminiCommand(binDir);
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "gemini_local",
+      config: {
+        command: "gemini",
+        cwd,
+        env: {
+          GEMINI_API_KEY: "test-key",
+          PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        },
+      },
+    });
+
+    expect(result.status).toBe("warn");
+    expect(result.checks.some((check) => check.code === "gemini_hello_probe_quota_exhausted")).toBe(true);
     await fs.rm(root, { recursive: true, force: true });
   });
 });

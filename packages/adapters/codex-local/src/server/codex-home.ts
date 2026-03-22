@@ -6,6 +6,7 @@ import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
 const COPIED_SHARED_FILES = ["config.json", "config.toml", "instructions.md"] as const;
 const SYMLINKED_SHARED_FILES = ["auth.json"] as const;
+const DEFAULT_PAPERCLIP_INSTANCE_ID = "default";
 
 function nonEmpty(value: string | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -15,25 +16,26 @@ export async function pathExists(candidate: string): Promise<boolean> {
   return fs.access(candidate).then(() => true).catch(() => false);
 }
 
-export function resolveCodexHomeDir(env: NodeJS.ProcessEnv = process.env): string {
+export function resolveSharedCodexHomeDir(
+  env: NodeJS.ProcessEnv = process.env,
+): string {
   const fromEnv = nonEmpty(env.CODEX_HOME);
-  if (fromEnv) return path.resolve(fromEnv);
-  return path.join(os.homedir(), ".codex");
+  return fromEnv ? path.resolve(fromEnv) : path.join(os.homedir(), ".codex");
 }
 
 function isWorktreeMode(env: NodeJS.ProcessEnv): boolean {
   return TRUTHY_ENV_RE.test(env.PAPERCLIP_IN_WORKTREE ?? "");
 }
 
-function resolveWorktreeCodexHomeDir(env: NodeJS.ProcessEnv): string | null {
-  if (!isWorktreeMode(env)) return null;
-  const paperclipHome = nonEmpty(env.PAPERCLIP_HOME);
-  if (!paperclipHome) return null;
-  const instanceId = nonEmpty(env.PAPERCLIP_INSTANCE_ID);
-  if (instanceId) {
-    return path.resolve(paperclipHome, "instances", instanceId, "codex-home");
-  }
-  return path.resolve(paperclipHome, "codex-home");
+export function resolveManagedCodexHomeDir(
+  env: NodeJS.ProcessEnv,
+  companyId?: string,
+): string {
+  const paperclipHome = nonEmpty(env.PAPERCLIP_HOME) ?? path.resolve(os.homedir(), ".paperclip");
+  const instanceId = nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? DEFAULT_PAPERCLIP_INSTANCE_ID;
+  return companyId
+    ? path.resolve(paperclipHome, "instances", instanceId, "companies", companyId, "codex-home")
+    : path.resolve(paperclipHome, "instances", instanceId, "codex-home");
 }
 
 async function ensureParentDir(target: string): Promise<void> {
@@ -69,14 +71,14 @@ async function ensureCopiedFile(target: string, source: string): Promise<void> {
   await fs.copyFile(source, target);
 }
 
-export async function prepareWorktreeCodexHome(
+export async function prepareManagedCodexHome(
   env: NodeJS.ProcessEnv,
   onLog: AdapterExecutionContext["onLog"],
-): Promise<string | null> {
-  const targetHome = resolveWorktreeCodexHomeDir(env);
-  if (!targetHome) return null;
+  companyId?: string,
+): Promise<string> {
+  const targetHome = resolveManagedCodexHomeDir(env, companyId);
 
-  const sourceHome = resolveCodexHomeDir(env);
+  const sourceHome = resolveSharedCodexHomeDir(env);
   if (path.resolve(sourceHome) === path.resolve(targetHome)) return targetHome;
 
   await fs.mkdir(targetHome, { recursive: true });
@@ -94,8 +96,8 @@ export async function prepareWorktreeCodexHome(
   }
 
   await onLog(
-    "stderr",
-    `[paperclip] Using worktree-isolated Codex home "${targetHome}" (seeded from "${sourceHome}").\n`,
+    "stdout",
+    `[paperclip] Using ${isWorktreeMode(env) ? "worktree-isolated" : "Paperclip-managed"} Codex home "${targetHome}" (seeded from "${sourceHome}").\n`,
   );
   return targetHome;
 }

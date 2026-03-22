@@ -188,12 +188,15 @@ The heartbeat is a protocol, not a runtime. Paperclip defines how to initiate an
 
 Agent configuration includes an **adapter** that defines how Paperclip invokes the agent. Initial adapters:
 
-| Adapter   | Mechanism               | Example                                       |
-| --------- | ----------------------- | --------------------------------------------- |
-| `process` | Execute a child process | `python run_agent.py --agent-id {id}`         |
-| `http`    | Send an HTTP request    | `POST https://openclaw.example.com/hook/{id}` |
+| Adapter              | Mechanism               | Example                                       |
+| -------------------- | ----------------------- | --------------------------------------------- |
+| `process`            | Execute a child process | `python run_agent.py --agent-id {id}`         |
+| `http`               | Send an HTTP request    | `POST https://openclaw.example.com/hook/{id}` |
+| `openclaw_gateway`   | OpenClaw gateway API    | Managed OpenClaw agent via gateway             |
+| `gemini_local`       | Gemini CLI process      | Local Gemini CLI with sandbox and approval     |
+| `hermes_local`       | Hermes agent process    | Local Hermes agent                             |
 
-The `process` and `http` adapters ship as defaults. Additional adapters can be added via the plugin system (see Plugin / Extension Architecture).
+The `process` and `http` adapters ship as defaults. Additional adapters have been added for specific agent runtimes (see list above), and new adapter types can be registered via the plugin system (see Plugin / Extension Architecture).
 
 ### Adapter Interface
 
@@ -429,7 +432,7 @@ The core Paperclip system must be extensible. Features like knowledge bases, ext
 - **Agent Adapter plugins** — new Adapter types can be registered via the plugin system
 - Plugin-registrable UI components (future)
 
-This isn't a V1 deliverable (we're not building a plugin framework upfront), but the architecture should not paint us into a corner. Keep boundaries clean so extensions are possible.
+The plugin framework has shipped. Plugins can register new adapter types, hook into lifecycle events, and contribute UI components (e.g. global toolbar buttons). A plugin SDK and CLI commands (`paperclipai plugin`) are available for authoring and installing plugins.
 
 ---
 

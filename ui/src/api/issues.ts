@@ -6,6 +6,7 @@ import type {
   IssueComment,
   IssueDocument,
   IssueLabel,
+  IssueWorkProduct,
   UpsertIssueDocument,
 } from "@paperclipai/shared";
 import { api } from "./client";
@@ -21,6 +22,9 @@ export const issuesApi = {
       touchedByUserId?: string;
       unreadForUserId?: string;
       labelId?: string;
+      originKind?: string;
+      originId?: string;
+      includeRoutineExecutions?: boolean;
       q?: string;
     },
   ) => {
@@ -32,6 +36,9 @@ export const issuesApi = {
     if (filters?.touchedByUserId) params.set("touchedByUserId", filters.touchedByUserId);
     if (filters?.unreadForUserId) params.set("unreadForUserId", filters.unreadForUserId);
     if (filters?.labelId) params.set("labelId", filters.labelId);
+    if (filters?.originKind) params.set("originKind", filters.originKind);
+    if (filters?.originId) params.set("originId", filters.originId);
+    if (filters?.includeRoutineExecutions) params.set("includeRoutineExecutions", "true");
     if (filters?.q) params.set("q", filters.q);
     const qs = params.toString();
     return api.get<Issue[]>(`/companies/${companyId}/issues${qs ? `?${qs}` : ""}`);
@@ -90,4 +97,10 @@ export const issuesApi = {
     api.post<Approval[]>(`/issues/${id}/approvals`, { approvalId }),
   unlinkApproval: (id: string, approvalId: string) =>
     api.delete<{ ok: true }>(`/issues/${id}/approvals/${approvalId}`),
+  listWorkProducts: (id: string) => api.get<IssueWorkProduct[]>(`/issues/${id}/work-products`),
+  createWorkProduct: (id: string, data: Record<string, unknown>) =>
+    api.post<IssueWorkProduct>(`/issues/${id}/work-products`, data),
+  updateWorkProduct: (id: string, data: Record<string, unknown>) =>
+    api.patch<IssueWorkProduct>(`/work-products/${id}`, data),
+  deleteWorkProduct: (id: string) => api.delete<IssueWorkProduct>(`/work-products/${id}`),
 };
