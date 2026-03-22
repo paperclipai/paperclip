@@ -6,7 +6,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const url = asString(config.url, "");
   if (!url) throw new Error("HTTP adapter missing url");
 
-  const method = asString(config.method, "POST");
+  const method = asString(config.method, "POST").toUpperCase();
   const timeoutMs = asNumber(config.timeoutMs, 0);
   const headers = parseObject(config.headers) as Record<string, string>;
   const payloadTemplate = parseObject(config.payloadTemplate);
@@ -15,14 +15,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const controller = new AbortController();
   const timer = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
 
+  // GET and HEAD requests must not include a body per HTTP spec;
+  // Node.js fetch / undici will reject them with an error (#1335).
+  const isBodyless = method === "GET" || method === "HEAD";
+
   try {
     const res = await fetch(url, {
       method,
       headers: {
-        "content-type": "application/json",
+        ...(isBodyless ? {} : { "content-type": "application/json" }),
         ...headers,
       },
-      body: JSON.stringify(body),
+      ...(isBodyless ? {} : { body: JSON.stringify(body) }),
       ...(timer ? { signal: controller.signal } : {}),
     });
 
