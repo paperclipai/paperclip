@@ -64,14 +64,14 @@ export function SavedViewsBar({ viewState, onApplyView }: SavedViewsBarProps) {
 
   return (
     <>
-      <div className="flex items-center gap-1.5 flex-wrap">
+      <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none -mx-1 px-1 pb-0.5">
         <Bookmark className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
         {savedViews.map((view) => {
           const active = isViewActive(view);
           return (
             <button
               key={view.id}
-              className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${
+              className={`px-2.5 py-1.5 sm:py-1 text-xs rounded-full border transition-colors whitespace-nowrap shrink-0 ${
                 active
                   ? "bg-primary text-primary-foreground border-primary"
                   : "border-border text-muted-foreground hover:text-foreground hover:border-foreground/30"
@@ -83,7 +83,7 @@ export function SavedViewsBar({ viewState, onApplyView }: SavedViewsBarProps) {
           );
         })}
         <button
-          className="px-2 py-1 text-xs rounded-full border border-dashed border-border text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors inline-flex items-center gap-1"
+          className="px-2 py-1.5 sm:py-1 text-xs rounded-full border border-dashed border-border text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors inline-flex items-center gap-1 whitespace-nowrap shrink-0"
           onClick={() => setSaveOpen(true)}
         >
           <Plus className="h-3 w-3" />
@@ -91,7 +91,7 @@ export function SavedViewsBar({ viewState, onApplyView }: SavedViewsBarProps) {
         </button>
         {savedViews.length > 0 && (
           <button
-            className="p-1 text-muted-foreground hover:text-foreground transition-colors rounded"
+            className="p-1.5 sm:p-1 text-muted-foreground hover:text-foreground transition-colors rounded shrink-0"
             onClick={() => setManageOpen(true)}
             title="Manage saved views"
           >
@@ -140,7 +140,7 @@ function SaveViewDialog({
       onOpenChange(false);
     },
     onError: () => {
-      pushToast({ type: "error", message: "Failed to save view" });
+      pushToast({ title: "Failed to save view", tone: "error" });
     },
   });
 
@@ -223,7 +223,7 @@ function ManageViewsDialog({
       savedViewsApi.update(selectedCompanyId!, id, data),
     onSuccess: invalidate,
     onError: () => {
-      pushToast({ type: "error", message: "Failed to update view" });
+      pushToast({ title: "Failed to update view", tone: "error" });
     },
   });
 
@@ -231,7 +231,7 @@ function ManageViewsDialog({
     mutationFn: (id: string) => savedViewsApi.remove(selectedCompanyId!, id),
     onSuccess: invalidate,
     onError: () => {
-      pushToast({ type: "error", message: "Failed to delete view" });
+      pushToast({ title: "Failed to delete view", tone: "error" });
     },
   });
 

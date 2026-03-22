@@ -729,3 +729,12 @@ a.paperclip-project-mention-chip {
 [class*="_toolbarNodeKindSelectContainer_"] {
   z-index: 81 !important;
 }
+
+/* Hide scrollbar but keep scroll functionality */
+.scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
