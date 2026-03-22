@@ -1,0 +1,27 @@
+[Unit]
+Description=Paperclip AI Orchestration Platform
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/paperclip
+EnvironmentFile=/opt/paperclip/.env.prod
+
+# Start
+ExecStart=/usr/bin/docker-compose -f docker-compose.prod.yml up -d
+
+# Stop
+ExecStop=/usr/bin/docker-compose -f docker-compose.prod.yml down
+
+# Restart on failure
+Restart=always
+RestartSec=30s
+
+# Auto-start on boot
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

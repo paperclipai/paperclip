@@ -1,0 +1,110 @@
+version: '3.9'
+
+services:
+  # PostgreSQL Database
+  db:
+    image: postgres:17-alpine
+    container_name: paperclip-db
+    restart: always
+    environment:
+      POSTGRES_USER: ${DB_USER:-paperclip}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-paperclip}
+      POSTGRES_DB: ${DB_NAME:-paperclip}
+      POSTGRES_INITDB_ARGS: --encoding=UTF8 --locale=C
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-paperclip} -d ${DB_NAME:-paperclip}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"  # Only accessible from localhost
+    networks:
+      - paperclip-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Paperclip Server
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: paperclip-server
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://${DB_USER:-paperclip}:${DB_PASSWORD:-paperclip}@db:5432/${DB_NAME:-paperclip}
+      HOST: 0.0.0.0
+      PORT: 3100
+      SERVE_UI: "true"
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?Error: BETTER_AUTH_SECRET must be set}
+      PAPERCLIP_DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-authenticated}
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: ${DEPLOYMENT_EXPOSURE:-private}
+      PAPERCLIP_PUBLIC_URL: ${PUBLIC_URL:-http://localhost}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Optional: Add other environment variables here
+      # AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      # AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      # AWS_REGION: ${AWS_REGION:-us-east-1}
+    volumes:
+      - paperclip-data:/paperclip
+    expose:
+      - "3100"
+    networks:
+      - paperclip-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3100/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: paperclip-nginx
+    restart: always
+    depends_on:
+      - server
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # Uncomment and configure for HTTPS:
+      # - /etc/letsencrypt:/etc/letsencrypt:ro
+      # - ./ssl-params.conf:/etc/nginx/snippets/ssl-params.conf:ro
+    networks:
+      - paperclip-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  pgdata:
+    driver: local
+  paperclip-data:
+    driver: local
+
+networks:
+  paperclip-network:
+    driver: bridge
