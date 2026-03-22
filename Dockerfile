@@ -32,7 +32,11 @@ FROM base AS production
 WORKDIR /app
 COPY --from=build /app /app
 RUN apt-get update && apt-get install -y --no-install-recommends gosu postgresql-client && rm -rf /var/lib/apt/lists/*
-RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest
+RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest playwright
+
+# Install Chromium + all system dependencies for headless browser automation
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
+RUN npx playwright install --with-deps chromium
 
 # Create non-root user so Claude Code allows --dangerously-skip-permissions
 RUN groupadd -r paperclip && useradd -r -g paperclip -m -d /paperclip -s /bin/bash paperclip
@@ -49,7 +53,8 @@ ENV NODE_ENV=production \
   PAPERCLIP_INSTANCE_ID=default \
   PAPERCLIP_CONFIG=/paperclip/instances/default/config.json \
   PAPERCLIP_DEPLOYMENT_MODE=authenticated \
-  PAPERCLIP_DEPLOYMENT_EXPOSURE=private
+  PAPERCLIP_DEPLOYMENT_EXPOSURE=private \
+  PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
 
 VOLUME ["/paperclip"]
 EXPOSE 3100
