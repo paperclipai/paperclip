@@ -71,6 +71,11 @@ Read enough ancestor/comment context to understand _why_ the task exists and wha
 **Step 8 — Update status and communicate.** Always include the run ID header.
 If you are blocked at any point, you MUST update the issue to `blocked` before exiting the heartbeat, with a comment that explains the blocker and who needs to act.
 
+**Ticket completion gate (WAT-329):** Before setting any ticket to `done` that involved code changes, your closing comment MUST include:
+1. A **PR link** (e.g., `gh pr create` output) — the PR to `origin/main` (or `origin/dev`).
+2. Confirmation that the feature branch was **merged into `paperclip/main`** and pushed.
+If either is missing, do NOT mark the ticket `done`. Instead, complete the missing step first. If you cannot (e.g., no push access), set the ticket to `blocked` with a comment explaining what's missing.
+
 ```json
 PATCH /api/issues/{issueId}
 Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
