@@ -1064,7 +1064,7 @@ export function CompanySkills() {
                 >
                   <RefreshCw className={cn("h-4 w-4", scanProjects.isPending && "animate-spin")} />
                 </Button>
-                <Button variant="ghost" size="icon-sm" onClick={() => setCreateOpen((value) => !value)}>
+                <Button variant="ghost" size="icon-sm" onClick={() => setCreateOpen((value) => !value)} aria-label="Add skill">
                   <Plus className="h-4 w-4" />
                 </Button>
               </div>
