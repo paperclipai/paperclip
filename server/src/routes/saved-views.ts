@@ -62,8 +62,8 @@ export function savedViewRoutes(db: Db) {
     const viewId = req.params.viewId as string;
     assertCompanyAccess(req, companyId);
     const { name, filters, groupBy, sortField, sortDirection } = req.body;
-    if (name !== undefined && (typeof name !== "string" || name.length > 255)) {
-      res.status(400).json({ error: "name must be a string of 255 characters or fewer" });
+    if (name !== undefined && (typeof name !== "string" || name.trim().length === 0 || name.length > 255)) {
+      res.status(400).json({ error: "name must be a non-empty string of 255 characters or fewer" });
       return;
     }
     if (sortField !== undefined && !VALID_SORT_FIELDS.includes(sortField)) {

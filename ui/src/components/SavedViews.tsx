@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
+import { useToast } from "../context/ToastContext";
 import { savedViewsApi, type SavedView, type CreateSavedViewInput } from "../api/saved-views";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
@@ -127,6 +128,7 @@ function SaveViewDialog({
 }) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
   const [name, setName] = useState("");
 
   const createMutation = useMutation({
@@ -136,6 +138,9 @@ function SaveViewDialog({
       queryClient.invalidateQueries({ queryKey: queryKeys.savedViews.list(selectedCompanyId!) });
       setName("");
       onOpenChange(false);
+    },
+    onError: () => {
+      pushToast({ type: "error", message: "Failed to save view" });
     },
   });
 
@@ -200,6 +205,7 @@ function ManageViewsDialog({
 }) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
 
@@ -216,11 +222,17 @@ function ManageViewsDialog({
     mutationFn: ({ id, data }: { id: string; data: Parameters<typeof savedViewsApi.update>[2] }) =>
       savedViewsApi.update(selectedCompanyId!, id, data),
     onSuccess: invalidate,
+    onError: () => {
+      pushToast({ type: "error", message: "Failed to update view" });
+    },
   });
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => savedViewsApi.remove(selectedCompanyId!, id),
     onSuccess: invalidate,
+    onError: () => {
+      pushToast({ type: "error", message: "Failed to delete view" });
+    },
   });
 
   const startEdit = (view: SavedView) => {
