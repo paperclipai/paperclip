@@ -91,7 +91,12 @@ export function healthRoutes(
     });
   });
 
-  router.post("/restart", (_req, res) => {
+  router.post("/restart", (req, res) => {
+    if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
+      res.status(403).json({ error: "Requires instance admin" });
+      return;
+    }
+
     logger.info("Restart requested via API — exiting process for PM2 to restart");
 
     // Reset the dev-server-status file so the banner doesn't reappear after restart

@@ -69,8 +69,32 @@ import {
 import {
   execute as hermesExecute,
   testEnvironment as hermesTestEnvironment,
-  sessionCodec as hermesSessionCodec,
+  sessionCodec as hermesSessionCodecRaw,
 } from "hermes-paperclip-adapter/server";
+
+/**
+ * Hermes session IDs follow the format YYYYMMDD_HHMMSS_<hex>.
+ * The upstream regex is too loose and can capture random words like "from"
+ * from error output (e.g. "Session not found: from"), causing an infinite
+ * retry loop. This wrapper validates the format before accepting a session ID.
+ * See: https://github.com/paperclipai/paperclip/issues/1160
+ */
+const HERMES_SESSION_ID_FORMAT = /^\d{8}_\d{6}_[a-zA-Z0-9]+$/;
+function validateHermesSessionId(params: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (!params) return null;
+  const sessionId = typeof params.sessionId === "string" ? params.sessionId : null;
+  if (!sessionId || !HERMES_SESSION_ID_FORMAT.test(sessionId)) return null;
+  return params;
+}
+const hermesSessionCodec: typeof hermesSessionCodecRaw = {
+  deserialize(raw) {
+    return validateHermesSessionId(hermesSessionCodecRaw.deserialize(raw));
+  },
+  serialize(params) {
+    return validateHermesSessionId(hermesSessionCodecRaw.serialize(params));
+  },
+  getDisplayId: hermesSessionCodecRaw.getDisplayId,
+};
 import {
   agentConfigurationDoc as hermesAgentConfigurationDoc,
   models as hermesModels,
