@@ -19,7 +19,7 @@ import { ROLE_PERMISSIONS } from "@paperclipai/shared";
 import { companyService, agentService, accessService, logActivity } from "../services/index.js";
 
 /** Default model for hosted agents routed through the metered gateway. */
-const DEFAULT_GATEWAY_MODEL = "anthropic/claude-sonnet-4";
+const DEFAULT_GATEWAY_MODEL = "qwen/qwen3-coder:free";
 
 /** Directory where we persist the OpenCode gateway provider config. */
 const GATEWAY_CONFIG_DIR = path.join(process.env.PAPERCLIP_HOME ?? "/data", ".opencode-gateway");
@@ -45,8 +45,8 @@ async function ensureGatewayProviderConfig(gatewayUrl: string): Promise<void> {
         },
         models: {
           [DEFAULT_GATEWAY_MODEL]: {
-            name: "Claude Sonnet 4",
-            limit: { context: 200000, output: 16384 },
+            name: "Qwen3 Coder 480B",
+            limit: { context: 262000, output: 16384 },
           },
         },
       },
