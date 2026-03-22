@@ -11,7 +11,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const headers = parseObject(config.headers) as Record<string, string>;
   const payloadTemplate = parseObject(config.payloadTemplate);
   const payload = { ...payloadTemplate, agentId: agent.id, runId, context };
-  const hasBody = method !== "GET" && method !== "HEAD";
 
   const controller = new AbortController();
   const timer = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
@@ -27,7 +26,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ...(isBodyless ? {} : { "content-type": "application/json" }),
         ...headers,
       },
-      ...(isBodyless ? {} : { body: JSON.stringify(body) }),
+      ...(isBodyless ? {} : { body: JSON.stringify(payload) }),
       ...(timer ? { signal: controller.signal } : {}),
     });
 
