@@ -407,18 +407,27 @@ type PendingRequest = {
 };
 
 class CodexRpcClient {
-  private proc = spawn(
-    "codex",
-    ["-s", "read-only", "-a", "untrusted", "app-server"],
-    { stdio: ["pipe", "pipe", "pipe"], env: process.env },
-  );
-
+  private proc;
   private nextId = 1;
   private buffer = "";
   private pending = new Map<number, PendingRequest>();
   private stderr = "";
+  private spawnError: Error | null = null;
 
   constructor() {
+    this.proc = spawn(
+      "codex",
+      ["-s", "read-only", "-a", "untrusted", "app-server"],
+      { stdio: ["pipe", "pipe", "pipe"], env: process.env },
+    );
+    this.proc.on("error", (err: Error) => {
+      this.spawnError = err;
+      for (const request of this.pending.values()) {
+        clearTimeout(request.timer);
+        request.reject(new Error(`codex binary not available: ${err.message}`));
+      }
+      this.pending.clear();
+    });
     this.proc.stdout.setEncoding("utf8");
     this.proc.stderr.setEncoding("utf8");
     this.proc.stdout.on("data", (chunk: string) => this.onStdout(chunk));
@@ -459,6 +468,9 @@ class CodexRpcClient {
   }
 
   private request(method: string, params: Record<string, unknown> = {}, timeoutMs = 6_000): Promise<Record<string, unknown>> {
+    if (this.spawnError) {
+      return Promise.reject(new Error(`codex binary not available: ${this.spawnError.message}`));
+    }
     const id = this.nextId++;
     const payload = JSON.stringify({ id, method, params }) + "\n";
     return new Promise<Record<string, unknown>>((resolve, reject) => {
@@ -500,7 +512,9 @@ class CodexRpcClient {
   }
 
   async shutdown() {
-    this.proc.kill("SIGTERM");
+    if (!this.spawnError) {
+      this.proc.kill("SIGTERM");
+    }
   }
 }
 
