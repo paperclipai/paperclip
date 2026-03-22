@@ -639,6 +639,7 @@ export function OnboardingWizard() {
                   </div>
                   <div className="mt-3 group">
                     <label
+                      htmlFor="onboarding-company-name"
                       className={cn(
                         "text-xs mb-1 block transition-colors",
                         companyName.trim()
@@ -649,6 +650,7 @@ export function OnboardingWizard() {
                       Company name
                     </label>
                     <input
+                      id="onboarding-company-name"
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
                       placeholder="Acme Corp"
                       value={companyName}
@@ -658,6 +660,7 @@ export function OnboardingWizard() {
                   </div>
                   <div className="group">
                     <label
+                      htmlFor="onboarding-company-goal"
                       className={cn(
                         "text-xs mb-1 block transition-colors",
                         companyGoal.trim()
@@ -668,6 +671,7 @@ export function OnboardingWizard() {
                       Mission / goal (optional)
                     </label>
                     <textarea
+                      id="onboarding-company-goal"
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[60px]"
                       placeholder="What is this company trying to achieve?"
                       value={companyGoal}
@@ -691,10 +695,11 @@ export function OnboardingWizard() {
                     </div>
                   </div>
                   <div>
-                    <label className="text-xs text-muted-foreground mb-1 block">
+                    <label htmlFor="onboarding-agent-name" className="text-xs text-muted-foreground mb-1 block">
                       Agent name
                     </label>
                     <input
+                      id="onboarding-agent-name"
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
                       placeholder="CEO"
                       value={agentName}
@@ -862,7 +867,7 @@ export function OnboardingWizard() {
                     adapterType === "cursor") && (
                     <div className="space-y-3">
                       <div>
-                        <label className="text-xs text-muted-foreground mb-1 block">
+                        <label id="onboarding-model-label" className="text-xs text-muted-foreground mb-1 block">
                           Model
                         </label>
                         <Popover
@@ -873,7 +878,7 @@ export function OnboardingWizard() {
                           }}
                         >
                           <PopoverTrigger asChild>
-                            <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
+                            <button type="button" aria-labelledby="onboarding-model-label" className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
                               <span
                                 className={cn(
                                   !model && "text-muted-foreground"
@@ -894,6 +899,7 @@ export function OnboardingWizard() {
                             align="start"
                           >
                             <input
+                              aria-label="Search models"
                               className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
                               placeholder="Search models..."
                               value={modelSearch}
@@ -1082,12 +1088,13 @@ export function OnboardingWizard() {
                   {(adapterType === "http" ||
                     adapterType === "openclaw_gateway") && (
                     <div>
-                      <label className="text-xs text-muted-foreground mb-1 block">
+                      <label htmlFor="onboarding-webhook-url" className="text-xs text-muted-foreground mb-1 block">
                         {adapterType === "openclaw_gateway"
                           ? "Gateway URL"
                           : "Webhook URL"}
                       </label>
                       <input
+                        id="onboarding-webhook-url"
                         className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
                         placeholder={
                           adapterType === "openclaw_gateway"
@@ -1117,10 +1124,11 @@ export function OnboardingWizard() {
                     </div>
                   </div>
                   <div>
-                    <label className="text-xs text-muted-foreground mb-1 block">
+                    <label htmlFor="onboarding-task-title" className="text-xs text-muted-foreground mb-1 block">
                       Task title
                     </label>
                     <input
+                      id="onboarding-task-title"
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
                       placeholder="e.g. Research competitor pricing"
                       value={taskTitle}
@@ -1129,10 +1137,11 @@ export function OnboardingWizard() {
                     />
                   </div>
                   <div>
-                    <label className="text-xs text-muted-foreground mb-1 block">
+                    <label htmlFor="onboarding-task-description" className="text-xs text-muted-foreground mb-1 block">
                       Description (optional)
                     </label>
                     <textarea
+                      id="onboarding-task-description"
                       ref={textareaRef}
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[120px] max-h-[300px] overflow-y-auto"
                       placeholder="Add more detail about what the agent should do..."
