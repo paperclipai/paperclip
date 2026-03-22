@@ -780,6 +780,7 @@ export function IssueDetail() {
               size="icon-xs"
               onClick={copyIssueToClipboard}
               title="Copy issue as markdown"
+              aria-label="Copy issue as markdown"
             >
               {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
             </Button>
@@ -788,6 +789,7 @@ export function IssueDetail() {
               size="icon-xs"
               onClick={() => setMobilePropsOpen(true)}
               title="Properties"
+              aria-label="Show properties"
             >
               <SlidersHorizontal className="h-4 w-4" />
             </Button>
@@ -799,6 +801,7 @@ export function IssueDetail() {
               size="icon-xs"
               onClick={copyIssueToClipboard}
               title="Copy issue as markdown"
+              aria-label="Copy issue as markdown"
             >
               {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
             </Button>
@@ -811,6 +814,7 @@ export function IssueDetail() {
               )}
               onClick={() => setPanelVisible(true)}
               title="Show properties"
+              aria-label="Show properties"
             >
               <SlidersHorizontal className="h-4 w-4" />
             </Button>
@@ -961,6 +965,7 @@ export function IssueDetail() {
                   onClick={() => deleteAttachment.mutate(attachment.id)}
                   disabled={deleteAttachment.isPending}
                   title="Delete attachment"
+                  aria-label="Delete attachment"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>

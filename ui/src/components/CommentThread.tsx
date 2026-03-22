@@ -126,6 +126,7 @@ function CopyMarkdownButton({ text }: { text: string }) {
       type="button"
       className="text-muted-foreground hover:text-foreground transition-colors"
       title="Copy as markdown"
+      aria-label="Copy as markdown"
       onClick={() => {
         navigator.clipboard.writeText(text).then(() => {
           setCopied(true);
@@ -441,6 +442,7 @@ export function CommentThread({
           onClick={toggleSortOrder}
           className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
           title={sortOrder === "newest" ? "Showing newest first — click to show oldest first" : "Showing oldest first — click to show newest first"}
+          aria-label={sortOrder === "newest" ? "Showing newest first — click to show oldest first" : "Showing oldest first — click to show newest first"}
         >
           <ArrowUpDown className="h-3 w-3" />
           {sortOrder === "newest" ? "Newest first" : "Oldest first"}
@@ -484,6 +486,7 @@ export function CommentThread({
                 onClick={() => attachInputRef.current?.click()}
                 disabled={attaching}
                 title="Attach image"
+                aria-label="Attach image"
               >
                 <Paperclip className="h-4 w-4" />
               </Button>
