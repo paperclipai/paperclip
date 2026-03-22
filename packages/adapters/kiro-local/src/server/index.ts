@@ -40,6 +40,9 @@ export const sessionCodec: AdapterSessionCodec = {
     return {
       sessionId: typeof params.sessionId === "string" ? params.sessionId : null,
       cwd: typeof params.cwd === "string" ? params.cwd : null,
+      workspaceId: typeof params.workspaceId === "string" ? params.workspaceId : null,
+      repoUrl: typeof params.repoUrl === "string" ? params.repoUrl : null,
+      repoRef: typeof params.repoRef === "string" ? params.repoRef : null,
     };
   },
 
@@ -48,6 +51,9 @@ export const sessionCodec: AdapterSessionCodec = {
     return {
       sessionId: typeof params.sessionId === "string" ? params.sessionId : null,
       cwd: typeof params.cwd === "string" ? params.cwd : null,
+      workspaceId: typeof params.workspaceId === "string" ? params.workspaceId : null,
+      repoUrl: typeof params.repoUrl === "string" ? params.repoUrl : null,
+      repoRef: typeof params.repoRef === "string" ? params.repoRef : null,
     };
   },
 

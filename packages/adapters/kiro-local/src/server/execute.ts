@@ -512,7 +512,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       `[paperclip] Kiro session "${sessionId}" is stale or unknown, retrying with a fresh session.\n`,
     );
     const retry = await runAttempt(null);
-    return toResult(retry, null);
+    const result = toResult(retry, null);
+    // Set clearSession to true so the broken session is cleared
+    result.clearSession = true;
+    return result;
   }
 
   return toResult(initial, sessionId);
