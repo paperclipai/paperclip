@@ -13,6 +13,7 @@ import {
   approvalService,
   heartbeatService,
   issueApprovalService,
+  issueService,
   logActivity,
   notifyKatyaPublishApproved,
   secretService,
@@ -32,8 +33,28 @@ export function approvalRoutes(db: Db) {
   const svc = approvalService(db);
   const heartbeat = heartbeatService(db);
   const issueApprovalsSvc = issueApprovalService(db);
+  const issuesSvc = issueService(db);
   const secretsSvc = secretService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
+
+  async function transitionLinkedIssues(
+    approvalId: string,
+    nextStatus: "in_review" | "blocked",
+    reason: string,
+    actorUserId: string,
+  ) {
+    const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approvalId);
+    const eligibleIssues = linkedIssues.filter((issue) => issue.status !== "done" && issue.status !== "cancelled");
+
+    for (const issue of eligibleIssues) {
+      await issuesSvc.update(issue.id, { status: nextStatus });
+      await issuesSvc.addComment(issue.id, `[workflow] ${reason}`, {
+        userId: actorUserId,
+      });
+    }
+
+    return linkedIssues;
+  }
 
   router.get("/companies/:companyId/approvals", async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -129,7 +150,12 @@ export function approvalRoutes(db: Db) {
     );
 
     if (applied) {
-      const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
+      const linkedIssues = await transitionLinkedIssues(
+        approval.id,
+        "in_review",
+        "Approval approved — moved to Scheduled workflow stage (mapped as in_review).",
+        req.actor.userId ?? "board",
+      );
       const linkedIssueIds = linkedIssues.map((issue) => issue.id);
       const primaryIssueId = linkedIssueIds[0] ?? null;
 
@@ -237,6 +263,13 @@ export function approvalRoutes(db: Db) {
     );
 
     if (applied) {
+      await transitionLinkedIssues(
+        approval.id,
+        "blocked",
+        "Approval rejected — moved to blocked and requires rework before resubmission.",
+        req.actor.userId ?? "board",
+      );
+
       await logActivity(db, {
         companyId: approval.companyId,
         actorType: "user",
@@ -261,6 +294,13 @@ export function approvalRoutes(db: Db) {
         id,
         req.body.decidedByUserId ?? "board",
         req.body.decisionNote,
+      );
+
+      await transitionLinkedIssues(
+        approval.id,
+        "blocked",
+        "Approval needs edits — moved to blocked until updated draft is resubmitted.",
+        req.actor.userId ?? "board",
       );
 
       await logActivity(db, {
