@@ -1,5 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link } from "@/lib/router";
+import { Button } from "@/components/ui/button";
+import { formatDate } from "@/lib/utils";
 import {
   DndContext,
   DragOverlay,
@@ -55,11 +57,15 @@ function KanbanColumn({
   issues,
   agents,
   liveIssueIds,
+  selectedIssueId,
+  onSelectIssue,
 }: {
   status: string;
   issues: Issue[];
   agents?: Agent[];
   liveIssueIds?: Set<string>;
+  selectedIssueId?: string | null;
+  onSelectIssue?: (issueId: string) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
 
@@ -90,6 +96,8 @@ function KanbanColumn({
               issue={issue}
               agents={agents}
               isLive={liveIssueIds?.has(issue.id)}
+              isSelected={selectedIssueId === issue.id}
+              onSelectIssue={onSelectIssue}
             />
           ))}
         </SortableContext>
@@ -105,11 +113,15 @@ function KanbanCard({
   agents,
   isLive,
   isOverlay,
+  isSelected,
+  onSelectIssue,
 }: {
   issue: Issue;
   agents?: Agent[];
   isLive?: boolean;
   isOverlay?: boolean;
+  isSelected?: boolean;
+  onSelectIssue?: (issueId: string) => void;
 }) {
   const {
     attributes,
@@ -138,42 +150,48 @@ function KanbanCard({
       {...listeners}
       className={`rounded-md border bg-card p-2.5 cursor-grab active:cursor-grabbing transition-shadow ${
         isDragging && !isOverlay ? "opacity-30" : ""
-      } ${isOverlay ? "shadow-lg ring-1 ring-primary/20" : "hover:shadow-sm"}`}
+      } ${isOverlay ? "shadow-lg ring-1 ring-primary/20" : "hover:shadow-sm"} ${isSelected ? "ring-1 ring-primary/35 border-primary/40" : ""}`}
+      onClick={(e) => {
+        if (isDragging) return;
+        if ((e.target as HTMLElement).closest("a")) return;
+        onSelectIssue?.(issue.id);
+      }}
     >
-      <Link
-        to={`/issues/${issue.identifier ?? issue.id}`}
-        className="block no-underline text-inherit"
-        onClick={(e) => {
-          // Prevent navigation during drag
-          if (isDragging) e.preventDefault();
-        }}
-      >
-        <div className="flex items-start gap-1.5 mb-1.5">
-          <span className="text-xs text-muted-foreground font-mono shrink-0">
-            {issue.identifier ?? issue.id.slice(0, 8)}
+      <div className="flex items-start gap-1.5 mb-1.5">
+        <span className="text-xs text-muted-foreground font-mono shrink-0">
+          {issue.identifier ?? issue.id.slice(0, 8)}
+        </span>
+        {isLive && (
+          <span className="relative flex h-2 w-2 shrink-0 mt-0.5">
+            <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
           </span>
-          {isLive && (
-            <span className="relative flex h-2 w-2 shrink-0 mt-0.5">
-              <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+        )}
+      </div>
+      <p className="text-sm leading-snug line-clamp-2 mb-2">{issue.title}</p>
+      <div className="flex items-center gap-2">
+        <PriorityIcon priority={issue.priority} />
+        {issue.assigneeAgentId && (() => {
+          const name = agentName(issue.assigneeAgentId);
+          return name ? (
+            <Identity name={name} size="xs" />
+          ) : (
+            <span className="text-xs text-muted-foreground font-mono">
+              {issue.assigneeAgentId.slice(0, 8)}
             </span>
-          )}
-        </div>
-        <p className="text-sm leading-snug line-clamp-2 mb-2">{issue.title}</p>
-        <div className="flex items-center gap-2">
-          <PriorityIcon priority={issue.priority} />
-          {issue.assigneeAgentId && (() => {
-            const name = agentName(issue.assigneeAgentId);
-            return name ? (
-              <Identity name={name} size="xs" />
-            ) : (
-              <span className="text-xs text-muted-foreground font-mono">
-                {issue.assigneeAgentId.slice(0, 8)}
-              </span>
-            );
-          })()}
-        </div>
-      </Link>
+          );
+        })()}
+        <Link
+          to={`/issues/${issue.identifier ?? issue.id}`}
+          className="ml-auto text-[11px] text-muted-foreground hover:text-foreground"
+          onClick={(e) => {
+            if (isDragging) e.preventDefault();
+            e.stopPropagation();
+          }}
+        >
+          Open
+        </Link>
+      </div>
     </div>
   );
 }
@@ -187,6 +205,7 @@ export function KanbanBoard({
   onUpdateIssue,
 }: KanbanBoardProps) {
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [selectedIssueId, setSelectedIssueId] = useState<string | null>(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
@@ -208,6 +227,11 @@ export function KanbanBoard({
   const activeIssue = useMemo(
     () => (activeId ? issues.find((i) => i.id === activeId) : null),
     [activeId, issues]
+  );
+
+  const selectedIssue = useMemo(
+    () => (selectedIssueId ? issues.find((i) => i.id === selectedIssueId) ?? null : null),
+    [selectedIssueId, issues],
   );
 
   function handleDragStart(event: DragStartEvent) {
@@ -253,16 +277,47 @@ export function KanbanBoard({
       onDragOver={handleDragOver}
       onDragEnd={handleDragEnd}
     >
-      <div className="flex gap-3 overflow-x-auto pb-4 -mx-2 px-2">
-        {boardStatuses.map((status) => (
-          <KanbanColumn
-            key={status}
-            status={status}
-            issues={columnIssues[status] ?? []}
-            agents={agents}
-            liveIssueIds={liveIssueIds}
-          />
-        ))}
+      <div className="flex gap-4">
+        <div className="min-w-0 flex-1">
+          <div className="flex gap-3 overflow-x-auto pb-4 -mx-2 px-2">
+            {boardStatuses.map((status) => (
+              <KanbanColumn
+                key={status}
+                status={status}
+                issues={columnIssues[status] ?? []}
+                agents={agents}
+                liveIssueIds={liveIssueIds}
+                selectedIssueId={selectedIssueId}
+                onSelectIssue={setSelectedIssueId}
+              />
+            ))}
+          </div>
+        </div>
+
+        {selectedIssue && (
+          <aside className="hidden xl:flex xl:w-[360px] shrink-0 rounded-lg border bg-card p-3 h-fit sticky top-16">
+            <div className="space-y-2 w-full">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <p className="text-xs text-muted-foreground font-mono">{selectedIssue.identifier ?? selectedIssue.id.slice(0, 8)}</p>
+                  <h3 className="text-sm font-semibold leading-tight mt-0.5">{selectedIssue.title}</h3>
+                </div>
+                <StatusIcon status={selectedIssue.status} />
+              </div>
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <PriorityIcon priority={selectedIssue.priority} />
+                <span>Updated {formatDate(selectedIssue.updatedAt)}</span>
+              </div>
+              <div className="rounded-md border bg-muted/20 p-2 text-xs text-muted-foreground whitespace-pre-wrap max-h-[320px] overflow-auto">
+                {selectedIssue.description?.trim() || "No description yet."}
+              </div>
+              <div className="flex items-center justify-between pt-1">
+                <Button size="sm" variant="outline" onClick={() => setSelectedIssueId(null)}>Close</Button>
+                <Link to={`/issues/${selectedIssue.identifier ?? selectedIssue.id}`} className="text-xs text-primary hover:underline">Open full issue</Link>
+              </div>
+            </div>
+          </aside>
+        )}
       </div>
       <DragOverlay>
         {activeIssue ? (
