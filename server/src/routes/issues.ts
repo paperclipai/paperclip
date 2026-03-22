@@ -1216,7 +1216,6 @@ export function issueRoutes(db: Db, storage: StorageService) {
       id,
       req.actor.type === "agent" ? req.actor.agentId : undefined,
       actorRunId,
-      { force },
     );
     if (!released) {
       res.status(404).json({ error: "Issue not found" });
