@@ -821,7 +821,7 @@ export function IssueDetail() {
 
             <Popover open={moreOpen} onOpenChange={setMoreOpen}>
               <PopoverTrigger asChild>
-                <Button variant="ghost" size="icon-xs" className="shrink-0">
+                <Button variant="ghost" size="icon-xs" className="shrink-0" aria-label="More options">
                   <MoreHorizontal className="h-4 w-4" />
                 </Button>
               </PopoverTrigger>

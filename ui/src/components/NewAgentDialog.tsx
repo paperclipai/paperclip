@@ -144,6 +144,7 @@ export function NewAgentDialog() {
               setShowAdvancedCards(false);
               closeNewAgent();
             }}
+            aria-label="Close"
           >
             <span className="text-lg leading-none">&times;</span>
           </Button>

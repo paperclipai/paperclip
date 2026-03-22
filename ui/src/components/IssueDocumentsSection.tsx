@@ -665,6 +665,7 @@ export function IssueDocumentsSection({
                       copiedDocumentKey === doc.key && "text-foreground",
                     )}
                     title={copiedDocumentKey === doc.key ? "Copied" : "Copy document"}
+                    aria-label={copiedDocumentKey === doc.key ? "Copied" : "Copy document"}
                     onClick={() => void copyDocumentBody(doc.key, activeDraft?.body ?? doc.body)}
                   >
                     {copiedDocumentKey === doc.key ? (
@@ -680,6 +681,7 @@ export function IssueDocumentsSection({
                         size="icon-xs"
                         className="text-muted-foreground"
                         title="Document actions"
+                        aria-label="Document actions"
                       >
                         <MoreHorizontal className="h-3.5 w-3.5" />
                       </Button>
