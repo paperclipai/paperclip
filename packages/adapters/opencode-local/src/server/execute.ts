@@ -16,6 +16,7 @@ import {
   ensureCommandResolvable,
   ensurePathInEnv,
   renderTemplate,
+  expandAgentHomeInText,
   runChildProcess,
 } from "@paperclipai_dld/adapter-utils/server-utils";
 import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
@@ -49,6 +50,18 @@ function resolveOpenCodeBiller(env: Record<string, string>, provider: string | n
 
 function claudeSkillsHome(): string {
   return path.join(os.homedir(), ".claude", "skills");
+}
+
+/** Paths saved from bad `{{context.paperclipWorkspaces}}` templates; must not be used as cwd. */
+function isCorruptedAdapterFilesystemPath(value: string): boolean {
+  const t = value.trim();
+  if (!t) return false;
+  return t === "[]" || t.startsWith("[]/") || t.includes("/[]/") || t.startsWith("[]\\");
+}
+
+function isMissingOrCorruptAgentHomeEnv(value: string | undefined): boolean {
+  const t = (value ?? "").trim();
+  return t.length === 0 || t === "[]" || t.startsWith("[]/") || t.includes("/[]/");
 }
 
 async function resolvePaperclipSkillsDir(): Promise<string | null> {
@@ -111,7 +124,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (value): value is Record<string, unknown> => typeof value === "object" && value !== null,
       )
     : [];
-  const configuredCwd = asString(config.cwd, "");
+  const rawConfiguredCwd = asString(config.cwd, "");
+  const configuredCwd = isCorruptedAdapterFilesystemPath(rawConfiguredCwd) ? "" : rawConfiguredCwd;
+  if (rawConfiguredCwd !== configuredCwd && rawConfiguredCwd.trim().length > 0) {
+    await onLog(
+      "stderr",
+      `[paperclip] Ignoring invalid adapter cwd (corrupt template path): ${JSON.stringify(rawConfiguredCwd)}\n`,
+    );
+  }
   const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
@@ -163,6 +183,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
+  }
+  if (agentHome.trim() && isMissingOrCorruptAgentHomeEnv(env.AGENT_HOME)) {
+    env.AGENT_HOME = agentHome.trim();
   }
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
@@ -250,6 +273,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     company: { id: agent.companyId },
     agent,
     run: { id: runId, source: "on_demand" },
+    agentHome,
     context,
   };
   const renderedPrompt = renderTemplate(promptTemplate, templateData);
@@ -258,12 +282,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
-  const prompt = joinPromptSections([
-    instructionsPrefix,
-    renderedBootstrapPrompt,
-    sessionHandoffNote,
-    renderedPrompt,
-  ]);
+  const prompt = expandAgentHomeInText(
+    joinPromptSections([
+      instructionsPrefix,
+      renderedBootstrapPrompt,
+      sessionHandoffNote,
+      renderedPrompt,
+    ]),
+    env.AGENT_HOME ?? "",
+  );
   const promptMetrics = {
     promptChars: prompt.length,
     instructionsChars: instructionsPrefix.length,

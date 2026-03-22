@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { renderTemplate, resolvePathValue } from "@paperclipai_dld/adapter-utils/server-utils";
+import {
+  expandAgentHomeInText,
+  renderTemplate,
+  resolvePathValue,
+} from "@paperclipai_dld/adapter-utils/server-utils";
 
 describe("resolvePathValue", () => {
   it("returns empty string for arrays instead of JSON (avoids [] path prefixes)", () => {
@@ -7,6 +11,13 @@ describe("resolvePathValue", () => {
       context: { paperclipWorkspaces: [] as unknown[] },
     };
     expect(resolvePathValue(data, "context.paperclipWorkspaces")).toBe("");
+  });
+});
+
+describe("expandAgentHomeInText", () => {
+  it("replaces ${AGENT_HOME} before $AGENT_HOME and leaves text unchanged when home is empty", () => {
+    expect(expandAgentHomeInText("${AGENT_HOME}/x $AGENT_HOME/y", "/home/a")).toBe("/home/a/x /home/a/y");
+    expect(expandAgentHomeInText("$AGENT_HOME/x", "")).toBe("$AGENT_HOME/x");
   });
 });
 

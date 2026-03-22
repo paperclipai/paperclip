@@ -125,6 +125,13 @@ export function renderTemplate(template: string, data: Record<string, unknown>) 
   return template.replace(/{{\s*([a-zA-Z0-9_.-]+)\s*}}/g, (_, path) => resolvePathValue(data, path));
 }
 
+/** Replace `$AGENT_HOME` / `${AGENT_HOME}` so stdin prompts work when the child CLI does not expand env (e.g. OpenCode). */
+export function expandAgentHomeInText(text: string, agentHome: string): string {
+  const home = agentHome.trim();
+  if (!home) return text;
+  return text.replaceAll("${AGENT_HOME}", home).replaceAll("$AGENT_HOME", home);
+}
+
 export function joinPromptSections(
   sections: Array<string | null | undefined>,
   separator = "\n\n",
