@@ -498,6 +498,7 @@ export function PromptsTab({
                 variant="outline"
                 className="h-7 w-7"
                 onClick={() => setShowNewFileInput(true)}
+                aria-label="Add file"
               >
                 +
               </Button>

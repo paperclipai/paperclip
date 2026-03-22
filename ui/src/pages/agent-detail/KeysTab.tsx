@@ -63,6 +63,7 @@ export function KeysTab({ agentId, companyId }: { agentId: string; companyId?: s
               size="icon-sm"
               onClick={() => setTokenVisible((v) => !v)}
               title={tokenVisible ? "Hide" : "Show"}
+              aria-label={tokenVisible ? "Hide token" : "Show token"}
             >
               {tokenVisible ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
             </Button>
@@ -71,6 +72,7 @@ export function KeysTab({ agentId, companyId }: { agentId: string; companyId?: s
               size="icon-sm"
               onClick={copyToken}
               title="Copy"
+              aria-label="Copy token"
             >
               <Copy className="h-3.5 w-3.5" />
             </Button>
