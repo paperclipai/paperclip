@@ -575,16 +575,16 @@ export function Routines() {
               ))}
             </div>
             <div className="overflow-x-auto">
-            <table className="min-w-full text-sm">
+            <table className="min-w-full text-sm" aria-label="Routines">
               <thead>
                 <tr className="text-left text-xs text-muted-foreground border-b border-border">
-                  <th className="px-3 py-2 font-medium">Name</th>
-                  <th className="px-3 py-2 font-medium">Project</th>
-                  <th className="px-3 py-2 font-medium">Agent</th>
-                  <th className="px-3 py-2 font-medium">Triggers</th>
-                  <th className="px-3 py-2 font-medium">Last run</th>
-                  <th className="px-3 py-2 font-medium">Enabled</th>
-                  <th className="w-12 px-3 py-2" />
+                  <th scope="col" className="px-3 py-2 font-medium">Name</th>
+                  <th scope="col" className="px-3 py-2 font-medium">Project</th>
+                  <th scope="col" className="px-3 py-2 font-medium">Agent</th>
+                  <th scope="col" className="px-3 py-2 font-medium">Triggers</th>
+                  <th scope="col" className="px-3 py-2 font-medium">Last run</th>
+                  <th scope="col" className="px-3 py-2 font-medium">Enabled</th>
+                  <th scope="col" className="w-12 px-3 py-2" />
                 </tr>
               </thead>
               <tbody>
@@ -602,8 +602,17 @@ export function Routines() {
                   return (
                     <tr
                       key={routine.id}
+                      tabIndex={0}
+                      role="button"
+                      aria-label={`View routine: ${routine.title}`}
                       className="align-middle border-b border-border transition-colors hover:bg-accent/50 last:border-b-0 cursor-pointer"
                       onClick={() => navigate(`/routines/${routine.id}`)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          navigate(`/routines/${routine.id}`);
+                        }
+                      }}
                     >
                       <td className="px-3 py-2.5">
                         <div className="min-w-[180px] flex items-center gap-2 flex-wrap">
