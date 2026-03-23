@@ -341,6 +341,7 @@ export function IssueDetail() {
         id: `agent:${agent.id}`,
         name: agent.name,
         kind: "agent",
+        agentId: agent.id,
       });
     }
     for (const project of orderedProjects) {

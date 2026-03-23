@@ -543,6 +543,14 @@ export {
 } from "./project-mentions.js";
 
 export {
+  AGENT_MENTION_SCHEME,
+  buildAgentMentionHref,
+  parseAgentMentionHref,
+  extractAgentMentionIds,
+  type ParsedAgentMention,
+} from "./agent-mentions.js";
+
+export {
   paperclipConfigSchema,
   configMetaSchema,
   llmConfigSchema,

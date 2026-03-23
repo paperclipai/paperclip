@@ -311,8 +311,10 @@ export function CommentThread({
     return Array.from(agentMap.values())
       .filter((a) => a.status !== "terminated")
       .map((a) => ({
-        id: a.id,
+        id: `agent:${a.id}`,
         name: a.name,
+        kind: "agent" as const,
+        agentId: a.id,
       }));
   }, [agentMap, providedMentions]);
 

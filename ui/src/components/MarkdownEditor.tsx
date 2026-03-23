@@ -27,7 +27,7 @@ import {
   thematicBreakPlugin,
   type RealmPlugin,
 } from "@mdxeditor/editor";
-import { buildProjectMentionHref, parseProjectMentionHref } from "@paperclipai/shared";
+import { buildAgentMentionHref, buildProjectMentionHref, parseAgentMentionHref, parseProjectMentionHref } from "@paperclipai/shared";
 import { cn } from "../lib/utils";
 
 /* ---- Mention types ---- */
@@ -36,6 +36,7 @@ export interface MentionOption {
   id: string;
   name: string;
   kind?: "agent" | "project";
+  agentId?: string;
   projectId?: string;
   projectColor?: string | null;
 }
@@ -153,6 +154,9 @@ function detectMention(container: HTMLElement): MentionState | null {
 function mentionMarkdown(option: MentionOption): string {
   if (option.kind === "project" && option.projectId) {
     return `[@${option.name}](${buildProjectMentionHref(option.projectId, option.projectColor ?? null)}) `;
+  }
+  if (option.kind === "agent" && option.agentId) {
+    return `[@${option.name}](${buildAgentMentionHref(option.agentId)}) `;
   }
   return `@${option.name} `;
 }
@@ -309,34 +313,48 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     }
   }, [value]);
 
-  const decorateProjectMentions = useCallback(() => {
+  const decorateMentions = useCallback(() => {
     const editable = containerRef.current?.querySelector('[contenteditable="true"]');
     if (!editable) return;
     const links = editable.querySelectorAll("a");
     for (const node of links) {
       const link = node as HTMLAnchorElement;
-      const parsed = parseProjectMentionHref(link.getAttribute("href") ?? "");
-      if (!parsed) {
-        if (link.dataset.projectMention === "true") {
+      const href = link.getAttribute("href") ?? "";
+      const parsedProject = parseProjectMentionHref(href);
+      const parsedAgent = parseAgentMentionHref(href);
+
+      if (parsedProject) {
+        const color = parsedProject.color ?? projectColorById.get(parsedProject.projectId) ?? null;
+        link.dataset.projectMention = "true";
+        link.classList.add("paperclip-project-mention-chip");
+        link.setAttribute("contenteditable", "false");
+        const style = mentionChipStyle(color);
+        if (style) {
+          link.style.borderColor = style.borderColor ?? "";
+          link.style.backgroundColor = style.backgroundColor ?? "";
+          link.style.color = style.color ?? "";
+        }
+      } else if (parsedAgent) {
+        link.dataset.agentMention = "true";
+        link.classList.add("paperclip-project-mention-chip");
+        link.setAttribute("contenteditable", "false");
+        // Agent mentions use theme-aware muted colors via CSS variables
+        const root = getComputedStyle(document.documentElement);
+        const border = root.getPropertyValue("--border").trim();
+        const muted = root.getPropertyValue("--muted-foreground").trim();
+        link.style.borderColor = border ? `hsl(${border})` : "";
+        link.style.backgroundColor = muted ? `hsl(${muted} / 0.15)` : "";
+        link.style.color = "";
+      } else {
+        if (link.dataset.projectMention === "true" || link.dataset.agentMention === "true") {
           link.dataset.projectMention = "false";
+          link.dataset.agentMention = "false";
           link.classList.remove("paperclip-project-mention-chip");
           link.removeAttribute("contenteditable");
           link.style.removeProperty("border-color");
           link.style.removeProperty("background-color");
           link.style.removeProperty("color");
         }
-        continue;
-      }
-
-      const color = parsed.color ?? projectColorById.get(parsed.projectId) ?? null;
-      link.dataset.projectMention = "true";
-      link.classList.add("paperclip-project-mention-chip");
-      link.setAttribute("contenteditable", "false");
-      const style = mentionChipStyle(color);
-      if (style) {
-        link.style.borderColor = style.borderColor ?? "";
-        link.style.backgroundColor = style.backgroundColor ?? "";
-        link.style.color = style.color ?? "";
       }
     }
   }, [projectColorById]);
@@ -377,9 +395,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   useEffect(() => {
     const editable = containerRef.current?.querySelector('[contenteditable="true"]');
     if (!editable) return;
-    decorateProjectMentions();
+    decorateMentions();
     const observer = new MutationObserver(() => {
-      decorateProjectMentions();
+      decorateMentions();
     });
     observer.observe(editable, {
       subtree: true,
@@ -387,7 +405,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       characterData: true,
     });
     return () => observer.disconnect();
-  }, [decorateProjectMentions, value]);
+  }, [decorateMentions, value]);
 
   const selectMention = useCallback(
     (option: MentionOption) => {
@@ -396,7 +414,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       const state = mentionStateRef.current;
       if (!state) return;
 
-      if (option.kind === "project" && option.projectId) {
+      if ((option.kind === "project" && option.projectId) || (option.kind === "agent" && option.agentId)) {
         const current = latestValueRef.current;
         const next = applyMention(current, state.query, option);
         if (next !== current) {
@@ -406,7 +424,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         }
         requestAnimationFrame(() => {
           ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
-          decorateProjectMentions();
+          decorateMentions();
         });
         mentionStateRef.current = null;
         setMentionState(null);
@@ -482,13 +500,13 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       }
 
       requestAnimationFrame(() => {
-        decorateProjectMentions();
+        decorateMentions();
       });
 
       mentionStateRef.current = null;
       setMentionState(null);
     },
-    [decorateProjectMentions, onChange],
+    [decorateMentions, onChange],
   );
 
   function hasFilePayload(evt: DragEvent<HTMLDivElement>) {
