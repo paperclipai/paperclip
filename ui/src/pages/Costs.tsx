@@ -147,7 +147,7 @@ function FinanceSummaryCard({
 }
 
 export function Costs() {
-  const { selectedCompanyId } = useCompany();
+  const { selectedCompanyId, selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
 
@@ -528,6 +528,36 @@ export function Costs() {
     project: budgetPolicies.filter((policy) => policy.scopeType === "project"),
   }), [budgetPolicies]);
 
+  const companyBudgetSummary = useMemo(() => {
+    const matched = budgetPoliciesByScope.company[0];
+    if (matched) return matched;
+    const budgetMonthlyCents = selectedCompany?.budgetMonthlyCents ?? 0;
+    const spentMonthlyCents = selectedCompany?.spentMonthlyCents ?? 0;
+    return {
+      policyId: "",
+      companyId: companyId,
+      scopeType: "company",
+      scopeId: companyId,
+      scopeName: selectedCompany?.name ?? "Company",
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      amount: budgetMonthlyCents,
+      observedAmount: spentMonthlyCents,
+      remainingAmount: Math.max(0, budgetMonthlyCents - spentMonthlyCents),
+      utilizationPercent:
+        budgetMonthlyCents > 0 ? Number(((spentMonthlyCents / budgetMonthlyCents) * 100).toFixed(2)) : 0,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: true,
+      isActive: budgetMonthlyCents > 0,
+      status: budgetMonthlyCents > 0 && spentMonthlyCents >= budgetMonthlyCents ? "hard_stop" : "ok",
+      paused: false,
+      pauseReason: null,
+      windowStart: new Date(),
+      windowEnd: new Date(),
+    } satisfies BudgetPolicySummary;
+  }, [budgetPoliciesByScope.company, selectedCompany, companyId]);
+
   if (!selectedCompanyId) {
     return <EmptyState icon={DollarSign} message="Select a company to view costs." />;
   }
@@ -901,7 +931,30 @@ export function Costs() {
               ) : null}
 
               <div className="space-y-5">
-                {(["company", "agent", "project"] as const).map((scopeType) => {
+                <section className="space-y-3">
+                  <div>
+                    <h2 className="text-lg font-semibold">Company budget</h2>
+                    <p className="text-sm text-muted-foreground">
+                      Company-wide monthly spending limit. Agents and projects inherit this ceiling.
+                    </p>
+                  </div>
+                  <div className="grid gap-4 xl:grid-cols-2">
+                    <BudgetPolicyCard
+                      key={companyBudgetSummary.policyId || "company-budget"}
+                      summary={companyBudgetSummary}
+                      isSaving={policyMutation.isPending}
+                      onSave={(amount) =>
+                        policyMutation.mutate({
+                          scopeType: "company",
+                          scopeId: companyId,
+                          amount,
+                          windowKind: "calendar_month_utc",
+                        })}
+                    />
+                  </div>
+                </section>
+
+                {(["agent", "project"] as const).map((scopeType) => {
                   const rows = budgetPoliciesByScope[scopeType];
                   if (rows.length === 0) return null;
                   return (
@@ -909,11 +962,9 @@ export function Costs() {
                       <div>
                         <h2 className="text-lg font-semibold capitalize">{scopeType} budgets</h2>
                         <p className="text-sm text-muted-foreground">
-                          {scopeType === "company"
-                            ? "Company-wide monthly policy."
-                            : scopeType === "agent"
-                              ? "Recurring monthly spend policies for individual agents."
-                              : "Lifetime spend policies for execution-bound projects."}
+                          {scopeType === "agent"
+                            ? "Recurring monthly spend policies for individual agents."
+                            : "Lifetime spend policies for execution-bound projects."}
                         </p>
                       </div>
                       <div className="grid gap-4 xl:grid-cols-2">
@@ -935,14 +986,6 @@ export function Costs() {
                     </section>
                   );
                 })}
-
-                {budgetPolicies.length === 0 ? (
-                  <Card>
-                    <CardContent className="px-5 py-8 text-sm text-muted-foreground">
-                      No budget policies yet. Set agent and project budgets from their detail pages, or use the existing company monthly budget control.
-                    </CardContent>
-                  </Card>
-                ) : null}
               </div>
             </>
           )}

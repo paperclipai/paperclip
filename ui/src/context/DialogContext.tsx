@@ -15,7 +15,7 @@ interface NewGoalDefaults {
 }
 
 interface OnboardingOptions {
-  initialStep?: 1 | 2 | 3 | 4;
+  initialStep?: 1 | 2 | 3 | 4 | 5;
   companyId?: string;
 }
 
