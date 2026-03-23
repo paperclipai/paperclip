@@ -59,14 +59,14 @@ function formatVerb(action: string, details: Record<string, unknown> | null | un
     if (details.status !== undefined) {
       const from = previous.status;
       return from
-        ? `${t.activity.changedStatusFrom} ${humanizeValue(from)} ${t.activity.changedStatusTo} ${humanizeValue(details.status)} ${t.activity.on}`
-        : `${t.activity.changedStatusTo} ${humanizeValue(details.status)} ${t.activity.on}`;
+        ? t.activity.changedStatusFromTo.replace("{from}", humanizeValue(from)).replace("{to}", humanizeValue(details.status))
+        : t.activity.changedStatusTo.replace("{to}", humanizeValue(details.status));
     }
     if (details.priority !== undefined) {
       const from = previous.priority;
       return from
-        ? `${t.activity.changedPriorityFrom} ${humanizeValue(from)} ${t.activity.changedPriorityTo} ${humanizeValue(details.priority)} ${t.activity.on}`
-        : `${t.activity.changedPriorityTo} ${humanizeValue(details.priority)} ${t.activity.on}`;
+        ? t.activity.changedPriorityFromTo.replace("{from}", humanizeValue(from)).replace("{to}", humanizeValue(details.priority))
+        : t.activity.changedPriorityTo.replace("{to}", humanizeValue(details.priority));
     }
   }
   return buildActionVerbs(t)[action] ?? action.replace(/[._]/g, " ");

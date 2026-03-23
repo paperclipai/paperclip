@@ -62,7 +62,7 @@ export function InstanceGeneralSettings() {
           <h1 className="text-lg font-semibold">{t.settings.general}</h1>
         </div>
         <p className="text-sm text-muted-foreground">
-          {t.settings.appearance}
+          {t.settings.generalDescription}
         </p>
       </div>
 

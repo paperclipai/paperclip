@@ -91,6 +91,7 @@ export const en = {
   settings: {
     title: "Settings",
     general: "General",
+    generalDescription: "Configure instance-wide defaults that affect how operator-visible logs are displayed.",
     appearance: "Appearance",
     language: "Language",
     languageDescription: "Select your preferred language",
@@ -425,13 +426,11 @@ export const en = {
     verbCreatedCompany: "created company",
     verbUpdatedCompany: "updated company",
     verbArchived: "archived",
-    // Dynamic verb parts
-    changedStatusFrom: "changed status from",
-    changedStatusTo: "changed status to",
-    changedPriorityFrom: "changed priority from",
-    changedPriorityTo: "changed priority to",
-    to: "to",
-    on: "on",
+    // Dynamic verb templates — use {from} and {to} as placeholders
+    changedStatusFromTo: "changed status from {from} to {to} on",
+    changedStatusTo: "changed status to {to} on",
+    changedPriorityFromTo: "changed priority from {from} to {to} on",
+    changedPriorityTo: "changed priority to {to} on",
   },
   activeAgents: {
     heading: "Agents",

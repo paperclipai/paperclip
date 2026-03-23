@@ -93,6 +93,7 @@ export const ptBR: DeepPartial<Translations> = {
   settings: {
     title: "Configurações",
     general: "Geral",
+    generalDescription: "Configure os padrões globais da instância que afetam como os logs visíveis ao operador são exibidos.",
     appearance: "Aparência",
     language: "Idioma",
     languageDescription: "Selecione seu idioma preferido",
@@ -427,13 +428,11 @@ export const ptBR: DeepPartial<Translations> = {
     verbCreatedCompany: "criou empresa",
     verbUpdatedCompany: "atualizou empresa",
     verbArchived: "arquivou",
-    // Dynamic verb parts
-    changedStatusFrom: "alterou status de",
-    changedStatusTo: "para",
-    changedPriorityFrom: "alterou prioridade de",
-    changedPriorityTo: "para",
-    to: "para",
-    on: "em",
+    // Dynamic verb templates — use {from} and {to} as placeholders
+    changedStatusFromTo: "alterou status de {from} para {to} em",
+    changedStatusTo: "alterou status para {to} em",
+    changedPriorityFromTo: "alterou prioridade de {from} para {to} em",
+    changedPriorityTo: "alterou prioridade para {to} em",
   },
   activeAgents: {
     heading: "Agentes",
