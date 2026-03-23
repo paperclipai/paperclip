@@ -2417,6 +2417,7 @@ export function heartbeatService(db: Db) {
             msg.includes("429") ||
             msg.includes("too many requests") ||
             msg.includes("quota exceeded") ||
+            msg.includes("exhausted your capacity") ||
             msg.includes("resource_exhausted") ||
             msg.includes("no capacity") ||
             msg.includes("overloaded"))
