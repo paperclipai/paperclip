@@ -1414,12 +1414,13 @@ export function heartbeatService(db: Db) {
     }
 
     const claimedAt = new Date();
+    const claimedAtStr = claimedAt.toISOString();
     const claimed = await db
       .update(heartbeatRuns)
       .set({
         status: "running",
-        startedAt: run.startedAt ?? claimedAt,
-        updatedAt: claimedAt,
+        startedAt: (run.startedAt ?? claimedAtStr) as any,
+        updatedAt: claimedAtStr as any,
       })
       .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
       .returning()
@@ -1513,13 +1514,14 @@ export function heartbeatService(db: Db) {
         if (now.getTime() - refTime < staleThresholdMs) continue;
       }
 
+      // postgres.js requires timestamp params as ISO strings, not Date objects
       await setRunStatus(run.id, "failed", {
         error: "Process lost -- server may have restarted",
         errorCode: "process_lost",
-        finishedAt: now,
+        finishedAt: now.toISOString() as any,
       });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
-        finishedAt: now,
+        finishedAt: now.toISOString() as any,
         error: "Process lost -- server may have restarted",
       });
       const updatedRun = await getRun(run.id);
@@ -2846,6 +2848,7 @@ export function heartbeatService(db: Db) {
           .returning()
           .then((rows) => rows[0]);
 
+        const nowStr = now.toISOString();
         await tx
           .update(agentWakeupRequests)
           .set({
@@ -2855,7 +2858,7 @@ export function heartbeatService(db: Db) {
             claimedAt: null,
             finishedAt: null,
             error: null,
-            updatedAt: now,
+            updatedAt: nowStr as any,
           })
           .where(eq(agentWakeupRequests.id, deferred.id));
 
@@ -2864,8 +2867,8 @@ export function heartbeatService(db: Db) {
           .set({
             executionRunId: newRun.id,
             executionAgentNameKey: normalizeAgentNameKey(deferredAgent.name),
-            executionLockedAt: now,
-            updatedAt: now,
+            executionLockedAt: nowStr as any,
+            updatedAt: nowStr as any,
           })
           .where(eq(issues.id, issue.id));
 
@@ -3482,13 +3485,14 @@ export function heartbeatService(db: Db) {
 
     if (wakeupIds.length === 0) return 0;
 
+    const nowStr = now.toISOString();
     await db
       .update(agentWakeupRequests)
       .set({
         status: "cancelled",
-        finishedAt: now,
+        finishedAt: nowStr as any,
         error: "Cancelled due to budget pause",
-        updatedAt: now,
+        updatedAt: nowStr as any,
       })
       .where(inArray(agentWakeupRequests.id, wakeupIds));
 
