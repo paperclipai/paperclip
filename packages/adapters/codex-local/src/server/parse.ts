@@ -61,6 +61,22 @@ export function parseCodexJsonl(stdout: string) {
   };
 }
 
+/**
+ * Detects authentication errors in Codex output.
+ * Auth errors should cause immediate session clear to prevent
+ * infinite retry loops burning tokens (GH #1511).
+ */
+export function isCodexAuthError(stdout: string, stderr: string): boolean {
+  const haystack = `${stdout}\n${stderr}`
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+  return /\b(401|unauthorized|authentication required|auth.*error|invalid.*token|expired.*token|forbidden.*auth)\b/i.test(
+    haystack,
+  );
+}
+
 export function isCodexUnknownSessionError(stdout: string, stderr: string): boolean {
   const haystack = `${stdout}\n${stderr}`
     .split(/\r?\n/)

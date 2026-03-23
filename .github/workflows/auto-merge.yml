@@ -1,0 +1,44 @@
+name: Auto-merge
+
+on:
+  workflow_run:
+    workflows: ["PR"]
+    types: [completed]
+
+jobs:
+  auto-merge:
+    # Only merge when ALL CI jobs passed
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: write
+
+    steps:
+      - name: Find and merge passing PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          HEAD_BRANCH="${{ github.event.workflow_run.head_branch }}"
+
+          # Skip direct pushes to master (no PR to merge)
+          if [ "$HEAD_BRANCH" = "master" ]; then
+            echo "Direct push to master — skipping"
+            exit 0
+          fi
+
+          # Find the open PR targeting master for this branch
+          PR_NUMBER=$(gh api \
+            "repos/${{ github.repository }}/pulls?head=${{ github.repository_owner }}:${HEAD_BRANCH}&base=master&state=open" \
+            --jq '.[0].number')
+
+          if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then
+            echo "No open PR found for branch ${HEAD_BRANCH} → skipping"
+            exit 0
+          fi
+
+          echo "CI passed — merging PR #${PR_NUMBER} (branch: ${HEAD_BRANCH})"
+          gh pr merge "${PR_NUMBER}" \
+            --repo "${{ github.repository }}" \
+            --squash \
+            --delete-branch
