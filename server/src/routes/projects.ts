@@ -6,11 +6,16 @@ import {
   isUuidLike,
   updateProjectSchema,
   updateProjectWorkspaceSchema,
+  addProjectMemberSchema,
+  updateProjectMemberPermissionsSchema,
+  addProjectAgentSchema,
+  applyProjectRolePresetSchema,
+  PROJECT_ROLE_PRESETS,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { projectService, accessService, logActivity } from "../services/index.js";
-import { conflict, forbidden } from "../errors.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { conflict, forbidden, notFound } from "../errors.js";
+import { assertCompanyAccess, getActorInfo, requireProjectPermission, requireProjectAccess } from "./authz.js";
 
 export function projectRoutes(db: Db) {
   const router = Router();
@@ -58,7 +63,17 @@ export function projectRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     const includeArchived = req.query.includeArchived === "true";
     const archivedOnly = req.query.archived === "true";
-    const result = await svc.list(companyId, { includeArchived, archivedOnly });
+    let result = await svc.list(companyId, { includeArchived, archivedOnly });
+
+    const actor = getActorInfo(req);
+    if (actor.actorType === "user") {
+      const accessibleIds = await access.listAccessibleProjects(companyId, actor.actorId);
+      // Empty array means "owner, show all"
+      if (accessibleIds.length > 0) {
+        result = result.filter((p: any) => accessibleIds.includes(p.id));
+      }
+    }
+
     res.json(result);
   });
 
@@ -101,6 +116,19 @@ export function projectRoutes(db: Db) {
     const hydratedProject = workspace ? await svc.getById(project.id) : project;
 
     const actor = getActorInfo(req);
+
+    // Auto-add creator as project super_admin
+    if (actor.actorType === "user") {
+      await access.addProjectMember(
+        project.id,
+        companyId,
+        "user",
+        actor.actorId,
+        "super_admin",
+        actor.actorId,
+      );
+    }
+
     await logActivity(db, {
       companyId,
       actorType: actor.actorType,
@@ -124,13 +152,7 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
-    if (req.actor.type === "board") {
-      if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
-        const allowed = await access.canUser(existing.companyId, req.actor.userId, "projects:manage");
-        if (!allowed) throw forbidden("Missing permission: projects:manage");
-      }
-    }
+    await requireProjectPermission(req, access, existing.companyId, existing.id, "project:settings");
     const project = await svc.update(id, req.body);
     if (!project) {
       res.status(404).json({ error: "Project not found" });
@@ -401,6 +423,130 @@ export function projectRoutes(db: Db) {
     });
 
     res.json(project);
+  });
+
+  // --- Project Members ---
+
+  // List project members
+  router.get("/projects/:id/members", async (req, res) => {
+    const projectId = req.params.id as string;
+    const project = await svc.getById(projectId);
+    if (!project) throw notFound("Project not found");
+    await requireProjectAccess(req, access, project.companyId, projectId);
+    const members = await access.listProjectMembers(projectId);
+    res.json(members);
+  });
+
+  // Add project member
+  router.post("/projects/:id/members", validate(addProjectMemberSchema), async (req, res) => {
+    const projectId = req.params.id as string;
+    const project = await svc.getById(projectId);
+    if (!project) throw notFound("Project not found");
+    await requireProjectPermission(req, access, project.companyId, projectId, "project:members:manage");
+    const member = await access.addProjectMember(
+      projectId,
+      project.companyId,
+      req.body.principalType,
+      req.body.principalId,
+      req.body.role,
+      req.actor?.userId ?? null,
+    );
+    res.status(201).json(member);
+  });
+
+  // Update project member permissions (fine-tune)
+  router.patch(
+    "/projects/:id/members/:memberId/permissions",
+    validate(updateProjectMemberPermissionsSchema),
+    async (req, res) => {
+      const projectId = req.params.id as string;
+      const memberId = req.params.memberId as string;
+      const project = await svc.getById(projectId);
+      if (!project) throw notFound("Project not found");
+      await requireProjectPermission(req, access, project.companyId, projectId, "project:members:manage");
+      const updated = await access.setProjectMemberPermissions(
+        projectId,
+        memberId,
+        req.body.grants,
+        req.actor?.userId ?? null,
+      );
+      if (!updated) throw notFound("Member not found");
+      res.json(updated);
+    },
+  );
+
+  // Apply role preset to project member
+  router.post(
+    "/projects/:id/members/:memberId/role-preset",
+    validate(applyProjectRolePresetSchema),
+    async (req, res) => {
+      const projectId = req.params.id as string;
+      const memberId = req.params.memberId as string;
+      const project = await svc.getById(projectId);
+      if (!project) throw notFound("Project not found");
+      await requireProjectPermission(req, access, project.companyId, projectId, "project:members:manage");
+      const preset = PROJECT_ROLE_PRESETS.find((p) => p.id === req.body.presetId);
+      if (!preset) throw notFound("Preset not found");
+      const updated = await access.setProjectMemberPermissions(
+        projectId,
+        memberId,
+        preset.permissions.map((key) => ({ permissionKey: key })),
+        req.actor?.userId ?? null,
+      );
+      if (!updated) throw notFound("Member not found");
+      res.json({ ...updated, appliedPreset: req.body.presetId });
+    },
+  );
+
+  // Remove project member
+  router.delete("/projects/:id/members/:memberId", async (req, res) => {
+    const projectId = req.params.id as string;
+    const memberId = req.params.memberId as string;
+    const project = await svc.getById(projectId);
+    if (!project) throw notFound("Project not found");
+    await requireProjectPermission(req, access, project.companyId, projectId, "project:members:manage");
+    const removed = await access.removeProjectMember(projectId, memberId);
+    if (!removed) throw notFound("Member not found");
+    res.json(removed);
+  });
+
+  // --- Project Agents ---
+
+  // List project agents
+  router.get("/projects/:id/agents-access", async (req, res) => {
+    const projectId = req.params.id as string;
+    const project = await svc.getById(projectId);
+    if (!project) throw notFound("Project not found");
+    await requireProjectAccess(req, access, project.companyId, projectId);
+    const projectAgents = await access.listProjectAgents(projectId);
+    res.json(projectAgents);
+  });
+
+  // Add agent to project
+  router.post("/projects/:id/agents-access", validate(addProjectAgentSchema), async (req, res) => {
+    const projectId = req.params.id as string;
+    const project = await svc.getById(projectId);
+    if (!project) throw notFound("Project not found");
+    await requireProjectPermission(req, access, project.companyId, projectId, "project:members:manage");
+    const row = await access.addProjectAgent(projectId, project.companyId, req.body.agentId, req.actor?.userId ?? null);
+    res.status(201).json(row);
+  });
+
+  // Remove agent from project
+  router.delete("/projects/:id/agents-access/:agentId", async (req, res) => {
+    const projectId = req.params.id as string;
+    const agentId = req.params.agentId as string;
+    const project = await svc.getById(projectId);
+    if (!project) throw notFound("Project not found");
+    await requireProjectPermission(req, access, project.companyId, projectId, "project:members:manage");
+    const removed = await access.removeProjectAgent(projectId, agentId);
+    if (!removed) throw notFound("Agent not assigned to project");
+    res.json(removed);
+  });
+
+  // Project role presets list
+  router.get("/project-role-presets", (_req, res) => {
+    res.json(PROJECT_ROLE_PRESETS);
   });
 
   return router;
