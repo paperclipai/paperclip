@@ -24,7 +24,7 @@ import {
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
 import { forbidden, HttpError, unauthorized } from "../errors.js";
-import { assertCompanyAccess, getActorInfo, requirePermission, requireProjectPermission } from "./authz.js";
+import { assertCompanyAccess, getActorInfo, requirePermission, requireProjectPermission, requireProjectAccess } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 
 const MAX_ATTACHMENT_BYTES = Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
@@ -216,7 +216,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
 
-    const result = await svc.list(companyId, {
+    let result = await svc.list(companyId, {
       status: req.query.status as string | undefined,
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
       assigneeUserId,
@@ -226,6 +226,18 @@ export function issueRoutes(db: Db, storage: StorageService) {
       labelId: req.query.labelId as string | undefined,
       q: req.query.q as string | undefined,
     });
+
+    // Filter issues by project access
+    const actor = getActorInfo(req);
+    if (actor.actorType === "user") {
+      const accessibleIds = await access.listAccessibleProjects(companyId, actor.actorId);
+      if (accessibleIds !== null) {
+        result = result.filter((issue: any) =>
+          !issue.projectId || accessibleIds.includes(issue.projectId),
+        );
+      }
+    }
+
     res.json(result);
   });
 
@@ -291,6 +303,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    // Enforce project-level access
+    if (issue.projectId) {
+      await requireProjectAccess(req, access, issue.companyId, issue.projectId);
+    }
     const [ancestors, project, goal, mentionedProjectIds] = await Promise.all([
       svc.getAncestors(issue.id),
       issue.projectId ? projectsSvc.getById(issue.projectId) : null,

@@ -85,6 +85,7 @@ export function projectRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, project.companyId);
+    await requireProjectAccess(req, access, project.companyId, id);
     res.json(project);
   });
 
