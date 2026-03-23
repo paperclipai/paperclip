@@ -1,0 +1,25 @@
+services:
+  db:
+    ports: [] # Secure database, no external ports
+
+  server:
+    ports: [] # Port 3100 is handled by Traefik
+    environment:
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public"
+      PAPERCLIP_PUBLIC_URL: "https://paperclip.openclawbot.vn"
+    restart: always
+    networks:
+      - default
+      - root_default
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.paperclip.rule=Host(`paperclip.openclawbot.vn`)"
+      - "traefik.http.routers.paperclip.entrypoints=websecure"
+      - "traefik.http.routers.paperclip.tls=true"
+      - "traefik.http.routers.paperclip.tls.certresolver=letsencrypt"
+      - "traefik.http.services.paperclip.loadbalancer.server.port=3100"
+
+networks:
+  root_default:
+    external: true

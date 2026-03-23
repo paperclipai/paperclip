@@ -1,0 +1,37 @@
+name: Deploy Paperclip
+
+on:
+  push:
+    branches:
+      - main
+      - fix/ceo-agentmd-save-1561
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Copy files via scp
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USERNAME }}
+          password: ${{ secrets.VPS_PASSWORD }}
+          source: "."
+          target: "/root/paperclip"
+          rm: true
+
+      - name: Execute Docker Compose on VPS
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USERNAME }}
+          password: ${{ secrets.VPS_PASSWORD }}
+          script: |
+            cd /root/paperclip
+            if [ ! -f ".env" ]; then
+              echo "BETTER_AUTH_SECRET=$(openssl rand -base64 32)" > .env
+            fi
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d
