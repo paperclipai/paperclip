@@ -367,13 +367,6 @@ export function accessService(db: Db) {
   ): Promise<boolean> {
     if (!userId) return false;
     if (await isCompanyOwner(companyId, userId)) return true;
-    // Legacy mode: projects with zero members are accessible to everyone
-    const memberCount = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(projectMembers)
-      .where(eq(projectMembers.projectId, projectId))
-      .then((rows) => Number(rows[0]?.count ?? 0));
-    if (memberCount === 0) return true;
     const membership = await getProjectMembership(projectId, "user", userId);
     return Boolean(membership);
   }
@@ -560,8 +553,9 @@ export function accessService(db: Db) {
     return member;
   }
 
-  async function listAccessibleProjects(companyId: string, userId: string): Promise<string[]> {
-    if (await isCompanyOwner(companyId, userId)) return [];
+  async function listAccessibleProjects(companyId: string, userId: string): Promise<string[] | null> {
+    // Owners see everything — null means "no filter"
+    if (await isCompanyOwner(companyId, userId)) return null;
 
     // Projects where user is an explicit member
     const memberProjectIds = await db
@@ -576,22 +570,7 @@ export function accessService(db: Db) {
       )
       .then((rows) => rows.map((r) => r.projectId));
 
-    // Legacy mode: projects with zero members
-    const legacyProjectIds = await db
-      .select({ id: projects.id })
-      .from(projects)
-      .leftJoin(projectMembers, eq(projects.id, projectMembers.projectId))
-      .where(
-        and(
-          eq(projects.companyId, companyId),
-          isNull(projectMembers.id),
-        ),
-      )
-      .then((rows) => rows.map((r) => r.id));
-
-    // Combine unique IDs
-    const idSet = new Set([...memberProjectIds, ...legacyProjectIds]);
-    return Array.from(idSet);
+    return memberProjectIds;
   }
 
   async function listProjectAgents(projectId: string) {

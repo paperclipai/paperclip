@@ -68,8 +68,8 @@ export function projectRoutes(db: Db) {
     const actor = getActorInfo(req);
     if (actor.actorType === "user") {
       const accessibleIds = await access.listAccessibleProjects(companyId, actor.actorId);
-      // Empty array means "owner, show all"
-      if (accessibleIds.length > 0) {
+      // null = owner, show all; array = filter to only assigned projects
+      if (accessibleIds !== null) {
         result = result.filter((p: any) => accessibleIds.includes(p.id));
       }
     }
