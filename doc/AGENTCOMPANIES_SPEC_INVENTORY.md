@@ -60,7 +60,7 @@ Route registration lives in `server/src/app.ts` via `companyRoutes(db, storage)`
 
 | File | Commands |
 |---|---|
-| `cli/src/commands/client/company.ts` | `company export` — exports a company package to disk (flags: `--out`, `--include`, `--projects`, `--issues`, `--projectIssues`).<br>`company import` — imports a company package from a file or folder (flags: `--from`, `--include`, `--target`, `--companyId`, `--newCompanyName`, `--agents`, `--collision`, `--dryRun`).<br>Reads/writes portable file entries and handles `.paperclip.yaml` filtering. |
+| `cli/src/commands/client/company.ts` | `company export` — exports a company package to disk (flags: `--out`, `--include`, `--projects`, `--issues`, `--projectIssues`).<br>`company import <fromPathOrUrl>` — imports a company package from a file or folder (flags: positional source path/URL or GitHub shorthand, `--include`, `--target`, `--companyId`, `--newCompanyName`, `--agents`, `--collision`, `--ref`, `--dryRun`).<br>Reads/writes portable file entries and handles `.paperclip.yaml` filtering. |
 
 ## 7. UI — Pages
 

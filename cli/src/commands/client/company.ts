@@ -42,13 +42,13 @@ interface CompanyExportOptions extends BaseClientOptions {
 }
 
 interface CompanyImportOptions extends BaseClientOptions {
-  from?: string;
   include?: string;
   target?: CompanyImportTargetMode;
   companyId?: string;
   newCompanyName?: string;
   agents?: string;
   collision?: CompanyCollisionMode;
+  ref?: string;
   dryRun?: boolean;
 }
 
@@ -114,12 +114,136 @@ function parseCsvValues(input: string | undefined): string[] {
   return Array.from(new Set(input.split(",").map((part) => part.trim()).filter(Boolean)));
 }
 
+export function resolveCompanyImportApiPath(input: {
+  dryRun: boolean;
+  targetMode: "new_company" | "existing_company";
+  companyId?: string | null;
+}): string {
+  if (input.targetMode === "existing_company") {
+    const companyId = input.companyId?.trim();
+    if (!companyId) {
+      throw new Error("Existing-company imports require a companyId to resolve the API route.");
+    }
+    return input.dryRun
+      ? `/api/companies/${companyId}/imports/preview`
+      : `/api/companies/${companyId}/imports/apply`;
+  }
+
+  return input.dryRun ? "/api/companies/import/preview" : "/api/companies/import";
+}
+
 export function isHttpUrl(input: string): boolean {
   return /^https?:\/\//i.test(input.trim());
 }
 
 export function isGithubUrl(input: string): boolean {
   return /^https?:\/\/github\.com\//i.test(input.trim());
+}
+
+function isGithubSegment(input: string): boolean {
+  return /^[A-Za-z0-9._-]+$/.test(input);
+}
+
+export function isGithubShorthand(input: string): boolean {
+  const trimmed = input.trim();
+  if (!trimmed || isHttpUrl(trimmed)) return false;
+  if (
+    trimmed.startsWith(".") ||
+    trimmed.startsWith("/") ||
+    trimmed.startsWith("~") ||
+    trimmed.includes("\\") ||
+    /^[A-Za-z]:/.test(trimmed)
+  ) {
+    return false;
+  }
+
+  const segments = trimmed.split("/").filter(Boolean);
+  return segments.length >= 2 && segments.every(isGithubSegment);
+}
+
+function normalizeGithubImportPath(input: string | null | undefined): string | null {
+  if (!input) return null;
+  const trimmed = input.trim().replace(/^\/+|\/+$/g, "");
+  return trimmed || null;
+}
+
+function buildGithubImportUrl(input: {
+  owner: string;
+  repo: string;
+  ref?: string | null;
+  path?: string | null;
+  companyPath?: string | null;
+}): string {
+  const url = new URL(`https://github.com/${input.owner}/${input.repo.replace(/\.git$/i, "")}`);
+  const ref = input.ref?.trim();
+  if (ref) {
+    url.searchParams.set("ref", ref);
+  }
+  const companyPath = normalizeGithubImportPath(input.companyPath);
+  if (companyPath) {
+    url.searchParams.set("companyPath", companyPath);
+    return url.toString();
+  }
+  const sourcePath = normalizeGithubImportPath(input.path);
+  if (sourcePath) {
+    url.searchParams.set("path", sourcePath);
+  }
+  return url.toString();
+}
+
+export function normalizeGithubImportSource(input: string, refOverride?: string): string {
+  const trimmed = input.trim();
+  const ref = refOverride?.trim();
+
+  if (isGithubShorthand(trimmed)) {
+    const [owner, repo, ...repoPath] = trimmed.split("/").filter(Boolean);
+    return buildGithubImportUrl({
+      owner: owner!,
+      repo: repo!,
+      ref: ref || "main",
+      path: repoPath.join("/"),
+    });
+  }
+
+  if (!isGithubUrl(trimmed)) {
+    throw new Error("GitHub source must be a github.com URL or owner/repo[/path] shorthand.");
+  }
+  if (!ref) {
+    return trimmed;
+  }
+
+  const url = new URL(trimmed);
+  const parts = url.pathname.split("/").filter(Boolean);
+  if (parts.length < 2) {
+    throw new Error("Invalid GitHub URL.");
+  }
+
+  const owner = parts[0]!;
+  const repo = parts[1]!;
+  const existingPath = normalizeGithubImportPath(url.searchParams.get("path"));
+  const existingCompanyPath = normalizeGithubImportPath(url.searchParams.get("companyPath"));
+  if (existingCompanyPath) {
+    return buildGithubImportUrl({ owner, repo, ref, companyPath: existingCompanyPath });
+  }
+  if (existingPath) {
+    return buildGithubImportUrl({ owner, repo, ref, path: existingPath });
+  }
+  if (parts[2] === "tree") {
+    return buildGithubImportUrl({ owner, repo, ref, path: parts.slice(4).join("/") });
+  }
+  if (parts[2] === "blob") {
+    return buildGithubImportUrl({ owner, repo, ref, companyPath: parts.slice(4).join("/") });
+  }
+  return buildGithubImportUrl({ owner, repo, ref });
+}
+
+async function pathExists(inputPath: string): Promise<boolean> {
+  try {
+    await stat(path.resolve(inputPath));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function collectPackageFiles(
@@ -390,20 +514,21 @@ export function registerCompanyCommands(program: Command): void {
     company
       .command("import")
       .description("Import a portable markdown company package from local path, URL, or GitHub")
-      .requiredOption("--from <pathOrUrl>", "Source path or URL")
+      .argument("<fromPathOrUrl>", "Source path or URL")
       .option("--include <values>", "Comma-separated include set: company,agents,projects,issues,tasks,skills", "company,agents")
       .option("--target <mode>", "Target mode: new | existing")
       .option("-C, --company-id <id>", "Existing target company ID")
       .option("--new-company-name <name>", "Name override for --target new")
       .option("--agents <list>", "Comma-separated agent slugs to import, or all", "all")
       .option("--collision <mode>", "Collision strategy: rename | skip | replace", "rename")
+      .option("--ref <value>", "Git ref to use for GitHub imports (branch, tag, or commit)")
       .option("--dry-run", "Run preview only without applying", false)
-      .action(async (opts: CompanyImportOptions) => {
+      .action(async (fromPathOrUrl: string, opts: CompanyImportOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const from = (opts.from ?? "").trim();
+          const from = fromPathOrUrl.trim();
           if (!from) {
-            throw new Error("--from is required");
+            throw new Error("Source path or URL is required.");
           }
 
           const include = parseInclude(opts.include);
@@ -439,15 +564,21 @@ export function registerCompanyCommands(program: Command): void {
             | { type: "inline"; rootPath?: string | null; files: Record<string, CompanyPortabilityFileEntry> }
             | { type: "github"; url: string };
 
-          if (isHttpUrl(from)) {
-            if (!isGithubUrl(from)) {
+          const treatAsLocalPath = !isHttpUrl(from) && await pathExists(from);
+          const isGithubSource = isGithubUrl(from) || (isGithubShorthand(from) && !treatAsLocalPath);
+
+          if (isHttpUrl(from) || isGithubSource) {
+            if (!isGithubUrl(from) && !isGithubShorthand(from)) {
               throw new Error(
                 "Only GitHub URLs and local paths are supported for import. " +
                 "Generic HTTP URLs are not supported. Use a GitHub URL (https://github.com/...) or a local directory path.",
               );
             }
-            sourcePayload = { type: "github", url: from };
+            sourcePayload = { type: "github", url: normalizeGithubImportSource(from, opts.ref) };
           } else {
+            if (opts.ref?.trim()) {
+              throw new Error("--ref is only supported for GitHub import sources.");
+            }
             const inline = await resolveInlineSourceFromPath(from);
             sourcePayload = {
               type: "inline",
@@ -463,17 +594,19 @@ export function registerCompanyCommands(program: Command): void {
             agents,
             collisionStrategy: collision,
           };
+          const importApiPath = resolveCompanyImportApiPath({
+            dryRun: Boolean(opts.dryRun),
+            targetMode: targetPayload.mode,
+            companyId: targetPayload.mode === "existing_company" ? targetPayload.companyId : null,
+          });
 
           if (opts.dryRun) {
-            const preview = await ctx.api.post<CompanyPortabilityPreviewResult>(
-              "/api/companies/import/preview",
-              payload,
-            );
+            const preview = await ctx.api.post<CompanyPortabilityPreviewResult>(importApiPath, payload);
             printOutput(preview, { json: ctx.json });
             return;
           }
 
-          const imported = await ctx.api.post<CompanyPortabilityImportResult>("/api/companies/import", payload);
+          const imported = await ctx.api.post<CompanyPortabilityImportResult>(importApiPath, payload);
           printOutput(imported, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);

@@ -33,6 +33,10 @@ export function resolveDefaultContextPath(): string {
   return path.resolve(resolvePaperclipHomeDir(), "context.json");
 }
 
+export function resolveDefaultCliAuthPath(): string {
+  return path.resolve(resolvePaperclipHomeDir(), "auth.json");
+}
+
 export function resolveDefaultEmbeddedPostgresDir(instanceId?: string): string {
   return path.resolve(resolvePaperclipInstanceRoot(instanceId), "db");
 }

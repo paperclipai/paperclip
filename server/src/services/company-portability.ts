@@ -1898,7 +1898,12 @@ function buildManifestFromPackageFiles(
 }
 
 
-function parseGitHubSourceUrl(rawUrl: string) {
+function normalizeGitHubSourcePath(value: string | null | undefined) {
+  if (!value) return "";
+  return value.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+}
+
+export function parseGitHubSourceUrl(rawUrl: string) {
   const url = new URL(rawUrl);
   if (url.hostname !== "github.com") {
     throw unprocessable("GitHub source must use github.com URL");
@@ -1909,6 +1914,24 @@ function parseGitHubSourceUrl(rawUrl: string) {
   }
   const owner = parts[0]!;
   const repo = parts[1]!.replace(/\.git$/i, "");
+  const queryRef = url.searchParams.get("ref")?.trim();
+  const queryPath = normalizeGitHubSourcePath(url.searchParams.get("path"));
+  const queryCompanyPath = normalizeGitHubSourcePath(url.searchParams.get("companyPath"));
+  if (queryRef || queryPath || queryCompanyPath) {
+    const companyPath = queryCompanyPath || [queryPath, "COMPANY.md"].filter(Boolean).join("/") || "COMPANY.md";
+    let basePath = queryPath;
+    if (!basePath && companyPath !== "COMPANY.md") {
+      basePath = path.posix.dirname(companyPath);
+      if (basePath === ".") basePath = "";
+    }
+    return {
+      owner,
+      repo,
+      ref: queryRef || "main",
+      basePath,
+      companyPath,
+    };
+  }
   let ref = "main";
   let basePath = "";
   let companyPath = "COMPANY.md";

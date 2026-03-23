@@ -87,7 +87,7 @@ vi.mock("../routes/org-chart-svg.js", () => ({
   renderOrgChartPng: vi.fn(async () => Buffer.from("png")),
 }));
 
-const { companyPortabilityService } = await import("../services/company-portability.js");
+const { companyPortabilityService, parseGitHubSourceUrl } = await import("../services/company-portability.js");
 
 function asTextFile(entry: CompanyPortabilityFileEntry | undefined) {
   expect(typeof entry).toBe("string");
@@ -299,6 +299,32 @@ describe("company portability", () => {
         instructionsFilePath: `/tmp/${agent.id}/AGENTS.md`,
       },
     }));
+  });
+
+  it("parses canonical GitHub import URLs with explicit ref and package path", () => {
+    expect(
+      parseGitHubSourceUrl("https://github.com/paperclipai/companies?ref=feature%2Fdemo&path=gstack"),
+    ).toEqual({
+      owner: "paperclipai",
+      repo: "companies",
+      ref: "feature/demo",
+      basePath: "gstack",
+      companyPath: "gstack/COMPANY.md",
+    });
+  });
+
+  it("parses canonical GitHub import URLs with explicit companyPath", () => {
+    expect(
+      parseGitHubSourceUrl(
+        "https://github.com/paperclipai/companies?ref=abc123&companyPath=gstack%2FCOMPANY.md",
+      ),
+    ).toEqual({
+      owner: "paperclipai",
+      repo: "companies",
+      ref: "abc123",
+      basePath: "gstack",
+      companyPath: "gstack/COMPANY.md",
+    });
   });
 
   it("exports referenced skills as stubs by default with sanitized Paperclip extension data", async () => {

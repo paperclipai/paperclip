@@ -1488,11 +1488,24 @@ function renderMergePlan(plan: Awaited<ReturnType<typeof collectMergePlan>>["pla
     `Target: ${extras.targetPath}`,
     `Company: ${plan.companyName} (${plan.issuePrefix})`,
     "",
+    "Projects",
+    `- import: ${plan.counts.projectsToImport}`,
+    "",
     "Issues",
     `- insert: ${plan.counts.issuesToInsert}`,
     `- already present: ${plan.counts.issuesExisting}`,
     `- shared/imported issues with drift: ${plan.counts.issueDrift}`,
   ];
+
+  if (plan.projectImports.length > 0) {
+    lines.push("");
+    lines.push("Planned project imports");
+    for (const project of plan.projectImports) {
+      lines.push(
+        `- ${project.source.name} (${project.workspaces.length} workspace${project.workspaces.length === 1 ? "" : "s"})`,
+      );
+    }
+  }
 
   const issueInserts = plan.issuePlans.filter((item): item is PlannedIssueInsert => item.action === "insert");
   if (issueInserts.length > 0) {
@@ -1500,8 +1513,9 @@ function renderMergePlan(plan: Awaited<ReturnType<typeof collectMergePlan>>["pla
     lines.push("Planned issue imports");
     for (const issue of issueInserts) {
       const projectNote =
-        issue.projectResolution === "mapped" && issue.mappedProjectName
-          ? ` project->${issue.mappedProjectName}`
+        (issue.projectResolution === "mapped" || issue.projectResolution === "imported")
+        && issue.mappedProjectName
+          ? ` project->${issue.projectResolution === "imported" ? "import:" : ""}${issue.mappedProjectName}`
           : "";
       const adjustments = issue.adjustments.length > 0 ? ` [${issue.adjustments.join(", ")}]` : "";
       const prefix = `- ${issue.source.identifier ?? issue.source.id} -> ${issue.previewIdentifier} (${issue.targetStatus}${projectNote})`;
@@ -1562,6 +1576,7 @@ async function collectMergePlan(input: {
   targetDb: ClosableDb;
   company: ResolvedMergeCompany;
   scopes: ReturnType<typeof parseWorktreeMergeScopes>;
+  importProjectIds?: Iterable<string>;
   projectIdOverrides?: Record<string, string | null | undefined>;
 }) {
   const companyId = input.company.id;
@@ -1578,6 +1593,7 @@ async function collectMergePlan(input: {
     sourceAttachmentRows,
     targetAttachmentRows,
     sourceProjectsRows,
+    sourceProjectWorkspaceRows,
     targetProjectsRows,
     targetAgentsRows,
     targetProjectWorkspaceRows,
@@ -1743,6 +1759,10 @@ async function collectMergePlan(input: {
       .select()
       .from(projects)
       .where(eq(projects.companyId, companyId)),
+    input.sourceDb
+      .select()
+      .from(projectWorkspaces)
+      .where(eq(projectWorkspaces.companyId, companyId)),
     input.targetDb
       .select()
       .from(projects)
@@ -1779,6 +1799,8 @@ async function collectMergePlan(input: {
     targetIssues: targetIssuesRows,
     sourceComments: sourceCommentsRows,
     targetComments: targetCommentsRows,
+    sourceProjects: sourceProjectsRows,
+    sourceProjectWorkspaces: sourceProjectWorkspaceRows,
     sourceDocuments: sourceIssueDocumentsRows as IssueDocumentRow[],
     targetDocuments: targetIssueDocumentsRows as IssueDocumentRow[],
     sourceDocumentRevisions: sourceDocumentRevisionRows as DocumentRevisionRow[],
@@ -1789,6 +1811,7 @@ async function collectMergePlan(input: {
     targetProjects: targetProjectsRows,
     targetProjectWorkspaces: targetProjectWorkspaceRows,
     targetGoals: targetGoalsRows,
+    importProjectIds: input.importProjectIds,
     projectIdOverrides: input.projectIdOverrides,
   });
 
@@ -1800,11 +1823,16 @@ async function collectMergePlan(input: {
   };
 }
 
+type ProjectMappingSelections = {
+  importProjectIds: string[];
+  projectIdOverrides: Record<string, string | null>;
+};
+
 async function promptForProjectMappings(input: {
   plan: Awaited<ReturnType<typeof collectMergePlan>>["plan"];
   sourceProjects: Awaited<ReturnType<typeof collectMergePlan>>["sourceProjects"];
   targetProjects: Awaited<ReturnType<typeof collectMergePlan>>["targetProjects"];
-}): Promise<Record<string, string | null>> {
+}): Promise<ProjectMappingSelections> {
   const missingProjectIds = [
     ...new Set(
       input.plan.issuePlans
@@ -1813,8 +1841,11 @@ async function promptForProjectMappings(input: {
         .map((plan) => plan.source.projectId as string),
     ),
   ];
-  if (missingProjectIds.length === 0 || input.targetProjects.length === 0) {
-    return {};
+  if (missingProjectIds.length === 0) {
+    return {
+      importProjectIds: [],
+      projectIdOverrides: {},
+    };
   }
 
   const sourceProjectsById = new Map(input.sourceProjects.map((project) => [project.id, project]));
@@ -1827,15 +1858,22 @@ async function promptForProjectMappings(input: {
     }));
 
   const mappings: Record<string, string | null> = {};
+  const importProjectIds = new Set<string>();
   for (const sourceProjectId of missingProjectIds) {
     const sourceProject = sourceProjectsById.get(sourceProjectId);
     if (!sourceProject) continue;
     const nameMatch = input.targetProjects.find(
       (project) => project.name.trim().toLowerCase() === sourceProject.name.trim().toLowerCase(),
     );
+    const importSelectionValue = `__import__:${sourceProjectId}`;
     const selection = await p.select<string | null>({
       message: `Project "${sourceProject.name}" is missing in target. How should ${input.plan.issuePrefix} imports handle it?`,
       options: [
+        {
+          value: importSelectionValue,
+          label: `Import ${sourceProject.name}`,
+          hint: "Create the project and copy its workspace settings",
+        },
         ...(nameMatch
           ? [{
               value: nameMatch.id,
@@ -1855,10 +1893,17 @@ async function promptForProjectMappings(input: {
     if (p.isCancel(selection)) {
       throw new Error("Project mapping cancelled.");
     }
+    if (selection === importSelectionValue) {
+      importProjectIds.add(sourceProjectId);
+      continue;
+    }
     mappings[sourceProjectId] = selection;
   }
 
-  return mappings;
+  return {
+    importProjectIds: [...importProjectIds],
+    projectIdOverrides: mappings,
+  };
 }
 
 export async function worktreeListCommand(opts: WorktreeListOptions): Promise<void> {
@@ -1976,6 +2021,77 @@ async function applyMergePlan(input: {
   const companyId = input.company.id;
 
   return await input.targetDb.transaction(async (tx) => {
+    const importedProjectIds = input.plan.projectImports.map((project) => project.source.id);
+    const existingImportedProjectIds = importedProjectIds.length > 0
+      ? new Set(
+        (await tx
+          .select({ id: projects.id })
+          .from(projects)
+          .where(inArray(projects.id, importedProjectIds)))
+          .map((row) => row.id),
+      )
+      : new Set<string>();
+    const projectImports = input.plan.projectImports.filter((project) => !existingImportedProjectIds.has(project.source.id));
+    const importedWorkspaceIds = projectImports.flatMap((project) => project.workspaces.map((workspace) => workspace.id));
+    const existingImportedWorkspaceIds = importedWorkspaceIds.length > 0
+      ? new Set(
+        (await tx
+          .select({ id: projectWorkspaces.id })
+          .from(projectWorkspaces)
+          .where(inArray(projectWorkspaces.id, importedWorkspaceIds)))
+          .map((row) => row.id),
+      )
+      : new Set<string>();
+
+    let insertedProjects = 0;
+    let insertedProjectWorkspaces = 0;
+    for (const project of projectImports) {
+      await tx.insert(projects).values({
+        id: project.source.id,
+        companyId,
+        goalId: project.targetGoalId,
+        name: project.source.name,
+        description: project.source.description,
+        status: project.source.status,
+        leadAgentId: project.targetLeadAgentId,
+        targetDate: project.source.targetDate,
+        color: project.source.color,
+        pauseReason: project.source.pauseReason,
+        pausedAt: project.source.pausedAt,
+        executionWorkspacePolicy: project.source.executionWorkspacePolicy,
+        archivedAt: project.source.archivedAt,
+        createdAt: project.source.createdAt,
+        updatedAt: project.source.updatedAt,
+      });
+      insertedProjects += 1;
+
+      for (const workspace of project.workspaces) {
+        if (existingImportedWorkspaceIds.has(workspace.id)) continue;
+        await tx.insert(projectWorkspaces).values({
+          id: workspace.id,
+          companyId,
+          projectId: project.source.id,
+          name: workspace.name,
+          sourceType: workspace.sourceType,
+          cwd: workspace.cwd,
+          repoUrl: workspace.repoUrl,
+          repoRef: workspace.repoRef,
+          defaultRef: workspace.defaultRef,
+          visibility: workspace.visibility,
+          setupCommand: workspace.setupCommand,
+          cleanupCommand: workspace.cleanupCommand,
+          remoteProvider: workspace.remoteProvider,
+          remoteWorkspaceRef: workspace.remoteWorkspaceRef,
+          sharedWorkspaceKey: workspace.sharedWorkspaceKey,
+          metadata: workspace.metadata,
+          isPrimary: workspace.isPrimary,
+          createdAt: workspace.createdAt,
+          updatedAt: workspace.updatedAt,
+        });
+        insertedProjectWorkspaces += 1;
+      }
+    }
+
     const issueCandidates = input.plan.issuePlans.filter(
       (plan): plan is PlannedIssueInsert => plan.action === "insert",
     );
@@ -2274,6 +2390,8 @@ async function applyMergePlan(input: {
     }
 
     return {
+      insertedProjects,
+      insertedProjectWorkspaces,
       insertedIssues,
       insertedComments,
       insertedDocuments,
@@ -2330,18 +2448,22 @@ export async function worktreeMergeHistoryCommand(sourceArg: string | undefined,
       scopes,
     });
     if (!opts.yes) {
-      const projectIdOverrides = await promptForProjectMappings({
+      const projectSelections = await promptForProjectMappings({
         plan: collected.plan,
         sourceProjects: collected.sourceProjects,
         targetProjects: collected.targetProjects,
       });
-      if (Object.keys(projectIdOverrides).length > 0) {
+      if (
+        projectSelections.importProjectIds.length > 0
+        || Object.keys(projectSelections.projectIdOverrides).length > 0
+      ) {
         collected = await collectMergePlan({
           sourceDb: sourceHandle.db,
           targetDb: targetHandle.db,
           company,
           scopes,
-          projectIdOverrides,
+          importProjectIds: projectSelections.importProjectIds,
+          projectIdOverrides: projectSelections.projectIdOverrides,
         });
       }
     }
@@ -2381,7 +2503,7 @@ export async function worktreeMergeHistoryCommand(sourceArg: string | undefined,
     }
     p.outro(
       pc.green(
-        `Imported ${applied.insertedIssues} issues, ${applied.insertedComments} comments, ${applied.insertedDocuments} documents (${applied.insertedDocumentRevisions} revisions, ${applied.mergedDocuments} merged), and ${applied.insertedAttachments} attachments into ${company.issuePrefix}.`,
+        `Imported ${applied.insertedProjects} projects (${applied.insertedProjectWorkspaces} workspaces), ${applied.insertedIssues} issues, ${applied.insertedComments} comments, ${applied.insertedDocuments} documents (${applied.insertedDocumentRevisions} revisions, ${applied.mergedDocuments} merged), and ${applied.insertedAttachments} attachments into ${company.issuePrefix}.`,
       ),
     );
   } finally {
