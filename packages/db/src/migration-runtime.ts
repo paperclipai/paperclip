@@ -144,6 +144,16 @@ async function ensureEmbeddedPostgresConnection(
     };
   }
 
+  const logBuffer: string[] = [];
+  const appendLog = (message: unknown) => {
+    const text = typeof message === "string" ? message : message instanceof Error ? message.message : String(message ?? "");
+    for (const line of text.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (trimmed) logBuffer.push(trimmed);
+    }
+    if (logBuffer.length > 120) logBuffer.splice(0, logBuffer.length - 120);
+  };
+
   const instance = new EmbeddedPostgres({
     databaseDir: dataDir,
     user: "paperclip",
@@ -151,17 +161,18 @@ async function ensureEmbeddedPostgresConnection(
     port: selectedPort,
     persistent: true,
     initdbFlags: ["--encoding=UTF8", "--locale=C"],
-    onLog: () => {},
-    onError: () => {},
+    onLog: appendLog,
+    onError: appendLog,
   });
 
   if (!existsSync(path.resolve(dataDir, "PG_VERSION"))) {
     try {
       await instance.initialise();
     } catch (error) {
+      const logs = logBuffer.length > 0 ? `\nPostgres logs:\n${logBuffer.join("\n")}` : "";
       throw toError(
         error,
-        `Failed to initialize embedded PostgreSQL cluster in ${dataDir} on port ${selectedPort}`,
+        `Failed to initialize embedded PostgreSQL cluster in ${dataDir} on port ${selectedPort}${logs}`,
       );
     }
   }
@@ -171,7 +182,8 @@ async function ensureEmbeddedPostgresConnection(
   try {
     await instance.start();
   } catch (error) {
-    throw toError(error, `Failed to start embedded PostgreSQL on port ${selectedPort}`);
+    const logs = logBuffer.length > 0 ? `\nPostgres logs:\n${logBuffer.join("\n")}` : "";
+    throw toError(error, `Failed to start embedded PostgreSQL on port ${selectedPort}${logs}`);
   }
 
   const adminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${selectedPort}/postgres`;

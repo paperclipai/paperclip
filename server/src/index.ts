@@ -276,16 +276,27 @@ export async function startServer(): Promise<StartedServer> {
       }
     };
     const logEmbeddedPostgresFailure = (phase: "initialise" | "start", err: unknown) => {
-      if (embeddedPostgresLogBuffer.length > 0) {
-        logger.error(
-          {
-            phase,
-            recentLogs: embeddedPostgresLogBuffer,
-            err,
-          },
-          "Embedded PostgreSQL failed; showing buffered startup logs",
-        );
-      }
+      logger.error(
+        {
+          phase,
+          recentLogs: embeddedPostgresLogBuffer.length > 0 ? embeddedPostgresLogBuffer : ["(no logs captured)"],
+          err,
+        },
+        "Embedded PostgreSQL failed; showing buffered startup logs",
+      );
+    };
+    const enrichInitError = (phase: "initialise" | "start", err: unknown): Error => {
+      const original = err instanceof Error ? err.message : String(err);
+      const logs = embeddedPostgresLogBuffer.length > 0
+        ? embeddedPostgresLogBuffer.join("\n")
+        : "(no logs captured — stderr may not have been piped)";
+      return new Error(
+        `Embedded PostgreSQL failed to ${phase}.\n` +
+        `Original error: ${original}\n` +
+        `Buffered postgres logs:\n${logs}\n` +
+        `Hint: re-run with PAPERCLIP_EMBEDDED_POSTGRES_VERBOSE=true for real-time logging, ` +
+        `or run 'initdb --encoding=UTF8 --locale=C -D <dataDir>' manually to see full stderr.`,
+      );
     };
   
     if (config.databaseMode === "postgres") {
@@ -357,7 +368,7 @@ export async function startServer(): Promise<StartedServer> {
             await embeddedPostgres.initialise();
           } catch (err) {
             logEmbeddedPostgresFailure("initialise", err);
-            throw err;
+            throw enrichInitError("initialise", err);
           }
         } else {
           logger.info(`Embedded PostgreSQL cluster already exists (${clusterVersionFile}); skipping init`);
@@ -371,7 +382,7 @@ export async function startServer(): Promise<StartedServer> {
           await embeddedPostgres.start();
         } catch (err) {
           logEmbeddedPostgresFailure("start", err);
-          throw err;
+          throw enrichInitError("start", err);
         }
         embeddedPostgresStartedByThisProcess = true;
       }
