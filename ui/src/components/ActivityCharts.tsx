@@ -79,7 +79,7 @@ export function RunActivityChart({ runs }: { runs: HeartbeatRun[] }) {
 
   return (
     <div>
-      <div className="flex items-end gap-[3px] h-20">
+      <div className="flex items-end gap-[3px] h-20" role="img" aria-label="Run activity chart: succeeded, failed, and other runs per day over 14 days">
         {days.map(day => {
           const entry = grouped.get(day)!;
           const total = entry.succeeded + entry.failed + entry.other;
@@ -131,7 +131,7 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
 
   return (
     <div>
-      <div className="flex items-end gap-[3px] h-20">
+      <div className="flex items-end gap-[3px] h-20" role="img" aria-label="Issue priority chart: issues by priority level per day over 14 days">
         {days.map(day => {
           const entry = grouped.get(day)!;
           const total = Object.values(entry).reduce((a, b) => a + b, 0);
@@ -198,7 +198,7 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
 
   return (
     <div>
-      <div className="flex items-end gap-[3px] h-20">
+      <div className="flex items-end gap-[3px] h-20" role="img" aria-label="Issue status chart: issues by status per day over 14 days">
         {days.map(day => {
           const entry = grouped.get(day)!;
           const total = Object.values(entry).reduce((a, b) => a + b, 0);
@@ -241,7 +241,7 @@ export function SuccessRateChart({ runs }: { runs: HeartbeatRun[] }) {
 
   return (
     <div>
-      <div className="flex items-end gap-[3px] h-20">
+      <div className="flex items-end gap-[3px] h-20" role="img" aria-label="Success rate chart: run success percentage per day over 14 days">
         {days.map(day => {
           const entry = grouped.get(day)!;
           const rate = entry.total > 0 ? entry.succeeded / entry.total : 0;

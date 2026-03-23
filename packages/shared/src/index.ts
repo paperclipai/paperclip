@@ -538,6 +538,7 @@ export {
 
 export {
   paperclipConfigSchema,
+  normalizeRawConfig,
   configMetaSchema,
   llmConfigSchema,
   databaseBackupConfigSchema,

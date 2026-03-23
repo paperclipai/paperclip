@@ -16,6 +16,7 @@ import {
   budgetService,
   companyPortabilityService,
   companyService,
+  heartbeatService,
   logActivity,
 } from "../services/index.js";
 import type { StorageService } from "../storage/types.js";
@@ -315,6 +316,16 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       res.status(404).json({ error: "Company not found" });
       return;
     }
+
+    // Cancel all active heartbeat runs for agents in this company (#1348)
+    const heartbeat = heartbeatService(db);
+    const companyAgents = await agents.list(companyId, { includeTerminated: true });
+    for (const agent of companyAgents) {
+      await heartbeat.cancelActiveForAgent(agent.id).catch(() => {
+        // Agent may have no active runs — ignore
+      });
+    }
+
     await logActivity(db, {
       companyId,
       actorType: "user",

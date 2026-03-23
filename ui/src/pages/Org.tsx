@@ -51,6 +51,8 @@ function OrgTreeNode({
         {hasChildren ? (
           <button
             className="p-0.5"
+            aria-label={expanded ? "Collapse" : "Expand"}
+            aria-expanded={expanded}
             onClick={(e) => {
               e.preventDefault();
               e.stopPropagation();

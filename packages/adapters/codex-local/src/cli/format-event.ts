@@ -31,7 +31,7 @@ function errorText(value: unknown): string {
 }
 
 function printItemStarted(item: Record<string, unknown>): boolean {
-  const itemType = asString(item.type);
+  const itemType = asString(item.item_type) || asString(item.type);
   if (itemType === "command_execution") {
     const command = asString(item.command);
     console.log(pc.yellow("tool_call: command_execution"));
@@ -56,9 +56,9 @@ function printItemStarted(item: Record<string, unknown>): boolean {
 }
 
 function printItemCompleted(item: Record<string, unknown>): boolean {
-  const itemType = asString(item.type);
+  const itemType = asString(item.item_type) || asString(item.type);
 
-  if (itemType === "agent_message") {
+  if (itemType === "agent_message" || itemType === "assistant_message") {
     const text = asString(item.text);
     if (text) console.log(pc.green(`assistant: ${text}`));
     return true;
@@ -153,11 +153,11 @@ export function printCodexStreamEvent(raw: string, _debug: boolean): void {
 
   const type = asString(parsed.type);
 
-  if (type === "thread.started") {
-    const threadId = asString(parsed.thread_id);
+  if (type === "thread.started" || type === "session.created") {
+    const sessionId = asString(parsed.session_id, "") || asString(parsed.thread_id, "");
     const model = asString(parsed.model);
-    const details = [threadId ? `session: ${threadId}` : "", model ? `model: ${model}` : ""].filter(Boolean).join(", ");
-    console.log(pc.blue(`Codex thread started${details ? ` (${details})` : ""}`));
+    const details = [sessionId ? `session: ${sessionId}` : "", model ? `model: ${model}` : ""].filter(Boolean).join(", ");
+    console.log(pc.blue(`Codex session started${details ? ` (${details})` : ""}`));
     return;
   }
 
@@ -174,7 +174,7 @@ export function printCodexStreamEvent(raw: string, _debug: boolean): void {
           ? printItemStarted(item)
           : printItemCompleted(item);
       if (!handled) {
-        const itemType = asString(item.type, "unknown");
+        const itemType = asString(item.item_type, "") || asString(item.type, "unknown");
         const id = asString(item.id);
         const status = asString(item.status);
         const meta = [id ? `id=${id}` : "", status ? `status=${status}` : ""].filter(Boolean).join(" ");

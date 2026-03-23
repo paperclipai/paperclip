@@ -44,7 +44,15 @@ export function StatusIcon({ status, onChange, className, showLabel }: StatusIco
       {circle}
       <span className="text-sm">{statusLabel(status)}</span>
     </button>
-  ) : circle;
+  ) : (
+    <button
+      className="inline-flex items-center justify-center cursor-pointer hover:bg-accent/50 rounded p-0.5 transition-colors"
+      aria-label={`Change status: ${statusLabel(status)}`}
+      aria-haspopup="listbox"
+    >
+      {circle}
+    </button>
+  );
 
   return (
     <Popover open={open} onOpenChange={setOpen}>

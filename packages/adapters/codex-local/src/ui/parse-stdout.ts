@@ -123,9 +123,11 @@ function parseCodexItem(
   ts: string,
   phase: "started" | "completed",
 ): TranscriptEntry[] {
-  const itemType = asString(item.type);
+  // Support both old "item.type" and new "item.item_type" (#1343)
+  const itemType = asString(item.item_type) || asString(item.type);
 
-  if (itemType === "agent_message") {
+  // Support both "agent_message" and "assistant_message" (#1343)
+  if (itemType === "agent_message" || itemType === "assistant_message") {
     const text = asString(item.text);
     if (text) return [{ kind: "assistant", ts, text }];
     return [];
@@ -189,13 +191,14 @@ export function parseCodexStdoutLine(line: string, ts: string): TranscriptEntry[
 
   const type = asString(parsed.type);
 
-  if (type === "thread.started") {
-    const threadId = asString(parsed.thread_id);
+  // Support both old "thread.started" and new "session.created" (#1343)
+  if (type === "thread.started" || type === "session.created") {
+    const sessionId = asString(parsed.session_id, "") || asString(parsed.thread_id, "");
     return [{
       kind: "init",
       ts,
       model: asString(parsed.model, "codex"),
-      sessionId: threadId,
+      sessionId,
     }];
   }
 

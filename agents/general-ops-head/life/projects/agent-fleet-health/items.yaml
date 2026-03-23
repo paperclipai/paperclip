@@ -1,0 +1,34 @@
+facts:
+  - id: keeper-config-error-2026-03-22
+    type: incident
+    entity: agent
+    agent_id: 82791249-08a0-4997-8745-6ed72689070f
+    agent_name: Keeper (OpenClaw)
+    discovered_at: 2026-03-22T06:17:00Z
+    status: active
+    severity: medium
+    description: >
+      Keeper agent on remote VPS (103.130.219.254:18789) configured with
+      localhost paperclipApiUrl (127.0.0.1:18780), preventing communication
+      back to Paperclip server. Results in persistent ERROR state.
+    impact:
+      - Blocked task QUA-80
+      - 1 agent unavailable (7% of fleet)
+    recommended_fix: >
+      Update Keeper's paperclipApiUrl to actual Paperclip server URL accessible
+      from VPS (public URL, VPN, or SSH tunnel)
+    requires_approval: true
+    approval_reason: Cross-department configuration change
+
+  - id: transient-errors-2026-03-22
+    type: incident
+    discovered_at: 2026-03-22T06:17:00Z
+    resolved_at: 2026-03-22T08:16:00Z
+    status: resolved
+    severity: low
+    description: >
+      3 agents (QA Tester, Scholar OpenClaw, Media OpenClaw) showed ERROR
+      status at 06:17 UTC, all auto-recovered by 08:16 UTC
+    hypothesis: Transient heartbeat failures (network/rate-limit/restart)
+    action_taken: Monitored and documented. No intervention needed.
+    follow_up: Monitor for recurrence pattern

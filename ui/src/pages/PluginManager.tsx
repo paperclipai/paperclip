@@ -395,6 +395,7 @@ export function PluginManager() {
                           size="icon-sm"
                           className="h-8 w-8"
                           title={plugin.status === "ready" ? "Disable" : "Enable"}
+                          aria-label={plugin.status === "ready" ? "Disable plugin" : "Enable plugin"}
                           onClick={() => {
                             if (plugin.status === "ready") {
                               disableMutation.mutate(plugin.id);
@@ -411,6 +412,7 @@ export function PluginManager() {
                           size="icon-sm"
                           className="h-8 w-8 text-destructive hover:text-destructive"
                           title="Uninstall"
+                          aria-label="Uninstall plugin"
                           onClick={() => {
                             setUninstallPluginId(plugin.id);
                             setUninstallPluginName(plugin.manifestJson.displayName ?? plugin.packageName);

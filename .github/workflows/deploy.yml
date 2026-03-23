@@ -1,0 +1,32 @@
+name: Deploy Paperclip
+
+on:
+  push:
+    branches:
+      - main
+      - fix/ceo-agentmd-save-1561
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Execute Docker Compose on VPS
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USERNAME }}
+          password: ${{ secrets.VPS_PASSWORD }}
+          script: |
+            if [ ! -d "/root/paperclip" ]; then
+              git clone https://github.com/${{ github.repository }} /root/paperclip
+            fi
+            cd /root/paperclip
+            git fetch --all
+            git checkout ${{ github.ref_name }}
+            git pull origin ${{ github.ref_name }}
+            
+            if [ ! -f ".env" ]; then
+              echo "BETTER_AUTH_SECRET=$(openssl rand -base64 32)" > .env
+            fi
+            
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d

@@ -31,7 +31,7 @@
   },
   "scripts": {
     "dev": "tsx src/index.ts",
-    "build": "node --input-type=module -e \"import esbuild from 'esbuild'; import config from './esbuild.config.mjs'; await esbuild.build(config);\" && chmod +x dist/index.js",
+    "build": "node --input-type=module -e \"import esbuild from 'esbuild'; import config from './esbuild.config.mjs'; await esbuild.build(config);\" && node -e \"var p=process.platform;if(p==='darwin'||p==='linux')require('fs').chmodSync('dist/index.js',0o755)\"",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit"
   },
@@ -48,7 +48,7 @@
     "@paperclipai/db": "workspace:*",
     "@paperclipai/server": "workspace:*",
     "@paperclipai/shared": "workspace:*",
-    "drizzle-orm": "0.38.4",
+    "drizzle-orm": "0.41.0",
     "dotenv": "^17.0.1",
     "commander": "^13.1.0",
     "embedded-postgres": "^18.1.0-beta.16",

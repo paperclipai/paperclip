@@ -28,7 +28,7 @@ export function EntityRow({
   const isClickable = !!(to || onClick);
   const classes = cn(
     "flex items-center gap-3 px-4 py-2 text-sm border-b border-border last:border-b-0 transition-colors",
-    isClickable && "cursor-pointer hover:bg-accent/50",
+    isClickable && "cursor-pointer hover:bg-accent/50 focus-visible:outline-2 focus-visible:outline-primary focus-visible:outline-offset-[-2px]",
     selected && "bg-accent/30",
     className
   );
@@ -62,7 +62,13 @@ export function EntityRow({
   }
 
   return (
-    <div className={classes} onClick={onClick}>
+    <div
+      className={classes}
+      onClick={onClick}
+      role={isClickable ? "button" : undefined}
+      tabIndex={isClickable ? 0 : undefined}
+      onKeyDown={isClickable ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onClick?.(); } } : undefined}
+    >
       {content}
     </div>
   );

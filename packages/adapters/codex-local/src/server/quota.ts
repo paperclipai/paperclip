@@ -418,12 +418,29 @@ class CodexRpcClient {
   private pending = new Map<number, PendingRequest>();
   private stderr = "";
 
+  private spawnError: Error | null = null;
+
   constructor() {
+    this.proc.on("error", (err: Error) => {
+      this.spawnError = err;
+      for (const request of this.pending.values()) {
+        clearTimeout(request.timer);
+        request.reject(err);
+      }
+      this.pending.clear();
+    });
     this.proc.stdout.setEncoding("utf8");
     this.proc.stderr.setEncoding("utf8");
     this.proc.stdout.on("data", (chunk: string) => this.onStdout(chunk));
     this.proc.stderr.on("data", (chunk: string) => {
       this.stderr += chunk;
+    });
+    this.proc.on("error", (err) => {
+      for (const request of this.pending.values()) {
+        clearTimeout(request.timer);
+        request.reject(err);
+      }
+      this.pending.clear();
     });
     this.proc.on("exit", () => {
       for (const request of this.pending.values()) {
@@ -459,6 +476,7 @@ class CodexRpcClient {
   }
 
   private request(method: string, params: Record<string, unknown> = {}, timeoutMs = 6_000): Promise<Record<string, unknown>> {
+    if (this.spawnError) return Promise.reject(this.spawnError);
     const id = this.nextId++;
     const payload = JSON.stringify({ id, method, params }) + "\n";
     return new Promise<Record<string, unknown>>((resolve, reject) => {
@@ -500,7 +518,7 @@ class CodexRpcClient {
   }
 
   async shutdown() {
-    this.proc.kill("SIGTERM");
+    if (!this.spawnError) this.proc.kill("SIGTERM");
   }
 }
 

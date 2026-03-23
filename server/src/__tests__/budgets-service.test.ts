@@ -11,7 +11,17 @@ type SelectResult = unknown[];
 
 function createDbStub(selectResults: SelectResult[]) {
   const pendingSelects = [...selectResults];
-  const selectWhere = vi.fn(async () => pendingSelects.shift() ?? []);
+  const selectGroupBy = vi.fn(async () => pendingSelects.shift() ?? []);
+  const selectWhere = vi.fn(() => {
+    let groupByCalled = false;
+    return {
+      groupBy(...args: any[]) { groupByCalled = true; return selectGroupBy(...args); },
+      then(resolve: (v: unknown[]) => unknown, reject?: (e: unknown) => unknown) {
+        if (groupByCalled) return Promise.resolve(undefined as any).then(resolve, reject);
+        return Promise.resolve(pendingSelects.shift() ?? []).then(resolve, reject);
+      },
+    };
+  });
   const selectThen = vi.fn((resolve: (value: unknown[]) => unknown) => Promise.resolve(resolve(pendingSelects.shift() ?? [])));
   const selectOrderBy = vi.fn(async () => pendingSelects.shift() ?? []);
   const selectFrom = vi.fn(() => ({
@@ -82,7 +92,7 @@ describe("budgetService", () => {
 
     const dbStub = createDbStub([
       [policy],
-      [{ total: 150 }],
+      [{ agentId: "agent-1", total: 150 }],
       [],
       [{
         companyId: "company-1",

@@ -35,7 +35,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc && cp -r src/migrations dist/migrations",
+    "build": "tsc && node -e \"const fs=require('fs');fs.cpSync('src/migrations','dist/migrations',{recursive:true})\"",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
     "generate": "tsc -p tsconfig.json && drizzle-kit generate",
@@ -44,7 +44,7 @@
   },
   "dependencies": {
     "@paperclipai/shared": "workspace:*",
-    "drizzle-orm": "^0.38.4",
+    "drizzle-orm": "^0.41.0",
     "embedded-postgres": "^18.1.0-beta.16",
     "postgres": "^3.4.5"
   },

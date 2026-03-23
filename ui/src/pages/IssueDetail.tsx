@@ -53,7 +53,7 @@ import {
   Trash2,
 } from "lucide-react";
 import type { ActivityEvent } from "@paperclipai/shared";
-import type { Agent, IssueAttachment } from "@paperclipai/shared";
+import type { Agent, Issue, IssueAttachment } from "@paperclipai/shared";
 
 type CommentReassignment = {
   assigneeAgentId: string | null;
@@ -211,6 +211,7 @@ export function IssueDetail() {
   });
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [attachmentDragActive, setAttachmentDragActive] = useState(false);
+  const [visibleActivityCount, setVisibleActivityCount] = useState(20);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const lastMarkedReadIssueIdRef = useRef<string | null>(null);
 
@@ -466,6 +467,17 @@ export function IssueDetail() {
 
   const markIssueRead = useMutation({
     mutationFn: (id: string) => issuesApi.markRead(id),
+    onMutate: async (id) => {
+      if (!selectedCompanyId) return;
+      // Cancel in-flight fetches and optimistically mark as read
+      const touchedKey = queryKeys.issues.listTouchedByMe(selectedCompanyId);
+      await queryClient.cancelQueries({ queryKey: touchedKey });
+      queryClient.setQueryData<Issue[]>(touchedKey, (old) =>
+        old?.map((issue) =>
+          issue.id === id ? { ...issue, isUnreadForMe: false } : issue,
+        ),
+      );
+    },
     onSuccess: () => {
       if (selectedCompanyId) {
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
@@ -585,6 +597,23 @@ export function IssueDetail() {
     lastMarkedReadIssueIdRef.current = issue.id;
     markIssueRead.mutate(issue.id);
   }, [issue?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Mark read on unmount to capture any comments that arrived while viewing
+  useEffect(() => {
+    return () => {
+      const id = lastMarkedReadIssueIdRef.current;
+      if (!id) return;
+      // Fire-and-forget: use the API directly so the request completes
+      // even after the component unmounts (mutation callbacks won't fire)
+      issuesApi.markRead(id).then(() => {
+        if (selectedCompanyId) {
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId) });
+          queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
+        }
+      }).catch(() => { /* ignore unmount-time errors */ });
+    };
+  }, [selectedCompanyId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (issue) {
@@ -779,6 +808,7 @@ export function IssueDetail() {
               size="icon-xs"
               onClick={copyIssueToClipboard}
               title="Copy issue as markdown"
+              aria-label="Copy issue as markdown"
             >
               {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
             </Button>
@@ -787,6 +817,7 @@ export function IssueDetail() {
               size="icon-xs"
               onClick={() => setMobilePropsOpen(true)}
               title="Properties"
+              aria-label="Show properties"
             >
               <SlidersHorizontal className="h-4 w-4" />
             </Button>
@@ -798,6 +829,7 @@ export function IssueDetail() {
               size="icon-xs"
               onClick={copyIssueToClipboard}
               title="Copy issue as markdown"
+              aria-label="Copy issue as markdown"
             >
               {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
             </Button>
@@ -810,13 +842,14 @@ export function IssueDetail() {
               )}
               onClick={() => setPanelVisible(true)}
               title="Show properties"
+              aria-label="Show properties"
             >
               <SlidersHorizontal className="h-4 w-4" />
             </Button>
 
             <Popover open={moreOpen} onOpenChange={setMoreOpen}>
               <PopoverTrigger asChild>
-                <Button variant="ghost" size="icon-xs" className="shrink-0">
+                <Button variant="ghost" size="icon-xs" className="shrink-0" aria-label="More options">
                   <MoreHorizontal className="h-4 w-4" />
                 </Button>
               </PopoverTrigger>
@@ -959,7 +992,7 @@ export function IssueDetail() {
                   className="text-muted-foreground hover:text-destructive"
                   onClick={() => deleteAttachment.mutate(attachment.id)}
                   disabled={deleteAttachment.isPending}
-                  title="Delete attachment"
+                  aria-label="Delete attachment"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
@@ -1099,13 +1132,26 @@ export function IssueDetail() {
             <p className="text-xs text-muted-foreground">No activity yet.</p>
           ) : (
             <div className="space-y-1.5">
-              {activity.slice(0, 20).map((evt) => (
+              <p className="text-[10px] text-muted-foreground/60">
+                Showing {Math.min(visibleActivityCount, activity.length)} of {activity.length} event{activity.length !== 1 ? "s" : ""}
+              </p>
+              {activity.slice(0, visibleActivityCount).map((evt) => (
                 <div key={evt.id} className="flex items-center gap-1.5 text-xs text-muted-foreground">
                   <ActorIdentity evt={evt} agentMap={agentMap} />
                   <span>{formatAction(evt.action, evt.details)}</span>
                   <span className="ml-auto shrink-0">{relativeTime(evt.createdAt)}</span>
                 </div>
               ))}
+              {visibleActivityCount < activity.length && (
+                <button
+                  type="button"
+                  className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+                  onClick={() => setVisibleActivityCount((c) => c + 20)}
+                >
+                  <ChevronDown className="h-3 w-3" />
+                  Load more ({activity.length - visibleActivityCount} remaining)
+                </button>
+              )}
             </div>
           )}
         </TabsContent>

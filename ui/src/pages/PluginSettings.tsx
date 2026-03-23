@@ -147,7 +147,7 @@ export function PluginSettings() {
     <div className="space-y-6 max-w-5xl">
       <div className="flex items-center gap-4">
         <Link to="/instance/settings/plugins">
-          <Button variant="outline" size="icon" className="h-8 w-8">
+          <Button variant="outline" size="icon" className="h-8 w-8" aria-label="Back to plugins">
             <ArrowLeft className="h-4 w-4" />
           </Button>
         </Link>

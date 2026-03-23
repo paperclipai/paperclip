@@ -152,6 +152,7 @@ export function OpenClawGatewayConfigFields({
 
           <Field label="Session strategy">
             <select
+              aria-label="Session strategy"
               value={sessionStrategy}
               onChange={(e) => mark("adapterConfig", "sessionKeyStrategy", e.target.value)}
               className={inputClass}
