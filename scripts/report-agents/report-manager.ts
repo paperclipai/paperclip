@@ -1,8 +1,7 @@
 // report-manager.ts
 // Orchestrator: collect all data → analyze → generate daily/weekly/monthly reports
-// Env: WHALES_DB_PATH, GA4_PROPERTY_ID, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
-//      RAPIDAPI_KEY, SOCIAL_ACCOUNTS
 
+import "dotenv/config";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import Database from "better-sqlite3";

@@ -1,6 +1,7 @@
 // monthly-report.ts
 // Collect all platform data for the past month → Claude CLI analyze → Telegram
-// Env: WHALES_DB_PATH, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, GA4_PROPERTY_ID, RAPIDAPI_KEY, SOCIAL_ACCOUNTS
+
+import "dotenv/config";
 
 import Database from "better-sqlite3";
 import { execFile } from "child_process";

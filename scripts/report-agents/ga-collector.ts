@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { fetchGA4Metrics } from "./lib/ga4-client.js";
 import { sendTelegram } from "./lib/telegram.js";
 import { moneySmart, growthBadge } from "./lib/formatters.js";

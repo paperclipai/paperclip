@@ -1,6 +1,7 @@
 // social-collector.ts
-// Flow: Fetch RapidAPI → Parse/Filter → Claude API summarize → Write issue comment
-// Env: RAPIDAPI_KEY, PAPERCLIP_*, ANTHROPIC_API_KEY (for summarize)
+// Flow: Fetch RapidAPI → Parse/Filter → summarize → Telegram
+
+import "dotenv/config";
 
 import { sendTelegram } from "./lib/telegram.js";
 import { moneySmart } from "./lib/formatters.js";

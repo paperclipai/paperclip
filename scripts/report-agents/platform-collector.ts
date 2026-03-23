@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { fetchPlatformMetrics, type TokenRow } from "./lib/metabase-queries.js";
 import { sendTelegram } from "./lib/telegram.js";
 import { moneySmart, growthBadge, acqBadge } from "./lib/formatters.js";

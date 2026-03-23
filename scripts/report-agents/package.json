@@ -5,18 +5,22 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
+    "bot": "tsx bot-listener.ts",
+    "report": "tsx report-manager.ts",
+    "monthly": "tsx monthly-report.ts",
     "platform": "tsx platform-collector.ts",
-    "ga": "tsx ga-collector.ts",
-    "report": "tsx report-manager.ts"
+    "social": "tsx social-collector.ts",
+    "ga": "tsx ga-collector.ts"
   },
   "dependencies": {
-    "googleapis": "^144.0.0",
-    "better-sqlite3": "^11.0.0"
+    "better-sqlite3": "^11.0.0",
+    "dotenv": "^17.0.1",
+    "googleapis": "^144.0.0"
   },
   "devDependencies": {
-    "tsx": "^4.19.0",
-    "typescript": "^5.5.0",
     "@types/better-sqlite3": "^7.6.0",
-    "@types/node": "^22.0.0"
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
   }
 }

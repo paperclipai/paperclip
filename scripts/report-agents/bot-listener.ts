@@ -1,8 +1,8 @@
 // bot-listener.ts
 // Long-polling Telegram bot with conversation memory
 // /report triggers collectors, free text → Claude CLI with context
-// Env: TELEGRAM_BOT_TOKEN, WHALES_DB_PATH, GA4_PROPERTY_ID, RAPIDAPI_KEY, SOCIAL_ACCOUNTS
 
+import "dotenv/config";
 import Database from "better-sqlite3";
 import { sendTelegram } from "./lib/telegram.js";
 import { fetchPlatformMetrics } from "./lib/metabase-queries.js";
