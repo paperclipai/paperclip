@@ -78,6 +78,7 @@ type ProjectAccessChecker = {
   hasProjectPermission: (projectId: string, principalType: "user" | "agent", principalId: string, permissionKey: ProjectPermissionKey) => Promise<boolean>;
   canUserAccessProject: (companyId: string, projectId: string, userId: string | null | undefined) => Promise<boolean>;
   getProjectMembership: (projectId: string, principalType: "user" | "agent", principalId: string) => Promise<unknown>;
+  isAgentAssignedToProject: (projectId: string, agentId: string) => Promise<boolean>;
 };
 
 /**
@@ -132,9 +133,12 @@ export async function requireProjectAccess(
 
   if (req.actor.type === "agent") {
     if (!req.actor.agentId) throw forbidden("Agent authentication required");
+    // Agents can access via project_members OR project_agents
     const member = await access.getProjectMembership(projectId, "agent", req.actor.agentId);
-    if (!member) throw forbidden("No access to this project");
-    return;
+    if (member) return;
+    const assigned = await access.isAgentAssignedToProject(projectId, req.actor.agentId);
+    if (assigned) return;
+    throw forbidden("No access to this project");
   }
 
   throw unauthorized();

@@ -336,12 +336,27 @@ export function accessService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
+  async function isAgentAssignedToProject(projectId: string, agentId: string): Promise<boolean> {
+    const row = await db
+      .select({ id: projectAgents.id })
+      .from(projectAgents)
+      .where(
+        and(eq(projectAgents.projectId, projectId), eq(projectAgents.agentId, agentId)),
+      )
+      .then((rows) => rows[0] ?? null);
+    return Boolean(row);
+  }
+
   async function hasProjectPermission(
     projectId: string,
     principalType: PrincipalType,
     principalId: string,
     permissionKey: ProjectPermissionKey,
   ): Promise<boolean> {
+    // Agents assigned to project via project_agents get full working permissions
+    if (principalType === "agent") {
+      if (await isAgentAssignedToProject(projectId, principalId)) return true;
+    }
     const membership = await getProjectMembership(projectId, principalType, principalId);
     if (!membership) return false;
     if (permissionKey === "project:view") return true;
@@ -644,6 +659,7 @@ export function accessService(db: Db) {
     // Project-level access
     isCompanyOwner,
     getProjectMembership,
+    isAgentAssignedToProject,
     hasProjectPermission,
     canUserAccessProject,
     listProjectMembers,
