@@ -204,6 +204,13 @@
       "when": 1773869726370,
       "tag": "0028_provider_credentials",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1774251634985,
+      "tag": "0029_amazing_jubilee",
+      "breakpoints": true
     }
   ]
 }
