@@ -1,0 +1,369 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit Configuration — paperclip (smpnet74 fork)
+# Kiro CLI adapter development + team improvements
+#
+# In PR, comment "@coderabbitai configuration" to dump the active config
+
+# =============================================================================
+# GLOBAL SETTINGS
+# =============================================================================
+
+language: "en-US"
+
+tone_instructions: >
+  Focus on TypeScript correctness, adapter pattern consistency,
+  and shared interface compliance. Flag missing registration points.
+
+early_access: false
+enable_free_tier: true
+
+# =============================================================================
+# REVIEWS
+# =============================================================================
+
+reviews:
+  profile: "assertive"
+  request_changes_workflow: false
+  high_level_summary: true
+  high_level_summary_instructions: ""
+  high_level_summary_placeholder: "@coderabbitai summary"
+  high_level_summary_in_walkthrough: false
+
+  auto_title_placeholder: "@coderabbitai"
+  auto_title_instructions: >
+    Use conventional commit format: <type>: <description>.
+    Types: feat, fix, docs, chore, refactor, test, style, perf, ci.
+    Keep under 70 characters. Lowercase after the colon.
+
+  review_status: true
+  review_details: false
+  commit_status: true
+  fail_commit_status: false
+  collapse_walkthrough: false
+  changed_files_summary: true
+  sequence_diagrams: true
+  estimate_code_review_effort: true
+  poem: false
+  in_progress_fortune: true
+  enable_prompt_for_ai_agents: true
+  disable_cache: false
+
+  assess_linked_issues: true
+  related_issues: true
+  related_prs: true
+
+  suggested_labels: true
+  labeling_instructions: []
+  auto_apply_labels: false
+
+  suggested_reviewers: true
+  auto_assign_reviewers: false
+
+  abort_on_close: true
+
+  # ---------------------------------------------------------------------------
+  # PATH FILTERS
+  # ---------------------------------------------------------------------------
+  path_filters:
+    - "!pnpm-lock.yaml"
+    - "!dist/**"
+    - "!.pixi/**"
+    - "!x-*/**"
+
+  # ---------------------------------------------------------------------------
+  # PATH INSTRUCTIONS
+  # All instructions fields MUST stay under 250 characters.
+  # ---------------------------------------------------------------------------
+  path_instructions:
+    - path: "packages/adapters/**"
+      instructions: >
+        Adapter packages follow a 3-module pattern: server (execute, parse, test, session codec), ui (config form, stdout parser), cli
+        (terminal formatter). Verify skill injection targets correct home dir. Check runChildProcess args match the CLI contract.
+
+    - path: "packages/adapter-utils/**"
+      instructions: >
+        Shared adapter SDK used by every adapter. Changes here ripple across all runtimes. Verify backward compat of exported types
+        (AdapterExecutionContext, AdapterExecutionResult, UsageSummary). Check that buildPaperclipEnv and runChildProcess are stable.
+
+    - path: "server/src/adapters/**"
+      instructions: >
+        Adapter registry maps type strings to ServerAdapterModule objects. New adapters need imports, a const with all required fields
+        (execute, testEnvironment, models, sessionCodec), and an entry in adaptersByType map. Verify fallback to processAdapter.
+
+    - path: "ui/src/adapters/**"
+      instructions: >
+        UI adapter modules provide ConfigFields (React), parseStdoutLine (transcript), and buildAdapterConfig (form to config). Verify
+        the config shape matches what server execute expects. Check field defaults are sensible and types match shared interfaces.
+
+    - path: "ui/src/components/AgentConfigForm.tsx"
+      instructions: >
+        Core agent config form. New adapters need ENABLED_ADAPTER_TYPES and isLocal entries. Verify adapter-specific fields (cwd, command,
+        model, env vars) show/hide correctly per adapter type. Check switching adapters resets stale values from previous type.
+
+    - path: "ui/src/components/OnboardingWizard.tsx"
+      instructions: >
+        Onboarding wizard has hard-coded AdapterType union and isLocalAdapter checks gating UI behavior. New local adapters must be in
+        both. Verify the wizard flow end-to-end when the new adapter is selected: model picker, cwd input, test environment button.
+
+    - path: "packages/shared/src/constants.ts"
+      instructions: >
+        AGENT_ADAPTER_TYPES tuple is the source of truth for AgentAdapterType union across server, ui, and cli. New entries auto-extend
+        the type system. Verify the string matches the adapter's type field exactly. Keep entries alphabetized in the array.
+
+    - path: "server/src/routes/agents.ts"
+      instructions: >
+        Agent routes contain per-adapter creation logic: DEFAULT_INSTRUCTIONS_PATH_KEYS maps adapter types to config keys,
+        applyCreateDefaultsByAdapterType sets default model/config, assertAdapterConfigConstraints validates required fields.
+
+    - path: "server/src/services/**"
+      instructions: >
+        Server services include company-portability (ADAPTER_DEFAULT_RULES_BY_TYPE for export/import) and heartbeat orchestration.
+        New adapters need a portability defaults entry with timeoutSec and graceSec. Check heartbeat context passes wake reason.
+
+    - path: "skills/**"
+      instructions: >
+        Paperclip skills are injected into each CLI's skills dir at runtime. Each adapter may need a different format: Claude uses
+        markdown, Kiro uses SKILL.md with YAML frontmatter. Verify skill content is adapter-agnostic or has format-specific wrappers.
+
+    - path: ".github/workflows/**"
+      instructions: >
+        CI pipelines run on every PR: typecheck (pnpm -r typecheck), tests (pnpm test:run), build (pnpm build), canary release dry-run.
+        PR policy blocks manual lockfile edits. Verify new adapter packages are included in build and test matrix automatically.
+
+    - path: "**/*.test.ts"
+      instructions: >
+        Tests use vitest. Adapter tests cover: parse (stdout extraction, error detection), models (list validation), execute (arg build,
+        session resume, retry), environment (cwd, command, auth, hello probe), session codec (serialize/deserialize round-trip).
+
+  # ---------------------------------------------------------------------------
+  # AUTO REVIEW
+  # ---------------------------------------------------------------------------
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    auto_pause_after_reviewed_commits: 5
+    drafts: false
+    ignore_title_keywords:
+      - "WIP"
+      - "do not review"
+      - "skip review"
+    description_keyword: ""
+    labels: []
+    base_branches: []
+    ignore_usernames:
+      - "dependabot[bot]"
+      - "renovate[bot]"
+      - "github-actions[bot]"
+
+  # ---------------------------------------------------------------------------
+  # PRE-MERGE CHECKS
+  # ---------------------------------------------------------------------------
+  pre_merge_checks:
+    override_requested_reviewers_only: false
+    title:
+      mode: "warning"
+      requirements: "Must use conventional commit format (feat:, fix:, docs:, chore:, refactor:, test:, style:, perf:, ci:)"
+    description:
+      mode: "warning"
+    issue_assessment:
+      mode: "off"
+    docstrings:
+      mode: "off"
+      threshold: 80
+    custom_checks:
+      - name: "Adapter Registration Completeness"
+        mode: "warning"
+        instructions: >
+          If packages/adapters/ changed, verify the adapter is registered in: shared/constants.ts (AGENT_ADAPTER_TYPES), server registry,
+          cli registry, ui registry, AgentConfigForm (ENABLED_ADAPTER_TYPES + isLocal), labels in AgentProperties and InviteLanding.
+      - name: "Adapter Interface Compliance"
+        mode: "warning"
+        instructions: >
+          New adapters must implement ServerAdapterModule with: type, execute, testEnvironment, models, sessionCodec, and
+          agentConfigurationDoc. Check supportsLocalAgentJwt is set for local adapters. Verify listModels if dynamic model discovery exists.
+
+  # ---------------------------------------------------------------------------
+  # FINISHING TOUCHES
+  # ---------------------------------------------------------------------------
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
+    custom: []
+
+  # ---------------------------------------------------------------------------
+  # TOOLS
+  # ---------------------------------------------------------------------------
+  tools:
+    # Relevant — TypeScript/Node.js monorepo
+    eslint:
+      enabled: true
+    biome:
+      enabled: false
+    semgrep:
+      enabled: true
+    gitleaks:
+      enabled: true
+    trufflehog:
+      enabled: true
+    markdownlint:
+      enabled: true
+    languagetool:
+      enabled: true
+    github-checks:
+      enabled: true
+    dotenvLint:
+      enabled: true
+    osvScanner:
+      enabled: true
+    yamllint:
+      enabled: true
+    actionlint:
+      enabled: true
+
+    # Not relevant
+    ruff:
+      enabled: false
+    pylint:
+      enabled: false
+    flake8:
+      enabled: false
+    shellcheck:
+      enabled: false
+    hadolint:
+      enabled: false
+    checkov:
+      enabled: false
+    trivy:
+      enabled: false
+    oxc:
+      enabled: false
+    phpstan:
+      enabled: false
+    phpmd:
+      enabled: false
+    phpcs:
+      enabled: false
+    swiftlint:
+      enabled: false
+    detekt:
+      enabled: false
+    rubocop:
+      enabled: false
+    clippy:
+      enabled: false
+    fortitudeLint:
+      enabled: false
+    buf:
+      enabled: false
+    regal:
+      enabled: false
+    pmd:
+      enabled: false
+    clang:
+      enabled: false
+    cppcheck:
+      enabled: false
+    opengrep:
+      enabled: false
+    shopifyThemeCheck:
+      enabled: false
+    luacheck:
+      enabled: false
+    brakeman:
+      enabled: false
+    psscriptanalyzer:
+      enabled: false
+    blinter:
+      enabled: false
+    checkmake:
+      enabled: false
+    htmlhint:
+      enabled: false
+    stylelint:
+      enabled: false
+    sqlfluff:
+      enabled: false
+    prismaLint:
+      enabled: false
+    tflint:
+      enabled: false
+    circleci:
+      enabled: false
+    smartyLint:
+      enabled: false
+    emberTemplateLint:
+      enabled: false
+    golangci-lint:
+      enabled: false
+
+# =============================================================================
+# CHAT
+# =============================================================================
+
+chat:
+  art: false
+  auto_reply: true
+  integrations:
+    jira:
+      usage: "disabled"
+    linear:
+      usage: "disabled"
+
+# =============================================================================
+# KNOWLEDGE BASE
+# =============================================================================
+
+knowledge_base:
+  opt_out: false
+  web_search:
+    enabled: true
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "**/CLAUDE.md"
+      - "**/AGENTS.md"
+  learnings:
+    scope: "global"
+  issues:
+    scope: "auto"
+  pull_requests:
+    scope: "auto"
+  jira:
+    usage: "disabled"
+    project_keys: []
+  linear:
+    usage: "disabled"
+    team_keys: []
+  mcp:
+    usage: "auto"
+    disabled_servers: []
+  linked_repositories: []
+
+# =============================================================================
+# ISSUE ENRICHMENT
+# =============================================================================
+
+issue_enrichment:
+  auto_enrich:
+    enabled: false
+  planning:
+    enabled: false
+    auto_planning:
+      enabled: false
+      labels: []
+  labeling:
+    labeling_instructions: []
+    auto_apply_labels: false
+
+# =============================================================================
+# CODE GENERATION
+# =============================================================================
+
+code_generation:
+  docstrings:
+    language: "en-US"
+    path_instructions: []
+  unit_tests:
+    path_instructions: []

@@ -16,7 +16,14 @@ export default defineConfig({
   },
   projects: [
     {
+      name: "setup",
+      testMatch: "onboarding.spec.ts",
+      use: { browserName: "chromium" },
+    },
+    {
       name: "chromium",
+      dependencies: ["setup"],
+      testIgnore: "onboarding.spec.ts",
       use: { browserName: "chromium" },
     },
   ],

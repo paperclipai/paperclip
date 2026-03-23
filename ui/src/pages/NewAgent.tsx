@@ -35,6 +35,7 @@ const SUPPORTED_ADVANCED_ADAPTER_TYPES = new Set<CreateConfigValues["adapterType
   "opencode_local",
   "pi_local",
   "cursor",
+  "kiro_local",
   "openclaw_gateway",
 ]);
 
@@ -53,6 +54,8 @@ function createValuesForAdapterType(
     nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
   } else if (adapterType === "opencode_local") {
     nextValues.model = "";
+  } else if (adapterType === "kiro_local") {
+    nextValues.model = "auto";
   }
   return nextValues;
 }

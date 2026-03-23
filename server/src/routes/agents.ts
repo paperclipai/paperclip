@@ -69,6 +69,7 @@ export function agentRoutes(db: Db) {
     gemini_local: "instructionsFilePath",
     opencode_local: "instructionsFilePath",
     cursor: "instructionsFilePath",
+    kiro_local: "instructionsFilePath",
     pi_local: "instructionsFilePath",
   };
   const DEFAULT_MANAGED_INSTRUCTIONS_ADAPTER_TYPES = new Set(Object.keys(DEFAULT_INSTRUCTIONS_PATH_KEYS));
@@ -376,6 +377,9 @@ export function agentRoutes(db: Db) {
     // OpenCode requires explicit model selection — no default
     if (adapterType === "cursor" && !asNonEmptyString(next.model)) {
       next.model = DEFAULT_CURSOR_LOCAL_MODEL;
+    }
+    if (adapterType === "kiro_local" && !asNonEmptyString(next.model)) {
+      next.model = "auto";
     }
     return ensureGatewayDeviceKey(adapterType, next);
   }
@@ -1710,9 +1714,26 @@ export function agentRoutes(db: Db) {
       Object.prototype.hasOwnProperty.call(patchData, "adapterType") ||
       Object.prototype.hasOwnProperty.call(patchData, "adapterConfig");
     if (touchesAdapterConfiguration) {
-      const rawEffectiveAdapterConfig = Object.prototype.hasOwnProperty.call(patchData, "adapterConfig")
+      let rawEffectiveAdapterConfig = Object.prototype.hasOwnProperty.call(patchData, "adapterConfig")
         ? (asRecord(patchData.adapterConfig) ?? {})
         : (asRecord(existing.adapterConfig) ?? {});
+      // Defense-in-depth: when adapter type is changing, merge shared fields
+      // from the existing config so cwd, instructionsFilePath, etc. survive.
+      if (
+        Object.prototype.hasOwnProperty.call(patchData, "adapterType") &&
+        patchData.adapterType !== existing.adapterType
+      ) {
+        const SHARED_ADAPTER_CONFIG_KEYS = [
+          "cwd", "instructionsFilePath", "command", "extraArgs",
+          "env", "timeoutSec", "graceSec",
+        ];
+        const existingConfig = asRecord(existing.adapterConfig) ?? {};
+        const shared: Record<string, unknown> = {};
+        for (const key of SHARED_ADAPTER_CONFIG_KEYS) {
+          if (existingConfig[key] !== undefined) shared[key] = existingConfig[key];
+        }
+        rawEffectiveAdapterConfig = { ...shared, ...rawEffectiveAdapterConfig };
+      }
       const effectiveAdapterConfig = applyCreateDefaultsByAdapterType(
         requestedAdapterType,
         rawEffectiveAdapterConfig,

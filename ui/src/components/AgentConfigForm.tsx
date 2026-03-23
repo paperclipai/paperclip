@@ -247,9 +247,19 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     }
     if (overlay.adapterType !== undefined) {
       patch.adapterType = overlay.adapterType;
-      // When adapter type changes, send only the new config — don't merge
-      // with old config since old adapter fields are meaningless for the new type
-      patch.adapterConfig = overlay.adapterConfig;
+      // Preserve shared fields (cwd, instructionsFilePath, etc.) from the
+      // existing agent config when switching adapter types.  Overlay values
+      // take precedence so user edits after the switch are respected.
+      const SHARED_ADAPTER_FIELDS = [
+        "cwd", "instructionsFilePath", "command", "extraArgs",
+        "env", "timeoutSec", "graceSec",
+      ];
+      const existing = (agent.adapterConfig ?? {}) as Record<string, unknown>;
+      const sharedFromExisting: Record<string, unknown> = {};
+      for (const key of SHARED_ADAPTER_FIELDS) {
+        if (existing[key] !== undefined) sharedFromExisting[key] = existing[key];
+      }
+      patch.adapterConfig = { ...sharedFromExisting, ...overlay.adapterConfig };
     } else if (Object.keys(overlay.adapterConfig).length > 0) {
       const existing = (agent.adapterConfig ?? {}) as Record<string, unknown>;
       patch.adapterConfig = { ...existing, ...overlay.adapterConfig };
@@ -297,7 +307,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     adapterType === "gemini_local" ||
     adapterType === "opencode_local" ||
     adapterType === "pi_local" ||
-    adapterType === "cursor";
+    adapterType === "cursor" ||
+    adapterType === "kiro_local";
   const showLegacyWorkingDirectoryField =
     isLocal && shouldShowLegacyWorkingDirectoryField({ isCreate, adapterConfig: config });
   const uiAdapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
@@ -394,7 +405,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       : adapterType === "opencode_local"
         ? eff("adapterConfig", "variant", String(config.variant ?? ""))
       : eff("adapterConfig", "effort", String(config.effort ?? ""));
-  const showThinkingEffort = adapterType !== "gemini_local";
+  const showThinkingEffort = adapterType !== "gemini_local" && adapterType !== "kiro_local";
   const codexSearchEnabled = adapterType === "codex_local"
     ? (isCreate ? Boolean(val!.search) : eff("adapterConfig", "search", Boolean(config.search)))
     : false;
@@ -545,6 +556,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
                     } else if (t === "opencode_local") {
                       nextValues.model = "";
+                    } else if (t === "kiro_local") {
+                      nextValues.model = "auto";
                     }
                     set!(nextValues);
                   } else {
@@ -561,6 +574,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                               ? DEFAULT_GEMINI_LOCAL_MODEL
                             : t === "cursor"
                               ? DEFAULT_CURSOR_LOCAL_MODEL
+                            : t === "kiro_local"
+                              ? "auto"
                             : "",
                         effort: "",
                         modelReasoningEffort: "",
@@ -678,7 +693,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                           ? "agent"
                         : adapterType === "opencode_local"
                           ? "opencode"
-                          : "claude"
+                          : adapterType === "kiro_local"
+                            ? "kiro-cli"
+                            : "claude"
                   }
                 />
               </Field>
@@ -693,7 +710,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 }
                 open={modelOpen}
                 onOpenChange={setModelOpen}
-                allowDefault={adapterType !== "opencode_local"}
+                allowDefault={adapterType !== "opencode_local" && adapterType !== "kiro_local"}
                 required={adapterType === "opencode_local"}
                 groupByProvider={adapterType === "opencode_local"}
               />
@@ -960,7 +977,7 @@ function AdapterEnvironmentResult({ result }: { result: AdapterEnvironmentTestRe
 
 /* ---- Internal sub-components ---- */
 
-const ENABLED_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "gemini_local", "opencode_local", "pi_local", "cursor"]);
+const ENABLED_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "gemini_local", "opencode_local", "pi_local", "cursor", "kiro_local"]);
 
 /** Display list includes all real adapter types plus UI-only coming-soon entries. */
 const ADAPTER_DISPLAY_LIST: { value: string; label: string; comingSoon: boolean }[] = [
