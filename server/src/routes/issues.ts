@@ -1014,7 +1014,32 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
     assertCompanyAccess(req, issue.companyId);
     const attachments = await svc.listAttachments(issueId);
-    res.json(attachments.map(withContentPath));
+    const withPaths = attachments.map(withContentPath);
+
+    // When ?inline=true, include base64-encoded content so agents can pass
+    // images directly to AI models without needing to fetch protected URLs.  (#1600)
+    if (req.query.inline === "true") {
+      const results = await Promise.all(
+        withPaths.map(async (att) => {
+          try {
+            const object = await storage.getObject(issue.companyId, att.objectKey);
+            const chunks: Buffer[] = [];
+            for await (const chunk of object.stream) {
+              chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+            }
+            const contentBase64 = Buffer.concat(chunks).toString("base64");
+            return { ...att, contentBase64 };
+          } catch (err) {
+            logger.warn({ err, attachmentId: att.id }, "failed to inline attachment content");
+            return att;
+          }
+        }),
+      );
+      res.json(results);
+      return;
+    }
+
+    res.json(withPaths);
   });
 
   router.post("/companies/:companyId/issues/:issueId/attachments", async (req, res) => {
