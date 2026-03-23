@@ -33,3 +33,6 @@ export { companySecrets } from "./company_secrets.js";
 export { companySecretVersions } from "./company_secret_versions.js";
 export { telegramThreadMappings } from "./telegram_thread_mappings.js";
 export { providerCredentials } from "./provider_credentials.js";
+export { projectMembers } from "./project_members.js";
+export { projectPermissionGrants } from "./project_permission_grants.js";
+export { projectAgents } from "./project_agents.js";
