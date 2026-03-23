@@ -36,7 +36,7 @@ describe("resolveRouteOnboardingOptions", () => {
         companyPrefix: "pap",
         companies: [{ id: "company-1", issuePrefix: "PAP" }],
       }),
-    ).toEqual({ initialStep: 2, companyId: "company-1" });
+    ).toEqual({ initialStep: 3, companyId: "company-1" });
   });
 
   it("falls back to company creation when the prefixed company is missing", () => {
