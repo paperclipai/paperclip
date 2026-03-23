@@ -1,6 +1,7 @@
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { workflowRuns, workflowStepRuns, agents } from "@paperclipai/db";
+import { publishLiveEvent } from "./live-events.js";
 
 interface WorkflowStepDef {
   adapterType: string;
@@ -151,6 +152,16 @@ export function workflowService(db: Db) {
           completedAt: new Date(),
           updatedAt: new Date(),
         }).where(eq(workflowRuns.id, workflowId));
+
+        // Emit meeting.completed for meeting/consensus workflows
+        try {
+          publishLiveEvent({
+            companyId: workflow.companyId,
+            type: "meeting.completed",
+            payload: { workflowId, name: workflow.name },
+          });
+        } catch { /* non-fatal */ }
+
         return { action: "completed" as const };
       }
 
@@ -265,6 +276,14 @@ export function workflowService(db: Db) {
           prompt: step.prompt ?? null,
         })),
       );
+
+      try {
+        publishLiveEvent({
+          companyId,
+          type: "meeting.started",
+          payload: { workflowId: workflow!.id, name: data.name, participantCount: data.participantAgentIds.length },
+        });
+      } catch { /* non-fatal */ }
 
       return workflow!;
     },

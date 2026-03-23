@@ -2334,7 +2334,7 @@ export function heartbeatService(db: Db) {
       } catch { /* non-fatal: knowledge_store may be unavailable */ }
 
       // Heartbeat model override — use cheap model for timer invocations
-      const hbModel = parseObject(agent.runtimeConfig)?.heartbeat?.model;
+      const hbModel = (parseObject(agent.runtimeConfig)?.heartbeat as Record<string, unknown> | undefined)?.model;
       if (run.invocationSource === "timer" && hbModel && typeof hbModel === "string") {
         resolvedConfig.model = hbModel;
       }
@@ -2520,6 +2520,43 @@ export function heartbeatService(db: Db) {
           },
         });
         await releaseIssueExecutionAndPromote(finalizedRun);
+
+        // Post-run feedback: bump access for knowledge entries used in this run
+        try {
+          const ctx = parseObject(finalizedRun.contextSnapshot);
+          const digest = ctx.knowledgeDigest;
+          if (Array.isArray(digest) && knowledgeSvc && outcome === "succeeded") {
+            for (const entry of digest) {
+              if (entry?.id) {
+                await knowledgeSvc.bumpAccess(String(entry.id));
+              }
+            }
+          }
+        } catch { /* non-fatal: knowledge feedback is best-effort */ }
+
+        // Skill usage tracking: record which skills were used
+        try {
+          const ctx2 = parseObject(finalizedRun.contextSnapshot);
+          const skillSetHash = readNonEmptyString(ctx2.skillSetHash);
+          const usedSkills = ctx2.usedSkills;
+          if ((skillSetHash || usedSkills) && knowledgeSvc) {
+            await knowledgeSvc.create({
+              companyId: agent.companyId,
+              sourceAgentId: agent.id,
+              sourcePlatform: agent.adapterType,
+              category: "skill_metric",
+              title: `Skill usage: ${agent.name}`,
+              body: JSON.stringify({
+                skillSetHash,
+                usedSkills: Array.isArray(usedSkills) ? usedSkills : [],
+                runId: finalizedRun.id,
+                outcome,
+              }),
+              tags: ["skill-metric", agent.adapterType],
+              ttlDays: 90,
+            });
+          }
+        } catch { /* non-fatal */ }
       }
 
       if (finalizedRun) {
