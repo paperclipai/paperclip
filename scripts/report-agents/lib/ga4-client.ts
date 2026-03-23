@@ -1,4 +1,30 @@
 import { google } from "googleapis";
+import { execSync } from "child_process";
+
+// Auto-refresh ADC if expired
+export async function refreshADCIfNeeded(): Promise<void> {
+  try {
+    const auth = new google.auth.GoogleAuth({
+      scopes: ["https://www.googleapis.com/auth/analytics.readonly"],
+    });
+    const client = await auth.getClient();
+    await (client as any).getAccessToken();
+  } catch (e: any) {
+    if (e.message?.includes("invalid_grant") || e.message?.includes("Token has been expired") || e.message?.includes("Insufficient Permission")) {
+      console.log("GA4: ADC expired, attempting refresh...");
+      try {
+        execSync(
+          'gcloud auth application-default login --scopes=https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/analytics.readonly --quiet --no-launch-browser 2>/dev/null',
+          { env: { ...process.env, PATH: `${process.env.PATH}:/opt/homebrew/share/google-cloud-sdk/bin` }, timeout: 10_000 }
+        );
+      } catch {
+        throw new Error("GA4 credentials expired. Run: gcloud auth application-default login --scopes=https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/analytics.readonly");
+      }
+    } else {
+      throw e;
+    }
+  }
+}
 
 export interface GA4Metrics {
   activeUsers: number;
@@ -25,15 +51,31 @@ export async function fetchGA4Metrics(): Promise<GA4Metrics> {
   const propertyId = process.env.GA4_PROPERTY_ID;
   if (!propertyId) throw new Error("Missing GA4_PROPERTY_ID");
 
+  // Try refresh if using ADC
+  if (!process.env.GA4_SERVICE_ACCOUNT_JSON && !process.env.GA4_SERVICE_ACCOUNT_JSON_PATH) {
+    await refreshADCIfNeeded();
+  }
+
+  // Support: SA JSON string, SA JSON file path, or Application Default Credentials
   const credentialsJson = process.env.GA4_SERVICE_ACCOUNT_JSON;
-  const auth = credentialsJson
-    ? new google.auth.GoogleAuth({
-        credentials: JSON.parse(credentialsJson),
-        scopes: ["https://www.googleapis.com/auth/analytics.readonly"],
-      })
-    : new google.auth.GoogleAuth({
-        scopes: ["https://www.googleapis.com/auth/analytics.readonly"],
-      });
+  const credentialsPath = process.env.GA4_SERVICE_ACCOUNT_JSON_PATH;
+
+  let auth: any;
+  if (credentialsJson) {
+    auth = new google.auth.GoogleAuth({
+      credentials: JSON.parse(credentialsJson),
+      scopes: ["https://www.googleapis.com/auth/analytics.readonly"],
+    });
+  } else if (credentialsPath) {
+    auth = new google.auth.GoogleAuth({
+      keyFile: credentialsPath,
+      scopes: ["https://www.googleapis.com/auth/analytics.readonly"],
+    });
+  } else {
+    auth = new google.auth.GoogleAuth({
+      scopes: ["https://www.googleapis.com/auth/analytics.readonly"],
+    });
+  }
 
   const analyticsData = google.analyticsdata({ version: "v1beta", auth });
   const prop = `properties/${propertyId}`;

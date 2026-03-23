@@ -18,15 +18,31 @@ export async function fetchGA4MonthlyMetrics(): Promise<GA4MonthlyMetrics> {
   const propertyId = process.env.GA4_PROPERTY_ID;
   if (!propertyId) throw new Error("Missing GA4_PROPERTY_ID");
 
+  // Import refresh from ga4-client
+  const { refreshADCIfNeeded } = await import("./ga4-client.js") as any;
+  if (!process.env.GA4_SERVICE_ACCOUNT_JSON && !process.env.GA4_SERVICE_ACCOUNT_JSON_PATH) {
+    await refreshADCIfNeeded();
+  }
+
   const credentialsJson = process.env.GA4_SERVICE_ACCOUNT_JSON;
-  const auth = credentialsJson
-    ? new google.auth.GoogleAuth({
-        credentials: JSON.parse(credentialsJson),
-        scopes: ["https://www.googleapis.com/auth/analytics.readonly"],
-      })
-    : new google.auth.GoogleAuth({
-        scopes: ["https://www.googleapis.com/auth/analytics.readonly"],
-      });
+  const credentialsPath = process.env.GA4_SERVICE_ACCOUNT_JSON_PATH;
+
+  let auth: any;
+  if (credentialsJson) {
+    auth = new google.auth.GoogleAuth({
+      credentials: JSON.parse(credentialsJson),
+      scopes: ["https://www.googleapis.com/auth/analytics.readonly"],
+    });
+  } else if (credentialsPath) {
+    auth = new google.auth.GoogleAuth({
+      keyFile: credentialsPath,
+      scopes: ["https://www.googleapis.com/auth/analytics.readonly"],
+    });
+  } else {
+    auth = new google.auth.GoogleAuth({
+      scopes: ["https://www.googleapis.com/auth/analytics.readonly"],
+    });
+  }
 
   const analyticsData = google.analyticsdata({ version: "v1beta", auth });
   const prop = `properties/${propertyId}`;
