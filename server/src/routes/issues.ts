@@ -24,7 +24,7 @@ import {
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
 import { forbidden, HttpError, unauthorized } from "../errors.js";
-import { assertCompanyAccess, getActorInfo, requirePermission } from "./authz.js";
+import { assertCompanyAccess, getActorInfo, requirePermission, requireProjectPermission } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 
 const MAX_ATTACHMENT_BYTES = Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
@@ -409,6 +409,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
   router.post("/companies/:companyId/issues", validate(createIssueSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     await requirePermission(req, access, companyId, "issues:manage");
+    // If issue has a projectId, also check project-level permission
+    if (req.body.projectId) {
+      await requireProjectPermission(req, access, companyId, req.body.projectId, "project:issues:create");
+    }
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
       await assertCanAssignTasks(req, companyId);
     }
@@ -457,6 +461,9 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     await requirePermission(req, access, existing.companyId, "issues:manage");
+    if (existing.projectId) {
+      await requireProjectPermission(req, access, existing.companyId, existing.projectId, "project:issues:edit");
+    }
     const assigneeWillChange =
       (req.body.assigneeAgentId !== undefined && req.body.assigneeAgentId !== existing.assigneeAgentId) ||
       (req.body.assigneeUserId !== undefined && req.body.assigneeUserId !== existing.assigneeUserId);
@@ -626,6 +633,9 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     await requirePermission(req, access, existing.companyId, "issues:manage");
+    if (existing.projectId) {
+      await requireProjectPermission(req, access, existing.companyId, existing.projectId, "project:issues:delete");
+    }
     const attachments = await svc.listAttachments(id);
 
     const issue = await svc.remove(id);
