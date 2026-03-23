@@ -168,6 +168,26 @@ export type {
   ProductAnalyticsSummary,
 } from "./types/index.js";
 
+// Mission types (added for Wave 1: Mission Core)
+export type {
+  CreateMission,
+  UpdateMission,
+  MissionStatus,
+  AutonomyLevel,
+  RiskTier,
+} from "./types/mission.js";
+
+export {
+  createMissionSchema,
+  updateMissionSchema,
+  missionStatusSchema,
+  autonomyLevelSchema,
+  riskTierSchema,
+  digestScheduleSchema,
+  createApprovalRuleSchema,
+  createNotificationChannelSchema,
+} from "./types/mission.js";
+
 export {
   createCompanySchema,
   updateCompanySchema,

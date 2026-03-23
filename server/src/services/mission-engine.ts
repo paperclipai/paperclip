@@ -61,8 +61,14 @@ export const DEFAULT_APPROVAL_RULES = [
 export function missionEngine(db: Db) {
   return {
     async create(companyId: string, createdBy: string, data: CreateMission) {
+      const { expiresAt, budgetCapUsd, ...otherData } = data;
+      
       const [mission] = await db.insert(missions).values({
-        companyId, createdBy, ...data,
+        companyId,
+        createdBy,
+        ...otherData,
+        expiresAt: expiresAt ? new Date(expiresAt) : null,
+        budgetCapUsd: budgetCapUsd ? budgetCapUsd.toString() : null,
         objectives: data.objectives,
       }).returning();
 
@@ -106,8 +112,15 @@ export function missionEngine(db: Db) {
     },
 
     async update(missionId: string, data: UpdateMission) {
+      const { expiresAt, budgetCapUsd, ...otherData } = data;
+      
       const [updated] = await db.update(missions)
-        .set({ ...data, updatedAt: new Date() })
+        .set({ 
+          ...otherData, 
+          expiresAt: expiresAt ? new Date(expiresAt) : null,
+          budgetCapUsd: budgetCapUsd ? budgetCapUsd.toString() : null,
+          updatedAt: new Date() 
+        })
         .where(eq(missions.id, missionId)).returning();
       return updated;
     },

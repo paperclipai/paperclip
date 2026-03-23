@@ -12,7 +12,7 @@ let connection: RedisConnection | null = null;
 
 export function getRedisConnection(): RedisConnection {
   if (!connection) {
-    connection = new RedisConnection({ connection: { url: REDIS_URL, maxRetriesPerRequest: null } });
+    connection = new RedisConnection({ url: REDIS_URL, maxRetriesPerRequest: null });
   }
   return connection;
 }
