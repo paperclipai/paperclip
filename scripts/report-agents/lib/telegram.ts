@@ -10,9 +10,17 @@ export async function sendTelegram(
 
   if (!token || !chatId) throw new Error("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID");
 
+  // Strip unsupported HTML tags — Telegram only allows: b, i, u, s, a, code, pre
+  const cleanHtml = html
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/?(div|span|p|h[1-6]|ul|ol|li|table|tr|td|th|img|hr|blockquote)[^>]*>/gi, "\n")
+    .replace(/<\/?(em)>/gi, (_, tag) => tag.toLowerCase() === "em" ? "<i>" : "</i>")
+    .replace(/<\/?strong>/gi, (m) => m.includes("/") ? "</b>" : "<b>")
+    .replace(/\n{3,}/g, "\n\n");
+
   const body: Record<string, unknown> = {
     chat_id: chatId,
-    text: html,
+    text: cleanHtml,
     parse_mode: "HTML",
   };
   if (threadId) body.message_thread_id = threadId;
