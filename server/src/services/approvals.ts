@@ -1,13 +1,28 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { approvalComments, approvals } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
+import { redactCurrentUserText } from "../log-redaction.js";
 import { agentService } from "./agents.js";
+import { budgetService } from "./budgets.js";
 import { notifyHireApproved } from "./hire-hook.js";
+import { instanceSettingsService } from "./instance-settings.js";
 
 export function approvalService(db: Db) {
   const agentsSvc = agentService(db);
+  const budgets = budgetService(db);
+  const instanceSettings = instanceSettingsService(db);
   const canResolveStatuses = new Set(["pending", "revision_requested"]);
+  const resolvableStatuses = Array.from(canResolveStatuses);
+  type ApprovalRecord = typeof approvals.$inferSelect;
+  type ResolutionResult = { approval: ApprovalRecord; applied: boolean };
+
+  function redactApprovalComment<T extends { body: string }>(comment: T, censorUsernameInLogs: boolean): T {
+    return {
+      ...comment,
+      body: redactCurrentUserText(comment.body, { enabled: censorUsernameInLogs }),
+    };
+  }
 
   async function getExistingApproval(id: string) {
     const existing = await db
@@ -17,6 +32,50 @@ export function approvalService(db: Db) {
       .then((rows) => rows[0] ?? null);
     if (!existing) throw notFound("Approval not found");
     return existing;
+  }
+
+  async function resolveApproval(
+    id: string,
+    targetStatus: "approved" | "rejected",
+    decidedByUserId: string,
+    decisionNote: string | null | undefined,
+  ): Promise<ResolutionResult> {
+    const existing = await getExistingApproval(id);
+    if (!canResolveStatuses.has(existing.status)) {
+      if (existing.status === targetStatus) {
+        return { approval: existing, applied: false };
+      }
+      throw unprocessable(
+        `Only pending or revision requested approvals can be ${targetStatus === "approved" ? "approved" : "rejected"}`,
+      );
+    }
+
+    const now = new Date();
+    const updated = await db
+      .update(approvals)
+      .set({
+        status: targetStatus,
+        decidedByUserId,
+        decisionNote: decisionNote ?? null,
+        decidedAt: now,
+        updatedAt: now,
+      })
+      .where(and(eq(approvals.id, id), inArray(approvals.status, resolvableStatuses)))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+
+    if (updated) {
+      return { approval: updated, applied: true };
+    }
+
+    const latest = await getExistingApproval(id);
+    if (latest.status === targetStatus) {
+      return { approval: latest, applied: false };
+    }
+
+    throw unprocessable(
+      `Only pending or revision requested approvals can be ${targetStatus === "approved" ? "approved" : "rejected"}`,
+    );
   }
 
   return {
@@ -41,27 +100,16 @@ export function approvalService(db: Db) {
         .then((rows) => rows[0]),
 
     approve: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
-      const existing = await getExistingApproval(id);
-      if (!canResolveStatuses.has(existing.status)) {
-        throw unprocessable("Only pending or revision requested approvals can be approved");
-      }
-
-      const now = new Date();
-      const updated = await db
-        .update(approvals)
-        .set({
-          status: "approved",
-          decidedByUserId,
-          decisionNote: decisionNote ?? null,
-          decidedAt: now,
-          updatedAt: now,
-        })
-        .where(eq(approvals.id, id))
-        .returning()
-        .then((rows) => rows[0]);
+      const { approval: updated, applied } = await resolveApproval(
+        id,
+        "approved",
+        decidedByUserId,
+        decisionNote,
+      );
 
       let hireApprovedAgentId: string | null = null;
-      if (updated.type === "hire_agent") {
+      const now = new Date();
+      if (applied && updated.type === "hire_agent") {
         const payload = updated.payload as Record<string, unknown>;
         const payloadAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
         if (payloadAgentId) {
@@ -93,6 +141,20 @@ export function approvalService(db: Db) {
           hireApprovedAgentId = created?.id ?? null;
         }
         if (hireApprovedAgentId) {
+          const budgetMonthlyCents =
+            typeof payload.budgetMonthlyCents === "number" ? payload.budgetMonthlyCents : 0;
+          if (budgetMonthlyCents > 0) {
+            await budgets.upsertPolicy(
+              updated.companyId,
+              {
+                scopeType: "agent",
+                scopeId: hireApprovedAgentId,
+                amount: budgetMonthlyCents,
+                windowKind: "calendar_month_utc",
+              },
+              decidedByUserId,
+            );
+          }
           void notifyHireApproved(db, {
             companyId: updated.companyId,
             agentId: hireApprovedAgentId,
@@ -103,30 +165,18 @@ export function approvalService(db: Db) {
         }
       }
 
-      return updated;
+      return { approval: updated, applied };
     },
 
     reject: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
-      const existing = await getExistingApproval(id);
-      if (!canResolveStatuses.has(existing.status)) {
-        throw unprocessable("Only pending or revision requested approvals can be rejected");
-      }
+      const { approval: updated, applied } = await resolveApproval(
+        id,
+        "rejected",
+        decidedByUserId,
+        decisionNote,
+      );
 
-      const now = new Date();
-      const updated = await db
-        .update(approvals)
-        .set({
-          status: "rejected",
-          decidedByUserId,
-          decisionNote: decisionNote ?? null,
-          decidedAt: now,
-          updatedAt: now,
-        })
-        .where(eq(approvals.id, id))
-        .returning()
-        .then((rows) => rows[0]);
-
-      if (updated.type === "hire_agent") {
+      if (applied && updated.type === "hire_agent") {
         const payload = updated.payload as Record<string, unknown>;
         const payloadAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
         if (payloadAgentId) {
@@ -134,7 +184,7 @@ export function approvalService(db: Db) {
         }
       }
 
-      return updated;
+      return { approval: updated, applied };
     },
 
     requestRevision: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
@@ -182,6 +232,7 @@ export function approvalService(db: Db) {
 
     listComments: async (approvalId: string) => {
       const existing = await getExistingApproval(approvalId);
+      const { censorUsernameInLogs } = await instanceSettings.getGeneral();
       return db
         .select()
         .from(approvalComments)
@@ -191,7 +242,8 @@ export function approvalService(db: Db) {
             eq(approvalComments.companyId, existing.companyId),
           ),
         )
-        .orderBy(asc(approvalComments.createdAt));
+        .orderBy(asc(approvalComments.createdAt))
+        .then((comments) => comments.map((comment) => redactApprovalComment(comment, censorUsernameInLogs)));
     },
 
     addComment: async (
@@ -200,6 +252,10 @@ export function approvalService(db: Db) {
       actor: { agentId?: string; userId?: string },
     ) => {
       const existing = await getExistingApproval(approvalId);
+      const currentUserRedactionOptions = {
+        enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
+      };
+      const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
       return db
         .insert(approvalComments)
         .values({
@@ -207,10 +263,10 @@ export function approvalService(db: Db) {
           approvalId,
           authorAgentId: actor.agentId ?? null,
           authorUserId: actor.userId ?? null,
-          body,
+          body: redactedBody,
         })
         .returning()
-        .then((rows) => rows[0]);
+        .then((rows) => redactApprovalComment(rows[0], currentUserRedactionOptions.enabled));
     },
   };
 }

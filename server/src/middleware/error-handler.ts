@@ -11,6 +11,25 @@ export interface ErrorContext {
   reqQuery?: unknown;
 }
 
+function attachErrorContext(
+  req: Request,
+  res: Response,
+  payload: ErrorContext["error"],
+  rawError?: Error,
+) {
+  (res as any).__errorContext = {
+    error: payload,
+    method: req.method,
+    url: req.originalUrl,
+    reqBody: req.body,
+    reqParams: req.params,
+    reqQuery: req.query,
+  } satisfies ErrorContext;
+  if (rawError) {
+    (res as any).err = rawError;
+  }
+}
+
 export function errorHandler(
   err: unknown,
   req: Request,
@@ -19,14 +38,12 @@ export function errorHandler(
 ) {
   if (err instanceof HttpError) {
     if (err.status >= 500) {
-      (res as any).__errorContext = {
-        error: { message: err.message, stack: err.stack, name: err.name, details: err.details },
-        method: req.method,
-        url: req.originalUrl,
-        reqBody: req.body,
-        reqParams: req.params,
-        reqQuery: req.query,
-      } satisfies ErrorContext;
+      attachErrorContext(
+        req,
+        res,
+        { message: err.message, stack: err.stack, name: err.name, details: err.details },
+        err,
+      );
     }
     res.status(err.status).json({
       error: err.message,
@@ -40,16 +57,15 @@ export function errorHandler(
     return;
   }
 
-  (res as any).__errorContext = {
-    error: err instanceof Error
+  const rootError = err instanceof Error ? err : new Error(String(err));
+  attachErrorContext(
+    req,
+    res,
+    err instanceof Error
       ? { message: err.message, stack: err.stack, name: err.name }
-      : { message: String(err), raw: err },
-    method: req.method,
-    url: req.originalUrl,
-    reqBody: req.body,
-    reqParams: req.params,
-    reqQuery: req.query,
-  } satisfies ErrorContext;
+      : { message: String(err), raw: err, stack: rootError.stack, name: rootError.name },
+    rootError,
+  );
 
   res.status(500).json({ error: "Internal server error" });
 }

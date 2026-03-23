@@ -1,4 +1,4 @@
-export { getUIAdapter } from "./registry";
+export { getUIAdapter, listUIAdapters } from "./registry";
 export { buildTranscript } from "./transcript";
 export type {
   TranscriptEntry,
@@ -6,3 +6,4 @@ export type {
   UIAdapterModule,
   AdapterConfigFieldsProps,
 } from "./types";
+export type { RunLogChunk } from "./transcript";

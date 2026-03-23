@@ -1,14 +1,16 @@
 import { useMemo, useState } from "react";
 import { NavLink, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, Plus } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
+import { useDialog } from "../context/DialogContext";
 import { useSidebar } from "../context/SidebarContext";
 import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { AgentIcon } from "./AgentIconPicker";
+import { BudgetSidebarMarker } from "./BudgetSidebarMarker";
 import {
   Collapsible,
   CollapsibleContent,
@@ -40,6 +42,7 @@ function sortByHierarchy(agents: Agent[]): Agent[] {
 export function SidebarAgents() {
   const [open, setOpen] = useState(true);
   const { selectedCompanyId } = useCompany();
+  const { openNewAgent } = useDialog();
   const { isMobile, setSidebarOpen } = useSidebar();
   const location = useLocation();
 
@@ -71,8 +74,10 @@ export function SidebarAgents() {
     return sortByHierarchy(filtered);
   }, [agents]);
 
-  const agentMatch = location.pathname.match(/^\/(?:[^/]+\/)?agents\/([^/]+)/);
+  const agentMatch = location.pathname.match(/^\/(?:[^/]+\/)?agents\/([^/]+)(?:\/([^/]+))?/);
   const activeAgentId = agentMatch?.[1] ?? null;
+  const activeTab = agentMatch?.[2] ?? null;
+
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
@@ -89,6 +94,16 @@ export function SidebarAgents() {
               Agents
             </span>
           </CollapsibleTrigger>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              openNewAgent();
+            }}
+            className="flex items-center justify-center h-4 w-4 rounded text-muted-foreground/60 hover:text-foreground hover:bg-accent/50 transition-colors"
+            aria-label="New agent"
+          >
+            <Plus className="h-3 w-3" />
+          </button>
         </div>
       </div>
 
@@ -99,7 +114,7 @@ export function SidebarAgents() {
             return (
               <NavLink
                 key={agent.id}
-                to={agentUrl(agent)}
+                to={activeTab ? `${agentUrl(agent)}/${activeTab}` : agentUrl(agent)}
                 onClick={() => {
                   if (isMobile) setSidebarOpen(false);
                 }}
@@ -112,15 +127,22 @@ export function SidebarAgents() {
               >
                 <AgentIcon icon={agent.icon} className="shrink-0 h-3.5 w-3.5 text-muted-foreground" />
                 <span className="flex-1 truncate">{agent.name}</span>
-                {runCount > 0 && (
+                {(agent.pauseReason === "budget" || runCount > 0) && (
                   <span className="ml-auto flex items-center gap-1.5 shrink-0">
-                    <span className="relative flex h-2 w-2">
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-                      <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
-                    </span>
-                    <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">
-                      {runCount} live
-                    </span>
+                    {agent.pauseReason === "budget" ? (
+                      <BudgetSidebarMarker title="Agent paused by budget" />
+                    ) : null}
+                    {runCount > 0 ? (
+                      <span className="relative flex h-2 w-2">
+                        <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+                      </span>
+                    ) : null}
+                    {runCount > 0 ? (
+                      <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">
+                        {runCount} live
+                      </span>
+                    ) : null}
                   </span>
                 )}
               </NavLink>

@@ -2,6 +2,7 @@ import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { notFound } from "../errors.js";
+import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 
 export type RunLogStoreType = "local_file";
 
@@ -148,7 +149,7 @@ let cachedStore: RunLogStore | null = null;
 
 export function getRunLogStore() {
   if (cachedStore) return cachedStore;
-  const basePath = process.env.RUN_LOG_BASE_PATH ?? path.resolve(process.cwd(), "data/run-logs");
+  const basePath = process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
   cachedStore = createLocalFileRunLogStore(basePath);
   return cachedStore;
 }

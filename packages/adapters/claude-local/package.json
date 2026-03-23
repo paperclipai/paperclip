@@ -1,6 +1,16 @@
 {
   "name": "@paperclipai/adapter-claude-local",
-  "version": "0.2.7",
+  "version": "0.3.1",
+  "license": "MIT",
+  "homepage": "https://github.com/paperclipai/paperclip",
+  "bugs": {
+    "url": "https://github.com/paperclipai/paperclip/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/paperclipai/paperclip",
+    "directory": "packages/adapters/claude-local"
+  },
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
@@ -38,7 +48,9 @@
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "probe:quota": "pnpm exec tsx src/cli/quota-probe.ts --json",
+    "probe:quota:raw": "pnpm exec tsx src/cli/quota-probe.ts --json --raw-cli"
   },
   "dependencies": {
     "@paperclipai/adapter-utils": "workspace:*",

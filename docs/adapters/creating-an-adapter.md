@@ -6,7 +6,7 @@ summary: Guide to building a custom adapter
 Build a custom adapter to connect Paperclip to any agent runtime.
 
 <Tip>
-If you're using Claude Code, the `create-agent-adapter` skill can guide you through the full adapter creation process interactively. Just ask Claude to create a new adapter and it will walk you through each step.
+If you're using Claude Code, the `.agents/skills/create-agent-adapter` skill can guide you through the full adapter creation process interactively. Just ask Claude to create a new adapter and it will walk you through each step.
 </Tip>
 
 ## Package Structure

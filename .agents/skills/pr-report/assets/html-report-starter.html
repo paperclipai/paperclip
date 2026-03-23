@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PR Report Starter</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,500;6..72,700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg: #f4efe5;
+        --paper: rgba(255, 251, 244, 0.88);
+        --paper-strong: #fffaf1;
+        --ink: #1f1b17;
+        --muted: #6a6257;
+        --line: rgba(31, 27, 23, 0.12);
+        --accent: #9c4729;
+        --accent-soft: rgba(156, 71, 41, 0.1);
+        --good: #2f6a42;
+        --warn: #946200;
+        --bad: #8c2f25;
+        --shadow: 0 22px 60px rgba(52, 37, 19, 0.1);
+        --radius: 20px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        color: var(--ink);
+        font-family: "IBM Plex Sans", sans-serif;
+        background:
+          radial-gradient(circle at top left, rgba(156, 71, 41, 0.12), transparent 34rem),
+          radial-gradient(circle at top right, rgba(47, 106, 66, 0.08), transparent 28rem),
+          linear-gradient(180deg, #efe6d6 0%, var(--bg) 48%, #ece5d8 100%);
+      }
+
+      .shell {
+        width: min(1360px, calc(100vw - 32px));
+        margin: 24px auto;
+        display: grid;
+        grid-template-columns: 280px minmax(0, 1fr);
+        gap: 24px;
+      }
+
+      .panel {
+        background: var(--paper);
+        backdrop-filter: blur(12px);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+      }
+
+      .nav {
+        position: sticky;
+        top: 20px;
+        align-self: start;
+        padding: 22px;
+      }
+
+      .eyebrow {
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        font-size: 11px;
+        font-weight: 700;
+        color: var(--accent);
+      }
+
+      .nav h1,
+      .hero h1,
+      h2,
+      h3 {
+        font-family: "Newsreader", serif;
+        line-height: 0.96;
+        margin: 0;
+      }
+
+      .nav h1 {
+        font-size: 2rem;
+        margin-top: 10px;
+      }
+
+      .nav p {
+        color: var(--muted);
+        font-size: 0.95rem;
+        line-height: 1.5;
+      }
+
+      .nav ul {
+        list-style: none;
+        padding: 0;
+        margin: 18px 0 0;
+        display: grid;
+        gap: 10px;
+      }
+
+      .nav a {
+        display: block;
+        color: var(--ink);
+        text-decoration: none;
+        padding: 10px 12px;
+        border-radius: 12px;
+        border: 1px solid transparent;
+        background: rgba(255, 255, 255, 0.35);
+      }
+
+      .nav a:hover {
+        border-color: var(--line);
+        background: rgba(255, 255, 255, 0.75);
+      }
+
+      .meta-block {
+        margin-top: 20px;
+        padding-top: 18px;
+        border-top: 1px solid var(--line);
+        color: var(--muted);
+        font-size: 0.86rem;
+        line-height: 1.5;
+      }
+
+      main {
+        display: grid;
+        gap: 24px;
+      }
+
+      section {
+        padding: 26px 28px 28px;
+      }
+
+      .hero {
+        padding: 28px;
+        overflow: hidden;
+        position: relative;
+      }
+
+      .hero::after {
+        content: "";
+        position: absolute;
+        inset: auto -3rem -6rem auto;
+        width: 18rem;
+        height: 18rem;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(156, 71, 41, 0.14), transparent 68%);
+        pointer-events: none;
+      }
+
+      .hero h1 {
+        font-size: clamp(2.6rem, 5vw, 4.6rem);
+        max-width: 12ch;
+        margin-top: 12px;
+      }
+
+      .lede {
+        margin-top: 16px;
+        max-width: 70ch;
+        font-size: 1.05rem;
+        line-height: 1.65;
+        color: #2b2723;
+      }
+
+      .hero-grid,
+      .card-grid,
+      .two-col {
+        display: grid;
+        gap: 14px;
+      }
+
+      .hero-grid {
+        margin-top: 24px;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
+
+      .card-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .two-col {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .metric,
+      .card,
+      .finding {
+        padding: 18px;
+        background: rgba(255, 255, 255, 0.68);
+        border: 1px solid var(--line);
+        border-radius: 18px;
+      }
+
+      .metric .label {
+        color: var(--muted);
+        font-size: 0.82rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      .metric .value {
+        margin-top: 8px;
+        font-size: 1.45rem;
+        font-weight: 700;
+      }
+
+      h2 {
+        font-size: 2rem;
+        margin-bottom: 16px;
+      }
+
+      h3 {
+        font-size: 1.3rem;
+        margin-bottom: 10px;
+      }
+
+      p {
+        margin: 0 0 14px;
+        line-height: 1.65;
+      }
+
+      ul,
+      ol {
+        margin: 0;
+        padding-left: 20px;
+        line-height: 1.65;
+      }
+
+      li + li {
+        margin-top: 8px;
+      }
+
+      .badge-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 18px 0 8px;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 10px;
+        border-radius: 999px;
+        font-size: 0.82rem;
+        font-weight: 700;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.68);
+      }
+
+      .badge.good {
+        color: var(--good);
+      }
+
+      .badge.warn {
+        color: var(--warn);
+      }
+
+      .badge.bad {
+        color: var(--bad);
+      }
+
+      .quote {
+        margin-top: 18px;
+        padding: 18px;
+        border-left: 4px solid var(--accent);
+        border-radius: 14px;
+        background: var(--accent-soft);
+      }
+
+      .severity {
+        display: inline-flex;
+        margin-bottom: 12px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        font-size: 0.78rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      .severity.high {
+        background: rgba(140, 47, 37, 0.12);
+        color: var(--bad);
+      }
+
+      .severity.medium {
+        background: rgba(148, 98, 0, 0.12);
+        color: var(--warn);
+      }
+
+      .severity.low {
+        background: rgba(47, 106, 66, 0.12);
+        color: var(--good);
+      }
+
+      .ref {
+        color: var(--muted);
+        font-size: 0.82rem;
+        line-height: 1.5;
+      }
+
+      @media (max-width: 980px) {
+        .shell {
+          grid-template-columns: 1fr;
+        }
+
+        .nav {
+          position: static;
+        }
+
+        .hero-grid,
+        .card-grid,
+        .two-col {
+          grid-template-columns: 1fr;
+        }
+
+        .hero h1 {
+          max-width: 100%;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="panel nav">
+        <div class="eyebrow">Maintainer Report</div>
+        <h1>Report Title</h1>
+        <p>Replace this with a concise description of what the report covers.</p>
+        <ul>
+          <li><a href="#summary">Summary</a></li>
+          <li><a href="#tutorial">Tutorial</a></li>
+          <li><a href="#findings">Findings</a></li>
+          <li><a href="#recommendation">Recommendation</a></li>
+        </ul>
+        <div class="meta-block">
+          Replace with project metadata, review date, or scope notes.
+        </div>
+      </aside>
+
+      <main>
+        <section class="panel hero" id="summary">
+          <div class="eyebrow">Executive Summary</div>
+          <h1>Use the hero for the clearest one-line judgment.</h1>
+          <p class="lede">
+            Replace this with the short explanation of what the contribution does, why it matters,
+            and what the core maintainer question is.
+          </p>
+          <div class="badge-row">
+            <span class="badge good">Strength</span>
+            <span class="badge warn">Tradeoff</span>
+            <span class="badge bad">Risk</span>
+          </div>
+          <div class="hero-grid">
+            <div class="metric">
+              <div class="label">Overall Call</div>
+              <div class="value">Placeholder</div>
+            </div>
+            <div class="metric">
+              <div class="label">Main Concern</div>
+              <div class="value">Placeholder</div>
+            </div>
+            <div class="metric">
+              <div class="label">Best Part</div>
+              <div class="value">Placeholder</div>
+            </div>
+            <div class="metric">
+              <div class="label">Weakest Part</div>
+              <div class="value">Placeholder</div>
+            </div>
+          </div>
+          <div class="quote">
+            Use this block for the thesis, a sharp takeaway, or a key cited point.
+          </div>
+        </section>
+
+        <section class="panel" id="tutorial">
+          <h2>Tutorial Section</h2>
+          <div class="two-col">
+            <div class="card">
+              <h3>Concept Card</h3>
+              <p>Use cards for mental models, subsystems, or comparison slices.</p>
+              <div class="ref">path/to/file.ts:10</div>
+            </div>
+            <div class="card">
+              <h3>Second Card</h3>
+              <p>Keep cards fairly dense. This template is about style, not fixed structure.</p>
+              <div class="ref">path/to/file.ts:20</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel" id="findings">
+          <h2>Findings</h2>
+          <article class="finding">
+            <div class="severity high">High</div>
+            <h3>Finding Title</h3>
+            <p>Use findings for the sharpest judgment calls and risks.</p>
+            <div class="ref">path/to/file.ts:30</div>
+          </article>
+        </section>
+
+        <section class="panel" id="recommendation">
+          <h2>Recommendation</h2>
+          <div class="card-grid">
+            <div class="card">
+              <h3>Path Forward</h3>
+              <p>Use this area for merge guidance, salvage plan, or rollout advice.</p>
+            </div>
+            <div class="card">
+              <h3>What To Keep</h3>
+              <p>Call out the parts worth preserving even if the whole proposal should not land.</p>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>

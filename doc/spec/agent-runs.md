@@ -249,7 +249,7 @@ Runs local `claude` CLI directly.
   "cwd": "/absolute/or/relative/path",
   "promptTemplate": "You are agent {{agent.id}} ...",
   "model": "optional-model-id",
-  "maxTurnsPerRun": 80,
+  "maxTurnsPerRun": 300,
   "dangerouslySkipPermissions": true,
   "env": {"KEY": "VALUE"},
   "extraArgs": [],

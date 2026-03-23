@@ -2,7 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent } from "re
 import { Link, useLocation } from "react-router-dom";
 import type { IssueComment, Agent } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
-import { Paperclip } from "lucide-react";
+import { Check, Copy, Paperclip } from "lucide-react";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { MarkdownBody } from "./MarkdownBody";
@@ -10,6 +10,7 @@ import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./Ma
 import { StatusBadge } from "./StatusBadge";
 import { AgentIcon } from "./AgentIconPicker";
 import { formatDateTime } from "../lib/utils";
+import { PluginSlotOutlet } from "@/plugins/slots";
 
 interface CommentWithRunMeta extends IssueComment {
   runId?: string | null;
@@ -32,6 +33,8 @@ interface CommentReassignment {
 interface CommentThreadProps {
   comments: CommentWithRunMeta[];
   linkedRuns?: LinkedRunItem[];
+  companyId?: string | null;
+  projectId?: string | null;
   onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment) => Promise<void>;
   issueStatus?: string;
   agentMap?: Map<string, Agent>;
@@ -43,10 +46,10 @@ interface CommentThreadProps {
   enableReassign?: boolean;
   reassignOptions?: InlineEntityOption[];
   currentAssigneeValue?: string;
+  suggestedAssigneeValue?: string;
   mentions?: MentionOption[];
 }
 
-const CLOSED_STATUSES = new Set(["done", "cancelled"]);
 const DRAFT_DEBOUNCE_MS = 800;
 
 function loadDraft(draftKey: string): string {
@@ -92,6 +95,25 @@ function parseReassignment(target: string): CommentReassignment | null {
   return null;
 }
 
+function CopyMarkdownButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      className="text-muted-foreground hover:text-foreground transition-colors"
+      title="Copy as markdown"
+      onClick={() => {
+        navigator.clipboard.writeText(text).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 2000);
+        });
+      }}
+    >
+      {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+    </button>
+  );
+}
+
 type TimelineItem =
   | { kind: "comment"; id: string; createdAtMs: number; comment: CommentWithRunMeta }
   | { kind: "run"; id: string; createdAtMs: number; run: LinkedRunItem };
@@ -99,10 +121,14 @@ type TimelineItem =
 const TimelineList = memo(function TimelineList({
   timeline,
   agentMap,
+  companyId,
+  projectId,
   highlightCommentId,
 }: {
   timeline: TimelineItem[];
   agentMap?: Map<string, Agent>;
+  companyId?: string | null;
+  projectId?: string | null;
   highlightCommentId?: string | null;
 }) {
   if (timeline.length === 0) {
@@ -160,14 +186,51 @@ const TimelineList = memo(function TimelineList({
               ) : (
                 <Identity name="You" size="sm" />
               )}
-              <a
-                href={`#comment-${comment.id}`}
-                className="text-xs text-muted-foreground hover:text-foreground hover:underline transition-colors"
-              >
-                {formatDateTime(comment.createdAt)}
-              </a>
+              <span className="flex items-center gap-1.5">
+                {companyId ? (
+                  <PluginSlotOutlet
+                    slotTypes={["commentContextMenuItem"]}
+                    entityType="comment"
+                    context={{
+                      companyId,
+                      projectId: projectId ?? null,
+                      entityId: comment.id,
+                      entityType: "comment",
+                      parentEntityId: comment.issueId,
+                    }}
+                    className="flex flex-wrap items-center gap-1.5"
+                    itemClassName="inline-flex"
+                    missingBehavior="placeholder"
+                  />
+                ) : null}
+                <a
+                  href={`#comment-${comment.id}`}
+                  className="text-xs text-muted-foreground hover:text-foreground hover:underline transition-colors"
+                >
+                  {formatDateTime(comment.createdAt)}
+                </a>
+                <CopyMarkdownButton text={comment.body} />
+              </span>
             </div>
             <MarkdownBody className="text-sm">{comment.body}</MarkdownBody>
+            {companyId ? (
+              <div className="mt-2 space-y-2">
+                <PluginSlotOutlet
+                  slotTypes={["commentAnnotation"]}
+                  entityType="comment"
+                  context={{
+                    companyId,
+                    projectId: projectId ?? null,
+                    entityId: comment.id,
+                    entityType: "comment",
+                    parentEntityId: comment.issueId,
+                  }}
+                  className="space-y-2"
+                  itemClassName="rounded-md"
+                  missingBehavior="placeholder"
+                />
+              </div>
+            ) : null}
             {comment.runId && (
               <div className="mt-2 pt-2 border-t border-border/60">
                 {comment.runAgentId ? (
@@ -194,8 +257,9 @@ const TimelineList = memo(function TimelineList({
 export function CommentThread({
   comments,
   linkedRuns = [],
+  companyId,
+  projectId,
   onAdd,
-  issueStatus,
   agentMap,
   imageUploadHandler,
   onAttachImage,
@@ -204,21 +268,21 @@ export function CommentThread({
   enableReassign = false,
   reassignOptions = [],
   currentAssigneeValue = "",
+  suggestedAssigneeValue,
   mentions: providedMentions,
 }: CommentThreadProps) {
   const [body, setBody] = useState("");
   const [reopen, setReopen] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [attaching, setAttaching] = useState(false);
-  const [reassignTarget, setReassignTarget] = useState(currentAssigneeValue);
+  const effectiveSuggestedAssigneeValue = suggestedAssigneeValue ?? currentAssigneeValue;
+  const [reassignTarget, setReassignTarget] = useState(effectiveSuggestedAssigneeValue);
   const [highlightCommentId, setHighlightCommentId] = useState<string | null>(null);
   const editorRef = useRef<MarkdownEditorRef>(null);
   const attachInputRef = useRef<HTMLInputElement | null>(null);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const location = useLocation();
   const hasScrolledRef = useRef(false);
-
-  const isClosed = issueStatus ? CLOSED_STATUSES.has(issueStatus) : false;
 
   const timeline = useMemo<TimelineItem[]>(() => {
     const commentItems: TimelineItem[] = comments.map((comment) => ({
@@ -272,8 +336,8 @@ export function CommentThread({
   }, []);
 
   useEffect(() => {
-    setReassignTarget(currentAssigneeValue);
-  }, [currentAssigneeValue]);
+    setReassignTarget(effectiveSuggestedAssigneeValue);
+  }, [effectiveSuggestedAssigneeValue]);
 
   // Scroll to comment when URL hash matches #comment-{id}
   useEffect(() => {
@@ -301,11 +365,11 @@ export function CommentThread({
 
     setSubmitting(true);
     try {
-      await onAdd(trimmed, isClosed && reopen ? true : undefined, reassignment ?? undefined);
+      await onAdd(trimmed, reopen ? true : undefined, reassignment ?? undefined);
       setBody("");
       if (draftKey) clearDraft(draftKey);
-      setReopen(false);
-      setReassignTarget(currentAssigneeValue);
+      setReopen(true);
+      setReassignTarget(effectiveSuggestedAssigneeValue);
     } finally {
       setSubmitting(false);
     }
@@ -313,10 +377,17 @@ export function CommentThread({
 
   async function handleAttachFile(evt: ChangeEvent<HTMLInputElement>) {
     const file = evt.target.files?.[0];
-    if (!file || !onAttachImage) return;
+    if (!file) return;
     setAttaching(true);
     try {
-      await onAttachImage(file);
+      if (imageUploadHandler) {
+        const url = await imageUploadHandler(file);
+        const safeName = file.name.replace(/[[\]]/g, "\\$&");
+        const markdown = `![${safeName}](${url})`;
+        setBody((prev) => prev ? `${prev}\n\n${markdown}` : markdown);
+      } else if (onAttachImage) {
+        await onAttachImage(file);
+      }
     } finally {
       setAttaching(false);
       if (attachInputRef.current) attachInputRef.current.value = "";
@@ -329,7 +400,13 @@ export function CommentThread({
     <div className="space-y-4">
       <h3 className="text-sm font-semibold">Comments &amp; Runs ({timeline.length})</h3>
 
-      <TimelineList timeline={timeline} agentMap={agentMap} highlightCommentId={highlightCommentId} />
+      <TimelineList
+        timeline={timeline}
+        agentMap={agentMap}
+        companyId={companyId}
+        projectId={projectId}
+        highlightCommentId={highlightCommentId}
+      />
 
       {liveRunSlot}
 
@@ -345,7 +422,7 @@ export function CommentThread({
           contentClassName="min-h-[60px] text-sm"
         />
         <div className="flex items-center justify-end gap-3">
-          {onAttachImage && (
+          {(imageUploadHandler || onAttachImage) && (
             <div className="mr-auto flex items-center gap-3">
               <input
                 ref={attachInputRef}
@@ -365,17 +442,15 @@ export function CommentThread({
               </Button>
             </div>
           )}
-          {isClosed && (
-            <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={reopen}
-                onChange={(e) => setReopen(e.target.checked)}
-                className="rounded border-border"
-              />
-              Re-open
-            </label>
-          )}
+          <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={reopen}
+              onChange={(e) => setReopen(e.target.checked)}
+              className="rounded border-border"
+            />
+            Re-open
+          </label>
           {enableReassign && reassignOptions.length > 0 && (
             <InlineEntitySelector
               value={reassignTarget}

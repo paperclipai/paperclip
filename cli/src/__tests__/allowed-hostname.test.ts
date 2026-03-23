@@ -42,6 +42,7 @@ function writeBaseConfig(configPath: string) {
     },
     auth: {
       baseUrlMode: "auto",
+      disableSignUp: false,
     },
     storage: {
       provider: "local_disk",

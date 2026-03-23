@@ -5,6 +5,9 @@ interface NewIssueDefaults {
   priority?: string;
   projectId?: string;
   assigneeAgentId?: string;
+  assigneeUserId?: string;
+  title?: string;
+  description?: string;
 }
 
 interface NewGoalDefaults {

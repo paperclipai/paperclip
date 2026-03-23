@@ -18,5 +18,10 @@ export interface DashboardSummary {
     monthUtilizationPercent: number;
   };
   pendingApprovals: number;
-  staleTasks: number;
+  budgets: {
+    activeIncidents: number;
+    pendingApprovals: number;
+    pausedAgents: number;
+    pausedProjects: number;
+  };
 }

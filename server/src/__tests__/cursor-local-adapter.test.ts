@@ -165,6 +165,7 @@ describe("cursor ui stdout parser", () => {
         kind: "tool_call",
         ts,
         name: "shellToolCall",
+        toolUseId: "call_shell_1",
         input: { command: longCommand },
       },
     ]);
@@ -254,7 +255,7 @@ describe("cursor ui stdout parser", () => {
         }),
         ts,
       ),
-    ).toEqual([{ kind: "tool_call", ts, name: "readToolCall", input: { path: "README.md" } }]);
+    ).toEqual([{ kind: "tool_call", ts, name: "readToolCall", toolUseId: "call_1", input: { path: "README.md" } }]);
 
     expect(
       parseCursorStdoutLine(

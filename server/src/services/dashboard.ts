@@ -2,8 +2,10 @@ import { and, eq, gte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, approvals, companies, costEvents, issues } from "@paperclipai/db";
 import { notFound } from "../errors.js";
+import { budgetService } from "./budgets.js";
 
 export function dashboardService(db: Db) {
+  const budgets = budgetService(db);
   return {
     summary: async (companyId: string) => {
       const company = await db
@@ -30,19 +32,6 @@ export function dashboardService(db: Db) {
         .select({ count: sql<number>`count(*)` })
         .from(approvals)
         .where(and(eq(approvals.companyId, companyId), eq(approvals.status, "pending")))
-        .then((rows) => Number(rows[0]?.count ?? 0));
-
-      const staleCutoff = new Date(Date.now() - 60 * 60 * 1000);
-      const staleTasks = await db
-        .select({ count: sql<number>`count(*)` })
-        .from(issues)
-        .where(
-          and(
-            eq(issues.companyId, companyId),
-            eq(issues.status, "in_progress"),
-            sql`${issues.startedAt} < ${staleCutoff.toISOString()}`,
-          ),
-        )
         .then((rows) => Number(rows[0]?.count ?? 0));
 
       const agentCounts: Record<string, number> = {
@@ -91,6 +80,7 @@ export function dashboardService(db: Db) {
         company.budgetMonthlyCents > 0
           ? (monthSpendCents / company.budgetMonthlyCents) * 100
           : 0;
+      const budgetOverview = await budgets.overview(companyId);
 
       return {
         companyId,
@@ -107,7 +97,12 @@ export function dashboardService(db: Db) {
           monthUtilizationPercent: Number(utilization.toFixed(2)),
         },
         pendingApprovals,
-        staleTasks,
+        budgets: {
+          activeIncidents: budgetOverview.activeIncidents.length,
+          pendingApprovals: budgetOverview.pendingApprovalCount,
+          pausedAgents: budgetOverview.pausedAgentCount,
+          pausedProjects: budgetOverview.pausedProjectCount,
+        },
       };
     },
   };

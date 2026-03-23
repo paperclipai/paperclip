@@ -62,6 +62,7 @@ export function buildCursorLocalConfig(v: CreateConfigValues): Record<string, un
   if (v.cwd) ac.cwd = v.cwd;
   if (v.instructionsFilePath) ac.instructionsFilePath = v.instructionsFilePath;
   if (v.promptTemplate) ac.promptTemplate = v.promptTemplate;
+  if (v.bootstrapPrompt) ac.bootstrapPromptTemplate = v.bootstrapPrompt;
   ac.model = v.model || DEFAULT_CURSOR_LOCAL_MODEL;
   const mode = normalizeMode(v.thinkingEffort);
   if (mode) ac.mode = mode;

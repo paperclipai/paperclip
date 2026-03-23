@@ -78,6 +78,9 @@ If you change schema/API behavior, update all impacted layers:
 4. Do not replace strategic docs wholesale unless asked.
 Prefer additive updates. Keep `doc/SPEC.md` and `doc/SPEC-implementation.md` aligned.
 
+5. Keep plan docs dated and centralized.
+New plan documents belong in `doc/plans/` and should use `YYYY-MM-DD-slug.md` filenames.
+
 ## 6. Database Change Workflow
 
 When changing data model:

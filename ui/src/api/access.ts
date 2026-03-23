@@ -64,6 +64,17 @@ type BoardClaimStatus = {
   claimedByUserId: string | null;
 };
 
+type CompanyInviteCreated = {
+  id: string;
+  token: string;
+  inviteUrl: string;
+  expiresAt: string;
+  allowedJoinTypes: "human" | "agent" | "both";
+  onboardingTextPath?: string;
+  onboardingTextUrl?: string;
+  inviteMessage?: string | null;
+};
+
 export const accessApi = {
   createCompanyInvite: (
     companyId: string,
@@ -73,16 +84,18 @@ export const accessApi = {
       agentMessage?: string | null;
     } = {},
   ) =>
-    api.post<{
-      id: string;
-      token: string;
-      inviteUrl: string;
-      expiresAt: string;
-      allowedJoinTypes: "human" | "agent" | "both";
-      onboardingTextPath?: string;
-      onboardingTextUrl?: string;
-      inviteMessage?: string | null;
-    }>(`/companies/${companyId}/invites`, input),
+    api.post<CompanyInviteCreated>(`/companies/${companyId}/invites`, input),
+
+  createOpenClawInvitePrompt: (
+    companyId: string,
+    input: {
+      agentMessage?: string | null;
+    } = {},
+  ) =>
+    api.post<CompanyInviteCreated>(
+      `/companies/${companyId}/openclaw/invite-prompt`,
+      input,
+    ),
 
   getInvite: (token: string) => api.get<InviteSummary>(`/invites/${token}`),
   getInviteOnboarding: (token: string) =>

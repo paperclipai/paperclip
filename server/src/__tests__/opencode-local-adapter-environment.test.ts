@@ -5,7 +5,7 @@ import path from "node:path";
 import { testEnvironment } from "@paperclipai/adapter-opencode-local/server";
 
 describe("opencode_local environment diagnostics", () => {
-  it("creates a missing working directory when cwd is absolute", async () => {
+  it("reports a missing working directory as an error when cwd is absolute", async () => {
     const cwd = path.join(
       os.tmpdir(),
       `paperclip-opencode-local-cwd-${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -23,11 +23,9 @@ describe("opencode_local environment diagnostics", () => {
       },
     });
 
-    expect(result.checks.some((check) => check.code === "opencode_cwd_valid")).toBe(true);
-    expect(result.checks.some((check) => check.level === "error")).toBe(false);
-    const stats = await fs.stat(cwd);
-    expect(stats.isDirectory()).toBe(true);
-    await fs.rm(path.dirname(cwd), { recursive: true, force: true });
+    expect(result.checks.some((check) => check.code === "opencode_cwd_invalid")).toBe(true);
+    expect(result.checks.some((check) => check.level === "error")).toBe(true);
+    expect(result.status).toBe("fail");
   });
 
   it("treats an empty OPENAI_API_KEY override as missing", async () => {

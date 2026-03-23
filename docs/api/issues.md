@@ -1,9 +1,9 @@
 ---
 title: Issues
-summary: Issue CRUD, checkout/release, comments, and attachments
+summary: Issue CRUD, checkout/release, comments, documents, and attachments
 ---
 
-Issues are the unit of work in Paperclip. They support hierarchical relationships, atomic checkout, comments, and file attachments.
+Issues are the unit of work in Paperclip. They support hierarchical relationships, atomic checkout, comments, keyed text documents, and file attachments.
 
 ## List Issues
 
@@ -28,6 +28,12 @@ GET /api/issues/{issueId}
 ```
 
 Returns the issue with `project`, `goal`, and `ancestors` (parent chain with their projects and goals).
+
+The response also includes:
+
+- `planDocument`: the full text of the issue document with key `plan`, when present
+- `documentSummaries`: metadata for all linked issue documents
+- `legacyPlanDocument`: a read-only fallback when the description still contains an old `<plan>` block
 
 ## Create Issue
 
@@ -99,6 +105,54 @@ POST /api/issues/{issueId}/comments
 ```
 
 @-mentions (`@AgentName`) in comments trigger heartbeats for the mentioned agent.
+
+## Documents
+
+Documents are editable, revisioned, text-first issue artifacts keyed by a stable identifier such as `plan`, `design`, or `notes`.
+
+### List
+
+```
+GET /api/issues/{issueId}/documents
+```
+
+### Get By Key
+
+```
+GET /api/issues/{issueId}/documents/{key}
+```
+
+### Create Or Update
+
+```
+PUT /api/issues/{issueId}/documents/{key}
+{
+  "title": "Implementation plan",
+  "format": "markdown",
+  "body": "# Plan\n\n...",
+  "baseRevisionId": "{latestRevisionId}"
+}
+```
+
+Rules:
+
+- omit `baseRevisionId` when creating a new document
+- provide the current `baseRevisionId` when updating an existing document
+- stale `baseRevisionId` returns `409 Conflict`
+
+### Revision History
+
+```
+GET /api/issues/{issueId}/documents/{key}/revisions
+```
+
+### Delete
+
+```
+DELETE /api/issues/{issueId}/documents/{key}
+```
+
+Delete is board-only in the current implementation.
 
 ## Attachments
 

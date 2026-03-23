@@ -244,7 +244,7 @@ export function Companies() {
                     {issueCount} {issueCount === 1 ? "issue" : "issues"}
                   </span>
                 </div>
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-1.5 tabular-nums">
                   <DollarSign className="h-3.5 w-3.5" />
                   <span>
                     {formatCents(company.spentMonthlyCents)}

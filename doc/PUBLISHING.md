@@ -1,196 +1,140 @@
 # Publishing to npm
 
-This document covers how to build and publish the `paperclipai` CLI package to npm.
+Low-level reference for how Paperclip packages are prepared and published to npm.
 
-## Prerequisites
+For the maintainer workflow, use [doc/RELEASING.md](RELEASING.md). This document focuses on packaging internals.
 
-- Node.js 20+
-- pnpm 9.15+
-- An npm account with publish access to the `paperclipai` package
-- Logged in to npm: `npm login`
+## Current Release Entry Points
 
-## One-Command Publish
+Use these scripts:
 
-The fastest way to publish — bumps version, builds, publishes, restores, commits, and tags in one shot:
+- [`scripts/release.sh`](../scripts/release.sh) for canary and stable publish flows
+- [`scripts/create-github-release.sh`](../scripts/create-github-release.sh) after pushing a stable tag
+- [`scripts/rollback-latest.sh`](../scripts/rollback-latest.sh) to repoint `latest`
+- [`scripts/build-npm.sh`](../scripts/build-npm.sh) for the CLI packaging build
 
-```bash
-./scripts/bump-and-publish.sh patch          # 0.1.1 → 0.1.2
-./scripts/bump-and-publish.sh minor          # 0.1.1 → 0.2.0
-./scripts/bump-and-publish.sh major          # 0.1.1 → 1.0.0
-./scripts/bump-and-publish.sh 2.0.0          # set explicit version
-./scripts/bump-and-publish.sh patch --dry-run # everything except npm publish
-```
+Paperclip no longer uses release branches or Changesets for publishing.
 
-The script runs all 6 steps below in order. It requires a clean working tree and an active `npm login` session (unless `--dry-run`). After it finishes, push:
+## Why the CLI needs special packaging
 
-```bash
-git push && git push origin v<version>
-```
+The CLI package, `paperclipai`, imports code from workspace packages such as:
 
-## Manual Step-by-Step
+- `@paperclipai/server`
+- `@paperclipai/db`
+- `@paperclipai/shared`
+- adapter packages under `packages/adapters/`
 
-If you prefer to run each step individually:
+Those workspace references are valid in development but not in a publishable npm package. The release flow rewrites versions temporarily, then builds a publishable CLI bundle.
 
-### Quick Reference
+## `build-npm.sh`
+
+Run:
 
 ```bash
-# Bump version
-./scripts/version-bump.sh patch      # 0.1.0 → 0.1.1
-
-# Build
 ./scripts/build-npm.sh
-
-# Preview what will be published
-cd cli && npm pack --dry-run
-
-# Publish
-cd cli && npm publish --access public
-
-# Restore dev package.json
-mv cli/package.dev.json cli/package.json
 ```
 
-## Step-by-Step
+This script:
 
-### 1. Bump the version
+1. runs the forbidden token check unless `--skip-checks` is supplied
+2. runs `pnpm -r typecheck`
+3. bundles the CLI entrypoint with esbuild into `cli/dist/index.js`
+4. verifies the bundled entrypoint with `node --check`
+5. rewrites `cli/package.json` into a publishable npm manifest and stores the dev copy as `cli/package.dev.json`
+6. copies the repo `README.md` into `cli/README.md` for npm metadata
 
-```bash
-./scripts/version-bump.sh <patch|minor|major|X.Y.Z>
-```
+After the release script exits, the dev manifest and temporary files are restored automatically.
 
-This updates the version in two places:
+## Package discovery and versioning
 
-- `cli/package.json` — the source of truth
-- `cli/src/index.ts` — the Commander `.version()` call
+Public packages are discovered from:
+
+- `packages/`
+- `server/`
+- `cli/`
+
+`ui/` is ignored because it is private.
+
+The version rewrite step now uses [`scripts/release-package-map.mjs`](../scripts/release-package-map.mjs), which:
+
+- finds all public packages
+- sorts them topologically by internal dependencies
+- rewrites each package version to the target release version
+- rewrites internal `workspace:*` dependency references to the exact target version
+- updates the CLI's displayed version string
+
+Those rewrites are temporary. The working tree is restored after publish or dry-run.
+
+## Version formats
+
+Paperclip uses calendar versions:
+
+- stable: `YYYY.MDD.P`
+- canary: `YYYY.MDD.P-canary.N`
 
 Examples:
 
-```bash
-./scripts/version-bump.sh patch    # 0.1.0 → 0.1.1
-./scripts/version-bump.sh minor    # 0.1.0 → 0.2.0
-./scripts/version-bump.sh major    # 0.1.0 → 1.0.0
-./scripts/version-bump.sh 1.2.3   # set explicit version
-```
+- stable: `2026.318.0`
+- canary: `2026.318.1-canary.2`
 
-### 2. Build
+## Publish model
 
-```bash
-./scripts/build-npm.sh
-```
+### Canary
 
-The build script runs five steps:
+Canaries publish under the npm dist-tag `canary`.
 
-1. **Forbidden token check** — scans tracked files for tokens listed in `.git/hooks/forbidden-tokens.txt`. If the file is missing (e.g. on a contributor's machine), the check passes silently. The script never prints which tokens it's searching for.
-2. **TypeScript type-check** — runs `pnpm -r typecheck` across all workspace packages.
-3. **esbuild bundle** — bundles the CLI entry point (`cli/src/index.ts`) and all workspace package code (`@paperclipai/*`) into a single file at `cli/dist/index.js`. External npm dependencies (express, postgres, etc.) are kept as regular imports.
-4. **Generate publishable package.json** — replaces `cli/package.json` with a version that has real npm dependency ranges instead of `workspace:*` references (see [package.dev.json](#packagedevjson) below).
-5. **Summary** — prints the bundle size and next steps.
+Example:
 
-To skip the forbidden token check (e.g. in CI without the token list):
+- `paperclipai@2026.318.1-canary.2`
+
+This keeps the default install path unchanged while allowing explicit installs with:
 
 ```bash
-./scripts/build-npm.sh --skip-checks
+npx paperclipai@canary onboard
 ```
 
-### 3. Preview (optional)
+### Stable
 
-See what npm will publish:
+Stable publishes use the npm dist-tag `latest`.
+
+Example:
+
+- `paperclipai@2026.318.0`
+
+Stable publishes do not create a release commit. Instead:
+
+- package versions are rewritten temporarily
+- packages are published from the chosen source commit
+- git tag `vYYYY.MDD.P` points at that original commit
+
+## Trusted publishing
+
+The intended CI model is npm trusted publishing through GitHub OIDC.
+
+That means:
+
+- no long-lived `NPM_TOKEN` in repository secrets
+- GitHub Actions obtains short-lived publish credentials
+- trusted publisher rules are configured per workflow file
+
+See [doc/RELEASE-AUTOMATION-SETUP.md](RELEASE-AUTOMATION-SETUP.md) for the GitHub/npm setup steps.
+
+## Rollback model
+
+Rollback does not unpublish anything.
+
+It repoints the `latest` dist-tag to a prior stable version:
 
 ```bash
-cd cli && npm pack --dry-run
+./scripts/rollback-latest.sh 2026.318.0
 ```
 
-### 4. Publish
+This is the fastest way to restore the default install path if a stable release is bad.
 
-```bash
-cd cli && npm publish --access public
-```
+## Related Files
 
-### 5. Restore dev package.json
-
-After publishing, restore the workspace-aware `package.json`:
-
-```bash
-mv cli/package.dev.json cli/package.json
-```
-
-### 6. Commit and tag
-
-```bash
-git add cli/package.json cli/src/index.ts
-git commit -m "chore: bump version to X.Y.Z"
-git tag vX.Y.Z
-```
-
-## package.dev.json
-
-During development, `cli/package.json` contains `workspace:*` references like:
-
-```json
-{
-  "dependencies": {
-    "@paperclipai/server": "workspace:*",
-    "@paperclipai/db": "workspace:*"
-  }
-}
-```
-
-These tell pnpm to resolve those packages from the local monorepo. This is great for development but **npm doesn't understand `workspace:*`** — publishing with these references would cause install failures for users.
-
-The build script solves this with a two-file swap:
-
-1. **Before building:** `cli/package.json` has `workspace:*` refs (the dev version).
-2. **During build (`build-npm.sh` step 4):**
-   - The dev `package.json` is copied to `package.dev.json` as a backup.
-   - `generate-npm-package-json.mjs` reads every workspace package's `package.json`, collects all their external npm dependencies, and writes a new `cli/package.json` with those real dependency ranges — no `workspace:*` refs.
-3. **After publishing:** you restore the dev version with `mv package.dev.json package.json`.
-
-The generated publishable `package.json` looks like:
-
-```json
-{
-  "name": "paperclipai",
-  "version": "0.1.0",
-  "bin": { "paperclipai": "./dist/index.js" },
-  "dependencies": {
-    "express": "^5.1.0",
-    "postgres": "^3.4.5",
-    "commander": "^13.1.0"
-  }
-}
-```
-
-`package.dev.json` is listed in `.gitignore` — it only exists temporarily on disk during the build/publish cycle.
-
-## How the bundle works
-
-The CLI is a monorepo package that imports code from `@paperclipai/server`, `@paperclipai/db`, `@paperclipai/shared`, and several adapter packages. These workspace packages don't exist on npm.
-
-**esbuild** bundles all workspace TypeScript code into a single `dist/index.js` file (~250kb). External npm packages (express, postgres, zod, etc.) are left as normal `import` statements — they get installed by npm when a user runs `npx paperclipai onboard`.
-
-The esbuild configuration lives at `cli/esbuild.config.mjs`. It automatically reads every workspace package's `package.json` to determine which dependencies are external (real npm packages) vs. internal (workspace code to bundle).
-
-## Forbidden token enforcement
-
-The build process includes the same forbidden-token check used by the git pre-commit hook. This catches any accidentally committed tokens before they reach npm.
-
-- Token list: `.git/hooks/forbidden-tokens.txt` (one token per line, `#` comments supported)
-- The file lives inside `.git/` and is never committed
-- If the file is missing, the check passes — contributors without the list can still build
-- The script never prints which tokens are being searched for
-- Matches are printed so you know which files to fix, but not which token triggered it
-
-Run the check standalone:
-
-```bash
-pnpm check:tokens
-```
-
-## npm scripts reference
-
-| Script | Command | Description |
-|---|---|---|
-| `bump-and-publish` | `pnpm bump-and-publish <type>` | One-command bump + build + publish + commit + tag |
-| `build:npm` | `pnpm build:npm` | Full build (check + typecheck + bundle + package.json) |
-| `version:bump` | `pnpm version:bump <type>` | Bump CLI version |
-| `check:tokens` | `pnpm check:tokens` | Run forbidden token check only |
+- [`scripts/build-npm.sh`](../scripts/build-npm.sh)
+- [`scripts/generate-npm-package-json.mjs`](../scripts/generate-npm-package-json.mjs)
+- [`scripts/release-package-map.mjs`](../scripts/release-package-map.mjs)
+- [`cli/esbuild.config.mjs`](../cli/esbuild.config.mjs)
+- [`doc/RELEASING.md`](RELEASING.md)

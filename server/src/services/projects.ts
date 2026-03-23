@@ -1,34 +1,60 @@
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { projects, projectGoals, goals, projectWorkspaces } from "@paperclipai/db";
+import { projects, projectGoals, goals, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import {
   PROJECT_COLORS,
   deriveProjectUrlKey,
   isUuidLike,
   normalizeProjectUrlKey,
+  type ProjectCodebase,
+  type ProjectExecutionWorkspacePolicy,
   type ProjectGoalRef,
   type ProjectWorkspace,
+  type WorkspaceRuntimeService,
 } from "@paperclipai/shared";
+import { listWorkspaceRuntimeServicesForProjectWorkspaces } from "./workspace-runtime.js";
+import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
+import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 
 type ProjectRow = typeof projects.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
+type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 type CreateWorkspaceInput = {
   name?: string | null;
+  sourceType?: string | null;
   cwd?: string | null;
   repoUrl?: string | null;
   repoRef?: string | null;
+  defaultRef?: string | null;
+  visibility?: string | null;
+  setupCommand?: string | null;
+  cleanupCommand?: string | null;
+  remoteProvider?: string | null;
+  remoteWorkspaceRef?: string | null;
+  sharedWorkspaceKey?: string | null;
   metadata?: Record<string, unknown> | null;
   isPrimary?: boolean;
 };
 type UpdateWorkspaceInput = Partial<CreateWorkspaceInput>;
 
-interface ProjectWithGoals extends ProjectRow {
+interface ProjectWithGoals extends Omit<ProjectRow, "executionWorkspacePolicy"> {
   urlKey: string;
   goalIds: string[];
   goals: ProjectGoalRef[];
+  executionWorkspacePolicy: ProjectExecutionWorkspacePolicy | null;
+  codebase: ProjectCodebase;
   workspaces: ProjectWorkspace[];
   primaryWorkspace: ProjectWorkspace | null;
+}
+
+interface ProjectShortnameRow {
+  id: string;
+  name: string;
+}
+
+interface ResolveProjectNameOptions {
+  excludeProjectId?: string | null;
 }
 
 /** Batch-load goal refs for a set of projects. */
@@ -65,30 +91,121 @@ async function attachGoals(db: Db, rows: ProjectRow[]): Promise<ProjectWithGoals
       urlKey: deriveProjectUrlKey(r.name, r.id),
       goalIds: g.map((x) => x.id),
       goals: g,
+      executionWorkspacePolicy: parseProjectExecutionWorkspacePolicy(r.executionWorkspacePolicy),
     } as ProjectWithGoals;
   });
 }
 
-function toWorkspace(row: ProjectWorkspaceRow): ProjectWorkspace {
+function toRuntimeService(row: WorkspaceRuntimeServiceRow): WorkspaceRuntimeService {
   return {
     id: row.id,
     companyId: row.companyId,
-    projectId: row.projectId,
-    name: row.name,
-    cwd: row.cwd,
-    repoUrl: row.repoUrl ?? null,
-    repoRef: row.repoRef ?? null,
-    metadata: (row.metadata as Record<string, unknown> | null) ?? null,
-    isPrimary: row.isPrimary,
+    projectId: row.projectId ?? null,
+    projectWorkspaceId: row.projectWorkspaceId ?? null,
+    executionWorkspaceId: row.executionWorkspaceId ?? null,
+    issueId: row.issueId ?? null,
+    scopeType: row.scopeType as WorkspaceRuntimeService["scopeType"],
+    scopeId: row.scopeId ?? null,
+    serviceName: row.serviceName,
+    status: row.status as WorkspaceRuntimeService["status"],
+    lifecycle: row.lifecycle as WorkspaceRuntimeService["lifecycle"],
+    reuseKey: row.reuseKey ?? null,
+    command: row.command ?? null,
+    cwd: row.cwd ?? null,
+    port: row.port ?? null,
+    url: row.url ?? null,
+    provider: row.provider as WorkspaceRuntimeService["provider"],
+    providerRef: row.providerRef ?? null,
+    ownerAgentId: row.ownerAgentId ?? null,
+    startedByRunId: row.startedByRunId ?? null,
+    lastUsedAt: row.lastUsedAt,
+    startedAt: row.startedAt,
+    stoppedAt: row.stoppedAt ?? null,
+    stopPolicy: (row.stopPolicy as Record<string, unknown> | null) ?? null,
+    healthStatus: row.healthStatus as WorkspaceRuntimeService["healthStatus"],
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
 }
 
-function pickPrimaryWorkspace(rows: ProjectWorkspaceRow[]): ProjectWorkspace | null {
+function toWorkspace(
+  row: ProjectWorkspaceRow,
+  runtimeServices: WorkspaceRuntimeService[] = [],
+): ProjectWorkspace {
+  return {
+    id: row.id,
+    companyId: row.companyId,
+    projectId: row.projectId,
+    name: row.name,
+    sourceType: row.sourceType as ProjectWorkspace["sourceType"],
+    cwd: normalizeWorkspaceCwd(row.cwd),
+    repoUrl: row.repoUrl ?? null,
+    repoRef: row.repoRef ?? null,
+    defaultRef: row.defaultRef ?? row.repoRef ?? null,
+    visibility: row.visibility as ProjectWorkspace["visibility"],
+    setupCommand: row.setupCommand ?? null,
+    cleanupCommand: row.cleanupCommand ?? null,
+    remoteProvider: row.remoteProvider ?? null,
+    remoteWorkspaceRef: row.remoteWorkspaceRef ?? null,
+    sharedWorkspaceKey: row.sharedWorkspaceKey ?? null,
+    metadata: (row.metadata as Record<string, unknown> | null) ?? null,
+    isPrimary: row.isPrimary,
+    runtimeServices,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function deriveRepoNameFromRepoUrl(repoUrl: string | null): string | null {
+  const raw = readNonEmptyString(repoUrl);
+  if (!raw) return null;
+  try {
+    const parsed = new URL(raw);
+    const cleanedPath = parsed.pathname.replace(/\/+$/, "");
+    const repoName = cleanedPath.split("/").filter(Boolean).pop()?.replace(/\.git$/i, "") ?? "";
+    return repoName || null;
+  } catch {
+    return null;
+  }
+}
+
+function deriveProjectCodebase(input: {
+  companyId: string;
+  projectId: string;
+  primaryWorkspace: ProjectWorkspace | null;
+  fallbackWorkspaces: ProjectWorkspace[];
+}): ProjectCodebase {
+  const primaryWorkspace = input.primaryWorkspace ?? input.fallbackWorkspaces[0] ?? null;
+  const repoUrl = primaryWorkspace?.repoUrl ?? null;
+  const repoName = deriveRepoNameFromRepoUrl(repoUrl);
+  const localFolder = primaryWorkspace?.cwd ?? null;
+  const managedFolder = resolveManagedProjectWorkspaceDir({
+    companyId: input.companyId,
+    projectId: input.projectId,
+    repoName,
+  });
+
+  return {
+    workspaceId: primaryWorkspace?.id ?? null,
+    repoUrl,
+    repoRef: primaryWorkspace?.repoRef ?? null,
+    defaultRef: primaryWorkspace?.defaultRef ?? null,
+    repoName,
+    localFolder,
+    managedFolder,
+    effectiveLocalFolder: localFolder ?? managedFolder,
+    origin: localFolder ? "local_folder" : "managed_checkout",
+  };
+}
+
+function pickPrimaryWorkspace(
+  rows: ProjectWorkspaceRow[],
+  runtimeServicesByWorkspaceId?: Map<string, WorkspaceRuntimeService[]>,
+): ProjectWorkspace | null {
   if (rows.length === 0) return null;
   const explicitPrimary = rows.find((row) => row.isPrimary);
-  return toWorkspace(explicitPrimary ?? rows[0]);
+  const primary = explicitPrimary ?? rows[0];
+  return toWorkspace(primary, runtimeServicesByWorkspaceId?.get(primary.id) ?? []);
 }
 
 /** Batch-load workspace refs for a set of projects. */
@@ -101,6 +218,17 @@ async function attachWorkspaces(db: Db, rows: ProjectWithGoals[]): Promise<Proje
     .from(projectWorkspaces)
     .where(inArray(projectWorkspaces.projectId, projectIds))
     .orderBy(desc(projectWorkspaces.isPrimary), asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id));
+  const runtimeServicesByWorkspaceId = await listWorkspaceRuntimeServicesForProjectWorkspaces(
+    db,
+    rows[0]!.companyId,
+    workspaceRows.map((workspace) => workspace.id),
+  );
+  const sharedRuntimeServicesByWorkspaceId = new Map(
+    Array.from(runtimeServicesByWorkspaceId.entries()).map(([workspaceId, services]) => [
+      workspaceId,
+      services.map(toRuntimeService),
+    ]),
+  );
 
   const map = new Map<string, ProjectWorkspaceRow[]>();
   for (const row of workspaceRows) {
@@ -114,11 +242,23 @@ async function attachWorkspaces(db: Db, rows: ProjectWithGoals[]): Promise<Proje
 
   return rows.map((row) => {
     const projectWorkspaceRows = map.get(row.id) ?? [];
-    const workspaces = projectWorkspaceRows.map(toWorkspace);
+    const workspaces = projectWorkspaceRows.map((workspace) =>
+      toWorkspace(
+        workspace,
+        sharedRuntimeServicesByWorkspaceId.get(workspace.id) ?? [],
+      ),
+    );
+    const primaryWorkspace = pickPrimaryWorkspace(projectWorkspaceRows, sharedRuntimeServicesByWorkspaceId);
     return {
       ...row,
+      codebase: deriveProjectCodebase({
+        companyId: row.companyId,
+        projectId: row.id,
+        primaryWorkspace,
+        fallbackWorkspaces: workspaces,
+      }),
       workspaces,
-      primaryWorkspace: pickPrimaryWorkspace(projectWorkspaceRows),
+      primaryWorkspace,
     };
   });
 }
@@ -190,6 +330,34 @@ function deriveWorkspaceName(input: {
   if (repoUrl) return deriveNameFromRepoUrl(repoUrl);
 
   return "Workspace";
+}
+
+export function resolveProjectNameForUniqueShortname(
+  requestedName: string,
+  existingProjects: ProjectShortnameRow[],
+  options?: ResolveProjectNameOptions,
+): string {
+  const requestedShortname = normalizeProjectUrlKey(requestedName);
+  if (!requestedShortname) return requestedName;
+
+  const usedShortnames = new Set(
+    existingProjects
+      .filter((project) => !(options?.excludeProjectId && project.id === options.excludeProjectId))
+      .map((project) => normalizeProjectUrlKey(project.name))
+      .filter((value): value is string => value !== null),
+  );
+  if (!usedShortnames.has(requestedShortname)) return requestedName;
+
+  for (let suffix = 2; suffix < 10_000; suffix += 1) {
+    const candidateName = `${requestedName} ${suffix}`;
+    const candidateShortname = normalizeProjectUrlKey(candidateName);
+    if (candidateShortname && !usedShortnames.has(candidateShortname)) {
+      return candidateName;
+    }
+  }
+
+  // Fallback guard for pathological naming collisions.
+  return `${requestedName} ${Date.now()}`;
 }
 
 async function ensureSinglePrimaryWorkspace(
@@ -271,6 +439,12 @@ export function projectService(db: Db) {
         projectData.color = nextColor;
       }
 
+      const existingProjects = await db
+        .select({ id: projects.id, name: projects.name })
+        .from(projects)
+        .where(eq(projects.companyId, companyId));
+      projectData.name = resolveProjectNameForUniqueShortname(projectData.name, existingProjects);
+
       // Also write goalId to the legacy column (first goal or null)
       const legacyGoalId = ids && ids.length > 0 ? ids[0] : projectData.goalId ?? null;
 
@@ -295,6 +469,26 @@ export function projectService(db: Db) {
     ): Promise<ProjectWithGoals | null> => {
       const { goalIds: inputGoalIds, ...projectData } = data;
       const ids = resolveGoalIds({ goalIds: inputGoalIds, goalId: projectData.goalId });
+      const existingProject = await db
+        .select({ id: projects.id, companyId: projects.companyId, name: projects.name })
+        .from(projects)
+        .where(eq(projects.id, id))
+        .then((rows) => rows[0] ?? null);
+      if (!existingProject) return null;
+
+      if (projectData.name !== undefined) {
+        const existingShortname = normalizeProjectUrlKey(existingProject.name);
+        const nextShortname = normalizeProjectUrlKey(projectData.name);
+        if (existingShortname !== nextShortname) {
+          const existingProjects = await db
+            .select({ id: projects.id, name: projects.name })
+            .from(projects)
+            .where(eq(projects.companyId, existingProject.companyId));
+          projectData.name = resolveProjectNameForUniqueShortname(projectData.name, existingProjects, {
+            excludeProjectId: id,
+          });
+        }
+      }
 
       // Keep legacy goalId column in sync
       const updates: Partial<typeof projects.$inferInsert> = {
@@ -339,7 +533,18 @@ export function projectService(db: Db) {
         .from(projectWorkspaces)
         .where(eq(projectWorkspaces.projectId, projectId))
         .orderBy(desc(projectWorkspaces.isPrimary), asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id));
-      return rows.map(toWorkspace);
+      if (rows.length === 0) return [];
+      const runtimeServicesByWorkspaceId = await listWorkspaceRuntimeServicesForProjectWorkspaces(
+        db,
+        rows[0]!.companyId,
+        rows.map((workspace) => workspace.id),
+      );
+      return rows.map((row) =>
+        toWorkspace(
+          row,
+          (runtimeServicesByWorkspaceId.get(row.id) ?? []).map(toRuntimeService),
+        ),
+      );
     },
 
     createWorkspace: async (
@@ -355,7 +560,13 @@ export function projectService(db: Db) {
 
       const cwd = normalizeWorkspaceCwd(data.cwd);
       const repoUrl = readNonEmptyString(data.repoUrl);
-      if (!cwd && !repoUrl) return null;
+      const sourceType = readNonEmptyString(data.sourceType) ?? (repoUrl ? "git_repo" : cwd ? "local_path" : "remote_managed");
+      const remoteWorkspaceRef = readNonEmptyString(data.remoteWorkspaceRef);
+      if (sourceType === "remote_managed") {
+        if (!remoteWorkspaceRef && !repoUrl) return null;
+      } else if (!cwd && !repoUrl) {
+        return null;
+      }
       const name = deriveWorkspaceName({
         name: data.name,
         cwd,
@@ -389,9 +600,17 @@ export function projectService(db: Db) {
             companyId: project.companyId,
             projectId,
             name,
+            sourceType,
             cwd: cwd ?? null,
             repoUrl: repoUrl ?? null,
             repoRef: readNonEmptyString(data.repoRef),
+            defaultRef: readNonEmptyString(data.defaultRef) ?? readNonEmptyString(data.repoRef),
+            visibility: readNonEmptyString(data.visibility) ?? "default",
+            setupCommand: readNonEmptyString(data.setupCommand),
+            cleanupCommand: readNonEmptyString(data.cleanupCommand),
+            remoteProvider: readNonEmptyString(data.remoteProvider),
+            remoteWorkspaceRef,
+            sharedWorkspaceKey: readNonEmptyString(data.sharedWorkspaceKey),
             metadata: (data.metadata as Record<string, unknown> | null | undefined) ?? null,
             isPrimary: shouldBePrimary,
           })
@@ -428,7 +647,19 @@ export function projectService(db: Db) {
         data.repoUrl !== undefined
           ? readNonEmptyString(data.repoUrl)
           : readNonEmptyString(existing.repoUrl);
-      if (!nextCwd && !nextRepoUrl) return null;
+      const nextSourceType =
+        data.sourceType !== undefined
+          ? readNonEmptyString(data.sourceType)
+          : readNonEmptyString(existing.sourceType);
+      const nextRemoteWorkspaceRef =
+        data.remoteWorkspaceRef !== undefined
+          ? readNonEmptyString(data.remoteWorkspaceRef)
+          : readNonEmptyString(existing.remoteWorkspaceRef);
+      if (nextSourceType === "remote_managed") {
+        if (!nextRemoteWorkspaceRef && !nextRepoUrl) return null;
+      } else if (!nextCwd && !nextRepoUrl) {
+        return null;
+      }
 
       const patch: Partial<typeof projectWorkspaces.$inferInsert> = {
         updatedAt: new Date(),
@@ -440,6 +671,16 @@ export function projectService(db: Db) {
       if (data.cwd !== undefined) patch.cwd = nextCwd ?? null;
       if (data.repoUrl !== undefined) patch.repoUrl = nextRepoUrl ?? null;
       if (data.repoRef !== undefined) patch.repoRef = readNonEmptyString(data.repoRef);
+      if (data.sourceType !== undefined && nextSourceType) patch.sourceType = nextSourceType;
+      if (data.defaultRef !== undefined) patch.defaultRef = readNonEmptyString(data.defaultRef);
+      if (data.visibility !== undefined && readNonEmptyString(data.visibility)) {
+        patch.visibility = readNonEmptyString(data.visibility)!;
+      }
+      if (data.setupCommand !== undefined) patch.setupCommand = readNonEmptyString(data.setupCommand);
+      if (data.cleanupCommand !== undefined) patch.cleanupCommand = readNonEmptyString(data.cleanupCommand);
+      if (data.remoteProvider !== undefined) patch.remoteProvider = readNonEmptyString(data.remoteProvider);
+      if (data.remoteWorkspaceRef !== undefined) patch.remoteWorkspaceRef = nextRemoteWorkspaceRef;
+      if (data.sharedWorkspaceKey !== undefined) patch.sharedWorkspaceKey = readNonEmptyString(data.sharedWorkspaceKey);
       if (data.metadata !== undefined) patch.metadata = data.metadata;
 
       const updated = await db.transaction(async (tx) => {

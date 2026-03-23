@@ -11,11 +11,19 @@ export const assetsApi = {
     const safeFile = new File([buffer], file.name, { type: file.type });
 
     const form = new FormData();
-    form.append("file", safeFile);
     if (namespace && namespace.trim().length > 0) {
       form.append("namespace", namespace.trim());
     }
+    form.append("file", safeFile);
     return api.postForm<AssetImage>(`/companies/${companyId}/assets/images`, form);
   },
-};
 
+  uploadCompanyLogo: async (companyId: string, file: File) => {
+    const buffer = await file.arrayBuffer();
+    const safeFile = new File([buffer], file.name, { type: file.type });
+
+    const form = new FormData();
+    form.append("file", safeFile);
+    return api.postForm<AssetImage>(`/companies/${companyId}/logo`, form);
+  },
+};

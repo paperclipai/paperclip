@@ -1,6 +1,7 @@
 import { useEffect, useRef, type ReactNode } from "react";
-import { useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { Agent, Issue, LiveEvent } from "@paperclipai/shared";
+import { authApi } from "../api/auth";
 import { useCompany } from "./CompanyContext";
 import type { ToastInput } from "./ToastContext";
 import { useToast } from "./ToastContext";
@@ -152,6 +153,7 @@ function buildActivityToast(
   queryClient: QueryClient,
   companyId: string,
   payload: Record<string, unknown>,
+  currentActor: { userId: string | null; agentId: string | null },
 ): ToastInput | null {
   const entityType = readString(payload.entityType);
   const entityId = readString(payload.entityId);
@@ -166,6 +168,10 @@ function buildActivityToast(
 
   const issue = resolveIssueToastContext(queryClient, companyId, entityId, details);
   const actor = resolveActorLabel(queryClient, companyId, actorType, actorId);
+  const isSelfActivity =
+    (actorType === "user" && !!currentActor.userId && actorId === currentActor.userId) ||
+    (actorType === "agent" && !!currentActor.agentId && actorId === currentActor.agentId);
+  if (isSelfActivity) return null;
 
   if (action === "issue.created") {
     return {
@@ -178,8 +184,8 @@ function buildActivityToast(
   }
 
   if (action === "issue.updated") {
-    if (details?.reopened === true && readString(details.source) === "comment") {
-      // Reopen-via-comment emits a paired comment event; show one combined toast on the comment event.
+    if (readString(details?.source) === "comment") {
+      // Comment-driven updates emit a paired comment event; show one combined toast on the comment event.
       return null;
     }
     const changeDesc = describeIssueUpdate(details);
@@ -202,13 +208,18 @@ function buildActivityToast(
   const commentId = readString(details?.commentId);
   const bodySnippet = readString(details?.bodySnippet);
   const reopened = details?.reopened === true;
+  const updated = details?.updated === true;
   const reopenedFrom = readString(details?.reopenedFrom);
   const reopenedLabel = reopened
     ? reopenedFrom
       ? `reopened from ${reopenedFrom.replace(/_/g, " ")}`
       : "reopened"
     : null;
-  const title = reopened ? `${actor} reopened and commented on ${issue.ref}` : `${actor} commented on ${issue.ref}`;
+  const title = reopened
+    ? `${actor} reopened and commented on ${issue.ref}`
+    : updated
+      ? `${actor} commented and updated ${issue.ref}`
+      : `${actor} commented on ${issue.ref}`;
   const body = bodySnippet
     ? reopenedLabel
       ? `${reopenedLabel} - ${bodySnippet.replace(/^#+\s*/m, "").replace(/\n/g, " ")}`
@@ -245,7 +256,7 @@ function buildJoinRequestToast(
     title: `${label} wants to join`,
     body: "A new join request is waiting for approval.",
     tone: "info",
-    action: { label: "View inbox", href: "/inbox/new" },
+    action: { label: "View inbox", href: "/inbox/unread" },
     dedupeKey: `join-request:${entityId}`,
   };
 }
@@ -350,6 +361,8 @@ function invalidateActivityQueries(
 
   if (entityType === "issue") {
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId) });
     if (entityId) {
       const details = readRecord(payload.details);
       const issueRefs = resolveIssueQueryRefs(queryClient, companyId, entityId, details);
@@ -358,6 +371,9 @@ function invalidateActivityQueries(
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(ref) });
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(ref) });
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(ref) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.documents(ref) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(ref) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.approvals(ref) });
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(ref) });
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(ref) });
       }
@@ -399,6 +415,15 @@ function invalidateActivityQueries(
 
   if (entityType === "cost_event") {
     queryClient.invalidateQueries({ queryKey: queryKeys.costs(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.usageByProvider(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.usageWindowSpend(companyId) });
+    // usageQuotaWindows is intentionally excluded: quota windows come from external provider
+    // apis on a 5-minute poll and do not change in response to cost events logged by agents
+    return;
+  }
+
+  if (entityType === "routine" || entityType === "routine_trigger" || entityType === "routine_run") {
+    queryClient.invalidateQueries({ queryKey: ["routines"] });
     return;
   }
 
@@ -448,6 +473,7 @@ function handleLiveEvent(
   event: LiveEvent,
   pushToast: (toast: ToastInput) => string | null,
   gate: ToastGate,
+  currentActor: { userId: string | null; agentId: string | null },
 ) {
   if (event.companyId !== expectedCompanyId) return;
 
@@ -485,17 +511,27 @@ function handleLiveEvent(
     invalidateActivityQueries(queryClient, expectedCompanyId, payload);
     const action = readString(payload.action);
     const toast =
-      buildActivityToast(queryClient, expectedCompanyId, payload) ??
+      buildActivityToast(queryClient, expectedCompanyId, payload, currentActor) ??
       buildJoinRequestToast(payload);
     if (toast) gatedPushToast(gate, pushToast, `activity:${action ?? "unknown"}`, toast);
   }
 }
+
+export const __liveUpdatesTestUtils = {
+  invalidateActivityQueries,
+};
 
 export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const gateRef = useRef<ToastGate>({ cooldownHits: new Map(), suppressUntil: 0 });
+  const { data: session } = useQuery({
+    queryKey: queryKeys.auth.session,
+    queryFn: () => authApi.getSession(),
+    retry: false,
+  });
+  const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
 
   useEffect(() => {
     if (!selectedCompanyId) return;
@@ -541,7 +577,10 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
 
         try {
           const parsed = JSON.parse(raw) as LiveEvent;
-          handleLiveEvent(queryClient, selectedCompanyId, parsed, pushToast, gateRef.current);
+          handleLiveEvent(queryClient, selectedCompanyId, parsed, pushToast, gateRef.current, {
+            userId: currentUserId,
+            agentId: null,
+          });
         } catch {
           // Ignore non-JSON payloads.
         }
@@ -570,7 +609,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
         socket.close(1000, "provider_unmount");
       }
     };
-  }, [queryClient, selectedCompanyId, pushToast]);
+  }, [queryClient, selectedCompanyId, pushToast, currentUserId]);
 
   return <>{children}</>;
 }

@@ -30,7 +30,36 @@ export interface UsageSummary {
   cachedInputTokens?: number;
 }
 
-export type AdapterBillingType = "api" | "subscription" | "unknown";
+export type AdapterBillingType =
+  | "api"
+  | "subscription"
+  | "metered_api"
+  | "subscription_included"
+  | "subscription_overage"
+  | "credits"
+  | "fixed"
+  | "unknown";
+
+export interface AdapterRuntimeServiceReport {
+  id?: string | null;
+  projectId?: string | null;
+  projectWorkspaceId?: string | null;
+  issueId?: string | null;
+  scopeType?: "project_workspace" | "execution_workspace" | "run" | "agent";
+  scopeId?: string | null;
+  serviceName: string;
+  status?: "starting" | "running" | "stopped" | "failed";
+  lifecycle?: "shared" | "ephemeral";
+  reuseKey?: string | null;
+  command?: string | null;
+  cwd?: string | null;
+  port?: number | null;
+  url?: string | null;
+  providerRef?: string | null;
+  ownerAgentId?: string | null;
+  stopPolicy?: Record<string, unknown> | null;
+  healthStatus?: "unknown" | "healthy" | "unhealthy";
+}
 
 export interface AdapterExecutionResult {
   exitCode: number | null;
@@ -47,12 +76,22 @@ export interface AdapterExecutionResult {
   sessionParams?: Record<string, unknown> | null;
   sessionDisplayId?: string | null;
   provider?: string | null;
+  biller?: string | null;
   model?: string | null;
   billingType?: AdapterBillingType | null;
   costUsd?: number | null;
   resultJson?: Record<string, unknown> | null;
+  runtimeServices?: AdapterRuntimeServiceReport[];
   summary?: string | null;
   clearSession?: boolean;
+  question?: {
+    prompt: string;
+    choices: Array<{
+      key: string;
+      label: string;
+      description?: string;
+    }>;
+  } | null;
 }
 
 export interface AdapterSessionCodec {
@@ -69,6 +108,7 @@ export interface AdapterInvocationMeta {
   commandNotes?: string[];
   env?: Record<string, string>;
   prompt?: string;
+  promptMetrics?: Record<string, number>;
   context?: Record<string, unknown>;
 }
 
@@ -80,6 +120,7 @@ export interface AdapterExecutionContext {
   context: Record<string, unknown>;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
+  onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
   authToken?: string;
 }
 
@@ -105,6 +146,55 @@ export interface AdapterEnvironmentTestResult {
   status: AdapterEnvironmentTestStatus;
   checks: AdapterEnvironmentCheck[];
   testedAt: string;
+}
+
+export type AdapterSkillSyncMode = "unsupported" | "persistent" | "ephemeral";
+
+export type AdapterSkillState =
+  | "available"
+  | "configured"
+  | "installed"
+  | "missing"
+  | "stale"
+  | "external";
+
+export type AdapterSkillOrigin =
+  | "company_managed"
+  | "paperclip_required"
+  | "user_installed"
+  | "external_unknown";
+
+export interface AdapterSkillEntry {
+  key: string;
+  runtimeName: string | null;
+  desired: boolean;
+  managed: boolean;
+  required?: boolean;
+  requiredReason?: string | null;
+  state: AdapterSkillState;
+  origin?: AdapterSkillOrigin;
+  originLabel?: string | null;
+  locationLabel?: string | null;
+  readOnly?: boolean;
+  sourcePath?: string | null;
+  targetPath?: string | null;
+  detail?: string | null;
+}
+
+export interface AdapterSkillSnapshot {
+  adapterType: string;
+  supported: boolean;
+  mode: AdapterSkillSyncMode;
+  desiredSkills: string[];
+  entries: AdapterSkillEntry[];
+  warnings: string[];
+}
+
+export interface AdapterSkillContext {
+  agentId: string;
+  companyId: string;
+  adapterType: string;
+  config: Record<string, unknown>;
 }
 
 export interface AdapterEnvironmentTestContext {
@@ -140,11 +230,45 @@ export interface HireApprovedHookResult {
   detail?: Record<string, unknown>;
 }
 
+// ---------------------------------------------------------------------------
+// Quota window types — used by adapters that can report provider quota/rate-limit state
+// ---------------------------------------------------------------------------
+
+/** a single rate-limit or usage window returned by a provider quota API */
+export interface QuotaWindow {
+  /** human label, e.g. "5h", "7d", "Sonnet 7d", "Credits" */
+  label: string;
+  /** percent of the window already consumed (0-100), null when not reported */
+  usedPercent: number | null;
+  /** iso timestamp when this window resets, null when not reported */
+  resetsAt: string | null;
+  /** free-form value label for credit-style windows, e.g. "$4.20 remaining" */
+  valueLabel: string | null;
+  /** optional supporting text, e.g. reset details or provider-specific notes */
+  detail?: string | null;
+}
+
+/** result for one provider from getQuotaWindows() */
+export interface ProviderQuotaResult {
+  /** provider slug, e.g. "anthropic", "openai" */
+  provider: string;
+  /** source label when the provider reports where the quota data came from */
+  source?: string | null;
+  /** true when the fetch succeeded and windows is populated */
+  ok: boolean;
+  /** error message when ok is false */
+  error?: string;
+  windows: QuotaWindow[];
+}
+
 export interface ServerAdapterModule {
   type: string;
   execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult>;
   testEnvironment(ctx: AdapterEnvironmentTestContext): Promise<AdapterEnvironmentTestResult>;
+  listSkills?: (ctx: AdapterSkillContext) => Promise<AdapterSkillSnapshot>;
+  syncSkills?: (ctx: AdapterSkillContext, desiredSkills: string[]) => Promise<AdapterSkillSnapshot>;
   sessionCodec?: AdapterSessionCodec;
+  sessionManagement?: import("./session-compaction.js").AdapterSessionManagement;
   supportsLocalAgentJwt?: boolean;
   models?: AdapterModel[];
   listModels?: () => Promise<AdapterModel[]>;
@@ -157,6 +281,12 @@ export interface ServerAdapterModule {
     payload: HireApprovedPayload,
     adapterConfig: Record<string, unknown>,
   ) => Promise<HireApprovedHookResult>;
+  /**
+   * Optional: fetch live provider quota/rate-limit windows for this adapter.
+   * Returns a ProviderQuotaResult so the server can aggregate across adapters
+   * without knowing provider-specific credential paths or API shapes.
+   */
+  getQuotaWindows?: () => Promise<ProviderQuotaResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -167,8 +297,8 @@ export type TranscriptEntry =
   | { kind: "assistant"; ts: string; text: string; delta?: boolean }
   | { kind: "thinking"; ts: string; text: string; delta?: boolean }
   | { kind: "user"; ts: string; text: string }
-  | { kind: "tool_call"; ts: string; name: string; input: unknown }
-  | { kind: "tool_result"; ts: string; toolUseId: string; content: string; isError: boolean }
+  | { kind: "tool_call"; ts: string; name: string; input: unknown; toolUseId?: string }
+  | { kind: "tool_result"; ts: string; toolUseId: string; toolName?: string; content: string; isError: boolean }
   | { kind: "init"; ts: string; model: string; sessionId: string }
   | { kind: "result"; ts: string; text: string; inputTokens: number; outputTokens: number; cachedTokens: number; costUsd: number; subtype: string; isError: boolean; errors: string[] }
   | { kind: "stderr"; ts: string; text: string }
@@ -208,6 +338,12 @@ export interface CreateConfigValues {
   envBindings: Record<string, unknown>;
   url: string;
   bootstrapPrompt: string;
+  payloadTemplateJson?: string;
+  workspaceStrategyType?: string;
+  workspaceBaseRef?: string;
+  workspaceBranchTemplate?: string;
+  worktreeParentDir?: string;
+  runtimeServicesJson?: string;
   maxTurnsPerRun: number;
   heartbeatEnabled: boolean;
   intervalSec: number;

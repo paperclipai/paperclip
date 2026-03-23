@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
+import type { agents } from "@paperclipai/db";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
+  formatRuntimeWorkspaceWarningLog,
+  prioritizeProjectWorkspaceCandidatesForRun,
+  parseSessionCompactionPolicy,
   resolveRuntimeSessionParamsForWorkspace,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
@@ -18,6 +22,32 @@ function buildResolvedWorkspace(overrides: Partial<ResolvedWorkspaceForRun> = {}
     warnings: [],
     ...overrides,
   };
+}
+
+function buildAgent(adapterType: string, runtimeConfig: Record<string, unknown> = {}) {
+  return {
+    id: "agent-1",
+    companyId: "company-1",
+    projectId: null,
+    goalId: null,
+    name: "Agent",
+    role: "engineer",
+    title: null,
+    icon: null,
+    status: "running",
+    reportsTo: null,
+    capabilities: null,
+    adapterType,
+    adapterConfig: {},
+    runtimeConfig,
+    budgetMonthlyCents: 0,
+    spentMonthlyCents: 0,
+    permissions: {},
+    lastHeartbeatAt: null,
+    metadata: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  } as unknown as typeof agents.$inferSelect;
 }
 
 describe("resolveRuntimeSessionParamsForWorkspace", () => {
@@ -93,15 +123,25 @@ describe("shouldResetTaskSessionForWake", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "issue_assigned" })).toBe(true);
   });
 
-  it("resets session context on timer heartbeats", () => {
-    expect(shouldResetTaskSessionForWake({ wakeSource: "timer" })).toBe(true);
+  it("preserves session context on timer heartbeats", () => {
+    expect(shouldResetTaskSessionForWake({ wakeSource: "timer" })).toBe(false);
   });
 
-  it("resets session context on manual on-demand invokes", () => {
+  it("preserves session context on manual on-demand invokes by default", () => {
     expect(
       shouldResetTaskSessionForWake({
         wakeSource: "on_demand",
         wakeTriggerDetail: "manual",
+      }),
+    ).toBe(false);
+  });
+
+  it("resets session context when a fresh session is explicitly requested", () => {
+    expect(
+      shouldResetTaskSessionForWake({
+        wakeSource: "on_demand",
+        wakeTriggerDetail: "manual",
+        forceFreshSession: true,
       }),
     ).toBe(true);
   });
@@ -139,5 +179,102 @@ describe("shouldResetTaskSessionForWake", () => {
         wakeTriggerDetail: "callback",
       }),
     ).toBe(false);
+  });
+});
+
+describe("formatRuntimeWorkspaceWarningLog", () => {
+  it("emits informational workspace warnings on stdout", () => {
+    expect(formatRuntimeWorkspaceWarningLog("Using fallback workspace")).toEqual({
+      stream: "stdout",
+      chunk: "[paperclip] Using fallback workspace\n",
+    });
+  });
+});
+
+describe("prioritizeProjectWorkspaceCandidatesForRun", () => {
+  it("moves the explicitly selected workspace to the front", () => {
+    const rows = [
+      { id: "workspace-1", cwd: "/tmp/one" },
+      { id: "workspace-2", cwd: "/tmp/two" },
+      { id: "workspace-3", cwd: "/tmp/three" },
+    ];
+
+    expect(
+      prioritizeProjectWorkspaceCandidatesForRun(rows, "workspace-2").map((row) => row.id),
+    ).toEqual(["workspace-2", "workspace-1", "workspace-3"]);
+  });
+
+  it("keeps the original order when no preferred workspace is selected", () => {
+    const rows = [
+      { id: "workspace-1" },
+      { id: "workspace-2" },
+    ];
+
+    expect(
+      prioritizeProjectWorkspaceCandidatesForRun(rows, null).map((row) => row.id),
+    ).toEqual(["workspace-1", "workspace-2"]);
+  });
+
+  it("keeps the original order when the selected workspace is missing", () => {
+    const rows = [
+      { id: "workspace-1" },
+      { id: "workspace-2" },
+    ];
+
+    expect(
+      prioritizeProjectWorkspaceCandidatesForRun(rows, "workspace-9").map((row) => row.id),
+    ).toEqual(["workspace-1", "workspace-2"]);
+  });
+});
+
+describe("parseSessionCompactionPolicy", () => {
+  it("disables Paperclip-managed rotation by default for codex and claude local", () => {
+    expect(parseSessionCompactionPolicy(buildAgent("codex_local"))).toEqual({
+      enabled: true,
+      maxSessionRuns: 0,
+      maxRawInputTokens: 0,
+      maxSessionAgeHours: 0,
+    });
+    expect(parseSessionCompactionPolicy(buildAgent("claude_local"))).toEqual({
+      enabled: true,
+      maxSessionRuns: 0,
+      maxRawInputTokens: 0,
+      maxSessionAgeHours: 0,
+    });
+  });
+
+  it("keeps conservative defaults for adapters without confirmed native compaction", () => {
+    expect(parseSessionCompactionPolicy(buildAgent("cursor"))).toEqual({
+      enabled: true,
+      maxSessionRuns: 200,
+      maxRawInputTokens: 2_000_000,
+      maxSessionAgeHours: 72,
+    });
+    expect(parseSessionCompactionPolicy(buildAgent("opencode_local"))).toEqual({
+      enabled: true,
+      maxSessionRuns: 200,
+      maxRawInputTokens: 2_000_000,
+      maxSessionAgeHours: 72,
+    });
+  });
+
+  it("lets explicit agent overrides win over adapter defaults", () => {
+    expect(
+      parseSessionCompactionPolicy(
+        buildAgent("codex_local", {
+          heartbeat: {
+            sessionCompaction: {
+              maxSessionRuns: 25,
+              maxRawInputTokens: 500_000,
+            },
+          },
+        }),
+      ),
+    ).toEqual({
+      enabled: true,
+      maxSessionRuns: 25,
+      maxRawInputTokens: 500_000,
+      maxSessionAgeHours: 0,
+    });
   });
 });

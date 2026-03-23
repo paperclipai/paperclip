@@ -123,7 +123,7 @@
     -webkit-tap-highlight-color: color-mix(in oklab, var(--foreground) 20%, transparent);
   }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground antialiased;
     height: 100%;
     overflow: hidden;
   }
@@ -178,9 +178,19 @@
   background: oklch(0.5 0 0);
 }
 
-/* Auto-hide scrollbar: transparent by default, visible on container hover */
+/* Auto-hide scrollbar: always reserves space, thumb visible only on hover */
+.scrollbar-auto-hide::-webkit-scrollbar {
+  width: 8px !important;
+  background: transparent !important;
+}
+.scrollbar-auto-hide::-webkit-scrollbar-track {
+  background: transparent !important;
+}
 .scrollbar-auto-hide::-webkit-scrollbar-thumb {
   background: transparent !important;
+}
+.scrollbar-auto-hide:hover::-webkit-scrollbar-track {
+  background: oklch(0.205 0 0) !important;
 }
 .scrollbar-auto-hide:hover::-webkit-scrollbar-thumb {
   background: oklch(0.4 0 0) !important;
@@ -307,6 +317,11 @@
   color: inherit;
 }
 
+.paperclip-edit-in-place-content {
+  font-size: 0.9375rem;
+  line-height: 1.75rem;
+}
+
 .paperclip-mdxeditor-content > *:first-child {
   margin-top: 0;
 }
@@ -317,11 +332,11 @@
 
 .paperclip-mdxeditor-content p {
   margin: 0;
-  line-height: 1.4;
+  line-height: inherit;
 }
 
 .paperclip-mdxeditor-content p + p {
-  margin-top: 0.6rem;
+  margin-top: 1.1em;
 }
 
 .paperclip-mdxeditor-content a.paperclip-project-mention-chip {
@@ -342,8 +357,8 @@
 
 .paperclip-mdxeditor-content ul,
 .paperclip-mdxeditor-content ol {
-  margin: 0.35rem 0;
-  padding-left: 1.1rem;
+  margin: 1.1em 0;
+  padding-left: 1.6em;
 }
 
 .paperclip-mdxeditor-content ul {
@@ -356,19 +371,33 @@
 
 .paperclip-mdxeditor-content li {
   display: list-item;
-  margin: 0.15rem 0;
-  line-height: 1.4;
+  margin: 0.3em 0;
+  line-height: inherit;
 }
 
 .paperclip-mdxeditor-content li::marker {
   color: var(--muted-foreground);
 }
 
-.paperclip-mdxeditor-content h1,
-.paperclip-mdxeditor-content h2,
-.paperclip-mdxeditor-content h3 {
-  margin: 0.4rem 0 0.25rem;
+.paperclip-mdxeditor-content h1 {
+  margin: 1.4em 0 0.9em;
+  font-size: 1.75em;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.paperclip-mdxeditor-content h2 {
+  margin: 1.3em 0 0.85em;
+  font-size: 1.35em;
+  font-weight: 700;
   line-height: 1.3;
+}
+
+.paperclip-mdxeditor-content h3 {
+  margin: 1.2em 0 0.8em;
+  font-size: 1.15em;
+  font-weight: 600;
+  line-height: 1.35;
 }
 
 .paperclip-mdxeditor-content img {
@@ -377,39 +406,127 @@
 }
 
 .paperclip-mdxeditor-content blockquote {
-  margin: 0.45rem 0;
-  padding-left: 0.7rem;
-  border-left: 2px solid var(--border);
+  margin: 1.2em 0;
+  padding-left: 1em;
+  border-left: 3px solid var(--border);
   color: var(--muted-foreground);
-  line-height: 1.4;
+  line-height: inherit;
 }
 
 .paperclip-mdxeditor-content code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-  font-size: 0.84em;
+  font-size: 0.78em;
 }
 
 .paperclip-mdxeditor-content pre {
-  margin: 0.5rem 0;
-  padding: 0.45rem 0.55rem;
-  border: 1px solid var(--border);
+  margin: 0.4rem 0;
+  padding: 0;
+  border: 1px solid color-mix(in oklab, var(--foreground) 12%, transparent);
   border-radius: calc(var(--radius) - 3px);
-  background: color-mix(in oklab, var(--accent) 50%, transparent);
+  background: #1e1e2e;
+  color: #cdd6f4;
   overflow-x: auto;
 }
 
-/* Rendered markdown code blocks & inline code (prose/MarkdownBody context).
-   Matches the editor theme so rendered code looks consistent. */
-.prose pre {
-  border: 1px solid var(--border);
-  border-radius: calc(var(--radius) - 3px);
-  background-color: color-mix(in oklab, var(--accent) 50%, transparent);
-  color: var(--foreground);
+/* Dark theme for CodeMirror code blocks inside the MDXEditor.
+   Overrides the default cm6-theme-basic-light that MDXEditor bundles. */
+.paperclip-mdxeditor .cm-editor {
+  background-color: #1e1e2e !important;
+  color: #cdd6f4 !important;
+  font-size: 0.78em;
 }
 
-.prose code {
+.paperclip-mdxeditor .cm-gutters {
+  background-color: #181825 !important;
+  color: #585b70 !important;
+  border-right: 1px solid #313244 !important;
+}
+
+.paperclip-mdxeditor .cm-activeLineGutter {
+  background-color: #1e1e2e !important;
+}
+
+.paperclip-mdxeditor .cm-activeLine {
+  background-color: color-mix(in oklab, #cdd6f4 5%, transparent) !important;
+}
+
+.paperclip-mdxeditor .cm-cursor,
+.paperclip-mdxeditor .cm-dropCursor {
+  border-left-color: #cdd6f4 !important;
+}
+
+.paperclip-mdxeditor .cm-selectionBackground {
+  background-color: color-mix(in oklab, #89b4fa 25%, transparent) !important;
+}
+
+.paperclip-mdxeditor .cm-focused .cm-selectionBackground {
+  background-color: color-mix(in oklab, #89b4fa 30%, transparent) !important;
+}
+
+.paperclip-mdxeditor .cm-content {
+  caret-color: #cdd6f4;
+}
+
+/* MDXEditor code block language selector – show on hover only */
+.paperclip-mdxeditor-content [class*="_codeMirrorWrapper_"] {
+  position: relative;
+}
+
+.paperclip-mdxeditor-content [class*="_codeMirrorToolbar_"],
+.paperclip-mdxeditor-content [class*="_codeBlockToolbar_"] {
+  position: absolute;
+  top: 0.25rem;
+  right: 0.25rem;
+  z-index: 2;
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+
+.paperclip-mdxeditor-content [class*="_codeMirrorToolbar_"] select,
+.paperclip-mdxeditor-content [class*="_codeBlockToolbar_"] select {
+  background-color: #313244;
+  color: #cdd6f4;
+  border-color: #45475a;
+}
+
+.paperclip-mdxeditor-content [class*="_codeMirrorWrapper_"]:hover [class*="_codeMirrorToolbar_"],
+.paperclip-mdxeditor-content [class*="_codeMirrorWrapper_"]:hover [class*="_codeBlockToolbar_"],
+.paperclip-mdxeditor-content [class*="_codeMirrorWrapper_"]:focus-within [class*="_codeMirrorToolbar_"],
+.paperclip-mdxeditor-content [class*="_codeMirrorWrapper_"]:focus-within [class*="_codeBlockToolbar_"] {
+  opacity: 1;
+}
+
+/* Rendered markdown code blocks & inline code (prose/MarkdownBody context).
+   Dark theme code blocks with compact sizing.
+   Override prose CSS variables so prose-invert can't revert to defaults. */
+.paperclip-markdown {
+  --tw-prose-pre-bg: #1e1e2e;
+  --tw-prose-pre-code: #cdd6f4;
+  --tw-prose-invert-pre-bg: #1e1e2e;
+  --tw-prose-invert-pre-code: #cdd6f4;
+}
+
+.paperclip-markdown pre {
+  border: 1px solid color-mix(in oklab, var(--foreground) 12%, transparent) !important;
+  border-radius: calc(var(--radius) - 3px) !important;
+  background-color: #1e1e2e !important;
+  color: #cdd6f4 !important;
+  padding: 0.5rem 0.65rem !important;
+  margin: 0.4rem 0 !important;
+  font-size: 0.78em !important;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.paperclip-markdown code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-  font-size: 0.84em;
+  font-size: 0.78em;
+}
+
+.paperclip-markdown pre code {
+  font-size: inherit;
+  color: inherit;
+  background: none;
 }
 
 /* Remove backtick pseudo-elements from inline code (prose default adds them) */
@@ -424,6 +541,158 @@
   padding: 0.15em 0.35em;
   border-radius: 3px;
   font-weight: 500;
+}
+
+.paperclip-markdown {
+  color: var(--foreground);
+  font-size: 0.9375rem;
+  line-height: 1.6;
+}
+
+.paperclip-markdown > :first-child {
+  margin-top: 0;
+}
+
+.paperclip-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.paperclip-markdown :where(p, ul, ol, blockquote, pre, table) {
+  margin-top: 0.7rem;
+  margin-bottom: 0.7rem;
+}
+
+.paperclip-markdown :where(ul, ol) {
+  padding-left: 1.15rem;
+}
+
+.paperclip-markdown ul {
+  list-style-type: disc;
+}
+
+.paperclip-markdown ol {
+  list-style-type: decimal;
+}
+
+.paperclip-markdown li {
+  margin: 0.14rem 0;
+  padding-left: 0.2rem;
+}
+
+.paperclip-markdown li > :where(p, ul, ol) {
+  margin-top: 0.3rem;
+  margin-bottom: 0.3rem;
+}
+
+.paperclip-markdown li::marker {
+  color: var(--muted-foreground);
+}
+
+.paperclip-markdown h1,
+.paperclip-markdown h2,
+.paperclip-markdown h3,
+.paperclip-markdown h4 {
+  margin-top: 1.75rem;
+  margin-bottom: 0.45rem;
+  color: var(--foreground);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+}
+
+.paperclip-markdown h1 {
+  font-size: 1.5rem;
+}
+
+.paperclip-markdown h2 {
+  font-size: 1.25rem;
+}
+
+.paperclip-markdown h3 {
+  font-size: 1.05rem;
+}
+
+.paperclip-markdown h4 {
+  font-size: 0.95rem;
+}
+
+.paperclip-markdown :where(strong, b) {
+  color: var(--foreground);
+  font-weight: 600;
+}
+
+.paperclip-markdown a {
+  color: color-mix(in oklab, var(--foreground) 76%, #0969da 24%);
+  text-decoration: none;
+}
+
+.paperclip-markdown a:hover {
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+.dark .paperclip-markdown a {
+  color: color-mix(in oklab, var(--foreground) 80%, #58a6ff 20%);
+}
+
+.paperclip-markdown blockquote {
+  margin-left: 0;
+  padding-left: 0.95rem;
+  border-left: 0.24rem solid color-mix(in oklab, var(--border) 84%, var(--muted-foreground) 16%);
+  color: var(--muted-foreground);
+}
+
+.paperclip-markdown hr {
+  margin: 1.25rem 0;
+  border-color: var(--border);
+}
+
+.paperclip-markdown img {
+  border-radius: calc(var(--radius) + 2px);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--foreground) 10%, transparent);
+}
+
+.paperclip-markdown table {
+  width: 100%;
+}
+
+.paperclip-markdown th {
+  font-weight: 600;
+  text-align: left;
+}
+
+.paperclip-mermaid {
+  margin: 0.5rem 0;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 3px);
+  background-color: color-mix(in oklab, var(--accent) 35%, transparent);
+  overflow-x: auto;
+}
+
+.paperclip-mermaid svg {
+  display: block;
+  width: max-content;
+  max-width: none;
+  min-width: 100%;
+  height: auto;
+}
+
+.paperclip-mermaid-status {
+  margin: 0 0 0.45rem;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+
+.paperclip-mermaid-status-error {
+  color: var(--destructive);
+}
+
+.paperclip-mermaid-source {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
 }
 
 /* Project mention chips rendered inside MarkdownBody */
@@ -442,25 +711,21 @@ a.paperclip-project-mention-chip {
   white-space: nowrap;
 }
 
-/* Keep MDXEditor popups above app dialogs when editor is inside a modal. */
-.paperclip-mdxeditor-scope [class*="_dialogOverlay_"],
-.paperclip-mdxeditor [class*="_dialogOverlay_"] {
+/* Keep MDXEditor popups above app dialogs, even when they portal to <body>. */
+[class*="_popupContainer_"] {
+  z-index: 81 !important;
+}
+
+[class*="_dialogOverlay_"] {
   z-index: 80;
 }
 
-.paperclip-mdxeditor-scope [class*="_dialogContent_"],
-.paperclip-mdxeditor-scope [class*="_largeDialogContent_"],
-.paperclip-mdxeditor-scope [class*="_popoverContent_"],
-.paperclip-mdxeditor-scope [class*="_linkDialogPopoverContent_"],
-.paperclip-mdxeditor-scope [class*="_tableColumnEditorPopoverContent_"],
-.paperclip-mdxeditor-scope [class*="_toolbarButtonDropdownContainer_"],
-.paperclip-mdxeditor-scope [class*="_toolbarNodeKindSelectContainer_"],
-.paperclip-mdxeditor [class*="_dialogContent_"],
-.paperclip-mdxeditor [class*="_largeDialogContent_"],
-.paperclip-mdxeditor [class*="_popoverContent_"],
-.paperclip-mdxeditor [class*="_linkDialogPopoverContent_"],
-.paperclip-mdxeditor [class*="_tableColumnEditorPopoverContent_"],
-.paperclip-mdxeditor [class*="_toolbarButtonDropdownContainer_"],
-.paperclip-mdxeditor [class*="_toolbarNodeKindSelectContainer_"] {
+[class*="_dialogContent_"],
+[class*="_largeDialogContent_"],
+[class*="_popoverContent_"],
+[class*="_linkDialogPopoverContent_"],
+[class*="_tableColumnEditorPopoverContent_"],
+[class*="_toolbarButtonDropdownContainer_"],
+[class*="_toolbarNodeKindSelectContainer_"] {
   z-index: 81 !important;
 }

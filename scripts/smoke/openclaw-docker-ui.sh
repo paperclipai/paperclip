@@ -56,6 +56,7 @@ require_cmd grep
 
 OPENCLAW_REPO_URL="${OPENCLAW_REPO_URL:-https://github.com/openclaw/openclaw.git}"
 OPENCLAW_DOCKER_DIR="${OPENCLAW_DOCKER_DIR:-/tmp/openclaw-docker}"
+OPENCLAW_REPO_REF="${OPENCLAW_REPO_REF:-v2026.3.2}"
 OPENCLAW_IMAGE="${OPENCLAW_IMAGE:-openclaw:local}"
 OPENCLAW_TMP_DIR="${OPENCLAW_TMP_DIR:-${TMPDIR:-/tmp}}"
 OPENCLAW_TMP_DIR="${OPENCLAW_TMP_DIR%/}"
@@ -101,13 +102,22 @@ fi
 
 log "preparing OpenClaw repo at $OPENCLAW_DOCKER_DIR"
 if [[ -d "$OPENCLAW_DOCKER_DIR/.git" ]]; then
-  git -C "$OPENCLAW_DOCKER_DIR" fetch --quiet origin || true
-  git -C "$OPENCLAW_DOCKER_DIR" checkout --quiet main || true
-  git -C "$OPENCLAW_DOCKER_DIR" pull --ff-only --quiet origin main || true
+  git -C "$OPENCLAW_DOCKER_DIR" fetch --quiet --tags origin || true
 else
   rm -rf "$OPENCLAW_DOCKER_DIR"
   git clone "$OPENCLAW_REPO_URL" "$OPENCLAW_DOCKER_DIR"
+  git -C "$OPENCLAW_DOCKER_DIR" fetch --quiet --tags origin || true
 fi
+
+resolved_openclaw_ref=""
+if git -C "$OPENCLAW_DOCKER_DIR" rev-parse --verify --quiet "origin/$OPENCLAW_REPO_REF" >/dev/null; then
+  resolved_openclaw_ref="origin/$OPENCLAW_REPO_REF"
+elif git -C "$OPENCLAW_DOCKER_DIR" rev-parse --verify --quiet "$OPENCLAW_REPO_REF" >/dev/null; then
+  resolved_openclaw_ref="$OPENCLAW_REPO_REF"
+fi
+[[ -n "$resolved_openclaw_ref" ]] || fail "unable to resolve OPENCLAW_REPO_REF=$OPENCLAW_REPO_REF in $OPENCLAW_DOCKER_DIR"
+git -C "$OPENCLAW_DOCKER_DIR" checkout --quiet "$resolved_openclaw_ref"
+log "using OpenClaw ref $resolved_openclaw_ref ($(git -C "$OPENCLAW_DOCKER_DIR" rev-parse --short HEAD))"
 
 if [[ "$OPENCLAW_BUILD" == "1" ]]; then
   log "building Docker image $OPENCLAW_IMAGE"

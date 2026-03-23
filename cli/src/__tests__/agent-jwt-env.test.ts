@@ -4,7 +4,9 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   ensureAgentJwtSecret,
+  mergePaperclipEnvEntries,
   readAgentJwtSecretFromEnv,
+  readPaperclipEnvEntries,
   resolveAgentJwtEnvFile,
 } from "../config/env.js";
 import { agentJwtSecretCheck } from "../checks/agent-jwt-secret-check.js";
@@ -57,5 +59,21 @@ describe("agent jwt env helpers", () => {
 
     const result = agentJwtSecretCheck(configPath);
     expect(result.status).toBe("pass");
+  });
+
+  it("quotes hash-prefixed env values so dotenv round-trips them", () => {
+    const configPath = tempConfigPath();
+    const envPath = resolveAgentJwtEnvFile(configPath);
+
+    mergePaperclipEnvEntries(
+      {
+        PAPERCLIP_WORKTREE_COLOR: "#439edb",
+      },
+      envPath,
+    );
+
+    const contents = fs.readFileSync(envPath, "utf-8");
+    expect(contents).toContain('PAPERCLIP_WORKTREE_COLOR="#439edb"');
+    expect(readPaperclipEnvEntries(envPath).PAPERCLIP_WORKTREE_COLOR).toBe("#439edb");
   });
 });

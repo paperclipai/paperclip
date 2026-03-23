@@ -71,6 +71,12 @@ export function parseClaudeStdoutLine(line: string, ts: string): TranscriptEntry
           kind: "tool_call",
           ts,
           name: typeof block.name === "string" ? block.name : "unknown",
+          toolUseId:
+            typeof block.id === "string"
+              ? block.id
+              : typeof block.tool_use_id === "string"
+                ? block.tool_use_id
+                : undefined,
           input: block.input ?? {},
         });
       }

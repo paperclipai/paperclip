@@ -4,22 +4,14 @@ interface ShortcutHandlers {
   onNewIssue?: () => void;
   onToggleSidebar?: () => void;
   onTogglePanel?: () => void;
-  onSwitchCompany?: (index: number) => void;
 }
 
-export function useKeyboardShortcuts({ onNewIssue, onToggleSidebar, onTogglePanel, onSwitchCompany }: ShortcutHandlers) {
+export function useKeyboardShortcuts({ onNewIssue, onToggleSidebar, onTogglePanel }: ShortcutHandlers) {
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       // Don't fire shortcuts when typing in inputs
       const target = e.target as HTMLElement;
       if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable) {
-        return;
-      }
-
-      // Cmd+1..9 → Switch company
-      if ((e.metaKey || e.ctrlKey) && e.key >= "1" && e.key <= "9") {
-        e.preventDefault();
-        onSwitchCompany?.(parseInt(e.key, 10) - 1);
         return;
       }
 
@@ -44,5 +36,5 @@ export function useKeyboardShortcuts({ onNewIssue, onToggleSidebar, onTogglePane
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [onNewIssue, onToggleSidebar, onTogglePanel, onSwitchCompany]);
+  }, [onNewIssue, onToggleSidebar, onTogglePanel]);
 }

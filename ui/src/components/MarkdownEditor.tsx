@@ -61,6 +61,10 @@ export interface MarkdownEditorRef {
   focus: () => void;
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /* ---- Mention detection helpers ---- */
 
 interface MentionState {
@@ -251,6 +255,24 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           try {
             const src = await handler(file);
             setUploadError(null);
+            // After MDXEditor inserts the image, ensure two newlines follow it
+            // so the cursor isn't stuck right next to the image.
+            setTimeout(() => {
+              const current = latestValueRef.current;
+              const escapedSrc = escapeRegExp(src);
+              const updated = current.replace(
+                new RegExp(`(!\\[[^\\]]*\\]\\(${escapedSrc}\\))(?!\\n\\n)`, "g"),
+                "$1\n\n",
+              );
+              if (updated !== current) {
+                latestValueRef.current = updated;
+                ref.current?.setMarkdown(updated);
+                onChange(updated);
+                requestAnimationFrame(() => {
+                  ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
+                });
+              }
+            }, 100);
             return src;
           } catch (err) {
             const message = err instanceof Error ? err.message : "Image upload failed";
@@ -566,7 +588,6 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           "paperclip-mdxeditor-content focus:outline-none [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:list-item",
           contentClassName,
         )}
-        overlayContainer={containerRef.current}
         plugins={plugins}
       />
 

@@ -1,21 +1,29 @@
 import { applyPendingMigrations, inspectMigrations } from "./client.js";
+import { resolveMigrationConnection } from "./migration-runtime.js";
 
-const url = process.env.DATABASE_URL;
+async function main(): Promise<void> {
+  const resolved = await resolveMigrationConnection();
 
-if (!url) {
-  throw new Error("DATABASE_URL is required for db:migrate");
-}
+  console.log(`Migrating database via ${resolved.source}`);
 
-const before = await inspectMigrations(url);
-if (before.status === "upToDate") {
-  console.log("No pending migrations");
-} else {
-  console.log(`Applying ${before.pendingMigrations.length} pending migration(s)...`);
-  await applyPendingMigrations(url);
+  try {
+    const before = await inspectMigrations(resolved.connectionString);
+    if (before.status === "upToDate") {
+      console.log("No pending migrations");
+      return;
+    }
 
-  const after = await inspectMigrations(url);
-  if (after.status !== "upToDate") {
-    throw new Error(`Migrations incomplete: ${after.pendingMigrations.join(", ")}`);
+    console.log(`Applying ${before.pendingMigrations.length} pending migration(s)...`);
+    await applyPendingMigrations(resolved.connectionString);
+
+    const after = await inspectMigrations(resolved.connectionString);
+    if (after.status !== "upToDate") {
+      throw new Error(`Migrations incomplete: ${after.pendingMigrations.join(", ")}`);
+    }
+    console.log("Migrations complete");
+  } finally {
+    await resolved.stop();
   }
-  console.log("Migrations complete");
 }
+
+await main();

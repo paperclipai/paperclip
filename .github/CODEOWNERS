@@ -1,0 +1,10 @@
+# Replace @cryppadotta if a different maintainer or team should own release infrastructure.
+
+.github/** @cryppadotta @devinfoley
+scripts/release*.sh @cryppadotta @devinfoley
+scripts/release-*.mjs @cryppadotta @devinfoley
+scripts/create-github-release.sh @cryppadotta @devinfoley
+scripts/rollback-latest.sh @cryppadotta @devinfoley
+doc/RELEASING.md @cryppadotta @devinfoley
+doc/PUBLISHING.md @cryppadotta @devinfoley
+doc/RELEASE-AUTOMATION-SETUP.md @cryppadotta @devinfoley

@@ -1,15 +1,18 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { Link } from "@/lib/router";
 import type { Issue } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
+import { executionWorkspacesApi } from "../api/execution-workspaces";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
+import { formatAssigneeUserLabel } from "../lib/assignees";
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
@@ -17,8 +20,38 @@ import { formatDate, cn, projectUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { User, Hexagon, ArrowUpRight, Tag, Plus, Trash2 } from "lucide-react";
+import { User, Hexagon, ArrowUpRight, Tag, Plus, Trash2, Copy, Check } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
+
+const EXECUTION_WORKSPACE_OPTIONS = [
+  { value: "shared_workspace", label: "Project default" },
+  { value: "isolated_workspace", label: "New isolated workspace" },
+  { value: "reuse_existing", label: "Reuse existing workspace" },
+] as const;
+
+function defaultProjectWorkspaceIdForProject(project: {
+  workspaces?: Array<{ id: string; isPrimary: boolean }>;
+  executionWorkspacePolicy?: { defaultProjectWorkspaceId?: string | null } | null;
+} | null | undefined) {
+  if (!project) return null;
+  return project.executionWorkspacePolicy?.defaultProjectWorkspaceId
+    ?? project.workspaces?.find((workspace) => workspace.isPrimary)?.id
+    ?? project.workspaces?.[0]?.id
+    ?? null;
+}
+
+function defaultExecutionWorkspaceModeForProject(project: { executionWorkspacePolicy?: { enabled?: boolean; defaultMode?: string | null } | null } | null | undefined) {
+  const defaultMode = project?.executionWorkspacePolicy?.enabled ? project.executionWorkspacePolicy.defaultMode : null;
+  if (defaultMode === "isolated_workspace" || defaultMode === "operator_branch") return defaultMode;
+  if (defaultMode === "adapter_default") return "agent_default";
+  return "shared_workspace";
+}
+
+function issueModeForExistingWorkspace(mode: string | null | undefined) {
+  if (mode === "isolated_workspace" || mode === "operator_branch" || mode === "shared_workspace") return mode;
+  if (mode === "adapter_managed" || mode === "cloud_sandbox") return "agent_default";
+  return "shared_workspace";
+}
 
 interface IssuePropertiesProps {
   issue: Issue;
@@ -97,6 +130,49 @@ function PropertyPicker({
   );
 }
 
+/** Splits a string at `/` and `-` boundaries, inserting <wbr> for natural line breaks. */
+function BreakablePath({ text }: { text: string }) {
+  const parts: React.ReactNode[] = [];
+  // Split on path separators and hyphens, keeping them in the output
+  const segments = text.split(/(?<=[\/-])/);
+  for (let i = 0; i < segments.length; i++) {
+    if (i > 0) parts.push(<wbr key={i} />);
+    parts.push(segments[i]);
+  }
+  return <>{parts}</>;
+}
+
+/** Displays a value with a copy-to-clipboard icon and "Copied!" feedback. */
+function CopyableValue({ value, label, mono, className }: { value: string; label?: string; mono?: boolean; className?: string }) {
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => setCopied(false), 1500);
+    } catch { /* noop */ }
+  }, [value]);
+
+  return (
+    <div className={cn("flex items-start gap-1 group", className)}>
+      <span className="min-w-0" style={{ overflowWrap: "anywhere" }}>
+        {label && <span className="text-muted-foreground">{label} </span>}
+        <span className={mono ? "font-mono" : undefined}><BreakablePath text={value} /></span>
+      </span>
+      <button
+        type="button"
+        className="shrink-0 mt-0.5 p-0.5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground opacity-0 group-hover:opacity-100 focus:opacity-100"
+        onClick={handleCopy}
+        title={copied ? "Copied!" : "Copy to clipboard"}
+      >
+        {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
+      </button>
+    </div>
+  );
+}
+
 export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProps) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
@@ -114,6 +190,10 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
   });
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+  });
   const currentUserId = session?.user?.id ?? session?.session?.userId;
 
   const { data: agents } = useQuery({
@@ -127,8 +207,12 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
     queryFn: () => projectsApi.list(companyId!),
     enabled: !!companyId,
   });
+  const activeProjects = useMemo(
+    () => (projects ?? []).filter((p) => !p.archivedAt || p.id === issue.projectId),
+    [projects, issue.projectId],
+  );
   const { orderedProjects } = useProjectOrder({
-    projects: projects ?? [],
+    projects: activeProjects,
     companyId,
     userId: currentUserId,
   });
@@ -176,6 +260,47 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
     const project = orderedProjects.find((p) => p.id === id);
     return project?.name ?? id.slice(0, 8);
   };
+  const currentProject = issue.projectId
+    ? orderedProjects.find((project) => project.id === issue.projectId) ?? null
+    : null;
+  const currentProjectExecutionWorkspacePolicy =
+    experimentalSettings?.enableIsolatedWorkspaces === true
+      ? currentProject?.executionWorkspacePolicy ?? null
+      : null;
+  const currentProjectSupportsExecutionWorkspace = Boolean(currentProjectExecutionWorkspacePolicy?.enabled);
+  const currentExecutionWorkspaceSelection =
+    issue.executionWorkspacePreference
+    ?? issue.executionWorkspaceSettings?.mode
+    ?? defaultExecutionWorkspaceModeForProject(currentProject);
+  const { data: reusableExecutionWorkspaces } = useQuery({
+    queryKey: queryKeys.executionWorkspaces.list(companyId!, {
+      projectId: issue.projectId ?? undefined,
+      projectWorkspaceId: issue.projectWorkspaceId ?? undefined,
+      reuseEligible: true,
+    }),
+    queryFn: () =>
+      executionWorkspacesApi.list(companyId!, {
+        projectId: issue.projectId ?? undefined,
+        projectWorkspaceId: issue.projectWorkspaceId ?? undefined,
+        reuseEligible: true,
+      }),
+    enabled: Boolean(companyId) && Boolean(issue.projectId),
+  });
+  const deduplicatedReusableWorkspaces = useMemo(() => {
+    const workspaces = reusableExecutionWorkspaces ?? [];
+    const seen = new Map<string, typeof workspaces[number]>();
+    for (const ws of workspaces) {
+      const key = ws.cwd ?? ws.id;
+      const existing = seen.get(key);
+      if (!existing || new Date(ws.lastUsedAt) > new Date(existing.lastUsedAt)) {
+        seen.set(key, ws);
+      }
+    }
+    return Array.from(seen.values());
+  }, [reusableExecutionWorkspaces]);
+  const selectedReusableExecutionWorkspace = deduplicatedReusableWorkspaces.find(
+    (workspace) => workspace.id === issue.executionWorkspaceId,
+  );
   const projectLink = (id: string | null) => {
     if (!id) return null;
     const project = projects?.find((p) => p.id === id) ?? null;
@@ -191,14 +316,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
   const assignee = issue.assigneeAgentId
     ? agents?.find((a) => a.id === issue.assigneeAgentId)
     : null;
-  const userLabel = (userId: string | null | undefined) =>
-    userId
-      ? userId === "local-board"
-        ? "Board"
-        : currentUserId && userId === currentUserId
-          ? "Me"
-          : userId.slice(0, 5)
-      : null;
+  const userLabel = (userId: string | null | undefined) => formatAssigneeUserLabel(userId, currentUserId);
   const assigneeUserLabel = userLabel(issue.assigneeUserId);
   const creatorUserLabel = userLabel(issue.createdByUserId);
 
@@ -334,7 +452,22 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
         >
           No assignee
         </button>
-        {issue.createdByUserId && (
+        {currentUserId && (
+          <button
+            className={cn(
+              "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+              issue.assigneeUserId === currentUserId && "bg-accent",
+            )}
+            onClick={() => {
+              onUpdate({ assigneeAgentId: null, assigneeUserId: currentUserId });
+              setAssigneeOpen(false);
+            }}
+          >
+            <User className="h-3 w-3 shrink-0 text-muted-foreground" />
+            Assign to me
+          </button>
+        )}
+        {issue.createdByUserId && issue.createdByUserId !== currentUserId && (
           <button
             className={cn(
               "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
@@ -346,7 +479,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
             }}
           >
             <User className="h-3 w-3 shrink-0 text-muted-foreground" />
-            {creatorUserLabel ? `Assign to ${creatorUserLabel === "Me" ? "me" : creatorUserLabel}` : "Assign to requester"}
+            {creatorUserLabel ? `Assign to ${creatorUserLabel}` : "Assign to requester"}
           </button>
         )}
         {sortedAgents
@@ -402,7 +535,16 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
             "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 whitespace-nowrap",
             !issue.projectId && "bg-accent"
           )}
-          onClick={() => { onUpdate({ projectId: null }); setProjectOpen(false); }}
+          onClick={() => {
+            onUpdate({
+              projectId: null,
+              projectWorkspaceId: null,
+              executionWorkspaceId: null,
+              executionWorkspacePreference: null,
+              executionWorkspaceSettings: null,
+            });
+            setProjectOpen(false);
+          }}
         >
           No project
         </button>
@@ -419,7 +561,19 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
               "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 whitespace-nowrap",
               p.id === issue.projectId && "bg-accent"
             )}
-            onClick={() => { onUpdate({ projectId: p.id }); setProjectOpen(false); }}
+            onClick={() => {
+              const defaultMode = defaultExecutionWorkspaceModeForProject(p);
+              onUpdate({
+                projectId: p.id,
+                projectWorkspaceId: defaultProjectWorkspaceIdForProject(p),
+                executionWorkspaceId: null,
+                executionWorkspacePreference: defaultMode,
+                executionWorkspaceSettings: p.executionWorkspacePolicy?.enabled
+                  ? { mode: defaultMode }
+                  : null,
+              });
+              setProjectOpen(false);
+            }}
           >
             <span
               className="shrink-0 h-3 w-3 rounded-sm"
@@ -504,6 +658,91 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
           {projectContent}
         </PropertyPicker>
 
+        {currentProjectSupportsExecutionWorkspace && (
+          <PropertyRow label="Workspace">
+            <div className="w-full space-y-2">
+              <select
+                className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
+                value={currentExecutionWorkspaceSelection}
+                onChange={(e) => {
+                  const nextMode = e.target.value;
+                  onUpdate({
+                    executionWorkspacePreference: nextMode,
+                    executionWorkspaceId: nextMode === "reuse_existing" ? issue.executionWorkspaceId : null,
+                    executionWorkspaceSettings: {
+                      mode:
+                        nextMode === "reuse_existing"
+                          ? issueModeForExistingWorkspace(selectedReusableExecutionWorkspace?.mode)
+                          : nextMode,
+                    },
+                  });
+                }}
+              >
+                {EXECUTION_WORKSPACE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+
+              {currentExecutionWorkspaceSelection === "reuse_existing" && (
+                <select
+                  className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
+                  value={issue.executionWorkspaceId ?? ""}
+                  onChange={(e) => {
+                    const nextExecutionWorkspaceId = e.target.value || null;
+                    const nextExecutionWorkspace = deduplicatedReusableWorkspaces.find(
+                      (workspace) => workspace.id === nextExecutionWorkspaceId,
+                    );
+                    onUpdate({
+                      executionWorkspacePreference: "reuse_existing",
+                      executionWorkspaceId: nextExecutionWorkspaceId,
+                      executionWorkspaceSettings: {
+                        mode: issueModeForExistingWorkspace(nextExecutionWorkspace?.mode),
+                      },
+                    });
+                  }}
+                >
+                  <option value="">Choose an existing workspace</option>
+                  {deduplicatedReusableWorkspaces.map((workspace) => (
+                    <option key={workspace.id} value={workspace.id}>
+                      {workspace.name} · {workspace.status} · {workspace.branchName ?? workspace.cwd ?? workspace.id.slice(0, 8)}
+                    </option>
+                  ))}
+                </select>
+              )}
+
+              {issue.currentExecutionWorkspace && (
+                <div className="text-[11px] text-muted-foreground space-y-0.5">
+                  <div style={{ overflowWrap: "anywhere" }}>
+                    Current:{" "}
+                    <Link
+                      to={`/execution-workspaces/${issue.currentExecutionWorkspace.id}`}
+                      className="hover:text-foreground hover:underline"
+                    >
+                      <BreakablePath text={issue.currentExecutionWorkspace.name} />
+                    </Link>
+                    {" · "}
+                    {issue.currentExecutionWorkspace.status}
+                  </div>
+                  {issue.currentExecutionWorkspace.cwd && (
+                    <CopyableValue value={issue.currentExecutionWorkspace.cwd} mono className="text-[11px]" />
+                  )}
+                  {issue.currentExecutionWorkspace.branchName && (
+                    <CopyableValue value={issue.currentExecutionWorkspace.branchName} label="Branch:" className="text-[11px]" />
+                  )}
+                  {issue.currentExecutionWorkspace.repoUrl && (
+                    <CopyableValue value={issue.currentExecutionWorkspace.repoUrl} label="Repo:" mono className="text-[11px]" />
+                  )}
+                </div>
+              )}
+              {!issue.currentExecutionWorkspace && currentProject?.primaryWorkspace?.cwd && (
+                <CopyableValue value={currentProject.primaryWorkspace.cwd} mono className="text-[11px] text-muted-foreground" />
+              )}
+            </div>
+          </PropertyRow>
+        )}
+
         {issue.parentId && (
           <PropertyRow label="Parent">
             <Link
@@ -525,6 +764,23 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
       <Separator />
 
       <div className="space-y-1">
+        {(issue.createdByAgentId || issue.createdByUserId) && (
+          <PropertyRow label="Created by">
+            {issue.createdByAgentId ? (
+              <Link
+                to={`/agents/${issue.createdByAgentId}`}
+                className="hover:underline"
+              >
+                <Identity name={agentName(issue.createdByAgentId) ?? issue.createdByAgentId.slice(0, 8)} size="sm" />
+              </Link>
+            ) : (
+              <>
+                <User className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className="text-sm">{creatorUserLabel ?? "User"}</span>
+              </>
+            )}
+          </PropertyRow>
+        )}
         {issue.startedAt && (
           <PropertyRow label="Started">
             <span className="text-sm">{formatDate(issue.startedAt)}</span>

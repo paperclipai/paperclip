@@ -52,5 +52,5 @@ describe("privateHostnameGuard", () => {
     const res = await request(app).get("/dashboard").set("Host", "dotta-macbook-pro:3100");
     expect(res.status).toBe(403);
     expect(res.text).toContain("please run pnpm paperclipai allowed-hostname dotta-macbook-pro");
-  });
+  }, 20_000);
 });

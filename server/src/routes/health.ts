@@ -1,8 +1,11 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
-import { count, sql } from "drizzle-orm";
-import { instanceUserRoles } from "@paperclipai/db";
+import { and, count, eq, gt, inArray, isNull, sql } from "drizzle-orm";
+import { heartbeatRuns, instanceUserRoles, invites } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import { readPersistedDevServerStatus, toDevServerHealthStatus } from "../dev-server-status.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
+import { serverVersion } from "../version.js";
 
 export function healthRoutes(
   db?: Db,
@@ -22,11 +25,12 @@ export function healthRoutes(
 
   router.get("/", async (_req, res) => {
     if (!db) {
-      res.json({ status: "ok" });
+      res.json({ status: "ok", version: serverVersion });
       return;
     }
 
     let bootstrapStatus: "ready" | "bootstrap_pending" = "ready";
+    let bootstrapInviteActive = false;
     if (opts.deploymentMode === "authenticated") {
       const roleCount = await db
         .select({ count: count() })
@@ -34,17 +38,54 @@ export function healthRoutes(
         .where(sql`${instanceUserRoles.role} = 'instance_admin'`)
         .then((rows) => Number(rows[0]?.count ?? 0));
       bootstrapStatus = roleCount > 0 ? "ready" : "bootstrap_pending";
+
+      if (bootstrapStatus === "bootstrap_pending") {
+        const now = new Date();
+        const inviteCount = await db
+          .select({ count: count() })
+          .from(invites)
+          .where(
+            and(
+              eq(invites.inviteType, "bootstrap_ceo"),
+              isNull(invites.revokedAt),
+              isNull(invites.acceptedAt),
+              gt(invites.expiresAt, now),
+            ),
+          )
+          .then((rows) => Number(rows[0]?.count ?? 0));
+        bootstrapInviteActive = inviteCount > 0;
+      }
+    }
+
+    const persistedDevServerStatus = readPersistedDevServerStatus();
+    let devServer: ReturnType<typeof toDevServerHealthStatus> | undefined;
+    if (persistedDevServerStatus) {
+      const instanceSettings = instanceSettingsService(db);
+      const experimentalSettings = await instanceSettings.getExperimental();
+      const activeRunCount = await db
+        .select({ count: count() })
+        .from(heartbeatRuns)
+        .where(inArray(heartbeatRuns.status, ["queued", "running"]))
+        .then((rows) => Number(rows[0]?.count ?? 0));
+
+      devServer = toDevServerHealthStatus(persistedDevServerStatus, {
+        autoRestartEnabled: experimentalSettings.autoRestartDevServerWhenIdle ?? false,
+        activeRunCount,
+      });
     }
 
     res.json({
       status: "ok",
+      version: serverVersion,
       deploymentMode: opts.deploymentMode,
       deploymentExposure: opts.deploymentExposure,
       authReady: opts.authReady,
       bootstrapStatus,
+      bootstrapInviteActive,
       features: {
         companyDeletionEnabled: opts.companyDeletionEnabled,
       },
+      ...(devServer ? { devServer } : {}),
     });
   });
 
