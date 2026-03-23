@@ -1,4 +1,4 @@
-ALTER TABLE "cost_events" ADD COLUMN "adapter_type" text;--> statement-breakpoint
+ALTER TABLE "cost_events" ADD COLUMN IF NOT EXISTS "adapter_type" text;--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "cost_events_company_adapter_occurred_idx" ON "cost_events" ("company_id", "adapter_type", "occurred_at");--> statement-breakpoint
 UPDATE "cost_events" ce
 SET "adapter_type" = a."adapter_type"

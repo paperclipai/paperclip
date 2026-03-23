@@ -28,6 +28,7 @@ BEGIN
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;--> statement-breakpoint
+DROP TRIGGER IF EXISTS knowledge_store_search_vector_trigger ON "knowledge_store";
 CREATE TRIGGER knowledge_store_search_vector_trigger
   BEFORE INSERT OR UPDATE ON "knowledge_store"
   FOR EACH ROW EXECUTE FUNCTION knowledge_store_search_vector_update();--> statement-breakpoint

@@ -69,10 +69,16 @@ if [ "$NODE_COUNT" -gt 50 ]; then
 fi
 
 # 6. TAILSCALE CHECK
-TS_STATUS=$(tailscale status 2>/dev/null | head -1 || echo "not running")
-if echo "$TS_STATUS" | grep -qi "stopped\|error\|not running"; then
-  [ "$STATUS" = "OK" ] && STATUS="WARNING"
-  FINDINGS="$FINDINGS | TAILSCALE: down"
+TAILSCALE_BIN="/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+[ ! -x "$TAILSCALE_BIN" ] && TAILSCALE_BIN=$(which tailscale 2>/dev/null || echo "")
+if [ -n "$TAILSCALE_BIN" ]; then
+  TS_STATUS=$("$TAILSCALE_BIN" status 2>&1 | head -1 || echo "not running")
+  if echo "$TS_STATUS" | grep -qi "stopped\|error\|not running\|failed"; then
+    [ "$STATUS" = "OK" ] && STATUS="WARNING"
+    FINDINGS="$FINDINGS | TAILSCALE: down"
+  fi
+else
+  FINDINGS="$FINDINGS | TAILSCALE: binary not found"
 fi
 
 # LOG RESULT

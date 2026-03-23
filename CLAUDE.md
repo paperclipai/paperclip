@@ -28,6 +28,40 @@ Paperclip issue sistemi ile: parent issue → 3 sub-issue → degerlendirme → 
 Merkezi beyin: zeka_match.py → top 5 skill eslestirme
 Vault: ~/Documents/EvoHaus-Vault/Hafiza/zeka/
 
+## Unified Brain — Hafiza Sistemi
+
+### 3 Katman
+| Katman | Sistem | Port | Amac |
+|--------|--------|------|------|
+| HOT | claude-mem (SQLite+Chroma) | 37777 | Session-level, semantic search |
+| WARM | knowledge_store (PostgreSQL) | 3100 | Holding-level, FTS, agent injection |
+| COLD | Vault (Markdown, Syncthing) | - | Human-readable, cross-platform |
+
+### Knowledge Store
+- Tablo: `knowledge_store` (migration 0040)
+- Service: `server/src/services/knowledge.ts`
+- Routes: POST/GET `/api/knowledge`, `/api/knowledge/search`, `/api/knowledge/stats`, `/api/knowledge/weekly-digest`, `/api/knowledge/bulk-import`
+- Heartbeat injection: agent run'da ilgili knowledge entry'ler context'e eklenir
+
+### Holding Roster
+- `getHoldingTree()`: recursive CTE ile holding agaci
+- `getHoldingRoster()`: tum agent'lari capability/adapter/status ile filtrele
+- Routes: GET `/api/companies/holding/roster`, `/api/companies/holding/tree/:companyId`
+- Agent kolonlari: `capability_tags[]`, `specialty`, `current_task_summary`, `availability`
+
+### Sync Akisi (30dk)
+```
+Vault → claude-mem → knowledge_store
+         ↑                ↑
+OpenClaw bridge ──────────┘
+Session hooks ────────────┘
+```
+
+### Meeting & Delegation
+- `createMeeting()`: paralel agent calisma + CEO synthesis
+- `createConsensus()`: tri-model (claude+codex+gemini) → synthesis
+- `/issues/:id/delegate`: cross-company issue delegation
+
 ## Gelistirme Notlari
 - Database: Embedded PostgreSQL, port 54329
 - Server: localhost:3100
