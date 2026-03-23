@@ -1,5 +1,5 @@
 import type { Request } from "express";
-import type { PermissionKey } from "@paperclipai/shared";
+import type { PermissionKey, ProjectPermissionKey } from "@paperclipai/shared";
 import { forbidden, unauthorized } from "../errors.js";
 
 export function assertBoard(req: Request) {
@@ -71,4 +71,71 @@ export async function requirePermission(
   if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
   const allowed = await access.canUser(companyId, req.actor.userId, permissionKey);
   if (!allowed) throw forbidden(`Missing permission: ${permissionKey}`);
+}
+
+type ProjectAccessChecker = {
+  isCompanyOwner: (companyId: string, userId: string | null | undefined) => Promise<boolean>;
+  hasProjectPermission: (projectId: string, principalType: "user" | "agent", principalId: string, permissionKey: ProjectPermissionKey) => Promise<boolean>;
+  canUserAccessProject: (companyId: string, projectId: string, userId: string | null | undefined) => Promise<boolean>;
+  getProjectMembership: (projectId: string, principalType: "user" | "agent", principalId: string) => Promise<unknown>;
+};
+
+/**
+ * Checks company access, then verifies the actor holds the given project-level
+ * permission.  Company owners bypass the project permission check.
+ */
+export async function requireProjectPermission(
+  req: Request,
+  access: ProjectAccessChecker,
+  companyId: string,
+  projectId: string,
+  permissionKey: ProjectPermissionKey,
+) {
+  assertCompanyAccess(req, companyId);
+
+  if (req.actor.type === "board") {
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
+    if (await access.isCompanyOwner(companyId, req.actor.userId)) return;
+    const allowed = await access.hasProjectPermission(projectId, "user", req.actor.userId!, permissionKey);
+    if (!allowed) throw forbidden(`Missing project permission: ${permissionKey}`);
+    return;
+  }
+
+  if (req.actor.type === "agent") {
+    if (!req.actor.agentId) throw forbidden("Agent authentication required");
+    const allowed = await access.hasProjectPermission(projectId, "agent", req.actor.agentId, permissionKey);
+    if (!allowed) throw forbidden(`Missing project permission: ${permissionKey}`);
+    return;
+  }
+
+  throw unauthorized();
+}
+
+/**
+ * Checks company access, then verifies the actor has membership in the given
+ * project (no specific permission required).
+ */
+export async function requireProjectAccess(
+  req: Request,
+  access: ProjectAccessChecker,
+  companyId: string,
+  projectId: string,
+) {
+  assertCompanyAccess(req, companyId);
+
+  if (req.actor.type === "board") {
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
+    const canAccess = await access.canUserAccessProject(companyId, projectId, req.actor.userId);
+    if (!canAccess) throw forbidden("No access to this project");
+    return;
+  }
+
+  if (req.actor.type === "agent") {
+    if (!req.actor.agentId) throw forbidden("Agent authentication required");
+    const member = await access.getProjectMembership(projectId, "agent", req.actor.agentId);
+    if (!member) throw forbidden("No access to this project");
+    return;
+  }
+
+  throw unauthorized();
 }
