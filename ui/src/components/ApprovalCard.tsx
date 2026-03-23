@@ -1,10 +1,11 @@
-import { CheckCircle2, XCircle, Clock } from "lucide-react";
+import { CheckCircle2, XCircle, Clock, Loader2 } from "lucide-react";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { Identity } from "./Identity";
 import { approvalLabel, typeIcon, defaultTypeIcon, ApprovalPayloadRenderer } from "./ApprovalPayload";
 import { timeAgo } from "../lib/timeAgo";
 import type { Approval, Agent } from "@paperclipai/shared";
+import { useEffect, useRef, useState } from "react";
 
 function statusIcon(status: string) {
   if (status === "approved") return <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />;
@@ -31,6 +32,15 @@ export function ApprovalCard({
   detailLink?: string;
   isPending: boolean;
 }) {
+  const [pendingAction, setPendingAction] = useState<"approve" | "reject" | null>(null);
+  const prevIsPendingRef = useRef(isPending);
+  useEffect(() => {
+    if (prevIsPendingRef.current && !isPending) {
+      setPendingAction(null);
+    }
+    prevIsPendingRef.current = isPending;
+  }, [isPending]);
+
   const Icon = typeIcon[approval.type] ?? defaultTypeIcon;
   const label = approvalLabel(approval.type, approval.payload as Record<string, unknown> | null);
   const showResolutionButtons =
@@ -75,18 +85,22 @@ export function ApprovalCard({
           <Button
             size="sm"
             className="bg-green-700 hover:bg-green-600 text-white"
-            onClick={onApprove}
+            onClick={() => { setPendingAction("approve"); onApprove(); }}
             disabled={isPending}
           >
-            Approve
+            {pendingAction === "approve" && isPending
+              ? <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Approving...</>
+              : "Approve"}
           </Button>
           <Button
             variant="destructive"
             size="sm"
-            onClick={onReject}
+            onClick={() => { setPendingAction("reject"); onReject(); }}
             disabled={isPending}
           >
-            Reject
+            {pendingAction === "reject" && isPending
+              ? <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Rejecting...</>
+              : "Reject"}
           </Button>
         </div>
       )}

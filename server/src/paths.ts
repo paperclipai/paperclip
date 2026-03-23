@@ -32,3 +32,13 @@ export function resolvePaperclipConfigPath(overridePath?: string): string {
 export function resolvePaperclipEnvPath(overrideConfigPath?: string): string {
   return path.resolve(path.dirname(resolvePaperclipConfigPath(overrideConfigPath)), PAPERCLIP_ENV_FILENAME);
 }
+
+/**
+ * Convert MSYS/Git Bash drive paths (/c/Users/...) to native Windows paths (C:\Users\...).
+ * On non-Windows or non-matching paths, returns the input unchanged.
+ */
+export function normalizeMsysDrivePath(p: string): string {
+  if (process.platform !== "win32") return p;
+  const m = p.match(/^\/([a-zA-Z])\/(.*)/);
+  return m ? `${m[1].toUpperCase()}:\\${m[2].replace(/\//g, "\\")}` : p;
+}

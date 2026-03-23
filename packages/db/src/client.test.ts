@@ -103,6 +103,40 @@ afterEach(async () => {
 
 describe("applyPendingMigrations", () => {
   it(
+    "bootstraps migration journal for non-empty database without journal",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      // First, apply all migrations normally to create a fully-migrated database
+      await applyPendingMigrations(connectionString);
+
+      // Now drop the migration journal to simulate the "non-empty db, no journal" case
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        await sql.unsafe(`DROP SCHEMA "drizzle" CASCADE`);
+      } finally {
+        await sql.end();
+      }
+
+      // Verify we are now in the "no-migration-journal-non-empty-db" state
+      const stateBeforeFix = await inspectMigrations(connectionString);
+      expect(stateBeforeFix).toMatchObject({
+        status: "needsMigrations",
+        reason: "no-migration-journal-non-empty-db",
+      });
+
+      // The fix: applyPendingMigrations should bootstrap the journal
+      // instead of throwing "automatic migration is unsafe"
+      await applyPendingMigrations(connectionString);
+
+      // Verify the database is now up to date with a proper journal
+      const finalState = await inspectMigrations(connectionString);
+      expect(finalState.status).toBe("upToDate");
+    },
+    20_000,
+  );
+
+  it(
     "applies an inserted earlier migration without replaying later legacy migrations",
     async () => {
       const connectionString = await createTempDatabase();

@@ -26,11 +26,13 @@ export const AGENT_ADAPTER_TYPES = [
   "http",
   "claude_local",
   "codex_local",
+  "gemini_local",
   "opencode_local",
   "pi_local",
   "cursor",
   "openclaw_gateway",
   "hermes_local",
+  "gemini_local",
 ] as const;
 export type AgentAdapterType = (typeof AGENT_ADAPTER_TYPES)[number];
 
@@ -343,6 +345,8 @@ export type JoinRequestStatus = (typeof JOIN_REQUEST_STATUSES)[number];
 
 export const PERMISSION_KEYS = [
   "agents:create",
+  "agents:delete",
+  "agents:terminate",
   "users:invite",
   "users:manage_permissions",
   "tasks:assign",

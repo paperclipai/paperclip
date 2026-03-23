@@ -157,6 +157,7 @@ export function AgentIconPicker({ value, onChange, children }: AgentIconPickerPr
                 (value ?? DEFAULT_ICON) === name && "bg-accent ring-1 ring-primary"
               )}
               title={name}
+              aria-label={name}
             >
               <Icon className="h-4 w-4" />
             </button>

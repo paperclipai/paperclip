@@ -21,6 +21,7 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import {
@@ -450,6 +451,13 @@ export function NewIssueDialog() {
       reset();
       closeNewIssue();
     },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to create issue",
+        body: err instanceof Error ? err.message : "An unexpected error occurred.",
+        tone: "error",
+      });
+    },
   });
 
   const uploadDescriptionImage = useMutation({
@@ -870,6 +878,7 @@ export function NewIssueDialog() {
       <DialogContent
         showCloseButton={false}
         aria-describedby={undefined}
+        aria-labelledby="new-issue-dialog-title"
         className={cn(
           "p-0 gap-0 flex flex-col max-h-[calc(100dvh-2rem)]",
           expanded
@@ -899,6 +908,7 @@ export function NewIssueDialog() {
           }
         }}
       >
+        <DialogTitle id="new-issue-dialog-title" className="sr-only">Create new issue</DialogTitle>
         {/* Header bar */}
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-border shrink-0">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -965,6 +975,7 @@ export function NewIssueDialog() {
               className="text-muted-foreground"
               onClick={() => setExpanded(!expanded)}
               disabled={createIssue.isPending}
+              aria-label={expanded ? "Minimize" : "Maximize"}
             >
               {expanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
             </Button>
@@ -974,6 +985,7 @@ export function NewIssueDialog() {
               className="text-muted-foreground"
               onClick={() => closeNewIssue()}
               disabled={createIssue.isPending}
+              aria-label="Close"
             >
               <span className="text-lg leading-none">&times;</span>
             </Button>
@@ -1129,6 +1141,7 @@ export function NewIssueDialog() {
               </div>
               <select
                 className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
+                aria-label="Execution workspace mode"
                 value={executionWorkspaceMode}
                 onChange={(e) => {
                   setExecutionWorkspaceMode(e.target.value);
@@ -1146,6 +1159,7 @@ export function NewIssueDialog() {
               {executionWorkspaceMode === "reuse_existing" && (
                 <select
                   className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
+                  aria-label="Select existing workspace"
                   value={selectedExecutionWorkspaceId}
                   onChange={(e) => setSelectedExecutionWorkspaceId(e.target.value)}
                 >
@@ -1188,6 +1202,7 @@ export function NewIssueDialog() {
                     searchPlaceholder="Search models..."
                     emptyMessage="No models found."
                     onChange={setAssigneeModelOverride}
+                    allowCustomValue
                   />
                 </div>
                 <div className="space-y-1.5">
@@ -1288,6 +1303,7 @@ export function NewIssueDialog() {
                           onClick={() => removeStagedFile(file.id)}
                           disabled={createIssue.isPending}
                           title="Remove document"
+                          aria-label="Remove document"
                         >
                           <X className="h-3.5 w-3.5" />
                         </Button>
@@ -1319,6 +1335,7 @@ export function NewIssueDialog() {
                           onClick={() => removeStagedFile(file.id)}
                           disabled={createIssue.isPending}
                           title="Remove attachment"
+                          aria-label="Remove attachment"
                         >
                           <X className="h-3.5 w-3.5" />
                         </Button>
@@ -1418,7 +1435,7 @@ export function NewIssueDialog() {
           {/* More (dates) */}
           <Popover open={moreOpen} onOpenChange={setMoreOpen}>
             <PopoverTrigger asChild>
-              <button className="inline-flex items-center justify-center rounded-md border border-border p-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground">
+              <button aria-label="More date options" className="inline-flex items-center justify-center rounded-md border border-border p-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground">
                 <MoreHorizontal className="h-3 w-3" />
               </button>
             </PopoverTrigger>

@@ -18,8 +18,13 @@ export function parseCodexJsonl(stdout: string) {
     if (!event) continue;
 
     const type = asString(event.type, "");
-    if (type === "thread.started") {
-      sessionId = asString(event.thread_id, sessionId ?? "") || sessionId;
+
+    // Support both old "thread.started" and new "session.created" (#1343)
+    if (type === "thread.started" || type === "session.created") {
+      sessionId =
+        asString(event.session_id, "") ||
+        asString(event.thread_id, "") ||
+        sessionId;
       continue;
     }
 
@@ -31,7 +36,10 @@ export function parseCodexJsonl(stdout: string) {
 
     if (type === "item.completed") {
       const item = parseObject(event.item);
-      if (asString(item.type, "") === "agent_message") {
+      // Support both old "item.type" and new "item.item_type",
+      // and both "agent_message" and "assistant_message" (#1343)
+      const itemType = asString(item.item_type, "") || asString(item.type, "");
+      if (itemType === "agent_message" || itemType === "assistant_message") {
         const text = asString(item.text, "");
         if (text) messages.push(text);
       }
@@ -59,6 +67,22 @@ export function parseCodexJsonl(stdout: string) {
     usage,
     errorMessage,
   };
+}
+
+/**
+ * Detects authentication errors in Codex output.
+ * Auth errors should cause immediate session clear to prevent
+ * infinite retry loops burning tokens (GH #1511).
+ */
+export function isCodexAuthError(stdout: string, stderr: string): boolean {
+  const haystack = `${stdout}\n${stderr}`
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+  return /\b(401|unauthorized|authentication required|auth.*error|invalid.*token|expired.*token|forbidden.*auth)\b/i.test(
+    haystack,
+  );
 }
 
 export function isCodexUnknownSessionError(stdout: string, stderr: string): boolean {

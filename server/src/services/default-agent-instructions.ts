@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 
 const DEFAULT_AGENT_BUNDLE_FILES = {
-  default: ["AGENTS.md"],
+  default: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
   ceo: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
 } as const;
 

@@ -622,7 +622,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             <>
               <Field label="Prompt Template" hint={help.promptTemplate}>
                 <MarkdownEditor
-                  value={val!.promptTemplate}
+                  value={val!.promptTemplate ?? ""}
                   onChange={(v) => set!({ promptTemplate: v })}
                   placeholder="You are agent {{ agent.name }}. Your role is {{ agent.role }}..."
                   contentClassName="min-h-[88px] text-sm font-mono"
@@ -1192,6 +1192,7 @@ function EnvVarEditor({
             />
             <select
               className={cn(inputClass, "flex-[1] bg-background")}
+              aria-label="Value type"
               value={row.source}
               onChange={(e) =>
                 updateRow(i, {
@@ -1207,6 +1208,7 @@ function EnvVarEditor({
               <>
                 <select
                   className={cn(inputClass, "flex-[3] bg-background")}
+                  aria-label="Select secret"
                   value={row.secretId}
                   onChange={(e) => updateRow(i, { secretId: e.target.value })}
                 >
@@ -1250,6 +1252,7 @@ function EnvVarEditor({
               <button
                 type="button"
                 className="shrink-0 p-1 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors"
+                aria-label="Remove environment variable"
                 onClick={() => removeRow(i)}
               >
                 <X className="h-3.5 w-3.5" />
@@ -1393,8 +1396,20 @@ function ModelDropdown({
                 ))}
               </div>
             ))}
-            {filteredModels.length === 0 && (
+            {filteredModels.length === 0 && !modelSearch.trim() && (
               <p className="px-2 py-1.5 text-xs text-muted-foreground">No models found.</p>
+            )}
+            {modelSearch.trim() && !models.some((m) => m.id === modelSearch.trim()) && (
+              <button
+                className="flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50 border-t border-border mt-1 pt-2"
+                onClick={() => {
+                  onChange(modelSearch.trim());
+                  onOpenChange(false);
+                }}
+              >
+                <span className="text-muted-foreground">Use</span>{" "}
+                <code className="text-xs bg-muted px-1 py-0.5 rounded">{modelSearch.trim()}</code>
+              </button>
             )}
           </div>
         </PopoverContent>

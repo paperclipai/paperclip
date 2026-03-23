@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { activityApi } from "../api/activity";
 import { agentsApi } from "../api/agents";
@@ -18,13 +18,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { History } from "lucide-react";
+import { History, ChevronDown } from "lucide-react";
 import type { Agent } from "@paperclipai/shared";
 
 export function Activity() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [filter, setFilter] = useState("all");
+  const [visibleCount, setVisibleCount] = useState(50);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Activity" }]);
@@ -98,10 +99,26 @@ export function Activity() {
     ? [...new Set(data.map((e) => e.entityType))].sort()
     : [];
 
+  const handleFilterChange = useCallback((value: string) => {
+    setFilter(value);
+    setVisibleCount(50);
+  }, []);
+
+  const visible = filtered ? filtered.slice(0, visibleCount) : [];
+  const totalFiltered = filtered?.length ?? 0;
+  const hasMore = visibleCount < totalFiltered;
+
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-end">
-        <Select value={filter} onValueChange={setFilter}>
+      <div className="flex items-center justify-between">
+        {filtered && filtered.length > 0 ? (
+          <p className="text-xs text-muted-foreground">
+            Showing {Math.min(visibleCount, totalFiltered)} of {totalFiltered} event{totalFiltered !== 1 ? "s" : ""}
+          </p>
+        ) : (
+          <span />
+        )}
+        <Select value={filter} onValueChange={handleFilterChange}>
           <SelectTrigger className="w-[140px] h-8 text-xs">
             <SelectValue placeholder="Filter by type" />
           </SelectTrigger>
@@ -122,9 +139,9 @@ export function Activity() {
         <EmptyState icon={History} message="No activity yet." />
       )}
 
-      {filtered && filtered.length > 0 && (
+      {visible.length > 0 && (
         <div className="border border-border divide-y divide-border">
-          {filtered.map((event) => (
+          {visible.map((event) => (
             <ActivityRow
               key={event.id}
               event={event}
@@ -133,6 +150,18 @@ export function Activity() {
               entityTitleMap={entityTitleMap}
             />
           ))}
+        </div>
+      )}
+
+      {hasMore && (
+        <div className="flex justify-center">
+          <button
+            className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors px-3 py-1.5 border border-border rounded-md hover:bg-muted"
+            onClick={() => setVisibleCount((c) => c + 50)}
+          >
+            <ChevronDown className="h-3.5 w-3.5" />
+            Load more ({totalFiltered - visibleCount} remaining)
+          </button>
         </div>
       )}
     </div>

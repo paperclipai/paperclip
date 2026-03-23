@@ -258,6 +258,8 @@ export async function startServer(): Promise<StartedServer> {
     const dataDir = resolve(config.embeddedPostgresDataDir);
     const configuredPort = config.embeddedPostgresPort;
     let port = configuredPort;
+    const embeddedPgUser = process.env.PAPERCLIP_EMBEDDED_PG_USER ?? "paperclip";
+    const embeddedPgPassword = process.env.PAPERCLIP_EMBEDDED_PG_PASSWORD ?? "paperclip";
     const embeddedPostgresLogBuffer: string[] = [];
     const EMBEDDED_POSTGRES_LOG_BUFFER_LIMIT = 120;
     const verboseEmbeddedPostgresLogs = process.env.PAPERCLIP_EMBEDDED_POSTGRES_VERBOSE === "true";
@@ -343,8 +345,8 @@ export async function startServer(): Promise<StartedServer> {
         logger.info(`Using embedded PostgreSQL because no DATABASE_URL set (dataDir=${dataDir}, port=${port})`);
         embeddedPostgres = new EmbeddedPostgres({
           databaseDir: dataDir,
-          user: "paperclip",
-          password: "paperclip",
+          user: embeddedPgUser,
+          password: embeddedPgPassword,
           port,
           persistent: true,
           initdbFlags: ["--encoding=UTF8", "--locale=C"],
@@ -377,13 +379,13 @@ export async function startServer(): Promise<StartedServer> {
       }
     }
   
-    const embeddedAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
+    const embeddedAdminConnectionString = `postgres://${embeddedPgUser}:${embeddedPgPassword}@127.0.0.1:${port}/postgres`;
     const dbStatus = await ensurePostgresDatabase(embeddedAdminConnectionString, "paperclip");
     if (dbStatus === "created") {
       logger.info("Created embedded PostgreSQL database: paperclip");
     }
   
-    const embeddedConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;
+    const embeddedConnectionString = `postgres://${embeddedPgUser}:${embeddedPgPassword}@127.0.0.1:${port}/paperclip`;
     const shouldAutoApplyFirstRunMigrations = !clusterAlreadyInitialized || dbStatus === "created";
     if (shouldAutoApplyFirstRunMigrations) {
       logger.info("Detected first-run embedded PostgreSQL setup; applying pending migrations automatically");
@@ -532,6 +534,7 @@ export async function startServer(): Promise<StartedServer> {
     // then resume any persisted queued runs that were waiting on the previous process.
     void heartbeat
       .reapOrphanedRuns()
+      .then(() => heartbeat.releaseStaleExecutionLocks())
       .then(() => heartbeat.resumeQueuedRuns())
       .catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
@@ -563,6 +566,7 @@ export async function startServer(): Promise<StartedServer> {
       // persisted queued work is still being driven forward.
       void heartbeat
         .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
+        .then(() => heartbeat.releaseStaleExecutionLocks())
         .then(() => heartbeat.resumeQueuedRuns())
         .catch((err) => {
           logger.error({ err }, "periodic heartbeat recovery failed");

@@ -633,11 +633,28 @@ export function writePaperclipSkillSyncPreference(
   return next;
 }
 
+export async function symlinkOrCopy(source: string, target: string): Promise<void> {
+  try {
+    await fs.symlink(source, target);
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code !== "EPERM") {
+      throw err;
+    }
+    // Windows: symlink requires Developer Mode or admin.
+    // Try a junction first (no elevation needed, works for directories).
+    try {
+      await fs.symlink(source, target, "junction");
+    } catch {
+      // Junction failed too — fall back to a full recursive copy.
+      await fs.cp(source, target, { recursive: true });
+    }
+  }
+}
+
 export async function ensurePaperclipSkillSymlink(
   source: string,
   target: string,
-  linkSkill: (source: string, target: string) => Promise<void> = (linkSource, linkTarget) =>
-    fs.symlink(linkSource, linkTarget),
+  linkSkill: (source: string, target: string) => Promise<void> = symlinkOrCopy,
 ): Promise<"created" | "repaired" | "skipped"> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
@@ -761,6 +778,10 @@ export async function runChildProcess(
         }) as ChildProcessWithEvents;
         const startedAt = new Date().toISOString();
 
+        // Ensure UTF-8 encoding on streams to prevent WIN1252 crashes on Windows
+        child.stdout?.setEncoding("utf8");
+        child.stderr?.setEncoding("utf8");
+
         if (opts.stdin != null && child.stdin) {
           child.stdin.write(opts.stdin);
           child.stdin.end();
@@ -778,6 +799,8 @@ export async function runChildProcess(
         let stdout = "";
         let stderr = "";
         let logChain: Promise<void> = Promise.resolve();
+        let stdoutFirstChunk = true;
+        let stderrFirstChunk = true;
 
         const timeout =
           opts.timeoutSec > 0
@@ -793,7 +816,13 @@ export async function runChildProcess(
             : null;
 
         child.stdout?.on("data", (chunk: unknown) => {
-          const text = String(chunk);
+          let text = String(chunk);
+          // Strip UTF-8 BOM on first chunk — Windows PowerShell may emit BOM
+          // which corrupts headers and variable names (GH #1511)
+          if (stdoutFirstChunk) {
+            stdoutFirstChunk = false;
+            if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+          }
           stdout = appendWithCap(stdout, text);
           logChain = logChain
             .then(() => opts.onLog("stdout", text))
@@ -801,7 +830,12 @@ export async function runChildProcess(
         });
 
         child.stderr?.on("data", (chunk: unknown) => {
-          const text = String(chunk);
+          let text = String(chunk);
+          // Strip UTF-8 BOM on first chunk (GH #1511)
+          if (stderrFirstChunk) {
+            stderrFirstChunk = false;
+            if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+          }
           stderr = appendWithCap(stderr, text);
           logChain = logChain
             .then(() => opts.onLog("stderr", text))

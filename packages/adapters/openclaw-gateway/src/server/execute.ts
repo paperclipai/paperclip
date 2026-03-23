@@ -335,8 +335,10 @@ function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: Wak
   return paperclipEnv;
 }
 
-function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string>): string {
-  const claimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
+function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string>, options?: { workspacePath?: string }): string {
+  const claimedApiKeyPath = options?.workspacePath
+    ? `${options.workspacePath}/paperclip-claimed-api-key.json`
+    : "~/.openclaw/workspace/paperclip-claimed-api-key.json";
   const orderedKeys = [
     "PAPERCLIP_RUN_ID",
     "PAPERCLIP_AGENT_ID",
@@ -539,10 +541,8 @@ function buildDeviceAuthPayloadV3(params: {
 }): string {
   const scopes = params.scopes.join(",");
   const token = params.token ?? "";
-  const platform = params.platform?.trim() ?? "";
-  const deviceFamily = params.deviceFamily?.trim() ?? "";
   return [
-    "v3",
+    "v2",
     params.deviceId,
     params.clientId,
     params.clientMode,
@@ -551,8 +551,6 @@ function buildDeviceAuthPayloadV3(params: {
     String(params.signedAtMs),
     token,
     params.nonce,
-    platform,
-    deviceFamily,
   ].join("|");
 }
 
@@ -1053,7 +1051,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const wakePayload = buildWakePayload(ctx);
   const paperclipEnv = buildPaperclipEnvForWake(ctx, wakePayload);
-  const wakeText = buildWakeText(wakePayload, paperclipEnv);
+  const agentWorkspacePath = nonEmpty(ctx.config.workspace as string | undefined)
+    ?? (asRecord(ctx.context.paperclipWorkspace) ? nonEmpty(asRecord(ctx.context.paperclipWorkspace)?.cwd as string | undefined) : null)
+    ?? undefined;
+  const wakeText = buildWakeText(wakePayload, paperclipEnv, { workspacePath: agentWorkspacePath });
 
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
   const configuredSessionKey = nonEmpty(ctx.config.sessionKey);

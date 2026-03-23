@@ -352,6 +352,7 @@ export function OrgChart() {
 
       {/* SVG layer for edges */}
       <svg
+        aria-hidden="true"
         className="absolute inset-0 pointer-events-none"
         style={{
           width: "100%",
@@ -395,7 +396,10 @@ export function OrgChart() {
             <div
               key={node.id}
               data-org-card
-              className="absolute bg-card border border-border rounded-lg shadow-sm hover:shadow-md hover:border-foreground/20 transition-[box-shadow,border-color] duration-150 cursor-pointer select-none"
+              role="button"
+              tabIndex={0}
+              aria-label={`View ${node.name}`}
+              className="absolute bg-card border border-border rounded-lg shadow-sm hover:shadow-md hover:border-foreground/20 focus-visible:outline-2 focus-visible:outline-primary focus-visible:outline-offset-2 transition-[box-shadow,border-color] duration-150 cursor-pointer select-none"
               style={{
                 left: node.x,
                 top: node.y,
@@ -403,6 +407,12 @@ export function OrgChart() {
                 minHeight: CARD_H,
               }}
               onClick={() => navigate(agent ? agentUrl(agent) : `/agents/${node.id}`)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  navigate(agent ? agentUrl(agent) : `/agents/${node.id}`);
+                }
+              }}
             >
               <div className="flex items-center px-4 py-3 gap-3">
                 {/* Agent icon + status dot */}

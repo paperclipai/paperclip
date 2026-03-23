@@ -23,6 +23,8 @@ interface InlineEntitySelectorProps {
   renderOption?: (option: InlineEntityOption, isSelected: boolean) => ReactNode;
   /** Skip the Portal so the popover stays in the DOM tree (fixes scroll inside Dialogs). */
   disablePortal?: boolean;
+  /** When true, allow the user to submit the search query as a custom value. */
+  allowCustomValue?: boolean;
 }
 
 export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySelectorProps>(
@@ -40,6 +42,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
       renderTriggerValue,
       renderOption,
       disablePortal,
+      allowCustomValue,
     },
     ref,
   ) {
@@ -72,8 +75,27 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
       setHighlightedIndex(selectedIndex >= 0 ? selectedIndex : 0);
     }, [filteredOptions, open, value]);
 
+    const canUseCustom =
+      allowCustomValue &&
+      query.trim() !== "" &&
+      !allOptions.some((o) => o.id === query.trim());
+
+    const commitCustom = (moveNext: boolean) => {
+      onChange(query.trim());
+      shouldPreventCloseAutoFocusRef.current = moveNext;
+      setOpen(false);
+      setQuery("");
+      if (moveNext && onConfirm) {
+        requestAnimationFrame(() => onConfirm());
+      }
+    };
+
     const commitSelection = (index: number, moveNext: boolean) => {
       const option = filteredOptions[index] ?? filteredOptions[0];
+      if (!option && canUseCustom) {
+        commitCustom(moveNext);
+        return;
+      }
       if (option) onChange(option.id);
       shouldPreventCloseAutoFocusRef.current = moveNext;
       setOpen(false);
@@ -97,6 +119,8 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
           <button
             ref={ref}
             type="button"
+            aria-expanded={open}
+            aria-haspopup="listbox"
             className={cn(
               "inline-flex min-w-0 items-center gap-1 rounded-md border border-border bg-muted/40 px-2 py-1 text-sm font-medium text-foreground transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               className,
@@ -109,7 +133,8 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
           >
             {renderTriggerValue
               ? renderTriggerValue(currentOption)
-              : (currentOption?.label ?? <span className="text-muted-foreground">{placeholder}</span>)}
+              : (currentOption?.label
+                ?? (allowCustomValue && value ? value : <span className="text-muted-foreground">{placeholder}</span>))}
           </button>
         </PopoverTrigger>
         <PopoverContent
@@ -175,7 +200,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
             }}
           />
           <div className="max-h-56 overflow-y-auto overscroll-contain py-1 touch-pan-y">
-            {filteredOptions.length === 0 ? (
+            {filteredOptions.length === 0 && !canUseCustom ? (
               <p className="px-2 py-2 text-xs text-muted-foreground">{emptyMessage}</p>
             ) : (
               filteredOptions.map((option, index) => {
@@ -197,6 +222,16 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
                   </button>
                 );
               })
+            )}
+            {canUseCustom && (
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm touch-manipulation hover:bg-accent/50 border-t border-border mt-1 pt-1.5"
+                onClick={() => commitCustom(true)}
+              >
+                <span className="text-muted-foreground">Use custom:</span>
+                <code className="text-xs bg-muted px-1 py-0.5 rounded truncate">{query.trim()}</code>
+              </button>
             )}
           </div>
         </PopoverContent>

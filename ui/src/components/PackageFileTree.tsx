@@ -222,6 +222,7 @@ export function PackageFileTree({
                       checked={allChecked}
                       ref={(el) => { if (el) el.indeterminate = someChecked && !allChecked; }}
                       onChange={() => onToggleCheck?.(node.path, "dir")}
+                      aria-label={`Toggle all files in ${node.name}`}
                       className="mr-2 accent-foreground"
                     />
                   </label>
@@ -243,6 +244,8 @@ export function PackageFileTree({
                 <button
                   type="button"
                   className="flex h-9 w-9 items-center justify-center self-center rounded-sm text-muted-foreground opacity-70 transition-[background-color,color,opacity] hover:bg-accent hover:text-foreground group-hover:opacity-100"
+                  aria-label={expanded ? "Collapse folder" : "Expand folder"}
+                  aria-expanded={expanded}
                   onClick={() => onToggleDir(node.path)}
                 >
                   {expanded ? (
@@ -294,6 +297,7 @@ export function PackageFileTree({
                   type="checkbox"
                   checked={checked}
                   onChange={() => onToggleCheck?.(node.path, "file")}
+                  aria-label={`Select file: ${node.name}`}
                   className="mr-2 accent-foreground"
                 />
               </label>

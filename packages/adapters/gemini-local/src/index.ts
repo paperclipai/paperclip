@@ -4,11 +4,22 @@ export const DEFAULT_GEMINI_LOCAL_MODEL = "auto";
 
 export const models = [
   { id: DEFAULT_GEMINI_LOCAL_MODEL, label: "Auto" },
+  // --- Gemini 3.x family (latest, March 2026) ---
+  { id: "gemini-3.1-pro", label: "Gemini 3.1 Pro" },
+  { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro Preview" },
+  { id: "gemini-3.1-pro-preview-customtools", label: "Gemini 3.1 Pro Preview (Custom Tools)" },
+  { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash Lite" },
+  { id: "gemini-3-pro", label: "Gemini 3 Pro" },
+  { id: "gemini-3-flash", label: "Gemini 3 Flash" },
+  // --- Gemini 2.x family ---
   { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
   { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
   { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
   { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash" },
   { id: "gemini-2.0-flash-lite", label: "Gemini 2.0 Flash Lite" },
+  // --- Image generation models ---
+  { id: "imagen-4.0-generate-preview", label: "Imagen 4.0 Generate (Preview)" },
+  { id: "gemini-2.0-flash-preview-image-generation", label: "Gemini 2.0 Flash Image Generation" },
 ];
 
 export const agentConfigurationDoc = `# gemini_local agent configuration
