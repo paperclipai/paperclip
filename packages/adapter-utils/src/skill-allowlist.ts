@@ -14,8 +14,8 @@ export interface SkillAllowlistPolicy {
 }
 
 export const DEFAULT_SKILL_ALLOWLIST: SkillAllowlistPolicy = {
-  enabled: false,
-  allowed: [],
+  enabled: true,
+  allowed: ["paperclipai/paperclip/paperclip"],
   blocked: [],
 };
 
