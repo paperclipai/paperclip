@@ -69,7 +69,8 @@ const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
  */
 let _allowedPrivateHosts: Set<string> | undefined;
 
-function getAllowedPrivateHosts(envValue?: string): Set<string> {
+/** @internal Exported for testing only. */
+export function getAllowedPrivateHosts(envValue?: string): Set<string> {
   if (envValue !== undefined) {
     // Explicit value passed (e.g. from tests) — bypass cache.
     return new Set(
@@ -103,7 +104,8 @@ export function _resetAllowedPrivateHostsCache(): void {
  * Handles IPv4-mapped IPv6 addresses (e.g. ::ffff:127.0.0.1) which Node's
  * dns.lookup may return depending on OS configuration.
  */
-function isPrivateIP(ip: string): boolean {
+/** @internal Exported for testing only. */
+export function isPrivateIP(ip: string): boolean {
   const lower = ip.toLowerCase();
 
   // Unwrap IPv4-mapped IPv6 addresses (::ffff:x.x.x.x) and re-check as IPv4
@@ -146,7 +148,8 @@ function isPrivateIP(ip: string): boolean {
  * @returns Request-routing metadata used to connect directly to the resolved IP
  *          while preserving the original hostname for HTTP Host and TLS SNI.
  */
-interface ValidatedFetchTarget {
+/** @internal Exported for testing only. */
+export interface ValidatedFetchTarget {
   parsedUrl: URL;
   resolvedAddress: string;
   hostHeader: string;
@@ -154,7 +157,8 @@ interface ValidatedFetchTarget {
   useTls: boolean;
 }
 
-async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedFetchTarget> {
+/** @internal Exported for testing only. */
+export async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedFetchTarget> {
   let parsed: URL;
   try {
     parsed = new URL(urlString);
