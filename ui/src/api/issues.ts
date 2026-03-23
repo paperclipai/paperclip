@@ -12,6 +12,9 @@ export const issuesApi = {
       touchedByUserId?: string;
       unreadForUserId?: string;
       labelId?: string;
+      originKind?: string;
+      originId?: string;
+      includeRoutineExecutions?: boolean;
       q?: string;
     },
   ) => {
@@ -23,6 +26,9 @@ export const issuesApi = {
     if (filters?.touchedByUserId) params.set("touchedByUserId", filters.touchedByUserId);
     if (filters?.unreadForUserId) params.set("unreadForUserId", filters.unreadForUserId);
     if (filters?.labelId) params.set("labelId", filters.labelId);
+    if (filters?.originKind) params.set("originKind", filters.originKind);
+    if (filters?.originId) params.set("originId", filters.originId);
+    if (filters?.includeRoutineExecutions) params.set("includeRoutineExecutions", "true");
     if (filters?.q) params.set("q", filters.q);
     const qs = params.toString();
     return api.get<Issue[]>(`/companies/${companyId}/issues${qs ? `?${qs}` : ""}`);

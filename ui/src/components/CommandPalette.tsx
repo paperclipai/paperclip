@@ -18,6 +18,7 @@ import {
   CommandSeparator,
 } from "@/components/ui/command";
 import {
+  BookOpen,
   CircleDot,
   Bot,
   Hexagon,
@@ -26,6 +27,7 @@ import {
   Inbox,
   DollarSign,
   History,
+  Repeat,
   SquarePen,
   Plus,
 } from "lucide-react";
@@ -161,6 +163,14 @@ export function CommandPalette() {
           <CommandItem onSelect={() => go("/agents")}>
             <Bot className="mr-2 h-4 w-4" />
             Agents
+          </CommandItem>
+          <CommandItem onSelect={() => go("/skills")}>
+            <BookOpen className="mr-2 h-4 w-4" />
+            Skills
+          </CommandItem>
+          <CommandItem onSelect={() => go("/routines")}>
+            <Repeat className="mr-2 h-4 w-4" />
+            Routines
           </CommandItem>
           <CommandItem onSelect={() => go("/costs")}>
             <DollarSign className="mr-2 h-4 w-4" />

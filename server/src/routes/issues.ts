@@ -19,6 +19,7 @@ import {
   heartbeatService,
   issueApprovalService,
   issueService,
+  routineService,
   logActivity,
   projectService,
 } from "../services/index.js";
@@ -33,6 +34,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
   const svc = issueService(db);
   const access = accessService(db);
   const heartbeat = heartbeatService(db);
+  const routinesSvc = routineService(db);
   const agentsSvc = agentService(db);
   const projectsSvc = projectService(db);
   const goalsSvc = goalService(db);
@@ -224,6 +226,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
       projectId: req.query.projectId as string | undefined,
       parentId: req.query.parentId as string | undefined,
       labelId: req.query.labelId as string | undefined,
+      originKind: req.query.originKind as string | undefined,
+      originId: req.query.originId as string | undefined,
+      includeRoutineExecutions:
+        req.query.includeRoutineExecutions === "true" || req.query.includeRoutineExecutions === "1",
       q: req.query.q as string | undefined,
     });
     res.json(result);
@@ -523,6 +529,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
+    await routinesSvc.syncRunStatusForIssue(issue.id);
 
     // Build activity details with previous values for changed fields
     const previous: Record<string, unknown> = {};

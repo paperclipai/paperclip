@@ -1,5 +1,26 @@
 export type { Company } from "./company.js";
 export type {
+  CompanySkillSourceType,
+  CompanySkillTrustLevel,
+  CompanySkillCompatibility,
+  CompanySkillSourceBadge,
+  CompanySkillFileInventoryEntry,
+  CompanySkill,
+  CompanySkillListItem,
+  CompanySkillUsageAgent,
+  CompanySkillDetail,
+  CompanySkillUpdateStatus,
+  CompanySkillImportRequest,
+  CompanySkillImportResult,
+  CompanySkillProjectScanRequest,
+  CompanySkillProjectScanSkipped,
+  CompanySkillProjectScanConflict,
+  CompanySkillProjectScanResult,
+  CompanySkillCreateRequest,
+  CompanySkillFileDetail,
+  CompanySkillFileUpdateRequest,
+} from "./company-skill.js";
+export type {
   Agent,
   AgentPermissions,
   AgentKeyCreated,
@@ -29,6 +50,16 @@ export type {
   IssueAttachment,
   IssueLabel,
 } from "./issue.js";
+export type {
+  Routine,
+  RoutineTrigger,
+  RoutineRun,
+  RoutineTriggerSecretMaterial,
+  RoutineDetail,
+  RoutineRunSummary,
+  RoutineExecutionIssueOrigin,
+  RoutineListItem,
+} from "./routine.js";
 export type { Goal } from "./goal.js";
 export type { Approval, ApprovalComment } from "./approval.js";
 export type {

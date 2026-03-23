@@ -19,6 +19,8 @@ services:
     build: .
     ports:
       - "3100:3100"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       DATABASE_URL: postgres://paperclip:paperclip@db:5432/paperclip
       PORT: "3100"

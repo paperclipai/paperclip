@@ -123,6 +123,51 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
   return vars;
 }
 
+const AGENT_INHERITED_ENV_DENYLIST = new Set(["HOST", "PORT"]);
+
+export function sanitizeInheritedAgentEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...baseEnv };
+  for (const key of Object.keys(env)) {
+    if (key.startsWith("PAPERCLIP_")) {
+      delete env[key];
+      continue;
+    }
+    if (AGENT_INHERITED_ENV_DENYLIST.has(key)) {
+      delete env[key];
+    }
+  }
+  return env;
+}
+
+export function readPaperclipSkillSyncPreference(config: Record<string, unknown>): {
+  explicit: boolean;
+  desiredSkills: string[];
+} {
+  const raw = config.paperclipSkillSync;
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return { explicit: false, desiredSkills: [] };
+  }
+  const syncConfig = raw as Record<string, unknown>;
+  const desiredValues = syncConfig.desiredSkills;
+  const desired = Array.isArray(desiredValues)
+    ? desiredValues.filter((value): value is string => typeof value === "string").map((value) => value.trim()).filter(Boolean)
+    : [];
+  return {
+    explicit: Object.prototype.hasOwnProperty.call(syncConfig, "desiredSkills"),
+    desiredSkills: Array.from(new Set(desired)),
+  };
+}
+
+export function buildAgentProcessEnv(
+  env: Record<string, string>,
+  baseEnv: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(ensurePathInEnv({ ...sanitizeInheritedAgentEnv(baseEnv), ...env })).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
+}
 export function defaultPathForPlatform() {
   if (process.platform === "win32") {
     return "C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\Wbem";

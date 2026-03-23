@@ -5,6 +5,30 @@ export {
   type UpdateCompany,
 } from "./company.js";
 export {
+  companySkillSourceTypeSchema,
+  companySkillTrustLevelSchema,
+  companySkillCompatibilitySchema,
+  companySkillSourceBadgeSchema,
+  companySkillFileInventoryEntrySchema,
+  companySkillSchema,
+  companySkillListItemSchema,
+  companySkillUsageAgentSchema,
+  companySkillDetailSchema,
+  companySkillUpdateStatusSchema,
+  companySkillImportSchema,
+  companySkillProjectScanRequestSchema,
+  companySkillProjectScanSkippedSchema,
+  companySkillProjectScanConflictSchema,
+  companySkillProjectScanResultSchema,
+  companySkillCreateSchema,
+  companySkillFileDetailSchema,
+  companySkillFileUpdateSchema,
+  type CompanySkillImport,
+  type CompanySkillProjectScan,
+  type CompanySkillCreate,
+  type CompanySkillFileUpdate,
+} from "./company-skill.js";
+export {
   portabilityIncludeSchema,
   portabilitySecretRequirementSchema,
   portabilityCompanyManifestEntrySchema,
@@ -108,6 +132,20 @@ export {
   type RotateSecret,
   type UpdateSecret,
 } from "./secret.js";
+export {
+  createRoutineSchema,
+  updateRoutineSchema,
+  createRoutineTriggerSchema,
+  updateRoutineTriggerSchema,
+  runRoutineSchema,
+  rotateRoutineTriggerSecretSchema,
+  type CreateRoutine,
+  type UpdateRoutine,
+  type CreateRoutineTrigger,
+  type UpdateRoutineTrigger,
+  type RunRoutine,
+  type RotateRoutineTriggerSecret,
+} from "./routine.js";
 
 export {
   createCostEventSchema,
