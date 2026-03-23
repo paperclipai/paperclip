@@ -211,6 +211,7 @@ export function IssueDetail() {
   });
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [attachmentDragActive, setAttachmentDragActive] = useState(false);
+  const [visibleActivityCount, setVisibleActivityCount] = useState(20);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const lastMarkedReadIssueIdRef = useRef<string | null>(null);
 
@@ -1099,13 +1100,25 @@ export function IssueDetail() {
             <p className="text-xs text-muted-foreground">No activity yet.</p>
           ) : (
             <div className="space-y-1.5">
-              {activity.slice(0, 20).map((evt) => (
+              <p className="text-[10px] text-muted-foreground/60">
+                Showing {Math.min(visibleActivityCount, activity.length)} of {activity.length} event{activity.length !== 1 ? "s" : ""}
+              </p>
+              {activity.slice(0, visibleActivityCount).map((evt) => (
                 <div key={evt.id} className="flex items-center gap-1.5 text-xs text-muted-foreground">
                   <ActorIdentity evt={evt} agentMap={agentMap} />
                   <span>{formatAction(evt.action, evt.details)}</span>
                   <span className="ml-auto shrink-0">{relativeTime(evt.createdAt)}</span>
                 </div>
               ))}
+              {visibleActivityCount < activity.length && (
+                <button
+                  className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+                  onClick={() => setVisibleActivityCount((c) => c + 20)}
+                >
+                  <ChevronDown className="h-3 w-3" />
+                  Load more ({activity.length - visibleActivityCount} remaining)
+                </button>
+              )}
             </div>
           )}
         </TabsContent>

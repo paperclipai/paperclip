@@ -683,7 +683,14 @@ export function Costs() {
                     </div>
                     {spendData?.summary.budgetCents && spendData.summary.budgetCents > 0 ? (
                       <div className="space-y-2">
-                        <div className="h-2 overflow-hidden bg-muted">
+                        <div
+                          className="h-2 overflow-hidden bg-muted"
+                          role="progressbar"
+                          aria-valuenow={Math.min(100, spendData.summary.utilizationPercent)}
+                          aria-valuemin={0}
+                          aria-valuemax={100}
+                          aria-label={`Budget utilization: ${spendData.summary.utilizationPercent}%`}
+                        >
                           <div
                             className={cn(
                               "h-full transition-[width,background-color] duration-150",
@@ -732,6 +739,10 @@ export function Costs() {
                             <div
                               className={cn("flex items-start justify-between gap-3", hasBreakdown ? "cursor-pointer select-none" : "")}
                               onClick={() => hasBreakdown && toggleAgent(row.agentId)}
+                              role={hasBreakdown ? "button" : undefined}
+                              tabIndex={hasBreakdown ? 0 : undefined}
+                              aria-expanded={hasBreakdown ? isExpanded : undefined}
+                              onKeyDown={hasBreakdown ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleAgent(row.agentId); } } : undefined}
                             >
                               <div className="flex min-w-0 items-center gap-2">
                                 {hasBreakdown ? (
