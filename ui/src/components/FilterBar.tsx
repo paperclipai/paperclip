@@ -24,7 +24,9 @@ export function FilterBar({ filters, onRemove, onClear }: FilterBarProps) {
           <span className="text-muted-foreground">{f.label}:</span>
           <span>{f.value}</span>
           <button
+            type="button"
             className="ml-1 rounded-full hover:bg-accent p-0.5"
+            aria-label={`Remove filter: ${f.label}`}
             onClick={() => onRemove(f.key)}
           >
             <X className="h-3 w-3" />

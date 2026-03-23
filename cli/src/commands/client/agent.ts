@@ -3,6 +3,7 @@ import type { Agent } from "@paperclipai/shared";
 import {
   removeMaintainerOnlySkillSymlinks,
   resolvePaperclipSkillsDir,
+  symlinkOrCopy,
 } from "@paperclipai/adapter-utils/server-utils";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -90,7 +91,7 @@ async function installSkillsForTarget(
         } catch (err) {
           await fs.unlink(target);
           try {
-            await fs.symlink(source, target);
+            await symlinkOrCopy(source, target);
             summary.linked.push(entry.name);
             continue;
           } catch (linkErr) {
@@ -128,7 +129,7 @@ async function installSkillsForTarget(
     }
 
     try {
-      await fs.symlink(source, target);
+      await symlinkOrCopy(source, target);
       summary.linked.push(entry.name);
     } catch (err) {
       summary.failed.push({
@@ -163,7 +164,7 @@ export function registerAgentCommands(program: Command): void {
     agent
       .command("list")
       .description("List agents for a company")
-      .requiredOption("-C, --company-id <id>", "Company ID")
+      .option("-C, --company-id <id>", "Company ID")
       .action(async (opts: AgentListOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
@@ -222,7 +223,7 @@ export function registerAgentCommands(program: Command): void {
         "Create an agent API key, install local Paperclip skills for Codex/Claude, and print shell exports",
       )
       .argument("<agentRef>", "Agent ID or shortname/url-key")
-      .requiredOption("-C, --company-id <id>", "Company ID")
+      .option("-C, --company-id <id>", "Company ID")
       .option("--key-name <name>", "API key label", "local-cli")
       .option(
         "--no-install-skills",

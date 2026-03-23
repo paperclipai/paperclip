@@ -7,6 +7,106 @@ import {
   STORAGE_PROVIDERS,
 } from "./constants.js";
 
+// ---------------------------------------------------------------------------
+// Config field & value aliases (GH #1271)
+// ---------------------------------------------------------------------------
+
+const DATABASE_MODE_ALIASES: Record<string, string> = {
+  external: "postgres",
+  postgresql: "postgres",
+  pglite: "embedded-postgres",
+  embedded: "embedded-postgres",
+};
+
+const AUTH_BASE_URL_MODE_ALIASES: Record<string, string> = {
+  manual: "explicit",
+};
+
+const DEPLOYMENT_MODE_ALIASES: Record<string, string> = {
+  trusted: "local_trusted",
+  local: "local_trusted",
+  auth: "authenticated",
+};
+
+const DATABASE_FIELD_ALIASES: Record<string, string> = {
+  url: "connectionString",
+  databaseUrl: "connectionString",
+};
+
+const AUTH_FIELD_ALIASES: Record<string, string> = {
+  publicUrl: "publicBaseUrl",
+};
+
+type RawObj = Record<string, unknown>;
+
+function isPlainObject(v: unknown): v is RawObj {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function applyFieldAliases(obj: RawObj, aliases: Record<string, string>): RawObj {
+  const result = { ...obj };
+  for (const [alt, canonical] of Object.entries(aliases)) {
+    if (alt in result && !(canonical in result)) {
+      result[canonical] = result[alt];
+      delete result[alt];
+    }
+  }
+  return result;
+}
+
+function applyValueAlias(value: unknown, aliases: Record<string, string>): unknown {
+  if (typeof value !== "string") return value;
+  const lower = value.toLowerCase();
+  return aliases[lower] ?? value;
+}
+
+/**
+ * Normalizes a raw config object before Zod validation:
+ * - Maps common field name aliases (e.g. database.url → database.connectionString)
+ * - Maps common value aliases (e.g. database.mode "external" → "postgres")
+ * - Migrates legacy "pglite" config fields
+ */
+export function normalizeRawConfig(raw: unknown): unknown {
+  if (!isPlainObject(raw)) return raw;
+  const config = { ...raw };
+
+  if (isPlainObject(config.database)) {
+    let db = { ...config.database };
+
+    // Legacy pglite field migration
+    if (db.mode === "pglite") {
+      if (typeof db.embeddedPostgresDataDir !== "string" && typeof db.pgliteDataDir === "string") {
+        db.embeddedPostgresDataDir = db.pgliteDataDir;
+      }
+      if (
+        typeof db.embeddedPostgresPort !== "number" &&
+        typeof db.pglitePort === "number" &&
+        Number.isFinite(db.pglitePort)
+      ) {
+        db.embeddedPostgresPort = db.pglitePort;
+      }
+    }
+
+    db = applyFieldAliases(db, DATABASE_FIELD_ALIASES);
+    db.mode = applyValueAlias(db.mode, DATABASE_MODE_ALIASES);
+    config.database = db;
+  }
+
+  if (isPlainObject(config.auth)) {
+    let auth = applyFieldAliases({ ...config.auth }, AUTH_FIELD_ALIASES);
+    auth.baseUrlMode = applyValueAlias(auth.baseUrlMode, AUTH_BASE_URL_MODE_ALIASES);
+    config.auth = auth;
+  }
+
+  if (isPlainObject(config.server)) {
+    const server = { ...config.server };
+    server.deploymentMode = applyValueAlias(server.deploymentMode, DEPLOYMENT_MODE_ALIASES);
+    config.server = server;
+  }
+
+  return config;
+}
+
 export const configMetaSchema = z.object({
   version: z.literal(1),
   updatedAt: z.string(),

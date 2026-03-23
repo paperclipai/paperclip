@@ -43,7 +43,13 @@ export function MetricCard({ icon: Icon, value, label, description, to, onClick 
 
   if (onClick) {
     return (
-      <div className="h-full" onClick={onClick}>
+      <div
+        className="h-full rounded-lg focus-visible:outline-2 focus-visible:outline-primary focus-visible:outline-offset-[-2px]"
+        role="button"
+        tabIndex={0}
+        onClick={onClick}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onClick(); } }}
+      >
         {inner}
       </div>
     );

@@ -1,0 +1,117 @@
+@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700&display=swap');
+
+:root {
+  --primary-color: #3498db;
+  --secondary-color: #2c3e50;
+  --background-color: #ecf0f1;
+  --surface-color: #ffffff;
+  --text-color: #333333;
+  --light-gray: #bdc3c7;
+  --success-color: #2ecc71;
+  --success-hover-color: #27ae60;
+}
+
+body {
+  margin: 0;
+  font-family: 'Montserrat', sans-serif;
+  color: var(--text-color);
+  background-color: var(--background-color);
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+header {
+  text-align: center;
+  padding: 1rem;
+  background-color: var(--secondary-color);
+  color: white;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  z-index: 10;
+}
+
+header h1 {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+
+main {
+  display: flex;
+  flex-grow: 1;
+  overflow: hidden;
+  padding: 1rem;
+  gap: 1rem;
+}
+
+.markdown-input-container,
+.html-output-container {
+  display: flex;
+  flex-direction: column;
+  width: 50%;
+  background-color: var(--surface-color);
+  border-radius: 8px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  overflow: hidden;
+  position: relative;
+}
+
+.markdown-input,
+.html-output {
+  padding: 1.5rem;
+  overflow-y: auto;
+  font-size: 1rem;
+  line-height: 1.6;
+  border: none;
+  flex-grow: 1;
+}
+
+.markdown-input {
+  resize: none;
+  font-family: 'Courier New', Courier, monospace;
+}
+
+.html-output {
+  background-color: #fdfdfd;
+}
+
+.button-container {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  display: flex;
+  gap: 0.5rem;
+  z-index: 5;
+}
+
+.copy-button,
+.download-button {
+  background-color: var(--primary-color);
+  color: white;
+  border: none;
+  padding: 0.6rem 1.2rem;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background-color 0.3s ease, transform 0.2s ease;
+  font-weight: bold;
+}
+
+.download-button {
+  background-color: var(--success-color);
+}
+
+.copy-button:hover,
+.download-button:hover {
+  transform: translateY(-2px);
+}
+
+.copy-button:hover {
+  background-color: #2980b9;
+}
+
+.download-button:hover {
+  background-color: var(--success-hover-color);
+}

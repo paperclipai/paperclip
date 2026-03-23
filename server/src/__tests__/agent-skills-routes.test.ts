@@ -395,7 +395,7 @@ describe("agent skill routes", () => {
         adapterType: "claude_local",
       }),
       expect.objectContaining({
-        "AGENTS.md": expect.stringContaining("Keep the work moving until it's done."),
+        "AGENTS.md": expect.stringContaining("Never exfiltrate secrets or private data."),
       }),
       { entryFile: "AGENTS.md", replaceExisting: false },
     );

@@ -2,8 +2,8 @@ import { Router, type Request } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
-import { agents as agentsTable, companies, heartbeatRuns } from "@paperclipai/db";
-import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
+import { agents as agentsTable, agentRuntimeState, companies, heartbeatRuns, issues } from "@paperclipai/db";
+import { and, desc, eq, inArray, isNotNull, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
   createAgentKeySchema,
@@ -44,7 +44,7 @@ import {
 } from "../services/index.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
-import { findServerAdapter, listAdapterModels } from "../adapters/index.js";
+import { findServerAdapter, listAdapterModels, getStaticAdapterModels } from "../adapters/index.js";
 import { redactEventPayload } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
@@ -385,6 +385,24 @@ export function agentRoutes(db: Db) {
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
   ) {
+    if (!adapterType) return;
+
+    // Validate model compatibility with adapter
+    const model = typeof adapterConfig.model === "string" ? adapterConfig.model.trim() : "";
+    if (model) {
+      const knownModels = await listAdapterModels(adapterType);
+      if (knownModels.length > 0) {
+        const isKnown = knownModels.some((m) => m.id === model);
+        if (!isKnown) {
+          const suggestions = knownModels.slice(0, 5).map((m) => m.id).join(", ");
+          throw unprocessable(
+            `Model '${model}' is not compatible with adapter '${adapterType}'. ` +
+            `Available models: ${suggestions}${knownModels.length > 5 ? `, ... (${knownModels.length} total)` : ""}`,
+          );
+        }
+      }
+    }
+
     if (adapterType !== "opencode_local") return;
     const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(companyId, adapterConfig);
     const runtimeEnv = asRecord(runtimeConfig.env) ?? {};
@@ -399,6 +417,34 @@ export function agentRoutes(db: Db) {
       const reason = err instanceof Error ? err.message : String(err);
       throw unprocessable(`Invalid opencode_local adapterConfig: ${reason}`);
     }
+  }
+
+  async function assertModelCompatibleWithAdapter(
+    adapterType: string | null | undefined,
+    adapterConfig: Record<string, unknown>,
+  ): Promise<void> {
+    if (!adapterType) return;
+    const model = asNonEmptyString(adapterConfig.model as string);
+    if (!model) return; // no model specified — defaults will apply
+
+    // First quick check against static models (synchronous)
+    const staticModels = getStaticAdapterModels(adapterType);
+    if (!staticModels) return; // adapter has no static model list (dynamic-only or model-less)
+
+    const staticIds = staticModels.map((m) => m.id);
+    if (staticIds.includes(model)) return;
+
+    // For adapters with dynamic discovery (e.g. codex_local, cursor),
+    // also check dynamically discovered models before rejecting
+    const allModels = await listAdapterModels(adapterType);
+    const allIds = allModels.map((m) => m.id);
+    if (allIds.includes(model)) return;
+
+    throw unprocessable(
+      `Model '${model}' is not compatible with adapter '${adapterType}'. ` +
+      `Compatible models: ${allIds.join(", ")}. ` +
+      `Change the model or switch adapter_type.`,
+    );
   }
 
   function resolveInstructionsFilePath(candidatePath: string, adapterConfig: Record<string, unknown>) {
@@ -1169,6 +1215,7 @@ export function agentRoutes(db: Db) {
       hireInput.adapterType,
       normalizedAdapterConfig,
     );
+    await assertModelCompatibleWithAdapter(hireInput.adapterType, normalizedAdapterConfig);
     const normalizedHireInput = {
       ...hireInput,
       adapterConfig: normalizedAdapterConfig,
@@ -1329,6 +1376,7 @@ export function agentRoutes(db: Db) {
       createInput.adapterType,
       normalizedAdapterConfig,
     );
+    await assertModelCompatibleWithAdapter(createInput.adapterType, normalizedAdapterConfig);
 
     const createdAgent = await svc.create(companyId, {
       ...createInput,
@@ -1683,6 +1731,29 @@ export function agentRoutes(db: Db) {
     }
     await assertCanUpdateAgent(req, existing);
 
+    // Termination via PATCH is not allowed — it skips heartbeat cancellation and
+    // other cleanup that the dedicated POST /terminate endpoint performs (#1334).
+    if (req.body.status === "terminated") {
+      res.status(422).json({ error: "Use POST /agents/:id/terminate to terminate an agent." });
+      return;
+    }
+
+    // Prevent removing the last CEO via role demotion (#1334)
+    const isLosingCEO =
+      existing.role === "ceo" && req.body.role && req.body.role !== "ceo";
+    if (isLosingCEO) {
+      const companyAgents = await svc.list(existing.companyId);
+      const otherCEOs = companyAgents.filter(
+        (a) => a.role === "ceo" && a.status !== "terminated" && a.id !== id,
+      );
+      if (otherCEOs.length === 0) {
+        res.status(409).json({
+          error: "Cannot remove or demote the last CEO. Hire or promote another CEO first.",
+        });
+        return;
+      }
+    }
+
     if (Object.prototype.hasOwnProperty.call(req.body, "permissions")) {
       res.status(422).json({ error: "Use /api/agents/:id/permissions for permission changes" });
       return;
@@ -1710,9 +1781,18 @@ export function agentRoutes(db: Db) {
       Object.prototype.hasOwnProperty.call(patchData, "adapterType") ||
       Object.prototype.hasOwnProperty.call(patchData, "adapterConfig");
     if (touchesAdapterConfiguration) {
-      const rawEffectiveAdapterConfig = Object.prototype.hasOwnProperty.call(patchData, "adapterConfig")
+      const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
+      const incomingAdapterConfig = Object.prototype.hasOwnProperty.call(patchData, "adapterConfig")
         ? (asRecord(patchData.adapterConfig) ?? {})
-        : (asRecord(existing.adapterConfig) ?? {});
+        : {};
+      // Merge incoming fields into existing config (PATCH semantics per RFC 7396).
+      // Explicit null values remove keys; missing keys are preserved.
+      const merged = { ...existingAdapterConfig, ...incomingAdapterConfig };
+      // Per RFC 7396, null means "remove this key"
+      const rawEffectiveAdapterConfig: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(merged)) {
+        if (v !== null) rawEffectiveAdapterConfig[k] = v;
+      }
       const effectiveAdapterConfig = applyCreateDefaultsByAdapterType(
         requestedAdapterType,
         rawEffectiveAdapterConfig,
@@ -1724,7 +1804,7 @@ export function agentRoutes(db: Db) {
       );
       patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
     }
-    if (touchesAdapterConfiguration && requestedAdapterType === "opencode_local") {
+    if (touchesAdapterConfiguration) {
       const effectiveAdapterConfig = asRecord(patchData.adapterConfig) ?? {};
       await assertAdapterConfigConstraints(
         existing.companyId,
@@ -1732,8 +1812,14 @@ export function agentRoutes(db: Db) {
         effectiveAdapterConfig,
       );
     }
+    if (touchesAdapterConfiguration) {
+      const effectiveAdapterConfig = asRecord(patchData.adapterConfig) ?? asRecord(existing.adapterConfig) ?? {};
+      await assertModelCompatibleWithAdapter(requestedAdapterType, effectiveAdapterConfig);
+    }
 
     const actor = getActorInfo(req);
+    const adapterTypeChanged =
+      typeof patchData.adapterType === "string" && patchData.adapterType !== existing.adapterType;
     const agent = await svc.update(id, patchData, {
       recordRevision: {
         createdByAgentId: actor.agentId,
@@ -1744,6 +1830,19 @@ export function agentRoutes(db: Db) {
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
+    }
+
+    // When adapter type changes, clear stale runtime session state so the new
+    // adapter doesn't attempt to resume a session from the old adapter (#1505).
+    if (adapterTypeChanged) {
+      await db
+        .update(agentRuntimeState)
+        .set({
+          sessionId: null,
+          adapterType: patchData.adapterType as string,
+          updatedAt: new Date(),
+        })
+        .where(eq(agentRuntimeState.agentId, id));
     }
 
     await logActivity(db, {
@@ -1808,6 +1907,26 @@ export function agentRoutes(db: Db) {
   router.post("/agents/:id/terminate", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
+
+    // Prevent terminating the last CEO in a company (#1334)
+    const target = await svc.getById(id);
+    if (!target) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    if (target.role === "ceo") {
+      const companyAgents = await svc.list(target.companyId);
+      const activeCEOs = companyAgents.filter(
+        (a) => a.role === "ceo" && a.status !== "terminated" && a.id !== id,
+      );
+      if (activeCEOs.length === 0) {
+        res.status(409).json({
+          error: "Cannot terminate the last CEO. Hire or promote another CEO first.",
+        });
+        return;
+      }
+    }
+
     const agent = await svc.terminate(id);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
@@ -1831,6 +1950,22 @@ export function agentRoutes(db: Db) {
   router.delete("/agents/:id", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
+
+    // Prevent deleting the last CEO in a company (#1334)
+    const target = await svc.getById(id);
+    if (target && target.role === "ceo") {
+      const companyAgents = await svc.list(target.companyId);
+      const otherCEOs = companyAgents.filter(
+        (a) => a.role === "ceo" && a.status !== "terminated" && a.id !== id,
+      );
+      if (otherCEOs.length === 0) {
+        res.status(409).json({
+          error: "Cannot delete the last CEO. Hire or promote another CEO first.",
+        });
+        return;
+      }
+    }
+
     const agent = await svc.remove(id);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
@@ -1902,6 +2037,24 @@ export function agentRoutes(db: Db) {
       return;
     }
 
+    // Auto-resolve checked-out issue context so the run uses the correct workspace
+    const checkedOutIssue = await db
+      .select({
+        id: issues.id,
+        projectId: issues.projectId,
+        projectWorkspaceId: issues.projectWorkspaceId,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.assigneeAgentId, id),
+          eq(issues.companyId, agent.companyId),
+          isNotNull(issues.executionLockedAt),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
     const run = await heartbeat.wakeup(id, {
       source: req.body.source,
       triggerDetail: req.body.triggerDetail ?? "manual",
@@ -1914,6 +2067,11 @@ export function agentRoutes(db: Db) {
         triggeredBy: req.actor.type,
         actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,
         forceFreshSession: req.body.forceFreshSession === true,
+        ...(checkedOutIssue && {
+          issueId: checkedOutIssue.id,
+          projectId: checkedOutIssue.projectId ?? undefined,
+          projectWorkspaceId: checkedOutIssue.projectWorkspaceId ?? undefined,
+        }),
       },
     });
 

@@ -663,6 +663,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
             <div className="w-full space-y-2">
               <select
                 className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
+                aria-label="Workspace mode"
                 value={currentExecutionWorkspaceSelection}
                 onChange={(e) => {
                   const nextMode = e.target.value;
@@ -688,6 +689,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
               {currentExecutionWorkspaceSelection === "reuse_existing" && (
                 <select
                   className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
+                  aria-label="Select existing workspace"
                   value={issue.executionWorkspaceId ?? ""}
                   onChange={(e) => {
                     const nextExecutionWorkspaceId = e.target.value || null;

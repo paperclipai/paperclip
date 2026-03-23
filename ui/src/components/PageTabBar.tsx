@@ -12,9 +12,10 @@ interface PageTabBarProps {
   value?: string;
   onValueChange?: (value: string) => void;
   align?: "center" | "start";
+  "aria-label"?: string;
 }
 
-export function PageTabBar({ items, value, onValueChange, align = "center" }: PageTabBarProps) {
+export function PageTabBar({ items, value, onValueChange, align = "center", "aria-label": ariaLabel = "Page navigation" }: PageTabBarProps) {
   const { isMobile } = useSidebar();
 
   if (isMobile && value !== undefined && onValueChange) {
@@ -22,6 +23,7 @@ export function PageTabBar({ items, value, onValueChange, align = "center" }: Pa
       <select
         value={value}
         onChange={(e) => onValueChange(e.target.value)}
+        aria-label={ariaLabel}
         className="h-9 rounded-md border border-border bg-background px-2 py-1 text-base focus:outline-none focus:ring-1 focus:ring-ring"
       >
         {items.map((item) => (

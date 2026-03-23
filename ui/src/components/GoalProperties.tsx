@@ -46,7 +46,7 @@ function PickerButton({
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <button className="cursor-pointer hover:opacity-80 transition-opacity">
+        <button type="button" className="cursor-pointer hover:opacity-80 transition-opacity">
           {children}
         </button>
       </PopoverTrigger>

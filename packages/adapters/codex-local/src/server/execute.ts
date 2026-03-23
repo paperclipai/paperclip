@@ -13,6 +13,7 @@ import {
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
   ensurePaperclipSkillSymlink,
+  symlinkOrCopy,
   ensurePathInEnv,
   readPaperclipRuntimeSkillEntries,
   resolvePaperclipDesiredSkillNames,
@@ -20,7 +21,7 @@ import {
   joinPromptSections,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
-import { parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
+import { parseCodexJsonl, isCodexUnknownSessionError, isCodexAuthError } from "./parse.js";
 import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir } from "./codex-home.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
 
@@ -179,7 +180,7 @@ export async function ensureCodexSkillsInjected(
           if (linkSkill) {
             await linkSkill(entry.source, target);
           } else {
-            await fs.symlink(entry.source, target);
+            await symlinkOrCopy(entry.source, target);
           }
           await onLog(
             "stdout",
@@ -470,7 +471,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   const buildArgs = (resumeSessionId: string | null) => {
-    const args = ["exec", "--json"];
+    const args = ["exec", "--experimental-json", "--skip-git-repo-check"];
     if (search) args.unshift("--search");
     if (bypass) args.push("--dangerously-bypass-approvals-and-sandbox");
     if (model) args.push("--model", model);
@@ -598,6 +599,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     );
     const retry = await runAttempt(null);
     return toResult(retry, true);
+  }
+
+  // Auth errors (401/unauthorized) should immediately clear the session
+  // to prevent infinite retry loops that burn tokens (GH #1511).
+  if (
+    !initial.proc.timedOut &&
+    (initial.proc.exitCode ?? 0) !== 0 &&
+    isCodexAuthError(initial.proc.stdout, initial.rawStderr)
+  ) {
+    await onLog(
+      "stdout",
+      `[paperclip] Codex run failed with authentication error; clearing session to prevent retry loop.\n`,
+    );
+    const result = toResult(initial, true);
+    result.clearSession = true;
+    return result;
   }
 
   return toResult(initial);

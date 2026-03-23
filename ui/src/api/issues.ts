@@ -49,6 +49,8 @@ export const issuesApi = {
   deleteLabel: (id: string) => api.delete<IssueLabel>(`/labels/${id}`),
   get: (id: string) => api.get<Issue>(`/issues/${id}`),
   markRead: (id: string) => api.post<{ id: string; lastReadAt: Date }>(`/issues/${id}/read`, {}),
+  markAllRead: (companyId: string, issueIds?: string[]) =>
+    api.post<{ markedCount: number }>(`/companies/${companyId}/issues/mark-all-read`, issueIds ? { issueIds } : {}),
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<Issue>(`/companies/${companyId}/issues`, data),
   update: (id: string, data: Record<string, unknown>) => api.patch<Issue>(`/issues/${id}`, data),

@@ -533,7 +533,22 @@ function copyDirectoryContents(sourceDir: string, targetDir: string): boolean {
 
     if (entry.isSymbolicLink()) {
       rmSync(targetPath, { recursive: true, force: true });
-      symlinkSync(readlinkSync(sourcePath), targetPath);
+      const linkTarget = readlinkSync(sourcePath);
+      try {
+        symlinkSync(linkTarget, targetPath);
+      } catch (err: unknown) {
+        if ((err as NodeJS.ErrnoException).code === "EPERM") {
+          // Windows: symlink requires Developer Mode or admin.
+          // Try junction, then fall back to file copy.
+          try {
+            symlinkSync(linkTarget, targetPath, "junction");
+          } catch {
+            copyFileSync(sourcePath, targetPath);
+          }
+        } else {
+          throw err;
+        }
+      }
       copied = true;
       continue;
     }
