@@ -15,5 +15,7 @@ export { llmRoutes } from "./llms.js";
 export { modelProviderRoutes } from "./model-providers.js";
 export { accessRoutes } from "./access.js";
 export { integrationRecommendationRoutes } from "./integrationRecommendations.js";
+export { missionRoutes } from "./missions.js";
+export { agentToolRoutes } from "./agent-tools.js";
+export { telegramCallbackRoutes } from "./telegram-callback.js";
 export { departmentRoutes } from "./departments.js";
-export { productRoutes } from "./products.js";

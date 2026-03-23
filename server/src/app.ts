@@ -27,6 +27,9 @@ import { modelProviderRoutes } from "./routes/model-providers.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { integrationRecommendationRoutes } from "./routes/integrationRecommendations.js";
+import { missionRoutes } from "./routes/missions.js";
+import { agentToolRoutes } from "./routes/agent-tools.js";
+import { telegramCallbackRoutes } from "./routes/telegram-callback.js";
 import { departmentRoutes } from "./routes/departments.js";
 import { productRoutes } from "./routes/products.js";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
@@ -120,6 +123,10 @@ export async function createApp(
   api.use(dashboardRoutes(db));
   api.use(sidebarBadgeRoutes(db));
   api.use(integrationRecommendationRoutes(db));
+  // Wave 1 mission layer
+  api.use(missionRoutes(db));
+  api.use(agentToolRoutes(db));
+  api.use(telegramCallbackRoutes(db));
   api.use(departmentRoutes(db));
   api.use(productRoutes(db));
   api.use(

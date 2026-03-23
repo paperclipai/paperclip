@@ -1,5 +1,8 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
+import { z } from "zod";
+import { eq, and } from "drizzle-orm";
+import { approvals } from "@paperclipai/db";
 import {
   addApprovalCommentSchema,
   createApprovalSchema,
@@ -9,6 +12,7 @@ import {
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
+import { cancelApproveTimer } from "../services/jobs/approve-timer.js";
 import {
   approvalService,
   heartbeatService,
@@ -286,6 +290,41 @@ export function approvalRoutes(db: Db) {
       details: { type: approval.type },
     });
     res.json(redactApprovalPayload(approval));
+  });
+
+  // Wave 1: Idempotent approval resolve endpoint (handles race conditions)
+  const resolvePatchSchema = z.object({
+    decision: z.enum(["approved", "rejected"]),
+    resolvedVia: z.string().default("web"),
+    decisionNote: z.string().optional(),
+  });
+
+  router.patch("/approvals/:approvalId", validate(resolvePatchSchema), async (req, res) => {
+    const { approvalId } = req.params as { approvalId: string };
+    const { decision, resolvedVia, decisionNote } = req.body;
+
+    // Atomic: only update if still pending
+    const result = await db.update(approvals)
+      .set({
+        status: decision,
+        resolvedVia,
+        decisionNote: decisionNote ?? null,
+        decidedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(and(eq(approvals.id, approvalId), eq(approvals.status, "pending")))
+      .returning();
+
+    if (result.length > 0) {
+      // Cancel BullMQ auto-approve timer (idempotent if not set)
+      await cancelApproveTimer(approvalId).catch(() => null);
+    }
+
+    // Always return current state (idempotent)
+    const [current] = await db.select().from(approvals).where(eq(approvals.id, approvalId));
+    if (!current) { res.status(404).json({ error: "Approval not found" }); return; }
+
+    res.json({ approval: redactApprovalPayload(current) });
   });
 
   router.get("/approvals/:id/comments", async (req, res) => {

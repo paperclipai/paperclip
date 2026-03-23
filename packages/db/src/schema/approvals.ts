@@ -1,6 +1,7 @@
 import { pgTable, uuid, text, timestamp, jsonb, index } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
+import { missions } from "./missions.js";
 
 export const approvals = pgTable(
   "approvals",
@@ -17,6 +18,13 @@ export const approvals = pgTable(
     decidedAt: timestamp("decided_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    // Wave 1 mission layer extensions
+    missionId: uuid("mission_id").references(() => missions.id),
+    actionType: text("action_type"),
+    riskTier: text("risk_tier"),
+    autoApproveAt: timestamp("auto_approve_at", { withTimezone: true }),
+    resolvedVia: text("resolved_via"),
+    bullJobId: text("bull_job_id"),
   },
   (table) => ({
     companyStatusTypeIdx: index("approvals_company_status_type_idx").on(

@@ -23,6 +23,7 @@ import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import { heartbeatService } from "./services/index.js";
+import { startApproveTimerWorker } from "./services/jobs/approve-timer.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
@@ -478,6 +479,15 @@ if (config.heartbeatSchedulerEnabled) {
   }, config.heartbeatSchedulerIntervalMs);
 }
 
+// Wave 1: Start BullMQ approve-timer worker (requires Redis)
+let approveTimerWorker: ReturnType<typeof startApproveTimerWorker> | null = null;
+if (process.env.REDIS_URL) {
+  approveTimerWorker = startApproveTimerWorker(db as any);
+  logger.info({ redisUrl: process.env.REDIS_URL }, "Started BullMQ approve-timer worker");
+} else {
+  logger.warn("REDIS_URL not set — BullMQ workers disabled. Auto-approve timers will not fire.");
+}
+
 server.listen(listenPort, config.host, () => {
   logger.info(`Server listening on ${config.host}:${listenPort}`);
   if (process.env.PAPERCLIP_OPEN_ON_LISTEN === "true") {
@@ -530,9 +540,19 @@ if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
       await embeddedPostgres?.stop();
     } catch (err) {
       logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
-    } finally {
-      process.exit(0);
     }
+    // Wave 1: Close BullMQ workers
+    if (approveTimerWorker) {
+      logger.info("Closing BullMQ approve-timer worker");
+      await approveTimerWorker.close();
+    }
+    try {
+      const { closeAllQueues } = await import("./services/queue.js");
+      await closeAllQueues();
+    } catch (err) {
+      logger.error({ err }, "Failed to close BullMQ queues cleanly");
+    }
+    process.exit(0);
   };
 
   process.once("SIGINT", () => {

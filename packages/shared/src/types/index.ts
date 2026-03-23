@@ -85,6 +85,26 @@ export type {
   IntegrationCheckResult,
 } from "./integrationRecommendations.js";
 
+// Wave 1 mission layer - types
+export type {
+  CreateMission,
+  UpdateMission,
+  MissionStatus,
+  AutonomyLevel,
+  RiskTier,
+} from "./mission.js";
+// Wave 1 mission layer - schemas
+export {
+  createMissionSchema,
+  updateMissionSchema,
+  missionStatusSchema,
+  autonomyLevelSchema,
+  riskTierSchema,
+  digestScheduleSchema,
+  createApprovalRuleSchema,
+  createNotificationChannelSchema,
+} from "./mission.js";
+
 export type {
   AgentRuntimePolicy,
   ActionCatalogEntry,

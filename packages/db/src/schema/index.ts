@@ -32,6 +32,10 @@ export { activityLog } from "./activity_log.js";
 export { companySecrets } from "./company_secrets.js";
 export { companySecretVersions } from "./company_secret_versions.js";
 export { integrationCatalog, integrationRecommendations, integrationBlocks } from "./integrationRecommendations.js";
+// Mission layer (Wave 1)
+export { missions } from "./missions.js";
+export { missionApprovalRules } from "./mission_approval_rules.js";
+export { missionNotificationChannels } from "./mission_notification_channels.js";
 // Product-related tables
 export { products } from "./products.js";
 export { newsletterSubscribers } from "./newsletter_subscribers.js";
