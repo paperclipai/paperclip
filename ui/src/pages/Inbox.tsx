@@ -148,7 +148,7 @@ function FailedRunCard({
       <button
         type="button"
         onClick={onDismiss}
-        className="absolute right-2 top-2 z-10 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100"
+        className="absolute right-2 top-2 z-10 rounded-md p-1 text-muted-foreground opacity-100 transition-opacity hover:bg-accent hover:text-foreground sm:opacity-0 sm:group-hover:opacity-100"
         aria-label="Dismiss"
       >
         <X className="h-4 w-4" />
