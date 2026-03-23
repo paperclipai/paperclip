@@ -14,6 +14,9 @@ import {
   issueComments,
   issueDocuments,
   issueReadStates,
+  issueWorkProducts,
+  issueApprovals,
+  approvals,
   issues,
   labels,
   projectWorkspaces,
@@ -30,6 +33,7 @@ import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getDefaultCompanyGoal } from "./goals.js";
+import { evaluateLaunchChecklist, isLaunchIssueText, type LaunchChecklistMetadata } from "./issue-launch-guards.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -57,6 +61,51 @@ function applyStatusSideEffects(
     patch.cancelledAt = new Date();
   }
   return patch;
+}
+
+async function assertDoneTransitionGuards(
+  dbOrTx: any,
+  input: { id: string; title: string | null; description: string | null; status: string },
+) {
+  if (input.status !== "done") return;
+
+  const checklistRow = await dbOrTx
+    .select({ metadata: issueWorkProducts.metadata })
+    .from(issueWorkProducts)
+    .where(and(eq(issueWorkProducts.issueId, input.id), eq(issueWorkProducts.externalId, "launch_checklist_v1")))
+    .orderBy(desc(issueWorkProducts.updatedAt))
+    .then((rows: Array<{ metadata: Record<string, unknown> | null }>) => rows[0] ?? null);
+
+  const hasImageAttachment = await dbOrTx
+    .select({ id: issueAttachments.id })
+    .from(issueAttachments)
+    .innerJoin(assets, eq(assets.id, issueAttachments.assetId))
+    .where(and(eq(issueAttachments.issueId, input.id), sql`${assets.contentType} like 'image/%'`))
+    .limit(1)
+    .then((rows: Array<{ id: string }>) => rows.length > 0);
+
+  const hasApprovedLinkedApproval = await dbOrTx
+    .select({ approvalId: issueApprovals.approvalId })
+    .from(issueApprovals)
+    .innerJoin(approvals, eq(approvals.id, issueApprovals.approvalId))
+    .where(and(eq(issueApprovals.issueId, input.id), eq(approvals.status, "approved")))
+    .limit(1)
+    .then((rows: Array<{ approvalId: string }>) => rows.length > 0);
+
+  const launchRelated = isLaunchIssueText(input.title, input.description) || checklistRow !== null;
+  if (!launchRelated) return;
+
+  const checklist = evaluateLaunchChecklist({
+    metadata: (checklistRow?.metadata ?? null) as LaunchChecklistMetadata | null,
+    hasImageAttachment,
+    hasApprovedLinkedApproval,
+  });
+
+  if (!checklist.complete) {
+    throw unprocessable(
+      `Launch checklist incomplete. Missing: ${checklist.missing.join(", ")}. Complete checklist + proof metadata before moving to done.`,
+    );
+  }
 }
 
 export interface IssueFilters {
@@ -785,6 +834,12 @@ export function issueService(db: Db) {
         }
 
         const [issue] = await tx.insert(issues).values(values).returning();
+        await assertDoneTransitionGuards(tx, {
+          id: issue.id,
+          title: issue.title,
+          description: issue.description,
+          status: issue.status,
+        });
         if (inputLabelIds) {
           await syncIssueLabels(issue.id, companyId, inputLabelIds, tx);
         }
@@ -865,6 +920,13 @@ export function issueService(db: Db) {
       }
 
       return db.transaction(async (tx) => {
+        const nextStatus = (issueData.status ?? existing.status) as string;
+        await assertDoneTransitionGuards(tx, {
+          id,
+          title: (issueData.title ?? existing.title) as string,
+          description: (issueData.description ?? existing.description) as string | null,
+          status: nextStatus,
+        });
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, existing.companyId);
         patch.goalId = resolveNextIssueGoalId({
           currentProjectId: existing.projectId,

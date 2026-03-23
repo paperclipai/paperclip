@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent 
 import { Link, useLocation, useNavigate, useParams } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
+import { approvalsApi } from "../api/approvals";
 import { activityApi } from "../api/activity";
 import { heartbeatsApi } from "../api/heartbeats";
 import { agentsApi } from "../api/agents";
@@ -53,7 +54,7 @@ import {
   Trash2,
 } from "lucide-react";
 import type { ActivityEvent } from "@paperclipai/shared";
-import type { Agent, IssueAttachment } from "@paperclipai/shared";
+import type { Agent, IssueAttachment, IssueWorkProduct } from "@paperclipai/shared";
 
 type CommentReassignment = {
   assigneeAgentId: string | null;
@@ -138,6 +139,37 @@ function titleizeFilename(input: string) {
     .join(" ");
 }
 
+type LaunchChecklistState = {
+  copyFinal: boolean;
+  linksValid: boolean;
+  scheduledTime: string;
+  proofUrlOrPostId: string;
+  proofTimestamp: string;
+  proofPlatformChannel: string;
+};
+
+const defaultLaunchChecklist: LaunchChecklistState = {
+  copyFinal: false,
+  linksValid: false,
+  scheduledTime: "",
+  proofUrlOrPostId: "",
+  proofTimestamp: "",
+  proofPlatformChannel: "",
+};
+
+function launchChecklistFromProduct(product: IssueWorkProduct | null | undefined): LaunchChecklistState {
+  const metadata = (product?.metadata ?? {}) as Record<string, unknown>;
+  const proof = (metadata.proof ?? {}) as Record<string, unknown>;
+  return {
+    copyFinal: metadata.copyFinal === true,
+    linksValid: metadata.linksValid === true,
+    scheduledTime: typeof metadata.scheduledTime === "string" ? metadata.scheduledTime : "",
+    proofUrlOrPostId: typeof proof.urlOrPostId === "string" ? proof.urlOrPostId : "",
+    proofTimestamp: typeof proof.timestamp === "string" ? proof.timestamp : "",
+    proofPlatformChannel: typeof proof.platformChannel === "string" ? proof.platformChannel : "",
+  };
+}
+
 function formatAction(action: string, details?: Record<string, unknown> | null): string {
   if (action === "issue.updated" && details) {
     const previous = (details._previous ?? {}) as Record<string, unknown>;
@@ -211,6 +243,7 @@ export function IssueDetail() {
   });
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [attachmentDragActive, setAttachmentDragActive] = useState(false);
+  const [launchChecklist, setLaunchChecklist] = useState<LaunchChecklistState>(defaultLaunchChecklist);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const lastMarkedReadIssueIdRef = useRef<string | null>(null);
 
@@ -252,6 +285,12 @@ export function IssueDetail() {
     enabled: !!issueId,
   });
 
+  const { data: workProducts } = useQuery({
+    queryKey: ["issues", issueId, "work-products"],
+    queryFn: () => issuesApi.listWorkProducts(issueId!),
+    enabled: !!issueId,
+  });
+
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.issues.liveRuns(issueId!),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issueId!),
@@ -267,6 +306,18 @@ export function IssueDetail() {
   });
 
   const hasLiveRuns = (liveRuns ?? []).length > 0 || !!activeRun;
+  const launchChecklistProduct = useMemo(
+    () => (workProducts ?? []).find((product) => product.externalId === "launch_checklist_v1") ?? null,
+    [workProducts],
+  );
+  const pendingLinkedApproval = useMemo(
+    () => (linkedApprovals ?? []).find((approval) => approval.status === "pending") ?? null,
+    [linkedApprovals],
+  );
+  const isLaunchIssue = useMemo(() => {
+    const haystack = `${issue?.title ?? ""} ${issue?.description ?? ""}`.toLowerCase();
+    return ["launch", "publish", "go live", "campaign", "scheduled", "post"].some((token) => haystack.includes(token)) || Boolean(launchChecklistProduct);
+  }, [issue?.title, issue?.description, launchChecklistProduct]);
   const isScheduledWorkflowStage =
     issue?.status === "in_review" &&
     (linkedApprovals ?? []).some((approval) => approval.status === "approved");
@@ -458,6 +509,7 @@ export function IssueDetail() {
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.approvals(issueId!) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(issueId!) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.documents(issueId!) });
+    queryClient.invalidateQueries({ queryKey: ["issues", issueId, "work-products"] });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(issueId!) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(issueId!) });
     if (selectedCompanyId) {
@@ -483,6 +535,55 @@ export function IssueDetail() {
     mutationFn: (data: Record<string, unknown>) => issuesApi.update(issueId!, data),
     onSuccess: () => {
       invalidateIssue();
+    },
+    onError: (error) => {
+      pushToast({ title: error instanceof Error ? error.message : "Issue update failed", tone: "error" });
+    },
+  });
+
+  const approveAndMove = useMutation({
+    mutationFn: async () => {
+      if (!pendingLinkedApproval) throw new Error("No pending linked approval");
+      return approvalsApi.approve(pendingLinkedApproval.id, "Approved from issue flow");
+    },
+    onSuccess: () => {
+      invalidateIssue();
+      pushToast({ title: "Approved and moved to scheduled stage", tone: "success" });
+    },
+    onError: (error) => {
+      pushToast({ title: error instanceof Error ? error.message : "Failed to approve", tone: "error" });
+    },
+  });
+
+  const saveLaunchChecklist = useMutation({
+    mutationFn: async () => {
+      const payload = {
+        type: "document",
+        provider: "custom",
+        externalId: "launch_checklist_v1",
+        title: "Launch checklist",
+        status: "active",
+        reviewState: "none",
+        metadata: {
+          copyFinal: launchChecklist.copyFinal,
+          linksValid: launchChecklist.linksValid,
+          scheduledTime: launchChecklist.scheduledTime || null,
+          proof: {
+            urlOrPostId: launchChecklist.proofUrlOrPostId || null,
+            timestamp: launchChecklist.proofTimestamp || null,
+            platformChannel: launchChecklist.proofPlatformChannel || null,
+          },
+        },
+      };
+      if (launchChecklistProduct) {
+        return issuesApi.updateWorkProduct(launchChecklistProduct.id, payload);
+      }
+      return issuesApi.createWorkProduct(issueId!, payload);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["issues", issueId, "work-products"] });
+      invalidateIssue();
+      pushToast({ title: "Launch checklist saved", tone: "success" });
     },
   });
 
@@ -598,6 +699,10 @@ export function IssueDetail() {
     }
     return () => closePanel();
   }, [issue]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    setLaunchChecklist(launchChecklistFromProduct(launchChecklistProduct));
+  }, [launchChecklistProduct]);
 
   const copyIssueToClipboard = async () => {
     if (!issue) return;
@@ -736,6 +841,18 @@ export function IssueDetail() {
               Live
             </span>
           )}
+
+          {pendingLinkedApproval ? (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6 px-2 text-[11px]"
+              onClick={() => approveAndMove.mutate()}
+              disabled={approveAndMove.isPending}
+            >
+              {approveAndMove.isPending ? "Approving..." : "Approve + Move"}
+            </Button>
+          ) : null}
 
           {issue.originKind === "routine_execution" && issue.originId && (
             <Link
@@ -991,6 +1108,30 @@ export function IssueDetail() {
           ))}
         </div>
         </div>
+      ) : null}
+
+      {isLaunchIssue ? (
+        <section className="rounded-lg border bg-card p-3 space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="text-sm font-semibold">Launch checklist</h3>
+            <Button size="sm" variant="outline" onClick={() => saveLaunchChecklist.mutate()} disabled={saveLaunchChecklist.isPending}>
+              {saveLaunchChecklist.isPending ? "Saving..." : "Save checklist"}
+            </Button>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2 text-xs">
+            <label className="flex items-center gap-2"><input type="checkbox" checked={launchChecklist.copyFinal} onChange={(e) => setLaunchChecklist((prev) => ({ ...prev, copyFinal: e.target.checked }))} />Copy final</label>
+            <label className="flex items-center gap-2 opacity-70"><input type="checkbox" checked={attachmentList.some((item) => item.contentType.startsWith("image/"))} readOnly />Image attached (auto)</label>
+            <label className="flex items-center gap-2"><input type="checkbox" checked={launchChecklist.linksValid} onChange={(e) => setLaunchChecklist((prev) => ({ ...prev, linksValid: e.target.checked }))} />Links valid</label>
+            <label className="flex items-center gap-2 opacity-70"><input type="checkbox" checked={(linkedApprovals ?? []).some((approval) => approval.status === "approved")} readOnly />Approval received (auto)</label>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <input className="h-8 rounded-md border bg-background px-2 text-xs" placeholder="Scheduled time (ISO/local text)" value={launchChecklist.scheduledTime} onChange={(e) => setLaunchChecklist((prev) => ({ ...prev, scheduledTime: e.target.value }))} />
+            <input className="h-8 rounded-md border bg-background px-2 text-xs" placeholder="Proof URL / Post ID" value={launchChecklist.proofUrlOrPostId} onChange={(e) => setLaunchChecklist((prev) => ({ ...prev, proofUrlOrPostId: e.target.value }))} />
+            <input className="h-8 rounded-md border bg-background px-2 text-xs" placeholder="Proof timestamp" value={launchChecklist.proofTimestamp} onChange={(e) => setLaunchChecklist((prev) => ({ ...prev, proofTimestamp: e.target.value }))} />
+            <input className="h-8 rounded-md border bg-background px-2 text-xs" placeholder="Platform / channel" value={launchChecklist.proofPlatformChannel} onChange={(e) => setLaunchChecklist((prev) => ({ ...prev, proofPlatformChannel: e.target.value }))} />
+          </div>
+          <p className="text-[11px] text-muted-foreground">Moving this issue to done is blocked until all checks are complete and proof metadata is provided.</p>
+        </section>
       ) : null}
 
       <Separator />

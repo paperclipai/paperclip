@@ -200,6 +200,48 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
   );
 }
 
+function ProjectRoadmapStrip({ projectId, companyId }: { projectId: string; companyId: string }) {
+  const { data: issues } = useQuery({
+    queryKey: ["project-roadmap-strip", companyId, projectId],
+    queryFn: () => issuesApi.list(companyId, { projectId }),
+    enabled: !!companyId && !!projectId,
+    refetchInterval: 20_000,
+  });
+
+  const now = Date.now();
+  const doneCutoff = now - 7 * 24 * 60 * 60 * 1000;
+  const counts = {
+    inProgress: (issues ?? []).filter((issue) => issue.status === "in_progress").length,
+    todo: (issues ?? []).filter((issue) => issue.status === "todo").length,
+    blocked: (issues ?? []).filter((issue) => issue.status === "blocked").length,
+    doneThisWeek: (issues ?? []).filter((issue) => {
+      if (issue.status !== "done") return false;
+      const doneAt = issue.completedAt ? new Date(issue.completedAt).getTime() : new Date(issue.updatedAt).getTime();
+      return Number.isFinite(doneAt) && doneAt >= doneCutoff;
+    }).length,
+  };
+
+  const items = [
+    { label: "Live now", value: counts.inProgress, tone: "text-cyan-600" },
+    { label: "Next up", value: counts.todo, tone: "text-blue-600" },
+    { label: "Waiting approval", value: counts.blocked, tone: "text-amber-600" },
+    { label: "Done this week", value: counts.doneThisWeek, tone: "text-emerald-600" },
+  ];
+
+  return (
+    <section className="rounded-lg border bg-card p-3">
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        {items.map((item) => (
+          <div key={item.label} className="rounded-md border bg-background px-3 py-2">
+            <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{item.label}</p>
+            <p className={cn("text-2xl font-semibold", item.tone)}>{item.value}</p>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 /* ── Main project page ── */
 
 export function ProjectDetail() {
@@ -524,6 +566,10 @@ export function ProjectDetail() {
           ) : null}
         </div>
       </div>
+
+      {project?.id && resolvedCompanyId ? (
+        <ProjectRoadmapStrip projectId={project.id} companyId={resolvedCompanyId} />
+      ) : null}
 
       <PluginSlotOutlet
         slotTypes={["toolbarButton", "contextMenuItem"]}

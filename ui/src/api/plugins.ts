@@ -17,6 +17,7 @@ import type {
   PluginRecord,
   PluginConfig,
   PluginStatus,
+  PluginJobRecord,
 } from "@paperclipai/shared";
 import { api } from "./client";
 
@@ -245,6 +246,12 @@ export const pluginsApi = {
    */
   dashboard: (pluginId: string) =>
     api.get<PluginDashboardData>(`/plugins/${pluginId}/dashboard`),
+
+  listJobs: (pluginId: string) =>
+    api.get<PluginJobRecord[]>(`/plugins/${pluginId}/jobs`),
+
+  triggerJob: (pluginId: string, jobId: string) =>
+    api.post<{ ok: boolean; runId: string }>(`/plugins/${pluginId}/jobs/${jobId}/trigger`, {}),
 
   /**
    * Fetch recent log entries for a plugin.
