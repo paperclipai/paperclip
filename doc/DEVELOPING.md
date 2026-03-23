@@ -55,6 +55,14 @@ Allow additional private hostnames (for example custom Tailscale hostnames):
 pnpm paperclipai allowed-hostname dotta-macbook-pro
 ```
 
+Relay tunnel dev mode (remote access without port forwarding):
+
+```sh
+PAPERCLIP_RELAY_URL=wss://your-relay-server.com pnpm dev --tailscale-auth
+```
+
+On first start, the server auto-registers and prints a public URL (e.g. `https://d4lsc.your-relay-server.com`). Token and hostname are persisted automatically. A community-run test relay is available at `paperclip-relay.com` (not affiliated with Paperclip AI — deploy your own for production). See `doc/RELAY.md` for relay architecture and server source.
+
 ## One-Command Local Run
 
 For a first-time local install, you can bootstrap and run in one command:

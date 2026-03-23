@@ -27,7 +27,8 @@ Paperclip supports three deployment configurations, from zero-friction local to 
 - Login required via Better Auth
 - Binds to all interfaces for network access
 - Auto base URL mode (lower friction)
-- Best for: team access over Tailscale or local network
+- Supports relay tunnel for remote access without port forwarding
+- Best for: team access over Tailscale, relay tunnel, or local network
 
 ### Authenticated + Public
 
@@ -40,6 +41,7 @@ Paperclip supports three deployment configurations, from zero-friction local to 
 
 - **Just trying Paperclip?** Use `local_trusted` (the default)
 - **Sharing with a team on private network?** Use `authenticated` + `private`
+- **Want remote access without port forwarding?** Use `authenticated` + `private` with [relay tunnel](/deploy/relay-tunnel)
 - **Deploying to the cloud?** Use `authenticated` + `public`
 
 Set the mode during onboarding:

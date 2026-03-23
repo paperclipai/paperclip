@@ -37,11 +37,19 @@ Current CLI behavior:
 
 Target behavior (planned) is documented in `doc/DEPLOYMENT-MODES.md` section 5.
 
-Allow an authenticated/private hostname (for example custom Tailscale DNS):
+Allow an authenticated/private hostname (for example custom Tailscale DNS or relay subdomain):
 
 ```sh
 pnpm paperclipai allowed-hostname dotta-macbook-pro
 ```
+
+Enable relay tunnel for remote access (requires `authenticated` mode):
+
+```sh
+PAPERCLIP_RELAY_URL=wss://your-relay-server.com pnpm paperclipai run
+```
+
+A community-run test relay is available at `paperclip-relay.com` (not affiliated with Paperclip AI — deploy your own for production). See `doc/RELAY.md` for relay architecture and deployment.
 
 All client commands support:
 

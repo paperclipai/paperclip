@@ -70,6 +70,29 @@ export interface StartedServer {
 
 export async function startServer(): Promise<StartedServer> {
   const config = loadConfig();
+
+  // Enforce relay security requirement before any registration or config mutation.
+  if (config.relayUrl && config.deploymentMode !== "authenticated") {
+    throw new Error(
+      "Relay requires authenticated deployment mode. " +
+        "Use authenticated mode for relay deployments or remove PAPERCLIP_RELAY_URL.",
+    );
+  }
+
+  // Auto-register with relay if URL is configured but no token exists yet.
+  // Must happen before createApp() so the hostname guard includes the relay domain.
+  if (config.relayUrl && !config.relayToken) {
+    const { autoRegisterRelay } = await import("./relay/auto-register.js");
+    const result = await autoRegisterRelay(config.relayUrl);
+    if (result) {
+      config.relayToken = result.token;
+      process.env.PAPERCLIP_RELAY_TOKEN = result.token;
+      if (!config.allowedHostnames.includes(result.relayHostname)) {
+        config.allowedHostnames.push(result.relayHostname);
+      }
+    }
+  }
+
   if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
     process.env.PAPERCLIP_SECRETS_PROVIDER = config.secretsProvider;
   }
@@ -408,7 +431,7 @@ export async function startServer(): Promise<StartedServer> {
   if (config.deploymentMode === "local_trusted" && config.deploymentExposure !== "private") {
     throw new Error("local_trusted mode only supports private exposure");
   }
-  
+
   if (config.deploymentMode === "authenticated") {
     if (config.authBaseUrlMode === "explicit" && !config.authPublicBaseUrl) {
       throw new Error("auth.baseUrlMode=explicit requires auth.publicBaseUrl");
@@ -656,6 +679,7 @@ export async function startServer(): Promise<StartedServer> {
         databaseBackupIntervalMinutes: config.databaseBackupIntervalMinutes,
         databaseBackupRetentionDays: config.databaseBackupRetentionDays,
         databaseBackupDir: config.databaseBackupDir,
+        relayUrl: config.relayUrl,
       });
 
       const boardClaimUrl = getBoardClaimWarningUrl(config.host, listenPort);
@@ -677,19 +701,38 @@ export async function startServer(): Promise<StartedServer> {
       resolveListen();
     });
   });
-  
-  if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
-    const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+
+  let relayClient: { close: () => void } | null = null;
+  if (config.relayUrl && config.relayToken) {
+    const { startRelayClient } = await import("./relay/relay-client.js");
+    relayClient = startRelayClient({
+      relayUrl: config.relayUrl,
+      relayToken: config.relayToken,
+      localPort: listenPort,
+      onReady: (instanceId, publicUrl) => {
+        logger.info({ instanceId, publicUrl }, "Relay tunnel connected");
+        console.log(`\n  \x1b[2mRelay           \x1b[0m ${publicUrl}\n`);
+      },
+    });
+  }
+
+  const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+    if (relayClient) {
+      logger.info("Closing relay tunnel");
+      relayClient.close();
+    }
+    if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
       logger.info({ signal }, "Stopping embedded PostgreSQL");
       try {
         await embeddedPostgres?.stop();
       } catch (err) {
         logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
-      } finally {
-        process.exit(0);
       }
-    };
-  
+    }
+    process.exit(0);
+  };
+
+  if (relayClient || (embeddedPostgres && embeddedPostgresStartedByThisProcess)) {
     process.once("SIGINT", () => {
       void shutdown("SIGINT");
     });

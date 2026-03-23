@@ -33,6 +33,7 @@ type StartupBannerOptions = {
   databaseBackupIntervalMinutes: number;
   databaseBackupRetentionDays: number;
   databaseBackupDir: string;
+  relayUrl?: string;
 };
 
 const ansi = {
@@ -164,6 +165,9 @@ export function printStartupBanner(opts: StartupBannerOptions): void {
     row("DB Backup", dbBackup),
     row("Backup Dir", opts.databaseBackupDir),
     row("Config", configPath),
+    opts.relayUrl
+      ? row("Relay", `enabled ${color("(connecting...)", "dim")}`)
+      : null,
     agentJwtSecret.status === "warn"
       ? color("  ───────────────────────────────────────────────────────", "yellow")
       : null,

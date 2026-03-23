@@ -16,6 +16,15 @@ All environment variables that Paperclip uses for server configuration.
 | `PAPERCLIP_INSTANCE_ID` | `default` | Instance identifier (for multiple local instances) |
 | `PAPERCLIP_DEPLOYMENT_MODE` | `local_trusted` | Runtime mode override |
 
+## Relay Tunnel
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PAPERCLIP_RELAY_URL` | (none) | WebSocket URL of relay server (e.g. `wss://your-relay-server.com`). Enables relay tunnel. |
+| `PAPERCLIP_RELAY_TOKEN` | (none) | Relay authentication token. Auto-generated on first connect if not set. |
+
+See [Relay Tunnel](/deploy/relay-tunnel) for setup details. Requires `authenticated` deployment mode.
+
 ## Secrets
 
 | Variable | Default | Description |
