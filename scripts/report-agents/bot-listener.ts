@@ -5,6 +5,31 @@
 import dotenv from "dotenv";
 dotenv.config({ path: "../../.env" });
 import Database from "better-sqlite3";
+import { execSync } from "child_process";
+
+// ============================================================
+// DATA SYNC
+// ============================================================
+
+const SYNC_DIR = "/Users/amando/Desktop/Learn/metabase-sync";
+let lastSyncTime = 0;
+const SYNC_COOLDOWN_MS = 5 * 60 * 1000; // không sync lại trong 5 phút
+
+function syncData(): void {
+  const now = Date.now();
+  if (now - lastSyncTime < SYNC_COOLDOWN_MS) {
+    console.log("  Sync skipped (cooldown)");
+    return;
+  }
+  try {
+    console.log("  Syncing data...");
+    execSync("node sync.mjs", { cwd: SYNC_DIR, timeout: 120_000, stdio: "pipe" });
+    lastSyncTime = Date.now();
+    console.log("  Sync done ✓");
+  } catch (e: any) {
+    console.error("  Sync failed:", e.message?.slice(0, 100));
+  }
+}
 import { sendTelegram } from "./lib/telegram.js";
 import { fetchPlatformMetrics } from "./lib/metabase-queries.js";
 import { fetchGA4Metrics } from "./lib/ga4-client.js";
@@ -96,7 +121,8 @@ async function reply(chatId: string, text: string, threadId?: number): Promise<s
 // ============================================================
 
 async function handleReport(chatId: string, threadId?: number) {
-  await reply(chatId, "⏳ Generating reports...", threadId);
+  await reply(chatId, "⏳ Syncing data & generating reports...", threadId);
+  syncData();
 
   if (WHALES_DB_PATH) {
     try {
@@ -161,7 +187,8 @@ async function handleQuestion(chatId: string, question: string, chatKey: string,
     return;
   }
 
-  await reply(chatId, "🤔 Thinking...", threadId);
+  await reply(chatId, "🤔 Syncing & thinking...", threadId);
+  syncData();
 
   const session = getSession(chatKey);
   const isNewSession = !session.sessionId;

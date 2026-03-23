@@ -320,6 +320,16 @@ async function main() {
   console.log(`Report Manager: ${now.toISOString()}`);
   console.log(`  Day of week: ${dayOfWeek} (0=Sun), Day of month: ${dayOfMonth}`);
 
+  // === SYNC DATA FIRST ===
+  console.log("\n  → Syncing data...");
+  try {
+    const { execSync } = await import("child_process");
+    execSync("node sync.mjs", { cwd: "/Users/amando/Desktop/Learn/metabase-sync", timeout: 120_000, stdio: "pipe" });
+    console.log("  → Sync done ✓");
+  } catch (e) {
+    console.error("  → Sync failed (continuing with existing data)");
+  }
+
   // === DAILY (always) ===
   console.log("\n=== DAILY REPORT ===");
 
