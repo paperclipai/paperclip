@@ -570,6 +570,11 @@ export async function startServer(): Promise<StartedServer> {
         logger.error({ err }, "periodic expiry of terminated-run locks failed");
       });
 
+      // Periodically enqueue any due process_lost retries
+      void heartbeat.enqueueProcessLostRetries().catch((err) => {
+        logger.error({ err }, "periodic enqueue process_lost retries failed");
+      });
+
       // Reap orphaned workspace processes (grandchildren that survived run completion)
       void heartbeat.reapOrphanedWorkspaceProcesses().catch((err) => {
         logger.error({ err }, "periodic orphan workspace process reap failed");

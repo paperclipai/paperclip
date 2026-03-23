@@ -1530,10 +1530,11 @@ export function heartbeatService(db: Db) {
           level: "error",
           message: "Process lost -- server may have restarted",
         });
-        await releaseIssueExecutionAndPromote(updatedRun);
+        // Schedule retry instead of immediately releasing - process_lost auto-retry (DLD-819)
+        await scheduleProcessLostRetry(updatedRun);
       }
       await finalizeAgentStatus(run.agentId, "failed");
-      await startNextQueuedRunForAgent(run.agentId);
+      // Don't start next queued run - the retry will be picked up by enqueueProcessLostRetries
       runningProcesses.delete(run.id);
       reaped.push(run.id);
     }
@@ -1542,6 +1543,144 @@ export function heartbeatService(db: Db) {
       logger.warn({ reapedCount: reaped.length, runIds: reaped }, "reaped orphaned heartbeat runs");
     }
     return { reaped: reaped.length, runIds: reaped };
+  }
+
+  /**
+   * Schedule a process_lost retry for an issue ~10 seconds in the future.
+   * This clears the execution lock and sets processLostRetryAt, allowing
+   * enqueueProcessLostRetries to pick it up after the delay.
+   */
+  async function scheduleProcessLostRetry(run: typeof heartbeatRuns.$inferSelect) {
+    const PROCESS_LOST_RETRY_DELAY_MS = 10_000;
+
+    await db.transaction(async (tx) => {
+      const issue = await tx
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+        })
+        .from(issues)
+        .where(and(eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)))
+        .then((rows) => rows[0] ?? null);
+
+      if (!issue) return;
+
+      const retryAt = new Date(Date.now() + PROCESS_LOST_RETRY_DELAY_MS);
+
+      await tx
+        .update(issues)
+        .set({
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          processLostRetryAt: retryAt,
+          updatedAt: new Date(),
+        })
+        .where(eq(issues.id, issue.id));
+
+      logger.info(
+        { issueId: issue.id, runId: run.id, retryAt: retryAt.toISOString() },
+        "scheduled process_lost retry",
+      );
+    });
+  }
+
+  /**
+   * Pick up issues with processLostRetryAt in the past and enqueue them for retry.
+   * Called periodically by the scheduler.
+   */
+  async function enqueueProcessLostRetries() {
+    const now = new Date();
+
+    const dueIssues = await db
+      .select()
+      .from(issues)
+      .where(sql`${issues.processLostRetryAt} IS NOT NULL AND ${issues.processLostRetryAt} <= ${now}`)
+      .limit(100);
+
+    const enqueued: string[] = [];
+
+    for (const issue of dueIssues) {
+      try {
+        const agent = await getAgent(issue.assigneeAgentId!);
+        if (!agent) {
+          logger.warn({ issueId: issue.id }, "cannot enqueue process_lost retry: assignee agent not found");
+          await db
+            .update(issues)
+            .set({ processLostRetryAt: null, updatedAt: new Date() })
+            .where(eq(issues.id, issue.id));
+          continue;
+        }
+
+        if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
+          logger.warn({ issueId: issue.id, agentStatus: agent.status }, "cannot enqueue process_lost retry: agent not in valid state");
+          await db
+            .update(issues)
+            .set({ processLostRetryAt: null, updatedAt: new Date() })
+            .where(eq(issues.id, issue.id));
+          continue;
+        }
+
+        await db
+          .update(issues)
+          .set({ processLostRetryAt: null, updatedAt: new Date() })
+          .where(eq(issues.id, issue.id));
+
+        const run = await db.transaction(async (tx) => {
+          const existingQueued = await tx
+            .select({ id: heartbeatRuns.id })
+            .from(heartbeatRuns)
+            .where(
+              and(
+                eq(heartbeatRuns.agentId, agent.id),
+                eq(heartbeatRuns.status, "queued"),
+                sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+              ),
+            )
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+
+          if (existingQueued) {
+            logger.info({ issueId: issue.id }, "process_lost retry already queued, skipping");
+            return null;
+          }
+
+          const sessionBefore = await resolveSessionBeforeForWakeup(agent, `issue:${issue.id}`);
+
+          return tx
+            .insert(heartbeatRuns)
+            .values({
+              companyId: issue.companyId,
+              agentId: agent.id,
+              invocationSource: "automation",
+              triggerDetail: "process_lost_retry",
+              status: "queued",
+              contextSnapshot: {
+                issueId: issue.id,
+                companyId: issue.companyId,
+                source: "scheduler",
+                reason: "process_lost_retry",
+              },
+              sessionIdBefore: sessionBefore,
+            })
+            .returning()
+            .then((rows) => rows[0]);
+        });
+
+        if (run) {
+          enqueued.push(issue.id);
+          logger.info({ issueId: issue.id, runId: run.id }, "enqueued process_lost retry");
+        }
+      } catch (err) {
+        logger.error({ err, issueId: issue.id }, "failed to enqueue process_lost retry");
+      }
+    }
+
+    if (enqueued.length > 0) {
+      logger.info({ enqueuedCount: enqueued.length, issueIds: enqueued }, "enqueued process_lost retries");
+    }
+
+    return { enqueued: enqueued.length, issueIds: enqueued };
   }
 
   /**
@@ -3597,6 +3736,8 @@ export function heartbeatService(db: Db) {
 
     expireTerminatedRunLocks,
     resumeQueuedRuns,
+
+    enqueueProcessLostRetries,
 
     tickTimers: async (now = new Date()) => {
       const allAgents = await db.select().from(agents);

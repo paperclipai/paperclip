@@ -155,6 +155,7 @@ async function handleWorkflowRun(payload: GitHubWorkflowRunEvent): Promise<void>
     title,
     description,
     priority: "high",
+    status: "todo",
     assigneeAgentId,
   });
 
@@ -203,6 +204,7 @@ async function handleCheckRun(payload: GitHubCheckRunEvent): Promise<void> {
     title,
     description,
     priority: "high",
+    status: "todo",
     assigneeAgentId,
   });
 

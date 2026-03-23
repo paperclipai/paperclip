@@ -274,6 +274,13 @@
       "when": 1774053266954,
       "tag": "0038_unusual_thunderbird",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1774490000000,
+      "tag": "0039_speedy_task_master",
+      "breakpoints": true
     }
   ]
 }

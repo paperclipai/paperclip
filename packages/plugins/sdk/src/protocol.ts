@@ -581,7 +581,8 @@ export interface WorkerToHostMethods {
       parentId?: string;
       title: string;
       description?: string;
-      priority?: string;
+      priority?: "critical" | "high" | "medium" | "low";
+      status?: "backlog" | "todo" | "in_progress" | "in_review" | "done" | "blocked" | "cancelled";
       assigneeAgentId?: string;
     },
     result: Issue,

@@ -875,6 +875,7 @@ export interface PluginIssuesClient {
     title: string;
     description?: string;
     priority?: Issue["priority"];
+    status?: Issue["status"];
     assigneeAgentId?: string;
   }): Promise<Issue>;
   update(
