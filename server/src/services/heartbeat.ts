@@ -1579,7 +1579,7 @@ export function heartbeatService(db: Db) {
           executionRunId: null,
           executionAgentNameKey: null,
           executionLockedAt: null,
-          processLostRetryAt: retryAt,
+          processLostRetryAt: retryAt.toISOString() as any,
           updatedAt: new Date().toISOString() as any,
         })
         .where(eq(issues.id, issue.id));
@@ -1602,7 +1602,7 @@ export function heartbeatService(db: Db) {
     const dueIssues = await db
       .select()
       .from(issues)
-      .where(sql`${issues.processLostRetryAt} IS NOT NULL AND ${issues.processLostRetryAt} <= ${now}`)
+      .where(sql`${issues.processLostRetryAt} IS NOT NULL AND ${issues.processLostRetryAt} <= ${nowStr}`)
       .limit(100);
 
     const enqueued: string[] = [];
