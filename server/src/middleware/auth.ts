@@ -80,6 +80,14 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
+    // When a bearer token is present, clear the default actor to prevent
+    // privilege escalation in local_trusted mode. If the token is invalid,
+    // the request should be unauthenticated, not board-level.
+    const savedRunId = req.actor.runId;
+    req.actor = { type: "none", source: "none" };
+    if (savedRunId) req.actor.runId = savedRunId;
+    if (runIdHeader) req.actor.runId = runIdHeader;
+
     const tokenHash = hashToken(token);
     const key = await db
       .select()

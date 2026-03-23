@@ -3,6 +3,7 @@ import type { Agent } from "@paperclipai/shared";
 import {
   removeMaintainerOnlySkillSymlinks,
   resolvePaperclipSkillsDir,
+  symlinkOrCopy,
 } from "@paperclipai/adapter-utils/server-utils";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -90,7 +91,7 @@ async function installSkillsForTarget(
         } catch (err) {
           await fs.unlink(target);
           try {
-            await fs.symlink(source, target);
+            await symlinkOrCopy(source, target);
             summary.linked.push(entry.name);
             continue;
           } catch (linkErr) {
@@ -128,7 +129,7 @@ async function installSkillsForTarget(
     }
 
     try {
-      await fs.symlink(source, target);
+      await symlinkOrCopy(source, target);
       summary.linked.push(entry.name);
     } catch (err) {
       summary.failed.push({

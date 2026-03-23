@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { writeFileSync } from "node:fs";
 import type { Db } from "@paperclipai/db";
 import { and, count, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { heartbeatRuns, instanceUserRoles, invites } from "@paperclipai/db";
@@ -6,6 +7,7 @@ import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import { readPersistedDevServerStatus, toDevServerHealthStatus } from "../dev-server-status.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { serverVersion } from "../version.js";
+import { logger } from "../middleware/logger.js";
 
 export function healthRoutes(
   db?: Db,
@@ -87,6 +89,35 @@ export function healthRoutes(
       },
       ...(devServer ? { devServer } : {}),
     });
+  });
+
+  router.post("/restart", (_req, res) => {
+    logger.info("Restart requested via API — exiting process for PM2 to restart");
+
+    // Reset the dev-server-status file so the banner doesn't reappear after restart
+    const statusFilePath = process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE?.trim();
+    if (statusFilePath) {
+      try {
+        const resetStatus = {
+          dirty: false,
+          lastChangedAt: null,
+          changedPathCount: 0,
+          changedPathsSample: [],
+          pendingMigrations: [],
+          lastRestartAt: new Date().toISOString(),
+        };
+        writeFileSync(statusFilePath, JSON.stringify(resetStatus, null, 2), "utf8");
+        logger.info("Reset dev-server-status file before restart");
+      } catch (err) {
+        logger.warn({ err }, "Failed to reset dev-server-status file");
+      }
+    }
+
+    res.json({ status: "restarting" });
+    // Give time for the response to flush before exiting
+    setTimeout(() => {
+      process.exit(0);
+    }, 500);
   });
 
   return router;

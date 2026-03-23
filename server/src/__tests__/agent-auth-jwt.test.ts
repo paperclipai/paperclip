@@ -3,12 +3,14 @@ import { createLocalAgentJwt, verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 
 describe("agent local JWT", () => {
   const secretEnv = "PAPERCLIP_AGENT_JWT_SECRET";
+  const betterAuthEnv = "BETTER_AUTH_SECRET";
   const ttlEnv = "PAPERCLIP_AGENT_JWT_TTL_SECONDS";
   const issuerEnv = "PAPERCLIP_AGENT_JWT_ISSUER";
   const audienceEnv = "PAPERCLIP_AGENT_JWT_AUDIENCE";
 
   const originalEnv = {
     secret: process.env[secretEnv],
+    betterAuth: process.env[betterAuthEnv],
     ttl: process.env[ttlEnv],
     issuer: process.env[issuerEnv],
     audience: process.env[audienceEnv],
@@ -16,6 +18,7 @@ describe("agent local JWT", () => {
 
   beforeEach(() => {
     process.env[secretEnv] = "test-secret";
+    delete process.env[betterAuthEnv];
     process.env[ttlEnv] = "3600";
     delete process.env[issuerEnv];
     delete process.env[audienceEnv];
@@ -26,6 +29,8 @@ describe("agent local JWT", () => {
     vi.useRealTimers();
     if (originalEnv.secret === undefined) delete process.env[secretEnv];
     else process.env[secretEnv] = originalEnv.secret;
+    if (originalEnv.betterAuth === undefined) delete process.env[betterAuthEnv];
+    else process.env[betterAuthEnv] = originalEnv.betterAuth;
     if (originalEnv.ttl === undefined) delete process.env[ttlEnv];
     else process.env[ttlEnv] = originalEnv.ttl;
     if (originalEnv.issuer === undefined) delete process.env[issuerEnv];
@@ -55,6 +60,47 @@ describe("agent local JWT", () => {
     const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
     expect(token).toBeNull();
     expect(verifyLocalAgentJwt("abc.def.ghi")).toBeNull();
+  });
+
+  it("falls back to BETTER_AUTH_SECRET when PAPERCLIP_AGENT_JWT_SECRET is not set", () => {
+    delete process.env[secretEnv];
+    process.env[betterAuthEnv] = "better-auth-fallback-secret";
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+
+    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
+    expect(typeof token).toBe("string");
+
+    const claims = verifyLocalAgentJwt(token!);
+    expect(claims).toMatchObject({
+      sub: "agent-1",
+      company_id: "company-1",
+      adapter_type: "claude_local",
+      run_id: "run-1",
+    });
+  });
+
+  it("prefers PAPERCLIP_AGENT_JWT_SECRET over BETTER_AUTH_SECRET", () => {
+    process.env[secretEnv] = "primary-secret";
+    process.env[betterAuthEnv] = "fallback-secret";
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+
+    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
+    expect(typeof token).toBe("string");
+
+    // Token created with primary secret should verify
+    const claims = verifyLocalAgentJwt(token!);
+    expect(claims).not.toBeNull();
+
+    // Token should NOT verify if we switch to only fallback secret
+    delete process.env[secretEnv];
+    expect(verifyLocalAgentJwt(token!)).toBeNull();
+  });
+
+  it("returns null when both secrets are missing", () => {
+    delete process.env[secretEnv];
+    delete process.env[betterAuthEnv];
+    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
+    expect(token).toBeNull();
   });
 
   it("rejects expired tokens", () => {

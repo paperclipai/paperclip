@@ -92,6 +92,32 @@ describe("resolveRuntimeSessionParamsForWorkspace", () => {
     expect(result.warning).toBeNull();
   });
 
+  it("does not attempt session migration for adapter_config source workspaces", () => {
+    const agentId = "agent-123";
+    const fallbackCwd = resolveDefaultAgentWorkspaceDir(agentId);
+
+    const result = resolveRuntimeSessionParamsForWorkspace({
+      agentId,
+      previousSessionParams: {
+        sessionId: "session-1",
+        cwd: fallbackCwd,
+        workspaceId: null,
+      },
+      resolvedWorkspace: buildResolvedWorkspace({
+        cwd: "/home/user/my-project",
+        source: "adapter_config",
+        workspaceId: null,
+      }),
+    });
+
+    expect(result.sessionParams).toEqual({
+      sessionId: "session-1",
+      cwd: fallbackCwd,
+      workspaceId: null,
+    });
+    expect(result.warning).toBeNull();
+  });
+
   it("does not migrate when resolved workspace id differs from previous session workspace id", () => {
     const agentId = "agent-123";
     const fallbackCwd = resolveDefaultAgentWorkspaceDir(agentId);
