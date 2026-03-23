@@ -1,14 +1,22 @@
 import { useMemo, useState } from "react";
+import type { ComponentType } from "react";
 import { NavLink, useLocation } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
-import { ChevronRight, Plus } from "lucide-react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { ChevronRight, Plus, Eye, EyeOff, PauseCircle, CircleSlash } from "lucide-react";
+
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useSidebar } from "../context/SidebarContext";
+import { useToast } from "../context/ToastContext";
+
 import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
+
 import { queryKeys } from "../lib/queryKeys";
 import { cn, agentRouteRef, agentUrl } from "../lib/utils";
+
+import { useAgentFilters } from "../hooks/useAgentFilters";
+
 import { AgentIcon } from "./AgentIconPicker";
 import { BudgetSidebarMarker } from "./BudgetSidebarMarker";
 import {
@@ -16,7 +24,50 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import {
+  Tooltip,
+  TooltipTrigger,
+  TooltipContent,
+} from "@/components/ui/tooltip";
+
 import type { Agent } from "@paperclipai/shared";
+
+// Small tooltip-wrapped icon button used for the filter toolbar
+function FilterButton({
+  icon: Icon,
+  label,
+  onClick,
+  disabled,
+  className,
+}: {
+  icon: ComponentType<{ className?: string }>;
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  className?: string;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onClick();
+          }}
+          disabled={disabled}
+          className={cn(
+            "flex items-center justify-center h-4 w-4 rounded transition-colors",
+            className,
+          )}
+          aria-label={label}
+        >
+          <Icon className="h-3 w-3" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom">{label}</TooltipContent>
+    </Tooltip>
+  );
+}
 
 /** BFS sort: roots first (no reportsTo), then their direct reports, etc. */
 function sortByHierarchy(agents: Agent[]): Agent[] {
@@ -39,12 +90,24 @@ function sortByHierarchy(agents: Agent[]): Agent[] {
   return sorted;
 }
 
+const PAUSABLE_STATUSES = new Set(["active", "running", "idle"]);
+
+function pauseAllClassName(isPending: boolean, pausableCount: number): string {
+  if (isPending) return "text-muted-foreground/40 animate-pulse";
+  if (pausableCount === 0) return "text-muted-foreground/30 cursor-not-allowed";
+  return "text-muted-foreground/60 hover:text-foreground hover:bg-accent/50";
+}
+
 export function SidebarAgents() {
   const [open, setOpen] = useState(true);
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialog();
   const { isMobile, setSidebarOpen } = useSidebar();
   const location = useLocation();
+  const queryClient = useQueryClient();
+  const { pushToast } = useToast();
+
+  const { filters, updateFilter } = useAgentFilters(selectedCompanyId);
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -67,12 +130,45 @@ export function SidebarAgents() {
     return counts;
   }, [liveRuns]);
 
+  const pausableAgents = useMemo(
+    () => (agents ?? []).filter((a: Agent) => PAUSABLE_STATUSES.has(a.status)),
+    [agents],
+  );
+
+  const pauseAll = useMutation({
+    mutationFn: (agentsToPause: Agent[]) => {
+      if (!selectedCompanyId) return Promise.resolve([] as PromiseSettledResult<Agent>[]);
+      return Promise.allSettled(
+        agentsToPause.map((a) => agentsApi.pause(a.id, selectedCompanyId))
+      );
+    },
+    onSuccess: (results) => {
+      if (selectedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(selectedCompanyId) });
+      }
+      const failures = results.filter(
+        (r): r is PromiseRejectedResult => r.status === "rejected"
+      );
+      if (failures.length > 0) {
+        console.error(`Failed to pause ${failures.length} agent(s)`, failures);
+        pushToast({
+          title: `Failed to pause ${failures.length} agent(s)`,
+          tone: "error",
+        });
+      }
+    },
+  });
+
   const visibleAgents = useMemo(() => {
     const filtered = (agents ?? []).filter(
-      (a: Agent) => a.status !== "terminated"
+      (a: Agent) =>
+        a.status !== "terminated" &&
+        !(filters.hideIdle && a.status === "idle") &&
+        !(filters.hidePaused && a.status === "paused")
     );
     return sortByHierarchy(filtered);
-  }, [agents]);
+  }, [agents, filters.hideIdle, filters.hidePaused]);
 
   const agentMatch = location.pathname.match(/^\/(?:[^/]+\/)?agents\/([^/]+)(?:\/([^/]+))?/);
   const activeAgentId = agentMatch?.[1] ?? null;
@@ -94,6 +190,35 @@ export function SidebarAgents() {
               Agents
             </span>
           </CollapsibleTrigger>
+          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+            <FilterButton
+              icon={filters.hideIdle ? EyeOff : Eye}
+              label={filters.hideIdle ? "Show idle agents" : "Hide idle agents"}
+              onClick={() => updateFilter("hideIdle")}
+              className={
+                filters.hideIdle
+                  ? "text-muted-foreground/80 hover:text-foreground"
+                  : "text-muted-foreground/60 hover:text-foreground hover:bg-accent/50"
+              }
+            />
+            <FilterButton
+              icon={PauseCircle}
+              label="Pause all agents"
+              onClick={() => pauseAll.mutate(pausableAgents)}
+              disabled={pauseAll.isPending || pausableAgents.length === 0}
+              className={pauseAllClassName(pauseAll.isPending, pausableAgents.length)}
+            />
+            <FilterButton
+              icon={CircleSlash}
+              label={filters.hidePaused ? "Show paused agents" : "Hide paused agents"}
+              onClick={() => updateFilter("hidePaused")}
+              className={
+                filters.hidePaused
+                  ? "text-muted-foreground/80 hover:text-foreground"
+                  : "text-muted-foreground/60 hover:text-foreground hover:bg-accent/50"
+              }
+            />
+          </div>
           <button
             onClick={(e) => {
               e.stopPropagation();
