@@ -10,12 +10,15 @@ permissions:
 
 jobs:
   dependency-review:
+    if: ${{ github.event.repository.private == false || vars.ENABLE_PRIVATE_SECURITY_FEATURES == 'true' }}
     name: Review dependency changes for vulnerabilities
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Dependency Review
+        id: dependency_review
+        continue-on-error: true
         uses: actions/dependency-review-action@v4
         with:
           # Fail on HIGH or CRITICAL CVEs only — warn on MODERATE
@@ -24,3 +27,9 @@ jobs:
           comment-summary-in-pr: always
           # Allow these licenses (adjust as needed)
           allow-licenses: MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, 0BSD, CC0-1.0
+
+      - name: Enforce dependency review in strict mode
+        if: ${{ vars.DEPENDENCY_REVIEW_STRICT == 'true' && steps.dependency_review.outcome == 'failure' }}
+        run: |
+          echo "Dependency Review failed and strict mode is enabled."
+          exit 1

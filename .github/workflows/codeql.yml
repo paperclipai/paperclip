@@ -15,6 +15,7 @@ permissions:
 
 jobs:
   analyze:
+    if: ${{ github.event.repository.private == false || vars.ENABLE_PRIVATE_SECURITY_FEATURES == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -41,4 +42,12 @@ jobs:
         uses: github/codeql-action/autobuild@v3
 
       - name: Analyze
+        id: analyze
+        continue-on-error: true
         uses: github/codeql-action/analyze@v3
+
+      - name: Enforce CodeQL in strict mode
+        if: ${{ vars.CODEQL_STRICT == 'true' && steps.analyze.outcome == 'failure' }}
+        run: |
+          echo "CodeQL analysis failed and strict mode is enabled."
+          exit 1

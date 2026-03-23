@@ -4,7 +4,7 @@ on:
   schedule:
     # Run every Monday at 08:00 UTC
     - cron: "0 8 * * 1"
-  workflow_dispatch:   # allow manual trigger from GitHub UI
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -25,71 +25,80 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Add upstream remote
-        # UPSTREAM_URL must be set as a repo variable (not secret) in GitHub → Settings → Variables
-        # e.g. https://github.com/nearai/ironclaw
+      - name: Resolve upstream config
+        id: config
         run: |
-          UPSTREAM="${{ vars.UPSTREAM_URL }}"
-          if [ -z "$UPSTREAM" ]; then
-            echo "⚠️  UPSTREAM_URL variable not set — skipping sync"
+          UPSTREAM_URL="${{ vars.UPSTREAM_URL }}"
+          UPSTREAM_BRANCH="${{ vars.UPSTREAM_BRANCH }}"
+
+          if [ -z "$UPSTREAM_URL" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "UPSTREAM_URL is not configured. Skipping sync."
             exit 0
           fi
-          git remote add upstream "$UPSTREAM" || git remote set-url upstream "$UPSTREAM"
+
+          if [ -z "$UPSTREAM_BRANCH" ]; then
+            UPSTREAM_BRANCH="main"
+          fi
+
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "url=$UPSTREAM_URL" >> "$GITHUB_OUTPUT"
+          echo "branch=$UPSTREAM_BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: Add upstream remote
+        if: steps.config.outputs.skip == 'false'
+        run: |
+          git remote add upstream "${{ steps.config.outputs.url }}" || git remote set-url upstream "${{ steps.config.outputs.url }}"
 
       - name: Fetch upstream
-        run: git fetch upstream --no-tags
+        id: fetch
+        if: steps.config.outputs.skip == 'false'
+        run: |
+          if git fetch upstream --no-tags; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "Unable to fetch upstream. Skipping sync."
+          fi
 
       - name: Check for new commits
+        if: steps.config.outputs.skip == 'false' && steps.fetch.outputs.ok == 'true'
         id: check
         run: |
-          UPSTREAM_BRANCH="${{ vars.UPSTREAM_BRANCH || 'main' }}"
+          UPSTREAM_BRANCH="${{ steps.config.outputs.branch }}"
           BEHIND=$(git rev-list HEAD..upstream/$UPSTREAM_BRANCH --count 2>/dev/null || echo "0")
-          echo "behind=$BEHIND" >> $GITHUB_OUTPUT
-          echo "upstream_branch=$UPSTREAM_BRANCH" >> $GITHUB_OUTPUT
+          echo "behind=$BEHIND" >> "$GITHUB_OUTPUT"
+          echo "upstream_branch=$UPSTREAM_BRANCH" >> "$GITHUB_OUTPUT"
 
       - name: Create sync PR if upstream has new commits
-        if: steps.check.outputs.behind != '0'
+        if: steps.config.outputs.skip == 'false' && steps.fetch.outputs.ok == 'true' && steps.check.outputs.behind != '0'
         run: |
           UPSTREAM_BRANCH="${{ steps.check.outputs.upstream_branch }}"
-          SYNC_BRANCH="chore/sync-upstream-$(date +%Y%m%d)"
+          SYNC_BRANCH="chore/sync-upstream-${GITHUB_RUN_ID}"
           BEHIND="${{ steps.check.outputs.behind }}"
+          UPSTREAM_URL="${{ steps.config.outputs.url }}"
 
-          git checkout -b "$SYNC_BRANCH"
-          git merge "upstream/$UPSTREAM_BRANCH" --no-edit --allow-unrelated-histories || {
-            echo "⚠️  Merge conflict detected — creating PR for manual resolution"
+          git checkout -B "$SYNC_BRANCH"
+          if ! git merge "upstream/$UPSTREAM_BRANCH" --no-edit --allow-unrelated-histories; then
+            echo "Merge conflict detected while syncing upstream."
             git merge --abort || true
-            git checkout "$SYNC_BRANCH" 2>/dev/null || true
-          }
+            exit 0
+          fi
 
           git push origin "$SYNC_BRANCH" --force-with-lease
 
           gh pr create \
             --title "chore: sync with upstream ($BEHIND new commits)" \
-            --body "$(cat <<'EOF'
-## Upstream Sync
-
-This PR was automatically created by the **Sync with Upstream** workflow.
-
-| Field | Value |
-|-------|-------|
-| Upstream | \`${{ vars.UPSTREAM_URL }}\` |
-| Commits behind | **$BEHIND** |
-| Sync branch | \`$UPSTREAM_BRANCH\` |
-
-### Review Checklist
-- [ ] Review upstream changes — check for breaking changes
-- [ ] Verify our custom modifications still apply cleanly
-- [ ] Merge if all checks pass
-
-If there are conflicts, resolve them in this branch then merge.
-EOF
-)" \
+            --body "Automated upstream sync from $UPSTREAM_URL ($UPSTREAM_BRANCH). This branch is $BEHIND commits behind upstream." \
             --base main \
-            --head "$SYNC_BRANCH" \
-            --label "upstream-sync" 2>/dev/null || echo "PR already exists or no changes to push"
+            --head "$SYNC_BRANCH" 2>/dev/null || echo "PR already exists or no changes to push"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: No sync needed
-        if: steps.check.outputs.behind == '0'
-        run: echo "✅ Already up to date with upstream."
+        if: steps.config.outputs.skip == 'false' && steps.fetch.outputs.ok == 'true' && steps.check.outputs.behind == '0'
+        run: echo "Already up to date with upstream."
+
+      - name: Upstream unreachable
+        if: steps.config.outputs.skip == 'false' && steps.fetch.outputs.ok != 'true'
+        run: echo "Upstream fetch failed. Workflow exits without syncing."
