@@ -10,6 +10,7 @@ import {
   parseObject,
   appendWithCap,
 } from "@paperclipai/adapter-utils/server-utils";
+import { acquire, release } from "./lifecycle.js";
 
 // ---------------------------------------------------------------------------
 // Paperclip issue lifecycle helpers
@@ -70,14 +71,49 @@ async function completeIssue(
 // Helpers
 // ---------------------------------------------------------------------------
 
-function buildUserMessage(ctx: AdapterExecutionContext): string {
+async function fetchIssueContext(
+  issueId: string,
+  authToken: string,
+): Promise<{ title: string; description: string } | null> {
+  try {
+    const res = await fetch(`${PAPERCLIP_BASE_URL}/api/issues/${issueId}`, {
+      headers: {
+        authorization: `Bearer ${authToken}`,
+      },
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as Record<string, unknown>;
+    return {
+      title: typeof data.title === "string" ? data.title : "",
+      description: typeof data.description === "string" ? data.description : "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function buildUserMessage(ctx: AdapterExecutionContext): Promise<string> {
   const context = parseObject(ctx.context);
   const parts: string[] = [];
 
-  const title = asString(context.issueTitle as unknown, "");
-  if (title) parts.push(`# ${title}`);
+  let title = asString(context.issueTitle as unknown, "");
+  let description = asString(context.issueBody as unknown, "");
 
-  const description = asString(context.issueBody as unknown, "");
+  // If title/body are missing from context, fetch them from the API as a
+  // fallback so the LLM always gets meaningful task context.
+  if (!title && !description) {
+    const issueId = asString(context.issueId as unknown, "");
+    const authToken = ctx.authToken ?? "";
+    if (issueId && authToken) {
+      const fetched = await fetchIssueContext(issueId, authToken);
+      if (fetched) {
+        title = fetched.title;
+        description = fetched.description;
+      }
+    }
+  }
+
+  if (title) parts.push(`# ${title}`);
   if (description) parts.push(description);
 
   // Goal ancestry chain (parent goals for context)
@@ -134,7 +170,8 @@ async function* parseSSE(
     buffer = lines.pop() ?? "";
 
     let currentEvent: SSEEvent = {};
-    for (const line of lines) {
+    for (const rawLine of lines) {
+      const line = rawLine.replace(/\r$/, ""); // strip \r from \r\n
       if (line.startsWith("event: ")) {
         currentEvent.event = line.slice(7).trim();
       } else if (line.startsWith("data: ")) {
@@ -151,7 +188,8 @@ async function* parseSSE(
   // Flush remaining
   if (buffer.trim()) {
     const remaining: SSEEvent = {};
-    for (const line of buffer.split("\n")) {
+    for (const rawLine of buffer.split("\n")) {
+      const line = rawLine.replace(/\r$/, "");
       if (line.startsWith("event: ")) remaining.event = line.slice(7).trim();
       else if (line.startsWith("data: ")) remaining.data = line.slice(6);
     }
@@ -193,10 +231,30 @@ export async function execute(
   const issueId = asString(contextObj.issueId as unknown, "");
   const authToken = ctx.authToken ?? "";
 
+  // Ensure DeerFlow containers are running before any API calls
+  try {
+    await onLog("stdout", "[deerflow] Ensuring containers are running...\n");
+    await acquire(deerflowUrl);
+    await onLog("stdout", "[deerflow] Containers ready\n");
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await onLog("stderr", `[deerflow] Failed to start containers: ${msg}\n`);
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: `DeerFlow containers not available: ${msg}`,
+      provider: "deerflow",
+      model: model || undefined,
+      billingType: "api",
+    };
+  }
+
   const controller = new AbortController();
   const timer = timeoutSec > 0 ? setTimeout(() => controller.abort(), timeoutSec * 1000) : null;
 
   let stdout = "";
+  let toolCallCount = 0;
   const usage: UsageSummary = { inputTokens: 0, outputTokens: 0 };
   let summary = "";
   let errorMessage: string | null = null;
@@ -230,7 +288,7 @@ export async function execute(
     await onLog("stdout", `[deerflow] Thread: ${threadId}\n`);
 
     // 2. Build the message
-    const userMessage = buildUserMessage(ctx);
+    const userMessage = await buildUserMessage(ctx);
 
     // 3. Stream the run
     const runBody = {
@@ -241,6 +299,7 @@ export async function execute(
       config: {
         recursion_limit: recursionLimit,
       },
+      // LangGraph 0.6+ context — populates both config.configurable and runtime.context
       context: {
         thread_id: threadId,
         ...(model ? { model_name: model } : {}),
@@ -284,24 +343,33 @@ export async function execute(
         continue;
       }
 
-      if (sse.event === "messages-tuple" || sse.event === "messages/partial") {
-        // LangGraph streams messages as [messageType, messageData]
-        const tuple = parsed as [string, Record<string, unknown>];
-        if (!Array.isArray(tuple) || tuple.length < 2) continue;
+      if (sse.event === "messages" || sse.event === "messages-tuple" || sse.event === "messages/partial" || sse.event === "messages/complete") {
+        // LangGraph streams messages as [messageData, metadata] tuple.
+        // The first element is the message object itself.
+        const tuple = parsed as [Record<string, unknown>, ...unknown[]];
+        if (!Array.isArray(tuple) || tuple.length < 1) continue;
 
-        const [msgType, msgData] = tuple;
+        const msgData = tuple[0];
+        const msgType = asString(msgData.type as unknown, "");
+
+        // Skip middleware-generated messages (e.g. TitleMiddleware, MemoryMiddleware)
+        // — only capture content from the main model and tool nodes.
+        const metadata = tuple.length > 1 ? (tuple[1] as Record<string, unknown>) : {};
+        const nodeName = asString(metadata.langgraph_node as unknown, "");
+        const isMiddleware = nodeName.includes("Middleware");
 
         if (msgType === "AIMessageChunk" || msgType === "AIMessage") {
           const content = asString(msgData.content as unknown, "");
-          if (content) {
+          if (content && !isMiddleware) {
             await onLog("stdout", content);
             stdout = appendWithCap(stdout, content);
-            lastAiContent = content;
+            lastAiContent += content;
           }
 
           // Tool calls in AI message
           const toolCalls = msgData.tool_calls;
           if (Array.isArray(toolCalls) && toolCalls.length > 0) {
+            toolCallCount += toolCalls.length;
             for (const tc of toolCalls) {
               const tcObj = tc as Record<string, unknown>;
               const name = asString(tcObj.name as unknown, "unknown");
@@ -323,11 +391,28 @@ export async function execute(
           }
         }
       } else if (sse.event === "values") {
-        // Full state snapshot — extract artifacts, title, etc.
+        // Full state snapshot — extract artifacts, title, and AI messages.
         const stateData = parsed as Record<string, unknown>;
         const title = asString(stateData.title as unknown, "");
         if (title) {
           await onLog("stdout", `\n[title] ${title}\n`);
+        }
+        // Extract the last AI message from the values snapshot as a fallback.
+        // The streaming messages handler above is preferred; only use values
+        // if streaming didn't capture anything (e.g. non-streaming mode).
+        if (lastAiContent.trim().length === 0) {
+          const msgs = stateData.messages;
+          if (Array.isArray(msgs)) {
+            for (let i = msgs.length - 1; i >= 0; i--) {
+              const m = msgs[i] as Record<string, unknown>;
+              if ((m.type === "ai" || m.type === "AIMessage") && typeof m.content === "string" && m.content.trim().length > 0) {
+                lastAiContent = (m.content as string).trim();
+                await onLog("stdout", lastAiContent);
+                stdout = appendWithCap(stdout, lastAiContent);
+                break;
+              }
+            }
+          }
         }
       } else if (sse.event === "end") {
         break;
@@ -339,6 +424,58 @@ export async function execute(
     }
 
     summary = lastAiContent.slice(0, 500);
+
+    // Detect when the LLM failed to produce useful output (e.g. asked for
+    // clarification instead of doing the work).  In that case we must NOT
+    // auto-complete the issue — the task wasn't actually done.
+    const refusalPatterns = [
+      /\bneed\s+(more\s+)?(clarification|context|details|information|specifics)\b/i,
+      /\bcannot\s+proceed\b/i,
+      /\bplease\s+provide\b/i,
+      /\bwhat\s+(would|do)\s+you\s+(like|want)\s+me\s+to\b/i,
+      /\bunable\s+to\s+(complete|proceed|do)\b/i,
+    ];
+    const isRefusal = refusalPatterns.some((p) => p.test(stdout));
+    if (isRefusal) {
+      await onLog("stderr", `[deerflow] LLM response appears to be a refusal/clarification request — not marking issue as done\n`);
+      errorMessage = "LLM did not produce actionable output (possible refusal or clarification request)";
+    }
+
+    // Also fail if the LLM produced no meaningful AI content at all.
+    // Strip known boilerplate lines (checkout, thread, tool_call markers) before checking.
+    const strippedStdout = stdout
+      .replace(/\[deerflow\][^\n]*/g, "")
+      .replace(/\[tool_call\][^\n]*/g, "")
+      .replace(/\[tool_result\][^\n]*/g, "")
+      .replace(/\[title\][^\n]*/g, "")
+      .trim();
+    if (!isRefusal && strippedStdout.length < 50) {
+      await onLog("stderr", `[deerflow] LLM produced no meaningful output (${strippedStdout.length} chars after stripping boilerplate) — not marking issue as done\n`);
+      errorMessage = "LLM produced no meaningful output";
+    }
+
+    // Detect acknowledgment-only responses: the LLM says "I'll do X" but made
+    // no tool calls and produced minimal content.  This is a planning stub, not
+    // actual work.
+    if (!errorMessage && toolCallCount === 0 && strippedStdout.length < 500) {
+      const ackPatterns = [
+        /\b(?:I'll|I will|Let me)\s+(?:conduct|do|perform|break|start|begin|research|investigate|analyze|work on)\b/i,
+        /\bLet me break this down\b/i,
+        /\bcomprehensive\s+research\b/i,
+      ];
+      const isAckOnly = ackPatterns.some((p) => p.test(strippedStdout));
+      if (isAckOnly) {
+        await onLog("stderr", `[deerflow] LLM produced only an acknowledgment (${strippedStdout.length} chars, 0 tool calls) — not marking issue as done\n`);
+        errorMessage = "LLM acknowledged task but did not execute (no tool calls, no deliverables)";
+      }
+    }
+
+    // Final safety net: if no tools were called and output is under 200 chars,
+    // the LLM almost certainly didn't do real work regardless of content.
+    if (!errorMessage && toolCallCount === 0 && strippedStdout.length < 200) {
+      await onLog("stderr", `[deerflow] No tool calls and only ${strippedStdout.length} chars of output — not marking issue as done\n`);
+      errorMessage = "LLM produced insufficient output with no tool usage";
+    }
 
     // Mark issue as done on successful execution
     if (!errorMessage && issueId && authToken) {
@@ -381,5 +518,6 @@ export async function execute(
     };
   } finally {
     if (timer) clearTimeout(timer);
+    release();
   }
 }
