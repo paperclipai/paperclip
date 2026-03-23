@@ -574,20 +574,25 @@ export function accessService(db: Db) {
   }
 
   async function listProjectAgents(projectId: string) {
-    return db
-      .select({
-        id: projectAgents.id,
-        projectId: projectAgents.projectId,
-        agentId: projectAgents.agentId,
-        addedByUserId: projectAgents.addedByUserId,
-        createdAt: projectAgents.createdAt,
-        agentName: agents.name,
-        agentRole: agents.role,
-        agentIcon: agents.icon,
-      })
+    const rows = await db
+      .select()
       .from(projectAgents)
       .innerJoin(agents, eq(projectAgents.agentId, agents.id))
       .where(eq(projectAgents.projectId, projectId));
+
+    return rows.map((r) => ({
+      id: r.project_agents.id,
+      projectId: r.project_agents.projectId,
+      agentId: r.project_agents.agentId,
+      addedByUserId: r.project_agents.addedByUserId,
+      createdAt: r.project_agents.createdAt,
+      agent: {
+        id: r.agents.id,
+        name: r.agents.name,
+        role: r.agents.role,
+        iconName: r.agents.icon,
+      },
+    }));
   }
 
   async function addProjectAgent(

@@ -306,10 +306,12 @@ function ProjectMembersSection({ projectId, companyId }: { projectId: string; co
   });
 
   // Fetch company members (for "add member" dropdown)
+  // This may fail if user lacks users:manage_permissions — handle gracefully
   const { data: companyMembers = [] } = useQuery({
     queryKey: queryKeys.access.members(companyId),
-    queryFn: () => accessApi.listMembers(companyId),
+    queryFn: () => accessApi.listMembers(companyId).catch(() => [] as any[]),
     enabled: !!companyId,
+    retry: false,
   });
 
   // Fetch project agents
