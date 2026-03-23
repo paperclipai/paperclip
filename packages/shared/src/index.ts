@@ -31,6 +31,7 @@ export {
   JOIN_REQUEST_TYPES,
   JOIN_REQUEST_STATUSES,
   PERMISSION_KEYS,
+  PROJECT_PERMISSION_KEYS,
   type CompanyStatus,
   type DeploymentMode,
   type DeploymentExposure,
@@ -62,6 +63,7 @@ export {
   type JoinRequestType,
   type JoinRequestStatus,
   type PermissionKey,
+  type ProjectPermissionKey,
 } from "./constants.js";
 
 export type {
@@ -238,7 +240,7 @@ export {
 } from "./validators/index.js";
 
 export { AGENT_PRESETS, type AgentPreset } from "./agent-presets.js";
-export { ROLE_PRESETS, AGENT_ROLE_DEFAULT_PERMISSIONS, type RolePreset } from "./role-presets.js";
+export { ROLE_PRESETS, AGENT_ROLE_DEFAULT_PERMISSIONS, PROJECT_ROLE_PRESETS, type RolePreset, type ProjectRolePreset } from "./role-presets.js";
 export { API_PREFIX, API } from "./api.js";
 export { normalizeAgentUrlKey, deriveAgentUrlKey, isUuidLike } from "./agent-url-key.js";
 export { deriveProjectUrlKey, normalizeProjectUrlKey } from "./project-url-key.js";

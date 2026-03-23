@@ -241,3 +241,15 @@ export const PERMISSION_KEYS = [
   "issues:manage",
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
+
+export const PROJECT_PERMISSION_KEYS = [
+  "project:view",
+  "project:issues:create",
+  "project:issues:edit",
+  "project:issues:delete",
+  "project:issues:assign",
+  "project:agents:use",
+  "project:settings",
+  "project:members:manage",
+] as const;
+export type ProjectPermissionKey = (typeof PROJECT_PERMISSION_KEYS)[number];
