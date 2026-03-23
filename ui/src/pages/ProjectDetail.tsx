@@ -328,10 +328,10 @@ function ProjectMembersSection({ projectId, companyId }: { projectId: string; co
     enabled: !!companyId,
   });
 
-  // Members not yet in project
+  // Human members not yet in project (agents go through "Add Agent" section)
   const availableCompanyMembers = useMemo(() => {
     const existingPrincipalIds = new Set(members.map((m) => m.principalId));
-    return companyMembers.filter((cm) => !existingPrincipalIds.has(cm.principalId));
+    return companyMembers.filter((cm) => cm.principalType === "user" && !existingPrincipalIds.has(cm.principalId));
   }, [companyMembers, members]);
 
   // Agents not yet assigned to project
