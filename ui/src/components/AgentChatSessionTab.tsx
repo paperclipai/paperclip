@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ChatMessage, ChatSession, CreateChatMessageResponse, HeartbeatRun, HeartbeatRunEvent } from "@paperclipai/shared";
-import { Archive, Ellipsis, Loader2, MessageSquarePlus, Pencil, RotateCcw, Send, Trash2 } from "lucide-react";
+import { Archive, ChevronRight, Ellipsis, Loader2, MessageSquarePlus, Pencil, RotateCcw, Send, Trash2 } from "lucide-react";
 import { chatApi, type ChatLogEvent } from "../api/chat";
 import { heartbeatsApi } from "../api/heartbeats";
 import { getUIAdapter, buildTranscript } from "../adapters";
@@ -20,6 +20,11 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 
 type StreamStatus = "pending" | "streaming" | "completed" | "failed" | "cancelled" | "timed_out";
 
@@ -514,6 +519,132 @@ export function AgentChatSessionTab({
     );
   };
 
+  const renderSessionItems = (items: ChatSession[]) =>
+    items.map((session) => {
+      const isSelected = session.id === selectedSessionId;
+      const isRenaming = session.id === renamingSessionId;
+      const isUpdatingArchive = updateArchivedSession.isPending;
+      const isUpdatingName = renameSession.isPending;
+      return (
+        <div
+          key={session.id}
+          className={cn(
+            "group rounded-md border border-transparent px-2 py-2 text-xs transition-colors",
+            isSelected ? "border-border bg-accent/40" : "hover:bg-accent/20",
+          )}
+        >
+          {isRenaming ? (
+            <div className="space-y-2">
+              <Input
+                value={renameDraft}
+                onChange={(event) => setRenameDraft(event.target.value)}
+                className="h-8 text-xs"
+                placeholder="Conversation name"
+              />
+              <div className="flex items-center gap-1">
+                <Button
+                  size="sm"
+                  className="h-7 px-2 text-xs"
+                  disabled={isUpdatingName}
+                  onClick={() => renameSession.mutate({ sessionId: session.id, nextTitle: renameDraft })}
+                >
+                  Save
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 px-2 text-xs"
+                  onClick={() => {
+                    setRenamingSessionId(null);
+                    setRenameDraft(session.title ?? "");
+                  }}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="flex items-start justify-between gap-2">
+                <button
+                  type="button"
+                  className="min-w-0 flex-1 text-left"
+                  onClick={() => {
+                    setSelectedSessionId(session.id);
+                    setExpandedRunId(null);
+                    autoExpandedRunIdRef.current = null;
+                    setStreamState(null);
+                    closeStream();
+                  }}
+                >
+                  <div className="truncate text-sm font-medium">{displaySessionTitle(session)}</div>
+                  <div className="truncate text-[11px] text-muted-foreground">
+                    {relativeTime(session.lastMessageAt ?? session.updatedAt)}
+                  </div>
+                </button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      className={cn(
+                        "h-6 w-6 shrink-0 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100",
+                        isSelected && "opacity-100",
+                      )}
+                      onClick={(event) => event.stopPropagation()}
+                      aria-label="Conversation options"
+                    >
+                      <Ellipsis className="h-3.5 w-3.5" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" onClick={(event) => event.stopPropagation()}>
+                    <DropdownMenuItem
+                      onSelect={() => {
+                        setRenamingSessionId(session.id);
+                        setRenameDraft(session.title ?? "");
+                      }}
+                    >
+                      <Pencil />
+                      Rename
+                    </DropdownMenuItem>
+                    {session.archivedAt ? (
+                      <DropdownMenuItem
+                        disabled={isUpdatingArchive}
+                        onSelect={() => updateArchivedSession.mutate({ sessionId: session.id, archived: false })}
+                      >
+                        <RotateCcw />
+                        Restore
+                      </DropdownMenuItem>
+                    ) : (
+                      <>
+                        <DropdownMenuItem
+                          disabled={isUpdatingArchive}
+                          onSelect={() => updateArchivedSession.mutate({ sessionId: session.id, archived: true })}
+                        >
+                          <Archive />
+                          Archive
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          variant="destructive"
+                          disabled={isUpdatingArchive}
+                          onSelect={() => updateArchivedSession.mutate({ sessionId: session.id, archived: true })}
+                        >
+                          <Trash2 />
+                          Delete
+                        </DropdownMenuItem>
+                      </>
+                    )}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            </>
+          )}
+        </div>
+      );
+    });
+
   const renderSection = (title: string, items: ChatSession[]) => (
     <div className="space-y-1">
       <div className="px-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
@@ -522,139 +653,36 @@ export function AgentChatSessionTab({
       {items.length === 0 ? (
         <div className="px-2 py-1 text-xs text-muted-foreground">No conversations</div>
       ) : (
-        items.map((session) => {
-          const isSelected = session.id === selectedSessionId;
-          const isRenaming = session.id === renamingSessionId;
-          const isUpdatingArchive = updateArchivedSession.isPending;
-          const isUpdatingName = renameSession.isPending;
-          return (
-            <div
-              key={session.id}
-              className={cn(
-                "group rounded-md border border-transparent px-2 py-2 text-xs transition-colors",
-                isSelected ? "border-border bg-accent/40" : "hover:bg-accent/20",
-              )}
-            >
-              {isRenaming ? (
-                <div className="space-y-2">
-                  <Input
-                    value={renameDraft}
-                    onChange={(event) => setRenameDraft(event.target.value)}
-                    className="h-8 text-xs"
-                    placeholder="Conversation name"
-                  />
-                  <div className="flex items-center gap-1">
-                    <Button
-                      size="sm"
-                      className="h-7 px-2 text-xs"
-                      disabled={isUpdatingName}
-                      onClick={() => renameSession.mutate({ sessionId: session.id, nextTitle: renameDraft })}
-                    >
-                      Save
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-7 px-2 text-xs"
-                      onClick={() => {
-                        setRenamingSessionId(null);
-                        setRenameDraft(session.title ?? "");
-                      }}
-                    >
-                      Cancel
-                    </Button>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  <div className="flex items-start justify-between gap-2">
-                    <button
-                      type="button"
-                      className="min-w-0 flex-1 text-left"
-                      onClick={() => {
-                        setSelectedSessionId(session.id);
-                        setExpandedRunId(null);
-                        autoExpandedRunIdRef.current = null;
-                        setStreamState(null);
-                        closeStream();
-                      }}
-                    >
-                      <div className="truncate text-sm font-medium">{displaySessionTitle(session)}</div>
-                      <div className="truncate text-[11px] text-muted-foreground">
-                        {relativeTime(session.lastMessageAt ?? session.updatedAt)}
-                      </div>
-                    </button>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button
-                          type="button"
-                          size="icon"
-                          variant="ghost"
-                          className={cn(
-                            "h-6 w-6 shrink-0 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100",
-                            isSelected && "opacity-100",
-                          )}
-                          onClick={(event) => event.stopPropagation()}
-                          aria-label="Conversation options"
-                        >
-                          <Ellipsis className="h-3.5 w-3.5" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" onClick={(event) => event.stopPropagation()}>
-                        <DropdownMenuItem
-                          onSelect={() => {
-                            setRenamingSessionId(session.id);
-                            setRenameDraft(session.title ?? "");
-                          }}
-                        >
-                          <Pencil />
-                          Rename
-                        </DropdownMenuItem>
-                        {session.archivedAt ? (
-                          <DropdownMenuItem
-                            disabled={isUpdatingArchive}
-                            onSelect={() => updateArchivedSession.mutate({ sessionId: session.id, archived: false })}
-                          >
-                            <RotateCcw />
-                            Restore
-                          </DropdownMenuItem>
-                        ) : (
-                          <>
-                            <DropdownMenuItem
-                              disabled={isUpdatingArchive}
-                              onSelect={() => updateArchivedSession.mutate({ sessionId: session.id, archived: true })}
-                            >
-                              <Archive />
-                              Archive
-                            </DropdownMenuItem>
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem
-                              variant="destructive"
-                              disabled={isUpdatingArchive}
-                              onSelect={() => updateArchivedSession.mutate({ sessionId: session.id, archived: true })}
-                            >
-                              <Trash2 />
-                              Delete
-                            </DropdownMenuItem>
-                          </>
-                        )}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                </>
-              )}
-            </div>
-          );
-        })
+        renderSessionItems(items)
       )}
     </div>
+  );
+
+  const renderCollapsibleSection = (title: string, items: ChatSession[], defaultOpen = false) => (
+    <Collapsible defaultOpen={defaultOpen} className="group/section">
+      <CollapsibleTrigger className="flex w-full items-center gap-1 px-2 py-0.5">
+        <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground/60 transition-transform group-data-[state=open]/section:rotate-90" />
+        <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          {title} <span className="ml-1">{items.length}</span>
+        </span>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className="mt-1 space-y-1">
+          {items.length === 0 ? (
+            <div className="px-2 py-1 text-xs text-muted-foreground">No conversations</div>
+          ) : (
+            renderSessionItems(items)
+          )}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
   );
 
   return (
     <div className={cn("overflow-hidden bg-background", fillContainer ? "h-full" : "rounded-lg border border-border")}>
       <div className={cn("grid grid-cols-[18rem_1fr]", fillContainer ? "h-full" : "h-[74vh] min-h-[34rem]")}>
-        <aside className="border-r border-border bg-card/40 p-3">
-          <div className="mb-3 space-y-2">
+        <aside className="flex flex-col border-r border-border bg-card/40 overflow-hidden">
+          <div className="shrink-0 space-y-2 p-3 pb-2">
             <div className="flex items-center justify-between gap-2">
               <div className="text-sm font-semibold">Conversations</div>
               <Button
@@ -679,7 +707,7 @@ export function AgentChatSessionTab({
               placeholder="Search conversations..."
             />
           </div>
-          <div className="h-[calc(100%-5rem)] space-y-4 overflow-y-auto pr-1">
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-3 pb-3 pr-2 scrollbar-auto-hide">
             {sessionsLoading && (
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -690,8 +718,8 @@ export function AgentChatSessionTab({
               <>
                 {renderSection("Open", groupedSessions.open)}
                 {renderSection("Previous 7 days", groupedSessions.previous7Days)}
-                {renderSection("Older", groupedSessions.older)}
-                {renderSection("Archived", groupedSessions.archived)}
+                {renderCollapsibleSection("Older", groupedSessions.older)}
+                {renderCollapsibleSection("Archived", groupedSessions.archived)}
               </>
             )}
             {sessionsError && (
