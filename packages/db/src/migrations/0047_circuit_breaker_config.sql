@@ -1,0 +1,1 @@
+ALTER TABLE "agents" ADD COLUMN IF NOT EXISTS "circuit_breaker_config" jsonb;

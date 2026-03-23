@@ -3,6 +3,7 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
+  promises as fsPromises,
   readdirSync,
   readFileSync,
   readlinkSync,
@@ -15,15 +16,29 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { createServer } from "node:net";
+import { Readable } from "node:stream";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
-import { eq } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   applyPendingMigrations,
+  agents,
+  assets,
+  companies,
   createDb,
+  documentRevisions,
+  documents,
   ensurePostgresDatabase,
   formatDatabaseBackupResult,
+  goals,
+  heartbeatRuns,
+  inspectMigrations,
+  issueAttachments,
+  issueComments,
+  issueDocuments,
+  issues,
   projectWorkspaces,
+  projects,
   runDatabaseBackup,
   runDatabaseRestore,
 } from "@paperclipai/db";
@@ -48,6 +63,18 @@ import {
   type WorktreeSeedMode,
   type WorktreeLocalPaths,
 } from "./worktree-lib.js";
+import {
+  buildWorktreeMergePlan,
+  parseWorktreeMergeScopes,
+  type IssueAttachmentRow,
+  type IssueDocumentRow,
+  type DocumentRevisionRow,
+  type PlannedAttachmentInsert,
+  type PlannedCommentInsert,
+  type PlannedIssueDocumentInsert,
+  type PlannedIssueDocumentMerge,
+  type PlannedIssueInsert,
+} from "./worktree-merge-history-lib.js";
 
 type WorktreeInitOptions = {
   name?: string;
@@ -71,6 +98,20 @@ type WorktreeMakeOptions = WorktreeInitOptions & {
 type WorktreeEnvOptions = {
   config?: string;
   json?: boolean;
+};
+
+type WorktreeListOptions = {
+  json?: boolean;
+};
+
+type WorktreeMergeHistoryOptions = {
+  from?: string;
+  to?: string;
+  company?: string;
+  scope?: string;
+  apply?: boolean;
+  dry?: boolean;
+  yes?: boolean;
 };
 
 type EmbeddedPostgresInstance = {
@@ -151,6 +192,190 @@ function resolveWorktreeHome(explicit?: string): string {
 
 function resolveWorktreeStartPoint(explicit?: string): string | undefined {
   return explicit ?? nonEmpty(process.env.PAPERCLIP_WORKTREE_START_POINT) ?? undefined;
+}
+
+type ConfiguredStorage = {
+  getObject(companyId: string, objectKey: string): Promise<Buffer>;
+  putObject(companyId: string, objectKey: string, body: Buffer, contentType: string): Promise<void>;
+};
+
+function assertStorageCompanyPrefix(companyId: string, objectKey: string): void {
+  if (!objectKey.startsWith(`${companyId}/`) || objectKey.includes("..")) {
+    throw new Error(`Invalid object key for company ${companyId}.`);
+  }
+}
+
+function normalizeStorageObjectKey(objectKey: string): string {
+  const normalized = objectKey.replace(/\\/g, "/").trim();
+  if (!normalized || normalized.startsWith("/")) {
+    throw new Error("Invalid object key.");
+  }
+  const parts = normalized.split("/").filter((part) => part.length > 0);
+  if (parts.length === 0 || parts.some((part) => part === "." || part === "..")) {
+    throw new Error("Invalid object key.");
+  }
+  return parts.join("/");
+}
+
+function resolveLocalStoragePath(baseDir: string, objectKey: string): string {
+  const resolved = path.resolve(baseDir, normalizeStorageObjectKey(objectKey));
+  const root = path.resolve(baseDir);
+  if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) {
+    throw new Error("Invalid object key path.");
+  }
+  return resolved;
+}
+
+async function s3BodyToBuffer(body: unknown): Promise<Buffer> {
+  if (!body) {
+    throw new Error("Object not found.");
+  }
+  if (Buffer.isBuffer(body)) {
+    return body;
+  }
+  if (body instanceof Readable) {
+    return await streamToBuffer(body);
+  }
+
+  const candidate = body as {
+    transformToWebStream?: () => ReadableStream<Uint8Array>;
+    arrayBuffer?: () => Promise<ArrayBuffer>;
+  };
+  if (typeof candidate.transformToWebStream === "function") {
+    const webStream = candidate.transformToWebStream();
+    const reader = webStream.getReader();
+    const chunks: Uint8Array[] = [];
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) chunks.push(value);
+    }
+    return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)));
+  }
+  if (typeof candidate.arrayBuffer === "function") {
+    return Buffer.from(await candidate.arrayBuffer());
+  }
+
+  throw new Error("Unsupported storage response body.");
+}
+
+function normalizeS3Prefix(prefix: string | undefined): string {
+  if (!prefix) return "";
+  return prefix.trim().replace(/^\/+/, "").replace(/\/+$/, "");
+}
+
+function buildS3ObjectKey(prefix: string, objectKey: string): string {
+  return prefix ? `${prefix}/${objectKey}` : objectKey;
+}
+
+const dynamicImport = new Function("specifier", "return import(specifier);") as (specifier: string) => Promise<any>;
+
+function createConfiguredStorageFromPaperclipConfig(config: PaperclipConfig): ConfiguredStorage {
+  if (config.storage.provider === "local_disk") {
+    const baseDir = expandHomePrefix(config.storage.localDisk.baseDir);
+    return {
+      async getObject(companyId: string, objectKey: string) {
+        assertStorageCompanyPrefix(companyId, objectKey);
+        return await fsPromises.readFile(resolveLocalStoragePath(baseDir, objectKey));
+      },
+      async putObject(companyId: string, objectKey: string, body: Buffer) {
+        assertStorageCompanyPrefix(companyId, objectKey);
+        const filePath = resolveLocalStoragePath(baseDir, objectKey);
+        await fsPromises.mkdir(path.dirname(filePath), { recursive: true });
+        await fsPromises.writeFile(filePath, body);
+      },
+    };
+  }
+
+  const prefix = normalizeS3Prefix(config.storage.s3.prefix);
+  let s3ClientPromise: Promise<any> | null = null;
+  async function getS3Client() {
+    if (!s3ClientPromise) {
+      s3ClientPromise = (async () => {
+        const sdk = await dynamicImport("@aws-sdk/client-s3");
+        return {
+          sdk,
+          client: new sdk.S3Client({
+            region: config.storage.s3.region,
+            endpoint: config.storage.s3.endpoint,
+            forcePathStyle: config.storage.s3.forcePathStyle,
+          }),
+        };
+      })();
+    }
+    return await s3ClientPromise;
+  }
+  const bucket = config.storage.s3.bucket;
+  return {
+    async getObject(companyId: string, objectKey: string) {
+      assertStorageCompanyPrefix(companyId, objectKey);
+      const { sdk, client } = await getS3Client();
+      const response = await client.send(
+        new sdk.GetObjectCommand({
+          Bucket: bucket,
+          Key: buildS3ObjectKey(prefix, objectKey),
+        }),
+      );
+      return await s3BodyToBuffer(response.Body);
+    },
+    async putObject(companyId: string, objectKey: string, body: Buffer, contentType: string) {
+      assertStorageCompanyPrefix(companyId, objectKey);
+      const { sdk, client } = await getS3Client();
+      await client.send(
+        new sdk.PutObjectCommand({
+          Bucket: bucket,
+          Key: buildS3ObjectKey(prefix, objectKey),
+          Body: body,
+          ContentType: contentType,
+          ContentLength: body.length,
+        }),
+      );
+    },
+  };
+}
+
+function openConfiguredStorage(configPath: string): ConfiguredStorage {
+  const config = readConfig(configPath);
+  if (!config) {
+    throw new Error(`Config not found at ${configPath}.`);
+  }
+  return createConfiguredStorageFromPaperclipConfig(config);
+}
+
+async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+}
+
+export function isMissingStorageObjectError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as { code?: unknown; status?: unknown; name?: unknown; message?: unknown };
+  return candidate.code === "ENOENT"
+    || candidate.status === 404
+    || candidate.name === "NoSuchKey"
+    || candidate.name === "NotFound"
+    || candidate.message === "Object not found.";
+}
+
+export async function readSourceAttachmentBody(
+  sourceStorages: Array<Pick<ConfiguredStorage, "getObject">>,
+  companyId: string,
+  objectKey: string,
+): Promise<Buffer | null> {
+  for (const sourceStorage of sourceStorages) {
+    try {
+      return await sourceStorage.getObject(companyId, objectKey);
+    } catch (error) {
+      if (isMissingStorageObjectError(error)) {
+        continue;
+      }
+      throw error;
+    }
+  }
+  return null;
 }
 
 export function resolveWorktreeMakeTargetPath(name: string): string {
@@ -838,6 +1063,21 @@ type GitWorktreeListEntry = {
   detached: boolean;
 };
 
+type MergeSourceChoice = {
+  worktree: string;
+  branch: string | null;
+  branchLabel: string;
+  hasPaperclipConfig: boolean;
+  isCurrent: boolean;
+};
+
+type ResolvedWorktreeEndpoint = {
+  rootPath: string;
+  configPath: string;
+  label: string;
+  isCurrent: boolean;
+};
+
 function parseGitWorktreeList(cwd: string): GitWorktreeListEntry[] {
   const raw = execFileSync("git", ["worktree", "list", "--porcelain"], {
     cwd,
@@ -874,6 +1114,21 @@ function parseGitWorktreeList(cwd: string): GitWorktreeListEntry[] {
     });
   }
   return entries;
+}
+
+function toMergeSourceChoices(cwd: string): MergeSourceChoice[] {
+  const currentCwd = path.resolve(cwd);
+  return parseGitWorktreeList(cwd).map((entry) => {
+    const branchLabel = entry.branch?.replace(/^refs\/heads\//, "") ?? "(detached)";
+    const worktreePath = path.resolve(entry.worktree);
+    return {
+      worktree: worktreePath,
+      branch: entry.branch,
+      branchLabel,
+      hasPaperclipConfig: existsSync(path.resolve(worktreePath, ".paperclip", "config.json")),
+      isCurrent: worktreePath === currentCwd,
+    };
+  });
 }
 
 function branchHasUniqueCommits(cwd: string, branchName: string): boolean {
@@ -1071,6 +1326,1070 @@ export async function worktreeEnvCommand(opts: WorktreeEnvOptions): Promise<void
   console.log(formatShellExports(out));
 }
 
+type ClosableDb = ReturnType<typeof createDb> & {
+  $client?: { end?: (opts?: { timeout?: number }) => Promise<void> };
+};
+
+type OpenDbHandle = {
+  db: ClosableDb;
+  stop: () => Promise<void>;
+};
+
+type ResolvedMergeCompany = {
+  id: string;
+  name: string;
+  issuePrefix: string;
+};
+
+async function closeDb(db: ClosableDb): Promise<void> {
+  await db.$client?.end?.({ timeout: 5 }).catch(() => undefined);
+}
+
+function resolveCurrentEndpoint(): ResolvedWorktreeEndpoint {
+  return {
+    rootPath: path.resolve(process.cwd()),
+    configPath: resolveConfigPath(),
+    label: "current",
+    isCurrent: true,
+  };
+}
+
+function resolveAttachmentLookupStorages(input: {
+  sourceEndpoint: ResolvedWorktreeEndpoint;
+  targetEndpoint: ResolvedWorktreeEndpoint;
+}): ConfiguredStorage[] {
+  const orderedConfigPaths = [
+    input.sourceEndpoint.configPath,
+    resolveCurrentEndpoint().configPath,
+    input.targetEndpoint.configPath,
+    ...toMergeSourceChoices(process.cwd())
+      .filter((choice) => choice.hasPaperclipConfig)
+      .map((choice) => path.resolve(choice.worktree, ".paperclip", "config.json")),
+  ];
+  const seen = new Set<string>();
+  const storages: ConfiguredStorage[] = [];
+  for (const configPath of orderedConfigPaths) {
+    const resolved = path.resolve(configPath);
+    if (seen.has(resolved) || !existsSync(resolved)) continue;
+    seen.add(resolved);
+    storages.push(openConfiguredStorage(resolved));
+  }
+  return storages;
+}
+
+async function openConfiguredDb(configPath: string): Promise<OpenDbHandle> {
+  const config = readConfig(configPath);
+  if (!config) {
+    throw new Error(`Config not found at ${configPath}.`);
+  }
+  const envEntries = readPaperclipEnvEntries(resolvePaperclipEnvFile(configPath));
+  let embeddedHandle: EmbeddedPostgresHandle | null = null;
+
+  try {
+    if (config.database.mode === "embedded-postgres") {
+      embeddedHandle = await ensureEmbeddedPostgres(
+        config.database.embeddedPostgresDataDir,
+        config.database.embeddedPostgresPort,
+      );
+    }
+    const connectionString = resolveSourceConnectionString(config, envEntries, embeddedHandle?.port);
+    const migrationState = await inspectMigrations(connectionString);
+    if (migrationState.status !== "upToDate") {
+      const pending =
+        migrationState.reason === "pending-migrations"
+          ? ` Pending migrations: ${migrationState.pendingMigrations.join(", ")}.`
+          : "";
+      throw new Error(
+        `Database for ${configPath} is not up to date.${pending} Run \`pnpm db:migrate\` (or start Paperclip once) before using worktree merge history.`,
+      );
+    }
+    const db = createDb(connectionString) as ClosableDb;
+    return {
+      db,
+      stop: async () => {
+        await closeDb(db);
+        if (embeddedHandle?.startedByThisProcess) {
+          await embeddedHandle.stop();
+        }
+      },
+    };
+  } catch (error) {
+    if (embeddedHandle?.startedByThisProcess) {
+      await embeddedHandle.stop().catch(() => undefined);
+    }
+    throw error;
+  }
+}
+
+async function resolveMergeCompany(input: {
+  sourceDb: ClosableDb;
+  targetDb: ClosableDb;
+  selector?: string;
+}): Promise<ResolvedMergeCompany> {
+  const [sourceCompanies, targetCompanies] = await Promise.all([
+    input.sourceDb
+      .select({
+        id: companies.id,
+        name: companies.name,
+        issuePrefix: companies.issuePrefix,
+      })
+      .from(companies),
+    input.targetDb
+      .select({
+        id: companies.id,
+        name: companies.name,
+        issuePrefix: companies.issuePrefix,
+      })
+      .from(companies),
+  ]);
+
+  const targetById = new Map(targetCompanies.map((company) => [company.id, company]));
+  const shared = sourceCompanies.filter((company) => targetById.has(company.id));
+  const selector = nonEmpty(input.selector);
+  if (selector) {
+    const matched = shared.find(
+      (company) => company.id === selector || company.issuePrefix.toLowerCase() === selector.toLowerCase(),
+    );
+    if (!matched) {
+      throw new Error(`Could not resolve company "${selector}" in both source and target databases.`);
+    }
+    return matched;
+  }
+
+  if (shared.length === 1) {
+    return shared[0];
+  }
+
+  if (shared.length === 0) {
+    throw new Error("Source and target databases do not share a company id. Pass --company explicitly once both sides match.");
+  }
+
+  const options = shared
+    .map((company) => `${company.issuePrefix} (${company.name})`)
+    .join(", ");
+  throw new Error(`Multiple shared companies found. Re-run with --company <id-or-prefix>. Options: ${options}`);
+}
+
+function renderMergePlan(plan: Awaited<ReturnType<typeof collectMergePlan>>["plan"], extras: {
+  sourcePath: string;
+  targetPath: string;
+  unsupportedRunCount: number;
+}): string {
+  const terminalWidth = Math.max(60, process.stdout.columns ?? 100);
+  const oneLine = (value: string) => value.replace(/\s+/g, " ").trim();
+  const truncateToWidth = (value: string, maxWidth: number) => {
+    if (maxWidth <= 1) return "";
+    if (value.length <= maxWidth) return value;
+    return `${value.slice(0, Math.max(0, maxWidth - 1)).trimEnd()}…`;
+  };
+  const lines = [
+    `Mode: preview`,
+    `Source: ${extras.sourcePath}`,
+    `Target: ${extras.targetPath}`,
+    `Company: ${plan.companyName} (${plan.issuePrefix})`,
+    "",
+    "Issues",
+    `- insert: ${plan.counts.issuesToInsert}`,
+    `- already present: ${plan.counts.issuesExisting}`,
+    `- shared/imported issues with drift: ${plan.counts.issueDrift}`,
+  ];
+
+  const issueInserts = plan.issuePlans.filter((item): item is PlannedIssueInsert => item.action === "insert");
+  if (issueInserts.length > 0) {
+    lines.push("");
+    lines.push("Planned issue imports");
+    for (const issue of issueInserts) {
+      const projectNote =
+        issue.projectResolution === "mapped" && issue.mappedProjectName
+          ? ` project->${issue.mappedProjectName}`
+          : "";
+      const adjustments = issue.adjustments.length > 0 ? ` [${issue.adjustments.join(", ")}]` : "";
+      const prefix = `- ${issue.source.identifier ?? issue.source.id} -> ${issue.previewIdentifier} (${issue.targetStatus}${projectNote})`;
+      const title = oneLine(issue.source.title);
+      const suffix = `${adjustments}${title ? ` ${title}` : ""}`;
+      lines.push(
+        `${prefix}${truncateToWidth(suffix, Math.max(8, terminalWidth - prefix.length))}`,
+      );
+    }
+  }
+
+  if (plan.scopes.includes("comments")) {
+    lines.push("");
+    lines.push("Comments");
+    lines.push(`- insert: ${plan.counts.commentsToInsert}`);
+    lines.push(`- already present: ${plan.counts.commentsExisting}`);
+    lines.push(`- skipped (missing parent): ${plan.counts.commentsMissingParent}`);
+  }
+
+  lines.push("");
+  lines.push("Documents");
+  lines.push(`- insert: ${plan.counts.documentsToInsert}`);
+  lines.push(`- merge existing: ${plan.counts.documentsToMerge}`);
+  lines.push(`- already present: ${plan.counts.documentsExisting}`);
+  lines.push(`- skipped (conflicting key): ${plan.counts.documentsConflictingKey}`);
+  lines.push(`- skipped (missing parent): ${plan.counts.documentsMissingParent}`);
+  lines.push(`- revisions insert: ${plan.counts.documentRevisionsToInsert}`);
+
+  lines.push("");
+  lines.push("Attachments");
+  lines.push(`- insert: ${plan.counts.attachmentsToInsert}`);
+  lines.push(`- already present: ${plan.counts.attachmentsExisting}`);
+  lines.push(`- skipped (missing parent): ${plan.counts.attachmentsMissingParent}`);
+
+  lines.push("");
+  lines.push("Adjustments");
+  lines.push(`- cleared assignee agents: ${plan.adjustments.clear_assignee_agent}`);
+  lines.push(`- cleared projects: ${plan.adjustments.clear_project}`);
+  lines.push(`- cleared project workspaces: ${plan.adjustments.clear_project_workspace}`);
+  lines.push(`- cleared goals: ${plan.adjustments.clear_goal}`);
+  lines.push(`- cleared comment author agents: ${plan.adjustments.clear_author_agent}`);
+  lines.push(`- cleared document agents: ${plan.adjustments.clear_document_agent}`);
+  lines.push(`- cleared document revision agents: ${plan.adjustments.clear_document_revision_agent}`);
+  lines.push(`- cleared attachment author agents: ${plan.adjustments.clear_attachment_agent}`);
+  lines.push(`- coerced in_progress to todo: ${plan.adjustments.coerce_in_progress_to_todo}`);
+
+  lines.push("");
+  lines.push("Not imported in this phase");
+  lines.push(`- heartbeat runs: ${extras.unsupportedRunCount}`);
+  lines.push("");
+  lines.push("Identifiers shown above are provisional preview values. `--apply` reserves fresh issue numbers at write time.");
+
+  return lines.join("\n");
+}
+
+async function collectMergePlan(input: {
+  sourceDb: ClosableDb;
+  targetDb: ClosableDb;
+  company: ResolvedMergeCompany;
+  scopes: ReturnType<typeof parseWorktreeMergeScopes>;
+  projectIdOverrides?: Record<string, string | null | undefined>;
+}) {
+  const companyId = input.company.id;
+  const [
+    targetCompanyRow,
+    sourceIssuesRows,
+    targetIssuesRows,
+    sourceCommentsRows,
+    targetCommentsRows,
+    sourceIssueDocumentsRows,
+    targetIssueDocumentsRows,
+    sourceDocumentRevisionRows,
+    targetDocumentRevisionRows,
+    sourceAttachmentRows,
+    targetAttachmentRows,
+    sourceProjectsRows,
+    targetProjectsRows,
+    targetAgentsRows,
+    targetProjectWorkspaceRows,
+    targetGoalsRows,
+    runCountRows,
+  ] = await Promise.all([
+    input.targetDb
+      .select({
+        issueCounter: companies.issueCounter,
+      })
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .then((rows) => rows[0] ?? null),
+    input.sourceDb
+      .select()
+      .from(issues)
+      .where(eq(issues.companyId, companyId)),
+    input.targetDb
+      .select()
+      .from(issues)
+      .where(eq(issues.companyId, companyId)),
+    input.scopes.includes("comments")
+      ? input.sourceDb
+        .select()
+        .from(issueComments)
+        .where(eq(issueComments.companyId, companyId))
+      : Promise.resolve([]),
+    input.targetDb
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.companyId, companyId)),
+    input.sourceDb
+      .select({
+        id: issueDocuments.id,
+        companyId: issueDocuments.companyId,
+        issueId: issueDocuments.issueId,
+        documentId: issueDocuments.documentId,
+        key: issueDocuments.key,
+        linkCreatedAt: issueDocuments.createdAt,
+        linkUpdatedAt: issueDocuments.updatedAt,
+        title: documents.title,
+        format: documents.format,
+        latestBody: documents.latestBody,
+        latestRevisionId: documents.latestRevisionId,
+        latestRevisionNumber: documents.latestRevisionNumber,
+        createdByAgentId: documents.createdByAgentId,
+        createdByUserId: documents.createdByUserId,
+        updatedByAgentId: documents.updatedByAgentId,
+        updatedByUserId: documents.updatedByUserId,
+        documentCreatedAt: documents.createdAt,
+        documentUpdatedAt: documents.updatedAt,
+      })
+      .from(issueDocuments)
+      .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+      .innerJoin(issues, eq(issueDocuments.issueId, issues.id))
+      .where(eq(issues.companyId, companyId)),
+    input.targetDb
+      .select({
+        id: issueDocuments.id,
+        companyId: issueDocuments.companyId,
+        issueId: issueDocuments.issueId,
+        documentId: issueDocuments.documentId,
+        key: issueDocuments.key,
+        linkCreatedAt: issueDocuments.createdAt,
+        linkUpdatedAt: issueDocuments.updatedAt,
+        title: documents.title,
+        format: documents.format,
+        latestBody: documents.latestBody,
+        latestRevisionId: documents.latestRevisionId,
+        latestRevisionNumber: documents.latestRevisionNumber,
+        createdByAgentId: documents.createdByAgentId,
+        createdByUserId: documents.createdByUserId,
+        updatedByAgentId: documents.updatedByAgentId,
+        updatedByUserId: documents.updatedByUserId,
+        documentCreatedAt: documents.createdAt,
+        documentUpdatedAt: documents.updatedAt,
+      })
+      .from(issueDocuments)
+      .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+      .innerJoin(issues, eq(issueDocuments.issueId, issues.id))
+      .where(eq(issues.companyId, companyId)),
+    input.sourceDb
+      .select({
+        id: documentRevisions.id,
+        companyId: documentRevisions.companyId,
+        documentId: documentRevisions.documentId,
+        revisionNumber: documentRevisions.revisionNumber,
+        body: documentRevisions.body,
+        changeSummary: documentRevisions.changeSummary,
+        createdByAgentId: documentRevisions.createdByAgentId,
+        createdByUserId: documentRevisions.createdByUserId,
+        createdAt: documentRevisions.createdAt,
+      })
+      .from(documentRevisions)
+      .innerJoin(issueDocuments, eq(documentRevisions.documentId, issueDocuments.documentId))
+      .innerJoin(issues, eq(issueDocuments.issueId, issues.id))
+      .where(eq(issues.companyId, companyId)),
+    input.targetDb
+      .select({
+        id: documentRevisions.id,
+        companyId: documentRevisions.companyId,
+        documentId: documentRevisions.documentId,
+        revisionNumber: documentRevisions.revisionNumber,
+        body: documentRevisions.body,
+        changeSummary: documentRevisions.changeSummary,
+        createdByAgentId: documentRevisions.createdByAgentId,
+        createdByUserId: documentRevisions.createdByUserId,
+        createdAt: documentRevisions.createdAt,
+      })
+      .from(documentRevisions)
+      .innerJoin(issueDocuments, eq(documentRevisions.documentId, issueDocuments.documentId))
+      .innerJoin(issues, eq(issueDocuments.issueId, issues.id))
+      .where(eq(issues.companyId, companyId)),
+    input.sourceDb
+      .select({
+        id: issueAttachments.id,
+        companyId: issueAttachments.companyId,
+        issueId: issueAttachments.issueId,
+        issueCommentId: issueAttachments.issueCommentId,
+        assetId: issueAttachments.assetId,
+        provider: assets.provider,
+        objectKey: assets.objectKey,
+        contentType: assets.contentType,
+        byteSize: assets.byteSize,
+        sha256: assets.sha256,
+        originalFilename: assets.originalFilename,
+        createdByAgentId: assets.createdByAgentId,
+        createdByUserId: assets.createdByUserId,
+        assetCreatedAt: assets.createdAt,
+        assetUpdatedAt: assets.updatedAt,
+        attachmentCreatedAt: issueAttachments.createdAt,
+        attachmentUpdatedAt: issueAttachments.updatedAt,
+      })
+      .from(issueAttachments)
+      .innerJoin(assets, eq(issueAttachments.assetId, assets.id))
+      .innerJoin(issues, eq(issueAttachments.issueId, issues.id))
+      .where(eq(issues.companyId, companyId)),
+    input.targetDb
+      .select({
+        id: issueAttachments.id,
+        companyId: issueAttachments.companyId,
+        issueId: issueAttachments.issueId,
+        issueCommentId: issueAttachments.issueCommentId,
+        assetId: issueAttachments.assetId,
+        provider: assets.provider,
+        objectKey: assets.objectKey,
+        contentType: assets.contentType,
+        byteSize: assets.byteSize,
+        sha256: assets.sha256,
+        originalFilename: assets.originalFilename,
+        createdByAgentId: assets.createdByAgentId,
+        createdByUserId: assets.createdByUserId,
+        assetCreatedAt: assets.createdAt,
+        assetUpdatedAt: assets.updatedAt,
+        attachmentCreatedAt: issueAttachments.createdAt,
+        attachmentUpdatedAt: issueAttachments.updatedAt,
+      })
+      .from(issueAttachments)
+      .innerJoin(assets, eq(issueAttachments.assetId, assets.id))
+      .innerJoin(issues, eq(issueAttachments.issueId, issues.id))
+      .where(eq(issues.companyId, companyId)),
+    input.sourceDb
+      .select()
+      .from(projects)
+      .where(eq(projects.companyId, companyId)),
+    input.targetDb
+      .select()
+      .from(projects)
+      .where(eq(projects.companyId, companyId)),
+    input.targetDb
+      .select()
+      .from(agents)
+      .where(eq(agents.companyId, companyId)),
+    input.targetDb
+      .select()
+      .from(projectWorkspaces)
+      .where(eq(projectWorkspaces.companyId, companyId)),
+    input.targetDb
+      .select()
+      .from(goals)
+      .where(eq(goals.companyId, companyId)),
+    input.sourceDb
+      .select({ count: sql<number>`count(*)::int` })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, companyId)),
+  ]);
+
+  if (!targetCompanyRow) {
+    throw new Error(`Target company ${companyId} was not found.`);
+  }
+
+  const plan = buildWorktreeMergePlan({
+    companyId,
+    companyName: input.company.name,
+    issuePrefix: input.company.issuePrefix,
+    previewIssueCounterStart: targetCompanyRow.issueCounter,
+    scopes: input.scopes,
+    sourceIssues: sourceIssuesRows,
+    targetIssues: targetIssuesRows,
+    sourceComments: sourceCommentsRows,
+    targetComments: targetCommentsRows,
+    sourceDocuments: sourceIssueDocumentsRows as IssueDocumentRow[],
+    targetDocuments: targetIssueDocumentsRows as IssueDocumentRow[],
+    sourceDocumentRevisions: sourceDocumentRevisionRows as DocumentRevisionRow[],
+    targetDocumentRevisions: targetDocumentRevisionRows as DocumentRevisionRow[],
+    sourceAttachments: sourceAttachmentRows as IssueAttachmentRow[],
+    targetAttachments: targetAttachmentRows as IssueAttachmentRow[],
+    targetAgents: targetAgentsRows,
+    targetProjects: targetProjectsRows,
+    targetProjectWorkspaces: targetProjectWorkspaceRows,
+    targetGoals: targetGoalsRows,
+    projectIdOverrides: input.projectIdOverrides,
+  });
+
+  return {
+    plan,
+    sourceProjects: sourceProjectsRows,
+    targetProjects: targetProjectsRows,
+    unsupportedRunCount: runCountRows[0]?.count ?? 0,
+  };
+}
+
+async function promptForProjectMappings(input: {
+  plan: Awaited<ReturnType<typeof collectMergePlan>>["plan"];
+  sourceProjects: Awaited<ReturnType<typeof collectMergePlan>>["sourceProjects"];
+  targetProjects: Awaited<ReturnType<typeof collectMergePlan>>["targetProjects"];
+}): Promise<Record<string, string | null>> {
+  const missingProjectIds = [
+    ...new Set(
+      input.plan.issuePlans
+        .filter((plan): plan is PlannedIssueInsert => plan.action === "insert")
+        .filter((plan) => !!plan.source.projectId && plan.projectResolution === "cleared")
+        .map((plan) => plan.source.projectId as string),
+    ),
+  ];
+  if (missingProjectIds.length === 0 || input.targetProjects.length === 0) {
+    return {};
+  }
+
+  const sourceProjectsById = new Map(input.sourceProjects.map((project) => [project.id, project]));
+  const targetChoices = [...input.targetProjects]
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .map((project) => ({
+      value: project.id,
+      label: project.name,
+      hint: project.status,
+    }));
+
+  const mappings: Record<string, string | null> = {};
+  for (const sourceProjectId of missingProjectIds) {
+    const sourceProject = sourceProjectsById.get(sourceProjectId);
+    if (!sourceProject) continue;
+    const nameMatch = input.targetProjects.find(
+      (project) => project.name.trim().toLowerCase() === sourceProject.name.trim().toLowerCase(),
+    );
+    const selection = await p.select<string | null>({
+      message: `Project "${sourceProject.name}" is missing in target. How should ${input.plan.issuePrefix} imports handle it?`,
+      options: [
+        ...(nameMatch
+          ? [{
+              value: nameMatch.id,
+              label: `Map to ${nameMatch.name}`,
+              hint: "Recommended: exact name match",
+            }]
+          : []),
+        {
+          value: null,
+          label: "Leave unset",
+          hint: "Keep imported issues without a project",
+        },
+        ...targetChoices.filter((choice) => choice.value !== nameMatch?.id),
+      ],
+      initialValue: nameMatch?.id ?? null,
+    });
+    if (p.isCancel(selection)) {
+      throw new Error("Project mapping cancelled.");
+    }
+    mappings[sourceProjectId] = selection;
+  }
+
+  return mappings;
+}
+
+export async function worktreeListCommand(opts: WorktreeListOptions): Promise<void> {
+  const choices = toMergeSourceChoices(process.cwd());
+  if (opts.json) {
+    console.log(JSON.stringify(choices, null, 2));
+    return;
+  }
+
+  for (const choice of choices) {
+    const flags = [
+      choice.isCurrent ? "current" : null,
+      choice.hasPaperclipConfig ? "paperclip" : "no-paperclip-config",
+    ].filter((value): value is string => value !== null);
+    p.log.message(`${choice.branchLabel}  ${choice.worktree}  [${flags.join(", ")}]`);
+  }
+}
+
+function resolveEndpointFromChoice(choice: MergeSourceChoice): ResolvedWorktreeEndpoint {
+  if (choice.isCurrent) {
+    return resolveCurrentEndpoint();
+  }
+  return {
+    rootPath: choice.worktree,
+    configPath: path.resolve(choice.worktree, ".paperclip", "config.json"),
+    label: choice.branchLabel,
+    isCurrent: false,
+  };
+}
+
+function resolveWorktreeEndpointFromSelector(
+  selector: string,
+  opts?: { allowCurrent?: boolean },
+): ResolvedWorktreeEndpoint {
+  const trimmed = selector.trim();
+  const allowCurrent = opts?.allowCurrent !== false;
+  if (trimmed.length === 0) {
+    throw new Error("Worktree selector cannot be empty.");
+  }
+
+  const currentEndpoint = resolveCurrentEndpoint();
+  if (allowCurrent && trimmed === "current") {
+    return currentEndpoint;
+  }
+
+  const choices = toMergeSourceChoices(process.cwd());
+  const directPath = path.resolve(trimmed);
+  if (existsSync(directPath)) {
+    if (allowCurrent && directPath === currentEndpoint.rootPath) {
+      return currentEndpoint;
+    }
+    const configPath = path.resolve(directPath, ".paperclip", "config.json");
+    if (!existsSync(configPath)) {
+      throw new Error(`Resolved worktree path ${directPath} does not contain .paperclip/config.json.`);
+    }
+    return {
+      rootPath: directPath,
+      configPath,
+      label: path.basename(directPath),
+      isCurrent: false,
+    };
+  }
+
+  const matched = choices.find((choice) =>
+    (allowCurrent || !choice.isCurrent)
+    && (choice.worktree === directPath
+      || path.basename(choice.worktree) === trimmed
+      || choice.branchLabel === trimmed),
+  );
+  if (!matched) {
+    throw new Error(
+      `Could not resolve worktree "${selector}". Use a path, a listed worktree directory name, branch name, or "current".`,
+    );
+  }
+  if (!matched.hasPaperclipConfig && !matched.isCurrent) {
+    throw new Error(`Resolved worktree "${selector}" does not look like a Paperclip worktree.`);
+  }
+  return resolveEndpointFromChoice(matched);
+}
+
+async function promptForSourceEndpoint(excludeWorktreePath?: string): Promise<ResolvedWorktreeEndpoint> {
+  const excluded = excludeWorktreePath ? path.resolve(excludeWorktreePath) : null;
+  const currentEndpoint = resolveCurrentEndpoint();
+  const choices = toMergeSourceChoices(process.cwd())
+    .filter((choice) => choice.hasPaperclipConfig || choice.isCurrent)
+    .filter((choice) => path.resolve(choice.worktree) !== excluded)
+    .map((choice) => ({
+      value: choice.isCurrent ? "__current__" : choice.worktree,
+      label: choice.branchLabel,
+      hint: `${choice.worktree}${choice.isCurrent ? " (current)" : ""}`,
+    }));
+  if (choices.length === 0) {
+    throw new Error("No Paperclip worktrees were found. Run `paperclipai worktree:list` to inspect the repo worktrees.");
+  }
+  const selection = await p.select<string>({
+    message: "Choose the source worktree to import from",
+    options: choices,
+  });
+  if (p.isCancel(selection)) {
+    throw new Error("Source worktree selection cancelled.");
+  }
+  if (selection === "__current__") {
+    return currentEndpoint;
+  }
+  return resolveWorktreeEndpointFromSelector(selection, { allowCurrent: true });
+}
+
+async function applyMergePlan(input: {
+  sourceStorages: ConfiguredStorage[];
+  targetStorage: ConfiguredStorage;
+  targetDb: ClosableDb;
+  company: ResolvedMergeCompany;
+  plan: Awaited<ReturnType<typeof collectMergePlan>>["plan"];
+}) {
+  const companyId = input.company.id;
+
+  return await input.targetDb.transaction(async (tx) => {
+    const issueCandidates = input.plan.issuePlans.filter(
+      (plan): plan is PlannedIssueInsert => plan.action === "insert",
+    );
+    const issueCandidateIds = issueCandidates.map((issue) => issue.source.id);
+    const existingIssueIds = issueCandidateIds.length > 0
+      ? new Set(
+        (await tx
+          .select({ id: issues.id })
+          .from(issues)
+          .where(inArray(issues.id, issueCandidateIds)))
+          .map((row) => row.id),
+      )
+      : new Set<string>();
+    const issueInserts = issueCandidates.filter((issue) => !existingIssueIds.has(issue.source.id));
+
+    let nextIssueNumber = 0;
+    if (issueInserts.length > 0) {
+      const [companyRow] = await tx
+        .update(companies)
+        .set({ issueCounter: sql`${companies.issueCounter} + ${issueInserts.length}` })
+        .where(eq(companies.id, companyId))
+        .returning({ issueCounter: companies.issueCounter });
+      nextIssueNumber = companyRow.issueCounter - issueInserts.length + 1;
+    }
+
+    const insertedIssueIdentifiers = new Map<string, string>();
+    let insertedIssues = 0;
+    for (const issue of issueInserts) {
+      const issueNumber = nextIssueNumber;
+      nextIssueNumber += 1;
+      const identifier = `${input.company.issuePrefix}-${issueNumber}`;
+      insertedIssueIdentifiers.set(issue.source.id, identifier);
+      await tx.insert(issues).values({
+        id: issue.source.id,
+        companyId,
+        projectId: issue.targetProjectId,
+        projectWorkspaceId: issue.targetProjectWorkspaceId,
+        goalId: issue.targetGoalId,
+        parentId: issue.source.parentId,
+        title: issue.source.title,
+        description: issue.source.description,
+        status: issue.targetStatus,
+        priority: issue.source.priority,
+        assigneeAgentId: issue.targetAssigneeAgentId,
+        assigneeUserId: issue.source.assigneeUserId,
+        checkoutRunId: null,
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        createdByAgentId: issue.targetCreatedByAgentId,
+        createdByUserId: issue.source.createdByUserId,
+        issueNumber,
+        identifier,
+        requestDepth: issue.source.requestDepth,
+        billingCode: issue.source.billingCode,
+        assigneeAdapterOverrides: issue.targetAssigneeAgentId ? issue.source.assigneeAdapterOverrides : null,
+        executionWorkspaceId: null,
+        executionWorkspacePreference: null,
+        executionWorkspaceSettings: null,
+        startedAt: issue.source.startedAt,
+        completedAt: issue.source.completedAt,
+        cancelledAt: issue.source.cancelledAt,
+        hiddenAt: issue.source.hiddenAt,
+        createdAt: issue.source.createdAt,
+        updatedAt: issue.source.updatedAt,
+      });
+      insertedIssues += 1;
+    }
+
+    const commentCandidates = input.plan.commentPlans.filter(
+      (plan): plan is PlannedCommentInsert => plan.action === "insert",
+    );
+    const commentCandidateIds = commentCandidates.map((comment) => comment.source.id);
+    const existingCommentIds = commentCandidateIds.length > 0
+      ? new Set(
+        (await tx
+          .select({ id: issueComments.id })
+          .from(issueComments)
+          .where(inArray(issueComments.id, commentCandidateIds)))
+          .map((row) => row.id),
+      )
+      : new Set<string>();
+
+    let insertedComments = 0;
+    for (const comment of commentCandidates) {
+      if (existingCommentIds.has(comment.source.id)) continue;
+      const parentExists = await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(eq(issues.id, comment.source.issueId), eq(issues.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!parentExists) continue;
+      await tx.insert(issueComments).values({
+        id: comment.source.id,
+        companyId,
+        issueId: comment.source.issueId,
+        authorAgentId: comment.targetAuthorAgentId,
+        authorUserId: comment.source.authorUserId,
+        body: comment.source.body,
+        createdAt: comment.source.createdAt,
+        updatedAt: comment.source.updatedAt,
+      });
+      insertedComments += 1;
+    }
+
+    const documentCandidates = input.plan.documentPlans.filter(
+      (plan): plan is PlannedIssueDocumentInsert | PlannedIssueDocumentMerge =>
+        plan.action === "insert" || plan.action === "merge_existing",
+    );
+    let insertedDocuments = 0;
+    let mergedDocuments = 0;
+    let insertedDocumentRevisions = 0;
+    for (const documentPlan of documentCandidates) {
+      const parentExists = await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(eq(issues.id, documentPlan.source.issueId), eq(issues.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!parentExists) continue;
+
+      const conflictingKeyDocument = await tx
+        .select({ documentId: issueDocuments.documentId })
+        .from(issueDocuments)
+        .where(and(eq(issueDocuments.issueId, documentPlan.source.issueId), eq(issueDocuments.key, documentPlan.source.key)))
+        .then((rows) => rows[0] ?? null);
+      if (
+        conflictingKeyDocument
+        && conflictingKeyDocument.documentId !== documentPlan.source.documentId
+      ) {
+        continue;
+      }
+
+      const existingDocument = await tx
+        .select({ id: documents.id })
+        .from(documents)
+        .where(eq(documents.id, documentPlan.source.documentId))
+        .then((rows) => rows[0] ?? null);
+
+      if (!existingDocument) {
+        await tx.insert(documents).values({
+          id: documentPlan.source.documentId,
+          companyId,
+          title: documentPlan.source.title,
+          format: documentPlan.source.format,
+          latestBody: documentPlan.source.latestBody,
+          latestRevisionId: documentPlan.latestRevisionId,
+          latestRevisionNumber: documentPlan.latestRevisionNumber,
+          createdByAgentId: documentPlan.targetCreatedByAgentId,
+          createdByUserId: documentPlan.source.createdByUserId,
+          updatedByAgentId: documentPlan.targetUpdatedByAgentId,
+          updatedByUserId: documentPlan.source.updatedByUserId,
+          createdAt: documentPlan.source.documentCreatedAt,
+          updatedAt: documentPlan.source.documentUpdatedAt,
+        });
+        await tx.insert(issueDocuments).values({
+          id: documentPlan.source.id,
+          companyId,
+          issueId: documentPlan.source.issueId,
+          documentId: documentPlan.source.documentId,
+          key: documentPlan.source.key,
+          createdAt: documentPlan.source.linkCreatedAt,
+          updatedAt: documentPlan.source.linkUpdatedAt,
+        });
+        insertedDocuments += 1;
+      } else {
+        const existingLink = await tx
+          .select({ id: issueDocuments.id })
+          .from(issueDocuments)
+          .where(eq(issueDocuments.documentId, documentPlan.source.documentId))
+          .then((rows) => rows[0] ?? null);
+        if (!existingLink) {
+          await tx.insert(issueDocuments).values({
+            id: documentPlan.source.id,
+            companyId,
+            issueId: documentPlan.source.issueId,
+            documentId: documentPlan.source.documentId,
+            key: documentPlan.source.key,
+            createdAt: documentPlan.source.linkCreatedAt,
+            updatedAt: documentPlan.source.linkUpdatedAt,
+          });
+        } else {
+          await tx
+            .update(issueDocuments)
+            .set({
+              issueId: documentPlan.source.issueId,
+              key: documentPlan.source.key,
+              updatedAt: documentPlan.source.linkUpdatedAt,
+            })
+            .where(eq(issueDocuments.documentId, documentPlan.source.documentId));
+        }
+
+        await tx
+          .update(documents)
+          .set({
+            title: documentPlan.source.title,
+            format: documentPlan.source.format,
+            latestBody: documentPlan.source.latestBody,
+            latestRevisionId: documentPlan.latestRevisionId,
+            latestRevisionNumber: documentPlan.latestRevisionNumber,
+            updatedByAgentId: documentPlan.targetUpdatedByAgentId,
+            updatedByUserId: documentPlan.source.updatedByUserId,
+            updatedAt: documentPlan.source.documentUpdatedAt,
+          })
+          .where(eq(documents.id, documentPlan.source.documentId));
+        mergedDocuments += 1;
+      }
+
+      const existingRevisionIds = new Set(
+        (
+          await tx
+            .select({ id: documentRevisions.id })
+            .from(documentRevisions)
+            .where(eq(documentRevisions.documentId, documentPlan.source.documentId))
+        ).map((row) => row.id),
+      );
+      for (const revisionPlan of documentPlan.revisionsToInsert) {
+        if (existingRevisionIds.has(revisionPlan.source.id)) continue;
+        await tx.insert(documentRevisions).values({
+          id: revisionPlan.source.id,
+          companyId,
+          documentId: documentPlan.source.documentId,
+          revisionNumber: revisionPlan.targetRevisionNumber,
+          body: revisionPlan.source.body,
+          changeSummary: revisionPlan.source.changeSummary,
+          createdByAgentId: revisionPlan.targetCreatedByAgentId,
+          createdByUserId: revisionPlan.source.createdByUserId,
+          createdAt: revisionPlan.source.createdAt,
+        });
+        insertedDocumentRevisions += 1;
+      }
+    }
+
+    const attachmentCandidates = input.plan.attachmentPlans.filter(
+      (plan): plan is PlannedAttachmentInsert => plan.action === "insert",
+    );
+    const existingAttachmentIds = new Set(
+      (
+        await tx
+          .select({ id: issueAttachments.id })
+          .from(issueAttachments)
+          .where(eq(issueAttachments.companyId, companyId))
+      ).map((row) => row.id),
+    );
+    let insertedAttachments = 0;
+    let skippedMissingAttachmentObjects = 0;
+    for (const attachment of attachmentCandidates) {
+      if (existingAttachmentIds.has(attachment.source.id)) continue;
+      const parentExists = await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(eq(issues.id, attachment.source.issueId), eq(issues.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!parentExists) continue;
+
+      const body = await readSourceAttachmentBody(
+        input.sourceStorages,
+        companyId,
+        attachment.source.objectKey,
+      );
+      if (!body) {
+        skippedMissingAttachmentObjects += 1;
+        continue;
+      }
+      await input.targetStorage.putObject(
+        companyId,
+        attachment.source.objectKey,
+        body,
+        attachment.source.contentType,
+      );
+
+      await tx.insert(assets).values({
+        id: attachment.source.assetId,
+        companyId,
+        provider: attachment.source.provider,
+        objectKey: attachment.source.objectKey,
+        contentType: attachment.source.contentType,
+        byteSize: attachment.source.byteSize,
+        sha256: attachment.source.sha256,
+        originalFilename: attachment.source.originalFilename,
+        createdByAgentId: attachment.targetCreatedByAgentId,
+        createdByUserId: attachment.source.createdByUserId,
+        createdAt: attachment.source.assetCreatedAt,
+        updatedAt: attachment.source.assetUpdatedAt,
+      });
+
+      await tx.insert(issueAttachments).values({
+        id: attachment.source.id,
+        companyId,
+        issueId: attachment.source.issueId,
+        assetId: attachment.source.assetId,
+        issueCommentId: attachment.targetIssueCommentId,
+        createdAt: attachment.source.attachmentCreatedAt,
+        updatedAt: attachment.source.attachmentUpdatedAt,
+      });
+      insertedAttachments += 1;
+    }
+
+    return {
+      insertedIssues,
+      insertedComments,
+      insertedDocuments,
+      mergedDocuments,
+      insertedDocumentRevisions,
+      insertedAttachments,
+      skippedMissingAttachmentObjects,
+      insertedIssueIdentifiers,
+    };
+  });
+}
+
+export async function worktreeMergeHistoryCommand(sourceArg: string | undefined, opts: WorktreeMergeHistoryOptions): Promise<void> {
+  if (opts.apply && opts.dry) {
+    throw new Error("Use either --apply or --dry, not both.");
+  }
+
+  if (sourceArg && opts.from) {
+    throw new Error("Use either the positional source argument or --from, not both.");
+  }
+
+  const targetEndpoint = opts.to
+    ? resolveWorktreeEndpointFromSelector(opts.to, { allowCurrent: true })
+    : resolveCurrentEndpoint();
+  const sourceEndpoint = opts.from
+    ? resolveWorktreeEndpointFromSelector(opts.from, { allowCurrent: true })
+    : sourceArg
+      ? resolveWorktreeEndpointFromSelector(sourceArg, { allowCurrent: true })
+      : await promptForSourceEndpoint(targetEndpoint.rootPath);
+
+  if (path.resolve(sourceEndpoint.configPath) === path.resolve(targetEndpoint.configPath)) {
+    throw new Error("Source and target Paperclip configs are the same. Choose different --from/--to worktrees.");
+  }
+
+  const scopes = parseWorktreeMergeScopes(opts.scope);
+  const sourceHandle = await openConfiguredDb(sourceEndpoint.configPath);
+  const targetHandle = await openConfiguredDb(targetEndpoint.configPath);
+  const sourceStorages = resolveAttachmentLookupStorages({
+    sourceEndpoint,
+    targetEndpoint,
+  });
+  const targetStorage = openConfiguredStorage(targetEndpoint.configPath);
+
+  try {
+    const company = await resolveMergeCompany({
+      sourceDb: sourceHandle.db,
+      targetDb: targetHandle.db,
+      selector: opts.company,
+    });
+    let collected = await collectMergePlan({
+      sourceDb: sourceHandle.db,
+      targetDb: targetHandle.db,
+      company,
+      scopes,
+    });
+    if (!opts.yes) {
+      const projectIdOverrides = await promptForProjectMappings({
+        plan: collected.plan,
+        sourceProjects: collected.sourceProjects,
+        targetProjects: collected.targetProjects,
+      });
+      if (Object.keys(projectIdOverrides).length > 0) {
+        collected = await collectMergePlan({
+          sourceDb: sourceHandle.db,
+          targetDb: targetHandle.db,
+          company,
+          scopes,
+          projectIdOverrides,
+        });
+      }
+    }
+
+    console.log(renderMergePlan(collected.plan, {
+      sourcePath: `${sourceEndpoint.label} (${sourceEndpoint.rootPath})`,
+      targetPath: `${targetEndpoint.label} (${targetEndpoint.rootPath})`,
+      unsupportedRunCount: collected.unsupportedRunCount,
+    }));
+
+    if (!opts.apply) {
+      return;
+    }
+
+    const confirmed = opts.yes
+      ? true
+      : await p.confirm({
+        message: `Import ${collected.plan.counts.issuesToInsert} issues and ${collected.plan.counts.commentsToInsert} comments from ${sourceEndpoint.label} into ${targetEndpoint.label}?`,
+        initialValue: false,
+      });
+    if (p.isCancel(confirmed) || !confirmed) {
+      p.log.warn("Import cancelled.");
+      return;
+    }
+
+    const applied = await applyMergePlan({
+      sourceStorages,
+      targetStorage,
+      targetDb: targetHandle.db,
+      company,
+      plan: collected.plan,
+    });
+    if (applied.skippedMissingAttachmentObjects > 0) {
+      p.log.warn(
+        `Skipped ${applied.skippedMissingAttachmentObjects} attachments whose source files were missing from storage.`,
+      );
+    }
+    p.outro(
+      pc.green(
+        `Imported ${applied.insertedIssues} issues, ${applied.insertedComments} comments, ${applied.insertedDocuments} documents (${applied.insertedDocumentRevisions} revisions, ${applied.mergedDocuments} merged), and ${applied.insertedAttachments} attachments into ${company.issuePrefix}.`,
+      ),
+    );
+  } finally {
+    await targetHandle.stop();
+    await sourceHandle.stop();
+  }
+}
+
 export function registerWorktreeCommands(program: Command): void {
   const worktree = program.command("worktree").description("Worktree-local Paperclip instance helpers");
 
@@ -1113,6 +2432,25 @@ export function registerWorktreeCommands(program: Command): void {
     .option("-c, --config <path>", "Path to config file")
     .option("--json", "Print JSON instead of shell exports")
     .action(worktreeEnvCommand);
+
+  program
+    .command("worktree:list")
+    .description("List git worktrees visible from this repo and whether they look like Paperclip worktrees")
+    .option("--json", "Print JSON instead of text output")
+    .action(worktreeListCommand);
+
+  program
+    .command("worktree:merge-history")
+    .description("Preview or import issue/comment history from another worktree into the current instance")
+    .argument("[source]", "Optional source worktree path, directory name, or branch name (back-compat alias for --from)")
+    .option("--from <worktree>", "Source worktree path, directory name, branch name, or current")
+    .option("--to <worktree>", "Target worktree path, directory name, branch name, or current (defaults to current)")
+    .option("--company <id-or-prefix>", "Shared company id or issue prefix inside the chosen source/target instances")
+    .option("--scope <items>", "Comma-separated scopes to import (issues, comments)", "issues,comments")
+    .option("--apply", "Apply the import after previewing the plan", false)
+    .option("--dry", "Preview only and do not import anything", false)
+    .option("--yes", "Skip the interactive confirmation prompt when applying", false)
+    .action(worktreeMergeHistoryCommand);
 
   program
     .command("worktree:cleanup")

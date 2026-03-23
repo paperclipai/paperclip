@@ -271,15 +271,85 @@
     {
       "idx": 38,
       "version": "7",
-      "when": 1774000000000,
-      "tag": "0038_holding_parent_company",
+      "when": 1773931592563,
+      "tag": "0038_careless_iron_monger",
       "breakpoints": true
     },
     {
       "idx": 39,
       "version": "7",
+      "when": 1773926116580,
+      "tag": "0039_fat_magneto",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1773927102783,
+      "tag": "0040_eager_shotgun",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1774011294562,
+      "tag": "0041_curly_maria_hill",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1774031825634,
+      "tag": "0042_spotty_the_renegades",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1774008910991,
+      "tag": "0043_reflective_captain_universe",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1774100000000,
+      "tag": "0044_holding_parent_company",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
       "when": 1774200000000,
-      "tag": "0039_cross_platform_orchestration",
+      "tag": "0045_cross_platform_orchestration",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1774300000000,
+      "tag": "0046_knowledge_store",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1774400000000,
+      "tag": "0047_circuit_breaker_config",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1774500000000,
+      "tag": "0048_heartbeat_runs_missing_columns",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1774600000000,
+      "tag": "0049_artifacts_table",
       "breakpoints": true
     }
   ]

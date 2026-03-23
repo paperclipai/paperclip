@@ -12,6 +12,23 @@ export const ACTIONABLE_APPROVAL_STATUSES = new Set(["pending", "revision_reques
 export const DISMISSED_KEY = "paperclip:inbox:dismissed";
 export const INBOX_LAST_TAB_KEY = "paperclip:inbox:last-tab";
 export type InboxTab = "recent" | "unread" | "all";
+export type InboxApprovalFilter = "all" | "actionable" | "resolved";
+export type InboxWorkItem =
+  | {
+      kind: "issue";
+      timestamp: number;
+      issue: Issue;
+    }
+  | {
+      kind: "approval";
+      timestamp: number;
+      approval: Approval;
+    }
+  | {
+      kind: "failed_run";
+      timestamp: number;
+      run: HeartbeatRun;
+    };
 
 export interface InboxBadgeData {
   inbox: number;
@@ -102,6 +119,92 @@ export function getRecentTouchedIssues(issues: Issue[]): Issue[] {
 
 export function getUnreadTouchedIssues(issues: Issue[]): Issue[] {
   return issues.filter((issue) => issue.isUnreadForMe);
+}
+
+export function getApprovalsForTab(
+  approvals: Approval[],
+  tab: InboxTab,
+  filter: InboxApprovalFilter,
+): Approval[] {
+  const sortedApprovals = [...approvals].sort(
+    (a, b) => normalizeTimestamp(b.updatedAt) - normalizeTimestamp(a.updatedAt),
+  );
+
+  if (tab === "recent") return sortedApprovals;
+  if (tab === "unread") {
+    return sortedApprovals.filter((approval) => ACTIONABLE_APPROVAL_STATUSES.has(approval.status));
+  }
+  if (filter === "all") return sortedApprovals;
+
+  return sortedApprovals.filter((approval) => {
+    const isActionable = ACTIONABLE_APPROVAL_STATUSES.has(approval.status);
+    return filter === "actionable" ? isActionable : !isActionable;
+  });
+}
+
+export function approvalActivityTimestamp(approval: Approval): number {
+  const updatedAt = normalizeTimestamp(approval.updatedAt);
+  if (updatedAt > 0) return updatedAt;
+  return normalizeTimestamp(approval.createdAt);
+}
+
+export function getInboxWorkItems({
+  issues,
+  approvals,
+  failedRuns = [],
+}: {
+  issues: Issue[];
+  approvals: Approval[];
+  failedRuns?: HeartbeatRun[];
+}): InboxWorkItem[] {
+  return [
+    ...issues.map((issue) => ({
+      kind: "issue" as const,
+      timestamp: issueLastActivityTimestamp(issue),
+      issue,
+    })),
+    ...approvals.map((approval) => ({
+      kind: "approval" as const,
+      timestamp: approvalActivityTimestamp(approval),
+      approval,
+    })),
+    ...failedRuns.map((run) => ({
+      kind: "failed_run" as const,
+      timestamp: normalizeTimestamp(run.createdAt),
+      run,
+    })),
+  ].sort((a, b) => {
+    const timestampDiff = b.timestamp - a.timestamp;
+    if (timestampDiff !== 0) return timestampDiff;
+
+    if (a.kind === "issue" && b.kind === "issue") {
+      return sortIssuesByMostRecentActivity(a.issue, b.issue);
+    }
+    if (a.kind === "approval" && b.kind === "approval") {
+      return approvalActivityTimestamp(b.approval) - approvalActivityTimestamp(a.approval);
+    }
+
+    return a.kind === "approval" ? -1 : 1;
+  });
+}
+
+export function shouldShowInboxSection({
+  tab,
+  hasItems,
+  showOnRecent,
+  showOnUnread,
+  showOnAll,
+}: {
+  tab: InboxTab;
+  hasItems: boolean;
+  showOnRecent: boolean;
+  showOnUnread: boolean;
+  showOnAll: boolean;
+}): boolean {
+  if (!hasItems) return false;
+  if (tab === "recent") return showOnRecent;
+  if (tab === "unread") return showOnUnread;
+  return showOnAll;
 }
 
 export function computeInboxBadgeData({

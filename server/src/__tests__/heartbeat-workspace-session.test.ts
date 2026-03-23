@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { agents } from "@paperclipai/db";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
+  formatRuntimeWorkspaceWarningLog,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
   resolveRuntimeSessionParamsForWorkspace,
@@ -178,6 +179,15 @@ describe("shouldResetTaskSessionForWake", () => {
         wakeTriggerDetail: "callback",
       }),
     ).toBe(false);
+  });
+});
+
+describe("formatRuntimeWorkspaceWarningLog", () => {
+  it("emits informational workspace warnings on stdout", () => {
+    expect(formatRuntimeWorkspaceWarningLog("Using fallback workspace")).toEqual({
+      stream: "stdout",
+      chunk: "[paperclip] Using fallback workspace\n",
+    });
   });
 });
 

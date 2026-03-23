@@ -69,13 +69,13 @@ Those rewrites are temporary. The working tree is restored after publish or dry-
 
 Paperclip uses calendar versions:
 
-- stable: `YYYY.M.D`
-- canary: `YYYY.M.D-canary.N`
+- stable: `YYYY.MDD.P`
+- canary: `YYYY.MDD.P-canary.N`
 
 Examples:
 
-- stable: `2026.3.17`
-- canary: `2026.3.17-canary.2`
+- stable: `2026.318.0`
+- canary: `2026.318.1-canary.2`
 
 ## Publish model
 
@@ -85,7 +85,7 @@ Canaries publish under the npm dist-tag `canary`.
 
 Example:
 
-- `paperclipai@2026.3.17-canary.2`
+- `paperclipai@2026.318.1-canary.2`
 
 This keeps the default install path unchanged while allowing explicit installs with:
 
@@ -99,13 +99,13 @@ Stable publishes use the npm dist-tag `latest`.
 
 Example:
 
-- `paperclipai@2026.3.17`
+- `paperclipai@2026.318.0`
 
 Stable publishes do not create a release commit. Instead:
 
 - package versions are rewritten temporarily
 - packages are published from the chosen source commit
-- git tag `vYYYY.M.D` points at that original commit
+- git tag `vYYYY.MDD.P` points at that original commit
 
 ## Trusted publishing
 
@@ -126,7 +126,7 @@ Rollback does not unpublish anything.
 It repoints the `latest` dist-tag to a prior stable version:
 
 ```bash
-./scripts/rollback-latest.sh 2026.3.16
+./scripts/rollback-latest.sh 2026.318.0
 ```
 
 This is the fastest way to restore the default install path if a stable release is bad.

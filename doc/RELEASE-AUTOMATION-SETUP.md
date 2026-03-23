@@ -205,7 +205,7 @@ After setup:
 3. confirm it passes verification
 4. confirm publish succeeds under the `npm-canary` environment
 5. confirm npm now shows a new `canary` release
-6. confirm a git tag named `canary/vYYYY.M.D-canary.N` was pushed
+6. confirm a git tag named `canary/vYYYY.MDD.P-canary.N` was pushed
 
 Install-path check:
 
@@ -217,18 +217,25 @@ npx paperclipai@canary onboard
 
 After at least one good canary exists:
 
-1. prepare `releases/vYYYY.M.D.md` on the source commit you want to promote
-2. open `Actions` -> `Release`
-3. run it with:
+1. resolve the target stable version with `./scripts/release.sh stable --date YYYY-MM-DD --print-version`
+2. prepare `releases/vYYYY.MDD.P.md` on the source commit you want to promote
+3. open `Actions` -> `Release`
+4. run it with:
    - `source_ref`: the tested commit SHA or canary tag source commit
-   - `stable_date`: leave blank or set the intended UTC date
+   - `stable_date`: leave blank or set the intended UTC date like `2026-03-18`
+     do not enter a version like `2026.318.0`; the workflow computes that from the date
    - `dry_run`: `true`
-4. confirm the dry-run succeeds
-5. rerun with `dry_run: false`
-6. approve the `npm-stable` environment when prompted
-7. confirm npm `latest` points to the new stable version
-8. confirm git tag `vYYYY.M.D` exists
-9. confirm the GitHub Release was created
+5. confirm the dry-run succeeds
+6. rerun with `dry_run: false`
+7. approve the `npm-stable` environment when prompted
+8. confirm npm `latest` points to the new stable version
+9. confirm git tag `vYYYY.MDD.P` exists
+10. confirm the GitHub Release was created
+
+Implementation note:
+
+- the GitHub Actions stable workflow calls `create-github-release.sh` with `PUBLISH_REMOTE=origin`
+- local maintainer usage can still pass `PUBLISH_REMOTE=public-gh` explicitly when needed
 
 ## 13. Suggested Maintainer Policy
 

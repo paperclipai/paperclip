@@ -65,6 +65,7 @@ export type CreateIssueLabel = z.infer<typeof createIssueLabelSchema>;
 
 export const updateIssueSchema = createIssueSchema.partial().extend({
   comment: z.string().min(1).optional(),
+  reopen: z.boolean().optional(),
   hiddenAt: z.string().datetime().nullable().optional(),
 });
 

@@ -3,7 +3,6 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
-import { resolveSkillAllowlist, filterSkills } from "@paperclipai/adapter-utils";
 import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 import {
   asString,
@@ -13,6 +12,7 @@ import {
   parseObject,
   parseJson,
   buildPaperclipEnv,
+  readPaperclipRuntimeSkillEntries,
   joinPromptSections,
   redactEnvForLogs,
   ensureAbsoluteDirectory,
@@ -28,52 +28,32 @@ import {
   isClaudeMaxTurnsResult,
   isClaudeUnknownSessionError,
 } from "./parse.js";
+import { resolveClaudeDesiredSkillNames } from "./skills.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
-const PAPERCLIP_SKILLS_CANDIDATES = [
-  path.resolve(__moduleDir, "../../skills"),         // published: <pkg>/dist/server/ -> <pkg>/skills/
-  path.resolve(__moduleDir, "../../../../../skills"), // dev: src/server/ -> repo root/skills/
-];
-
-async function resolvePaperclipSkillsDir(): Promise<string | null> {
-  for (const candidate of PAPERCLIP_SKILLS_CANDIDATES) {
-    const isDir = await fs.stat(candidate).then((s) => s.isDirectory()).catch(() => false);
-    if (isDir) return candidate;
-  }
-  return null;
-}
 
 /**
  * Create a tmpdir with `.claude/skills/` containing symlinks to skills from
  * the repo's `skills/` directory, so `--add-dir` makes Claude Code discover
  * them as proper registered skills.
  */
-async function buildSkillsDir(runtimeConfig?: unknown): Promise<string> {
+async function buildSkillsDir(config: Record<string, unknown>): Promise<string> {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skills-"));
   const target = path.join(tmp, ".claude", "skills");
   await fs.mkdir(target, { recursive: true });
-  const skillsDir = await resolvePaperclipSkillsDir();
-  if (!skillsDir) return tmp;
-  let entries = await fs.readdir(skillsDir, { withFileTypes: true });
-  entries = entries.filter((e) => e.isDirectory());
-
-  // Apply skill allowlist filtering when configured on the agent
-  const allowlistPolicy = resolveSkillAllowlist(runtimeConfig);
-  if (allowlistPolicy.enabled || allowlistPolicy.blocked.length > 0) {
-    const allNames = entries.map((e) => e.name);
-    const allowedNames = new Set(filterSkills(allNames, allowlistPolicy));
-    entries = entries.filter((e) => allowedNames.has(e.name));
-  }
-
-  for (const entry of entries) {
-    try {
-      await fs.symlink(
-        path.join(skillsDir, entry.name),
-        path.join(target, entry.name),
-      );
-    } catch (err: any) {
-      if (err.code !== "EEXIST") throw err;
-    }
+  const availableEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
+  const desiredNames = new Set(
+    resolveClaudeDesiredSkillNames(
+      config,
+      availableEntries,
+    ),
+  );
+  for (const entry of availableEntries) {
+    if (!desiredNames.has(entry.key)) continue;
+    await fs.symlink(
+      entry.source,
+      path.join(target, entry.runtimeName),
+    );
   }
   return tmp;
 }
@@ -316,7 +296,7 @@ export async function runClaudeLogin(input: {
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const { runId, agent, runtime, config, context, onLog, onMeta, authToken } = ctx;
+  const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -359,7 +339,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ),
   );
   const billingType = resolveClaudeBillingType(effectiveEnv);
-  const skillsDir = await buildSkillsDir(agent.runtimeConfig);
+  const skillsDir = await buildSkillsDir(config);
 
   // Write a sourceable env file so agents can access Paperclip env vars in bash.
   // Claude Code does not export parent-process env vars as shell variables —
@@ -394,13 +374,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // When instructionsFilePath is configured, create a combined temp file that
   // includes both the file content and the path directive, so we only need
   // --append-system-prompt-file (Claude CLI forbids using both flags together).
-  let effectiveInstructionsFilePath = instructionsFilePath;
+  let effectiveInstructionsFilePath: string | undefined = instructionsFilePath;
   if (instructionsFilePath) {
-    const instructionsContent = await fs.readFile(instructionsFilePath, "utf-8");
-    const pathDirective = `\nThe above agent instructions were loaded from ${instructionsFilePath}. Resolve any relative file references from ${instructionsFileDir}.`;
-    const combinedPath = path.join(skillsDir, "agent-instructions.md");
-    await fs.writeFile(combinedPath, instructionsContent + pathDirective + envBootstrapNote, "utf-8");
-    effectiveInstructionsFilePath = combinedPath;
+    try {
+      const instructionsContent = await fs.readFile(instructionsFilePath, "utf-8");
+      const pathDirective = `\nThe above agent instructions were loaded from ${instructionsFilePath}. Resolve any relative file references from ${instructionsFileDir}.`;
+      const combinedPath = path.join(skillsDir, "agent-instructions.md");
+      await fs.writeFile(combinedPath, instructionsContent + pathDirective + envBootstrapNote, "utf-8");
+      effectiveInstructionsFilePath = combinedPath;
+      await onLog("stderr", `[paperclip] Loaded agent instructions file: ${instructionsFilePath}\n`);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      await onLog(
+        "stderr",
+        `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
+      );
+      // Even without custom instructions, ensure env bootstrap is available.
+      const combinedPath = path.join(skillsDir, "agent-instructions.md");
+      await fs.writeFile(combinedPath, envBootstrapNote, "utf-8");
+      effectiveInstructionsFilePath = combinedPath;
+    }
   } else {
     // Even without custom instructions, ensure env bootstrap is available.
     const combinedPath = path.join(skillsDir, "agent-instructions.md");
@@ -417,7 +410,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const sessionId = canResumeSession ? runtimeSessionId : null;
   if (runtimeSessionId && !canResumeSession) {
     await onLog(
-      "stderr",
+      "stdout",
       `[paperclip] Claude session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
     );
   }
@@ -504,6 +497,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stdin: prompt,
       timeoutSec,
       graceSec,
+      onSpawn,
       onLog,
     });
 
@@ -621,7 +615,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       isClaudeUnknownSessionError(initial.parsed)
     ) {
       await onLog(
-        "stderr",
+        "stdout",
         `[paperclip] Claude resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
       );
       const retry = await runAttempt(null);

@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, resolveSkillAllowlist, filterSkills, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
   asString,
   asNumber,
@@ -14,7 +14,8 @@ import {
   ensureCommandResolvable,
   ensurePaperclipSkillSymlink,
   ensurePathInEnv,
-  listPaperclipSkillEntries,
+  readPaperclipRuntimeSkillEntries,
+  resolvePaperclipDesiredSkillNames,
   removeMaintainerOnlySkillSymlinks,
   renderTemplate,
   joinPromptSections,
@@ -94,39 +95,26 @@ function cursorSkillsHome(): string {
 
 type EnsureCursorSkillsInjectedOptions = {
   skillsDir?: string | null;
-  skillsEntries?: Array<{ name: string; source: string }>;
+  skillsEntries?: Array<{ key: string; runtimeName: string; source: string }>;
   skillsHome?: string;
   linkSkill?: (source: string, target: string) => Promise<void>;
-  runtimeConfig?: unknown;
 };
 
 export async function ensureCursorSkillsInjected(
   onLog: AdapterExecutionContext["onLog"],
   options: EnsureCursorSkillsInjectedOptions = {},
 ) {
-  let skillsEntries = options.skillsEntries
+  const skillsEntries = options.skillsEntries
     ?? (options.skillsDir
       ? (await fs.readdir(options.skillsDir, { withFileTypes: true }))
           .filter((entry) => entry.isDirectory())
-          .map((entry) => ({ name: entry.name, source: path.join(options.skillsDir!, entry.name) }))
-      : await listPaperclipSkillEntries(__moduleDir));
+          .map((entry) => ({
+            key: entry.name,
+            runtimeName: entry.name,
+            source: path.join(options.skillsDir!, entry.name),
+          }))
+      : await readPaperclipRuntimeSkillEntries({}, __moduleDir));
   if (skillsEntries.length === 0) return;
-
-  // Apply skill allowlist filtering when configured on the agent
-  const allowlistPolicy = resolveSkillAllowlist(options.runtimeConfig);
-  if (allowlistPolicy.enabled || allowlistPolicy.blocked.length > 0) {
-    const allNames = skillsEntries.map((e) => e.name);
-    const allowedNames = new Set(filterSkills(allNames, allowlistPolicy));
-    const beforeCount = skillsEntries.length;
-    skillsEntries = skillsEntries.filter((e) => allowedNames.has(e.name));
-    const filtered = beforeCount - skillsEntries.length;
-    if (filtered > 0) {
-      await onLog(
-        "stderr",
-        `[paperclip] Skill allowlist active: ${skillsEntries.length} allowed, ${filtered} filtered out\n`,
-      );
-    }
-  }
 
   const skillsHome = options.skillsHome ?? cursorSkillsHome();
   try {
@@ -140,7 +128,7 @@ export async function ensureCursorSkillsInjected(
   }
   const removedSkills = await removeMaintainerOnlySkillSymlinks(
     skillsHome,
-    skillsEntries.map((entry) => entry.name),
+    skillsEntries.map((entry) => entry.runtimeName),
   );
   for (const skillName of removedSkills) {
     await onLog(
@@ -150,26 +138,26 @@ export async function ensureCursorSkillsInjected(
   }
   const linkSkill = options.linkSkill ?? ((source: string, target: string) => fs.symlink(source, target));
   for (const entry of skillsEntries) {
-    const target = path.join(skillsHome, entry.name);
+    const target = path.join(skillsHome, entry.runtimeName);
     try {
       const result = await ensurePaperclipSkillSymlink(entry.source, target, linkSkill);
       if (result === "skipped") continue;
 
       await onLog(
         "stderr",
-        `[paperclip] ${result === "repaired" ? "Repaired" : "Injected"} Cursor skill "${entry.name}" into ${skillsHome}\n`,
+        `[paperclip] ${result === "repaired" ? "Repaired" : "Injected"} Cursor skill "${entry.key}" into ${skillsHome}\n`,
       );
     } catch (err) {
       await onLog(
         "stderr",
-        `[paperclip] Failed to inject Cursor skill "${entry.name}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
+        `[paperclip] Failed to inject Cursor skill "${entry.key}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
       );
     }
   }
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const { runId, agent, runtime, config, context, onLog, onMeta, authToken } = ctx;
+  const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -196,7 +184,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
-  await ensureCursorSkillsInjected(onLog, { runtimeConfig: agent.runtimeConfig });
+  const cursorSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
+  const desiredCursorSkillNames = resolvePaperclipDesiredSkillNames(config, cursorSkillEntries);
+  await ensureCursorSkillsInjected(onLog, {
+    skillsEntries: cursorSkillEntries.filter((entry) => desiredCursorSkillNames.includes(entry.key)),
+  });
 
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
@@ -298,7 +290,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const sessionId = canResumeSession ? runtimeSessionId : null;
   if (runtimeSessionId && !canResumeSession) {
     await onLog(
-      "stderr",
+      "stdout",
       `[paperclip] Cursor session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
     );
   }
@@ -316,13 +308,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `Resolve any relative file references from ${instructionsDir}.\n\n`;
       instructionsChars = instructionsPrefix.length;
       await onLog(
-        "stderr",
+        "stdout",
         `[paperclip] Loaded agent instructions file: ${instructionsFilePath}\n`,
       );
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       await onLog(
-        "stderr",
+        "stdout",
         `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
       );
     }
@@ -437,6 +429,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timeoutSec,
       graceSec,
       stdin: prompt,
+      onSpawn,
       onLog: async (stream, chunk) => {
         if (stream !== "stdout") {
           await onLog(stream, chunk);
@@ -529,7 +522,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     isCursorUnknownSessionError(initial.proc.stdout, initial.proc.stderr)
   ) {
     await onLog(
-      "stderr",
+      "stdout",
       `[paperclip] Cursor resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
     );
     const retry = await runAttempt(null);

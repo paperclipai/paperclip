@@ -400,7 +400,7 @@ export function normalizeTranscript(entries: TranscriptEntry[], streaming: boole
           type: "tool",
           ts: entry.ts,
           endTs: entry.ts,
-          name: "tool",
+          name: entry.toolName ?? "tool",
           toolUseId: entry.toolUseId,
           input: null,
           result: entry.content,

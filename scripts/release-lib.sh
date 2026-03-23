@@ -107,7 +107,7 @@ get_current_stable_version() {
   fi
 }
 
-stable_version_for_date() {
+stable_version_slot_for_date() {
   node - "${1:-}" <<'NODE'
 const input = process.argv[2];
 
@@ -117,7 +117,10 @@ if (Number.isNaN(date.getTime())) {
   process.exit(1);
 }
 
-process.stdout.write(`${date.getUTCFullYear()}.${date.getUTCMonth() + 1}.${date.getUTCDate()}`);
+const month = String(date.getUTCMonth() + 1);
+const day = String(date.getUTCDate()).padStart(2, '0');
+
+process.stdout.write(`${date.getUTCFullYear()}.${month}${day}`);
 NODE
 }
 
@@ -128,6 +131,53 @@ const y = date.getUTCFullYear();
 const m = String(date.getUTCMonth() + 1).padStart(2, '0');
 const d = String(date.getUTCDate()).padStart(2, '0');
 process.stdout.write(`${y}-${m}-${d}`);
+NODE
+}
+
+next_stable_version() {
+  local release_date="$1"
+  shift
+
+  node - "$release_date" "$@" <<'NODE'
+const input = process.argv[2];
+const packageNames = process.argv.slice(3);
+const { execSync } = require("node:child_process");
+
+const date = input ? new Date(`${input}T00:00:00Z`) : new Date();
+if (Number.isNaN(date.getTime())) {
+  console.error(`invalid date: ${input}`);
+  process.exit(1);
+}
+
+const stableSlot = `${date.getUTCFullYear()}.${date.getUTCMonth() + 1}${String(date.getUTCDate()).padStart(2, "0")}`;
+const pattern = new RegExp(`^${stableSlot.replace(/\./g, '\\.')}\.(\\d+)$`);
+let max = -1;
+
+for (const packageName of packageNames) {
+  let versions = [];
+
+  try {
+    const raw = execSync(`npm view ${JSON.stringify(packageName)} versions --json`, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      versions = Array.isArray(parsed) ? parsed : [parsed];
+    }
+  } catch {
+    versions = [];
+  }
+
+  for (const version of versions) {
+    const match = version.match(pattern);
+    if (!match) continue;
+    max = Math.max(max, Number(match[1]));
+  }
+}
+
+process.stdout.write(`${stableSlot}.${max + 1}`);
 NODE
 }
 
@@ -159,7 +209,7 @@ for (const packageName of packageNames) {
   } catch {
     versions = [];
   }
-
+ 
   for (const version of versions) {
     const match = version.match(pattern);
     if (!match) continue;

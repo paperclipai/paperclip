@@ -178,13 +178,16 @@
   background: oklch(0.5 0 0);
 }
 
-/* Auto-hide scrollbar: fully invisible by default, visible on container hover */
+/* Auto-hide scrollbar: always reserves space, thumb visible only on hover */
+.scrollbar-auto-hide::-webkit-scrollbar {
+  width: 8px !important;
+  background: transparent !important;
+}
 .scrollbar-auto-hide::-webkit-scrollbar-track {
   background: transparent !important;
 }
 .scrollbar-auto-hide::-webkit-scrollbar-thumb {
   background: transparent !important;
-  transition: background 150ms ease;
 }
 .scrollbar-auto-hide:hover::-webkit-scrollbar-track {
   background: oklch(0.205 0 0) !important;

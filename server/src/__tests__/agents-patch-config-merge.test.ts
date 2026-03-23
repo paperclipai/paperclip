@@ -24,6 +24,20 @@ const mockSecretService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockBudgetService = vi.hoisted(() => ({}));
 const mockWorkspaceOperationService = vi.hoisted(() => ({}));
+const mockAgentInstructionsService = vi.hoisted(() => ({
+  getBundle: vi.fn(),
+  syncFromFilePath: vi.fn(),
+}));
+const mockCompanySkillService = vi.hoisted(() => ({
+  listForCompany: vi.fn().mockResolvedValue([]),
+  listForAgent: vi.fn().mockResolvedValue([]),
+}));
+const mockTokenAnalyticsService = vi.hoisted(() => ({
+  getAgentStats: vi.fn().mockResolvedValue({}),
+}));
+const mockInstanceSettingsService = vi.hoisted(() => ({
+  get: vi.fn().mockResolvedValue({ experimentalSettings: {} }),
+}));
 
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
@@ -35,7 +49,18 @@ vi.mock("../services/index.js", () => ({
   issueService: () => mockIssueService,
   secretService: () => mockSecretService,
   workspaceOperationService: () => mockWorkspaceOperationService,
+  agentInstructionsService: () => mockAgentInstructionsService,
+  companySkillService: () => mockCompanySkillService,
+  syncInstructionsBundleConfigFromFilePath: vi.fn((_agent: unknown, config: unknown) => config),
   logActivity: mockLogActivity,
+}));
+
+vi.mock("../services/token-analytics.js", () => ({
+  tokenAnalyticsService: () => mockTokenAnalyticsService,
+}));
+
+vi.mock("../services/instance-settings.js", () => ({
+  instanceSettingsService: () => mockInstanceSettingsService,
 }));
 
 function createApp() {
