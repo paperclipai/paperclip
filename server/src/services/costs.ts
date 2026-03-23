@@ -79,7 +79,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .update(agents)
         .set({
           spentMonthlyCents: agentMonthSpend,
-          updatedAt: new Date(),
+          updatedAt: new Date().toISOString() as any,
         })
         .where(eq(agents.id, event.agentId));
 
@@ -87,7 +87,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .update(companies)
         .set({
           spentMonthlyCents: companyMonthSpend,
-          updatedAt: new Date(),
+          updatedAt: new Date().toISOString() as any,
         })
         .where(eq(companies.id, companyId));
 

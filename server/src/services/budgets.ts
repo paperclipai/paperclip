@@ -203,8 +203,8 @@ async function markApprovalStatus(
       status,
       decisionNote: decisionNote ?? null,
       decidedByUserId,
-      decidedAt: new Date(),
-      updatedAt: new Date(),
+      decidedAt: new Date().toISOString() as any,
+      updatedAt: new Date().toISOString() as any,
     })
     .where(eq(approvals.id, approvalId));
 }
@@ -417,8 +417,8 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       .update(budgetIncidents)
       .set({
         status: "resolved",
-        resolvedAt: new Date(),
-        updatedAt: new Date(),
+        resolvedAt: new Date().toISOString() as any,
+        updatedAt: new Date().toISOString() as any,
       })
       .where(
         and(
@@ -443,8 +443,8 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       .update(budgetIncidents)
       .set({
         status: "resolved",
-        resolvedAt: new Date(),
-        updatedAt: new Date(),
+        resolvedAt: new Date().toISOString() as any,
+        updatedAt: new Date().toISOString() as any,
       })
       .where(and(eq(budgetIncidents.policyId, policyId), eq(budgetIncidents.status, "open")));
 
@@ -924,8 +924,8 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           .update(budgetIncidents)
           .set({
             status: "dismissed",
-            resolvedAt: new Date(),
-            updatedAt: new Date(),
+            resolvedAt: new Date().toISOString() as any,
+            updatedAt: new Date().toISOString() as any,
           })
           .where(eq(budgetIncidents.id, incident.id));
         await markApprovalStatus(db, incident.approvalId ?? null, "rejected", input.decisionNote, actorUserId);
@@ -949,8 +949,8 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       const [updated] = await hydrateIncidentRows([{
         ...incident,
         status: input.action === "raise_budget_and_resume" ? "resolved" : "dismissed",
-        resolvedAt: new Date(),
-        updatedAt: new Date(),
+        resolvedAt: new Date().toISOString() as any,
+        updatedAt: new Date().toISOString() as any,
       }]);
       return updated!;
     },
