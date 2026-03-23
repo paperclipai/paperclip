@@ -1,7 +1,8 @@
 // monthly-report.ts
 // Collect all platform data for the past month → Claude CLI analyze → Telegram
 
-import "dotenv/config";
+import dotenv from "dotenv";
+dotenv.config({ path: "../../.env" });
 
 import Database from "better-sqlite3";
 import { execFile } from "child_process";

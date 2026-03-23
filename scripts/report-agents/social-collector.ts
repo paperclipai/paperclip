@@ -1,7 +1,8 @@
 // social-collector.ts
 // Flow: Fetch RapidAPI → Parse/Filter → summarize → Telegram
 
-import "dotenv/config";
+import dotenv from "dotenv";
+dotenv.config({ path: "../../.env" });
 
 import { sendTelegram } from "./lib/telegram.js";
 import { moneySmart } from "./lib/formatters.js";

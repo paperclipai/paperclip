@@ -2,7 +2,8 @@
 // Long-polling Telegram bot with conversation memory
 // /report triggers collectors, free text → Claude CLI with context
 
-import "dotenv/config";
+import dotenv from "dotenv";
+dotenv.config({ path: "../../.env" });
 import Database from "better-sqlite3";
 import { sendTelegram } from "./lib/telegram.js";
 import { fetchPlatformMetrics } from "./lib/metabase-queries.js";

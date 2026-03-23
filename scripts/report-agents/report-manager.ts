@@ -1,7 +1,8 @@
 // report-manager.ts
 // Orchestrator: collect all data → analyze → generate daily/weekly/monthly reports
 
-import "dotenv/config";
+import dotenv from "dotenv";
+dotenv.config({ path: "../../.env" });
 import { execFile } from "child_process";
 import { promisify } from "util";
 import Database from "better-sqlite3";
