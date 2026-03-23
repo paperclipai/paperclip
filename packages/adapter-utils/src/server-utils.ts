@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type {
   AdapterSkillEntry,
@@ -204,7 +205,13 @@ export function redactEnvForLogs(env: Record<string, string>): Record<string, st
 export function buildPaperclipEnv(agent: { id: string; companyId: string }): Record<string, string> {
   const resolveHostForUrl = (rawHost: string): string => {
     const host = rawHost.trim();
-    if (!host || host === "0.0.0.0" || host === "::") return "localhost";
+    // Only fall back to localhost when no host is configured at all.
+    // When HOST is explicitly set to a wildcard like 0.0.0.0 or ::, use the
+    // machine hostname so that remote agents (Tailscale, VPN, LAN) can reach
+    // the server.  Callers who truly want localhost should set HOST=localhost
+    // or PAPERCLIP_API_URL explicitly.
+    if (!host) return "localhost";
+    if (host === "0.0.0.0" || host === "::") return os.hostname();
     if (host.includes(":") && !host.startsWith("[") && !host.endsWith("]")) return `[${host}]`;
     return host;
   };

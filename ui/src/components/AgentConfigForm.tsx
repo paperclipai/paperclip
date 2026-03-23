@@ -41,6 +41,7 @@ import {
 import { defaultCreateValues } from "./agent-config-defaults";
 import { getUIAdapter } from "../adapters";
 import { ClaudeLocalAdvancedFields } from "../adapters/claude-local/config-fields";
+import { CopilotCliAdvancedFields } from "../adapters/copilot-cli/config-fields";
 import { MarkdownEditor } from "./MarkdownEditor";
 import { ChoosePathButton } from "./PathInstructionsModal";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
@@ -297,7 +298,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     adapterType === "gemini_local" ||
     adapterType === "opencode_local" ||
     adapterType === "pi_local" ||
-    adapterType === "cursor";
+    adapterType === "cursor" ||
+    adapterType === "copilot_cli";
   const showLegacyWorkingDirectoryField =
     isLocal && shouldShowLegacyWorkingDirectoryField({ isCreate, adapterConfig: config });
   const uiAdapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
@@ -368,13 +370,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const thinkingEffortKey =
     adapterType === "codex_local"
       ? "modelReasoningEffort"
-      : adapterType === "cursor"
-        ? "mode"
-        : adapterType === "opencode_local"
-          ? "variant"
-          : "effort";
+      : adapterType === "copilot_cli"
+        ? "reasoningEffort"
+        : adapterType === "cursor"
+          ? "mode"
+          : adapterType === "opencode_local"
+            ? "variant"
+            : "effort";
   const thinkingEffortOptions =
-    adapterType === "codex_local"
+    adapterType === "codex_local" || adapterType === "copilot_cli"
       ? codexThinkingEffortOptions
       : adapterType === "cursor"
         ? cursorModeOptions
@@ -389,6 +393,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           "modelReasoningEffort",
           String(config.modelReasoningEffort ?? config.reasoningEffort ?? ""),
         )
+      : adapterType === "copilot_cli"
+        ? eff("adapterConfig", "reasoningEffort", String(config.reasoningEffort ?? ""))
       : adapterType === "cursor"
         ? eff("adapterConfig", "mode", String(config.mode ?? ""))
       : adapterType === "opencode_local"
@@ -756,6 +762,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               {adapterType === "claude_local" && (
                 <ClaudeLocalAdvancedFields {...adapterFieldProps} />
               )}
+              {adapterType === "copilot_cli" && (
+                <CopilotCliAdvancedFields {...adapterFieldProps} />
+              )}
 
               <Field label="Extra args (comma-separated)" hint={help.extraArgs}>
                 <DraftInput
@@ -960,7 +969,7 @@ function AdapterEnvironmentResult({ result }: { result: AdapterEnvironmentTestRe
 
 /* ---- Internal sub-components ---- */
 
-const ENABLED_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "gemini_local", "opencode_local", "pi_local", "cursor"]);
+const ENABLED_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "gemini_local", "opencode_local", "pi_local", "cursor", "copilot_cli"]);
 
 /** Display list includes all real adapter types plus UI-only coming-soon entries. */
 const ADAPTER_DISPLAY_LIST: { value: string; label: string; comingSoon: boolean }[] = [

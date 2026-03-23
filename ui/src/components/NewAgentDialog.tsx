@@ -15,6 +15,7 @@ import {
   Bot,
   Code,
   Gem,
+  Github,
   MousePointer2,
   Sparkles,
   Terminal,
@@ -25,6 +26,7 @@ import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 type AdvancedAdapterType =
   | "claude_local"
   | "codex_local"
+  | "copilot_cli"
   | "gemini_local"
   | "opencode_local"
   | "pi_local"
@@ -51,6 +53,12 @@ const ADVANCED_ADAPTER_OPTIONS: Array<{
     icon: Code,
     desc: "Local Codex agent",
     recommended: true,
+  },
+  {
+    value: "copilot_cli",
+    label: "Copilot CLI",
+    icon: Github,
+    desc: "Local GitHub Copilot agent",
   },
   {
     value: "gemini_local",

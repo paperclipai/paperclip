@@ -75,6 +75,15 @@ import {
   agentConfigurationDoc as hermesAgentConfigurationDoc,
   models as hermesModels,
 } from "hermes-paperclip-adapter";
+import {
+  execute as copilotCliExecute,
+  testEnvironment as copilotCliTestEnvironment,
+  sessionCodec as copilotCliSessionCodec,
+} from "@paperclipai/adapter-copilot-cli/server";
+import {
+  agentConfigurationDoc as copilotCliAgentConfigurationDoc,
+  models as copilotCliModels,
+} from "@paperclipai/adapter-copilot-cli";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
 
@@ -181,6 +190,17 @@ const hermesLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: hermesAgentConfigurationDoc,
 };
 
+const copilotCliAdapter: ServerAdapterModule = {
+  type: "copilot_cli",
+  execute: copilotCliExecute,
+  testEnvironment: copilotCliTestEnvironment,
+  sessionCodec: copilotCliSessionCodec,
+  sessionManagement: getAdapterSessionManagement("copilot_cli") ?? undefined,
+  models: copilotCliModels,
+  supportsLocalAgentJwt: true,
+  agentConfigurationDoc: copilotCliAgentConfigurationDoc,
+};
+
 const adaptersByType = new Map<string, ServerAdapterModule>(
   [
     claudeLocalAdapter,
@@ -191,6 +211,7 @@ const adaptersByType = new Map<string, ServerAdapterModule>(
     geminiLocalAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,
+    copilotCliAdapter,
     processAdapter,
     httpAdapter,
   ].map((a) => [a.type, a]),

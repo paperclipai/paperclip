@@ -122,6 +122,7 @@ const adapterLabels: Record<string, string> = {
   gemini_local: "Gemini",
   opencode_local: "OpenCode",
   cursor: "Cursor",
+  copilot_cli: "Copilot",
   openclaw_gateway: "OpenClaw Gateway",
   process: "Process",
   http: "HTTP",
