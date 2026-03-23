@@ -254,14 +254,12 @@ export function companyService(db: Db) {
     remove: (id: string) =>
       db.transaction(async (tx) => {
         // Delete from child tables in dependency order
-        // --- Tables referencing heartbeat_runs (must go before heartbeatRuns) ---
+        // --- Tables with NO ACTION FKs to heartbeat_runs (must go before heartbeatRuns) ---
         await tx.delete(activityLog).where(eq(activityLog.companyId, id));
         await tx.delete(financeEvents).where(eq(financeEvents.companyId, id));
         await tx.delete(costEvents).where(eq(costEvents.companyId, id));
         await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.companyId, id));
         await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.companyId, id));
-        await tx.execute(sql`DELETE FROM workspace_operations WHERE company_id = ${id}`);
-        await tx.execute(sql`DELETE FROM workspace_runtime_services WHERE company_id = ${id}`);
         await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, id));
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, id));
         // --- Tables referencing issues (must go before issues) ---
@@ -298,8 +296,13 @@ export function companyService(db: Db) {
         await tx.delete(agentRuntimeState).where(eq(agentRuntimeState.companyId, id));
         await tx.delete(companyLogos).where(eq(companyLogos.companyId, id));
         await tx.delete(assets).where(eq(assets.companyId, id));
+        await tx.execute(sql`DELETE FROM routines WHERE company_id = ${id}`);
         await tx.execute(sql`UPDATE agents SET reports_to = NULL WHERE company_id = ${id}`);
         await tx.delete(agents).where(eq(agents.companyId, id));
+        // --- Tables only referencing companies (safe to delete in any order) ---
+        await tx.execute(sql`DELETE FROM workspace_operations WHERE company_id = ${id}`);
+        await tx.execute(sql`DELETE FROM workspace_runtime_services WHERE company_id = ${id}`);
+        await tx.execute(sql`DELETE FROM company_skills WHERE company_id = ${id}`);
         const rows = await tx
           .delete(companies)
           .where(eq(companies.id, id))
