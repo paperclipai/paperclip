@@ -7,7 +7,7 @@ import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
-import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
+import { boardMutationGuard, buildAllowedBoardOrigins } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
 import { healthRoutes } from "./routes/health.js";
 import { companyRoutes } from "./routes/companies.js";
@@ -28,6 +28,7 @@ import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { artifactRoutes } from "./routes/artifacts.js";
 import { workflowRoutes } from "./routes/workflows.js";
+import { knowledgeRoutes } from "./routes/knowledge.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { applyUiBranding } from "./ui-branding.js";
@@ -66,9 +67,11 @@ export async function createApp(
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
     allowedHostnames: string[];
+    authPublicBaseUrl?: string;
     bindHost: string;
     authReady: boolean;
     companyDeletionEnabled: boolean;
+    authProviders?: string[];
     instanceId?: string;
     hostVersion?: string;
     localPluginDir?: string;
@@ -127,7 +130,13 @@ export async function createApp(
 
   // Mount API routes
   const api = Router();
-  api.use(boardMutationGuard());
+  const allowedOrigins = buildAllowedBoardOrigins({
+    authPublicBaseUrl: opts.authPublicBaseUrl,
+    allowedHostnames: opts.allowedHostnames,
+    serverPort: opts.serverPort,
+  });
+  api.use(boardMutationGuard({ allowedOrigins }));
+
   api.use(
     "/health",
     healthRoutes(db, {
@@ -135,6 +144,7 @@ export async function createApp(
       deploymentExposure: opts.deploymentExposure,
       authReady: opts.authReady,
       companyDeletionEnabled: opts.companyDeletionEnabled,
+      authProviders: opts.authProviders,
     }),
   );
   api.use("/companies", companyRoutes(db));
@@ -153,6 +163,7 @@ export async function createApp(
   api.use(instanceSettingsRoutes(db));
   api.use(artifactRoutes(db));
   api.use(workflowRoutes(db));
+  api.use(knowledgeRoutes(db));
   const hostServicesDisposers = new Map<string, () => void>();
   const workerManager = createPluginWorkerManager();
   const pluginRegistry = pluginRegistryService(db);

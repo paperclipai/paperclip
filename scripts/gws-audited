@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# gws-audited — Wrapper around gws CLI that logs every call to Paperclip activity log.
+# Install: chmod +x && symlink to ~/.local/bin/gws-audited
+# Usage: Same as gws — all args are forwarded.
+
+PAPERCLIP_API="${PAPERCLIP_API_URL:-http://localhost:3100}"
+TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+# Fire-and-forget audit log (don't block gws execution)
+curl -s -X POST "${PAPERCLIP_API}/api/instance/activity" \
+  -H "Content-Type: application/json" \
+  -d "{\"action\":\"gws.call\",\"details\":{\"args\":\"$*\",\"timestamp\":\"${TIMESTAMP}\"}}" \
+  >/dev/null 2>&1 &
+
+# Execute real gws with all original arguments
+exec gws "$@"

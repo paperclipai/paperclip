@@ -73,6 +73,20 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?
   const publicUrl = process.env.PAPERCLIP_PUBLIC_URL ?? baseUrl;
   const isHttpOnly = publicUrl ? publicUrl.startsWith("http://") : false;
 
+  const socialProviders: Record<string, any> = {};
+  if (config.authGithubClientId && config.authGithubClientSecret) {
+    socialProviders.github = {
+      clientId: config.authGithubClientId,
+      clientSecret: config.authGithubClientSecret,
+    };
+  }
+  if (config.authGoogleClientId && config.authGoogleClientSecret) {
+    socialProviders.google = {
+      clientId: config.authGoogleClientId,
+      clientSecret: config.authGoogleClientSecret,
+    };
+  }
+
   const authConfig = {
     baseURL: baseUrl,
     secret,
@@ -91,6 +105,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?
       requireEmailVerification: false,
       disableSignUp: config.authDisableSignUp,
     },
+    socialProviders: Object.keys(socialProviders).length > 0 ? socialProviders : undefined,
     ...(isHttpOnly ? { advanced: { useSecureCookies: false } } : {}),
   };
 

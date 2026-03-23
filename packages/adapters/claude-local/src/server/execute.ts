@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { resolveSkillAllowlist, filterSkills } from "@paperclipai/adapter-utils";
 import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 import {
   asString,
@@ -47,19 +48,31 @@ async function resolvePaperclipSkillsDir(): Promise<string | null> {
  * the repo's `skills/` directory, so `--add-dir` makes Claude Code discover
  * them as proper registered skills.
  */
-async function buildSkillsDir(): Promise<string> {
+async function buildSkillsDir(runtimeConfig?: unknown): Promise<string> {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skills-"));
   const target = path.join(tmp, ".claude", "skills");
   await fs.mkdir(target, { recursive: true });
   const skillsDir = await resolvePaperclipSkillsDir();
   if (!skillsDir) return tmp;
-  const entries = await fs.readdir(skillsDir, { withFileTypes: true });
+  let entries = await fs.readdir(skillsDir, { withFileTypes: true });
+  entries = entries.filter((e) => e.isDirectory());
+
+  // Apply skill allowlist filtering when configured on the agent
+  const allowlistPolicy = resolveSkillAllowlist(runtimeConfig);
+  if (allowlistPolicy.enabled || allowlistPolicy.blocked.length > 0) {
+    const allNames = entries.map((e) => e.name);
+    const allowedNames = new Set(filterSkills(allNames, allowlistPolicy));
+    entries = entries.filter((e) => allowedNames.has(e.name));
+  }
+
   for (const entry of entries) {
-    if (entry.isDirectory()) {
+    try {
       await fs.symlink(
         path.join(skillsDir, entry.name),
         path.join(target, entry.name),
       );
+    } catch (err: any) {
+      if (err.code !== "EEXIST") throw err;
     }
   }
   return tmp;
@@ -346,7 +359,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ),
   );
   const billingType = resolveClaudeBillingType(effectiveEnv);
-  const skillsDir = await buildSkillsDir();
+  const skillsDir = await buildSkillsDir(agent.runtimeConfig);
 
   // Write a sourceable env file so agents can access Paperclip env vars in bash.
   // Claude Code does not export parent-process env vars as shell variables —

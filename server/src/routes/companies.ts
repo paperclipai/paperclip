@@ -100,6 +100,44 @@ export function companyRoutes(db: Db) {
     res.json(roots);
   });
 
+  /** Holding roster: all agents across the holding tree */
+  router.get("/holding/roster", async (req, res, next) => {
+    try {
+      assertBoard(req);
+      const all = await svc.list();
+      // Find root company (no parent) or first company
+      const root = all.find((c) => !c.parentCompanyId) ?? all[0];
+      if (!root) return res.json({ agents: [], count: 0 });
+
+      const { adapter_type, capability, status } = req.query;
+      try {
+        const roster = await svc.getHoldingRoster(root.id, {
+          adapterType: adapter_type ? String(adapter_type) : undefined,
+          capabilityTag: capability ? String(capability) : undefined,
+          status: status ? String(status) : undefined,
+        });
+        return res.json({ agents: roster, count: roster.length });
+      } catch (innerErr: any) {
+        console.error("[holding/roster] Inner error:", innerErr?.message);
+        return res.status(500).json({ error: innerErr?.message ?? "Internal error" });
+      }
+    } catch (err: any) {
+      console.error("[holding/roster] Outer error:", err?.message);
+      next(err);
+    }
+  });
+
+  /** Holding tree: recursive company hierarchy from a given root */
+  router.get("/holding/tree/:companyId", async (req, res, next) => {
+    try {
+      assertBoard(req);
+      const tree = await svc.getHoldingTree(req.params.companyId);
+      return res.json(tree);
+    } catch (err) {
+      next(err);
+    }
+  });
+
   // Common malformed path when companyId is empty in "/api/companies/{companyId}/issues".
   router.get("/issues", (_req, res) => {
     res.status(400).json({

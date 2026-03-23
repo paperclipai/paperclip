@@ -1,0 +1,15 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "anthropic": {},
+    "openai": {},
+    "google": {},
+    "openrouter": {}
+  },
+  "model": "openrouter/minimax/minimax-m2.5",
+  "small_model": "openrouter/minimax/minimax-m2.5",
+  "instructions": [
+    "agents.md"
+  ],
+  "mcp": {}
+}

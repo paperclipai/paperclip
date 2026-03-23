@@ -524,6 +524,11 @@ export async function startServer(): Promise<StartedServer> {
   const listenPort = await detectPort(config.port);
   const uiMode = config.uiDevMiddleware ? "vite-dev" : config.serveUi ? "static" : "none";
   const storageService = createStorageServiceFromConfig(config);
+  
+  const authProviders: string[] = [];
+  if (config.authGithubClientId && config.authGithubClientSecret) authProviders.push("github");
+  if (config.authGoogleClientId && config.authGoogleClientSecret) authProviders.push("google");
+
   const app = await createApp(db as any, {
     uiMode,
     serverPort: listenPort,
@@ -531,9 +536,11 @@ export async function startServer(): Promise<StartedServer> {
     deploymentMode: config.deploymentMode,
     deploymentExposure: config.deploymentExposure,
     allowedHostnames: config.allowedHostnames,
+    authPublicBaseUrl: config.authPublicBaseUrl,
     bindHost: config.host,
     authReady,
     companyDeletionEnabled: config.companyDeletionEnabled,
+    authProviders,
     betterAuthHandler,
     resolveSession,
   });

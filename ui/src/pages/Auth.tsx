@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { authApi } from "../api/auth";
+import { healthApi } from "../api/health";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { AsciiArtAnimation } from "@/components/AsciiArtAnimation";
@@ -20,6 +21,11 @@ export function AuthPage() {
   const [error, setError] = useState<string | null>(null);
 
   const nextPath = useMemo(() => searchParams.get("next") || "/", [searchParams]);
+  const healthQuery = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+    retry: false,
+  });
   const { data: session, isLoading: isSessionLoading } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -146,6 +152,39 @@ export function AuthPage() {
                   : "Create Account"}
             </Button>
           </form>
+
+          {healthQuery.data?.authProviders && healthQuery.data.authProviders.length > 0 && (
+            <div className="mt-6 flex flex-col gap-3">
+              <div className="relative">
+                <div className="absolute inset-0 flex items-center">
+                  <span className="w-full border-t border-border" />
+                </div>
+                <div className="relative flex justify-center text-xs uppercase">
+                  <span className="bg-background px-2 text-muted-foreground">Or</span>
+                </div>
+              </div>
+              {healthQuery.data.authProviders.includes("github") && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full"
+                  onClick={() => authApi.signInSocial("github")}
+                >
+                  Continue with GitHub
+                </Button>
+              )}
+              {healthQuery.data.authProviders.includes("google") && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full"
+                  onClick={() => authApi.signInSocial("google")}
+                >
+                  Continue with Google
+                </Button>
+              )}
+            </div>
+          )}
 
           <div className="mt-5 text-sm text-muted-foreground">
             {mode === "sign_in" ? "Need an account?" : "Already have an account?"}{" "}

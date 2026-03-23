@@ -96,6 +96,9 @@ async function notifyTelegramAuthFailure(agentName: string, adapterType: string,
 }
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
+const HEARTBEAT_MAX_GLOBAL_CONCURRENT_RUNS = parseInt(process.env.HEARTBEAT_MAX_GLOBAL_CONCURRENT_RUNS ?? "1", 10);
+const HEARTBEAT_MIN_SPACING_MS = parseInt(process.env.HEARTBEAT_MIN_SPACING_MS ?? "120000", 10); // 2 min default
+let lastRunFinishedAt: number | null = null;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
@@ -788,6 +791,13 @@ export function heartbeatService(db: Db) {
   const runLogStore = getRunLogStore();
   const secretsSvc = secretService(db);
   const issuesSvc = issueService(db);
+
+  // Knowledge service for context injection (lazy init to avoid circular deps)
+  let knowledgeSvc: ReturnType<typeof import("./knowledge.js").createKnowledgeService> | null = null;
+  try {
+    const { createKnowledgeService } = require("./knowledge.js");
+    knowledgeSvc = createKnowledgeService(db);
+  } catch { /* knowledge service may not be available */ }
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
   const activeRunExecutions = new Set<string>();
@@ -1637,6 +1647,22 @@ export function heartbeatService(db: Db) {
   }
 
   async function resumeQueuedRuns() {
+    // Global concurrency guard: don't start new runs if we already have too many
+    const globalRunningCount = runningProcesses.size + activeRunExecutions.size;
+    if (globalRunningCount >= HEARTBEAT_MAX_GLOBAL_CONCURRENT_RUNS) {
+      logger.info(
+        { globalRunningCount, limit: HEARTBEAT_MAX_GLOBAL_CONCURRENT_RUNS },
+        "global concurrent run limit reached — skipping queued run resumption",
+      );
+      return;
+    }
+    // Minimum spacing guard: wait at least HEARTBEAT_MIN_SPACING_MS between runs
+    if (lastRunFinishedAt !== null && Date.now() - lastRunFinishedAt < HEARTBEAT_MIN_SPACING_MS) {
+      const waitMs = HEARTBEAT_MIN_SPACING_MS - (Date.now() - lastRunFinishedAt);
+      logger.info({ waitMs }, "minimum run spacing not elapsed — skipping queued run resumption");
+      return;
+    }
+
     const queuedRuns = await db
       .select({ agentId: heartbeatRuns.agentId })
       .from(heartbeatRuns)
@@ -1644,6 +1670,9 @@ export function heartbeatService(db: Db) {
 
     const agentIds = [...new Set(queuedRuns.map((r) => r.agentId))];
     for (const agentId of agentIds) {
+      // Re-check global limit before each agent start
+      const currentRunning = runningProcesses.size + activeRunExecutions.size;
+      if (currentRunning >= HEARTBEAT_MAX_GLOBAL_CONCURRENT_RUNS) break;
       await startNextQueuedRunForAgent(agentId);
     }
   }
@@ -2287,6 +2316,29 @@ export function heartbeatService(db: Db) {
         context.vaultSnapshot = await getVaultSnapshot();
       } catch { /* non-fatal: vault may be unavailable */ }
 
+      // Inject knowledge digest — task-relevant knowledge from knowledge_store
+      try {
+        const taskQuery = readNonEmptyString(context.issueDescription)
+          ?? readNonEmptyString(context.taskKey)
+          ?? agent.name;
+        if (taskQuery && knowledgeSvc) {
+          const digest = await knowledgeSvc.getRelevantForTask({
+            query: taskQuery,
+            companyId: agent.companyId,
+            limit: 5,
+          });
+          if (digest.length > 0) {
+            context.knowledgeDigest = digest;
+          }
+        }
+      } catch { /* non-fatal: knowledge_store may be unavailable */ }
+
+      // Heartbeat model override — use cheap model for timer invocations
+      const hbModel = parseObject(agent.runtimeConfig)?.heartbeat?.model;
+      if (run.invocationSource === "timer" && hbModel && typeof hbModel === "string") {
+        resolvedConfig.model = hbModel;
+      }
+
       const adapterResult = await adapter.execute({
         runId: run.id,
         agent,
@@ -2618,6 +2670,7 @@ export function heartbeatService(db: Db) {
         } finally {
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
           activeRunExecutions.delete(run.id);
+          lastRunFinishedAt = Date.now();
           await startNextQueuedRunForAgent(run.agentId);
         }
   }
@@ -3393,6 +3446,7 @@ export function heartbeatService(db: Db) {
     }
 
     runningProcesses.delete(run.id);
+    lastRunFinishedAt = Date.now();
     await finalizeAgentStatus(run.agentId, "cancelled");
     await startNextQueuedRunForAgent(run.agentId);
     return cancelled;
@@ -3606,7 +3660,8 @@ export function heartbeatService(db: Db) {
         checked += 1;
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
-        if (elapsedMs < policy.intervalSec * 1000) continue;
+        const jitterMs = Math.floor(Math.random() * 60_000); // 0-60s random jitter to stagger heartbeats
+        if (elapsedMs < (policy.intervalSec * 1000) + jitterMs) continue;
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",

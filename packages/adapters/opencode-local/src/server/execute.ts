@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { inferOpenAiCompatibleBiller, resolveSkillAllowlist, filterSkills, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
   asString,
   asNumber,
@@ -58,15 +58,31 @@ async function resolvePaperclipSkillsDir(): Promise<string | null> {
   return null;
 }
 
-async function ensureOpenCodeSkillsInjected(onLog: AdapterExecutionContext["onLog"]) {
+async function ensureOpenCodeSkillsInjected(onLog: AdapterExecutionContext["onLog"], runtimeConfig?: unknown) {
   const skillsDir = await resolvePaperclipSkillsDir();
   if (!skillsDir) return;
 
   const skillsHome = claudeSkillsHome();
   await fs.mkdir(skillsHome, { recursive: true });
-  const entries = await fs.readdir(skillsDir, { withFileTypes: true });
+  let entries = (await fs.readdir(skillsDir, { withFileTypes: true })).filter((e) => e.isDirectory());
+
+  // Apply skill allowlist filtering when configured on the agent
+  const allowlistPolicy = resolveSkillAllowlist(runtimeConfig);
+  if (allowlistPolicy.enabled || allowlistPolicy.blocked.length > 0) {
+    const allNames = entries.map((e) => e.name);
+    const allowedNames = new Set(filterSkills(allNames, allowlistPolicy));
+    const beforeCount = entries.length;
+    entries = entries.filter((e) => allowedNames.has(e.name));
+    const filtered = beforeCount - entries.length;
+    if (filtered > 0) {
+      await onLog(
+        "stderr",
+        `[paperclip] Skill allowlist active: ${entries.length} allowed, ${filtered} filtered out\n`,
+      );
+    }
+  }
+
   for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
     const source = path.join(skillsDir, entry.name);
     const target = path.join(skillsHome, entry.name);
     const existing = await fs.lstat(target).catch(() => null);
@@ -115,7 +131,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
-  await ensureOpenCodeSkillsInjected(onLog);
+  await ensureOpenCodeSkillsInjected(onLog, agent.runtimeConfig);
 
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =

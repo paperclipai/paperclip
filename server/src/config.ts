@@ -47,6 +47,10 @@ export interface Config {
   authBaseUrlMode: AuthBaseUrlMode;
   authPublicBaseUrl: string | undefined;
   authDisableSignUp: boolean;
+  authGithubClientId: string | undefined;
+  authGithubClientSecret: string | undefined;
+  authGoogleClientId: string | undefined;
+  authGoogleClientSecret: string | undefined;
   databaseMode: DatabaseMode;
   databaseUrl: string | undefined;
   embeddedPostgresDataDir: string;
@@ -157,6 +161,12 @@ export function loadConfig(): Config {
     disableSignUpFromEnv !== undefined
       ? disableSignUpFromEnv === "true"
       : (fileConfig?.auth?.disableSignUp ?? false);
+  
+  const authGithubClientId = process.env.PAPERCLIP_AUTH_GITHUB_CLIENT_ID ?? fileConfig?.auth?.github?.clientId;
+  const authGithubClientSecret = process.env.PAPERCLIP_AUTH_GITHUB_CLIENT_SECRET ?? fileConfig?.auth?.github?.clientSecret;
+  const authGoogleClientId = process.env.PAPERCLIP_AUTH_GOOGLE_CLIENT_ID ?? fileConfig?.auth?.google?.clientId;
+  const authGoogleClientSecret = process.env.PAPERCLIP_AUTH_GOOGLE_CLIENT_SECRET ?? fileConfig?.auth?.google?.clientSecret;
+
   const allowedHostnamesFromEnvRaw = process.env.PAPERCLIP_ALLOWED_HOSTNAMES;
   const allowedHostnamesFromEnv = allowedHostnamesFromEnvRaw
     ? allowedHostnamesFromEnvRaw
@@ -219,6 +229,10 @@ export function loadConfig(): Config {
     authBaseUrlMode,
     authPublicBaseUrl,
     authDisableSignUp,
+    authGithubClientId,
+    authGithubClientSecret,
+    authGoogleClientId,
+    authGoogleClientSecret,
     databaseMode: fileDatabaseMode,
     databaseUrl: process.env.DATABASE_URL ?? fileDbUrl,
     embeddedPostgresDataDir: resolveHomeAwarePath(

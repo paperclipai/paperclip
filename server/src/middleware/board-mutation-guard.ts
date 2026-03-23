@@ -16,18 +16,67 @@ function parseOrigin(value: string | undefined) {
   }
 }
 
-function trustedOriginsForRequest(req: Request) {
+function addParsedOrigin(origins: Set<string>, value: string | undefined) {
+  const parsed = parseOrigin(value);
+  if (parsed) origins.add(parsed);
+}
+
+function hostnameHasExplicitPort(hostname: string) {
+  try {
+    return new URL(`http://${hostname}`).port.length > 0;
+  } catch {
+    return hostname.includes(":");
+  }
+}
+
+export function buildAllowedBoardOrigins(opts: {
+  authPublicBaseUrl?: string;
+  allowedHostnames: string[];
+  serverPort: number;
+}) {
+  const origins = new Set<string>();
+  addParsedOrigin(origins, opts.authPublicBaseUrl);
+
+  for (const rawHostname of opts.allowedHostnames) {
+    const hostname = rawHostname.trim();
+    if (!hostname) continue;
+
+    addParsedOrigin(origins, `http://${hostname}`);
+    addParsedOrigin(origins, `https://${hostname}`);
+
+    // Browser origins include the active Paperclip port during private
+    // authenticated access, while allowed hostnames are usually configured
+    // without an explicit port.
+    if (!hostnameHasExplicitPort(hostname)) {
+      addParsedOrigin(origins, `http://${hostname}:${opts.serverPort}`);
+      addParsedOrigin(origins, `https://${hostname}:${opts.serverPort}`);
+    }
+  }
+
+  return [...origins];
+}
+
+function trustedOriginsForRequest(req: Request, configuredOrigins: string[]) {
   const origins = new Set(DEFAULT_DEV_ORIGINS.map((value) => value.toLowerCase()));
-  const host = req.header("host")?.trim();
-  if (host) {
-    origins.add(`http://${host}`.toLowerCase());
-    origins.add(`https://${host}`.toLowerCase());
+  
+  for (const o of configuredOrigins) {
+    const parsed = parseOrigin(o);
+    if (parsed) origins.add(parsed);
+  }
+
+  // Fallback to Host header if no explicit origins are configured
+  if (configuredOrigins.length === 0) {
+    const host = req.header("host")?.trim();
+    if (host) {
+      origins.add(`http://${host}`.toLowerCase());
+      origins.add(`https://${host}`.toLowerCase());
+    }
   }
   return origins;
 }
 
-function isTrustedBoardMutationRequest(req: Request) {
-  const allowedOrigins = trustedOriginsForRequest(req);
+function isTrustedBoardMutationRequest(req: Request, configuredOrigins: string[]) {
+  const allowedOrigins = trustedOriginsForRequest(req, configuredOrigins);
   const origin = parseOrigin(req.header("origin"));
   if (origin && allowedOrigins.has(origin)) return true;
 
@@ -37,7 +86,8 @@ function isTrustedBoardMutationRequest(req: Request) {
   return false;
 }
 
-export function boardMutationGuard(): RequestHandler {
+export function boardMutationGuard(opts?: { allowedOrigins?: string[] }): RequestHandler {
+  const configuredOrigins = opts?.allowedOrigins ?? [];
   return (req, res, next) => {
     if (SAFE_METHODS.has(req.method.toUpperCase())) {
       next();
@@ -57,7 +107,7 @@ export function boardMutationGuard(): RequestHandler {
       return;
     }
 
-    if (!isTrustedBoardMutationRequest(req)) {
+    if (!isTrustedBoardMutationRequest(req, configuredOrigins)) {
       res.status(403).json({ error: "Board mutation requires trusted browser origin" });
       return;
     }

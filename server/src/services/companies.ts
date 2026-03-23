@@ -319,5 +319,109 @@ export function companyService(db: Db) {
         }
         return result;
       }),
+
+    /** Recursive CTE: get all company IDs in a holding tree (parent + descendants) */
+    getHoldingTree: async (companyId: string) => {
+      const rows = await db.execute(sql`
+        WITH RECURSIVE tree AS (
+          SELECT id, name, parent_company_id, 0 AS depth
+          FROM companies
+          WHERE id = ${companyId}
+          UNION ALL
+          SELECT c.id, c.name, c.parent_company_id, t.depth + 1
+          FROM companies c
+          JOIN tree t ON c.parent_company_id = t.id
+          WHERE t.depth < 10
+        )
+        SELECT id, name, parent_company_id AS "parentCompanyId", depth
+        FROM tree
+        ORDER BY depth, name
+      `);
+      const resultRows = Array.isArray(rows) ? rows : (rows as any).rows ?? [];
+      return resultRows as Array<{
+        id: string;
+        name: string;
+        parentCompanyId: string | null;
+        depth: number;
+      }>;
+    },
+
+    /** Get all agents across the holding tree with capabilities */
+    getHoldingRoster: async (companyId: string, filters?: {
+      adapterType?: string;
+      capabilityTag?: string;
+      status?: string;
+    }) => {
+      // First get all company IDs in the tree
+      const treeResult = await db.execute(sql`
+        WITH RECURSIVE tree AS (
+          SELECT id FROM companies WHERE id = ${companyId}
+          UNION ALL
+          SELECT c.id FROM companies c JOIN tree t ON c.parent_company_id = t.id
+        )
+        SELECT id FROM tree
+      `);
+      // db.execute returns either { rows: [...] } or directly [...] depending on driver
+      const treeRows = Array.isArray(treeResult) ? treeResult : (treeResult as any).rows ?? [];
+      const companyIds = (treeRows as Array<{ id: string }>).map((r) => r.id);
+      if (companyIds.length === 0) return [];
+
+      const rosterConditions = [inArray(agents.companyId, companyIds)];
+      if (filters?.adapterType) {
+        rosterConditions.push(eq(agents.adapterType, filters.adapterType));
+      }
+      if (filters?.status) {
+        rosterConditions.push(eq(agents.status, filters.status));
+      }
+
+      const rows = await db
+        .select({
+          id: agents.id,
+          name: agents.name,
+          role: agents.role,
+          status: agents.status,
+          adapterType: agents.adapterType,
+          companyId: agents.companyId,
+          companyName: companies.name,
+        })
+        .from(agents)
+        .innerJoin(companies, eq(agents.companyId, companies.id))
+        .where(and(...rosterConditions))
+        .orderBy(companies.name, agents.name);
+
+      // Fetch capability columns separately via raw SQL (new columns not yet in Drizzle build)
+      if (rows.length === 0) return rows;
+      const agentIds = rows.map((r) => r.id);
+      const capRaw = await db
+        .select({
+          id: agents.id,
+          capabilityTags: agents.capabilityTags,
+          specialty: agents.specialty,
+          currentTaskSummary: agents.currentTaskSummary,
+        })
+        .from(agents)
+        .where(inArray(agents.id, agentIds));
+      const capRows = capRaw;
+      const capMap = new Map(
+        capRows.map((r) => [r.id, {
+          capabilityTags: r.capabilityTags ?? [],
+          specialty: r.specialty ?? null,
+          currentTaskSummary: r.currentTaskSummary ?? null,
+        }]),
+      );
+
+      const enriched = rows.map((r) => ({
+        ...r,
+        ...(capMap.get(r.id) ?? { capabilityTags: [], specialty: null, currentTaskSummary: null }),
+      }));
+
+      if (filters?.capabilityTag) {
+        return enriched.filter((r) =>
+          Array.isArray(r.capabilityTags) && r.capabilityTags.includes(filters.capabilityTag!),
+        );
+      }
+
+      return enriched;
+    },
   };
 }

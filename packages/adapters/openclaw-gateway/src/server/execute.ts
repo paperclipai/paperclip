@@ -3,6 +3,7 @@ import type {
   AdapterExecutionResult,
   AdapterRuntimeServiceReport,
 } from "@paperclipai/adapter-utils";
+import { resolveSkillAllowlist } from "@paperclipai/adapter-utils";
 import { asNumber, asString, buildPaperclipEnv, parseObject } from "@paperclipai/adapter-utils/server-utils";
 import crypto, { randomUUID } from "node:crypto";
 import { WebSocket } from "ws";
@@ -1103,6 +1104,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   if (typeof agentParams.timeout !== "number") {
     agentParams.timeout = waitTimeoutMs;
+  }
+
+  // Pass skill allowlist to gateway so it can filter skills on the runtime side
+  const skillAllowlistPolicy = resolveSkillAllowlist(ctx.agent.runtimeConfig);
+  if (skillAllowlistPolicy.enabled) {
+    agentParams.skillAllowlist = {
+      enabled: true,
+      allowed: skillAllowlistPolicy.allowed,
+      blocked: skillAllowlistPolicy.blocked,
+    };
   }
 
   if (ctx.onMeta) {

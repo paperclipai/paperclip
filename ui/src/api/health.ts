@@ -6,6 +6,7 @@ export type HealthStatus = {
   authReady?: boolean;
   bootstrapStatus?: "ready" | "bootstrap_pending";
   bootstrapInviteActive?: boolean;
+  authProviders?: Array<"github" | "google">;
   features?: {
     companyDeletionEnabled?: boolean;
   };

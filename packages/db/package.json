@@ -40,7 +40,8 @@
     "typecheck": "tsc --noEmit",
     "generate": "tsc -p tsconfig.json && drizzle-kit generate",
     "migrate": "tsx src/migrate.ts",
-    "seed": "tsx src/seed.ts"
+    "seed": "tsx src/seed.ts",
+    "seed:agency": "tsx src/seed-agency-agents.ts"
   },
   "dependencies": {
     "@paperclipai/shared": "workspace:*",

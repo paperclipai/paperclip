@@ -1,6 +1,6 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { workflowRuns, workflowStepRuns } from "@paperclipai/db";
+import { workflowRuns, workflowStepRuns, agents } from "@paperclipai/db";
 
 interface WorkflowStepDef {
   adapterType: string;
@@ -200,6 +200,129 @@ export function workflowService(db: Db) {
         completedAt: new Date(),
         updatedAt: new Date(),
       }).where(eq(workflowRuns.id, workflowId));
+    },
+
+    /**
+     * Create a meeting workflow — parallel agent execution + synthesis
+     * workflow_type = 'meeting'
+     */
+    async createMeeting(
+      companyId: string,
+      data: {
+        name: string;
+        issueId?: string;
+        participantAgentIds: string[];
+        meetingType: "standup" | "consultation" | "consensus";
+        prompt: string;
+        createdBy?: string;
+      },
+    ) {
+      // Build steps: one per participant agent + CEO synthesis step
+      const participantSteps: WorkflowStepDef[] = data.participantAgentIds.map((agentId) => ({
+        adapterType: "claude_local",
+        action: "meeting_response",
+        prompt: data.prompt,
+        config: { agentId, meetingType: data.meetingType },
+      }));
+
+      // Add synthesis step (CEO or first agent)
+      const synthesisStep: WorkflowStepDef = {
+        adapterType: "claude_local",
+        action: "meeting_synthesis",
+        prompt: `Synthesize the meeting responses from ${data.participantAgentIds.length} participants.`,
+        dependsOn: participantSteps.map((_, i) => i),
+        config: { meetingType: data.meetingType },
+      };
+
+      const steps = [...participantSteps, synthesisStep];
+
+      // Create workflow with workflow_type = 'meeting'
+      const [workflow] = await db
+        .insert(workflowRuns)
+        .values({
+          companyId,
+          issueId: data.issueId ?? null,
+          name: data.name,
+          steps,
+          createdBy: data.createdBy ?? "system",
+          onStepFailure: "skip",
+          maxRetries: 1,
+          timeoutPerStepMs: 120_000,
+        })
+        .returning();
+
+      // Set workflow_type via raw SQL (column exists in DB but not in Drizzle schema)
+      await db.execute(
+        sql`UPDATE workflow_runs SET workflow_type = 'meeting' WHERE id = ${workflow!.id}`,
+      );
+
+      // Pre-create step run records
+      await db.insert(workflowStepRuns).values(
+        steps.map((step, index) => ({
+          workflowRunId: workflow!.id,
+          stepIndex: index,
+          adapterType: step.adapterType,
+          prompt: step.prompt ?? null,
+        })),
+      );
+
+      return workflow!;
+    },
+
+    /**
+     * Create a tri-model consensus workflow
+     * Runs same prompt on 3 different adapter types in parallel
+     */
+    async createConsensus(
+      companyId: string,
+      data: {
+        issueId?: string;
+        prompt: string;
+        models?: string[];
+        createdBy?: string;
+      },
+    ) {
+      const models = data.models ?? ["claude_local", "codex_local", "gemini_local"];
+      const steps: WorkflowStepDef[] = models.map((adapterType) => ({
+        adapterType,
+        action: "consensus_vote",
+        prompt: data.prompt,
+      }));
+
+      // Synthesis step
+      steps.push({
+        adapterType: "claude_local",
+        action: "consensus_synthesis",
+        prompt: `Synthesize ${models.length} model responses into a unified consensus.`,
+        dependsOn: models.map((_, i) => i),
+      });
+
+      const [workflow] = await db
+        .insert(workflowRuns)
+        .values({
+          companyId,
+          issueId: data.issueId ?? null,
+          name: `Tri-Model Consensus`,
+          steps,
+          createdBy: data.createdBy ?? "system",
+          onStepFailure: "skip",
+        })
+        .returning();
+
+      await db.execute(
+        sql`UPDATE workflow_runs SET workflow_type = 'consensus' WHERE id = ${workflow!.id}`,
+      );
+
+      await db.insert(workflowStepRuns).values(
+        steps.map((step, index) => ({
+          workflowRunId: workflow!.id,
+          stepIndex: index,
+          adapterType: step.adapterType,
+          prompt: step.prompt ?? null,
+        })),
+      );
+
+      return workflow!;
     },
   };
 }

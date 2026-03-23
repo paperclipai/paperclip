@@ -68,6 +68,16 @@ export const authApi = {
     await authPost("/sign-up/email", input);
   },
 
+  signInSocial: async (provider: "github" | "google") => {
+    const data = await authPost("/sign-in/social", {
+      provider,
+      callbackURL: window.location.href,
+    });
+    if (data && typeof data === "object" && "url" in data && typeof data.url === "string") {
+      window.location.href = data.url;
+    }
+  },
+
   signOut: async () => {
     await authPost("/sign-out", {});
   },

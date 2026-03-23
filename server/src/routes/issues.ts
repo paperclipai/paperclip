@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
+import { sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
@@ -1561,6 +1562,60 @@ export function issueRoutes(db: Db, storage: StorageService) {
     });
 
     res.json({ ok: true });
+  });
+
+  /** Delegate an issue to another company */
+  router.post("/issues/:id/delegate", async (req, res, next) => {
+    try {
+      const { targetCompanyId, targetAgentId, reason } = req.body;
+      if (!targetCompanyId) {
+        return res.status(400).json({ error: "targetCompanyId is required" });
+      }
+
+      const issue = await svc.getById(req.params.id);
+      if (!issue) return res.status(404).json({ error: "Issue not found" });
+
+      // Create delegated issue in target company
+      const delegatedIssue = await svc.create(targetCompanyId, {
+        title: `[Delegated] ${issue.title}`,
+        description: `Delegated from ${issue.companyId}.\n\nOriginal: ${issue.description ?? ""}\n\nReason: ${reason ?? "N/A"}`,
+        assigneeId: targetAgentId ?? null,
+        priority: issue.priority,
+        labels: [],
+      });
+
+      // Update original issue with delegation reference via raw SQL
+      await db.execute(
+        sql`UPDATE issues SET
+          delegated_from_company_id = ${issue.companyId},
+          delegated_from_issue_id = ${issue.id}
+          WHERE id = ${delegatedIssue.id}`,
+      );
+
+      return res.status(201).json({
+        originalIssueId: issue.id,
+        delegatedIssueId: delegatedIssue.id,
+        targetCompanyId,
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  /** Get delegations for an issue */
+  router.get("/issues/:id/delegations", async (req, res, next) => {
+    try {
+      const delegations = await db.execute(
+        sql`SELECT id, company_id, title, status, delegated_from_company_id, delegated_from_issue_id
+            FROM issues
+            WHERE delegated_from_issue_id = ${req.params.id}
+            ORDER BY created_at DESC`,
+      );
+      const rows = Array.isArray(delegations) ? delegations : (delegations as any).rows ?? [];
+      return res.json(rows);
+    } catch (err) {
+      next(err);
+    }
   });
 
   return router;
