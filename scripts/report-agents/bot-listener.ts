@@ -45,6 +45,37 @@ function getSession(chatKey: string): ChatSession {
 }
 
 // ============================================================
+// HELP TEXT
+// ============================================================
+
+const HELP_TEXT = `<b>🐳 Whales Market Data Analyst Bot</b>
+
+<b>📊 Commands:</b>
+/report — Daily report (Platform + Social + GA4)
+/volume — Top tokens by volume (24h)
+/volume 7d — Top tokens by volume (7 ngày)
+/users — New vs Returning users (24h)
+/token BP — Phân tích tổng hợp 1 token
+/funnel — On-chain conversion funnel (30d)
+/trend — Daily trend 14 ngày
+/settle — Settlement rate overview
+/mom — Month-over-Month comparison
+
+<b>💬 Free chat:</b>
+Hỏi bất kỳ câu hỏi nào về data — bot sẽ query database và phân tích.
+Ví dụ:
+• "WLFI có bao nhiêu trader tuần này?"
+• "Tại sao volume giảm?"
+• "So sánh BP vs WET"
+• "Token nào có nhiều user mới nhất?"
+
+<b>🔄 Khác:</b>
+/reset — Reset conversation (bắt đầu mới)
+/help — Hiện menu này
+
+<i>Bot nhớ context hội thoại — có thể hỏi tiếp "token này có bao nhiêu ví?" sau khi hỏi về 1 token.</i>`;
+
+// ============================================================
 // TELEGRAM
 // ============================================================
 
@@ -246,9 +277,52 @@ async function main() {
         const cleanText = text.replace(/@\w+/g, "").trim();
         const fullQuestion = replyContext + cleanText;
 
-        if (cleanText === "/report" || cleanText.startsWith("/report")) {
+        if (cleanText === "/help" || cleanText === "/start") {
+          await reply(chatId, HELP_TEXT, threadId);
+        } else if (cleanText === "/report" || cleanText.startsWith("/report")) {
           console.log(`[${chatKey}] /report command`);
           await handleReport(chatId, threadId);
+        } else if (cleanText.startsWith("/volume")) {
+          const arg = cleanText.replace("/volume", "").trim();
+          const q = arg ? `Top tokens by Order Volume ${arg}` : "Top 5 tokens by Filled Order Volume 24h qua, kèm so sánh vs hôm qua";
+          console.log(`[${chatKey}] /volume: ${q}`);
+          await handleQuestion(chatId, q, chatKey, threadId);
+        } else if (cleanText.startsWith("/users")) {
+          const arg = cleanText.replace("/users", "").trim();
+          const q = arg ? `User metrics cho ${arg}` : "New Users vs Returning Users 24h qua, Acquisition Rate, so sánh vs hôm qua";
+          console.log(`[${chatKey}] /users: ${q}`);
+          await handleQuestion(chatId, q, chatKey, threadId);
+        } else if (cleanText.startsWith("/token")) {
+          const token = cleanText.replace("/token", "").trim().toUpperCase();
+          if (!token) { await reply(chatId, "Dùng: /token BP — xem tổng hợp 1 token", threadId); }
+          else {
+            const q = `Phân tích tổng hợp token ${token}: Order Volume (24h + all-time), Offer Volume, số traders (new vs returning), Settlement Rate, top chains. So sánh với benchmark.`;
+            console.log(`[${chatKey}] /token ${token}`);
+            await handleQuestion(chatId, q, chatKey, threadId);
+          }
+        } else if (cleanText.startsWith("/funnel")) {
+          const q = "On-chain funnel 30 ngày: bao nhiêu wallets tạo offer → bao nhiêu offer được fill → bao nhiêu order settle thành công. Tính conversion rate mỗi bước.";
+          console.log(`[${chatKey}] /funnel`);
+          await handleQuestion(chatId, q, chatKey, threadId);
+        } else if (cleanText.startsWith("/trend")) {
+          const arg = cleanText.replace("/trend", "").trim();
+          const q = arg ? `Daily trend ${arg}` : "Daily trend 14 ngày gần nhất: volume, orders, unique wallets theo ngày. Highlight ngày cao nhất/thấp nhất, pattern weekend vs weekday.";
+          console.log(`[${chatKey}] /trend`);
+          await handleQuestion(chatId, q, chatKey, threadId);
+        } else if (cleanText.startsWith("/settle")) {
+          const arg = cleanText.replace("/settle", "").trim();
+          const q = arg ? `Settlement performance cho ${arg}` : "Settlement Rate tổng thể và top 5 tokens, so sánh vs benchmark 80%. Tokens nào settle tệ nhất?";
+          console.log(`[${chatKey}] /settle`);
+          await handleQuestion(chatId, q, chatKey, threadId);
+        } else if (cleanText.startsWith("/mom")) {
+          const q = "So sánh MoM (tháng này vs tháng trước): Filled Order Volume, total orders, unique wallets, new users, acquisition rate. Đánh giá từng metric.";
+          console.log(`[${chatKey}] /mom`);
+          await handleQuestion(chatId, q, chatKey, threadId);
+        } else if (cleanText.startsWith("/reset")) {
+          const session = getSession(chatKey);
+          session.sessionId = null;
+          session.lastActivity = 0;
+          await reply(chatId, "🔄 Session reset. Conversation mới.", threadId);
         } else if (cleanText.length > 2) {
           console.log(`[${chatKey}] Question: ${cleanText.slice(0, 50)}`);
           await handleQuestion(chatId, fullQuestion, chatKey, threadId);
