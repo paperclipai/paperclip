@@ -83,3 +83,36 @@ export interface InstanceUserRoleGrant {
   createdAt: Date;
   updatedAt: Date;
 }
+
+export interface ProjectMember {
+  id: string;
+  projectId: string;
+  companyId: string;
+  principalType: string;
+  principalId: string;
+  role: string;
+  addedByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectPermissionGrant {
+  id: string;
+  projectId: string;
+  companyId: string;
+  principalType: string;
+  principalId: string;
+  permissionKey: string;
+  grantedByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectAgent {
+  id: string;
+  projectId: string;
+  companyId: string;
+  agentId: string;
+  addedByUserId: string | null;
+  createdAt: string;
+}

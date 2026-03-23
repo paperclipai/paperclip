@@ -52,6 +52,9 @@ export type {
   Invite,
   JoinRequest,
   InstanceUserRoleGrant,
+  ProjectMember,
+  ProjectPermissionGrant,
+  ProjectAgent,
 } from "./access.js";
 export type {
   CompanyPortabilityInclude,

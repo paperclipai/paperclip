@@ -5,6 +5,7 @@ import {
   JOIN_REQUEST_STATUSES,
   JOIN_REQUEST_TYPES,
   PERMISSION_KEYS,
+  PROJECT_PERMISSION_KEYS,
 } from "../constants.js";
 
 export const createCompanyInviteSchema = z.object({
@@ -60,3 +61,34 @@ export const updateUserCompanyAccessSchema = z.object({
 });
 
 export type UpdateUserCompanyAccess = z.infer<typeof updateUserCompanyAccessSchema>;
+
+export const addProjectMemberSchema = z.object({
+  principalType: z.enum(["user", "agent"]),
+  principalId: z.string().min(1),
+  role: z.enum(["super_admin", "admin", "editor", "viewer"]).default("viewer"),
+});
+export type AddProjectMember = z.infer<typeof addProjectMemberSchema>;
+
+export const updateProjectMemberSchema = z.object({
+  role: z.enum(["super_admin", "admin", "editor", "viewer"]),
+});
+export type UpdateProjectMember = z.infer<typeof updateProjectMemberSchema>;
+
+export const updateProjectMemberPermissionsSchema = z.object({
+  grants: z.array(
+    z.object({
+      permissionKey: z.enum(PROJECT_PERMISSION_KEYS),
+    }),
+  ),
+});
+export type UpdateProjectMemberPermissions = z.infer<typeof updateProjectMemberPermissionsSchema>;
+
+export const addProjectAgentSchema = z.object({
+  agentId: z.string().uuid(),
+});
+export type AddProjectAgent = z.infer<typeof addProjectAgentSchema>;
+
+export const applyProjectRolePresetSchema = z.object({
+  presetId: z.enum(["super_admin", "admin", "editor", "viewer"]),
+});
+export type ApplyProjectRolePreset = z.infer<typeof applyProjectRolePresetSchema>;
