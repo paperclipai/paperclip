@@ -141,7 +141,7 @@ export function SidebarProjects() {
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
 
   const visibleProjects = useMemo(
-    () => (projects ?? []).filter((project: Project) => !project.archivedAt),
+    () => (projects ?? []).filter((project: Project) => !project.archivedAt && project.status !== 'cancelled'),
     [projects],
   );
   const { orderedProjects, persistOrder } = useProjectOrder({
