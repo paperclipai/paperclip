@@ -1851,7 +1851,7 @@ export function heartbeatService(db: Db) {
         cachedInputTokens,
         outputTokens,
         costCents: additionalCostCents,
-        occurredAt: new Date(),
+        occurredAt: new Date().toISOString() as any,
       });
     }
   }
@@ -2059,7 +2059,7 @@ export function heartbeatService(db: Db) {
             providerType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "local_fs",
             providerRef: executionWorkspace.worktreePath,
             status: "active",
-            lastUsedAt: new Date(),
+            lastUsedAt: new Date().toISOString() as any,
             metadata: {
               ...(existingExecutionWorkspace.metadata ?? {}),
               source: executionWorkspace.source,
@@ -2089,8 +2089,8 @@ export function heartbeatService(db: Db) {
               branchName: executionWorkspace.branchName,
               providerType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "local_fs",
               providerRef: executionWorkspace.worktreePath,
-              lastUsedAt: new Date(),
-              openedAt: new Date(),
+              lastUsedAt: new Date().toISOString() as any,
+              openedAt: new Date().toISOString() as any,
               metadata: {
                 source: executionWorkspace.source,
                 createdByRuntime: executionWorkspace.created,
