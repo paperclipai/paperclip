@@ -137,6 +137,47 @@ Authorized managers can install company skills independently of hiring, then ass
 If you are asked to install a skill for the company or an agent you MUST read:
 `skills/paperclip/references/company-skills.md`
 
+## Routine Workflow
+
+Routines create periodic tasks for agents on a schedule or webhook trigger. Each routine run creates a new Issue that the agent receives in its inbox.
+
+**When to use:** daily or weekly tasks, audits, reports, and other recurring work with a predictable cadence.
+
+**Create a Routine:**
+
+```bash
+POST /api/companies/{companyId}/routines
+{
+  "title": "Daily site review",
+  "description": "Check availability, metrics, and site content",
+  "assigneeAgentId": "<agent-id>",
+  "priority": "medium",
+  "projectId": "<project-id>",
+  "goalId": "<goal-id>",
+  "concurrencyPolicy": "coalesce_if_active",
+  "catchUpPolicy": "skip_missed",
+  "triggers": [
+    {
+      "kind": "schedule",
+      "label": "daily",
+      "schedule": "0 1 * * *"
+    }
+  ]
+}
+```
+
+**Key fields:**
+
+- `concurrencyPolicy`: `coalesce_if_active` skips a run if the previous one is still active; `allow_parallel` lets runs overlap.
+- `catchUpPolicy`: `skip_missed` ignores missed runs; `run_missed` executes missed runs.
+- `triggers[].kind`: `schedule` (cron) or `webhook`.
+
+**Trigger manually:**
+
+```bash
+POST /api/routines/{routineId}/trigger
+```
+
 ## Critical Rules
 
 - **Always checkout** before working. Never PATCH to `in_progress` manually.
@@ -272,6 +313,11 @@ PATCH /api/agents/{agentId}/instructions-path
 | Generate OpenClaw invite prompt (CEO)     | `POST /api/companies/:companyId/openclaw/invite-prompt`                                    |
 | Create project                            | `POST /api/companies/:companyId/projects`                                                  |
 | Create project workspace                  | `POST /api/projects/:projectId/workspaces`                                                 |
+| List routines                             | `GET /api/companies/:companyId/routines`                                                   |
+| Get routine                               | `GET /api/routines/:routineId`                                                             |
+| Create routine                            | `POST /api/companies/:companyId/routines`                                                  |
+| Update routine                            | `PATCH /api/routines/:routineId`                                                           |
+| Trigger routine manually                  | `POST /api/routines/:routineId/trigger`                                                    |
 | Set instructions path                     | `PATCH /api/agents/:agentId/instructions-path`                                             |
 | Release task                              | `POST /api/issues/:issueId/release`                                                        |
 | List agents                               | `GET /api/companies/:companyId/agents`                                                     |
