@@ -750,6 +750,16 @@ async function ensureEmbeddedPostgres(dataDir: string, preferredPort: number): P
   }
 
   const port = await findAvailablePort(preferredPort);
+  const logBuffer: string[] = [];
+  const appendLog = (message: unknown) => {
+    const text = typeof message === "string" ? message : message instanceof Error ? message.message : String(message ?? "");
+    for (const line of text.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (trimmed) logBuffer.push(trimmed);
+    }
+    if (logBuffer.length > 120) logBuffer.splice(0, logBuffer.length - 120);
+  };
+
   const instance = new EmbeddedPostgres({
     databaseDir: dataDir,
     user: "paperclip",
@@ -757,17 +767,33 @@ async function ensureEmbeddedPostgres(dataDir: string, preferredPort: number): P
     port,
     persistent: true,
     initdbFlags: ["--encoding=UTF8", "--locale=C"],
-    onLog: () => {},
-    onError: () => {},
+    onLog: appendLog,
+    onError: appendLog,
   });
 
   if (!existsSync(path.resolve(dataDir, "PG_VERSION"))) {
-    await instance.initialise();
+    try {
+      await instance.initialise();
+    } catch (err) {
+      const logs = logBuffer.length > 0 ? `\nPostgres logs:\n${logBuffer.join("\n")}` : "";
+      throw new Error(
+        `Failed to initialise embedded PostgreSQL cluster in ${dataDir} on port ${port}${logs}`,
+        { cause: err },
+      );
+    }
   }
   if (existsSync(postmasterPidFile)) {
     rmSync(postmasterPidFile, { force: true });
   }
-  await instance.start();
+  try {
+    await instance.start();
+  } catch (err) {
+    const logs = logBuffer.length > 0 ? `\nPostgres logs:\n${logBuffer.join("\n")}` : "";
+    throw new Error(
+      `Failed to start embedded PostgreSQL on port ${port}${logs}`,
+      { cause: err },
+    );
+  }
 
   return {
     port,
