@@ -185,22 +185,93 @@ QUY TẮC BẮT BUỘC:
 // REPORT GENERATORS
 // ============================================================
 
-async function generateDailyInsight(platformRaw: any, gaRaw: any): Promise<string> {
+async function generateDailyOverview(platformRaw: any, gaRaw: any): Promise<string> {
   const today = new Date().toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric" });
-  const prompt = `Bạn là data analyst cho Whales Market. Viết daily insight ngắn gọn.
 
-## Platform Data (24h):
+  // Query thêm DB data cho overview
+  const db = new Database(WHALES_DB_PATH, { readonly: true });
+  let dbSummary = "";
+  try {
+    const todayStats = db.prepare(`
+      SELECT
+        COUNT(DISTINCT order_id) AS total_orders,
+        ROUND(SUM(CASE WHEN is_exit_position = 0 THEN order_value_usd_1side ELSE 0 END), 2) AS filled_volume,
+        ROUND(SUM(CASE WHEN is_exit_position = 1 THEN order_value_usd_1side ELSE 0 END), 2) AS exit_volume,
+        COUNT(DISTINCT buyer_id) AS unique_buyers,
+        COUNT(DISTINCT seller_id) AS unique_sellers
+      FROM _order_flat WHERE created_at >= datetime('now', '-24 hours')
+    `).get();
+
+    const yesterdayStats = db.prepare(`
+      SELECT
+        COUNT(DISTINCT order_id) AS total_orders,
+        ROUND(SUM(CASE WHEN is_exit_position = 0 THEN order_value_usd_1side ELSE 0 END), 2) AS filled_volume
+      FROM _order_flat WHERE created_at >= datetime('now', '-48 hours') AND created_at < datetime('now', '-24 hours')
+    `).get();
+
+    const userStats = db.prepare(`
+      WITH wallets_24h AS (
+        SELECT DISTINCT buyer_id AS user_id FROM _order_flat WHERE created_at >= datetime('now', '-24 hours')
+        UNION
+        SELECT DISTINCT seller_id AS user_id FROM _order_flat WHERE created_at >= datetime('now', '-24 hours')
+      )
+      SELECT
+        COUNT(DISTINCT w.user_id) AS total_active,
+        COUNT(DISTINCT CASE WHEN ufo.first_order_at >= datetime('now', '-24 hours') THEN w.user_id END) AS new_users
+      FROM wallets_24h w
+      JOIN _user_first_order ufo ON w.user_id = ufo.user_id
+    `).get();
+
+    dbSummary = JSON.stringify({ todayStats, yesterdayStats, userStats }, null, 2);
+  } catch (e) {
+    dbSummary = "DB query failed";
+  } finally {
+    db.close();
+  }
+
+  const prompt = `Bạn là Head of Data Analytics cho Whales Market. Viết daily overview kết hợp TẤT CẢ nguồn data.
+
+ĐỌC: /Users/amando/Desktop/Learn/metabase-sync/BUSINESS_CONTEXT.md để biết benchmarks.
+
+## Platform Summary (24h vs yesterday):
+${dbSummary}
+
+## Top Tokens (24h):
 ${JSON.stringify(platformRaw?.slice(0, 5), null, 2)}
 
-## GA4 Data (yesterday):
+## Website Traffic (GA4 yesterday):
 ${JSON.stringify(gaRaw, null, 2)}
 
-Viết phần <b>💡 Daily Insight — ${today}</b> dưới 500 ký tự:
-- 2-3 điểm đáng chú ý nhất hôm nay dựa trên cả platform + website data
-- So sánh cross-platform nếu có pattern thú vị (vd: token hot trên platform cũng có nhiều page views?)
-- Ngắn gọn, dựa trên fact
+Viết overview HTML cho Telegram:
 
-${REPORT_RULES}`;
+<b>📊 Whales Market — Daily Overview ${today}</b>
+
+<b>🐳 Trading</b>
+- Filled Order Volume 24h (so sánh vs hôm qua, đánh giá benchmark)
+- Số orders, avg order size
+- Top 3 tokens (tên + volume + % tổng)
+- Exit Position volume (nếu có)
+
+<b>👥 Users</b>
+- Total active wallets, New vs Returning
+- Acquisition Rate + đánh giá
+
+<b>🌐 Traffic</b>
+- Active Users, Sessions (so sánh vs hôm trước nếu có)
+- Top pre-market pages → token nào được xem nhiều nhất
+- Traffic sources
+
+<b>💡 Cross-Platform Insight</b>
+- Token hot nhất trên platform có match với traffic cao trên website không?
+- New users trên website có convert sang new wallets trên platform không?
+- Bất kỳ pattern thú vị nào kết nối 2 nguồn data
+
+<b>⚡ Action Items</b>
+- 1-2 điều team nên chú ý hôm nay
+
+${REPORT_RULES}
+Giữ dưới 2000 ký tự.`;
+
   return claudeAnalyze(prompt);
 }
 
@@ -356,7 +427,7 @@ async function main() {
   // Daily insight (cross-platform analysis by Claude)
   console.log("  → Daily insight...");
   try {
-    const insight = await generateDailyInsight(platform.raw, ga.raw);
+    const insight = await generateDailyOverview(platform.raw, ga.raw);
     if (insight) await sendTelegram(insight);
   } catch (e) { console.error("  Daily insight error:", e); }
 
