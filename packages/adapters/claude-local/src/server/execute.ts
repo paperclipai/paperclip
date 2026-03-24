@@ -58,6 +58,10 @@ async function buildSkillsDir(config: Record<string, unknown>, onLog: AdapterExe
         path.join(target, entry.runtimeName),
       );
     } catch (err) {
+      // Only suppress EPERM (Windows symlink permission) — symlinkOrJunction
+      // handles EPERM internally, but the outer catch is a safety net.
+      // Re-throw other errors (ENOENT, EACCES, etc.) so real problems surface.
+      if ((err as NodeJS.ErrnoException).code !== "EPERM") throw err;
       await onLog(
         "stderr",
         `[paperclip] Failed to link Claude skill "${entry.key}": ${err instanceof Error ? err.message : String(err)}\n`,

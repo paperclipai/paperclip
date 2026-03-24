@@ -62,9 +62,12 @@ async function ensureSymlink(target: string, source: string): Promise<void> {
     return;
   }
 
-  // Hard link repair: compare inodes to detect stale links (e.g. source
-  // path changed after a CODEX_HOME move). Hard links share an inode with
-  // their source, so divergent inodes mean the link is stale.
+  // Hard link repair (Windows only): compare inodes to detect stale links
+  // (e.g. source path changed after a CODEX_HOME move). Hard links share an
+  // inode with their source, so divergent inodes mean the link is stale.
+  // On non-Windows, a non-symlink file at target was not created by us —
+  // leave it untouched to preserve the original guard behavior.
+  if (process.platform !== "win32") return;
   const sourceStat = await fs.stat(source).catch(() => null);
   if (sourceStat && existing.ino !== sourceStat.ino) {
     await fs.unlink(target);

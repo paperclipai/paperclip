@@ -665,9 +665,10 @@ export function writePaperclipSkillSyncPreference(
 }
 
 /**
- * Create a symlink, falling back to a directory junction on Windows where
- * symlinks require Developer Mode or admin privileges.  The "junction" type
- * is silently ignored on non-Windows platforms.
+ * Create a **directory** symlink, falling back to a Windows directory junction
+ * where symlinks require Developer Mode or admin privileges.  Junctions only
+ * support directory targets — for file symlinks use {@link symlinkOrHardLink}
+ * instead.  The "junction" type is silently ignored on non-Windows platforms.
  */
 export async function symlinkOrJunction(source: string, target: string): Promise<void> {
   if (process.platform !== "win32") {
