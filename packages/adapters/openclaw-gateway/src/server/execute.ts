@@ -360,7 +360,9 @@ function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string
   const issueIdHint = payload.taskId ?? payload.issueId ?? "";
   const apiBaseHint = paperclipEnv.PAPERCLIP_API_URL ?? "<set PAPERCLIP_API_URL>";
 
-  const lines = [
+  const isMentionWake = payload.wakeReason === "issue_comment_mentioned";
+
+  const commonHeader = [
     "Paperclip wake event for a cloud adapter.",
     "",
     "Run this procedure now. Do not guess undocumented endpoints and do not ask for additional heartbeat docs.",
@@ -385,6 +387,9 @@ function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string
     "- Use X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID on every mutating API call.",
     "- Use only /api endpoints listed below.",
     "- Do NOT call guessed endpoints like /api/cloud-adapter/*, /api/cloud-adapters/*, /api/adapters/cloud/*, or /api/heartbeat.",
+  ];
+
+  const assignmentWorkflow = [
     "",
     "Workflow:",
     "1) GET /api/agents/me",
@@ -399,6 +404,25 @@ function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string
     "4) If issueId does not exist:",
     "   - GET /api/companies/$PAPERCLIP_COMPANY_ID/issues?assigneeAgentId=$PAPERCLIP_AGENT_ID&status=todo,in_progress,blocked",
     "   - Pick in_progress first, then todo, then blocked, then execute step 3.",
+  ];
+
+  const mentionWorkflow = [
+    "",
+    "Workflow (mention wake — you were @-mentioned in a comment, you may NOT be the assignee):",
+    "1) GET /api/agents/me",
+    `2) Determine issueId: PAPERCLIP_TASK_ID if present, otherwise issue_id (${issueIdHint}).`,
+    "3) GET /api/issues/{issueId}",
+    "4) GET /api/issues/{issueId}/comments",
+    `5) Read the triggering comment (wake_comment_id=${payload.wakeCommentId ?? ""}). Determine if it contains a direct request for YOUR work.`,
+    "6) If the comment is a direct work request (fix, implement, review, etc.):",
+    "   - POST /api/issues/{issueId}/checkout with {\"agentId\":\"$PAPERCLIP_AGENT_ID\",\"expectedStatuses\":[\"todo\",\"backlog\",\"blocked\",\"in_progress\",\"in_review\"]}",
+    "   - If checkout succeeds: execute the requested work, then PATCH /api/issues/{issueId} with {\"status\":\"in_review\",\"comment\":\"what changed and why\"}.",
+    "   - If checkout returns 409 (another agent holds the lock): you can still respond. Post your work as comments via POST /api/issues/{issueId}/comments. Do NOT change issue status.",
+    "7) If your name appears only in instructional text, quotes, or passing reference — exit quietly. Do not post a comment.",
+    "8) NEVER post comments claiming \"INCORRECT WAKE\" with @-mentions of other agents. This causes cascade wakes.",
+  ];
+
+  const commonFooter = [
     "",
     "Useful endpoints for issue work:",
     "- POST /api/issues/{issueId}/comments",
@@ -406,6 +430,12 @@ function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string
     "- POST /api/companies/{companyId}/issues (when asked to create a new issue)",
     "",
     "Complete the workflow in this run.",
+  ];
+
+  const lines = [
+    ...commonHeader,
+    ...(isMentionWake ? mentionWorkflow : assignmentWorkflow),
+    ...commonFooter,
   ];
   return lines.join("\n");
 }
