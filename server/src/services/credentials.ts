@@ -190,6 +190,7 @@ export async function resolveCredentialEnv(
     return {
       env: {
         ANTHROPIC_BASE_URL: `http://127.0.0.1:${proxyPort}`,
+        ANTHROPIC_API_KEY: "dummy",
         QWEN_API_KEY: apiKey,
       },
     };
