@@ -8,6 +8,7 @@ import {
   index,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { companies } from "./companies.js";
 import { plugins } from "./plugins.js";
 import type { PluginJobStatus, PluginJobRunStatus, PluginJobRunTrigger } from "@paperclipai/shared";
 
@@ -80,6 +81,8 @@ export const pluginJobRuns = pgTable(
     pluginId: uuid("plugin_id")
       .notNull()
       .references(() => plugins.id, { onDelete: "cascade" }),
+    /** Company scope — NULL for instance-level jobs. */
+    companyId: uuid("company_id").references(() => companies.id, { onDelete: "cascade" }),
     /** What caused this run to start (`"scheduled"` or `"manual"`). */
     trigger: text("trigger").$type<PluginJobRunTrigger>().notNull(),
     /** Current lifecycle state of this run. */

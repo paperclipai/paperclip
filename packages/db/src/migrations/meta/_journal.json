@@ -337,6 +337,13 @@
       "when": 1774374362097,
       "tag": "0047_saas_hardening",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1774375318749,
+      "tag": "0048_plugin_company_isolation",
+      "breakpoints": true
     }
   ]
 }
