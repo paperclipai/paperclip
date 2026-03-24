@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - "docker/agent-runtime/**"
+      - ".github/workflows/agent-runtime.yml"
   workflow_dispatch:
     inputs:
       tag:
@@ -21,16 +22,76 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
-  build-and-push:
+  build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - name: agent-multi
             dockerfile: docker/agent-runtime/Dockerfile.multi
             image: ghcr.io/paperclipinc/agent-multi
+            platform: linux/amd64
+            runner: ubuntu-latest
+            arch: amd64
+          - name: agent-multi
+            dockerfile: docker/agent-runtime/Dockerfile.multi
+            image: ghcr.io/paperclipinc/agent-multi
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
 
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push (single platform)
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          platforms: ${{ matrix.platform }}
+          cache-from: type=gha,scope=${{ matrix.name }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}-${{ matrix.arch }}
+          provenance: false
+          outputs: type=image,name=${{ matrix.image }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.push.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.name }}-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 5
 
     permissions:
       contents: read
@@ -39,11 +100,12 @@ jobs:
       id-token: write
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-agent-multi-*
+          merge-multiple: true
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -59,30 +121,28 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ matrix.image }}
+          images: ghcr.io/paperclipinc/agent-multi
           tags: |
             type=raw,value=${{ inputs.tag || 'latest' }},enable={{is_default_branch}}
             type=raw,value={{date 'YYYY.MMDD'}},enable={{is_default_branch}}
             type=sha,prefix=
 
-      - name: Build and push
-        id: push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ${{ matrix.dockerfile }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          platforms: linux/amd64,linux/arm64
-          cache-from: type=gha,scope=${{ matrix.name }}
-          cache-to: type=gha,scope=${{ matrix.name }},mode=max
-          provenance: true
-          sbom: true
+      - name: Create and push multi-arch manifest
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf 'ghcr.io/paperclipinc/agent-multi@sha256:%s ' *)
+
+      - name: Get manifest digest
+        id: digest
+        run: |
+          digest=$(docker buildx imagetools inspect "ghcr.io/paperclipinc/agent-multi:latest" --format '{{println .Manifest.Digest}}' | grep sha256)
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
       - name: Generate artifact attestation
         uses: actions/attest-build-provenance@v2
         with:
-          subject-name: ${{ matrix.image }}
-          subject-digest: ${{ steps.push.outputs.digest }}
+          subject-name: ghcr.io/paperclipinc/agent-multi
+          subject-digest: ${{ steps.digest.outputs.digest }}
           push-to-registry: true
