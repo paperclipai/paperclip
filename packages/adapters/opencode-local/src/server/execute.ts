@@ -22,7 +22,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
-import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/server-utils";
+import { removeDanglingSkillSymlinks, removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/server-utils";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -59,6 +59,13 @@ async function ensureOpenCodeSkillsInjected(
   await fs.mkdir(skillsHome, { recursive: true });
   const desiredSet = new Set(desiredSkillNames ?? skillsEntries.map((entry) => entry.key));
   const selectedEntries = skillsEntries.filter((entry) => desiredSet.has(entry.key));
+  const danglingSkills = await removeDanglingSkillSymlinks(skillsHome);
+  for (const skillName of danglingSkills) {
+    await onLog(
+      "stderr",
+      `[paperclip] Removed dangling OpenCode skill symlink "${skillName}" from ${skillsHome}\n`,
+    );
+  }
   const removedSkills = await removeMaintainerOnlySkillSymlinks(
     skillsHome,
     selectedEntries.map((entry) => entry.runtimeName),

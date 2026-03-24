@@ -17,6 +17,7 @@ import {
   ensurePathInEnv,
   readPaperclipRuntimeSkillEntries,
   resolvePaperclipDesiredSkillNames,
+  removeDanglingSkillSymlinks,
   removeMaintainerOnlySkillSymlinks,
   renderTemplate,
   runChildProcess,
@@ -61,6 +62,13 @@ async function ensurePiSkillsInjected(
   const selectedEntries = skillsEntries.filter((entry) => desiredSet.has(entry.key));
   if (selectedEntries.length === 0) return;
   await fs.mkdir(PI_AGENT_SKILLS_DIR, { recursive: true });
+  const danglingSkills = await removeDanglingSkillSymlinks(PI_AGENT_SKILLS_DIR);
+  for (const skillName of danglingSkills) {
+    await onLog(
+      "stderr",
+      `[paperclip] Removed dangling Pi skill symlink "${skillName}" from ${PI_AGENT_SKILLS_DIR}\n`,
+    );
+  }
   const removedSkills = await removeMaintainerOnlySkillSymlinks(
     PI_AGENT_SKILLS_DIR,
     selectedEntries.map((entry) => entry.runtimeName),

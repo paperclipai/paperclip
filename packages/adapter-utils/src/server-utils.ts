@@ -705,6 +705,36 @@ export async function removeMaintainerOnlySkillSymlinks(
   }
 }
 
+export async function removeDanglingSkillSymlinks(
+  skillsHome: string,
+): Promise<string[]> {
+  try {
+    const entries = await fs.readdir(skillsHome, { withFileTypes: true });
+    const removed: string[] = [];
+    for (const entry of entries) {
+      const target = path.join(skillsHome, entry.name);
+      const existing = await fs.lstat(target).catch(() => null);
+      if (!existing?.isSymbolicLink()) continue;
+
+      const linkedPath = await fs.readlink(target).catch(() => null);
+      if (!linkedPath) continue;
+
+      const resolvedLinkedPath = path.isAbsolute(linkedPath)
+        ? linkedPath
+        : path.resolve(path.dirname(target), linkedPath);
+      const targetExists = await fs.stat(resolvedLinkedPath).then(() => true).catch(() => false);
+      if (targetExists) continue;
+
+      await fs.unlink(target);
+      removed.push(entry.name);
+    }
+
+    return removed;
+  } catch {
+    return [];
+  }
+}
+
 export async function ensureCommandResolvable(command: string, cwd: string, env: NodeJS.ProcessEnv) {
   const resolved = await resolveCommandPath(command, cwd, env);
   if (resolved) return;

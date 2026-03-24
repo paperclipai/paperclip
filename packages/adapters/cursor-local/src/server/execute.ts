@@ -16,6 +16,7 @@ import {
   ensurePathInEnv,
   readPaperclipRuntimeSkillEntries,
   resolvePaperclipDesiredSkillNames,
+  removeDanglingSkillSymlinks,
   removeMaintainerOnlySkillSymlinks,
   renderTemplate,
   joinPromptSections,
@@ -125,6 +126,13 @@ export async function ensureCursorSkillsInjected(
       `[paperclip] Failed to prepare Cursor skills directory ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
     );
     return;
+  }
+  const danglingSkills = await removeDanglingSkillSymlinks(skillsHome);
+  for (const skillName of danglingSkills) {
+    await onLog(
+      "stderr",
+      `[paperclip] Removed dangling Cursor skill symlink "${skillName}" from ${skillsHome}\n`,
+    );
   }
   const removedSkills = await removeMaintainerOnlySkillSymlinks(
     skillsHome,

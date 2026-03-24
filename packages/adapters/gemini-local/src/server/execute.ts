@@ -17,6 +17,7 @@ import {
   ensurePathInEnv,
   readPaperclipRuntimeSkillEntries,
   resolvePaperclipDesiredSkillNames,
+  removeDanglingSkillSymlinks,
   removeMaintainerOnlySkillSymlinks,
   parseObject,
   redactEnvForLogs,
@@ -101,6 +102,13 @@ async function ensureGeminiSkillsInjected(
       `[paperclip] Failed to prepare Gemini skills directory ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
     );
     return;
+  }
+  const danglingSkills = await removeDanglingSkillSymlinks(skillsHome);
+  for (const skillName of danglingSkills) {
+    await onLog(
+      "stderr",
+      `[paperclip] Removed dangling Gemini skill symlink "${skillName}" from ${skillsHome}\n`,
+    );
   }
   const removedSkills = await removeMaintainerOnlySkillSymlinks(
     skillsHome,

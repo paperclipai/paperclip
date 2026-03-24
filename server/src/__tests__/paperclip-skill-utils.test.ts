@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   listPaperclipSkillEntries,
+  removeDanglingSkillSymlinks,
   removeMaintainerOnlySkillSymlinks,
 } from "@paperclipai/adapter-utils/server-utils";
 
@@ -58,5 +59,46 @@ describe("paperclip skill utils", () => {
     await expect(fs.lstat(path.join(skillsHome, "release"))).rejects.toThrow();
     expect((await fs.lstat(path.join(skillsHome, "paperclip"))).isSymbolicLink()).toBe(true);
     expect((await fs.lstat(path.join(skillsHome, "release-notes"))).isSymbolicLink()).toBe(true);
+  });
+
+  it("removes dangling symlinks whose targets no longer exist", async () => {
+    const root = await makeTempDir("paperclip-dangling-cleanup-");
+    cleanupDirs.add(root);
+
+    const skillsHome = path.join(root, "skills-home");
+    const validSkill = path.join(root, "skills", "paperclip");
+    const missingSkill = path.join(root, "skills", "deleted-adapter-skill");
+
+    await fs.mkdir(skillsHome, { recursive: true });
+    await fs.mkdir(validSkill, { recursive: true });
+    // Do NOT create missingSkill — it simulates a removed adapter package
+
+    await fs.symlink(validSkill, path.join(skillsHome, "paperclip"));
+    await fs.symlink(missingSkill, path.join(skillsHome, "deleted-adapter-skill"));
+
+    const removed = await removeDanglingSkillSymlinks(skillsHome);
+
+    expect(removed).toEqual(["deleted-adapter-skill"]);
+    await expect(fs.lstat(path.join(skillsHome, "deleted-adapter-skill"))).rejects.toThrow();
+    expect((await fs.lstat(path.join(skillsHome, "paperclip"))).isSymbolicLink()).toBe(true);
+  });
+
+  it("does not remove non-symlink entries or valid symlinks", async () => {
+    const root = await makeTempDir("paperclip-dangling-noop-");
+    cleanupDirs.add(root);
+
+    const skillsHome = path.join(root, "skills-home");
+    const validSkill = path.join(root, "skills", "paperclip");
+
+    await fs.mkdir(skillsHome, { recursive: true });
+    await fs.mkdir(validSkill, { recursive: true });
+    await fs.mkdir(path.join(skillsHome, "regular-dir"), { recursive: true });
+    await fs.symlink(validSkill, path.join(skillsHome, "paperclip"));
+
+    const removed = await removeDanglingSkillSymlinks(skillsHome);
+
+    expect(removed).toEqual([]);
+    expect((await fs.lstat(path.join(skillsHome, "paperclip"))).isSymbolicLink()).toBe(true);
+    expect((await fs.stat(path.join(skillsHome, "regular-dir"))).isDirectory()).toBe(true);
   });
 });
