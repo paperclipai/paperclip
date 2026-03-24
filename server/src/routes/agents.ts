@@ -43,7 +43,7 @@ import {
   workspaceOperationService,
 } from "../services/index.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import { planLimits } from "../middleware/plan-limits.js";
 import { findServerAdapter, listAdapterModels } from "../adapters/index.js";
 import { redactEventPayload } from "../redaction.js";
@@ -74,6 +74,13 @@ export function agentRoutes(db: Db) {
   };
   const DEFAULT_MANAGED_INSTRUCTIONS_ADAPTER_TYPES = new Set(Object.keys(DEFAULT_INSTRUCTIONS_PATH_KEYS));
   const KNOWN_INSTRUCTIONS_PATH_KEYS = new Set(["instructionsFilePath", "agentsMdPath"]);
+  const KNOWN_INSTRUCTIONS_BUNDLE_KEYS = [
+    "instructionsBundleMode",
+    "instructionsRootPath",
+    "instructionsEntryFile",
+    "instructionsFilePath",
+    "agentsMdPath",
+  ] as const;
 
   const router = Router();
   const svc = agentService(db);
@@ -303,6 +310,24 @@ export function agentRoutes(db: Db) {
     if (typeof value !== "string") return null;
     const trimmed = value.trim();
     return trimmed.length > 0 ? trimmed : null;
+  }
+
+  function preserveInstructionsBundleConfig(
+    existingAdapterConfig: Record<string, unknown>,
+    nextAdapterConfig: Record<string, unknown>,
+  ) {
+    const nextKeys = new Set(Object.keys(nextAdapterConfig));
+    if (KNOWN_INSTRUCTIONS_BUNDLE_KEYS.some((key) => nextKeys.has(key))) {
+      return nextAdapterConfig;
+    }
+
+    const merged = { ...nextAdapterConfig };
+    for (const key of KNOWN_INSTRUCTIONS_BUNDLE_KEYS) {
+      if (merged[key] === undefined && existingAdapterConfig[key] !== undefined) {
+        merged[key] = existingAdapterConfig[key];
+      }
+    }
+    return merged;
   }
 
   function parseBooleanLike(value: unknown): boolean | null {
@@ -832,17 +857,7 @@ export function agentRoutes(db: Db) {
   });
 
   router.get("/instance/scheduler-heartbeats", async (req, res) => {
-    assertBoard(req);
-
-    const accessConditions = [];
-    if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
-      const allowedCompanyIds = req.actor.companyIds ?? [];
-      if (allowedCompanyIds.length === 0) {
-        res.json([]);
-        return;
-      }
-      accessConditions.push(inArray(agentsTable.companyId, allowedCompanyIds));
-    }
+    assertInstanceAdmin(req);
 
     const rows = await db
       .select({
@@ -860,7 +875,6 @@ export function agentRoutes(db: Db) {
       })
       .from(agentsTable)
       .innerJoin(companies, eq(agentsTable.companyId, companies.id))
-      .where(accessConditions.length > 0 ? and(...accessConditions) : undefined)
       .orderBy(companies.name, agentsTable.name);
 
     const items: InstanceSchedulerHeartbeatAgent[] = rows
@@ -889,7 +903,6 @@ export function agentRoutes(db: Db) {
         };
       })
       .filter((item) =>
-        item.intervalSec > 0 &&
         item.status !== "paused" &&
         item.status !== "terminated" &&
         item.status !== "pending_approval",
@@ -1694,6 +1707,8 @@ export function agentRoutes(db: Db) {
     }
 
     const patchData = { ...(req.body as Record<string, unknown>) };
+    const replaceAdapterConfig = patchData.replaceAdapterConfig === true;
+    delete patchData.replaceAdapterConfig;
     if (Object.prototype.hasOwnProperty.call(patchData, "adapterConfig")) {
       const adapterConfig = asRecord(patchData.adapterConfig);
       if (!adapterConfig) {
@@ -1715,9 +1730,31 @@ export function agentRoutes(db: Db) {
       Object.prototype.hasOwnProperty.call(patchData, "adapterType") ||
       Object.prototype.hasOwnProperty.call(patchData, "adapterConfig");
     if (touchesAdapterConfiguration) {
-      const rawEffectiveAdapterConfig = Object.prototype.hasOwnProperty.call(patchData, "adapterConfig")
+      const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
+      const changingAdapterType =
+        typeof patchData.adapterType === "string" && patchData.adapterType !== existing.adapterType;
+      const requestedAdapterConfig = Object.prototype.hasOwnProperty.call(patchData, "adapterConfig")
         ? (asRecord(patchData.adapterConfig) ?? {})
-        : (asRecord(existing.adapterConfig) ?? {});
+        : null;
+      if (
+        requestedAdapterConfig
+        && replaceAdapterConfig
+        && KNOWN_INSTRUCTIONS_BUNDLE_KEYS.some((key) =>
+          existingAdapterConfig[key] !== undefined && requestedAdapterConfig[key] === undefined,
+        )
+      ) {
+        await assertCanManageInstructionsPath(req, existing);
+      }
+      let rawEffectiveAdapterConfig = requestedAdapterConfig ?? existingAdapterConfig;
+      if (requestedAdapterConfig && !changingAdapterType && !replaceAdapterConfig) {
+        rawEffectiveAdapterConfig = { ...existingAdapterConfig, ...requestedAdapterConfig };
+      }
+      if (changingAdapterType) {
+        rawEffectiveAdapterConfig = preserveInstructionsBundleConfig(
+          existingAdapterConfig,
+          rawEffectiveAdapterConfig,
+        );
+      }
       const effectiveAdapterConfig = applyCreateDefaultsByAdapterType(
         requestedAdapterType,
         rawEffectiveAdapterConfig,

@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  activityLog,
   agents,
   assets,
   companies,
@@ -19,7 +20,7 @@ import {
   projectWorkspaces,
   projects,
 } from "@paperclipai/db";
-import { extractProjectMentionIds } from "@paperclipai/shared";
+import { extractAgentMentionIds, extractProjectMentionIds } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
@@ -62,6 +63,7 @@ function applyStatusSideEffects(
 export interface IssueFilters {
   status?: string;
   assigneeAgentId?: string;
+  participantAgentId?: string;
   assigneeUserId?: string;
   touchedByUserId?: string;
   unreadForUserId?: string;
@@ -129,6 +131,30 @@ function touchedByUserCondition(companyId: string, userId: string) {
         WHERE ${issueComments.issueId} = ${issues.id}
           AND ${issueComments.companyId} = ${companyId}
           AND ${issueComments.authorUserId} = ${userId}
+      )
+    )
+  `;
+}
+
+function participatedByAgentCondition(companyId: string, agentId: string) {
+  return sql<boolean>`
+    (
+      ${issues.createdByAgentId} = ${agentId}
+      OR ${issues.assigneeAgentId} = ${agentId}
+      OR EXISTS (
+        SELECT 1
+        FROM ${issueComments}
+        WHERE ${issueComments.issueId} = ${issues.id}
+          AND ${issueComments.companyId} = ${companyId}
+          AND ${issueComments.authorAgentId} = ${agentId}
+      )
+      OR EXISTS (
+        SELECT 1
+        FROM ${activityLog}
+        WHERE ${activityLog.companyId} = ${companyId}
+          AND ${activityLog.entityType} = 'issue'
+          AND ${activityLog.entityId} = ${issues.id}::text
+          AND ${activityLog.agentId} = ${agentId}
       )
     )
   `;
@@ -507,6 +533,9 @@ export function issueService(db: Db) {
       }
       if (filters?.assigneeAgentId) {
         conditions.push(eq(issues.assigneeAgentId, filters.assigneeAgentId));
+      }
+      if (filters?.participantAgentId) {
+        conditions.push(participatedByAgentCondition(companyId, filters.participantAgentId));
       }
       if (filters?.assigneeUserId) {
         conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
@@ -1462,10 +1491,19 @@ export function issueService(db: Db) {
       const tokens = new Set<string>();
       let m: RegExpExecArray | null;
       while ((m = re.exec(body)) !== null) tokens.add(m[1].toLowerCase());
-      if (tokens.size === 0) return [];
+
+      const explicitAgentMentionIds = extractAgentMentionIds(body);
+      if (tokens.size === 0 && explicitAgentMentionIds.length === 0) return [];
+
       const rows = await db.select({ id: agents.id, name: agents.name })
         .from(agents).where(eq(agents.companyId, companyId));
-      return rows.filter(a => tokens.has(a.name.toLowerCase())).map(a => a.id);
+      const resolved = new Set<string>(explicitAgentMentionIds);
+      for (const agent of rows) {
+        if (tokens.has(agent.name.toLowerCase())) {
+          resolved.add(agent.id);
+        }
+      }
+      return [...resolved];
     },
 
     findMentionedProjectIds: async (issueId: string) => {

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from "react";
+import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link, useLocation, useNavigate, useParams } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
@@ -341,6 +342,8 @@ export function IssueDetail() {
         id: `agent:${agent.id}`,
         name: agent.name,
         kind: "agent",
+        agentId: agent.id,
+        agentIcon: agent.icon,
       });
     }
     for (const project of orderedProjects) {
@@ -670,7 +673,12 @@ export function IssueDetail() {
         )}
       >
         <Paperclip className="h-3.5 w-3.5 mr-1.5" />
-        {uploadAttachment.isPending || importMarkdownDocument.isPending ? "Uploading..." : "Upload attachment"}
+        {uploadAttachment.isPending || importMarkdownDocument.isPending ? "Uploading..." : (
+          <>
+            <span className="hidden sm:inline">Upload attachment</span>
+            <span className="sm:hidden">Upload</span>
+          </>
+        )}
       </Button>
     </>
   );
@@ -760,7 +768,7 @@ export function IssueDetail() {
                   className="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium"
                   style={{
                     borderColor: label.color,
-                    color: label.color,
+                    color: pickTextColorForPillBg(label.color, 0.12),
                     backgroundColor: `${label.color}1f`,
                   }}
                 >

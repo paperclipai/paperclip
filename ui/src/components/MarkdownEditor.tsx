@@ -6,7 +6,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
   type DragEvent,
 } from "react";
 import {
@@ -27,7 +26,11 @@ import {
   thematicBreakPlugin,
   type RealmPlugin,
 } from "@mdxeditor/editor";
-import { buildProjectMentionHref, parseProjectMentionHref } from "@paperclipai/shared";
+import { buildAgentMentionHref, buildProjectMentionHref } from "@paperclipai/shared";
+import { AgentIcon } from "./AgentIconPicker";
+import { applyMentionChipDecoration, clearMentionChipDecoration, parseMentionChipHref } from "../lib/mention-chips";
+import { MentionAwareLinkNode, mentionAwareLinkNodeReplacement } from "../lib/mention-aware-link-node";
+import { mentionDeletionPlugin } from "../lib/mention-deletion";
 import { cn } from "../lib/utils";
 
 /* ---- Mention types ---- */
@@ -36,6 +39,8 @@ export interface MentionOption {
   id: string;
   name: string;
   kind?: "agent" | "project";
+  agentId?: string;
+  agentIcon?: string | null;
   projectId?: string;
   projectColor?: string | null;
 }
@@ -63,6 +68,12 @@ export interface MarkdownEditorRef {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function isSafeMarkdownLinkUrl(url: string): boolean {
+  const trimmed = url.trim();
+  if (!trimmed) return true;
+  return !/^(javascript|data|vbscript):/i.test(trimmed);
 }
 
 /* ---- Mention detection helpers ---- */
@@ -154,7 +165,8 @@ function mentionMarkdown(option: MentionOption): string {
   if (option.kind === "project" && option.projectId) {
     return `[@${option.name}](${buildProjectMentionHref(option.projectId, option.projectColor ?? null)}) `;
   }
-  return `@${option.name} `;
+  const agentId = option.agentId ?? option.id.replace(/^agent:/, "");
+  return `[@${option.name}](${buildAgentMentionHref(agentId, option.agentIcon ?? null)}) `;
 }
 
 /** Replace `@<query>` in the markdown string with the selected mention token. */
@@ -164,31 +176,6 @@ function applyMention(markdown: string, query: string, option: MentionOption): s
   const idx = markdown.lastIndexOf(search);
   if (idx === -1) return markdown;
   return markdown.slice(0, idx) + replacement + markdown.slice(idx + search.length);
-}
-
-function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
-  const trimmed = hex.trim();
-  const match = /^#([0-9a-f]{6})$/i.exec(trimmed);
-  if (!match) return null;
-  const value = match[1];
-  return {
-    r: parseInt(value.slice(0, 2), 16),
-    g: parseInt(value.slice(2, 4), 16),
-    b: parseInt(value.slice(4, 6), 16),
-  };
-}
-
-function mentionChipStyle(color: string | null): CSSProperties | undefined {
-  if (!color) return undefined;
-  const rgb = hexToRgb(color);
-  if (!rgb) return undefined;
-  const luminance = (0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b) / 255;
-  const textColor = luminance > 0.55 ? "#111827" : "#f8fafc";
-  return {
-    borderColor: color,
-    backgroundColor: `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.22)`,
-    color: textColor,
-  };
 }
 
 /* ---- Component ---- */
@@ -221,11 +208,15 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   const mentionStateRef = useRef<MentionState | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
   const mentionActive = mentionState !== null && mentions && mentions.length > 0;
-  const projectColorById = useMemo(() => {
-    const map = new Map<string, string | null>();
+  const mentionOptionByKey = useMemo(() => {
+    const map = new Map<string, MentionOption>();
     for (const mention of mentions ?? []) {
+      if (mention.kind === "agent") {
+        const agentId = mention.agentId ?? mention.id.replace(/^agent:/, "");
+        map.set(`agent:${agentId}`, mention);
+      }
       if (mention.kind === "project" && mention.projectId) {
-        map.set(mention.projectId, mention.projectColor ?? null);
+        map.set(`project:${mention.projectId}`, mention);
       }
     }
     return map;
@@ -286,8 +277,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       listsPlugin(),
       quotePlugin(),
       tablePlugin(),
-      linkPlugin(),
+      linkPlugin({ validateUrl: isSafeMarkdownLinkUrl }),
       linkDialogPlugin(),
+      mentionDeletionPlugin(),
       thematicBreakPlugin(),
       codeBlockPlugin({
         defaultCodeBlockLanguage: "txt",
@@ -315,31 +307,28 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     const links = editable.querySelectorAll("a");
     for (const node of links) {
       const link = node as HTMLAnchorElement;
-      const parsed = parseProjectMentionHref(link.getAttribute("href") ?? "");
+      const parsed = parseMentionChipHref(link.getAttribute("href") ?? "");
       if (!parsed) {
-        if (link.dataset.projectMention === "true") {
-          link.dataset.projectMention = "false";
-          link.classList.remove("paperclip-project-mention-chip");
-          link.removeAttribute("contenteditable");
-          link.style.removeProperty("border-color");
-          link.style.removeProperty("background-color");
-          link.style.removeProperty("color");
-        }
+        clearMentionChipDecoration(link);
         continue;
       }
 
-      const color = parsed.color ?? projectColorById.get(parsed.projectId) ?? null;
-      link.dataset.projectMention = "true";
-      link.classList.add("paperclip-project-mention-chip");
-      link.setAttribute("contenteditable", "false");
-      const style = mentionChipStyle(color);
-      if (style) {
-        link.style.borderColor = style.borderColor ?? "";
-        link.style.backgroundColor = style.backgroundColor ?? "";
-        link.style.color = style.color ?? "";
+      if (parsed.kind === "project") {
+        const option = mentionOptionByKey.get(`project:${parsed.projectId}`);
+        applyMentionChipDecoration(link, {
+          ...parsed,
+          color: parsed.color ?? option?.projectColor ?? null,
+        });
+        continue;
       }
+
+      const option = mentionOptionByKey.get(`agent:${parsed.agentId}`);
+      applyMentionChipDecoration(link, {
+        ...parsed,
+        icon: parsed.icon ?? option?.agentIcon ?? null,
+      });
     }
-  }, [projectColorById]);
+  }, [mentionOptionByKey]);
 
   // Mention detection: listen for selection changes and input events
   const checkMention = useCallback(() => {
@@ -395,94 +384,67 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       // update state between the last render and this callback firing).
       const state = mentionStateRef.current;
       if (!state) return;
-
-      if (option.kind === "project" && option.projectId) {
-        const current = latestValueRef.current;
-        const next = applyMention(current, state.query, option);
-        if (next !== current) {
-          latestValueRef.current = next;
-          ref.current?.setMarkdown(next);
-          onChange(next);
-        }
-        requestAnimationFrame(() => {
-          ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
-          decorateProjectMentions();
-        });
-        mentionStateRef.current = null;
-        setMentionState(null);
-        return;
-      }
-
-      const replacement = mentionMarkdown(option);
-
-      // Replace @query directly via DOM selection so the cursor naturally
-      // lands after the inserted text. Lexical picks up the change through
-      // its normal input-event handling.
-      const sel = window.getSelection();
-      if (sel && state.textNode.isConnected) {
-        const range = document.createRange();
-        range.setStart(state.textNode, state.atPos);
-        range.setEnd(state.textNode, state.endPos);
-        sel.removeAllRanges();
-        sel.addRange(range);
-        document.execCommand("insertText", false, replacement);
-
-        // After Lexical reconciles the DOM, the cursor position set by
-        // execCommand may be lost. Explicitly reposition it after the
-        // inserted mention text.
-        const cursorTarget = state.atPos + replacement.length;
-        requestAnimationFrame(() => {
-          const newSel = window.getSelection();
-          if (!newSel) return;
-          // Try the original text node first (it may still be valid)
-          if (state.textNode.isConnected) {
-            const len = state.textNode.textContent?.length ?? 0;
-            if (cursorTarget <= len) {
-              const r = document.createRange();
-              r.setStart(state.textNode, cursorTarget);
-              r.collapse(true);
-              newSel.removeAllRanges();
-              newSel.addRange(r);
-              return;
-            }
-          }
-          // Fallback: search for the replacement in text nodes
-          const editable = containerRef.current?.querySelector('[contenteditable="true"]');
-          if (!editable) return;
-          const walker = document.createTreeWalker(editable, NodeFilter.SHOW_TEXT);
-          let node: Text | null;
-          while ((node = walker.nextNode() as Text | null)) {
-            const text = node.textContent ?? "";
-            const idx = text.indexOf(replacement);
-            if (idx !== -1) {
-              const pos = idx + replacement.length;
-              if (pos <= text.length) {
-                const r = document.createRange();
-                r.setStart(node, pos);
-                r.collapse(true);
-                newSel.removeAllRanges();
-                newSel.addRange(r);
-                return;
-              }
-            }
-          }
-        });
-      } else {
-        // Fallback: full markdown replacement when DOM node is stale
-        const current = latestValueRef.current;
-        const next = applyMention(current, state.query, option);
-        if (next !== current) {
-          latestValueRef.current = next;
-          ref.current?.setMarkdown(next);
-          onChange(next);
-        }
-        requestAnimationFrame(() => {
-          ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
-        });
+      const current = latestValueRef.current;
+      const next = applyMention(current, state.query, option);
+      if (next !== current) {
+        latestValueRef.current = next;
+        ref.current?.setMarkdown(next);
+        onChange(next);
       }
 
       requestAnimationFrame(() => {
-        decorateProjectMentions();
+        requestAnimationFrame(() => {
+          const editable = containerRef.current?.querySelector('[contenteditable="true"]');
+          if (!(editable instanceof HTMLElement)) return;
+          decorateProjectMentions();
+          editable.focus();
+
+          const mentionHref = option.kind === "project" && option.projectId
+            ? buildProjectMentionHref(option.projectId, option.projectColor ?? null)
+            : buildAgentMentionHref(
+                option.agentId ?? option.id.replace(/^agent:/, ""),
+                option.agentIcon ?? null,
+              );
+          const matchingMentions = Array.from(editable.querySelectorAll("a"))
+            .filter((node): node is HTMLAnchorElement => node instanceof HTMLAnchorElement)
+            .filter((link) => {
+              const href = link.getAttribute("href") ?? "";
+              return href === mentionHref && link.textContent === `@${option.name}`;
+            });
+          const containerRect = containerRef.current?.getBoundingClientRect();
+          const target = matchingMentions.sort((a, b) => {
+            const rectA = a.getBoundingClientRect();
+            const rectB = b.getBoundingClientRect();
+            const leftA = containerRect ? rectA.left - containerRect.left : rectA.left;
+            const topA = containerRect ? rectA.top - containerRect.top : rectA.top;
+            const leftB = containerRect ? rectB.left - containerRect.left : rectB.left;
+            const topB = containerRect ? rectB.top - containerRect.top : rectB.top;
+            const distA = Math.hypot(leftA - state.left, topA - state.top);
+            const distB = Math.hypot(leftB - state.left, topB - state.top);
+            return distA - distB;
+          })[0] ?? null;
+          if (!target) return;
+
+          const selection = window.getSelection();
+          if (!selection) return;
+          const range = document.createRange();
+          const nextSibling = target.nextSibling;
+          if (nextSibling?.nodeType === Node.TEXT_NODE) {
+            const text = nextSibling.textContent ?? "";
+            if (text.startsWith(" ")) {
+              range.setStart(nextSibling, 1);
+              range.collapse(true);
+              selection.removeAllRanges();
+              selection.addRange(range);
+              return;
+            }
+          }
+
+          range.setStartAfter(target);
+          range.collapse(true);
+          selection.removeAllRanges();
+          selection.addRange(range);
+        });
       });
 
       mentionStateRef.current = null;
@@ -588,6 +550,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           "paperclip-mdxeditor-content focus:outline-none [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:list-item",
           contentClassName,
         )}
+        additionalLexicalNodes={[MentionAwareLinkNode, mentionAwareLinkNodeReplacement]}
         plugins={plugins}
       />
 
@@ -616,7 +579,10 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                   style={{ backgroundColor: option.projectColor ?? "#64748b" }}
                 />
               ) : (
-                <span className="text-muted-foreground">@</span>
+                <AgentIcon
+                  icon={option.agentIcon}
+                  className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                />
               )}
               <span>{option.name}</span>
               {option.kind === "project" && option.projectId && (

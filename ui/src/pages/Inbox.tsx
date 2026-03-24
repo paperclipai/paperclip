@@ -16,7 +16,7 @@ import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { IssueRow } from "../components/IssueRow";
-import { PriorityIcon } from "../components/PriorityIcon";
+
 import { StatusIcon } from "../components/StatusIcon";
 import { StatusBadge } from "../components/StatusBadge";
 import { approvalLabel, defaultTypeIcon, typeIcon } from "../components/ApprovalPayload";
@@ -782,9 +782,6 @@ export function Inbox() {
                     issueLinkState={issueLinkState}
                     desktopMetaLeading={(
                       <>
-                        <span className="hidden sm:inline-flex">
-                          <PriorityIcon priority={issue.priority} />
-                        </span>
                         <span className="hidden shrink-0 sm:inline-flex">
                           <StatusIcon status={issue.status} />
                         </span>

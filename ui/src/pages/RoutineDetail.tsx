@@ -647,6 +647,7 @@ export function RoutineDetail() {
           <button
             type="button"
             role="switch"
+            data-slot="toggle"
             aria-checked={automationEnabled}
             aria-label={automationEnabled ? "Pause automatic triggers" : "Enable automatic triggers"}
             disabled={automationToggleDisabled}

@@ -94,6 +94,8 @@ export function AuthPage() {
 
           <form
             className="mt-6 space-y-4"
+            method="post"
+            action={mode === "sign_up" ? "/api/auth/sign-up/email" : "/api/auth/sign-in/email"}
             onSubmit={(event) => {
               event.preventDefault();
               if (mutation.isPending) return;
@@ -106,8 +108,10 @@ export function AuthPage() {
           >
             {mode === "sign_up" && (
               <div>
-                <label className="text-xs text-muted-foreground mb-1 block">Name</label>
+                <label htmlFor="name" className="text-xs text-muted-foreground mb-1 block">Name</label>
                 <input
+                  id="name"
+                  name="name"
                   className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
                   value={name}
                   onChange={(event) => setName(event.target.value)}
@@ -117,8 +121,10 @@ export function AuthPage() {
               </div>
             )}
             <div>
-              <label className="text-xs text-muted-foreground mb-1 block">Email</label>
+              <label htmlFor="email" className="text-xs text-muted-foreground mb-1 block">Email</label>
               <input
+                id="email"
+                name="email"
                 className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
                 type="email"
                 value={email}
@@ -128,8 +134,10 @@ export function AuthPage() {
               />
             </div>
             <div>
-              <label className="text-xs text-muted-foreground mb-1 block">Password</label>
+              <label htmlFor="password" className="text-xs text-muted-foreground mb-1 block">Password</label>
               <input
+                id="password"
+                name="password"
                 className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
                 type="password"
                 value={password}
