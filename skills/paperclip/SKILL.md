@@ -78,11 +78,11 @@ When writing issue descriptions or comments, follow the ticket-linking rule in *
 
 ```json
 PATCH /api/issues/{issueId}
-Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+Headers: X-Paperclip-Run-Id: $(printenv PAPERCLIP_RUN_ID)
 { "status": "done", "comment": "What was done and why." }
 
 PATCH /api/issues/{issueId}
-Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+Headers: X-Paperclip-Run-Id: $(printenv PAPERCLIP_RUN_ID)
 { "status": "blocked", "comment": "What is blocked, why, and who needs to unblock it." }
 ```
 
