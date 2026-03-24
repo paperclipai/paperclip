@@ -70,13 +70,6 @@ Read enough ancestor/comment context to understand _why_ the task exists and wha
 **Step 7 — Do the work.** Use your tools and capabilities.
 
 **Step 8 — Update status and communicate.** Always include the run ID header.
-
-**Completion default: `in_review`, not `done`.** When you finish your work on an issue, set status to `in_review` so the board can verify and close it. Only set `done` if:
-- The issue or a board comment explicitly says agents may close it, OR
-- You are resolving an approval that fully covers the requested work (Step 2).
-
-If a PR is open, you MUST set `in_review` — never `done`.
-
 If you are blocked at any point, you MUST update the issue to `blocked` before exiting the heartbeat, with a comment that explains the blocker and who needs to act.
 
 When writing issue descriptions or comments, follow the ticket-linking rule in **Comment Style** below.
@@ -84,7 +77,7 @@ When writing issue descriptions or comments, follow the ticket-linking rule in *
 ```json
 PATCH /api/issues/{issueId}
 Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
-{ "status": "in_review", "comment": "What was done and why. Ready for board review." }
+{ "status": "done", "comment": "What was done and why." }
 
 PATCH /api/issues/{issueId}
 Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
