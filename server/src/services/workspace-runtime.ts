@@ -263,13 +263,16 @@ function formatCommandForDisplay(command: string, args: string[]) {
  * one-shot GIT_CONFIG env vars so git doesn't reject cross-filesystem paths
  * (e.g. WSL mounts accessed from Windows). Only affects the spawned subprocess.
  */
-function buildGitSafeDirectoryEnv(cwd: string): NodeJS.ProcessEnv {
-  const gitEnv = { ...process.env } as Record<string, string>;
-  const existingCount = Math.max(0, parseInt(gitEnv.GIT_CONFIG_COUNT ?? "0", 10) || 0);
-  gitEnv.GIT_CONFIG_COUNT = String(existingCount + 1);
-  gitEnv[`GIT_CONFIG_KEY_${existingCount}`] = "safe.directory";
-  gitEnv[`GIT_CONFIG_VALUE_${existingCount}`] = cwd;
-  return gitEnv;
+export function buildSafeDirectoryEnv(cwd: string): Record<string, string> {
+  const env: Record<string, string> = Object.fromEntries(
+    Object.entries(process.env).filter((e): e is [string, string] => e[1] != null),
+  );
+  const parsed = parseInt(env.GIT_CONFIG_COUNT ?? "0", 10);
+  const existingCount = Math.max(0, Number.isFinite(parsed) ? parsed : 0);
+  env.GIT_CONFIG_COUNT = String(existingCount + 1);
+  env[`GIT_CONFIG_KEY_${existingCount}`] = "safe.directory";
+  env[`GIT_CONFIG_VALUE_${existingCount}`] = cwd;
+  return env;
 }
 
 async function executeProcess(input: {
@@ -303,7 +306,7 @@ async function runGit(args: string[], cwd: string): Promise<string> {
     command: "git",
     args,
     cwd,
-    env: buildGitSafeDirectoryEnv(cwd),
+    env: buildSafeDirectoryEnv(cwd) as NodeJS.ProcessEnv,
   });
   if (proc.code !== 0) {
     throw new Error(proc.stderr.trim() || proc.stdout.trim() || `git ${args.join(" ")} failed`);
@@ -443,6 +446,7 @@ async function recordGitOperation(
         command: "git",
         args: input.args,
         cwd: input.cwd,
+        env: buildSafeDirectoryEnv(input.cwd) as NodeJS.ProcessEnv,
       });
       stdout = result.stdout;
       stderr = result.stderr;

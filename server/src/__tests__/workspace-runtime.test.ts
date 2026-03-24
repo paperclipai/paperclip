@@ -18,6 +18,7 @@ import {
 } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
 import {
+  buildSafeDirectoryEnv,
   cleanupExecutionWorkspaceArtifacts,
   ensureRuntimeServicesForRun,
   normalizeAdapterManagedRuntimeServices,
@@ -1750,5 +1751,78 @@ describe("normalizeAdapterManagedRuntimeServices", () => {
       scopeId: "execution-workspace-1",
       executionWorkspaceId: "execution-workspace-1",
     });
+  });
+});
+
+describe("buildSafeDirectoryEnv (safe.directory injection)", () => {
+  const originalGitConfigCount = process.env.GIT_CONFIG_COUNT;
+  const originalGitConfigKey0 = process.env.GIT_CONFIG_KEY_0;
+  const originalGitConfigValue0 = process.env.GIT_CONFIG_VALUE_0;
+
+  afterEach(() => {
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith("GIT_CONFIG_")) {
+        delete process.env[key];
+      }
+    }
+    if (originalGitConfigCount !== undefined) process.env.GIT_CONFIG_COUNT = originalGitConfigCount;
+    if (originalGitConfigKey0 !== undefined) process.env.GIT_CONFIG_KEY_0 = originalGitConfigKey0;
+    if (originalGitConfigValue0 !== undefined) process.env.GIT_CONFIG_VALUE_0 = originalGitConfigValue0;
+  });
+
+  it("sets GIT_CONFIG_COUNT, KEY, and VALUE for safe.directory when no prior config exists", () => {
+    delete process.env.GIT_CONFIG_COUNT;
+    const env = buildSafeDirectoryEnv("/tmp/my-repo");
+    expect(env.GIT_CONFIG_COUNT).toBe("1");
+    expect(env.GIT_CONFIG_KEY_0).toBe("safe.directory");
+    expect(env.GIT_CONFIG_VALUE_0).toBe("/tmp/my-repo");
+  });
+
+  it("increments existing GIT_CONFIG_COUNT and uses the next index", () => {
+    process.env.GIT_CONFIG_COUNT = "2";
+    process.env.GIT_CONFIG_KEY_0 = "core.autocrlf";
+    process.env.GIT_CONFIG_VALUE_0 = "false";
+    process.env.GIT_CONFIG_KEY_1 = "user.email";
+    process.env.GIT_CONFIG_VALUE_1 = "test@example.com";
+
+    const env = buildSafeDirectoryEnv("/workspace/project");
+    expect(env.GIT_CONFIG_COUNT).toBe("3");
+    expect(env.GIT_CONFIG_KEY_2).toBe("safe.directory");
+    expect(env.GIT_CONFIG_VALUE_2).toBe("/workspace/project");
+    expect(env.GIT_CONFIG_KEY_0).toBe("core.autocrlf");
+    expect(env.GIT_CONFIG_VALUE_0).toBe("false");
+  });
+
+  it("guards against non-numeric GIT_CONFIG_COUNT by treating it as 0", () => {
+    process.env.GIT_CONFIG_COUNT = "not-a-number";
+    const env = buildSafeDirectoryEnv("/repo");
+    expect(env.GIT_CONFIG_COUNT).toBe("1");
+    expect(env.GIT_CONFIG_KEY_0).toBe("safe.directory");
+    expect(env.GIT_CONFIG_VALUE_0).toBe("/repo");
+  });
+
+  it("guards against negative GIT_CONFIG_COUNT by clamping to 0", () => {
+    process.env.GIT_CONFIG_COUNT = "-5";
+    const env = buildSafeDirectoryEnv("/repo");
+    expect(env.GIT_CONFIG_COUNT).toBe("1");
+    expect(env.GIT_CONFIG_KEY_0).toBe("safe.directory");
+    expect(env.GIT_CONFIG_VALUE_0).toBe("/repo");
+  });
+
+  it("scopes safe.directory to the specific cwd, not a wildcard", () => {
+    delete process.env.GIT_CONFIG_COUNT;
+    const env = buildSafeDirectoryEnv("/specific/path");
+    expect(env.GIT_CONFIG_VALUE_0).toBe("/specific/path");
+    expect(env.GIT_CONFIG_VALUE_0).not.toBe("*");
+  });
+
+  it("does not mutate process.env", () => {
+    delete process.env.GIT_CONFIG_COUNT;
+    delete process.env.GIT_CONFIG_KEY_0;
+    delete process.env.GIT_CONFIG_VALUE_0;
+    buildSafeDirectoryEnv("/tmp/test");
+    expect(process.env.GIT_CONFIG_COUNT).toBeUndefined();
+    expect(process.env.GIT_CONFIG_KEY_0).toBeUndefined();
+    expect(process.env.GIT_CONFIG_VALUE_0).toBeUndefined();
   });
 });
