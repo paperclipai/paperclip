@@ -341,7 +341,7 @@ export function agentService(db: Db) {
 
     const updated = await db
       .update(agents)
-      .set({ ...normalizedPatch, updatedAt: new Date().toISOString() as any })
+      .set({ ...normalizedPatch, updatedAt: new Date() })
       .where(eq(agents.id, id))
       .returning()
       .then((rows) => rows[0] ?? null);
@@ -415,8 +415,8 @@ export function agentService(db: Db) {
         .set({
           status: "paused",
           pauseReason: reason,
-          pausedAt: new Date().toISOString() as any,
-          updatedAt: new Date().toISOString() as any,
+          pausedAt: new Date(),
+          updatedAt: new Date(),
         })
         .where(eq(agents.id, id))
         .returning()
@@ -438,7 +438,7 @@ export function agentService(db: Db) {
           status: "idle",
           pauseReason: null,
           pausedAt: null,
-          updatedAt: new Date().toISOString() as any,
+          updatedAt: new Date(),
         })
         .where(eq(agents.id, id))
         .returning()
@@ -456,13 +456,13 @@ export function agentService(db: Db) {
           status: "terminated",
           pauseReason: null,
           pausedAt: null,
-          updatedAt: new Date().toISOString() as any,
+          updatedAt: new Date(),
         })
         .where(eq(agents.id, id));
 
       await db
         .update(agentApiKeys)
-        .set({ revokedAt: new Date().toISOString() as any })
+        .set({ revokedAt: new Date() })
         .where(eq(agentApiKeys.agentId, id));
 
       return getById(id);
@@ -496,7 +496,7 @@ export function agentService(db: Db) {
 
       const updated = await db
         .update(agents)
-        .set({ status: "idle", updatedAt: new Date().toISOString() as any })
+        .set({ status: "idle", updatedAt: new Date() })
         .where(eq(agents.id, id))
         .returning()
         .then((rows) => rows[0] ?? null);
@@ -512,7 +512,7 @@ export function agentService(db: Db) {
         .update(agents)
         .set({
           permissions: normalizeAgentPermissions(permissions, existing.role),
-          updatedAt: new Date().toISOString() as any,
+          updatedAt: new Date(),
         })
         .where(eq(agents.id, id))
         .returning()
@@ -606,7 +606,7 @@ export function agentService(db: Db) {
     revokeKey: async (keyId: string) => {
       const rows = await db
         .update(agentApiKeys)
-        .set({ revokedAt: new Date().toISOString() as any })
+        .set({ revokedAt: new Date() })
         .where(eq(agentApiKeys.id, keyId))
         .returning();
       return rows[0] ?? null;

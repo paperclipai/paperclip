@@ -65,7 +65,7 @@ export function goalService(db: Db) {
     update: (id: string, data: Partial<typeof goals.$inferInsert>) =>
       db
         .update(goals)
-        .set({ ...data, updatedAt: new Date().toISOString() as any })
+        .set({ ...data, updatedAt: new Date() })
         .where(eq(goals.id, id))
         .returning()
         .then((rows) => rows[0] ?? null),

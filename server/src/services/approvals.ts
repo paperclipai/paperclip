@@ -48,15 +48,15 @@ export function approvalService(db: Db) {
       );
     }
 
-    const nowStr = new Date().toISOString();
+    const now = new Date();
     const updated = await db
       .update(approvals)
       .set({
         status: targetStatus,
         decidedByUserId,
         decisionNote: decisionNote ?? null,
-        decidedAt: nowStr as any,
-        updatedAt: nowStr as any,
+        decidedAt: now,
+        updatedAt: now,
       })
       .where(and(eq(approvals.id, id), inArray(approvals.status, resolvableStatuses)))
       .returning()
@@ -191,15 +191,15 @@ export function approvalService(db: Db) {
         throw unprocessable("Only pending approvals can request revision");
       }
 
-      const nowStr = new Date().toISOString();
+      const now = new Date();
       return db
         .update(approvals)
         .set({
           status: "revision_requested",
           decidedByUserId,
           decisionNote: decisionNote ?? null,
-          decidedAt: nowStr as any,
-          updatedAt: nowStr as any,
+          decidedAt: now,
+          updatedAt: now,
         })
         .where(eq(approvals.id, id))
         .returning()
@@ -212,7 +212,7 @@ export function approvalService(db: Db) {
         throw unprocessable("Only revision requested approvals can be resubmitted");
       }
 
-      const nowStr = new Date().toISOString();
+      const now = new Date();
       return db
         .update(approvals)
         .set({
@@ -221,7 +221,7 @@ export function approvalService(db: Db) {
           decisionNote: null,
           decidedByUserId: null,
           decidedAt: null,
-          updatedAt: nowStr as any,
+          updatedAt: now,
         })
         .where(eq(approvals.id, id))
         .returning()

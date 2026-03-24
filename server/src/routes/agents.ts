@@ -861,7 +861,7 @@ export function agentRoutes(db: Db) {
         decisionNote: null,
         decidedByUserId: null,
         decidedAt: null,
-        updatedAt: new Date().toISOString() as any,
+        updatedAt: new Date(),
       });
 
       if (sourceIssueIds.length > 0) {

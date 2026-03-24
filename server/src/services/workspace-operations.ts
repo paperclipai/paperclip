@@ -99,13 +99,13 @@ export function workspaceOperationService(db: Db) {
             .update(workspaceOperations)
             .set({
               executionWorkspaceId,
-              updatedAt: new Date().toISOString() as any,
+              updatedAt: new Date(),
             })
             .where(inArray(workspaceOperations.id, createdIds));
         },
 
         async recordOperation(recordInput) {
-          const startedAt = new Date().toISOString() as any;
+          const startedAt = new Date();
           const id = randomUUID();
           const handle = await logStore.begin({
             companyId: input.companyId,
@@ -148,7 +148,7 @@ export function workspaceOperationService(db: Db) {
             await append("stdout", result.stdout ?? null);
             await append("stderr", result.stderr ?? null);
             const finalized = await logStore.finalize(handle);
-            const finishedAtStr = new Date().toISOString();
+            const finishedAt = new Date();
             const row = await db
               .update(workspaceOperations)
               .set({
@@ -163,8 +163,8 @@ export function workspaceOperationService(db: Db) {
                 metadata: redactCurrentUserValue(
                   combineMetadata(recordInput.metadata, result.metadata),
                 ) as Record<string, unknown> | null,
-                finishedAt: finishedAtStr as any,
-                updatedAt: finishedAtStr as any,
+                finishedAt,
+                updatedAt: finishedAt,
               })
               .where(eq(workspaceOperations.id, id))
               .returning()
@@ -174,7 +174,7 @@ export function workspaceOperationService(db: Db) {
           } catch (error) {
             await append("stderr", error instanceof Error ? error.message : String(error));
             const finalized = await logStore.finalize(handle).catch(() => null);
-            const finishedAtStr = new Date().toISOString();
+            const finishedAt = new Date();
             await db
               .update(workspaceOperations)
               .set({
@@ -185,8 +185,8 @@ export function workspaceOperationService(db: Db) {
                 logBytes: finalized?.bytes ?? null,
                 logSha256: finalized?.sha256 ?? null,
                 logCompressed: finalized?.compressed ?? false,
-                finishedAt: finishedAtStr as any,
-                updatedAt: finishedAtStr as any,
+                finishedAt,
+                updatedAt: finishedAt,
               })
               .where(eq(workspaceOperations.id, id));
             throw error;

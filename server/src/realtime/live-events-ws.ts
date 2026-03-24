@@ -165,7 +165,7 @@ async function authorizeUpgrade(
 
   await db
     .update(agentApiKeys)
-    .set({ lastUsedAt: new Date().toISOString() as any })
+    .set({ lastUsedAt: new Date() })
     .where(eq(agentApiKeys.id, key.id));
 
   return {

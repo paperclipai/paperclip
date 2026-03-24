@@ -1217,7 +1217,7 @@ export function heartbeatService(db: Db) {
           sessionDisplayId: input.sessionDisplayId,
           lastRunId: input.lastRunId,
           lastError: input.lastError,
-          updatedAt: new Date().toISOString() as any,
+          updatedAt: new Date(),
         })
         .where(eq(agentTaskSessions.id, existing.id))
         .returning()
@@ -1284,10 +1284,9 @@ export function heartbeatService(db: Db) {
     status: string,
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
   ) {
-    const now = new Date().toISOString();
     const updated = await db
       .update(heartbeatRuns)
-      .set({ status, ...patch, updatedAt: now as any })
+      .set({ status, ...patch, updatedAt: new Date() })
       .where(eq(heartbeatRuns.id, runId))
       .returning()
       .then((rows) => rows[0] ?? null);
@@ -1319,10 +1318,9 @@ export function heartbeatService(db: Db) {
     patch?: Partial<typeof agentWakeupRequests.$inferInsert>,
   ) {
     if (!wakeupRequestId) return;
-    const now = new Date().toISOString();
     await db
       .update(agentWakeupRequests)
-      .set({ status, ...patch, updatedAt: now as any })
+      .set({ status, ...patch, updatedAt: new Date() })
       .where(eq(agentWakeupRequests.id, wakeupRequestId));
   }
 
@@ -1416,13 +1414,12 @@ export function heartbeatService(db: Db) {
     }
 
     const claimedAt = new Date();
-    const claimedAtStr = claimedAt.toISOString();
     const claimed = await db
       .update(heartbeatRuns)
       .set({
         status: "running",
-        startedAt: (run.startedAt ?? claimedAtStr) as any,
-        updatedAt: claimedAtStr as any,
+        startedAt: run.startedAt ?? claimedAt,
+        updatedAt: claimedAt,
       })
       .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
       .returning()
@@ -1468,14 +1465,12 @@ export function heartbeatService(db: Db) {
           ? "idle"
           : "error";
 
-    const nowStr = new Date().toISOString();
     const updated = await db
       .update(agents)
       .set({
         status: nextStatus,
-        // postgres.js requires ISO strings for timestamp parameters, not Date objects
-        lastHeartbeatAt: nowStr as any,
-        updatedAt: nowStr as any,
+        lastHeartbeatAt: new Date(),
+        updatedAt: new Date(),
       })
       .where(eq(agents.id, agentId))
       .returning()
@@ -1518,14 +1513,13 @@ export function heartbeatService(db: Db) {
         if (now.getTime() - refTime < staleThresholdMs) continue;
       }
 
-      // postgres.js requires timestamp params as ISO strings, not Date objects
       await setRunStatus(run.id, "failed", {
         error: "Process lost -- server may have restarted",
         errorCode: "process_lost",
-        finishedAt: now.toISOString() as any,
+        finishedAt: now,
       });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
-        finishedAt: now.toISOString() as any,
+        finishedAt: now,
         error: "Process lost -- server may have restarted",
       });
       const updatedRun = await getRun(run.id);
@@ -1579,8 +1573,8 @@ export function heartbeatService(db: Db) {
           executionRunId: null,
           executionAgentNameKey: null,
           executionLockedAt: null,
-          processLostRetryAt: retryAt.toISOString() as any,
-          updatedAt: new Date().toISOString() as any,
+          processLostRetryAt: retryAt,
+          updatedAt: new Date(),
         })
         .where(eq(issues.id, issue.id));
 
@@ -1597,12 +1591,11 @@ export function heartbeatService(db: Db) {
    */
   async function enqueueProcessLostRetries() {
     const now = new Date();
-    const nowStr = now.toISOString();
 
     const dueIssues = await db
       .select()
       .from(issues)
-      .where(sql`${issues.processLostRetryAt} IS NOT NULL AND ${issues.processLostRetryAt} <= ${nowStr}`)
+      .where(sql`${issues.processLostRetryAt} IS NOT NULL AND ${issues.processLostRetryAt} <= ${now}`)
       .limit(100);
 
     const enqueued: string[] = [];
@@ -1614,7 +1607,7 @@ export function heartbeatService(db: Db) {
           logger.warn({ issueId: issue.id }, "cannot enqueue process_lost retry: assignee agent not found");
           await db
             .update(issues)
-            .set({ processLostRetryAt: null, updatedAt: nowStr as any })
+            .set({ processLostRetryAt: null, updatedAt: new Date() })
             .where(eq(issues.id, issue.id));
           continue;
         }
@@ -1623,14 +1616,14 @@ export function heartbeatService(db: Db) {
           logger.warn({ issueId: issue.id, agentStatus: agent.status }, "cannot enqueue process_lost retry: agent not in valid state");
           await db
             .update(issues)
-            .set({ processLostRetryAt: null, updatedAt: nowStr as any })
+            .set({ processLostRetryAt: null, updatedAt: new Date() })
             .where(eq(issues.id, issue.id));
           continue;
         }
 
         await db
           .update(issues)
-          .set({ processLostRetryAt: null, updatedAt: nowStr as any })
+          .set({ processLostRetryAt: null, updatedAt: new Date() })
           .where(eq(issues.id, issue.id));
 
         const run = await db.transaction(async (tx) => {
@@ -1832,7 +1825,7 @@ export function heartbeatService(db: Db) {
         totalOutputTokens: sql`${agentRuntimeState.totalOutputTokens} + ${outputTokens}`,
         totalCachedInputTokens: sql`${agentRuntimeState.totalCachedInputTokens} + ${cachedInputTokens}`,
         totalCostCents: sql`${agentRuntimeState.totalCostCents} + ${additionalCostCents}`,
-        updatedAt: new Date().toISOString() as any,
+        updatedAt: new Date(),
       })
       .where(eq(agentRuntimeState.agentId, agent.id));
 
@@ -1851,7 +1844,7 @@ export function heartbeatService(db: Db) {
         cachedInputTokens,
         outputTokens,
         costCents: additionalCostCents,
-        occurredAt: new Date().toISOString() as any,
+        occurredAt: new Date(),
       });
     }
   }
@@ -1914,10 +1907,10 @@ export function heartbeatService(db: Db) {
       await setRunStatus(runId, "failed", {
         error: "Agent not found",
         errorCode: "agent_not_found",
-        finishedAt: new Date().toISOString() as any,
+        finishedAt: new Date(),
       });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
-        finishedAt: new Date().toISOString() as any,
+        finishedAt: new Date(),
         error: "Agent not found",
       });
       const failedRun = await getRun(runId);
@@ -2059,7 +2052,7 @@ export function heartbeatService(db: Db) {
             providerType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "local_fs",
             providerRef: executionWorkspace.worktreePath,
             status: "active",
-            lastUsedAt: new Date().toISOString() as any,
+            lastUsedAt: new Date(),
             metadata: {
               ...(existingExecutionWorkspace.metadata ?? {}),
               source: executionWorkspace.source,
@@ -2089,8 +2082,8 @@ export function heartbeatService(db: Db) {
               branchName: executionWorkspace.branchName,
               providerType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "local_fs",
               providerRef: executionWorkspace.worktreePath,
-              lastUsedAt: new Date().toISOString() as any,
-              openedAt: new Date().toISOString() as any,
+              lastUsedAt: new Date(),
+              openedAt: new Date(),
               metadata: {
                 source: executionWorkspace.source,
                 createdByRuntime: executionWorkspace.created,
@@ -2162,7 +2155,7 @@ export function heartbeatService(db: Db) {
         .update(heartbeatRuns)
         .set({
           contextSnapshot: context,
-          updatedAt: new Date().toISOString() as any,
+          updatedAt: new Date(),
         })
         .where(eq(heartbeatRuns.id, run.id));
     }
@@ -2263,18 +2256,14 @@ export function heartbeatService(db: Db) {
     let stdoutExcerpt = "";
     let stderrExcerpt = "";
     try {
-      const now = new Date();
-      const nowStr = now.toISOString();
-      // postgres.js requires ISO strings for timestamp parameters
-      // run.startedAt comes from DB as string; ensure it's always a string
-      const startedAtStr = typeof run.startedAt === 'string' ? run.startedAt : nowStr;
+      const startedAt = run.startedAt ?? new Date();
       const runningWithSession = await db
         .update(heartbeatRuns)
         .set({
-          startedAt: startedAtStr as any,
+          startedAt,
           sessionIdBefore: runtimeForAdapter.sessionDisplayId ?? runtimeForAdapter.sessionId,
           contextSnapshot: context,
-          updatedAt: nowStr as any,
+          updatedAt: new Date(),
         })
         .where(eq(heartbeatRuns.id, run.id))
         .returning()
@@ -2283,7 +2272,7 @@ export function heartbeatService(db: Db) {
 
       const runningAgent = await db
         .update(agents)
-        .set({ status: "running", updatedAt: nowStr as any })
+        .set({ status: "running", updatedAt: new Date() })
         .where(eq(agents.id, agent.id))
         .returning()
         .then((rows) => rows[0] ?? null);
@@ -2319,7 +2308,7 @@ export function heartbeatService(db: Db) {
         .set({
           logStore: handle.store,
           logRef: handle.logRef,
-          updatedAt: new Date().toISOString() as any,
+          updatedAt: new Date(),
         })
         .where(eq(heartbeatRuns.id, runId));
 
@@ -2387,7 +2376,7 @@ export function heartbeatService(db: Db) {
           .update(heartbeatRuns)
           .set({
             contextSnapshot: context,
-            updatedAt: new Date().toISOString() as any,
+            updatedAt: new Date(),
           })
           .where(eq(heartbeatRuns.id, run.id));
       }
@@ -2475,7 +2464,7 @@ export function heartbeatService(db: Db) {
           .update(heartbeatRuns)
           .set({
             contextSnapshot: context,
-            updatedAt: new Date().toISOString() as any,
+            updatedAt: new Date(),
           })
           .where(eq(heartbeatRuns.id, run.id));
         if (issueId) {
@@ -2565,7 +2554,7 @@ export function heartbeatService(db: Db) {
           : null;
 
       await setRunStatus(run.id, status, {
-        finishedAt: new Date().toISOString() as any,
+        finishedAt: new Date(),
         error:
           outcome === "succeeded"
             ? null
@@ -2593,7 +2582,7 @@ export function heartbeatService(db: Db) {
       });
 
       await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
-        finishedAt: new Date().toISOString() as any,
+        finishedAt: new Date(),
         error: adapterResult.errorMessage ?? null,
       });
 
@@ -2653,7 +2642,7 @@ export function heartbeatService(db: Db) {
       const failedRun = await setRunStatus(run.id, "failed", {
         error: message,
         errorCode: "adapter_failed",
-        finishedAt: new Date().toISOString() as any,
+        finishedAt: new Date(),
         stdoutExcerpt,
         stderrExcerpt,
         logBytes: logSummary?.bytes,
@@ -2661,7 +2650,7 @@ export function heartbeatService(db: Db) {
         logCompressed: logSummary?.compressed ?? false,
       });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
-        finishedAt: new Date().toISOString() as any,
+        finishedAt: new Date(),
         error: message,
       });
 
@@ -2707,10 +2696,10 @@ export function heartbeatService(db: Db) {
           await setRunStatus(runId, "failed", {
             error: message,
             errorCode: "adapter_failed",
-            finishedAt: new Date().toISOString() as any,
+            finishedAt: new Date(),
           }).catch(() => undefined);
           await setWakeupStatus(run.wakeupRequestId, "failed", {
-            finishedAt: new Date().toISOString() as any,
+            finishedAt: new Date(),
             error: message,
           }).catch(() => undefined);
           const failedRun = await getRun(runId).catch(() => null);
@@ -2758,7 +2747,7 @@ export function heartbeatService(db: Db) {
           executionRunId: null,
           executionAgentNameKey: null,
           executionLockedAt: null,
-          updatedAt: new Date().toISOString() as any,
+          updatedAt: new Date(),
         })
         .where(eq(issues.id, issue.id));
 
@@ -2796,9 +2785,9 @@ export function heartbeatService(db: Db) {
             .update(agentWakeupRequests)
             .set({
               status: "failed",
-              finishedAt: new Date().toISOString() as any,
+              finishedAt: new Date(),
               error: "Deferred wake could not be promoted: agent is not invokable",
-              updatedAt: new Date().toISOString() as any,
+              updatedAt: new Date(),
             })
             .where(eq(agentWakeupRequests.id, deferred.id));
           continue;
@@ -2857,7 +2846,6 @@ export function heartbeatService(db: Db) {
           .returning()
           .then((rows) => rows[0]);
 
-        const nowStr = now.toISOString();
         await tx
           .update(agentWakeupRequests)
           .set({
@@ -2867,7 +2855,7 @@ export function heartbeatService(db: Db) {
             claimedAt: null,
             finishedAt: null,
             error: null,
-            updatedAt: nowStr as any,
+            updatedAt: now,
           })
           .where(eq(agentWakeupRequests.id, deferred.id));
 
@@ -2876,8 +2864,8 @@ export function heartbeatService(db: Db) {
           .set({
             executionRunId: newRun.id,
             executionAgentNameKey: normalizeAgentNameKey(deferredAgent.name),
-            executionLockedAt: nowStr as any,
-            updatedAt: nowStr as any,
+            executionLockedAt: now,
+            updatedAt: now,
           })
           .where(eq(issues.id, issue.id));
 
@@ -2937,7 +2925,7 @@ export function heartbeatService(db: Db) {
         requestedByActorType: opts.requestedByActorType ?? null,
         requestedByActorId: opts.requestedByActorId ?? null,
         idempotencyKey: opts.idempotencyKey ?? null,
-        finishedAt: new Date().toISOString() as any,
+        finishedAt: new Date(),
       });
     };
 
@@ -3017,7 +3005,7 @@ export function heartbeatService(db: Db) {
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,
             idempotencyKey: opts.idempotencyKey ?? null,
-            finishedAt: new Date().toISOString() as any,
+            finishedAt: new Date(),
           });
           return { kind: "skipped" as const };
         }
@@ -3041,7 +3029,7 @@ export function heartbeatService(db: Db) {
               executionRunId: null,
               executionAgentNameKey: null,
               executionLockedAt: null,
-              updatedAt: new Date().toISOString() as any,
+              updatedAt: new Date(),
             })
             .where(eq(issues.id, issue.id));
         }
@@ -3071,15 +3059,13 @@ export function heartbeatService(db: Db) {
               .from(agents)
               .where(eq(agents.id, legacyRun.agentId))
               .then((rows) => rows[0] ?? null);
-            const nowStr = new Date().toISOString();
             await tx
               .update(issues)
               .set({
                 executionRunId: legacyRun.id,
                 executionAgentNameKey: normalizeAgentNameKey(legacyAgent?.name),
-                // postgres.js requires ISO strings for timestamp parameters, not Date objects
-                executionLockedAt: nowStr as any,
-                updatedAt: nowStr as any,
+                executionLockedAt: new Date(),
+                updatedAt: new Date(),
               })
               .where(eq(issues.id, issue.id));
           }
@@ -3110,7 +3096,7 @@ export function heartbeatService(db: Db) {
               .update(heartbeatRuns)
               .set({
                 contextSnapshot: mergedContextSnapshot,
-                updatedAt: new Date().toISOString() as any,
+                updatedAt: new Date(),
               })
               .where(eq(heartbeatRuns.id, activeExecutionRun.id))
               .returning()
@@ -3129,7 +3115,7 @@ export function heartbeatService(db: Db) {
               requestedByActorId: opts.requestedByActorId ?? null,
               idempotencyKey: opts.idempotencyKey ?? null,
               runId: mergedRun.id,
-              finishedAt: new Date().toISOString() as any,
+              finishedAt: new Date(),
             });
 
             return { kind: "coalesced" as const, run: mergedRun };
@@ -3175,7 +3161,7 @@ export function heartbeatService(db: Db) {
               .set({
                 payload: mergedDeferredPayload,
                 coalescedCount: (existingDeferred.coalescedCount ?? 0) + 1,
-                updatedAt: new Date().toISOString() as any,
+                updatedAt: new Date(),
               })
               .where(eq(agentWakeupRequests.id, existingDeferred.id));
 
@@ -3215,7 +3201,7 @@ export function heartbeatService(db: Db) {
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,
             idempotencyKey: opts.idempotencyKey ?? null,
-            finishedAt: new Date().toISOString() as any,
+            finishedAt: new Date(),
           });
           return { kind: "capped" as const };
         }
@@ -3256,19 +3242,17 @@ export function heartbeatService(db: Db) {
           .update(agentWakeupRequests)
           .set({
             runId: newRun.id,
-            updatedAt: new Date().toISOString() as any,
+            updatedAt: new Date(),
           })
           .where(eq(agentWakeupRequests.id, wakeupRequest.id));
 
-        const nowStr = new Date().toISOString();
         await tx
           .update(issues)
           .set({
             executionRunId: newRun.id,
             executionAgentNameKey: agentNameKey,
-            // postgres.js requires ISO strings for timestamp parameters, not Date objects
-            executionLockedAt: nowStr as any,
-            updatedAt: nowStr as any,
+            executionLockedAt: new Date(),
+            updatedAt: new Date(),
           })
           .where(eq(issues.id, issue.id));
 
@@ -3323,7 +3307,7 @@ export function heartbeatService(db: Db) {
         .update(heartbeatRuns)
         .set({
           contextSnapshot: mergedContextSnapshot,
-          updatedAt: new Date().toISOString() as any,
+          updatedAt: new Date(),
         })
         .where(eq(heartbeatRuns.id, coalescedTargetRun.id))
         .returning()
@@ -3342,7 +3326,7 @@ export function heartbeatService(db: Db) {
         requestedByActorId: opts.requestedByActorId ?? null,
         idempotencyKey: opts.idempotencyKey ?? null,
         runId: mergedRun.id,
-        finishedAt: new Date().toISOString() as any,
+        finishedAt: new Date(),
       });
       return mergedRun;
     }
@@ -3391,7 +3375,7 @@ export function heartbeatService(db: Db) {
       .update(agentWakeupRequests)
       .set({
         runId: newRun.id,
-        updatedAt: new Date().toISOString() as any,
+        updatedAt: new Date(),
       })
       .where(eq(agentWakeupRequests.id, wakeupRequest.id));
 
@@ -3498,14 +3482,13 @@ export function heartbeatService(db: Db) {
 
     if (wakeupIds.length === 0) return 0;
 
-    const nowStr = now.toISOString();
     await db
       .update(agentWakeupRequests)
       .set({
         status: "cancelled",
-        finishedAt: nowStr as any,
+        finishedAt: now,
         error: "Cancelled due to budget pause",
-        updatedAt: nowStr as any,
+        updatedAt: now,
       })
       .where(inArray(agentWakeupRequests.id, wakeupIds));
 
@@ -3527,13 +3510,13 @@ export function heartbeatService(db: Db) {
     }
 
     const cancelled = await setRunStatus(run.id, "cancelled", {
-      finishedAt: new Date().toISOString() as any,
+      finishedAt: new Date(),
       error: reason,
       errorCode: "cancelled",
     });
 
     await setWakeupStatus(run.wakeupRequestId, "cancelled", {
-      finishedAt: new Date().toISOString() as any,
+      finishedAt: new Date(),
       error: reason,
     });
 
@@ -3561,13 +3544,13 @@ export function heartbeatService(db: Db) {
 
     for (const run of runs) {
       await setRunStatus(run.id, "cancelled", {
-        finishedAt: new Date().toISOString() as any,
+        finishedAt: new Date(),
         error: reason,
         errorCode: "cancelled",
       });
 
       await setWakeupStatus(run.wakeupRequestId, "cancelled", {
-        finishedAt: new Date().toISOString() as any,
+        finishedAt: new Date(),
         error: reason,
       });
 
@@ -3679,7 +3662,7 @@ export function heartbeatService(db: Db) {
       const runtimePatch: Partial<typeof agentRuntimeState.$inferInsert> = {
         sessionId: null,
         lastError: null,
-        updatedAt: new Date().toISOString() as any,
+        updatedAt: new Date(),
       };
       if (!taskKey) {
         runtimePatch.stateJson = {};

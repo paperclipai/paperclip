@@ -144,7 +144,7 @@ export function pluginStateStore(db: Db) {
           namespace,
           stateKey: input.stateKey,
           valueJson: input.value,
-          updatedAt: new Date().toISOString() as any,
+          updatedAt: new Date(),
         })
         .onConflictDoUpdate({
           target: [
@@ -156,7 +156,7 @@ export function pluginStateStore(db: Db) {
           ],
           set: {
             valueJson: input.value,
-            updatedAt: new Date().toISOString() as any,
+            updatedAt: new Date(),
           },
         });
     },

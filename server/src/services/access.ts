@@ -115,8 +115,8 @@ export function accessService(db: Db) {
             permissionKey: grant.permissionKey,
             scope: grant.scope ?? null,
             grantedByUserId,
-            createdAt: new Date().toISOString() as any,
-            updatedAt: new Date().toISOString() as any,
+            createdAt: new Date(),
+            updatedAt: new Date(),
           })),
         );
       }
@@ -196,7 +196,7 @@ export function accessService(db: Db) {
       if (existing.status !== status || existing.membershipRole !== membershipRole) {
         const updated = await db
           .update(companyMemberships)
-          .set({ status, membershipRole, updatedAt: new Date().toISOString() as any })
+          .set({ status, membershipRole, updatedAt: new Date() })
           .where(eq(companyMemberships.id, existing.id))
           .returning()
           .then((rows) => rows[0] ?? null);
@@ -244,8 +244,8 @@ export function accessService(db: Db) {
           permissionKey: grant.permissionKey,
           scope: grant.scope ?? null,
           grantedByUserId,
-          createdAt: new Date().toISOString() as any,
-          updatedAt: new Date().toISOString() as any,
+          createdAt: new Date(),
+          updatedAt: new Date(),
         })),
       );
     });

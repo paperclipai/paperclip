@@ -55,7 +55,7 @@ export function workProductService(db: Db) {
         if (data.isPrimary) {
           await tx
             .update(issueWorkProducts)
-            .set({ isPrimary: false, updatedAt: new Date().toISOString() as any })
+            .set({ isPrimary: false, updatedAt: new Date() })
             .where(
               and(
                 eq(issueWorkProducts.companyId, companyId),
@@ -89,7 +89,7 @@ export function workProductService(db: Db) {
         if (patch.isPrimary === true) {
           await tx
             .update(issueWorkProducts)
-            .set({ isPrimary: false, updatedAt: new Date().toISOString() as any })
+            .set({ isPrimary: false, updatedAt: new Date() })
             .where(
               and(
                 eq(issueWorkProducts.companyId, existing.companyId),
@@ -101,7 +101,7 @@ export function workProductService(db: Db) {
 
         return await tx
           .update(issueWorkProducts)
-          .set({ ...patch, updatedAt: new Date().toISOString() as any })
+          .set({ ...patch, updatedAt: new Date() })
           .where(eq(issueWorkProducts.id, id))
           .returning()
           .then((rows) => rows[0] ?? null);

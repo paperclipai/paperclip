@@ -958,12 +958,12 @@ function toPersistedWorkspaceRuntimeService(record: RuntimeServiceRecord): typeo
     providerRef: record.providerRef,
     ownerAgentId: record.ownerAgentId,
     startedByRunId: record.startedByRunId,
-    lastUsedAt: new Date(record.lastUsedAt).toISOString() as any,
-    startedAt: new Date(record.startedAt).toISOString() as any,
-    stoppedAt: record.stoppedAt ? new Date(record.stoppedAt).toISOString() as any : null,
+    lastUsedAt: new Date(record.lastUsedAt),
+    startedAt: new Date(record.startedAt),
+    stoppedAt: record.stoppedAt ? new Date(record.stoppedAt) : null,
     stopPolicy: record.stopPolicy,
     healthStatus: record.healthStatus,
-    updatedAt: new Date().toISOString() as any,
+    updatedAt: new Date(),
   };
 }
 
@@ -1477,8 +1477,8 @@ export async function persistAdapterManagedRuntimeServices(input: {
 
   for (const ref of refs) {
     const existing = existingById.get(ref.id);
-    const startedAt = (existing?.startedAt instanceof Date ? existing.startedAt.toISOString() : existing?.startedAt ?? new Date(ref.startedAt).toISOString()) as any;
-    const createdAt = (existing?.createdAt instanceof Date ? existing.createdAt.toISOString() : existing?.createdAt ?? new Date().toISOString()) as any;
+    const startedAt = existing?.startedAt ?? new Date(ref.startedAt);
+    const createdAt = existing?.createdAt ?? new Date();
     await input.db
       .insert(workspaceRuntimeServices)
       .values({
@@ -1502,13 +1502,13 @@ export async function persistAdapterManagedRuntimeServices(input: {
         providerRef: ref.providerRef,
         ownerAgentId: ref.ownerAgentId,
         startedByRunId: ref.startedByRunId,
-        lastUsedAt: new Date(ref.lastUsedAt).toISOString() as any,
+        lastUsedAt: new Date(ref.lastUsedAt),
         startedAt,
-        stoppedAt: ref.stoppedAt ? new Date(ref.stoppedAt).toISOString() as any : null,
+        stoppedAt: ref.stoppedAt ? new Date(ref.stoppedAt) : null,
         stopPolicy: ref.stopPolicy,
         healthStatus: ref.healthStatus,
         createdAt,
-        updatedAt: new Date().toISOString() as any,
+        updatedAt: new Date(),
       })
       .onConflictDoUpdate({
         target: workspaceRuntimeServices.id,
@@ -1531,12 +1531,12 @@ export async function persistAdapterManagedRuntimeServices(input: {
           providerRef: ref.providerRef,
           ownerAgentId: ref.ownerAgentId,
           startedByRunId: ref.startedByRunId,
-          lastUsedAt: new Date(ref.lastUsedAt).toISOString() as any,
+          lastUsedAt: new Date(ref.lastUsedAt),
           startedAt,
-          stoppedAt: ref.stoppedAt ? new Date(ref.stoppedAt).toISOString() as any : null,
+          stoppedAt: ref.stoppedAt ? new Date(ref.stoppedAt) : null,
           stopPolicy: ref.stopPolicy,
           healthStatus: ref.healthStatus,
-          updatedAt: new Date().toISOString() as any,
+          updatedAt: new Date(),
         },
       });
   }

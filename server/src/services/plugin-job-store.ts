@@ -169,7 +169,7 @@ export function pluginJobStore(db: Db) {
         if (existing) {
           // Update schedule if it changed; re-activate if it was paused
           const updates: Record<string, unknown> = {
-            updatedAt: new Date().toISOString() as any,
+            updatedAt: new Date(),
           };
           if (existing.schedule !== schedule) {
             updates.schedule = schedule;
@@ -198,7 +198,7 @@ export function pluginJobStore(db: Db) {
         if (!declaredKeys.has(existing.jobKey) && existing.status !== "paused") {
           await db
             .update(pluginJobs)
-            .set({ status: "paused", updatedAt: new Date().toISOString() as any })
+            .set({ status: "paused", updatedAt: new Date() })
             .where(eq(pluginJobs.id, existing.id));
         }
       }
@@ -292,7 +292,7 @@ export function pluginJobStore(db: Db) {
     ): Promise<void> {
       await db
         .update(pluginJobs)
-        .set({ status, updatedAt: new Date().toISOString() as any })
+        .set({ status, updatedAt: new Date() })
         .where(eq(pluginJobs.id, jobId));
     },
 
@@ -316,7 +316,7 @@ export function pluginJobStore(db: Db) {
         .set({
           lastRunAt,
           nextRunAt,
-          updatedAt: new Date().toISOString() as any,
+          updatedAt: new Date(),
         })
         .where(eq(pluginJobs.id, jobId));
     },
@@ -374,7 +374,7 @@ export function pluginJobStore(db: Db) {
         .update(pluginJobRuns)
         .set({
           status: "running" as PluginJobRunStatus,
-          startedAt: new Date().toISOString() as any,
+          startedAt: new Date(),
         })
         .where(eq(pluginJobRuns.id, runId));
     },
@@ -396,7 +396,7 @@ export function pluginJobStore(db: Db) {
           status: input.status,
           error: input.error ?? null,
           durationMs: input.durationMs ?? null,
-          finishedAt: new Date().toISOString() as any,
+          finishedAt: new Date(),
         })
         .where(eq(pluginJobRuns.id, runId));
     },

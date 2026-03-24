@@ -87,7 +87,7 @@ export function executionWorkspaceService(db: Db) {
     update: async (id: string, patch: Partial<typeof executionWorkspaces.$inferInsert>) => {
       const row = await db
         .update(executionWorkspaces)
-        .set({ ...patch, updatedAt: new Date().toISOString() as any })
+        .set({ ...patch, updatedAt: new Date() })
         .where(eq(executionWorkspaces.id, id))
         .returning()
         .then((rows) => rows[0] ?? null);
