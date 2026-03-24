@@ -253,9 +253,13 @@ export type {
   CompanyPortabilityEnvInput,
   CompanyPortabilityFileEntry,
   CompanyPortabilityCompanyManifestEntry,
+  CompanyPortabilitySidebarOrder,
   CompanyPortabilityAgentManifestEntry,
   CompanyPortabilitySkillManifestEntry,
   CompanyPortabilityProjectManifestEntry,
+  CompanyPortabilityProjectWorkspaceManifestEntry,
+  CompanyPortabilityIssueRoutineTriggerManifestEntry,
+  CompanyPortabilityIssueRoutineManifestEntry,
   CompanyPortabilityIssueManifestEntry,
   CompanyPortabilityManifest,
   CompanyPortabilityExportResult,
@@ -484,6 +488,7 @@ export {
   portabilityIncludeSchema,
   portabilityEnvInputSchema,
   portabilityCompanyManifestEntrySchema,
+  portabilitySidebarOrderSchema,
   portabilityAgentManifestEntrySchema,
   portabilityManifestSchema,
   portabilitySourceSchema,
@@ -535,10 +540,15 @@ export { API_PREFIX, API } from "./api.js";
 export { normalizeAgentUrlKey, deriveAgentUrlKey, isUuidLike } from "./agent-url-key.js";
 export { deriveProjectUrlKey, normalizeProjectUrlKey } from "./project-url-key.js";
 export {
+  AGENT_MENTION_SCHEME,
   PROJECT_MENTION_SCHEME,
+  buildAgentMentionHref,
   buildProjectMentionHref,
+  extractAgentMentionIds,
+  parseAgentMentionHref,
   parseProjectMentionHref,
   extractProjectMentionIds,
+  type ParsedAgentMention,
   type ParsedProjectMention,
 } from "./project-mentions.js";
 

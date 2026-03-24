@@ -1,5 +1,6 @@
 import type {
   Company,
+  CompanyPortabilityExportRequest,
   CompanyPortabilityExportPreviewResult,
   CompanyPortabilityExportResult,
   CompanyPortabilityImportRequest,
@@ -37,41 +38,17 @@ export const companiesApi = {
   remove: (companyId: string) => api.delete<{ ok: true }>(`/companies/${companyId}`),
   exportBundle: (
     companyId: string,
-    data: {
-      include?: { company?: boolean; agents?: boolean; projects?: boolean; issues?: boolean };
-      agents?: string[];
-      skills?: string[];
-      projects?: string[];
-      issues?: string[];
-      projectIssues?: string[];
-      selectedFiles?: string[];
-    },
+    data: CompanyPortabilityExportRequest,
   ) =>
     api.post<CompanyPortabilityExportResult>(`/companies/${companyId}/export`, data),
   exportPreview: (
     companyId: string,
-    data: {
-      include?: { company?: boolean; agents?: boolean; projects?: boolean; issues?: boolean };
-      agents?: string[];
-      skills?: string[];
-      projects?: string[];
-      issues?: string[];
-      projectIssues?: string[];
-      selectedFiles?: string[];
-    },
+    data: CompanyPortabilityExportRequest,
   ) =>
     api.post<CompanyPortabilityExportPreviewResult>(`/companies/${companyId}/exports/preview`, data),
   exportPackage: (
     companyId: string,
-    data: {
-      include?: { company?: boolean; agents?: boolean; projects?: boolean; issues?: boolean };
-      agents?: string[];
-      skills?: string[];
-      projects?: string[];
-      issues?: string[];
-      projectIssues?: string[];
-      selectedFiles?: string[];
-    },
+    data: CompanyPortabilityExportRequest,
   ) =>
     api.post<CompanyPortabilityExportResult>(`/companies/${companyId}/exports`, data),
   importPreview: (data: CompanyPortabilityPreviewRequest) =>

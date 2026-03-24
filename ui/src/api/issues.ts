@@ -18,6 +18,7 @@ export const issuesApi = {
       status?: string;
       projectId?: string;
       assigneeAgentId?: string;
+      participantAgentId?: string;
       assigneeUserId?: string;
       touchedByUserId?: string;
       unreadForUserId?: string;
@@ -32,6 +33,7 @@ export const issuesApi = {
     if (filters?.status) params.set("status", filters.status);
     if (filters?.projectId) params.set("projectId", filters.projectId);
     if (filters?.assigneeAgentId) params.set("assigneeAgentId", filters.assigneeAgentId);
+    if (filters?.participantAgentId) params.set("participantAgentId", filters.participantAgentId);
     if (filters?.assigneeUserId) params.set("assigneeUserId", filters.assigneeUserId);
     if (filters?.touchedByUserId) params.set("touchedByUserId", filters.touchedByUserId);
     if (filters?.unreadForUserId) params.set("unreadForUserId", filters.unreadForUserId);

@@ -40,6 +40,12 @@ pnpm paperclipai agent local-cli codexcoder --company-id <company-id>
 
 This installs any missing skills, creates an agent API key, and prints shell exports to run as that agent.
 
+## Instructions Resolution
+
+If `instructionsFilePath` is configured, Paperclip reads that file and prepends it to the stdin prompt sent to `codex exec` on every run.
+
+This is separate from any workspace-level instruction discovery that Codex itself performs in the run `cwd`. Paperclip does not disable Codex-native repo instruction files, so a repo-local `AGENTS.md` may still be loaded by Codex in addition to the Paperclip-managed agent instructions.
+
 ## Environment Test
 
 The environment test checks:

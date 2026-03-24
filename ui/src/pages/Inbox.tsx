@@ -15,7 +15,7 @@ import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { IssueRow } from "../components/IssueRow";
-import { PriorityIcon } from "../components/PriorityIcon";
+
 import { StatusIcon } from "../components/StatusIcon";
 import { StatusBadge } from "../components/StatusBadge";
 import { approvalLabel, defaultTypeIcon, typeIcon } from "../components/ApprovalPayload";
@@ -36,6 +36,7 @@ import {
   XCircle,
   X,
   RotateCcw,
+  UserPlus,
 } from "lucide-react";
 import { PageTabBar } from "../components/PageTabBar";
 import type { Approval, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
@@ -61,7 +62,6 @@ type InboxCategoryFilter =
   | "alerts";
 type SectionKey =
   | "work_items"
-  | "join_requests"
   | "alerts";
 
 function firstNonEmptyLine(value: string | null | undefined): string | null {
@@ -281,6 +281,84 @@ function ApprovalInboxRow({
   );
 }
 
+function JoinRequestInboxRow({
+  joinRequest,
+  onApprove,
+  onReject,
+  isPending,
+}: {
+  joinRequest: JoinRequest;
+  onApprove: () => void;
+  onReject: () => void;
+  isPending: boolean;
+}) {
+  const label =
+    joinRequest.requestType === "human"
+      ? "Human join request"
+      : `Agent join request${joinRequest.agentName ? `: ${joinRequest.agentName}` : ""}`;
+
+  return (
+    <div className="border-b border-border px-2 py-2.5 last:border-b-0 sm:px-1 sm:pr-3 sm:py-2">
+      <div className="flex items-start gap-2 sm:items-center">
+        <div className="flex min-w-0 flex-1 items-start gap-2">
+          <span className="hidden h-2 w-2 shrink-0 sm:inline-flex" aria-hidden="true" />
+          <span className="hidden h-3.5 w-3.5 shrink-0 sm:inline-flex" aria-hidden="true" />
+          <span className="mt-0.5 shrink-0 rounded-md bg-muted p-1.5 sm:mt-0">
+            <UserPlus className="h-4 w-4 text-muted-foreground" />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="line-clamp-2 text-sm font-medium sm:truncate sm:line-clamp-none">
+              {label}
+            </span>
+            <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+              <span>requested {timeAgo(joinRequest.createdAt)} from IP {joinRequest.requestIp}</span>
+              {joinRequest.adapterType && <span>adapter: {joinRequest.adapterType}</span>}
+            </span>
+          </span>
+        </div>
+        <div className="hidden shrink-0 items-center gap-2 sm:flex">
+          <Button
+            size="sm"
+            className="h-8 bg-green-700 px-3 text-white hover:bg-green-600"
+            onClick={onApprove}
+            disabled={isPending}
+          >
+            Approve
+          </Button>
+          <Button
+            variant="destructive"
+            size="sm"
+            className="h-8 px-3"
+            onClick={onReject}
+            disabled={isPending}
+          >
+            Reject
+          </Button>
+        </div>
+      </div>
+      <div className="mt-3 flex gap-2 sm:hidden">
+        <Button
+          size="sm"
+          className="h-8 bg-green-700 px-3 text-white hover:bg-green-600"
+          onClick={onApprove}
+          disabled={isPending}
+        >
+          Approve
+        </Button>
+        <Button
+          variant="destructive"
+          size="sm"
+          className="h-8 px-3"
+          onClick={onReject}
+          disabled={isPending}
+        >
+          Reject
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export function Inbox() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -431,14 +509,22 @@ export function Inbox() {
     return failedRuns;
   }, [failedRuns, tab, showFailedRunsCategory]);
 
+  const joinRequestsForTab = useMemo(() => {
+    if (tab === "all" && !showJoinRequestsCategory) return [];
+    if (tab === "recent") return joinRequests;
+    if (tab === "unread") return joinRequests;
+    return joinRequests;
+  }, [joinRequests, tab, showJoinRequestsCategory]);
+
   const workItemsToRender = useMemo(
     () =>
       getInboxWorkItems({
         issues: tab === "all" && !showTouchedCategory ? [] : issuesToRender,
         approvals: tab === "all" && !showApprovalsCategory ? [] : approvalsToRender,
         failedRuns: failedRunsForTab,
+        joinRequests: joinRequestsForTab,
       }),
-    [approvalsToRender, issuesToRender, showApprovalsCategory, showTouchedCategory, tab, failedRunsForTab],
+    [approvalsToRender, issuesToRender, showApprovalsCategory, showTouchedCategory, tab, failedRunsForTab, joinRequestsForTab],
   );
 
   const agentName = (id: string | null) => {
@@ -602,10 +688,7 @@ export function Inbox() {
     dashboard.costs.monthUtilizationPercent >= 80 &&
     !dismissed.has("alert:budget");
   const hasAlerts = showAggregateAgentError || showBudgetAlert;
-  const hasJoinRequests = joinRequests.length > 0;
   const showWorkItemsSection = workItemsToRender.length > 0;
-  const showJoinRequestsSection =
-    tab === "all" ? showJoinRequestsCategory && hasJoinRequests : tab === "unread" && hasJoinRequests;
   const showAlertsSection = shouldShowInboxSection({
     tab,
     hasItems: hasAlerts,
@@ -616,7 +699,6 @@ export function Inbox() {
 
   const visibleSections = [
     showAlertsSection ? "alerts" : null,
-    showJoinRequestsSection ? "join_requests" : null,
     showWorkItemsSection ? "work_items" : null,
   ].filter((key): key is SectionKey => key !== null);
 
@@ -757,6 +839,18 @@ export function Inbox() {
                   );
                 }
 
+                if (item.kind === "join_request") {
+                  return (
+                    <JoinRequestInboxRow
+                      key={`join:${item.joinRequest.id}`}
+                      joinRequest={item.joinRequest}
+                      onApprove={() => approveJoinMutation.mutate(item.joinRequest)}
+                      onReject={() => rejectJoinMutation.mutate(item.joinRequest)}
+                      isPending={approveJoinMutation.isPending || rejectJoinMutation.isPending}
+                    />
+                  );
+                }
+
                 const issue = item.issue;
                 const isUnread = issue.isUnreadForMe && !fadingOutIssues.has(issue.id);
                 const isFading = fadingOutIssues.has(issue.id);
@@ -767,9 +861,6 @@ export function Inbox() {
                     issueLinkState={issueLinkState}
                     desktopMetaLeading={(
                       <>
-                        <span className="hidden sm:inline-flex">
-                          <PriorityIcon priority={issue.priority} />
-                        </span>
                         <span className="hidden shrink-0 sm:inline-flex">
                           <StatusIcon status={issue.status} />
                         </span>
@@ -808,61 +899,6 @@ export function Inbox() {
           </div>
         </>
       )}
-
-      {showJoinRequestsSection && (
-        <>
-          {showSeparatorBefore("join_requests") && <Separator />}
-          <div>
-            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              Join Requests
-            </h3>
-            <div className="grid gap-3">
-              {joinRequests.map((joinRequest) => (
-                <div key={joinRequest.id} className="rounded-xl border border-border bg-card p-4">
-                  <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                    <div className="space-y-1">
-                      <p className="text-sm font-medium">
-                        {joinRequest.requestType === "human"
-                          ? "Human join request"
-                          : `Agent join request${joinRequest.agentName ? `: ${joinRequest.agentName}` : ""}`}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        requested {timeAgo(joinRequest.createdAt)} from IP {joinRequest.requestIp}
-                      </p>
-                      {joinRequest.requestEmailSnapshot && (
-                        <p className="text-xs text-muted-foreground">
-                          email: {joinRequest.requestEmailSnapshot}
-                        </p>
-                      )}
-                      {joinRequest.adapterType && (
-                        <p className="text-xs text-muted-foreground">adapter: {joinRequest.adapterType}</p>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={approveJoinMutation.isPending || rejectJoinMutation.isPending}
-                        onClick={() => rejectJoinMutation.mutate(joinRequest)}
-                      >
-                        Reject
-                      </Button>
-                      <Button
-                        size="sm"
-                        disabled={approveJoinMutation.isPending || rejectJoinMutation.isPending}
-                        onClick={() => approveJoinMutation.mutate(joinRequest)}
-                      >
-                        Approve
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </>
-      )}
-
 
       {showAlertsSection && (
         <>

@@ -45,17 +45,21 @@ function matchesFilter(status: string, tab: FilterTab, showTerminated: boolean):
 }
 
 function filterAgents(agents: Agent[], tab: FilterTab, showTerminated: boolean): Agent[] {
-  return agents.filter((a) => matchesFilter(a.status, tab, showTerminated));
+  return agents
+    .filter((a) => matchesFilter(a.status, tab, showTerminated))
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function filterOrgTree(nodes: OrgNode[], tab: FilterTab, showTerminated: boolean): OrgNode[] {
-  return nodes.reduce<OrgNode[]>((acc, node) => {
-    const filteredReports = filterOrgTree(node.reports, tab, showTerminated);
-    if (matchesFilter(node.status, tab, showTerminated) || filteredReports.length > 0) {
-      acc.push({ ...node, reports: filteredReports });
-    }
-    return acc;
-  }, []);
+  return nodes
+    .reduce<OrgNode[]>((acc, node) => {
+      const filteredReports = filterOrgTree(node.reports, tab, showTerminated);
+      if (matchesFilter(node.status, tab, showTerminated) || filteredReports.length > 0) {
+        acc.push({ ...node, reports: filteredReports });
+      }
+      return acc;
+    }, [])
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export function Agents() {

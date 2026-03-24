@@ -35,8 +35,8 @@
     "test:release-smoke:headed": "npx playwright test --config tests/release-smoke/playwright.config.ts --headed"
   },
   "devDependencies": {
-    "cross-env": "^10.1.0",
     "@playwright/test": "^1.58.2",
+    "cross-env": "^10.1.0",
     "esbuild": "^0.27.3",
     "typescript": "^5.7.3",
     "vitest": "^3.0.5"
@@ -44,5 +44,10 @@
   "engines": {
     "node": ">=20"
   },
-  "packageManager": "pnpm@9.15.4"
+  "packageManager": "pnpm@9.15.4",
+  "pnpm": {
+    "patchedDependencies": {
+      "embedded-postgres@18.1.0-beta.16": "patches/embedded-postgres@18.1.0-beta.16.patch"
+    }
+  }
 }

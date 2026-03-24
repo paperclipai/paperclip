@@ -352,7 +352,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const combinedPath = path.join(skillsDir, "agent-instructions.md");
       await fs.writeFile(combinedPath, instructionsContent + pathDirective, "utf-8");
       effectiveInstructionsFilePath = combinedPath;
-      await onLog("stderr", `[paperclip] Loaded agent instructions file: ${instructionsFilePath}\n`);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       await onLog(
