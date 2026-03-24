@@ -102,10 +102,10 @@ export async function requireProjectPermission(
     return;
   }
 
+  // Agents bypass project-level checks — they're already gated by company-level
+  // permissions (issues:manage, tasks:assign, etc.). Project access control
+  // is for human users only.
   if (req.actor.type === "agent") {
-    if (!req.actor.agentId) throw forbidden("Agent authentication required");
-    const allowed = await access.hasProjectPermission(projectId, "agent", req.actor.agentId, permissionKey);
-    if (!allowed) throw forbidden(`Missing project permission: ${permissionKey}`);
     return;
   }
 
@@ -131,14 +131,10 @@ export async function requireProjectAccess(
     return;
   }
 
+  // Agents bypass project access checks — company membership is sufficient.
+  // Project-level visibility control is for human users only.
   if (req.actor.type === "agent") {
-    if (!req.actor.agentId) throw forbidden("Agent authentication required");
-    // Agents can access via project_members OR project_agents
-    const member = await access.getProjectMembership(projectId, "agent", req.actor.agentId);
-    if (member) return;
-    const assigned = await access.isAgentAssignedToProject(projectId, req.actor.agentId);
-    if (assigned) return;
-    throw forbidden("No access to this project");
+    return;
   }
 
   throw unauthorized();
