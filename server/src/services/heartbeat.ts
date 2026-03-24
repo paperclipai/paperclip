@@ -37,6 +37,12 @@ import {
   tripCircuitBreaker,
 } from "./circuit-breaker.js";
 import {
+  executeFallback,
+  parseFallbackConfig,
+  buildFallbackPrompt,
+  type FallbackResult,
+} from "./openrouter-fallback.js";
+import {
   buildWorkspaceReadyComment,
   cleanupExecutionWorkspaceArtifacts,
   ensureRuntimeServicesForRun,
@@ -47,6 +53,7 @@ import {
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
+import { autoResearchSkills, buildAutoResearchContext } from "./autoresearch.js";
 import { workspaceOperationService } from "./workspace-operations.js";
 import {
   buildExecutionWorkspaceAdapterConfig,
@@ -657,6 +664,56 @@ async function enrichContextWithDbContent(
       contextSnapshot.commentBody = row.body;
     }
   }
+}
+
+/**
+ * Build role-specific instructions injected into agent context.
+ * Helps leads delegate, CMO orchestrate marketing team, etc.
+ */
+function buildRoleBasedInstructions(
+  agent: { name: string; role: string; companyId: string },
+  _db: Db,
+): string | null {
+  const lines: string[] = [];
+
+  // Lead agents: auto-delegation instructions
+  if (agent.role === "project_lead") {
+    lines.push(
+      "## Auto-Delegation",
+      "Sen proje lead'isin. Bu gorevi alt gorevlere bol ve ilgili muhendislere ata.",
+      "Her sub-issue icin Paperclip API kullan: POST /api/companies/:companyId/issues",
+      "Sub-issue'larda parentId olarak bu issue'nun ID'sini kullan.",
+      "Rollere gore ata: Backend → backend_engineer, Frontend → frontend_engineer,",
+      "QA → qa_engineer, DevOps → devops, Designer → designer.",
+    );
+  }
+
+  // CMO: marketing team orchestration
+  if (agent.name === "EvoHaus CMO") {
+    lines.push(
+      "## CMO Delegasyon Talimati",
+      "Sen stratejik CMO'sun. Icerik uretimi, sosyal medya postlari,",
+      "materyal hazirlama gibi operasyonel gorevleri ekibine delege et:",
+      "- PAZARLAMA: icerik uretimi, sosyal medya",
+      "- REKLAM: reklam kampanyalari",
+      "- CRM: musteri iliskileri",
+      "- EMAIL: email kampanyalari",
+      "- WHATSAPP: WhatsApp iletisimi",
+      "Sen sadece strateji belirle ve onayla. Operasyonel isleri sub-issue olarak delege et.",
+    );
+  }
+
+  // COO: cross-cutting operations
+  if (agent.role === "coo") {
+    lines.push(
+      "## COO Operasyon Talimati",
+      "Cross-cutting workflow'lari yonet. n8n automation'lari, WhatsApp bildirimleri,",
+      "haftalik hatirlatmalar gibi gorevleri ilgili agent'lara delege et.",
+      "DEPLOY agent'i deploy islemleri icin, WHATSAPP agent'i mesajlasma icin kullan.",
+    );
+  }
+
+  return lines.length > 0 ? lines.join("\n") : null;
 }
 
 function mergeCoalescedContextSnapshot(
@@ -2575,6 +2632,38 @@ export function heartbeatService(db: Db) {
         } catch { /* non-fatal: vault may be unavailable */ }
       }
 
+      // --- Auto-Research: discover & inject skills based on task ---
+      const issueDesc = readNonEmptyString(context.issueDescription);
+      const issueTitle = readNonEmptyString(context.issueTitle);
+      if (issueDesc && run.invocationSource !== "timer") {
+        try {
+          const arResult = await autoResearchSkills({
+            issueTitle: issueTitle ?? "",
+            issueDescription: issueDesc,
+            agentId: agent.id,
+            agentName: agent.name,
+            agentRole: agent.role,
+            companyId: agent.companyId,
+            db,
+          });
+          const arContext = buildAutoResearchContext(arResult);
+          if (arContext) {
+            context.autoResearchSummary = arContext;
+          }
+        } catch (err) {
+          /* non-fatal: autoresearch failure should not block agent execution */
+          console.warn("[autoresearch] Failed:", err);
+        }
+      }
+
+      // --- Role-based context instructions ---
+      try {
+        const roleInstructions = buildRoleBasedInstructions(agent, db);
+        if (roleInstructions) {
+          context.paperclipRoleInstructions = roleInstructions;
+        }
+      } catch { /* non-fatal */ }
+
       // Inject knowledge digest — only when agent has an actual task
       const hasTask = Boolean(readNonEmptyString(context.issueDescription) || readNonEmptyString(context.taskKey));
       if (hasTask) {
@@ -2700,6 +2789,71 @@ export function heartbeatService(db: Db) {
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
       if (handle) {
         logSummary = await runLogStore.finalize(handle);
+      }
+
+      // ── OpenRouter free model fallback ──
+      let fallbackResult: FallbackResult | null = null;
+      if (outcome === "failed" || outcome === "timed_out") {
+        try {
+          const fallbackConfig = parseFallbackConfig(parseObject(agent.runtimeConfig));
+          const openrouterKey = process.env.OPENROUTER_API_KEY;
+          if (fallbackConfig && openrouterKey) {
+            logger.info(
+              { agentId: agent.id, runId: run.id, errorCode: adapterResult.errorCode, outcome },
+              "Primary adapter failed, attempting OpenRouter fallback",
+            );
+            const fallbackPrompt = buildFallbackPrompt(context, agent);
+            fallbackResult = await executeFallback({
+              config: fallbackConfig,
+              prompt: fallbackPrompt,
+              systemPrompt: `You are ${agent.name}, a ${agent.role} at EvoHaus. Complete the assigned task concisely.`,
+              apiKey: openrouterKey,
+            });
+            if (fallbackResult.success) {
+              logger.info({ agentId: agent.id, model: fallbackResult.model }, "OpenRouter fallback succeeded");
+              // Post fallback response as issue comment
+              const issueIdForFallback = readNonEmptyString(context.issueId);
+              if (issueIdForFallback && fallbackResult.response) {
+                try {
+                  await issuesSvc.addComment(
+                    issueIdForFallback,
+                    `**[Fallback: ${fallbackResult.model}]**\n\n${fallbackResult.response}`,
+                    { agentId: agent.id },
+                  );
+                } catch (commentErr) {
+                  logger.warn({ err: commentErr }, "Failed to post fallback comment");
+                }
+              }
+              // Record free model cost event ($0)
+              if (fallbackResult.tokensUsed) {
+                try {
+                  const costs = costService(db, budgetHooks);
+                  await costs.createEvent(agent.companyId, {
+                    heartbeatRunId: run.id,
+                    agentId: agent.id,
+                    issueId: readNonEmptyString(context.issueId) ?? undefined,
+                    projectId: readNonEmptyString(context.projectId) ?? undefined,
+                    provider: "openrouter",
+                    biller: "openrouter",
+                    billingType: "api",
+                    model: fallbackResult.model,
+                    inputTokens: fallbackResult.tokensUsed.input,
+                    cachedInputTokens: 0,
+                    outputTokens: fallbackResult.tokensUsed.output,
+                    costCents: 0,
+                    occurredAt: new Date(),
+                  });
+                } catch (costErr) {
+                  logger.warn({ err: costErr }, "Failed to record fallback cost event");
+                }
+              }
+            } else {
+              logger.warn({ agentId: agent.id, error: fallbackResult.error }, "OpenRouter fallback also failed");
+            }
+          }
+        } catch (fallbackErr) {
+          logger.warn({ err: fallbackErr, agentId: agent.id }, "Fallback execution failed (non-fatal)");
+        }
       }
 
       const status =
@@ -2852,17 +3006,21 @@ export function heartbeatService(db: Db) {
       }
       await finalizeAgentStatus(agent.id, outcome);
 
-      // Circuit breaker evaluation after run completes
-      try {
-        const cbConfig = resolveCircuitBreakerConfigForAdapter(agent.circuitBreakerConfig as Record<string, unknown> | null, agent.adapterType);
-        if (cbConfig.enabled) {
-          const cbEval = await evaluateCircuitBreaker(db, agent.id, cbConfig);
-          if (cbEval.tripped) {
-            await tripCircuitBreaker(db, agent.id, agent.companyId, cbEval.reason!);
+      // Circuit breaker evaluation after run completes — skip if fallback succeeded
+      if (fallbackResult?.success) {
+        logger.info({ agentId: agent.id, runId }, "Skipping circuit breaker — OpenRouter fallback succeeded");
+      } else {
+        try {
+          const cbConfig = resolveCircuitBreakerConfigForAdapter(agent.circuitBreakerConfig as Record<string, unknown> | null, agent.adapterType);
+          if (cbConfig.enabled) {
+            const cbEval = await evaluateCircuitBreaker(db, agent.id, cbConfig);
+            if (cbEval.tripped) {
+              await tripCircuitBreaker(db, agent.id, agent.companyId, cbEval.reason!);
+            }
           }
+        } catch (cbErr) {
+          logger.warn({ err: cbErr, agentId: agent.id, runId }, "circuit breaker evaluation failed (non-fatal)");
         }
-      } catch (cbErr) {
-        logger.warn({ err: cbErr, agentId: agent.id, runId }, "circuit breaker evaluation failed (non-fatal)");
       }
     } catch (err) {
       const message = redactCurrentUserText(
