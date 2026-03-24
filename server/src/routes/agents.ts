@@ -638,11 +638,20 @@ export function agentRoutes(db: Db) {
     }
   });
 
-  router.get("/companies/:companyId/adapters/:type/models", async (req, res) => {
+  router.post("/companies/:companyId/adapters/:type/models", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const type = req.params.type as string;
-    const models = await listAdapterModels(type);
+
+    const adapterConfig = (req.body?.adapterConfig ?? {}) as Record<string, unknown>;
+    const cwd = typeof adapterConfig.cwd === "string" ? adapterConfig.cwd : undefined;
+    const env = typeof adapterConfig.env === "object" && adapterConfig.env !== null
+      ? adapterConfig.env as Record<string, string>
+      : undefined;
+
+    console.log("[agents] POST /adapters/%s/models: cwd=%s, env keys=%s", type, cwd, env ? Object.keys(env).join(",") : "none");
+    const models = await listAdapterModels(type, { cwd, env });
+    console.log("[agents] POST /adapters/%s/models: returning %d models", type, models.length);
     res.json(models);
   });
 

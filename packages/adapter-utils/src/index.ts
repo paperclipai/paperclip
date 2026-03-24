@@ -23,6 +23,7 @@ export type {
   HireApprovedPayload,
   HireApprovedHookResult,
   ServerAdapterModule,
+  ListModelsContext,
   QuotaWindow,
   ProviderQuotaResult,
   TranscriptEntry,

@@ -89,7 +89,14 @@ export function NewAgent() {
     queryKey: selectedCompanyId
       ? queryKeys.agents.adapterModels(selectedCompanyId, configValues.adapterType)
       : ["agents", "none", "adapter-models", configValues.adapterType],
-    queryFn: () => agentsApi.adapterModels(selectedCompanyId!, configValues.adapterType),
+    queryFn: () => {
+      const adapterConfig: Record<string, unknown> = {};
+      if (configValues.cwd) adapterConfig.cwd = configValues.cwd;
+      if (configValues.envBindings && Object.keys(configValues.envBindings).length > 0) {
+        adapterConfig.env = configValues.envBindings;
+      }
+      return agentsApi.adapterModels(selectedCompanyId!, configValues.adapterType, adapterConfig);
+    },
     enabled: Boolean(selectedCompanyId),
   });
 

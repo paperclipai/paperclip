@@ -311,7 +311,21 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     queryKey: selectedCompanyId
       ? queryKeys.agents.adapterModels(selectedCompanyId, adapterType)
       : ["agents", "none", "adapter-models", adapterType],
-    queryFn: () => agentsApi.adapterModels(selectedCompanyId!, adapterType),
+    queryFn: () => {
+      const adapterConfig: Record<string, unknown> = {};
+      if (isCreate && val) {
+        if (val.cwd) adapterConfig.cwd = val.cwd;
+        if (val.envBindings && Object.keys(val.envBindings).length > 0) {
+          adapterConfig.env = val.envBindings;
+        }
+      } else if (!isCreate) {
+        if (config.cwd) adapterConfig.cwd = config.cwd;
+        if (config.env && Object.keys(config.env as Record<string, unknown>).length > 0) {
+          adapterConfig.env = config.env;
+        }
+      }
+      return agentsApi.adapterModels(selectedCompanyId!, adapterType, adapterConfig);
+    },
     enabled: Boolean(selectedCompanyId),
   });
   const models = fetchedModels ?? externalModels ?? [];

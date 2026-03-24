@@ -187,7 +187,23 @@ export function OnboardingWizard() {
     queryKey: createdCompanyId
       ? queryKeys.agents.adapterModels(createdCompanyId, adapterType)
       : ["agents", "none", "adapter-models", adapterType],
-    queryFn: () => agentsApi.adapterModels(createdCompanyId!, adapterType),
+    queryFn: () => {
+      const adapterConfig: Record<string, unknown> = {};
+      const effectiveCwd = command.trim() || (
+        adapterType === "codex_local"
+          ? "codex"
+          : adapterType === "gemini_local"
+            ? "gemini"
+          : adapterType === "pi_local"
+            ? "pi"
+          : adapterType === "cursor"
+            ? "agent"
+          : adapterType === "opencode_local"
+            ? "opencode"
+            : "claude"
+      );
+      return agentsApi.adapterModels(createdCompanyId!, adapterType, adapterConfig);
+    },
     enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 2
   });
   const isLocalAdapter =

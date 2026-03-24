@@ -26,4 +26,5 @@ export type {
   ResolvedSessionCompactionPolicy,
   SessionCompactionPolicy,
   ServerAdapterModule,
+  ListModelsContext,
 } from "@paperclipai/adapter-utils";

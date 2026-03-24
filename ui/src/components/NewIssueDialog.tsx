@@ -395,7 +395,18 @@ export function NewIssueDialog() {
       effectiveCompanyId && assigneeAdapterType
         ? queryKeys.agents.adapterModels(effectiveCompanyId, assigneeAdapterType)
         : ["agents", "none", "adapter-models", assigneeAdapterType ?? "none"],
-    queryFn: () => agentsApi.adapterModels(effectiveCompanyId!, assigneeAdapterType!),
+    queryFn: () => {
+      const adapterConfig: Record<string, unknown> = {};
+      const assigneeAgent = (agents ?? []).find((agent) => agent.id === selectedAssigneeAgentId);
+      if (assigneeAgent?.adapterConfig) {
+        const config = assigneeAgent.adapterConfig;
+        if (config.cwd) adapterConfig.cwd = config.cwd;
+        if (config.env && Object.keys(config.env as Record<string, unknown>).length > 0) {
+          adapterConfig.env = config.env;
+        }
+      }
+      return agentsApi.adapterModels(effectiveCompanyId!, assigneeAdapterType!, adapterConfig);
+    },
     enabled: Boolean(effectiveCompanyId) && newIssueOpen && supportsAssigneeOverrides,
   });
 

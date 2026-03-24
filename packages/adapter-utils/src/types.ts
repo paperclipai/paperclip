@@ -261,6 +261,11 @@ export interface ProviderQuotaResult {
   windows: QuotaWindow[];
 }
 
+export interface ListModelsContext {
+  cwd?: string;
+  env?: Record<string, string>;
+}
+
 export interface ServerAdapterModule {
   type: string;
   execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult>;
@@ -271,7 +276,7 @@ export interface ServerAdapterModule {
   sessionManagement?: import("./session-compaction.js").AdapterSessionManagement;
   supportsLocalAgentJwt?: boolean;
   models?: AdapterModel[];
-  listModels?: () => Promise<AdapterModel[]>;
+  listModels?: (ctx?: ListModelsContext) => Promise<AdapterModel[]>;
   agentConfigurationDoc?: string;
   /**
    * Optional lifecycle hook when an agent is approved/hired (join-request or hire_agent approval).

@@ -1430,7 +1430,15 @@ function ConfigurationTab({
       companyId
         ? queryKeys.agents.adapterModels(companyId, agent.adapterType)
         : ["agents", "none", "adapter-models", agent.adapterType],
-    queryFn: () => agentsApi.adapterModels(companyId!, agent.adapterType),
+    queryFn: () => {
+      const adapterConfig: Record<string, unknown> = {};
+      const config = agent.adapterConfig ?? {};
+      if (config.cwd) adapterConfig.cwd = config.cwd;
+      if (config.env && Object.keys(config.env as Record<string, unknown>).length > 0) {
+        adapterConfig.env = config.env;
+      }
+      return agentsApi.adapterModels(companyId!, agent.adapterType, adapterConfig);
+    },
     enabled: Boolean(companyId),
   });
 

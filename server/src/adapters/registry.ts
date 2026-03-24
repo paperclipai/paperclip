@@ -1,4 +1,4 @@
-import type { ServerAdapterModule } from "./types.js";
+import type { ServerAdapterModule, ListModelsContext } from "./types.js";
 import { getAdapterSessionManagement } from "@paperclipai/adapter-utils";
 import {
   execute as claudeExecute,
@@ -205,11 +205,11 @@ export function getServerAdapter(type: string): ServerAdapterModule {
   return adapter;
 }
 
-export async function listAdapterModels(type: string): Promise<{ id: string; label: string }[]> {
+export async function listAdapterModels(type: string, ctx?: ListModelsContext): Promise<{ id: string; label: string }[]> {
   const adapter = adaptersByType.get(type);
   if (!adapter) return [];
   if (adapter.listModels) {
-    const discovered = await adapter.listModels();
+    const discovered = await adapter.listModels(ctx);
     if (discovered.length > 0) return discovered;
   }
   return adapter.models ?? [];
