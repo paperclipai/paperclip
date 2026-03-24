@@ -85,6 +85,9 @@ const HELP_TEXT = `<b>🐳 Whales Market Data Analyst Bot</b>
 /trend — Daily trend 14 ngày
 /settle — Settlement rate overview
 /mom — Month-over-Month comparison
+/visual — Dashboard chart (daily)
+/visual weekly — Dashboard chart (weekly)
+/visual monthly — Dashboard chart (monthly)
 
 <b>💬 Free chat:</b>
 Hỏi bất kỳ câu hỏi nào về data — bot sẽ query database và phân tích.
@@ -345,6 +348,23 @@ async function main() {
           const q = "So sánh MoM (tháng này vs tháng trước): Filled Order Volume, total orders, unique wallets, new users, acquisition rate. Đánh giá từng metric.";
           console.log(`[${chatKey}] /mom`);
           await handleQuestion(chatId, q, chatKey, threadId);
+        } else if (cleanText.startsWith("/visual")) {
+          const arg = cleanText.replace("/visual", "").trim() || "daily";
+          const validPeriods = ["daily", "weekly", "monthly"];
+          const period = validPeriods.includes(arg) ? arg : "daily";
+          console.log(`[${chatKey}] /visual ${period}`);
+          await reply(chatId, `⏳ Generating ${period} visual report...`, threadId);
+          try {
+            const { execSync: exec } = await import("child_process");
+            exec(`npx tsx visual-report.ts ${period}`, {
+              cwd: "/Users/amando/Desktop/Learn/paperclip/scripts/report-agents",
+              timeout: 300_000,
+              env: { ...process.env, PATH: `${process.env.PATH}:/usr/local/bin:/opt/homebrew/bin` },
+              stdio: "pipe",
+            });
+          } catch (e: any) {
+            await reply(chatId, `❌ Visual report failed: ${e.message?.slice(0, 200)}`, threadId);
+          }
         } else if (cleanText.startsWith("/reset")) {
           const session = getSession(chatKey);
           session.sessionId = null;
