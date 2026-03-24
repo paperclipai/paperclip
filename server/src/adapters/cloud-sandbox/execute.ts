@@ -83,8 +83,13 @@ function resolveRuntimeCommand(runtime: string, model: string): string[] {
         ...(model ? ["--model", model] : [])];
     case "opencode":
       return ["opencode"];
+    case "gemini":
+      return ["gemini",
+        ...(model ? ["--model", model] : [])];
+    case "pi":
+      return ["pi-pods",
+        ...(model ? ["--model", model] : [])];
     default:
-      // multi — default to codex
       return ["codex", "--full-auto",
         ...(model ? ["--model", model] : [])];
   }

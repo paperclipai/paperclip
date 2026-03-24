@@ -28,7 +28,11 @@ RUN curl -fsSL "https://go.dev/dl/go${GOVERSION}.linux-$(dpkg --print-architectu
 ENV PATH="/usr/local/go/bin:/root/go/bin:${PATH}"
 
 # Install agent CLIs globally
-RUN npm install -g @openai/codex@latest 2>/dev/null || true \
+RUN npm install -g \
+    @openai/codex@latest \
+    @google/gemini-cli@latest \
+    @mariozechner/pi@latest \
+    2>/dev/null || true \
     && npm cache clean --force
 
 # Install OpenCode, then remove Go toolchain
