@@ -25,6 +25,7 @@ export function ApprovalDetail() {
   const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const [commentBody, setCommentBody] = useState("");
+  const [editorOverride, setEditorOverride] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [showRawPayload, setShowRawPayload] = useState(false);
 
@@ -140,6 +141,33 @@ export function ApprovalDetail() {
       navigate("/approvals");
     },
     onError: (err) => setError(err instanceof Error ? err.message : "Delete failed"),
+  });
+
+  const pushToKatyaMutation = useMutation({
+    mutationFn: async () => {
+      if (!approvalId || !approval) throw new Error("Approval not loaded");
+      const payload = approval.payload as Record<string, unknown>;
+      const fallbackDraft = getApprovalDraftText(payload) ?? "";
+      const chosenDraft = editorOverride.trim() || fallbackDraft;
+      if (approval.status === "pending") {
+        await approvalsApi.requestRevision(approvalId, "Revision requested and pushed to Katya");
+      }
+      const pushComment = [
+        "[PUSH_TO_KATYA]",
+        "Please revise this content using Pelergy voice rules and latest comments.",
+        "",
+        chosenDraft ? "Human-approved draft to use as source:\n" + chosenDraft : "No override draft provided; revise from current payload + comments.",
+        "",
+        "When revised, mark this approval as resubmitted.",
+      ].join("\n");
+      await approvalsApi.addComment(approvalId, pushComment);
+    },
+    onSuccess: () => {
+      setError(null);
+      setEditorOverride("");
+      refresh();
+    },
+    onError: (err) => setError(err instanceof Error ? err.message : "Push to Katya failed"),
   });
 
   if (isLoading) return <PageSkeleton variant="detail" />;
@@ -327,16 +355,46 @@ export function ApprovalDetail() {
       </div>
 
       {isStrategyApproval && (
-        <ApprovalDraftReviewPanel
-          draftText={draftText}
-          status={approval.status}
-          onApprove={() => approveMutation.mutate()}
-          onNeedsEdits={() => revisionMutation.mutate()}
-          onReject={() => rejectMutation.mutate()}
-          approvePending={approveMutation.isPending}
-          needsEditsPending={revisionMutation.isPending}
-          rejectPending={rejectMutation.isPending}
-        />
+        <>
+          <ApprovalDraftReviewPanel
+            draftText={draftText}
+            status={approval.status}
+            onApprove={() => approveMutation.mutate()}
+            onNeedsEdits={() => revisionMutation.mutate()}
+            onReject={() => rejectMutation.mutate()}
+            approvePending={approveMutation.isPending}
+            needsEditsPending={revisionMutation.isPending}
+            rejectPending={rejectMutation.isPending}
+          />
+
+          <section className="border border-border rounded-lg p-4 space-y-3">
+            <div>
+              <h3 className="text-sm font-semibold">Editor override (optional)</h3>
+              <p className="text-xs text-muted-foreground">
+                Paste your edited version, then click <strong>Push to Katya</strong>. Katya will revise from this text and comments.
+              </p>
+            </div>
+            <Textarea
+              value={editorOverride}
+              onChange={(e) => setEditorOverride(e.target.value)}
+              placeholder="Paste exact text you want Katya to use as source..."
+              rows={6}
+            />
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => pushToKatyaMutation.mutate()}
+                disabled={pushToKatyaMutation.isPending || approveMutation.isPending || rejectMutation.isPending}
+              >
+                {pushToKatyaMutation.isPending ? "Pushing…" : "Push to Katya"}
+              </Button>
+              <p className="text-xs text-muted-foreground">
+                This records a structured comment and keeps the approval in revision flow until resubmitted.
+              </p>
+            </div>
+          </section>
+        </>
       )}
 
       <div className="border border-border rounded-lg p-4 space-y-3">

@@ -3,15 +3,33 @@ import { formatCents } from "../lib/utils";
 
 export const typeLabel: Record<string, string> = {
   hire_agent: "Hire Agent",
-  approve_ceo_strategy: "CEO Strategy",
+  approve_ceo_strategy: "Content Approval",
   budget_override_required: "Budget Override",
 };
+
+function contentLaneFromPayload(payload?: Record<string, unknown> | null): string | null {
+  if (!payload) return null;
+  const lane = typeof payload.lane === "string" ? payload.lane : null;
+  const channel = typeof payload.channel === "string" ? payload.channel : null;
+  const category = typeof payload.category === "string" ? payload.category : null;
+  const title = typeof payload.title === "string" ? payload.title : null;
+
+  const raw = `${lane ?? ""} ${channel ?? ""} ${category ?? ""} ${title ?? ""}`.toLowerCase();
+  if (raw.includes("blog")) return "Blog";
+  if (raw.includes("linkedin") || raw.includes("x/") || raw.includes("x post") || raw.includes("social")) return "Social";
+  if (raw.includes("outreach") || raw.includes("email")) return "Outreach";
+  return null;
+}
 
 /** Build a contextual label for an approval, e.g. "Hire Agent: Designer" */
 export function approvalLabel(type: string, payload?: Record<string, unknown> | null): string {
   const base = typeLabel[type] ?? type;
   if (type === "hire_agent" && payload?.name) {
     return `${base}: ${String(payload.name)}`;
+  }
+  if (type === "approve_ceo_strategy") {
+    const lane = contentLaneFromPayload(payload);
+    return lane ? `${base} — ${lane}` : base;
   }
   return base;
 }
