@@ -951,10 +951,11 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
 
     const assigneeChanged = assigneeWillChange;
-    const statusChangedFromBacklog =
-      existing.status === "backlog" &&
-      issue.status !== "backlog" &&
-      req.body.status !== undefined;
+    const actionableStatuses = new Set(["todo", "in_progress"]);
+    const statusChangedToActionable =
+      req.body.status !== undefined &&
+      !actionableStatuses.has(existing.status) &&
+      actionableStatuses.has(issue.status);
 
     // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
     void (async () => {
@@ -972,7 +973,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
         });
       }
 
-      if (!assigneeChanged && statusChangedFromBacklog && issue.assigneeAgentId) {
+      if (!assigneeChanged && statusChangedToActionable && issue.assigneeAgentId) {
         wakeups.set(issue.assigneeAgentId, {
           source: "automation",
           triggerDetail: "system",
