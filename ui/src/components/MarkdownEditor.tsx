@@ -28,6 +28,7 @@ import {
   type RealmPlugin,
 } from "@mdxeditor/editor";
 import { buildProjectMentionHref, parseProjectMentionHref } from "@paperclipai/shared";
+import { Bot, User } from "lucide-react";
 import { cn } from "../lib/utils";
 
 /* ---- Mention types ---- */
@@ -35,7 +36,7 @@ import { cn } from "../lib/utils";
 export interface MentionOption {
   id: string;
   name: string;
-  kind?: "agent" | "project";
+  kind?: "agent" | "project" | "user";
   projectId?: string;
   projectColor?: string | null;
 }
@@ -150,6 +151,11 @@ function mentionMarkdown(option: MentionOption): string {
   if (option.kind === "project" && option.projectId) {
     return `[@${option.name}](${buildProjectMentionHref(option.projectId, option.projectColor ?? null)}) `;
   }
+  if (option.kind === "user") {
+    const userId = option.id.replace("user:", "");
+    return `[@${option.name}](user://${userId}) `;
+  }
+  // Agents: plain @mention
   return `@${option.name} `;
 }
 
@@ -293,11 +299,32 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     const links = editable.querySelectorAll("a");
     for (const node of links) {
       const link = node as HTMLAnchorElement;
-      const parsed = parseProjectMentionHref(link.getAttribute("href") ?? "");
+      const href = link.getAttribute("href") ?? "";
+
+      // User mention links (user://userId)
+      if (href.startsWith("user://")) {
+        link.dataset.userMention = "true";
+        link.classList.add("paperclip-user-mention-chip");
+        link.setAttribute("contenteditable", "false");
+        link.style.borderColor = "rgb(59 130 246 / 0.4)";
+        link.style.backgroundColor = "rgb(59 130 246 / 0.1)";
+        link.style.color = "rgb(59 130 246)";
+        continue;
+      }
+
+      const parsed = parseProjectMentionHref(href);
       if (!parsed) {
         if (link.dataset.projectMention === "true") {
           link.dataset.projectMention = "false";
           link.classList.remove("paperclip-project-mention-chip");
+          link.removeAttribute("contenteditable");
+          link.style.removeProperty("border-color");
+          link.style.removeProperty("background-color");
+          link.style.removeProperty("color");
+        }
+        if (link.dataset.userMention === "true") {
+          link.dataset.userMention = "false";
+          link.classList.remove("paperclip-user-mention-chip");
           link.removeAttribute("contenteditable");
           link.style.removeProperty("border-color");
           link.style.removeProperty("background-color");
@@ -385,6 +412,22 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         requestAnimationFrame(() => {
           ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
           decorateProjectMentions();
+        });
+        mentionStateRef.current = null;
+        setMentionState(null);
+        return;
+      }
+
+      if (option.kind === "user") {
+        const current = latestValueRef.current;
+        const next = applyMention(current, state.query, option);
+        if (next !== current) {
+          latestValueRef.current = next;
+          ref.current?.setMarkdown(next);
+          onChange(next);
+        }
+        requestAnimationFrame(() => {
+          ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
         });
         mentionStateRef.current = null;
         setMentionState(null);
@@ -594,13 +637,20 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                   className="inline-flex h-2 w-2 rounded-full border border-border/50"
                   style={{ backgroundColor: option.projectColor ?? "#64748b" }}
                 />
+              ) : option.kind === "user" ? (
+                <User className="h-3.5 w-3.5 text-blue-500" />
               ) : (
-                <span className="text-muted-foreground">@</span>
+                <Bot className="h-3.5 w-3.5 text-muted-foreground" />
               )}
               <span>{option.name}</span>
               {option.kind === "project" && option.projectId && (
                 <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
                   Project
+                </span>
+              )}
+              {option.kind === "user" && (
+                <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
+                  Member
                 </span>
               )}
             </button>

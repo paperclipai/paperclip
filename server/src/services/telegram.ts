@@ -389,6 +389,15 @@ async function handleActivityLogged(
     const issueTitle = (details.issueTitle as string) ?? "";
     const hasMention = /\B@[^\s@,!?.]+/.test(bodySnippet);
 
+    // Extract user://userId mentions from the comment body
+    const userMentionRegex = /\[.*?\]\(user:\/\/([^)]+)\)/g;
+    const mentionedUserIds: string[] = [];
+    let userMentionMatch;
+    while ((userMentionMatch = userMentionRegex.exec(bodySnippet)) !== null) {
+      mentionedUserIds.push(userMentionMatch[1]);
+    }
+    const hasUserMention = mentionedUserIds.length > 0;
+
     // "important" level (default): only notify when a human is involved
     if (notificationLevel !== "all") {
       // Check if the comment actor is a human
@@ -407,11 +416,11 @@ async function handleActivityLogged(
           // best-effort lookup
         }
       }
-      const isHumanInvolved = isHumanActor || hasHumanAssignee || hasMention;
+      const isHumanInvolved = isHumanActor || hasHumanAssignee || hasMention || hasUserMention;
       if (!isHumanInvolved) return;
     }
 
-    const mentionTag = hasMention ? " (has @mention)" : "";
+    const mentionTag = (hasMention || hasUserMention) ? " (has @mention)" : "";
     const actorLabel = p.agentId ?? p.actorId ?? "someone";
     const lines = [
       `\u{1F4AC} <b>Comment on ${escapeHtml(identifier)}</b>${mentionTag}`,

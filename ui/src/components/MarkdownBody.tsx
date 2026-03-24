@@ -47,6 +47,15 @@ export function MarkdownBody({ children, className }: MarkdownBodyProps) {
         remarkPlugins={[remarkGfm]}
         components={{
           a: ({ href, children: linkChildren }) => {
+            // User mention links (user://userId)
+            if (href?.startsWith("user://")) {
+              return (
+                <span className="inline-flex items-center rounded-full bg-blue-500/10 px-1.5 py-0.5 text-xs font-medium text-blue-600 dark:text-blue-400">
+                  {linkChildren}
+                </span>
+              );
+            }
+
             const parsed = href ? parseProjectMentionHref(href) : null;
             if (parsed) {
               const label = linkChildren;

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
+import { accessApi } from "../api/access";
 import { activityApi } from "../api/activity";
 import { heartbeatsApi } from "../api/heartbeats";
 import { agentsApi } from "../api/agents";
@@ -246,6 +247,11 @@ export function IssueDetail() {
     queryFn: () => projectsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const { data: teamMembers = [] } = useQuery({
+    queryKey: queryKeys.access.team(selectedCompanyId!),
+    queryFn: () => accessApi.listTeam(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const { orderedProjects } = useProjectOrder({
     projects: projects ?? [],
@@ -261,6 +267,14 @@ export function IssueDetail() {
 
   const mentionOptions = useMemo<MentionOption[]>(() => {
     const options: MentionOption[] = [];
+    // Team members (humans) — listed first
+    for (const member of teamMembers) {
+      options.push({
+        id: `user:${member.id}`,
+        name: member.displayName,
+        kind: "user",
+      });
+    }
     const activeAgents = [...(agents ?? [])]
       .filter((agent) => agent.status !== "terminated")
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -281,7 +295,7 @@ export function IssueDetail() {
       });
     }
     return options;
-  }, [agents, orderedProjects]);
+  }, [teamMembers, agents, orderedProjects]);
 
   const childIssues = useMemo(() => {
     if (!allIssues || !issue) return [];
