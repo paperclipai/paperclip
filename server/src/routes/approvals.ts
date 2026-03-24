@@ -16,7 +16,7 @@ import {
   logActivity,
   secretService,
 } from "../services/index.js";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, hasCompanyAccess, getActorInfo } from "./authz.js";
 import { redactEventPayload } from "../redaction.js";
 
 function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(approval: T): T {
@@ -45,11 +45,10 @@ export function approvalRoutes(db: Db) {
   router.get("/approvals/:id", async (req, res) => {
     const id = req.params.id as string;
     const approval = await svc.getById(id);
-    if (!approval) {
+    if (!approval || !hasCompanyAccess(req, approval.companyId)) {
       res.status(404).json({ error: "Approval not found" });
       return;
     }
-    assertCompanyAccess(req, approval.companyId);
     res.json(redactApprovalPayload(approval));
   });
 
@@ -109,11 +108,10 @@ export function approvalRoutes(db: Db) {
   router.get("/approvals/:id/issues", async (req, res) => {
     const id = req.params.id as string;
     const approval = await svc.getById(id);
-    if (!approval) {
+    if (!approval || !hasCompanyAccess(req, approval.companyId)) {
       res.status(404).json({ error: "Approval not found" });
       return;
     }
-    assertCompanyAccess(req, approval.companyId);
     const issues = await issueApprovalsSvc.listIssuesForApproval(id);
     res.json(issues);
   });
@@ -121,6 +119,11 @@ export function approvalRoutes(db: Db) {
   router.post("/approvals/:id/approve", validate(resolveApprovalSchema), async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
+      res.status(404).json({ error: "Approval not found" });
+      return;
+    }
     const { approval, applied } = await svc.approve(
       id,
       req.body.decidedByUserId ?? "board",
@@ -216,6 +219,11 @@ export function approvalRoutes(db: Db) {
   router.post("/approvals/:id/reject", validate(resolveApprovalSchema), async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
+      res.status(404).json({ error: "Approval not found" });
+      return;
+    }
     const { approval, applied } = await svc.reject(
       id,
       req.body.decidedByUserId ?? "board",
@@ -243,6 +251,11 @@ export function approvalRoutes(db: Db) {
     async (req, res) => {
       assertBoard(req);
       const id = req.params.id as string;
+      const existing = await svc.getById(id);
+      if (!existing || !hasCompanyAccess(req, existing.companyId)) {
+        res.status(404).json({ error: "Approval not found" });
+        return;
+      }
       const approval = await svc.requestRevision(
         id,
         req.body.decidedByUserId ?? "board",
@@ -266,11 +279,10 @@ export function approvalRoutes(db: Db) {
   router.post("/approvals/:id/resubmit", validate(resubmitApprovalSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
-    if (!existing) {
+    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
       res.status(404).json({ error: "Approval not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
 
     if (req.actor.type === "agent" && req.actor.agentId !== existing.requestedByAgentId) {
       res.status(403).json({ error: "Only requesting agent can resubmit this approval" });
@@ -304,11 +316,10 @@ export function approvalRoutes(db: Db) {
   router.get("/approvals/:id/comments", async (req, res) => {
     const id = req.params.id as string;
     const approval = await svc.getById(id);
-    if (!approval) {
+    if (!approval || !hasCompanyAccess(req, approval.companyId)) {
       res.status(404).json({ error: "Approval not found" });
       return;
     }
-    assertCompanyAccess(req, approval.companyId);
     const comments = await svc.listComments(id);
     res.json(comments);
   });
@@ -316,11 +327,10 @@ export function approvalRoutes(db: Db) {
   router.post("/approvals/:id/comments", validate(addApprovalCommentSchema), async (req, res) => {
     const id = req.params.id as string;
     const approval = await svc.getById(id);
-    if (!approval) {
+    if (!approval || !hasCompanyAccess(req, approval.companyId)) {
       res.status(404).json({ error: "Approval not found" });
       return;
     }
-    assertCompanyAccess(req, approval.companyId);
     const actor = getActorInfo(req);
     const comment = await svc.addComment(id, req.body.body, {
       agentId: actor.agentId ?? undefined,

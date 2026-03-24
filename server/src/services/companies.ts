@@ -110,9 +110,18 @@ export function companyService(db: Db) {
     return normalized.slice(0, 3) || ISSUE_PREFIX_FALLBACK;
   }
 
+  function randomSuffix(length: number) {
+    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no I/1/O/0 to avoid ambiguity
+    let result = "";
+    for (let i = 0; i < length; i++) {
+      result += chars[Math.floor(Math.random() * chars.length)];
+    }
+    return result;
+  }
+
   function suffixForAttempt(attempt: number) {
     if (attempt <= 1) return "";
-    return "A".repeat(attempt - 1);
+    return randomSuffix(attempt <= 3 ? 3 : 5);
   }
 
   function isIssuePrefixConflict(error: unknown) {

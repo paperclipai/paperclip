@@ -1,7 +1,7 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { connectionService } from "../services/connections.js";
-import { assertBoard, assertCompanyAccess } from "./authz.js";
+import { assertBoard, assertCompanyAccess, hasCompanyAccess } from "./authz.js";
 import { logActivity } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
 
@@ -89,8 +89,7 @@ export function connectionRoutes(db: Db) {
   router.post("/connections/:id/refresh", async (req, res) => {
     assertBoard(req);
     const conn = await svc.getById(req.params.id);
-    if (!conn) { res.status(404).json({ error: "Connection not found" }); return; }
-    assertCompanyAccess(req, conn.companyId);
+    if (!conn || !hasCompanyAccess(req, conn.companyId)) { res.status(404).json({ error: "Connection not found" }); return; }
 
     const refreshed = await svc.refreshToken(conn.id);
 
@@ -111,8 +110,7 @@ export function connectionRoutes(db: Db) {
   router.delete("/connections/:id", async (req, res) => {
     assertBoard(req);
     const conn = await svc.getById(req.params.id);
-    if (!conn) { res.status(404).json({ error: "Connection not found" }); return; }
-    assertCompanyAccess(req, conn.companyId);
+    if (!conn || !hasCompanyAccess(req, conn.companyId)) { res.status(404).json({ error: "Connection not found" }); return; }
 
     const removed = await svc.disconnect(conn.id);
 
@@ -134,6 +132,7 @@ export function connectionRoutes(db: Db) {
     "/companies/:companyId/connections/auth-failure",
     async (req, res) => {
       const { companyId } = req.params;
+      assertCompanyAccess(req, companyId);
       const { providerId, errorMessage } = req.body as {
         providerId: string;
         errorMessage?: string;

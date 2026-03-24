@@ -17,7 +17,7 @@ import {
   heartbeatService,
   logActivity,
 } from "../services/index.js";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, hasCompanyAccess, getActorInfo } from "./authz.js";
 import { fetchAllQuotaWindows } from "../services/quota-windows.js";
 import { badRequest } from "../errors.js";
 
@@ -284,12 +284,10 @@ export function costRoutes(db: Db) {
   router.patch("/agents/:agentId/budgets", validate(updateBudgetSchema), async (req, res) => {
     const agentId = req.params.agentId as string;
     const agent = await agents.getById(agentId);
-    if (!agent) {
+    if (!agent || !hasCompanyAccess(req, agent.companyId)) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-
-    assertCompanyAccess(req, agent.companyId);
 
     if (req.actor.type === "agent") {
       if (req.actor.agentId !== agentId) {

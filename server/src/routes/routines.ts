@@ -10,7 +10,7 @@ import {
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { accessService, logActivity, routineService } from "../services/index.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertCompanyAccess, hasCompanyAccess, getActorInfo } from "./authz.js";
 import { forbidden, unauthorized } from "../errors.js";
 
 export function routineRoutes(db: Db) {
@@ -39,8 +39,7 @@ export function routineRoutes(db: Db) {
 
   async function assertCanManageExistingRoutine(req: Request, routineId: string) {
     const routine = await svc.get(routineId);
-    if (!routine) return null;
-    assertCompanyAccess(req, routine.companyId);
+    if (!routine || !hasCompanyAccess(req, routine.companyId)) return null;
     if (req.actor.type === "board") return routine;
     if (req.actor.type !== "agent" || !req.actor.agentId) throw unauthorized();
     if (routine.assigneeAgentId !== req.actor.agentId) {
@@ -81,11 +80,10 @@ export function routineRoutes(db: Db) {
 
   router.get("/routines/:id", async (req, res) => {
     const detail = await svc.getDetail(req.params.id as string);
-    if (!detail) {
+    if (!detail || !hasCompanyAccess(req, detail.companyId)) {
       res.status(404).json({ error: "Routine not found" });
       return;
     }
-    assertCompanyAccess(req, detail.companyId);
     res.json(detail);
   });
 
@@ -132,11 +130,10 @@ export function routineRoutes(db: Db) {
 
   router.get("/routines/:id/runs", async (req, res) => {
     const routine = await svc.get(req.params.id as string);
-    if (!routine) {
+    if (!routine || !hasCompanyAccess(req, routine.companyId)) {
       res.status(404).json({ error: "Routine not found" });
       return;
     }
-    assertCompanyAccess(req, routine.companyId);
     const limit = Number(req.query.limit ?? 50);
     const result = await svc.listRuns(routine.id, Number.isFinite(limit) ? limit : 50);
     res.json(result);

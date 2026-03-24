@@ -30,6 +30,19 @@ export function assertCompanyAccess(req: Request, companyId: string) {
   }
 }
 
+/**
+ * Non-throwing variant of assertCompanyAccess.
+ * Returns false when the actor does not have access — callers should
+ * respond with a uniform 404 to avoid leaking whether the resource
+ * exists in another tenant.
+ */
+export function hasCompanyAccess(req: Request, companyId: string): boolean {
+  if (req.actor.type === "none") return false;
+  if (req.actor.type === "agent") return req.actor.companyId === companyId;
+  if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
+  return (req.actor.companyIds ?? []).includes(companyId);
+}
+
 export function getActorInfo(req: Request) {
   if (req.actor.type === "none") {
     throw unauthorized();
