@@ -351,6 +351,13 @@
       "when": 1775145655558,
       "tag": "0049_bent_dust",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1775145655559,
+      "tag": "0050_acl_bootstrap_existing_companies",
+      "breakpoints": true
     }
   ]
 }
