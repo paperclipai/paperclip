@@ -37,12 +37,9 @@ RUN go install github.com/opencode-ai/opencode@latest 2>/dev/null || true \
     && cp /root/go/bin/opencode /usr/local/bin/opencode 2>/dev/null || true \
     && rm -rf /usr/local/go /root/go /root/.cache/go-build
 
-# Create non-root user for agent execution
-RUN groupadd -g 1000 agent \
-    && useradd -u 1000 -g agent -m -s /bin/bash agent
-
+# Reuse the existing node user (UID 1000) from the base image
 # Pre-create workspace and agent home mount points
-RUN mkdir -p /workspaces /home/agents && chown -R agent:agent /workspaces /home/agents
+RUN mkdir -p /workspaces /home/agents && chown -R node:node /workspaces /home/agents
 
 # Git config for agent commits
 RUN git config --system user.name "Paperclip Agent" \
@@ -51,7 +48,7 @@ RUN git config --system user.name "Paperclip Agent" \
     && git config --system --add safe.directory '*'
 
 # Switch to non-root user — all exec'd commands run as this user
-USER agent
+USER node
 WORKDIR /workspaces
 
 # No exposed ports — sandbox pods don't serve traffic
