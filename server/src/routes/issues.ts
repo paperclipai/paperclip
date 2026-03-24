@@ -838,6 +838,24 @@ export function issueRoutes(db: Db, storage: StorageService) {
       if (!isAgentReturningIssueToCreator) {
         await assertCanAssignTasks(req, existing.companyId);
       }
+      // Non-CEO agents may only change assigneeAgentId if they are the current assignee.
+      // This prevents stale runs from overriding a CEO reassignment: when CEO re-routes an
+      // issue to a different agent, the original agent's pending run must not be able to
+      // re-assign it back to its preferred next agent.
+      if (
+        req.actor.type === "agent" &&
+        req.actor.agentId &&
+        !isAgentReturningIssueToCreator
+      ) {
+        const actorAgent = await agentsSvc.getById(req.actor.agentId);
+        const isCeoAgent = actorAgent?.role === "ceo" || canCreateAgentsLegacy(actorAgent ?? { role: "", permissions: null });
+        if (!isCeoAgent && existing.assigneeAgentId !== req.actor.agentId) {
+          res.status(403).json({
+            error: "Agents may only reassign issues they currently own. CEO reassignment takes precedence.",
+          });
+          return;
+        }
+      }
     }
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
 
