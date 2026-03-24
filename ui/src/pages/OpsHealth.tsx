@@ -74,7 +74,7 @@ export function OpsHealth() {
       return jobs.map((job) => {
         const lastRunAt = job.lastRunAt ? new Date(job.lastRunAt) : null;
         const nextRunAt = job.nextRunAt ? new Date(job.nextRunAt) : null;
-        const latestFailure = dashboard?.recentJobRuns.find((run) => run.jobId === job.id && run.status === "failed");
+        const latestFailure = dashboard?.recentJobRuns?.find((run) => run.jobId === job.id && run.status === "failed");
         const rag = ragForJob(job.status, nextRunAt, lastRunAt);
         const blocker = latestFailure?.error ?? (job.status === "failed" ? "Job flagged failed" : null);
         const nextAction = blocker ? "Run now + inspect plugin logs" : "No action";

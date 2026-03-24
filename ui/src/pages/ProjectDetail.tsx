@@ -242,6 +242,28 @@ function ProjectRoadmapStrip({ projectId, companyId }: { projectId: string; comp
   );
 }
 
+function MarketingBoardPlaybookCard() {
+  return (
+    <section className="rounded-lg border bg-card p-4">
+      <p className="text-sm font-semibold">How this board works (Pelergy marketing)</p>
+      <div className="mt-2 text-sm text-muted-foreground space-y-2">
+        <p>Pipeline: todo = backlog, in_progress = drafting, in_review = internal quality pass, blocked = waiting for your approval/edits, done = published with proof link.</p>
+        <p>Goal: keep content flowing without you micromanaging tile movement.</p>
+      </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        <div className="rounded-md border bg-background px-3 py-2">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Tile movement</p>
+          <p className="mt-1 text-sm">Felix moves tiles by default through drafting/review.</p>
+        </div>
+        <div className="rounded-md border bg-background px-3 py-2">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Your action</p>
+          <p className="mt-1 text-sm">Only act at approval gates (Approve / Needs edits / Reject) and major reprioritization. After approval, use Approve + Move (or Felix does it).</p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 /* ── Main project page ── */
 
 export function ProjectDetail() {
@@ -570,6 +592,8 @@ export function ProjectDetail() {
       {project?.id && resolvedCompanyId ? (
         <ProjectRoadmapStrip projectId={project.id} companyId={resolvedCompanyId} />
       ) : null}
+
+      {activeTab === "list" ? <MarketingBoardPlaybookCard /> : null}
 
       <PluginSlotOutlet
         slotTypes={["toolbarButton", "contextMenuItem"]}
