@@ -245,6 +245,16 @@ export function OpsHealth() {
           <button className={`rounded border px-2 py-1 ${agentFilter === "katya" ? "bg-muted" : ""}`} onClick={() => setAgentFilter("katya")}>🧵 Katya</button>
           <button className={`rounded border px-2 py-1 ${showRedOnly ? "bg-muted" : ""}`} onClick={() => setShowRedOnly((v) => !v)}>{showRedOnly ? "Showing 🔴 only" : "Show 🔴 only"}</button>
           <button className={`rounded border px-2 py-1 ${showArchitectureOnly ? "bg-muted" : ""}`} onClick={() => setShowArchitectureOnly((v) => !v)}>{showArchitectureOnly ? "Architecture only 🏗️" : "Show architecture only 🏗️"}</button>
+          <button
+            className="rounded border px-2 py-1"
+            onClick={() => {
+              setAgentFilter("all");
+              setShowRedOnly(false);
+              setShowArchitectureOnly(false);
+            }}
+          >
+            Reset filters
+          </button>
         </div>
         <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2 text-xs">
           <span className="text-muted-foreground">Type order (drag):</span>
