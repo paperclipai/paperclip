@@ -263,9 +263,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     exitCode = result.exitCode;
     timedOut = result.timedOut;
   } catch (err) {
-    const message = err instanceof Error
-      ? err.message
-      : (typeof err === "object" && err !== null) ? JSON.stringify(err) : String(err) || "Exec failed";
+    let message: string;
+    if (err instanceof Error) {
+      message = err.message;
+    } else if (typeof err === "object" && err !== null) {
+      // K8s WebSocket ErrorEvent - extract the underlying error
+      const inner = (err as { error?: Error }).error;
+      message = inner?.message ?? JSON.stringify(err) || "Exec failed";
+    } else {
+      message = String(err) || "Exec failed";
+    }
     await ctx.onLog("stderr", `[cloud-sandbox] Exec error: ${message}\n`);
     return {
       exitCode: 1,
