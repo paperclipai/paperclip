@@ -460,6 +460,7 @@ const app = await createApp(db as any, {
   bindHost: config.host,
   authReady,
   companyDeletionEnabled: config.companyDeletionEnabled,
+  trustProxy: config.trustProxy,
   betterAuthHandler,
   resolveSession,
 });

@@ -60,6 +60,7 @@ export interface Config {
   heartbeatSchedulerEnabled: boolean;
   heartbeatSchedulerIntervalMs: number;
   companyDeletionEnabled: boolean;
+  trustProxy: boolean | string;
 }
 
 export function loadConfig(): Config {
@@ -236,5 +237,26 @@ export function loadConfig(): Config {
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
+    trustProxy: resolveTrustProxy(process.env.PAPERCLIP_TRUST_PROXY, deploymentMode),
   };
+}
+
+/**
+ * Resolve the Express "trust proxy" setting.
+ *
+ * - Explicit env var wins (`true`, `false`, or a string like `loopback` / `1`).
+ * - When omitted, auto-enable for non-local deployments (authenticated mode
+ *   typically runs behind a reverse proxy).
+ */
+function resolveTrustProxy(
+  envValue: string | undefined,
+  deploymentMode: DeploymentMode,
+): boolean | string {
+  if (envValue !== undefined) {
+    if (envValue === "true") return true;
+    if (envValue === "false") return false;
+    return envValue; // e.g. "loopback", "linklocal", "uniquelocal", or a hop count
+  }
+  // Auto-enable when deployed behind a proxy (i.e. not local_trusted)
+  return deploymentMode !== "local_trusted";
 }
