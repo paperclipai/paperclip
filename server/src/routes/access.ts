@@ -1411,6 +1411,25 @@ function grantsFromDefaults(
   return result;
 }
 
+export function agentJoinGrantsFromDefaults(
+  defaultsPayload: Record<string, unknown> | null | undefined
+): Array<{
+  permissionKey: (typeof PERMISSION_KEYS)[number];
+  scope: Record<string, unknown> | null;
+}> {
+  const grants = grantsFromDefaults(defaultsPayload, "agent");
+  if (grants.some((grant) => grant.permissionKey === "tasks:assign")) {
+    return grants;
+  }
+  return [
+    ...grants,
+    {
+      permissionKey: "tasks:assign",
+      scope: null
+    }
+  ];
+}
+
 type JoinRequestManagerCandidate = {
   id: string;
   role: string;
@@ -2618,17 +2637,8 @@ export function accessRoutes(
           "member",
           "active"
         );
-        await access.setPrincipalPermission(
-          companyId,
-          "agent",
-          created.id,
-          "tasks:assign",
-          true,
-          req.actor.userId ?? null
-        );
-        const grants = grantsFromDefaults(
-          invite.defaultsPayload as Record<string, unknown> | null,
-          "agent"
+        const grants = agentJoinGrantsFromDefaults(
+          invite.defaultsPayload as Record<string, unknown> | null
         );
         await access.setPrincipalGrants(
           companyId,

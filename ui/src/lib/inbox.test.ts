@@ -296,12 +296,44 @@ describe("inbox helpers", () => {
       }).map((item) => {
         if (item.kind === "issue") return `issue:${item.issue.id}`;
         if (item.kind === "approval") return `approval:${item.approval.id}`;
+        if (item.kind === "join_request") return `join:${item.joinRequest.id}`;
         return `run:${item.run.id}`;
       }),
     ).toEqual([
       "issue:1",
       "approval:approval-between",
       "issue:2",
+    ]);
+  });
+
+  it("mixes join requests into the inbox feed by most recent activity", () => {
+    const issue = makeIssue("1", true);
+    issue.lastExternalCommentAt = new Date("2026-03-11T04:00:00.000Z");
+
+    const joinRequest = makeJoinRequest("join-1");
+    joinRequest.createdAt = new Date("2026-03-11T03:00:00.000Z");
+
+    const approval = makeApprovalWithTimestamps(
+      "approval-oldest",
+      "pending",
+      "2026-03-11T02:00:00.000Z",
+    );
+
+    expect(
+      getInboxWorkItems({
+        issues: [issue],
+        approvals: [approval],
+        joinRequests: [joinRequest],
+      }).map((item) => {
+        if (item.kind === "issue") return `issue:${item.issue.id}`;
+        if (item.kind === "approval") return `approval:${item.approval.id}`;
+        if (item.kind === "join_request") return `join:${item.joinRequest.id}`;
+        return `run:${item.run.id}`;
+      }),
+    ).toEqual([
+      "issue:1",
+      "join:join-1",
+      "approval:approval-oldest",
     ]);
   });
 

@@ -4,6 +4,11 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  embedded-postgres@18.1.0-beta.16:
+    hash: 55uhvnotpqyiy37rn3pqpukhei
+    path: patches/embedded-postgres@18.1.0-beta.16.patch
+
 importers:
 
   .:
@@ -73,7 +78,7 @@ importers:
         version: 0.38.4(@electric-sql/pglite@0.3.15)(@types/react@19.2.14)(kysely@0.28.11)(pg@8.18.0)(postgres@3.4.8)(react@19.2.4)
       embedded-postgres:
         specifier: ^18.1.0-beta.16
-        version: 18.1.0-beta.16
+        version: 18.1.0-beta.16(patch_hash=55uhvnotpqyiy37rn3pqpukhei)
       picocolors:
         specifier: ^1.1.1
         version: 1.1.1
@@ -225,7 +230,7 @@ importers:
         version: 0.38.4(@electric-sql/pglite@0.3.15)(@types/react@19.2.14)(kysely@0.28.11)(pg@8.18.0)(postgres@3.4.8)(react@19.2.4)
       embedded-postgres:
         specifier: ^18.1.0-beta.16
-        version: 18.1.0-beta.16
+        version: 18.1.0-beta.16(patch_hash=55uhvnotpqyiy37rn3pqpukhei)
       postgres:
         specifier: ^3.4.5
         version: 3.4.8
@@ -494,7 +499,7 @@ importers:
         version: 0.38.4(@electric-sql/pglite@0.3.15)(@types/react@19.2.14)(kysely@0.28.11)(pg@8.18.0)(postgres@3.4.8)(react@19.2.4)
       embedded-postgres:
         specifier: ^18.1.0-beta.16
-        version: 18.1.0-beta.16
+        version: 18.1.0-beta.16(patch_hash=55uhvnotpqyiy37rn3pqpukhei)
       express:
         specifier: ^5.1.0
         version: 5.2.1
@@ -9973,7 +9978,7 @@ snapshots:
 
   electron-to-chromium@1.5.286: {}
 
-  embedded-postgres@18.1.0-beta.16:
+  embedded-postgres@18.1.0-beta.16(patch_hash=55uhvnotpqyiy37rn3pqpukhei):
     dependencies:
       async-exit-hook: 2.0.1
       pg: 8.18.0

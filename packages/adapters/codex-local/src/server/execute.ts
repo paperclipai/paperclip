@@ -415,10 +415,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `The above agent instructions were loaded from ${instructionsFilePath}. ` +
         `Resolve any relative file references from ${instructionsDir}.\n\n`;
       instructionsChars = instructionsPrefix.length;
-      await onLog(
-        "stdout",
-        `[paperclip] Loaded agent instructions file: ${instructionsFilePath}\n`,
-      );
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       await onLog(

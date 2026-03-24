@@ -8,6 +8,7 @@ import { companiesApi } from "../api/companies";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
 import { issuesApi } from "../api/issues";
+import { projectsApi } from "../api/projects";
 import { queryKeys } from "../lib/queryKeys";
 import { Dialog, DialogPortal } from "@/components/ui/dialog";
 import {
@@ -25,6 +26,11 @@ import {
 import { getUIAdapter } from "../adapters";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { parseOnboardingGoalInput } from "../lib/onboarding-goal";
+import {
+  buildOnboardingIssuePayload,
+  buildOnboardingProjectPayload,
+  selectDefaultCompanyGoalId
+} from "../lib/onboarding-launch";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL
@@ -145,7 +151,11 @@ export function OnboardingWizard() {
   const [createdCompanyPrefix, setCreatedCompanyPrefix] = useState<
     string | null
   >(null);
+  const [createdCompanyGoalId, setCreatedCompanyGoalId] = useState<string | null>(
+    null
+  );
   const [createdAgentId, setCreatedAgentId] = useState<string | null>(null);
+  const [createdProjectId, setCreatedProjectId] = useState<string | null>(null);
   const [createdIssueRef, setCreatedIssueRef] = useState<string | null>(null);
 
   useEffect(() => {
@@ -161,6 +171,10 @@ export function OnboardingWizard() {
     setStep(effectiveOnboardingOptions.initialStep ?? 1);
     setCreatedCompanyId(cId);
     setCreatedCompanyPrefix(null);
+    setCreatedCompanyGoalId(null);
+    setCreatedProjectId(null);
+    setCreatedAgentId(null);
+    setCreatedIssueRef(null);
   }, [
     effectiveOnboardingOpen,
     effectiveOnboardingOptions.companyId,
@@ -285,7 +299,9 @@ export function OnboardingWizard() {
     setTaskDescription(DEFAULT_TASK_DESCRIPTION);
     setCreatedCompanyId(null);
     setCreatedCompanyPrefix(null);
+    setCreatedCompanyGoalId(null);
     setCreatedAgentId(null);
+    setCreatedProjectId(null);
     setCreatedIssueRef(null);
   }
 
@@ -372,7 +388,7 @@ export function OnboardingWizard() {
 
       if (companyGoal.trim()) {
         const parsedGoal = parseOnboardingGoalInput(companyGoal);
-        await goalsApi.create(company.id, {
+        const goal = await goalsApi.create(company.id, {
           title: parsedGoal.title,
           ...(parsedGoal.description
             ? { description: parsedGoal.description }
@@ -380,9 +396,12 @@ export function OnboardingWizard() {
           level: "company",
           status: "active"
         });
+        setCreatedCompanyGoalId(goal.id);
         queryClient.invalidateQueries({
           queryKey: queryKeys.goals.list(company.id)
         });
+      } else {
+        setCreatedCompanyGoalId(null);
       }
 
       setStep(2);
@@ -523,16 +542,38 @@ export function OnboardingWizard() {
     setLoading(true);
     setError(null);
     try {
+      let goalId = createdCompanyGoalId;
+      if (!goalId) {
+        const goals = await goalsApi.list(createdCompanyId);
+        goalId = selectDefaultCompanyGoalId(goals);
+        setCreatedCompanyGoalId(goalId);
+      }
+
+      let projectId = createdProjectId;
+      if (!projectId) {
+        const project = await projectsApi.create(
+          createdCompanyId,
+          buildOnboardingProjectPayload(goalId)
+        );
+        projectId = project.id;
+        setCreatedProjectId(projectId);
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.projects.list(createdCompanyId)
+        });
+      }
+
       let issueRef = createdIssueRef;
       if (!issueRef) {
-        const issue = await issuesApi.create(createdCompanyId, {
-          title: taskTitle.trim(),
-          ...(taskDescription.trim()
-            ? { description: taskDescription.trim() }
-            : {}),
-          assigneeAgentId: createdAgentId,
-          status: "todo"
-        });
+        const issue = await issuesApi.create(
+          createdCompanyId,
+          buildOnboardingIssuePayload({
+            title: taskTitle,
+            description: taskDescription,
+            assigneeAgentId: createdAgentId,
+            projectId,
+            goalId
+          })
+        );
         issueRef = issue.identifier ?? issue.id;
         setCreatedIssueRef(issueRef);
         queryClient.invalidateQueries({
