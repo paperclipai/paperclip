@@ -1,28 +1,27 @@
 #!/usr/bin/env bash
-# pcurl — curl wrapper that converts JSON responses to TOON format.
+# pcurl — curl wrapper for the Paperclip API with TOON-compressed output.
 #
 # Reduces LLM context window token usage by ~50-70% for Paperclip API responses
 # (lists of issues, agents, runs, etc.) by converting uniform JSON arrays to
 # TOON tabular notation.
 #
-# Usage: pcurl [curl options] <url>
-# Drop-in replacement for: curl -s $PAPERCLIP_API_URL/api/issues | jq .
-# Instead use:              pcurl $PAPERCLIP_API_URL/api/issues
+# Usage:
+#   pcurl /api/companies/{companyId}/issues?limit=20
+#   pcurl /api/companies/issues                      (auto-injects companyId)
+#   pcurl /api/agents/me
+#   pcurl -X POST -H "Content-Type: application/json" -d '{}' /api/companies/issues
+#   pcurl --raw /api/companies/issues | jq '.[0].id' (raw JSON for scripting)
 #
-# Automatically adds:
-#   -s (silent)
-#   -H "Authorization: Bearer $PAPERCLIP_API_KEY"
-#   -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID"  (if set)
-#
-# Options:
-#   --raw   Skip TOON conversion, output raw JSON (for programmatic use)
-#   --jq    Same as --raw (pipe through jq yourself)
+# Auth and base URL are resolved automatically (no env vars required):
+#   PAPERCLIP_API_URL → pcli state apiBase → http://127.0.0.1:3100
+#   PAPERCLIP_API_KEY → pcli-local (works for local dev without agent session)
+#   PAPERCLIP_RUN_ID  → added if set
+#   {companyId}       → resolved from pcli state
 
 set -euo pipefail
 
 RAW=0
 EXTRA_ARGS=()
-URL_ARGS=()
 
 for arg in "$@"; do
   case "$arg" in
@@ -31,18 +30,57 @@ for arg in "$@"; do
   esac
 done
 
-# Build auth headers
-AUTH_HEADERS=()
-if [ -n "${PAPERCLIP_API_KEY:-}" ]; then
-  AUTH_HEADERS+=(-H "Authorization: Bearer $PAPERCLIP_API_KEY")
-fi
+# Resolve from pcli state (cached for this invocation)
+_pcli_state() {
+  pcli --json state 2>/dev/null || echo '{}'
+}
+
+_api_base() {
+  if [ -n "${PAPERCLIP_API_URL:-}" ]; then
+    echo "$PAPERCLIP_API_URL"
+  elif command -v pcli &>/dev/null; then
+    _pcli_state | python3 -c "import sys,json; print(json.load(sys.stdin).get('apiBase','http://127.0.0.1:3100'))" 2>/dev/null || echo "http://127.0.0.1:3100"
+  else
+    echo "http://127.0.0.1:3100"
+  fi
+}
+
+_company_id() {
+  if command -v pcli &>/dev/null; then
+    _pcli_state | python3 -c "import sys,json; print(json.load(sys.stdin).get('companyId',''))" 2>/dev/null || echo ""
+  fi
+}
+
+# Expand /api/... relative paths and resolve {companyId} placeholder
+_expand_arg() {
+  local base="$1" company="$2" arg="$3"
+  # Inject companyId into placeholder or shorthand /api/companies/X (without UUID)
+  arg="${arg//\{companyId\}/$company}"
+  # Expand relative /api paths to full URL
+  if [[ "$arg" == /api/* ]]; then
+    echo "${base}${arg}"
+  else
+    echo "$arg"
+  fi
+}
+
+API_BASE=$(_api_base)
+API_KEY="${PAPERCLIP_API_KEY:-pcli-local}"
+COMPANY_ID=$(_company_id)
+
+AUTH_HEADERS=(-H "Authorization: Bearer $API_KEY")
 if [ -n "${PAPERCLIP_RUN_ID:-}" ]; then
   AUTH_HEADERS+=(-H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID")
 fi
 
+RESOLVED_ARGS=()
+for arg in "${EXTRA_ARGS[@]}"; do
+  RESOLVED_ARGS+=("$(_expand_arg "$API_BASE" "$COMPANY_ID" "$arg")")
+done
+
 if [ "$RAW" = "1" ]; then
-  curl -s "${AUTH_HEADERS[@]}" "${EXTRA_ARGS[@]}"
+  curl -s "${AUTH_HEADERS[@]}" "${RESOLVED_ARGS[@]}"
 else
-  curl -s "${AUTH_HEADERS[@]}" "${EXTRA_ARGS[@]}" | json2toon 2>/dev/null || \
-    curl -s "${AUTH_HEADERS[@]}" "${EXTRA_ARGS[@]}"
+  curl -s "${AUTH_HEADERS[@]}" "${RESOLVED_ARGS[@]}" | json2toon 2>/dev/null || \
+    curl -s "${AUTH_HEADERS[@]}" "${RESOLVED_ARGS[@]}"
 fi
