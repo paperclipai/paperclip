@@ -138,7 +138,7 @@ export function NewAgentDialog() {
         dangerouslySkipPermissions: true,
         heartbeatEnabled: true,
         intervalSec: 300,
-        envVars: "ANTHROPIC_BASE_URL=http://127.0.0.1:3199,ANTHROPIC_API_KEY=dummy",
+        envVars: "ANTHROPIC_BASE_URL=http://127.0.0.1:3199\nANTHROPIC_API_KEY=dummy",
       }));
     } else {
       // Claude: use credential if available, otherwise plain
