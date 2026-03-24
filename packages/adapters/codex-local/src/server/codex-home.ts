@@ -41,11 +41,30 @@ async function ensureParentDir(target: string): Promise<void> {
   await fs.mkdir(path.dirname(target), { recursive: true });
 }
 
+/**
+ * Try fs.symlink; on EPERM (Windows without Developer Mode) fall back to
+ * fs.link (hard link). Hard links work on NTFS without elevated privileges
+ * and keep the file contents in sync (same inode). Unlike junctions, hard
+ * links work for files — this is the file-level counterpart to
+ * symlinkOrJunction (which handles directories).
+ */
+async function symlinkOrHardLink(source: string, target: string): Promise<void> {
+  try {
+    await fs.symlink(source, target);
+  } catch (err: unknown) {
+    if (process.platform === "win32" && (err as NodeJS.ErrnoException).code === "EPERM") {
+      await fs.link(source, target);
+      return;
+    }
+    throw err;
+  }
+}
+
 async function ensureSymlink(target: string, source: string): Promise<void> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
     await ensureParentDir(target);
-    await fs.symlink(source, target);
+    await symlinkOrHardLink(source, target);
     return;
   }
 
@@ -60,7 +79,7 @@ async function ensureSymlink(target: string, source: string): Promise<void> {
   if (resolvedLinkedPath === source) return;
 
   await fs.unlink(target);
-  await fs.symlink(source, target);
+  await symlinkOrHardLink(source, target);
 }
 
 async function ensureCopiedFile(target: string, source: string): Promise<void> {
