@@ -1,12 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { agents } from "@paperclipai/db";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
+  createRunLivenessRefresher,
+  DEFAULT_ORPHANED_RUN_STALE_THRESHOLD_MS,
   formatRuntimeWorkspaceWarningLog,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
+  RUN_LIVENESS_TOUCH_INTERVAL_MS,
   resolveRuntimeSessionParamsForWorkspace,
   shouldResetTaskSessionForWake,
+  shouldReapOrphanedRun,
   type ResolvedWorkspaceForRun,
 } from "../services/heartbeat.ts";
 
@@ -49,6 +53,11 @@ function buildAgent(adapterType: string, runtimeConfig: Record<string, unknown> 
     updatedAt: new Date(),
   } as unknown as typeof agents.$inferSelect;
 }
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 describe("resolveRuntimeSessionParamsForWorkspace", () => {
   it("migrates fallback workspace sessions to project workspace when project cwd becomes available", () => {
@@ -188,6 +197,63 @@ describe("formatRuntimeWorkspaceWarningLog", () => {
       stream: "stdout",
       chunk: "[paperclip] Using fallback workspace\n",
     });
+  });
+});
+
+describe("shouldReapOrphanedRun", () => {
+  it("does not reap runs that are still within the stale threshold", () => {
+    const now = new Date("2026-03-21T03:14:19.000Z");
+    const updatedAt = new Date(now.getTime() - DEFAULT_ORPHANED_RUN_STALE_THRESHOLD_MS + 1);
+
+    expect(
+      shouldReapOrphanedRun({
+        now,
+        updatedAt,
+        staleThresholdMs: DEFAULT_ORPHANED_RUN_STALE_THRESHOLD_MS,
+      }),
+    ).toBe(false);
+  });
+
+  it("reaps runs once they are past the stale threshold", () => {
+    const now = new Date("2026-03-21T03:14:19.000Z");
+    const updatedAt = new Date(now.getTime() - DEFAULT_ORPHANED_RUN_STALE_THRESHOLD_MS - 1);
+
+    expect(
+      shouldReapOrphanedRun({
+        now,
+        updatedAt,
+        staleThresholdMs: DEFAULT_ORPHANED_RUN_STALE_THRESHOLD_MS,
+      }),
+    ).toBe(true);
+  });
+
+  it("reaps immediately when no stale threshold is configured", () => {
+    expect(
+      shouldReapOrphanedRun({
+        now: new Date("2026-03-21T03:14:19.000Z"),
+        updatedAt: new Date("2026-03-21T03:14:18.999Z"),
+        staleThresholdMs: 0,
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("createRunLivenessRefresher", () => {
+  it("touches running work on an interval and stops cleanly", async () => {
+    vi.useFakeTimers();
+    const touch = vi.fn().mockResolvedValue(undefined);
+
+    const refresher = createRunLivenessRefresher(touch);
+
+    await vi.advanceTimersByTimeAsync(RUN_LIVENESS_TOUCH_INTERVAL_MS - 1);
+    expect(touch).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(touch).toHaveBeenCalledTimes(1);
+
+    refresher.stop();
+    await vi.advanceTimersByTimeAsync(RUN_LIVENESS_TOUCH_INTERVAL_MS);
+    expect(touch).toHaveBeenCalledTimes(1);
   });
 });
 

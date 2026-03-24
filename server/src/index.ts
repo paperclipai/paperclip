@@ -26,7 +26,11 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
-import { heartbeatService, reconcilePersistedRuntimeServicesOnStartup } from "./services/index.js";
+import {
+  DEFAULT_ORPHANED_RUN_STALE_THRESHOLD_MS,
+  heartbeatService,
+  reconcilePersistedRuntimeServicesOnStartup,
+} from "./services/index.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
@@ -527,10 +531,10 @@ export async function startServer(): Promise<StartedServer> {
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any);
   
-    // Reap orphaned running runs at startup while in-memory execution state is empty,
-    // then resume any persisted queued runs that were waiting on the previous process.
+    // Only reap runs after a staleness window. This avoids a second server process
+    // instantly killing healthy runs that are being tracked by another process.
     void heartbeat
-      .reapOrphanedRuns()
+      .reapOrphanedRuns({ staleThresholdMs: DEFAULT_ORPHANED_RUN_STALE_THRESHOLD_MS })
       .then(() => heartbeat.resumeQueuedRuns())
       .catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
@@ -547,10 +551,10 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "heartbeat timer tick failed");
         });
   
-      // Periodically reap orphaned runs (5-min staleness threshold) and make sure
+      // Periodically reap runs whose liveness has gone stale and make sure
       // persisted queued work is still being driven forward.
       void heartbeat
-        .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
+        .reapOrphanedRuns({ staleThresholdMs: DEFAULT_ORPHANED_RUN_STALE_THRESHOLD_MS })
         .then(() => heartbeat.resumeQueuedRuns())
         .catch((err) => {
           logger.error({ err }, "periodic heartbeat recovery failed");
