@@ -17,22 +17,60 @@ export function HttpConfigFields({
   mark,
 }: AdapterConfigFieldsProps) {
   return (
-    <Field label="Webhook URL" hint={help.webhookUrl}>
-      <DraftInput
-        value={
-          isCreate
-            ? values!.url
-            : eff("adapterConfig", "url", String(config.url ?? ""))
-        }
-        onCommit={(v) =>
-          isCreate
-            ? set!({ url: v })
-            : mark("adapterConfig", "url", v || undefined)
-        }
-        immediate
-        className={inputClass}
-        placeholder="https://..."
-      />
-    </Field>
+    <div className="space-y-3">
+      <Field label="Webhook URL" hint={help.webhookUrl}>
+        <DraftInput
+          value={
+            isCreate
+              ? values!.url
+              : eff("adapterConfig", "url", String(config.url ?? ""))
+          }
+          onCommit={(v) =>
+            isCreate
+              ? set!({ url: v })
+              : mark("adapterConfig", "url", v || undefined)
+          }
+          immediate
+          className={inputClass}
+          placeholder="https://..."
+        />
+      </Field>
+      <Field label="Authorization header" hint="Bearer token Paperclip will send with each heartbeat request (optional).">
+        <DraftInput
+          value={
+            isCreate
+              ? (values!.authorizationHeader ?? "")
+              : eff("adapterConfig", "authorizationHeader", String(config.authorizationHeader ?? ""))
+          }
+          onCommit={(v) =>
+            isCreate
+              ? set!({ authorizationHeader: v || undefined })
+              : mark("adapterConfig", "authorizationHeader", v || undefined)
+          }
+          immediate
+          className={inputClass}
+          placeholder="Bearer ..."
+        />
+      </Field>
+      <Field label="Timeout (ms)" hint="How long Paperclip waits for a response from the webhook before marking the heartbeat as failed.">
+        <DraftInput
+          value={
+            isCreate
+              ? String(values!.timeoutMs ?? 15000)
+              : eff("adapterConfig", "timeoutMs", String(config.timeoutMs ?? 15000))
+          }
+          onCommit={(v) => {
+            const ms = parseInt(v, 10);
+            const val = isNaN(ms) || ms <= 0 ? 15000 : ms;
+            isCreate
+              ? set!({ timeoutMs: val })
+              : mark("adapterConfig", "timeoutMs", val);
+          }}
+          immediate
+          className={inputClass}
+          placeholder="15000"
+        />
+      </Field>
+    </div>
   );
 }
