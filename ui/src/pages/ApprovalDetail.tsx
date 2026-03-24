@@ -181,6 +181,10 @@ export function ApprovalDetail() {
   const draftText = isStrategyApproval ? getApprovalDraftText(payload) : null;
   const TypeIcon = typeIcon[approval.type] ?? defaultTypeIcon;
   const showApprovedBanner = searchParams.get("resolved") === "approved" && approval.status === "approved";
+  const overrideComment = (comments ?? []).find((comment) => comment.body.includes("[PUSH_TO_KATYA]")) ?? null;
+  const showOverrideAppliedBadge = Boolean(
+    isStrategyApproval && overrideComment && ["revision_requested", "approved", "pending"].includes(approval.status),
+  );
   const primaryLinkedIssue = linkedIssues?.[0] ?? null;
   const resolvedCta =
     primaryLinkedIssue
@@ -266,6 +270,12 @@ export function ApprovalDetail() {
           )}
           {approval.decisionNote && (
             <p className="text-xs text-muted-foreground">Decision note: {approval.decisionNote}</p>
+          )}
+          {showOverrideAppliedBadge && (
+            <div className="inline-flex items-center gap-1 rounded-full border border-emerald-300/60 bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-800">
+              <CheckCircle2 className="h-3 w-3" />
+              Override applied from Mike edit
+            </div>
           )}
         </div>
         {error && <p className="text-sm text-destructive">{error}</p>}
