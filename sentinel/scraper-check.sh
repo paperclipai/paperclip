@@ -15,13 +15,14 @@ echo "[$TIMESTAMP] SENTINEL Scraper Gap Check Starting..."
 
 # Query Supabase for last data per provider
 # Adjust the docker exec command based on your actual Supabase container name
-RESULT=$(docker exec supabase-db psql -U postgres -d postgres -t -A -F '|' -c "
-SELECT 
-  provider,
+SUPABASE_DB_CONTAINER="${SUPABASE_DB_CONTAINER:-supabase-db-sw8g8cgs0kkco04kgwowcogw}"
+RESULT=$(docker exec "$SUPABASE_DB_CONTAINER" psql -U postgres -d postgres -t -A -F '|' -c "
+SELECT
+  provider_id as provider,
   COALESCE(TO_CHAR(MAX(created_at), 'YYYY-MM-DD HH24:MI:SS'), 'NO DATA') as last_data,
   COALESCE(EXTRACT(EPOCH FROM (NOW() - MAX(created_at)))/60, 99999)::int as gap_minutes
-FROM navico.vehicle_locations 
-GROUP BY provider 
+FROM navico.gps_buddy_data
+GROUP BY provider_id
 ORDER BY gap_minutes DESC;
 " 2>/dev/null) || {
   echo "[$TIMESTAMP] ERROR: Could not query Supabase"

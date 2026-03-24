@@ -375,13 +375,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // includes both the file content and the path directive, so we only need
   // --append-system-prompt-file (Claude CLI forbids using both flags together).
   let effectiveInstructionsFilePath: string | undefined = instructionsFilePath;
+  let effectiveInstructionsContent: string | undefined;
   if (instructionsFilePath) {
     try {
       const instructionsContent = await fs.readFile(instructionsFilePath, "utf-8");
       const pathDirective = `\nThe above agent instructions were loaded from ${instructionsFilePath}. Resolve any relative file references from ${instructionsFileDir}.`;
       const combinedPath = path.join(skillsDir, "agent-instructions.md");
-      await fs.writeFile(combinedPath, instructionsContent + pathDirective + envBootstrapNote, "utf-8");
+      const combinedContent = instructionsContent + pathDirective + envBootstrapNote;
+      await fs.writeFile(combinedPath, combinedContent, "utf-8");
       effectiveInstructionsFilePath = combinedPath;
+      effectiveInstructionsContent = combinedContent;
       await onLog("stderr", `[paperclip] Loaded agent instructions file: ${instructionsFilePath}\n`);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
@@ -451,8 +454,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (model) args.push("--model", model);
     if (effort) args.push("--effort", effort);
     if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
-    if (effectiveInstructionsFilePath) {
-      args.push("--append-system-prompt-file", effectiveInstructionsFilePath);
+    if (effectiveInstructionsContent) {
+      args.push("--append-system-prompt", effectiveInstructionsContent);
     }
     args.push("--add-dir", skillsDir);
     if (extraArgs.length > 0) args.push(...extraArgs);

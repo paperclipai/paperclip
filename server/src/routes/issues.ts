@@ -1009,18 +1009,37 @@ export function issueRoutes(db: Db, storage: StorageService) {
     })();
 
     // Emit delegation.completed when a delegated issue is marked done
+    // Also notify the source issue's assignee with a comment + wakeup
     if (updateFields.status === "done") {
       try {
         const delRef = await db.execute(
-          sql`SELECT delegated_from_issue_id FROM issues WHERE id = ${id} AND delegated_from_issue_id IS NOT NULL`,
+          sql`SELECT delegated_from_issue_id, delegated_from_company_id FROM issues WHERE id = ${id} AND delegated_from_issue_id IS NOT NULL`,
         );
         const delRows = Array.isArray(delRef) ? delRef : (delRef as any).rows ?? [];
         if (delRows.length > 0) {
+          const sourceIssueId = (delRows[0] as any).delegated_from_issue_id as string;
           publishLiveEvent({
             companyId: issue.companyId,
             type: "delegation.completed",
-            payload: { issueId: id, delegatedFromIssueId: (delRows[0] as any).delegated_from_issue_id },
+            payload: { issueId: id, delegatedFromIssueId: sourceIssueId },
           });
+          // Add comment to source issue notifying completion
+          try {
+            const sourceIssue = await svc.getById(sourceIssueId);
+            if (sourceIssue) {
+              await svc.addComment(sourceIssueId, `[Auto] Delegated görev tamamlandı: **${issue.title}**`, {
+                userId: "system",
+              });
+              // Wake the source issue's assignee
+              if (sourceIssue.assigneeAgentId) {
+                heartbeat.wakeup(sourceIssue.assigneeAgentId, {
+                  source: "automation",
+                  reason: "delegation_completed",
+                  payload: { delegatedIssueId: id, sourceIssueId, completedTitle: issue.title },
+                }).catch(() => { /* non-fatal */ });
+              }
+            }
+          } catch { /* non-fatal: source issue notification */ }
         }
       } catch { /* non-fatal */ }
     }

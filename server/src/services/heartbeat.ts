@@ -2691,19 +2691,67 @@ export function heartbeatService(db: Db) {
         resolvedConfig.model = hbModel;
       }
 
-      const adapterResult = await adapter.execute({
-        runId: run.id,
-        agent,
-        runtime: runtimeForAdapter,
-        config: runtimeConfig,
-        context,
-        onLog,
-        onMeta: onAdapterMeta,
-        onSpawn: async (meta) => {
-          await persistRunProcessMetadata(run.id, meta);
-        },
-        authToken: authToken ?? undefined,
-      });
+      // ── OpenRouter direct mode: bypass adapter, call OpenRouter API directly ──
+      const useOpenRouter = parseObject(agent.runtimeConfig)?.useOpenRouter === true;
+      let openRouterDirectResult: FallbackResult | null = null;
+
+      if (useOpenRouter) {
+        const openrouterKey = process.env.OPENROUTER_API_KEY;
+        const fbConfig = parseFallbackConfig(parseObject(agent.runtimeConfig));
+        if (fbConfig && openrouterKey) {
+          await onLog("stderr", `[paperclip] useOpenRouter=true — bypassing adapter, calling OpenRouter directly\n`);
+          const prompt = buildFallbackPrompt(context, agent);
+          openRouterDirectResult = await executeFallback({
+            config: fbConfig,
+            prompt,
+            systemPrompt: `You are ${agent.name}, a ${agent.role} at EvoHaus. Complete the assigned task concisely.`,
+            apiKey: openrouterKey,
+          });
+          if (openRouterDirectResult.success) {
+            await onLog("stderr", `[paperclip] OpenRouter direct succeeded with ${openRouterDirectResult.model}\n`);
+          } else {
+            await onLog("stderr", `[paperclip] OpenRouter direct failed: ${openRouterDirectResult.error}\n`);
+          }
+        }
+      }
+
+      const adapterResult = useOpenRouter && openRouterDirectResult
+        ? {
+            exitCode: openRouterDirectResult.success ? 0 : 1,
+            signal: null,
+            timedOut: false,
+            errorMessage: openRouterDirectResult.success ? null : openRouterDirectResult.error,
+            errorCode: openRouterDirectResult.success ? null : "openrouter_failed",
+            usage: openRouterDirectResult.tokensUsed ? {
+              inputTokens: openRouterDirectResult.tokensUsed.input,
+              outputTokens: openRouterDirectResult.tokensUsed.output,
+            } as UsageSummary : undefined,
+            provider: "openrouter",
+            biller: "openrouter",
+            model: openRouterDirectResult.model,
+            billingType: "api" as const,
+            costUsd: 0,
+            resultJson: openRouterDirectResult.success
+              ? { response: openRouterDirectResult.response }
+              : null,
+            sessionId: null,
+            sessionParams: null,
+            runtimeServices: [],
+            summary: openRouterDirectResult.response?.slice(0, 200) ?? null,
+          } satisfies AdapterExecutionResult
+        : await adapter.execute({
+            runId: run.id,
+            agent,
+            runtime: runtimeForAdapter,
+            config: runtimeConfig,
+            context,
+            onLog,
+            onMeta: onAdapterMeta,
+            onSpawn: async (meta) => {
+              await persistRunProcessMetadata(run.id, meta);
+            },
+            authToken: authToken ?? undefined,
+          });
       const adapterManagedRuntimeServices = adapterResult.runtimeServices
         ? await persistAdapterManagedRuntimeServices({
             db,
@@ -3005,6 +3053,23 @@ export function heartbeatService(db: Db) {
         }
       }
       await finalizeAgentStatus(agent.id, outcome);
+
+      // ── Telegram notification on failure ──
+      if (outcome !== "succeeded" && outcome !== "cancelled") {
+        const telegramToken = process.env.TELEGRAM_BOT_TOKEN;
+        const telegramChat = process.env.TELEGRAM_CHAT_ID;
+        if (telegramToken && telegramChat) {
+          const emoji = outcome === "failed" ? "🔴" : outcome === "timed_out" ? "⏰" : "⚠️";
+          const model = adapterResult.model ?? resolvedConfig.model ?? "unknown";
+          const errMsg = adapterResult.errorMessage?.slice(0, 200) ?? "Unknown error";
+          const text = `${emoji} *${agent.name}* (${agent.adapterType})\nModel: ${model}\nStatus: ${outcome}\nError: ${errMsg}`;
+          fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chat_id: telegramChat, text, parse_mode: "Markdown" }),
+          }).catch(() => { /* non-fatal */ });
+        }
+      }
 
       // Circuit breaker evaluation after run completes — skip if fallback succeeded
       if (fallbackResult?.success) {
