@@ -5,7 +5,8 @@ import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { agentsApi } from "../api/agents";
 import { queryKeys } from "../lib/queryKeys";
-import { AGENT_ROLES, AGENT_PRESETS, type AgentPreset } from "@paperclipai/shared";
+import { AGENT_ROLES, AGENT_PRESETS, PROVIDER_LABELS, STRATEGIC_ROLES, type AgentPreset } from "@paperclipai/shared";
+import { credentialsApi } from "../api/credentials";
 import {
   Dialog,
   DialogContent,
@@ -49,6 +50,9 @@ export function NewAgentDialog() {
   const [selectedPreset, setSelectedPreset] = useState<AgentPreset | null>(null);
   const [showFullForm, setShowFullForm] = useState(false);
 
+  // Track per-preset provider overrides
+  const [providerOverrides, setProviderOverrides] = useState<Record<string, "claude" | "qwen">>({});
+
   // Popover states
   const [roleOpen, setRoleOpen] = useState(false);
   const [reportsToOpen, setReportsToOpen] = useState(false);
@@ -56,6 +60,12 @@ export function NewAgentDialog() {
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId && newAgentOpen,
+  });
+
+  const { data: credentials = [] } = useQuery({
+    queryKey: queryKeys.credentials.list(selectedCompanyId!),
+    queryFn: () => credentialsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId && newAgentOpen,
   });
 
@@ -109,18 +119,35 @@ export function NewAgentDialog() {
     setFormError(null);
     setSelectedPreset(null);
     setShowFullForm(false);
+    setProviderOverrides({});
   }
 
-  function handlePresetSelect(preset: AgentPreset) {
-    setSelectedPreset(preset);
+  function handlePresetWithProvider(preset: AgentPreset, provider: "claude" | "qwen") {
+    // Find the right credential
+    const credentialType = provider === "qwen" ? "qwen_api_key" : "claude_oauth";
+    const credential = credentials.find((c) => c.type === credentialType && c.isDefault)
+      ?? credentials.find((c) => c.type === credentialType);
+
+    // Set identity
     setName(preset.name);
     setTitle(preset.title);
     setRole(preset.role);
+
+    // Set config with auto-credential
     setConfigValues((prev) => ({
       ...prev,
       adapterType: preset.adapterType,
+      credentialId: credential?.id ?? null,
+      heartbeatEnabled: true,
+      intervalSec: 300,
     }));
+
+    setSelectedPreset(preset);
     setShowFullForm(false);
+  }
+
+  function handlePresetSelect(preset: AgentPreset) {
+    handlePresetWithProvider(preset, providerOverrides[preset.id] ?? preset.defaultProvider);
   }
 
   function buildAdapterConfig() {
@@ -332,19 +359,42 @@ export function NewAgentDialog() {
             <div className="px-4 py-3 border-t border-border">
               <div className="text-xs font-medium text-muted-foreground mb-2">Quick start from template</div>
               <div className="grid grid-cols-2 gap-2">
-                {AGENT_PRESETS.map((preset) => (
-                  <button
-                    key={preset.id}
-                    onClick={() => handlePresetSelect(preset)}
-                    className="flex flex-col items-start gap-1 rounded-lg border border-border px-3 py-2 text-left transition-all hover:bg-accent/50 hover:border-foreground/20"
-                  >
-                    <div className="flex items-center gap-2">
-                      <AgentIcon icon={preset.icon} className="h-3.5 w-3.5 text-muted-foreground" />
-                      <span className="text-xs font-medium">{preset.name}</span>
+                {AGENT_PRESETS.map((preset) => {
+                  const provider = providerOverrides[preset.id] ?? preset.defaultProvider;
+                  return (
+                    <div
+                      key={preset.id}
+                      className="flex flex-col rounded-lg border border-border transition-all hover:border-foreground/20 overflow-hidden"
+                    >
+                      {/* Clickable card body */}
+                      <button
+                        onClick={() => handlePresetWithProvider(preset, provider)}
+                        className="flex flex-col items-start gap-1 px-3 py-2 text-left hover:bg-accent/50 transition-colors flex-1"
+                      >
+                        <div className="flex items-center gap-2">
+                          <AgentIcon icon={preset.icon} className="h-3.5 w-3.5 text-muted-foreground" />
+                          <span className="text-xs font-medium">{preset.name}</span>
+                        </div>
+                        <span className="text-[10px] text-muted-foreground line-clamp-1">{preset.description}</span>
+                      </button>
+                      {/* Provider toggle at bottom */}
+                      <div className="flex items-center gap-1 px-3 py-1.5 border-t border-border bg-muted/30">
+                        <select
+                          className="w-full rounded border-none bg-transparent text-[10px] font-medium text-muted-foreground outline-none cursor-pointer"
+                          value={provider}
+                          onChange={(e) => {
+                            e.stopPropagation();
+                            setProviderOverrides((prev) => ({ ...prev, [preset.id]: e.target.value as "claude" | "qwen" }));
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <option value="claude">&#9729; Claude</option>
+                          <option value="qwen">&#128060; Qwen</option>
+                        </select>
+                      </div>
                     </div>
-                    <span className="text-[10px] text-muted-foreground line-clamp-1">{preset.description}</span>
-                  </button>
-                ))}
+                  );
+                })}
               </div>
               <button
                 className="mt-2 w-full text-xs text-muted-foreground hover:text-foreground transition-colors py-1"
@@ -363,7 +413,10 @@ export function NewAgentDialog() {
                   <AgentIcon icon={selectedPreset.icon} className="h-4 w-4 text-muted-foreground" />
                   <span className="text-xs font-medium">{selectedPreset.description}</span>
                   <span className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-muted-foreground">
-                    {adapterLabels[selectedPreset.adapterType] ?? selectedPreset.adapterType}
+                    {configValues.credentialId
+                      ? (credentials.find((c) => c.id === configValues.credentialId)?.type === "qwen_api_key" ? "\ud83d\udc3c Qwen" : "\u2601 Claude")
+                      : adapterLabels[selectedPreset.adapterType] ?? selectedPreset.adapterType
+                    }
                   </span>
                 </div>
                 <button
