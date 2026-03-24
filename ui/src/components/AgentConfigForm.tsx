@@ -447,6 +447,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     mark: mark as (group: "adapterConfig", field: string, value: unknown) => void,
     models,
     hideInstructionsFile,
+    agentId: !isCreate ? props.agent.id : undefined,
   };
 
   // Section toggle state — advanced always starts collapsed

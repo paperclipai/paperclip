@@ -46,6 +46,7 @@ import {
   ArrowLeft,
   ArrowRight,
   Sparkles,
+  Globe,
   Check,
   Loader2,
   ChevronDown,
@@ -252,7 +253,7 @@ export function OnboardingWizard() {
   // External/plugin adapters automatically appear with generic defaults, and
   // server-disabled types are filtered out.
   const { recommendedAdapters, moreAdapters } = useMemo(() => {
-    const SYSTEM_ADAPTER_TYPES = new Set(["process", "http"]);
+    const SYSTEM_ADAPTER_TYPES = new Set(["process"]);
     const all = listUIAdapters()
       .filter((a) =>
         !SYSTEM_ADAPTER_TYPES.has(a.type) &&
