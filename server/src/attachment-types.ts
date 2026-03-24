@@ -15,6 +15,8 @@
  *   - Wildcards:     "image/*"  or  "application/vnd.openxmlformats-officedocument.*"
  */
 
+import path from "node:path";
+
 export const DEFAULT_ALLOWED_TYPES: readonly string[] = [
   "image/png",
   "image/jpeg",
@@ -63,7 +65,7 @@ export function inferContentType(
   if (!filename) {
     return reportedMimeType;
   }
-  const ext = filename.toLowerCase().slice(filename.lastIndexOf("."));
+  const ext = path.extname(filename).toLowerCase();
   const inferred = EXTENSION_TO_MIME_TYPE[ext];
   return inferred || reportedMimeType;
 }

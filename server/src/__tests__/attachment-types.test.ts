@@ -131,4 +131,10 @@ describe("inferContentType", () => {
     expect(inferContentType(undefined, "application/octet-stream")).toBe("application/octet-stream");
     expect(inferContentType("", "application/octet-stream")).toBe("application/octet-stream");
   });
+
+  it("returns original mime type for filenames with no extension", () => {
+    expect(inferContentType("nodotfile", "application/octet-stream")).toBe("application/octet-stream");
+    expect(inferContentType("Makefile", "application/octet-stream")).toBe("application/octet-stream");
+    expect(inferContentType("README", "application/octet-stream")).toBe("application/octet-stream");
+  });
 });
