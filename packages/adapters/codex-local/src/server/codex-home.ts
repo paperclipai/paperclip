@@ -2,6 +2,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import { symlinkOrHardLink } from "@paperclipai/adapter-utils/server-utils";
+
 const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
 const COPIED_SHARED_FILES = ["config.json", "config.toml", "instructions.md"] as const;
 const SYMLINKED_SHARED_FILES = ["auth.json"] as const;
@@ -41,25 +43,6 @@ async function ensureParentDir(target: string): Promise<void> {
   await fs.mkdir(path.dirname(target), { recursive: true });
 }
 
-/**
- * Try fs.symlink; on EPERM (Windows without Developer Mode) fall back to
- * fs.link (hard link). Hard links work on NTFS without elevated privileges
- * and keep the file contents in sync (same inode). Unlike junctions, hard
- * links work for files — this is the file-level counterpart to
- * symlinkOrJunction (which handles directories).
- */
-async function symlinkOrHardLink(source: string, target: string): Promise<void> {
-  try {
-    await fs.symlink(source, target);
-  } catch (err: unknown) {
-    if (process.platform === "win32" && (err as NodeJS.ErrnoException).code === "EPERM") {
-      await fs.link(source, target);
-      return;
-    }
-    throw err;
-  }
-}
-
 async function ensureSymlink(target: string, source: string): Promise<void> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
@@ -68,18 +51,25 @@ async function ensureSymlink(target: string, source: string): Promise<void> {
     return;
   }
 
-  if (!existing.isSymbolicLink()) {
+  if (existing.isSymbolicLink()) {
+    // Symlink repair: check if it points to the right source
+    const linkedPath = await fs.readlink(target).catch(() => null);
+    if (!linkedPath) return;
+    const resolvedLinkedPath = path.resolve(path.dirname(target), linkedPath);
+    if (resolvedLinkedPath === source) return;
+    await fs.unlink(target);
+    await symlinkOrHardLink(source, target);
     return;
   }
 
-  const linkedPath = await fs.readlink(target).catch(() => null);
-  if (!linkedPath) return;
-
-  const resolvedLinkedPath = path.resolve(path.dirname(target), linkedPath);
-  if (resolvedLinkedPath === source) return;
-
-  await fs.unlink(target);
-  await symlinkOrHardLink(source, target);
+  // Hard link repair: compare inodes to detect stale links (e.g. source
+  // path changed after a CODEX_HOME move). Hard links share an inode with
+  // their source, so divergent inodes mean the link is stale.
+  const sourceStat = await fs.stat(source).catch(() => null);
+  if (sourceStat && existing.ino !== sourceStat.ino) {
+    await fs.unlink(target);
+    await symlinkOrHardLink(source, target);
+  }
 }
 
 async function ensureCopiedFile(target: string, source: string): Promise<void> {
