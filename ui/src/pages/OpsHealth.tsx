@@ -15,6 +15,26 @@ function ragForJob(status: string, nextRunAt: Date | null, lastRunAt: Date | nul
   return { label: "Green", className: "text-emerald-600" };
 }
 
+function ragForCronJob(status: string | null, consecutiveErrors: number, enabled: boolean, nextRunAtMs: number | null, lastRunAtMs: number | null) {
+  if (!enabled) return { label: "Off", className: "text-muted-foreground" };
+  if (consecutiveErrors >= 2 || status === "error" || status === "failed") return { label: "Red", className: "text-rose-600" };
+  if (!nextRunAtMs && !lastRunAtMs) return { label: "Amber", className: "text-amber-600" };
+  if (nextRunAtMs && nextRunAtMs < Date.now() - 10 * 60_000) return { label: "Amber", className: "text-amber-600" };
+  return { label: "Green", className: "text-emerald-600" };
+}
+
+function topicFromSessionKey(sessionKey: string | null) {
+  if (!sessionKey) return "—";
+  const match = sessionKey.match(/:topic:(\d+)/);
+  return match ? `topic ${match[1]}` : "—";
+}
+
+function scheduleLabel(kind: string | null, expr: string | null, everyMs: number | null) {
+  if (kind === "cron" && expr) return expr;
+  if (kind === "every" && everyMs) return `every ${Math.round(everyMs / 60000)}m`;
+  return kind ?? "—";
+}
+
 export function OpsHealth() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -33,6 +53,12 @@ export function OpsHealth() {
   const { data: plugins } = useQuery({
     queryKey: ["ops-health", "plugins"],
     queryFn: () => pluginsApi.list(),
+    refetchInterval: 30_000,
+  });
+
+  const { data: openclawCronJobs } = useQuery({
+    queryKey: ["ops-health", "openclaw-cron-jobs"],
+    queryFn: () => heartbeatsApi.listOpenclawCronJobs(),
     refetchInterval: 30_000,
   });
 
@@ -83,6 +109,17 @@ export function OpsHealth() {
     });
   }, [dashboardQueries, pluginJobsQueries, readyPlugins]);
 
+  const cronRows = useMemo(() => {
+    return (openclawCronJobs ?? []).map((job) => {
+      const rag = ragForCronJob(job.lastRunStatus, job.consecutiveErrors, job.enabled, job.nextRunAtMs, job.lastRunAtMs);
+      return {
+        ...job,
+        rag,
+        topic: topicFromSessionKey(job.sessionKey),
+      };
+    });
+  }, [openclawCronJobs]);
+
   if (isLoading) return <PageSkeleton variant="dashboard" />;
   if (error) return <p className="text-sm text-destructive">{error instanceof Error ? error.message : "Failed to load ops health"}</p>;
 
@@ -105,6 +142,26 @@ export function OpsHealth() {
           </div>
         </section>
       )}
+
+      <section className="rounded-lg border bg-card overflow-hidden">
+        <div className="border-b px-3 py-2 text-sm font-semibold">OpenClaw cron jobs (cross-topic automation)</div>
+        <div className="grid grid-cols-12 gap-2 px-3 py-2 text-[11px] uppercase tracking-wide text-muted-foreground border-b bg-muted/20">
+          <div className="col-span-1">RAG</div><div className="col-span-3">Job</div><div className="col-span-1">Agent</div><div className="col-span-1">Topic</div><div className="col-span-2">Schedule</div><div className="col-span-2">Last run</div><div className="col-span-2">Next run</div>
+        </div>
+        <div className="divide-y">
+          {cronRows.length === 0 ? <div className="px-3 py-3 text-sm text-muted-foreground">No OpenClaw cron jobs found.</div> : cronRows.map((row) => (
+            <div key={row.id} className="grid grid-cols-12 gap-2 px-3 py-2 text-xs items-center">
+              <div className={`col-span-1 font-semibold ${row.rag.className}`}>{row.rag.label}</div>
+              <div className="col-span-3 truncate" title={row.name}>{row.name}</div>
+              <div className="col-span-1 text-muted-foreground">{row.agentId ?? "—"}</div>
+              <div className="col-span-1 text-muted-foreground">{row.topic}</div>
+              <div className="col-span-2 text-muted-foreground truncate" title={scheduleLabel(row.scheduleKind, row.scheduleExpr, row.everyMs)}>{scheduleLabel(row.scheduleKind, row.scheduleExpr, row.everyMs)}</div>
+              <div className="col-span-2 text-muted-foreground">{row.lastRunAtMs ? new Date(row.lastRunAtMs).toLocaleString() : "never"}</div>
+              <div className="col-span-2 text-muted-foreground">{row.nextRunAtMs ? new Date(row.nextRunAtMs).toLocaleString() : "n/a"}</div>
+            </div>
+          ))}
+        </div>
+      </section>
 
       <section className="rounded-lg border bg-card overflow-hidden">
         <div className="border-b px-3 py-2 text-sm font-semibold">RAG Ops control panel</div>

@@ -26,6 +26,23 @@ export interface LiveRunForIssue {
   issueId?: string | null;
 }
 
+export interface OpenclawCronJob {
+  id: string;
+  name: string;
+  enabled: boolean;
+  agentId: string | null;
+  sessionKey: string | null;
+  sessionTarget: string | null;
+  scheduleKind: string | null;
+  scheduleExpr: string | null;
+  scheduleTz: string | null;
+  everyMs: number | null;
+  nextRunAtMs: number | null;
+  lastRunAtMs: number | null;
+  lastRunStatus: string | null;
+  consecutiveErrors: number;
+}
+
 export const heartbeatsApi = {
   list: (companyId: string, agentId?: string, limit?: number) => {
     const searchParams = new URLSearchParams();
@@ -58,4 +75,6 @@ export const heartbeatsApi = {
     api.get<LiveRunForIssue[]>(`/companies/${companyId}/live-runs${minCount ? `?minCount=${minCount}` : ""}`),
   listInstanceSchedulerAgents: () =>
     api.get<InstanceSchedulerHeartbeatAgent[]>("/instance/scheduler-heartbeats"),
+  listOpenclawCronJobs: () =>
+    api.get<OpenclawCronJob[]>("/instance/openclaw-cron-jobs"),
 };

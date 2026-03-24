@@ -1,5 +1,6 @@
 import { Router, type Request } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
 import { agents as agentsTable, companies, heartbeatRuns } from "@paperclipai/db";
@@ -902,6 +903,47 @@ export function agentRoutes(db: Db) {
       });
 
     res.json(items);
+  });
+
+  router.get("/instance/openclaw-cron-jobs", async (req, res) => {
+    assertBoard(req);
+
+    const jobsPath = path.join(process.env.HOME ?? "", ".openclaw", "cron", "jobs.json");
+    try {
+      const raw = await readFile(jobsPath, "utf8");
+      const parsed = JSON.parse(raw) as { jobs?: unknown[] };
+      const jobs = Array.isArray(parsed.jobs) ? parsed.jobs : [];
+
+      const items = jobs.map((job) => {
+        const j = (job ?? {}) as Record<string, unknown>;
+        const state = ((j.state ?? {}) as Record<string, unknown>);
+        const schedule = ((j.schedule ?? {}) as Record<string, unknown>);
+        return {
+          id: String(j.id ?? ""),
+          name: String(j.name ?? ""),
+          enabled: Boolean(j.enabled),
+          agentId: j.agentId == null ? null : String(j.agentId),
+          sessionKey: j.sessionKey == null ? null : String(j.sessionKey),
+          sessionTarget: j.sessionTarget == null ? null : String(j.sessionTarget),
+          scheduleKind: schedule.kind == null ? null : String(schedule.kind),
+          scheduleExpr: schedule.expr == null ? null : String(schedule.expr),
+          scheduleTz: schedule.tz == null ? null : String(schedule.tz),
+          everyMs: typeof schedule.everyMs === "number" ? schedule.everyMs : null,
+          nextRunAtMs: typeof state.nextRunAtMs === "number" ? state.nextRunAtMs : null,
+          lastRunAtMs: typeof state.lastRunAtMs === "number" ? state.lastRunAtMs : null,
+          lastRunStatus: state.lastRunStatus == null ? null : String(state.lastRunStatus),
+          consecutiveErrors: typeof state.consecutiveErrors === "number" ? state.consecutiveErrors : 0,
+        };
+      });
+
+      res.json(items);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        res.json([]);
+        return;
+      }
+      throw error;
+    }
   });
 
   router.get("/companies/:companyId/org", async (req, res) => {
