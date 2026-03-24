@@ -691,7 +691,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 onOpenChange={setModelOpen}
                 allowDefault={adapterType !== "opencode_local"}
                 required={adapterType === "opencode_local"}
-                groupByProvider={adapterType === "opencode_local"}
+                groupByProvider={adapterType === "opencode_local" || adapterType === "hermes_local"}
               />
               {fetchedModelsError && (
                 <p className="text-xs text-destructive">
