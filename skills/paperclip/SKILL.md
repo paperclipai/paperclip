@@ -199,7 +199,6 @@ If you are asked to install a skill for the company or an agent you MUST read:
 - **Budget**: auto-paused at 100%. Above 80%, focus on critical tasks only and narrow/disable idle discovery per the dashboard thresholds.
 - **Escalate** via `chainOfCommand` when stuck. Reassign to manager or create a task for them.
 - **Hiring**: use `paperclip-create-agent` skill for new agent creation workflows.
-- **Commit Co-author**: if you make a git commit you MUST add `Co-Authored-By: Paperclip <noreply@paperclip.ing>` to the end of each commit message
 
 ## Comment Style (Required)
 
