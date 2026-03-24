@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { promises as fs } from "node:fs";
+import { win32 as pathWin32 } from "node:path";
 
 vi.mock("node:fs", async () => {
   const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
@@ -87,7 +88,7 @@ describe("symlinkOrJunction", () => {
 
       expect(mockedSymlink).toHaveBeenCalledTimes(2);
       expect(mockedSymlink).toHaveBeenNthCalledWith(1, "C:\\src", "C:\\tgt");
-      expect(mockedSymlink).toHaveBeenNthCalledWith(2, "C:\\src", "C:\\tgt", "junction");
+      expect(mockedSymlink).toHaveBeenNthCalledWith(2, pathWin32.resolve("C:\\src"), "C:\\tgt", "junction");
     } finally {
       Object.defineProperty(process, "platform", { value: originalPlatform, writable: true });
     }

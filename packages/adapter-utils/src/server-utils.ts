@@ -680,8 +680,10 @@ export async function symlinkOrJunction(source: string, target: string): Promise
   } catch (err: unknown) {
     if ((err as NodeJS.ErrnoException).code !== "EPERM") throw err;
     // Windows: directory symlinks need admin; junctions don't.
-    // Junctions require absolute paths — resolve to be safe.
-    await fs.symlink(path.resolve(source), target, "junction");
+    // Junctions require absolute paths — use path.win32.resolve so the
+    // resolution always uses Windows semantics (important for testability
+    // on Linux/macOS CI where process.platform is mocked).
+    await fs.symlink(path.win32.resolve(source), target, "junction");
   }
 }
 
