@@ -24,14 +24,28 @@ services:
       PORT: "3100"
       SERVE_UI: "true"
       PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
-      PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public"
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+      GITHUB_TOKEN: "${GITHUB_TOKEN}"
+      VERCEL_TOKEN: "${VERCEL_TOKEN}"
     volumes:
       - paperclip-data:/paperclip
+      - /Users/darshanbathija_1/Downloads/PC Admin:/Users/darshanbathija_1/Downloads/PC Admin:rw
+      - /Users/darshanbathija_1/Downloads/PCFolder:/Users/darshanbathija_1/Downloads/PCFolder
     depends_on:
       db:
         condition: service_healthy
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --config /etc/cloudflared/config.yml run
+    volumes:
+      - ./cloudflared-config.yml:/etc/cloudflared/config.yml:ro
+      - /Users/darshanbathija_1/.cloudflared/738ff732-9759-4fe3-8b87-4dd55d8b32bc.json:/etc/cloudflared/credentials.json:ro
+    depends_on:
+      - server
+    restart: unless-stopped
 
 volumes:
   pgdata:

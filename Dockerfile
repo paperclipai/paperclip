@@ -7,6 +7,7 @@ RUN corepack enable
 FROM base AS deps
 WORKDIR /app
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
+COPY patches/ patches/
 COPY cli/package.json cli/
 COPY server/package.json server/
 COPY ui/package.json ui/
@@ -21,6 +22,8 @@ COPY packages/adapters/openclaw-gateway/package.json packages/adapters/openclaw-
 COPY packages/adapters/opencode-local/package.json packages/adapters/opencode-local/
 COPY packages/adapters/pi-local/package.json packages/adapters/pi-local/
 COPY packages/plugins/sdk/package.json packages/plugins/sdk/
+COPY packages/plugins/create-paperclip-plugin/package.json packages/plugins/create-paperclip-plugin/
+COPY packages/plugins/plugin-slack/package.json packages/plugins/plugin-slack/
 
 RUN pnpm install --frozen-lockfile
 
@@ -28,8 +31,9 @@ FROM base AS build
 WORKDIR /app
 COPY --from=deps /app /app
 COPY . .
-RUN pnpm --filter @paperclipai/ui build
+RUN pnpm --filter @paperclipai/shared build
 RUN pnpm --filter @paperclipai/plugin-sdk build
+RUN pnpm --filter @paperclipai/ui build
 RUN pnpm --filter @paperclipai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 
