@@ -249,8 +249,9 @@ export function IssueDetail() {
   });
   const { data: teamMembers = [] } = useQuery({
     queryKey: queryKeys.access.team(selectedCompanyId!),
-    queryFn: () => accessApi.listTeam(selectedCompanyId!),
+    queryFn: () => accessApi.listTeam(selectedCompanyId!).catch(() => [] as any[]),
     enabled: !!selectedCompanyId,
+    retry: false,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const { orderedProjects } = useProjectOrder({

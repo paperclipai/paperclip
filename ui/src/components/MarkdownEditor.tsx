@@ -418,7 +418,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         return;
       }
 
-      if (option.kind === "user") {
+      if (option.kind === "user" || option.kind === "agent") {
         const current = latestValueRef.current;
         const next = applyMention(current, state.query, option);
         if (next !== current) {
@@ -428,6 +428,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         }
         requestAnimationFrame(() => {
           ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
+          decorateProjectMentions();
         });
         mentionStateRef.current = null;
         setMentionState(null);
