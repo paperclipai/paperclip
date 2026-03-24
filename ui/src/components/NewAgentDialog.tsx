@@ -133,11 +133,12 @@ export function NewAgentDialog() {
     setTitle(preset.title);
     setRole(preset.role);
 
-    // Set config with auto-credential
+    // Set config with auto-credential + skip permissions for automated agents
     setConfigValues((prev) => ({
       ...prev,
       adapterType: preset.adapterType,
       credentialId: credential?.id ?? null,
+      dangerouslySkipPermissions: true,
       heartbeatEnabled: true,
       intervalSec: 300,
     }));
