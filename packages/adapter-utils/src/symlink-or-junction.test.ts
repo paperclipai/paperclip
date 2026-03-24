@@ -9,12 +9,14 @@ vi.mock("node:fs", async () => {
       ...actual.promises,
       symlink: vi.fn(),
       link: vi.fn(),
+      copyFile: vi.fn(),
     },
   };
 });
 
 const mockedSymlink = fs.symlink as unknown as ReturnType<typeof vi.fn>;
 const mockedLink = fs.link as unknown as ReturnType<typeof vi.fn>;
+const mockedCopyFile = fs.copyFile as unknown as ReturnType<typeof vi.fn>;
 
 // Helper: dynamically import functions so the mock is in place.
 async function loadSymlinkOrJunction() {
@@ -129,6 +131,7 @@ describe("symlinkOrHardLink", () => {
     vi.restoreAllMocks();
     mockedSymlink.mockReset();
     mockedLink.mockReset();
+    mockedCopyFile.mockReset();
   });
 
   it("creates a symlink when symlink succeeds (no hard link fallback)", async () => {
@@ -189,6 +192,27 @@ describe("symlinkOrHardLink", () => {
 
       expect(mockedSymlink).toHaveBeenCalledTimes(1);
       expect(mockedLink).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform, writable: true });
+    }
+  });
+
+  it("falls back to copyFile on Windows when hard link fails with EXDEV (cross-drive)", async () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32", writable: true });
+
+    try {
+      mockedSymlink.mockRejectedValueOnce(makeErrno("EPERM"));
+      mockedLink.mockRejectedValueOnce(makeErrno("EXDEV"));
+      mockedCopyFile.mockResolvedValueOnce(undefined);
+
+      const symlinkOrHardLink = await loadSymlinkOrHardLink();
+      await symlinkOrHardLink("D:\\src\\auth.json", "C:\\tgt\\auth.json");
+
+      expect(mockedSymlink).toHaveBeenCalledTimes(1);
+      expect(mockedLink).toHaveBeenCalledTimes(1);
+      expect(mockedCopyFile).toHaveBeenCalledTimes(1);
+      expect(mockedCopyFile).toHaveBeenCalledWith("D:\\src\\auth.json", "C:\\tgt\\auth.json");
     } finally {
       Object.defineProperty(process, "platform", { value: originalPlatform, writable: true });
     }
