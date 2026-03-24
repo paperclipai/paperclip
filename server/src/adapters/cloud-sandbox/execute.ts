@@ -269,7 +269,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     } else if (typeof err === "object" && err !== null) {
       // K8s WebSocket ErrorEvent - extract the underlying error
       const inner = (err as { error?: Error }).error;
-      message = inner?.message ?? JSON.stringify(err) || "Exec failed";
+      message = inner?.message ?? (JSON.stringify(err) || "Exec failed");
     } else {
       message = String(err) || "Exec failed";
     }
