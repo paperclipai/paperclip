@@ -854,7 +854,10 @@ export function IssueDetail() {
                 {approveAndMove.isPending ? "Approving..." : "Approve + Move"}
               </Button>
               <span className="text-[11px] text-muted-foreground">
-                PEL-1 quick action: this approves the linked request and moves status to in_review.
+                PEL-1 quick action: this approves the linked request and moves status to in_review. {" "}
+                <Link className="underline" to={`/approvals/${pendingLinkedApproval.id}`}>
+                  Open pending approval
+                </Link>
               </span>
             </>
           ) : (linkedApprovals?.length ?? 0) > 0 ? (
