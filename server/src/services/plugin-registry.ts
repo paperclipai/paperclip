@@ -154,7 +154,7 @@ export function pluginRegistryService(db: Db) {
             manifestJson: manifest,
             status: "installed" as PluginStatus,
             lastError: null,
-            updatedAt: new Date(),
+            updatedAt: new Date().toISOString() as any,
           })
           .where(eq(plugins.id, existing.id))
           .returning()
@@ -204,8 +204,8 @@ export function pluginRegistryService(db: Db) {
       const plugin = await getById(id);
       if (!plugin) throw notFound("Plugin not found");
 
-      const setClause: Partial<typeof plugins.$inferInsert> & { updatedAt: Date } = {
-        updatedAt: new Date(),
+      const setClause: Partial<typeof plugins.$inferInsert> & { updatedAt: any } = {
+        updatedAt: new Date().toISOString() as any,
       };
       if (data.packageName !== undefined) setClause.packageName = data.packageName;
       if (data.version !== undefined) setClause.version = data.version;
@@ -235,7 +235,7 @@ export function pluginRegistryService(db: Db) {
         .set({
           status: input.status,
           lastError: input.lastError ?? null,
-          updatedAt: new Date(),
+          updatedAt: new Date().toISOString() as any,
         })
         .where(eq(plugins.id, id))
         .returning()
@@ -269,7 +269,7 @@ export function pluginRegistryService(db: Db) {
         .update(plugins)
         .set({
           status: "uninstalled" as PluginStatus,
-          updatedAt: new Date(),
+          updatedAt: new Date().toISOString() as any,
         })
         .where(eq(plugins.id, id))
         .returning()
@@ -307,7 +307,7 @@ export function pluginRegistryService(db: Db) {
           .set({
             configJson: input.configJson,
             lastError: null,
-            updatedAt: new Date(),
+            updatedAt: new Date().toISOString() as any,
           })
           .where(eq(pluginConfig.pluginId, pluginId))
           .returning()
@@ -345,7 +345,7 @@ export function pluginRegistryService(db: Db) {
           .set({
             configJson: merged,
             lastError: null,
-            updatedAt: new Date(),
+            updatedAt: new Date().toISOString() as any,
           })
           .where(eq(pluginConfig.pluginId, pluginId))
           .returning()
@@ -369,7 +369,7 @@ export function pluginRegistryService(db: Db) {
     setConfigError: async (pluginId: string, lastError: string | null) => {
       const rows = await db
         .update(pluginConfig)
-        .set({ lastError, updatedAt: new Date() })
+        .set({ lastError, updatedAt: new Date().toISOString() as any })
         .where(eq(pluginConfig.pluginId, pluginId))
         .returning();
 
@@ -466,7 +466,7 @@ export function pluginRegistryService(db: Db) {
           .update(pluginEntities)
           .set({
             ...input,
-            updatedAt: new Date(),
+            updatedAt: new Date().toISOString() as any,
           })
           .where(eq(pluginEntities.id, existing.id))
           .returning()
@@ -551,7 +551,7 @@ export function pluginRegistryService(db: Db) {
           .set({
             schedule: input.schedule,
             status: input.status ?? existing.status,
-            updatedAt: new Date(),
+            updatedAt: new Date().toISOString() as any,
           })
           .where(eq(pluginJobs.id, existing.id))
           .returning()

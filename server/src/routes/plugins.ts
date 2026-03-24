@@ -1971,7 +1971,7 @@ export function pluginRoutes(
         status: "pending",
         payload,
         headers: rawHeaders,
-        startedAt,
+        startedAt: startedAt.toISOString() as any,
       })
       .returning({ id: pluginWebhookDeliveries.id });
 
@@ -1993,7 +1993,7 @@ export function pluginRoutes(
         .set({
           status: "success",
           durationMs,
-          finishedAt,
+          finishedAt: finishedAt.toISOString() as any,
         })
         .where(eq(pluginWebhookDeliveries.id, delivery.id));
 
@@ -2013,7 +2013,7 @@ export function pluginRoutes(
           status: "failed",
           durationMs,
           error: errorMessage,
-          finishedAt,
+          finishedAt: finishedAt.toISOString() as any,
         })
         .where(eq(pluginWebhookDeliveries.id, delivery.id));
 

@@ -238,7 +238,7 @@ export function secretService(db: Db) {
           .set({
             latestVersion: nextVersion,
             externalRef: prepared.externalRef,
-            updatedAt: new Date(),
+            updatedAt: new Date().toISOString() as any,
           })
           .where(eq(companySecrets.id, secret.id))
           .returning()
@@ -271,7 +271,7 @@ export function secretService(db: Db) {
             patch.description === undefined ? secret.description : patch.description,
           externalRef:
             patch.externalRef === undefined ? secret.externalRef : patch.externalRef,
-          updatedAt: new Date(),
+          updatedAt: new Date().toISOString() as any,
         })
         .where(eq(companySecrets.id, secret.id))
         .returning()

@@ -1948,9 +1948,10 @@ export function accessRoutes(
         if (!existingAdmin) {
           await access.promoteInstanceAdmin(userId);
         }
+        const nowStr = new Date().toISOString() as any;
         const updatedInvite = await db
           .update(invites)
-          .set({ acceptedAt: new Date(), updatedAt: new Date() })
+          .set({ acceptedAt: nowStr, updatedAt: nowStr })
           .where(eq(invites.id, invite.id))
           .returning()
           .then((rows) => rows[0] ?? invite);
@@ -2079,9 +2080,10 @@ export function accessRoutes(
         requestType === "human" ? await resolveActorEmail(db, req) : null;
       const created = !inviteAlreadyAccepted
         ? await db.transaction(async (tx) => {
+            const nowStr = new Date().toISOString() as any;
             await tx
               .update(invites)
-              .set({ acceptedAt: new Date(), updatedAt: new Date() })
+              .set({ acceptedAt: nowStr, updatedAt: nowStr })
               .where(
                 and(
                   eq(invites.id, invite.id),
@@ -2138,7 +2140,7 @@ export function accessRoutes(
               adapterType: requestType === "agent" ? adapterType : null,
               agentDefaultsPayload:
                 requestType === "agent" ? joinDefaults.normalized : null,
-              updatedAt: new Date()
+              updatedAt: new Date().toISOString() as any
             })
             .where(eq(joinRequests.id, replayJoinRequestId as string))
             .returning()
@@ -2312,9 +2314,10 @@ export function accessRoutes(
     if (invite.acceptedAt) throw conflict("Invite already consumed");
     if (invite.revokedAt) return res.json(invite);
 
+    const nowStr = new Date().toISOString() as any;
     const revoked = await db
       .update(invites)
-      .set({ revokedAt: new Date(), updatedAt: new Date() })
+      .set({ revokedAt: nowStr, updatedAt: nowStr })
       .where(eq(invites.id, id))
       .returning()
       .then((rows) => rows[0]);
@@ -2463,15 +2466,16 @@ export function accessRoutes(
         );
       }
 
+      const nowStr = new Date().toISOString() as any;
       const approved = await db
         .update(joinRequests)
         .set({
           status: "approved",
           approvedByUserId:
             req.actor.userId ?? (isLocalImplicit(req) ? "local-board" : null),
-          approvedAt: new Date(),
+          approvedAt: nowStr,
           createdAgentId,
-          updatedAt: new Date()
+          updatedAt: nowStr
         })
         .where(eq(joinRequests.id, requestId))
         .returning()
@@ -2522,14 +2526,15 @@ export function accessRoutes(
       if (existing.status !== "pending_approval")
         throw conflict("Join request is not pending");
 
+      const nowStr = new Date().toISOString() as any;
       const rejected = await db
         .update(joinRequests)
         .set({
           status: "rejected",
           rejectedByUserId:
             req.actor.userId ?? (isLocalImplicit(req) ? "local-board" : null),
-          rejectedAt: new Date(),
-          updatedAt: new Date()
+          rejectedAt: nowStr,
+          updatedAt: nowStr
         })
         .where(eq(joinRequests.id, requestId))
         .returning()
@@ -2590,9 +2595,10 @@ export function accessRoutes(
         .then((rows) => rows[0] ?? null);
       if (existingKey) throw conflict("API key already claimed");
 
+      const nowStr = new Date().toISOString() as any;
       const consumed = await db
         .update(joinRequests)
-        .set({ claimSecretConsumedAt: new Date(), updatedAt: new Date() })
+        .set({ claimSecretConsumedAt: nowStr, updatedAt: nowStr })
         .where(
           and(
             eq(joinRequests.id, requestId),

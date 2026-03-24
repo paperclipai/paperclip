@@ -134,7 +134,7 @@ export async function claimBoardOwnership(
       if (existing.status !== "active") {
         await tx
           .update(companyMemberships)
-          .set({ status: "active", membershipRole: "owner", updatedAt: new Date() })
+          .set({ status: "active", membershipRole: "owner", updatedAt: new Date().toISOString() as any })
           .where(eq(companyMemberships.id, existing.id));
       }
     }

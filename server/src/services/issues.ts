@@ -51,13 +51,13 @@ function applyStatusSideEffects(
   if (!status) return patch;
 
   if (status === "in_progress" && !patch.startedAt) {
-    patch.startedAt = new Date();
+    patch.startedAt = new Date().toISOString() as any;
   }
   if (status === "done") {
-    patch.completedAt = new Date();
+    patch.completedAt = new Date().toISOString() as any;
   }
   if (status === "cancelled") {
-    patch.cancelledAt = new Date();
+    patch.cancelledAt = new Date().toISOString() as any;
   }
   return patch;
 }
@@ -447,14 +447,14 @@ export function issueService(db: Db) {
     const stale = await isTerminalOrMissingHeartbeatRun(input.expectedCheckoutRunId);
     if (!stale) return null;
 
-    const now = new Date();
+    const nowStr = new Date().toISOString();
     const adopted = await db
       .update(issues)
       .set({
         checkoutRunId: input.actorRunId,
         executionRunId: input.actorRunId,
-        executionLockedAt: now,
-        updatedAt: now,
+        executionLockedAt: nowStr as any,
+        updatedAt: nowStr as any,
       })
       .where(
         and(
@@ -635,21 +635,22 @@ export function issueService(db: Db) {
     },
 
     markRead: async (companyId: string, issueId: string, userId: string, readAt: Date = new Date()) => {
-      const now = new Date();
+      const nowStr = new Date().toISOString();
+      const readAtStr = readAt.toISOString();
       const [row] = await db
         .insert(issueReadStates)
         .values({
           companyId,
           issueId,
           userId,
-          lastReadAt: readAt,
-          updatedAt: now,
+          lastReadAt: readAtStr as any,
+          updatedAt: nowStr as any,
         })
         .onConflictDoUpdate({
           target: [issueReadStates.companyId, issueReadStates.issueId, issueReadStates.userId],
           set: {
-            lastReadAt: readAt,
-            updatedAt: now,
+            lastReadAt: readAtStr as any,
+            updatedAt: nowStr as any,
           },
         })
         .returning();
@@ -768,13 +769,13 @@ export function issueService(db: Db) {
           identifier,
         } as typeof issues.$inferInsert;
         if (values.status === "in_progress" && !values.startedAt) {
-          values.startedAt = new Date();
+          values.startedAt = new Date().toISOString() as any;
         }
         if (values.status === "done") {
-          values.completedAt = new Date();
+          values.completedAt = new Date().toISOString() as any;
         }
         if (values.status === "cancelled") {
-          values.cancelledAt = new Date();
+          values.cancelledAt = new Date().toISOString() as any;
         }
 
         const [issue] = await tx.insert(issues).values(values).returning();
@@ -808,7 +809,7 @@ export function issueService(db: Db) {
 
       const patch: Partial<typeof issues.$inferInsert> = {
         ...issueData,
-        updatedAt: new Date(),
+        updatedAt: new Date().toISOString() as any,
       };
 
       const nextAssigneeAgentId =
@@ -924,7 +925,7 @@ export function issueService(db: Db) {
       if (!issueCompany) throw notFound("Issue not found");
       await assertAssignableAgent(issueCompany.companyId, agentId);
 
-      const now = new Date();
+      const nowStr = new Date().toISOString();
       const sameRunAssigneeCondition = checkoutRunId
         ? and(
           eq(issues.assigneeAgentId, agentId),
@@ -942,8 +943,8 @@ export function issueService(db: Db) {
           checkoutRunId,
           executionRunId: checkoutRunId,
           status: "in_progress",
-          startedAt: now,
-          updatedAt: now,
+          startedAt: nowStr as any,
+          updatedAt: nowStr as any,
         })
         .where(
           and(
@@ -987,7 +988,7 @@ export function issueService(db: Db) {
           .set({
             checkoutRunId,
             executionRunId: checkoutRunId,
-            updatedAt: new Date(),
+            updatedAt: new Date().toISOString() as any,
           })
           .where(
             and(
@@ -1132,7 +1133,7 @@ export function issueService(db: Db) {
           executionRunId: null,
           executionAgentNameKey: null,
           executionLockedAt: null,
-          updatedAt: new Date(),
+          updatedAt: new Date().toISOString() as any,
         })
         .where(eq(issues.id, id))
         .returning()
@@ -1286,7 +1287,7 @@ export function issueService(db: Db) {
       // Update issue's updatedAt so comment activity is reflected in recency sorting
       await db
         .update(issues)
-        .set({ updatedAt: new Date() })
+        .set({ updatedAt: new Date().toISOString() as any })
         .where(eq(issues.id, issueId));
 
       return redactIssueComment(comment);

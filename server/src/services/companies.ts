@@ -198,7 +198,7 @@ export function companyService(db: Db) {
 
         const updated = await tx
           .update(companies)
-          .set({ ...companyPatch, updatedAt: new Date() })
+          .set({ ...companyPatch, updatedAt: new Date().toISOString() as any })
           .where(eq(companies.id, id))
           .returning()
           .then((rows) => rows[0] ?? null);
@@ -217,7 +217,7 @@ export function companyService(db: Db) {
               target: companyLogos.companyId,
               set: {
                 assetId: logoAssetId,
-                updatedAt: new Date(),
+                updatedAt: new Date().toISOString() as any,
               },
             });
         }
@@ -238,7 +238,7 @@ export function companyService(db: Db) {
       db.transaction(async (tx) => {
         const updated = await tx
           .update(companies)
-          .set({ status: "archived", updatedAt: new Date() })
+          .set({ status: "archived", updatedAt: new Date().toISOString() as any })
           .where(eq(companies.id, id))
           .returning()
           .then((rows) => rows[0] ?? null);

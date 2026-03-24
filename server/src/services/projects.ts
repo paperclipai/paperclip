@@ -370,7 +370,7 @@ async function ensureSinglePrimaryWorkspace(
 ) {
   await dbOrTx
     .update(projectWorkspaces)
-    .set({ isPrimary: false, updatedAt: new Date() })
+    .set({ isPrimary: false, updatedAt: new Date().toISOString() as any })
     .where(
       and(
         eq(projectWorkspaces.companyId, input.companyId),
@@ -380,7 +380,7 @@ async function ensureSinglePrimaryWorkspace(
 
   await dbOrTx
     .update(projectWorkspaces)
-    .set({ isPrimary: true, updatedAt: new Date() })
+    .set({ isPrimary: true, updatedAt: new Date().toISOString() as any })
     .where(
       and(
         eq(projectWorkspaces.companyId, input.companyId),
@@ -493,7 +493,7 @@ export function projectService(db: Db) {
       // Keep legacy goalId column in sync
       const updates: Partial<typeof projects.$inferInsert> = {
         ...projectData,
-        updatedAt: new Date(),
+        updatedAt: new Date().toISOString() as any,
       };
       if (ids !== undefined) {
         updates.goalId = ids.length > 0 ? ids[0] : null;
@@ -585,7 +585,7 @@ export function projectService(db: Db) {
         if (shouldBePrimary) {
           await tx
             .update(projectWorkspaces)
-            .set({ isPrimary: false, updatedAt: new Date() })
+            .set({ isPrimary: false, updatedAt: new Date().toISOString() as any })
             .where(
               and(
                 eq(projectWorkspaces.companyId, project.companyId),
@@ -662,7 +662,7 @@ export function projectService(db: Db) {
       }
 
       const patch: Partial<typeof projectWorkspaces.$inferInsert> = {
-        updatedAt: new Date(),
+        updatedAt: new Date().toISOString() as any,
       };
       if (data.name !== undefined) patch.name = deriveWorkspaceName({ name: data.name, cwd: nextCwd, repoUrl: nextRepoUrl });
       if (data.name === undefined && (data.cwd !== undefined || data.repoUrl !== undefined)) {
@@ -687,7 +687,7 @@ export function projectService(db: Db) {
         if (data.isPrimary === true) {
           await tx
             .update(projectWorkspaces)
-            .set({ isPrimary: false, updatedAt: new Date() })
+            .set({ isPrimary: false, updatedAt: new Date().toISOString() as any })
             .where(
               and(
                 eq(projectWorkspaces.companyId, existing.companyId),

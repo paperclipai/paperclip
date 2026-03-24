@@ -82,7 +82,7 @@ export function approvalRoutes(db: Db) {
       decisionNote: null,
       decidedByUserId: null,
       decidedAt: null,
-      updatedAt: new Date(),
+      updatedAt: new Date().toISOString() as any,
     });
 
     if (uniqueIssueIds.length > 0) {
