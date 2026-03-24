@@ -6,6 +6,7 @@ import {
   DraftInput,
   help,
 } from "../../components/agent-config-primitives";
+import { CopyText } from "../../components/CopyText";
 
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
@@ -17,6 +18,7 @@ export function HttpConfigFields({
   config,
   eff,
   mark,
+  agentId,
 }: AdapterConfigFieldsProps) {
   const [authVisible, setAuthVisible] = useState(false);
 
@@ -106,6 +108,30 @@ export function HttpConfigFields({
           placeholder="15000"
         />
       </Field>
+
+      {!isCreate && agentId && (
+        <div className="mt-2 rounded-md border border-border bg-muted/30 p-3 space-y-2.5 text-xs">
+          <p className="font-medium text-foreground">Integration details</p>
+          <div className="space-y-0.5">
+            <p className="text-muted-foreground">
+              Agent ID <span className="text-muted-foreground/60">(PAPERCLIP_AGENT_ID)</span>
+            </p>
+            <CopyText
+              text={agentId}
+              className="font-mono text-foreground/80 text-xs break-all"
+            />
+          </div>
+          <div className="space-y-0.5">
+            <p className="text-muted-foreground">
+              JWT secret <span className="text-muted-foreground/60">(PAPERCLIP_AGENT_JWT_SECRET)</span>
+            </p>
+            <p className="font-mono text-foreground/80 break-all">
+              Found in your Paperclip instance at{" "}
+              <span className="text-foreground">instances/default/.env</span>
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
