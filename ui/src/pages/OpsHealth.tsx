@@ -48,6 +48,37 @@ function agentEmoji(agentId: string | null) {
   return "🤖";
 }
 
+function jobTypeMeta(name: string) {
+  const n = name.toLowerCase();
+  if (n.includes("memory-integrity")) return { key: "memory-integrity", label: "Memory Integrity", emoji: "🧠" };
+  if (n.includes("nightly-memory-dive") || n.includes("nightly deep dive")) return { key: "nightly-dive", label: "Nightly Deep Dive", emoji: "🌙" };
+  if (n.includes("nightly-improvement")) return { key: "nightly-improvement", label: "Nightly Improvement", emoji: "🛠️" };
+  if (n.includes("sprint-checkin")) return { key: "sprint-checkin", label: "Sprint Check-in", emoji: "📋" };
+  if (n.includes("daily-notes")) return { key: "daily-notes", label: "Daily Notes", emoji: "📝" };
+  if (n.includes("cron-watchdog") || n.includes("watchdog")) return { key: "watchdog", label: "Watchdog", emoji: "🚨" };
+  if (n.includes("content-calendar") || n.includes("marketing")) return { key: "content-run", label: "Content Run", emoji: "📣" };
+  if (n.includes("publish") || n.includes("promote") || n.includes("preflight")) return { key: "publish", label: "Publish/Promote", emoji: "🚀" };
+  if (n.includes("reminder")) return { key: "reminder", label: "Reminder", emoji: "⏰" };
+  return { key: "other", label: "Other", emoji: "⚙️" };
+}
+
+function jobTypeRank(typeKey: string) {
+  const order = [
+    "memory-integrity",
+    "nightly-dive",
+    "nightly-improvement",
+    "sprint-checkin",
+    "daily-notes",
+    "content-run",
+    "watchdog",
+    "publish",
+    "reminder",
+    "other",
+  ];
+  const idx = order.indexOf(typeKey);
+  return idx === -1 ? 999 : idx;
+}
+
 export function OpsHealth() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -127,9 +158,11 @@ export function OpsHealth() {
   const cronRows = useMemo(() => {
     return (openclawCronJobs ?? []).map((job) => {
       const rag = ragForCronJob(job.lastRunStatus, job.consecutiveErrors, job.enabled, job.nextRunAtMs, job.lastRunAtMs);
+      const type = jobTypeMeta(job.name);
       return {
         ...job,
         rag,
+        type,
         topic: topicFromSessionKey(job.sessionKey),
       };
     });
@@ -142,10 +175,15 @@ export function OpsHealth() {
   }, [agentFilter, cronRows, showRedOnly]);
 
   const cronGroups = useMemo(() => {
+    const sortRows = (rows: typeof filteredCronRows) => [...rows].sort((a, b) => {
+      const rankDelta = jobTypeRank(a.type.key) - jobTypeRank(b.type.key);
+      if (rankDelta !== 0) return rankDelta;
+      return a.name.localeCompare(b.name);
+    });
     return {
-      main: filteredCronRows.filter((row) => row.agentId === "main"),
-      katya: filteredCronRows.filter((row) => row.agentId === "katya"),
-      other: filteredCronRows.filter((row) => row.agentId !== "main" && row.agentId !== "katya"),
+      main: sortRows(filteredCronRows.filter((row) => row.agentId === "main")),
+      katya: sortRows(filteredCronRows.filter((row) => row.agentId === "katya")),
+      other: sortRows(filteredCronRows.filter((row) => row.agentId !== "main" && row.agentId !== "katya")),
     };
   }, [filteredCronRows]);
 
@@ -182,7 +220,7 @@ export function OpsHealth() {
           <button className={`rounded border px-2 py-1 ${showRedOnly ? "bg-muted" : ""}`} onClick={() => setShowRedOnly((v) => !v)}>{showRedOnly ? "Showing 🔴 only" : "Show 🔴 only"}</button>
         </div>
         <div className="grid grid-cols-12 gap-2 px-3 py-2 text-[11px] uppercase tracking-wide text-muted-foreground border-b bg-muted/20">
-          <div className="col-span-1">RAG</div><div className="col-span-3">Job</div><div className="col-span-1">Agent</div><div className="col-span-1">Topic</div><div className="col-span-2">Schedule</div><div className="col-span-2">Last run</div><div className="col-span-2">Next run</div>
+          <div className="col-span-1">RAG</div><div className="col-span-2">Job</div><div className="col-span-2">Type</div><div className="col-span-1">Agent</div><div className="col-span-1">Topic</div><div className="col-span-2">Schedule</div><div className="col-span-1">Last run</div><div className="col-span-2">Next run</div>
         </div>
         <div className="divide-y">
           {filteredCronRows.length === 0 ? <div className="px-3 py-3 text-sm text-muted-foreground">No OpenClaw cron jobs match this filter.</div> : (
@@ -197,11 +235,12 @@ export function OpsHealth() {
                     {rows.map((row) => (
                       <div key={row.id} className="grid grid-cols-12 gap-2 px-3 py-2 text-xs items-center">
                         <div className={`col-span-1 font-semibold ${row.rag.className}`}>{ragEmoji(row.rag.label)} {row.rag.label}</div>
-                        <div className="col-span-3 truncate" title={row.name}>{row.name}</div>
+                        <div className="col-span-2 truncate" title={row.name}>{row.name}</div>
+                        <div className="col-span-2 text-muted-foreground truncate" title={row.type.label}>{row.type.emoji} {row.type.label}</div>
                         <div className="col-span-1 text-muted-foreground">{agentEmoji(row.agentId)} {row.agentId ?? "—"}</div>
                         <div className="col-span-1 text-muted-foreground">{row.topic}</div>
                         <div className="col-span-2 text-muted-foreground truncate" title={scheduleLabel(row.scheduleKind, row.scheduleExpr, row.everyMs)}>{scheduleLabel(row.scheduleKind, row.scheduleExpr, row.everyMs)}</div>
-                        <div className="col-span-2 text-muted-foreground">{row.lastRunAtMs ? new Date(row.lastRunAtMs).toLocaleString() : "never"}</div>
+                        <div className="col-span-1 text-muted-foreground">{row.lastRunAtMs ? new Date(row.lastRunAtMs).toLocaleString() : "never"}</div>
                         <div className="col-span-2 text-muted-foreground">{row.nextRunAtMs ? new Date(row.nextRunAtMs).toLocaleString() : "n/a"}</div>
                       </div>
                     ))}
