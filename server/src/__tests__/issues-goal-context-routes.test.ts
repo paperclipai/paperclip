@@ -27,6 +27,7 @@ vi.mock("../services/index.js", () => ({
     canUser: vi.fn(),
     hasPermission: vi.fn(),
   }),
+  agentAclService: () => ({ listGrants: vi.fn(async () => []), getDefaults: vi.fn(async () => null) }),
   agentService: () => ({
     getById: vi.fn(),
   }),
