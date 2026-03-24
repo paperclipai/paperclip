@@ -1323,6 +1323,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
       }
 
+      // Fetch session usage from OpenClaw (token counts, model, cost).
+      // OpenClaw tracks per-session usage internally but does not include it
+      // in the agent.wait response.  The sessions.usage RPC returns totals and
+      // a per-model breakdown for the session identified by `sessionKey`.
+      let sessionUsageResult: Record<string, unknown> | null = null;
+      try {
+        sessionUsageResult = await client.request<Record<string, unknown>>(
+          "sessions.usage",
+          { key: sessionKey },
+          { timeoutMs: 10_000 },
+        );
+      } catch (usageErr) {
+        await ctx.onLog(
+          "stderr",
+          `[openclaw-gateway] sessions.usage failed (non-fatal): ${usageErr instanceof Error ? usageErr.message : String(usageErr)}\n`,
+        );
+      }
+
       const summaryFromEvents = assistantChunks.join("").trim();
       const summaryFromPayload =
         extractResultText(asRecord(acceptedPayload?.result)) ??
@@ -1344,12 +1362,42 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         asRecord(mergedMeta.agentMeta) ??
         asRecord(acceptedMeta?.agentMeta) ??
         asRecord(latestMeta?.agentMeta);
-      const usage = parseUsage(agentMeta?.usage ?? mergedMeta.usage);
-      const runtimeServices = extractRuntimeServicesFromMeta(agentMeta ?? mergedMeta);
-      const provider = nonEmpty(agentMeta?.provider) ?? nonEmpty(mergedMeta.provider) ?? "openclaw";
-      const model = nonEmpty(agentMeta?.model) ?? nonEmpty(mergedMeta.model) ?? null;
-      const costUsd = asNumber(agentMeta?.costUsd ?? mergedMeta.costUsd, 0);
+      // Extract sessions.usage data (token counts, model, cost).
+      const sessionUsage = asRecord(sessionUsageResult);
+      const sessionTotals = asRecord(sessionUsage?.totals);
+      const sessionAggregates = asRecord(sessionUsage?.aggregates);
+      const sessionByModel = Array.isArray(sessionAggregates?.byModel)
+        ? sessionAggregates.byModel
+        : [];
+      // byModel is pre-sorted by cost desc by OpenClaw — first entry is the primary model.
+      const primaryModelEntry =
+        sessionByModel.length > 0 ? asRecord(sessionByModel[0]) : null;
 
+      // Prefer agentMeta (forward-compatible), fall back to sessions.usage.
+      const usage =
+        parseUsage(agentMeta?.usage ?? mergedMeta.usage) ??
+        parseUsage(sessionTotals);
+      const runtimeServices = extractRuntimeServicesFromMeta(agentMeta ?? mergedMeta);
+      const provider =
+        nonEmpty(agentMeta?.provider) ??
+        nonEmpty(mergedMeta.provider) ??
+        nonEmpty(primaryModelEntry?.provider) ??
+        "openclaw";
+      const model =
+        nonEmpty(agentMeta?.model) ??
+        nonEmpty(mergedMeta.model) ??
+        nonEmpty(primaryModelEntry?.model) ??
+        null;
+      const costUsd =
+        asNumber(agentMeta?.costUsd ?? mergedMeta.costUsd, 0) ||
+        asNumber(sessionTotals?.totalCost, 0);
+
+      if (sessionUsageResult) {
+        await ctx.onLog(
+          "stdout",
+          `[openclaw-gateway] sessions.usage: input=${usage?.inputTokens ?? 0} output=${usage?.outputTokens ?? 0} cached=${usage?.cachedInputTokens ?? 0} model=${model ?? "unknown"} cost=$${costUsd.toFixed(4)}\n`,
+        );
+      }
       await ctx.onLog(
         "stdout",
         `[openclaw-gateway] run completed runId=${Array.from(trackedRunIds).join(",")} status=ok\n`,
