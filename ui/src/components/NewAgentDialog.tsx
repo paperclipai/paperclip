@@ -123,25 +123,37 @@ export function NewAgentDialog() {
   }
 
   function handlePresetWithProvider(preset: AgentPreset, provider: "claude" | "qwen") {
-    // Find the right credential
-    const credentialType = provider === "qwen" ? "qwen_api_key" : "claude_oauth";
-    const credential = credentials.find((c) => c.type === credentialType && c.isDefault)
-      ?? credentials.find((c) => c.type === credentialType);
-
     // Set identity
     setName(preset.name);
     setTitle(preset.title);
     setRole(preset.role);
 
-    // Set config with auto-credential + skip permissions for automated agents
-    setConfigValues((prev) => ({
-      ...prev,
-      adapterType: preset.adapterType,
-      credentialId: credential?.id ?? null,
-      dangerouslySkipPermissions: true,
-      heartbeatEnabled: true,
-      intervalSec: 300,
-    }));
+    if (provider === "qwen") {
+      // Qwen: inject proxy env vars directly — no credential setup needed.
+      // The server-side proxy at :3199 already has the API key.
+      setConfigValues((prev) => ({
+        ...prev,
+        adapterType: "claude_local",
+        credentialId: null,
+        dangerouslySkipPermissions: true,
+        heartbeatEnabled: true,
+        intervalSec: 300,
+        envVars: "ANTHROPIC_BASE_URL=http://127.0.0.1:3199,ANTHROPIC_API_KEY=dummy",
+      }));
+    } else {
+      // Claude: use credential if available, otherwise plain
+      const credential = credentials.find((c) => c.type === "claude_oauth" && c.isDefault)
+        ?? credentials.find((c) => c.type === "claude_oauth");
+      setConfigValues((prev) => ({
+        ...prev,
+        adapterType: preset.adapterType,
+        credentialId: credential?.id ?? null,
+        dangerouslySkipPermissions: true,
+        heartbeatEnabled: true,
+        intervalSec: 300,
+        envVars: "",
+      }));
+    }
 
     setSelectedPreset(preset);
     setShowFullForm(false);
