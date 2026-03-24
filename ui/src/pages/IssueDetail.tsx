@@ -843,15 +843,24 @@ export function IssueDetail() {
           )}
 
           {pendingLinkedApproval ? (
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-6 px-2 text-[11px]"
-              onClick={() => approveAndMove.mutate()}
-              disabled={approveAndMove.isPending}
-            >
-              {approveAndMove.isPending ? "Approving..." : "Approve + Move"}
-            </Button>
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-6 px-2 text-[11px]"
+                onClick={() => approveAndMove.mutate()}
+                disabled={approveAndMove.isPending}
+              >
+                {approveAndMove.isPending ? "Approving..." : "Approve + Move"}
+              </Button>
+              <span className="text-[11px] text-muted-foreground">
+                PEL-1 quick action: this approves the linked request and moves status to in_review.
+              </span>
+            </>
+          ) : (linkedApprovals?.length ?? 0) > 0 ? (
+            <span className="text-[11px] text-muted-foreground">
+              No pending approval on this issue right now — open Linked Approvals below.
+            </span>
           ) : null}
 
           {issue.originKind === "routine_execution" && issue.originId && (
