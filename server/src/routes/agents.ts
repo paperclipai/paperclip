@@ -2055,6 +2055,23 @@ export function agentRoutes(db: Db) {
     res.json(result);
   });
 
+  router.post("/companies/:companyId/heartbeat-runs/cancel-all", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const count = await heartbeat.cancelAllActiveForCompany(companyId);
+    await logActivity(db, {
+      companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "heartbeat.all_cancelled",
+      entityType: "company",
+      entityId: companyId,
+      details: { count },
+    });
+    res.json({ count });
+  });
+
   router.get("/companies/:companyId/heartbeat-runs", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);

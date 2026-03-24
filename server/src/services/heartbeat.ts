@@ -3842,6 +3842,38 @@ export function heartbeatService(db: Db) {
 
     cancelActiveForAgent: (agentId: string) => cancelActiveForAgentInternal(agentId),
 
+    cancelAllActiveForCompany: async (companyId: string, reason = "Cancelled by user") => {
+      const runs = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            inArray(heartbeatRuns.status, ["queued", "running"]),
+          ),
+        );
+
+      for (const run of runs) {
+        await setRunStatus(run.id, "cancelled", {
+          finishedAt: new Date(),
+          error: reason,
+          errorCode: "cancelled",
+        });
+        await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+          finishedAt: new Date(),
+          error: reason,
+        });
+        const running = runningProcesses.get(run.id);
+        if (running) {
+          running.child.kill("SIGTERM");
+          runningProcesses.delete(run.id);
+        }
+        await releaseIssueExecutionAndPromote(run);
+      }
+
+      return runs.length;
+    },
+
     cancelBudgetScopeWork,
 
     getActiveRunForAgent: async (agentId: string) => {

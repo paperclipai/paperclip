@@ -1,14 +1,15 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
 import { heartbeatsApi, type LiveRunForIssue } from "../api/heartbeats";
 import { issuesApi } from "../api/issues";
 import type { TranscriptEntry } from "../adapters";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, relativeTime } from "../lib/utils";
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, Square } from "lucide-react";
 import { Identity } from "./Identity";
+import { useToast } from "../context/ToastContext";
 import { RunTranscriptView } from "./transcript/RunTranscriptView";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
 
@@ -23,6 +24,10 @@ interface ActiveAgentsPanelProps {
 }
 
 export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
+  const queryClient = useQueryClient();
+  const { pushToast } = useToast();
+  const [cancellingAll, setCancellingAll] = useState(false);
+
   const { data: liveRuns } = useQuery({
     queryKey: [...queryKeys.liveRuns(companyId), "dashboard"],
     queryFn: () => heartbeatsApi.liveRunsForCompany(companyId, MIN_DASHBOARD_RUNS),
@@ -49,11 +54,45 @@ export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
     maxChunksPerRun: 120,
   });
 
+  const hasActiveRuns = runs.some(isRunActive);
+
+  const handleStopAll = async () => {
+    if (!window.confirm("Stop all active agent runs? This cannot be undone.")) {
+      return;
+    }
+
+    setCancellingAll(true);
+    try {
+      await heartbeatsApi.cancelAll(companyId);
+      queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(companyId) });
+    } catch (error) {
+      pushToast({
+        title: "Failed to stop all agent runs. Please try again.",
+        tone: "error",
+      });
+      console.error("Error cancelling all runs:", error);
+    } finally {
+      setCancellingAll(false);
+    }
+  };
+
   return (
     <div>
-      <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-        Agents
-      </h3>
+      <div className="mb-3 flex items-center justify-between">
+        <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+          Agents
+        </h3>
+        {hasActiveRuns && (
+          <button
+            onClick={handleStopAll}
+            disabled={cancellingAll}
+            className="inline-flex items-center gap-1 rounded-full border border-red-500/20 bg-red-500/[0.06] px-2.5 py-1 text-[11px] font-medium text-red-700 transition-colors hover:bg-red-500/[0.12] dark:text-red-300 disabled:opacity-50"
+          >
+            <Square className="h-2.5 w-2.5" fill="currentColor" />
+            {cancellingAll ? "Stopping…" : "Stop all"}
+          </button>
+        )}
+      </div>
       {runs.length === 0 ? (
         <div className="rounded-xl border border-border p-4">
           <p className="text-sm text-muted-foreground">No recent agent runs.</p>
