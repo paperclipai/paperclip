@@ -680,7 +680,8 @@ export async function symlinkOrJunction(source: string, target: string): Promise
   } catch (err: unknown) {
     if ((err as NodeJS.ErrnoException).code !== "EPERM") throw err;
     // Windows: directory symlinks need admin; junctions don't.
-    await fs.symlink(source, target, "junction");
+    // Junctions require absolute paths — resolve to be safe.
+    await fs.symlink(path.resolve(source), target, "junction");
   }
 }
 
@@ -688,15 +689,26 @@ export async function symlinkOrJunction(source: string, target: string): Promise
  * Create a file symlink, falling back to a hard link on Windows where
  * symlinks require Developer Mode or admin privileges.  Hard links work
  * on NTFS without elevated privileges and keep file contents in sync
- * (same inode).  Unlike junctions, hard links work for files — this is
- * the file-level counterpart to symlinkOrJunction (which handles directories).
+ * (same inode).  If source and target are on different drives (EXDEV),
+ * falls back to a file copy as a last resort.  Unlike junctions, hard
+ * links work for files — this is the file-level counterpart to
+ * symlinkOrJunction (which handles directories).
  */
 export async function symlinkOrHardLink(source: string, target: string): Promise<void> {
   try {
     await fs.symlink(source, target);
   } catch (err: unknown) {
     if (process.platform === "win32" && (err as NodeJS.ErrnoException).code === "EPERM") {
-      await fs.link(source, target);
+      try {
+        await fs.link(source, target);
+      } catch (linkErr: unknown) {
+        if ((linkErr as NodeJS.ErrnoException).code === "EXDEV") {
+          // Cross-drive: hard links not supported, fall back to copy.
+          await fs.copyFile(source, target);
+          return;
+        }
+        throw linkErr;
+      }
       return;
     }
     throw err;
