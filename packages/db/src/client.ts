@@ -704,14 +704,9 @@ export async function applyPendingMigrations(url: string): Promise<void> {
     );
   }
 
-  let state = await inspectMigrations(url);
+  // Re-inspect after reconciliation above may have partially resolved pending migrations.
+  const state = await inspectMigrations(url);
   if (state.status === "upToDate") return;
-
-  const repair = await reconcilePendingMigrationHistory(url);
-  if (repair.repairedMigrations.length > 0) {
-    state = await inspectMigrations(url);
-    if (state.status === "upToDate") return;
-  }
 
   if (state.status !== "needsMigrations" || state.reason !== "pending-migrations") {
     throw new Error("Migrations are still pending after migration-history reconciliation; run inspectMigrations for details.");
