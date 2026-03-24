@@ -3,6 +3,7 @@ import { useParams, useNavigate, Link, useBeforeUnload } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { agentsApi, type AgentKey, type ClaudeLoginResult } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
+import { credentialsApi } from "../api/credentials";
 import { ApiError } from "../api/client";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { activityApi } from "../api/activity";
@@ -57,7 +58,7 @@ import {
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
-import { isUuidLike, type Agent, type HeartbeatRun, type HeartbeatRunEvent, type AgentRuntimeState, type LiveEvent } from "@paperclipai/shared";
+import { isUuidLike, type Agent, type HeartbeatRun, type HeartbeatRunEvent, type AgentRuntimeState, type LiveEvent, type ProviderCredential } from "@paperclipai/shared";
 import { agentRouteRef } from "../lib/utils";
 
 const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string }> = {
@@ -292,6 +293,21 @@ export function AgentDetail() {
     enabled: !!resolvedCompanyId,
   });
 
+  const { data: credentials = [] } = useQuery({
+    queryKey: queryKeys.credentials.list(resolvedCompanyId!),
+    queryFn: () => credentialsApi.list(resolvedCompanyId!),
+    enabled: !!resolvedCompanyId,
+  });
+
+  const providerLabel = useMemo(() => {
+    if (!agent?.credentialId) return "";
+    const cred = credentials.find((c: ProviderCredential) => c.id === agent.credentialId);
+    if (!cred) return "";
+    if (cred.type === "qwen_api_key") return "Qwen";
+    if (cred.type === "claude_oauth") return "Claude";
+    return "";
+  }, [agent?.credentialId, credentials]);
+
   const assignedIssues = (allIssues ?? [])
     .filter((i) => i.assigneeAgentId === agent?.id)
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
@@ -446,7 +462,14 @@ export function AgentDetail() {
             </button>
           </AgentIconPicker>
           <div className="min-w-0">
-            <h2 className="text-2xl font-bold truncate">{agent.name}</h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-2xl font-bold truncate">{agent.name}</h2>
+              {providerLabel && (
+                <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                  {providerLabel === "Qwen" ? "\ud83d\udc3c Qwen" : "\u2601 Claude"}
+                </span>
+              )}
+            </div>
             <p className="text-sm text-muted-foreground truncate">
               {roleLabels[agent.role] ?? agent.role}
               {agent.title ? ` - ${agent.title}` : ""}

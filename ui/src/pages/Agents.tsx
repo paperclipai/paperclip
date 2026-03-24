@@ -3,6 +3,7 @@ import { Link, useNavigate, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { agentsApi, type OrgNode } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
+import { credentialsApi } from "../api/credentials";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useHasPermission } from "../hooks/usePermissions";
@@ -19,7 +20,7 @@ import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Bot, Plus, List, GitBranch, SlidersHorizontal } from "lucide-react";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent, ProviderCredential } from "@paperclipai/shared";
 import { AGENT_PRESETS } from "@paperclipai/shared";
 import { AgentIcon } from "../components/AgentIconPicker";
 
@@ -38,6 +39,18 @@ const roleLabels: Record<string, string> = {
   engineer: "Engineer", designer: "Designer", pm: "PM",
   qa: "QA", devops: "DevOps", researcher: "Researcher", general: "General",
 };
+
+function getAgentProviderLabel(
+  agent: { credentialId?: string | null },
+  credentials: ProviderCredential[],
+): string {
+  if (!agent.credentialId) return "";
+  const cred = credentials.find((c) => c.id === agent.credentialId);
+  if (!cred) return "";
+  if (cred.type === "qwen_api_key") return "Qwen";
+  if (cred.type === "claude_oauth") return "Claude";
+  return "";
+}
 
 type FilterTab = "all" | "active" | "paused" | "error";
 
@@ -97,6 +110,12 @@ export function Agents() {
     queryFn: () => heartbeatsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
     refetchInterval: 15_000,
+  });
+
+  const { data: credentials = [] } = useQuery({
+    queryKey: queryKeys.credentials.list(selectedCompanyId!),
+    queryFn: () => credentialsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
   });
 
   // Map agentId -> first live run + live run count
@@ -248,6 +267,7 @@ export function Agents() {
       {effectiveView === "list" && filtered.length > 0 && (
         <div className="border border-border">
           {filtered.map((agent) => {
+            const providerLabel = getAgentProviderLabel(agent, credentials);
             return (
               <EntityRow
                 key={agent.id}
@@ -282,6 +302,11 @@ export function Agents() {
                           liveCount={liveRunByAgent.get(agent.id)!.liveCount}
                         />
                       )}
+                      {providerLabel && (
+                        <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                          {providerLabel === "Qwen" ? "\ud83d\udc3c Qwen" : "\u2601 Claude"}
+                        </span>
+                      )}
                       <span className="text-xs text-muted-foreground font-mono w-14 text-right">
                         {adapterLabels[agent.adapterType] ?? agent.adapterType}
                       </span>
@@ -310,7 +335,7 @@ export function Agents() {
       {effectiveView === "org" && filteredOrg.length > 0 && (
         <div className="border border-border py-1">
           {filteredOrg.map((node) => (
-            <OrgTreeNode key={node.id} node={node} depth={0} agentMap={agentMap} liveRunByAgent={liveRunByAgent} />
+            <OrgTreeNode key={node.id} node={node} depth={0} agentMap={agentMap} liveRunByAgent={liveRunByAgent} credentials={credentials} />
           ))}
         </div>
       )}
@@ -335,13 +360,16 @@ function OrgTreeNode({
   depth,
   agentMap,
   liveRunByAgent,
+  credentials,
 }: {
   node: OrgNode;
   depth: number;
   agentMap: Map<string, Agent>;
   liveRunByAgent: Map<string, { runId: string; liveCount: number }>;
+  credentials: ProviderCredential[];
 }) {
   const agent = agentMap.get(node.id);
+  const providerLabel = agent ? getAgentProviderLabel(agent, credentials) : "";
 
   const statusColor = agentStatusDot[node.status] ?? agentStatusDotDefault;
 
@@ -383,6 +411,11 @@ function OrgTreeNode({
             )}
             {agent && (
               <>
+                {providerLabel && (
+                  <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                    {providerLabel === "Qwen" ? "\ud83d\udc3c Qwen" : "\u2601 Claude"}
+                  </span>
+                )}
                 <span className="text-xs text-muted-foreground font-mono w-14 text-right">
                   {adapterLabels[agent.adapterType] ?? agent.adapterType}
                 </span>
@@ -400,7 +433,7 @@ function OrgTreeNode({
       {node.reports && node.reports.length > 0 && (
         <div className="border-l border-border/50 ml-4">
           {node.reports.map((child) => (
-            <OrgTreeNode key={child.id} node={child} depth={depth + 1} agentMap={agentMap} liveRunByAgent={liveRunByAgent} />
+            <OrgTreeNode key={child.id} node={child} depth={depth + 1} agentMap={agentMap} liveRunByAgent={liveRunByAgent} credentials={credentials} />
           ))}
         </div>
       )}
