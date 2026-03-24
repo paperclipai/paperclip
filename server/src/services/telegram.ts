@@ -436,6 +436,20 @@ async function handleActivityLogged(
       if (issueTitle) lines.push(`<i>${escapeHtml(truncate(issueTitle, 100))}</i>`);
       void sendIssueNotification(db, config, event.companyId, p.entityId, identifier, issueTitle, lines.join("\n"));
     }
+
+    // Notify when an issue is assigned to a human user
+    const newAssigneeUserId = details.assigneeUserId as string | null | undefined;
+    const prevAssigneeUserId = (details._previous as Record<string, unknown> | undefined)?.assigneeUserId as string | null | undefined;
+    if (newAssigneeUserId && newAssigneeUserId !== prevAssigneeUserId) {
+      if (notificationLevel !== "critical") {
+        const issueTitle = (details.issueTitle as string) ?? (details.title as string) ?? "";
+        const lines = [
+          `\u{1F4CB} <b>${escapeHtml(identifier)} assigned to a team member</b>`,
+        ];
+        if (issueTitle) lines.push(`<i>${escapeHtml(truncate(issueTitle, 100))}</i>`);
+        void sendIssueNotification(db, config, event.companyId, p.entityId, identifier, issueTitle, lines.join("\n"));
+      }
+    }
     return;
   }
 

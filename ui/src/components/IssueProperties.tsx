@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Link } from "@/lib/router";
 import type { Issue } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { accessApi } from "../api/access";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { issuesApi } from "../api/issues";
@@ -17,7 +18,7 @@ import { formatDate, cn, projectUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { User, Hexagon, ArrowUpRight, Tag, Plus, Trash2 } from "lucide-react";
+import { User, Hexagon, ArrowUpRight, Tag, Plus, Trash2, Bot } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 
 interface IssuePropertiesProps {
@@ -122,6 +123,12 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
     enabled: !!companyId,
   });
 
+  const { data: teamMembers = [] } = useQuery({
+    queryKey: queryKeys.access.team(companyId!),
+    queryFn: () => accessApi.listTeam(companyId!),
+    enabled: !!companyId,
+  });
+
   const { data: projects } = useQuery({
     queryKey: queryKeys.projects.list(companyId!),
     queryFn: () => projectsApi.list(companyId!),
@@ -191,14 +198,13 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
   const assignee = issue.assigneeAgentId
     ? agents?.find((a) => a.id === issue.assigneeAgentId)
     : null;
-  const userLabel = (userId: string | null | undefined) =>
-    userId
-      ? userId === "local-board"
-        ? "Board"
-        : currentUserId && userId === currentUserId
-          ? "Me"
-          : userId.slice(0, 5)
-      : null;
+  const userLabel = (userId: string | null | undefined) => {
+    if (!userId) return null;
+    if (userId === "local-board") return "Board";
+    if (currentUserId && userId === currentUserId) return "Me";
+    const member = teamMembers.find((m) => m.id === userId);
+    return member?.displayName ?? userId.slice(0, 8);
+  };
   const assigneeUserLabel = userLabel(issue.assigneeUserId);
   const creatorUserLabel = userLabel(issue.createdByUserId);
 
@@ -315,6 +321,17 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
     </>
   );
 
+  const filteredAgents = sortedAgents.filter((a) => {
+    if (!assigneeSearch.trim()) return true;
+    return a.name.toLowerCase().includes(assigneeSearch.toLowerCase());
+  });
+
+  const filteredTeam = teamMembers.filter((m) => {
+    if (!assigneeSearch.trim()) return true;
+    const q = assigneeSearch.toLowerCase();
+    return m.displayName.toLowerCase().includes(q) || (m.email?.toLowerCase().includes(q) ?? false);
+  });
+
   const assigneeContent = (
     <>
       <input
@@ -325,6 +342,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
         autoFocus={!inline}
       />
       <div className="max-h-48 overflow-y-auto overscroll-contain">
+        {/* Unassign option */}
         <button
           className={cn(
             "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
@@ -334,40 +352,56 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
         >
           No assignee
         </button>
-        {issue.createdByUserId && (
-          <button
-            className={cn(
-              "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-              issue.assigneeUserId === issue.createdByUserId && "bg-accent",
-            )}
-            onClick={() => {
-              onUpdate({ assigneeAgentId: null, assigneeUserId: issue.createdByUserId });
-              setAssigneeOpen(false);
-            }}
-          >
-            <User className="h-3 w-3 shrink-0 text-muted-foreground" />
-            {creatorUserLabel ? `Assign to ${creatorUserLabel === "Me" ? "me" : creatorUserLabel}` : "Assign to requester"}
-          </button>
+
+        {/* Team (humans) section */}
+        {filteredTeam.length > 0 && (
+          <>
+            <div className="px-2 pt-2 pb-1 text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+              Team
+            </div>
+            {filteredTeam.map((member) => (
+              <button
+                key={member.id}
+                className={cn(
+                  "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                  issue.assigneeUserId === member.id && "bg-accent"
+                )}
+                onClick={() => {
+                  onUpdate({ assigneeAgentId: null, assigneeUserId: member.id });
+                  setAssigneeOpen(false);
+                }}
+              >
+                <User className="shrink-0 h-3 w-3 text-muted-foreground" />
+                <span className="truncate">{member.displayName}</span>
+                {member.id === currentUserId && (
+                  <span className="text-[10px] text-muted-foreground ml-auto">you</span>
+                )}
+              </button>
+            ))}
+          </>
         )}
-        {sortedAgents
-          .filter((a) => {
-            if (!assigneeSearch.trim()) return true;
-            const q = assigneeSearch.toLowerCase();
-            return a.name.toLowerCase().includes(q);
-          })
-          .map((a) => (
-          <button
-            key={a.id}
-            className={cn(
-              "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-              a.id === issue.assigneeAgentId && "bg-accent"
-            )}
-            onClick={() => { trackRecentAssignee(a.id); onUpdate({ assigneeAgentId: a.id, assigneeUserId: null }); setAssigneeOpen(false); }}
-          >
-            <AgentIcon icon={a.icon} className="shrink-0 h-3 w-3 text-muted-foreground" />
-            {a.name}
-          </button>
-        ))}
+
+        {/* AI Agents section */}
+        {filteredAgents.length > 0 && (
+          <>
+            <div className="px-2 pt-2 pb-1 text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+              AI Agents
+            </div>
+            {filteredAgents.map((a) => (
+              <button
+                key={a.id}
+                className={cn(
+                  "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                  a.id === issue.assigneeAgentId && "bg-accent"
+                )}
+                onClick={() => { trackRecentAssignee(a.id); onUpdate({ assigneeAgentId: a.id, assigneeUserId: null }); setAssigneeOpen(false); }}
+              >
+                <AgentIcon icon={a.icon} className="shrink-0 h-3 w-3 text-muted-foreground" />
+                {a.name}
+              </button>
+            ))}
+          </>
+        )}
       </div>
     </>
   );

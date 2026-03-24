@@ -2611,6 +2611,23 @@ export function accessRoutes(
     }
   );
 
+  // Lightweight team list — returns human members for assignee pickers etc.
+  // Only requires company membership, not admin permissions.
+  router.get("/companies/:companyId/team", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const members = await access.listMembersWithGrants(companyId);
+    const team = members
+      .filter((m) => m.principalType === "user" && m.status === "active")
+      .map((m) => ({
+        id: m.principalId,
+        principalId: m.principalId,
+        displayName: m.displayName ?? m.email ?? m.principalId,
+        email: m.email ?? null,
+      }));
+    res.json(team);
+  });
+
   router.get("/companies/:companyId/members", async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCompanyPermission(req, companyId, "users:manage_permissions");

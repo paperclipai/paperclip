@@ -127,6 +127,10 @@ export const accessApi = {
   claimBoard: (token: string, code: string) =>
     api.post<{ claimed: true; userId: string }>(`/board-claim/${token}/claim`, { code }),
 
+  // Lightweight team list for pickers
+  listTeam: (companyId: string) =>
+    api.get<Array<{ id: string; principalId: string; displayName: string; email: string | null }>>(`/companies/${companyId}/team`),
+
   // Members & Permissions
   listMembers: (companyId: string) =>
     api.get<CompanyMembership[]>(`/companies/${companyId}/members`),
