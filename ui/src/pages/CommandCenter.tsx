@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/react-query";
-import { companiesApi, type CompanyStats } from "../api/companies";
+import { companiesApi } from "../api/companies";
 import { agentsApi } from "../api/agents";
 import { issuesApi } from "../api/issues";
 import { dashboardApi } from "../api/dashboard";
-import { heartbeatsApi, type LiveRunForIssue } from "../api/heartbeats";
+import { heartbeatsApi } from "../api/heartbeats";
 import { activityApi } from "../api/activity";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useNavigate } from "@/lib/router";
 import { useInboxBadge } from "../hooks/useInboxBadge";
 import { queryKeys } from "../lib/queryKeys";
 import { StatusIcon } from "../components/StatusIcon";
@@ -603,6 +604,7 @@ function AggregateStats({
 export function CommandCenter() {
   const { companies, setSelectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const navigate = useNavigate();
   const [sortBy, setSortBy] = useState<SortOption>("activity");
 
   useEffect(() => {
@@ -710,10 +712,10 @@ export function CommandCenter() {
       const company = companies.find((c) => c.issuePrefix === prefix);
       if (company) {
         setSelectedCompanyId(company.id);
-        window.location.href = `/${prefix}/dashboard`;
+        navigate(`/${prefix}/dashboard`);
       }
     },
-    [companies, setSelectedCompanyId],
+    [companies, setSelectedCompanyId, navigate],
   );
 
   return (
