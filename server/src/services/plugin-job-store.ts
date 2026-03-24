@@ -374,7 +374,7 @@ export function pluginJobStore(db: Db) {
         .update(pluginJobRuns)
         .set({
           status: "running" as PluginJobRunStatus,
-          startedAt: new Date(),
+          startedAt: new Date().toISOString() as any,
         })
         .where(eq(pluginJobRuns.id, runId));
     },
@@ -396,7 +396,7 @@ export function pluginJobStore(db: Db) {
           status: input.status,
           error: input.error ?? null,
           durationMs: input.durationMs ?? null,
-          finishedAt: new Date(),
+          finishedAt: new Date().toISOString() as any,
         })
         .where(eq(pluginJobRuns.id, runId));
     },

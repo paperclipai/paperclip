@@ -1469,7 +1469,7 @@ export function heartbeatService(db: Db) {
       .update(agents)
       .set({
         status: nextStatus,
-        lastHeartbeatAt: new Date(),
+        lastHeartbeatAt: new Date().toISOString() as any,
         updatedAt: new Date().toISOString() as any,
       })
       .where(eq(agents.id, agentId))
@@ -1845,7 +1845,7 @@ export function heartbeatService(db: Db) {
         cachedInputTokens,
         outputTokens,
         costCents: additionalCostCents,
-        occurredAt: new Date(),
+        occurredAt: new Date().toISOString() as any,
       });
     }
   }
@@ -1908,10 +1908,10 @@ export function heartbeatService(db: Db) {
       await setRunStatus(runId, "failed", {
         error: "Agent not found",
         errorCode: "agent_not_found",
-        finishedAt: new Date(),
+        finishedAt: new Date().toISOString() as any,
       });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
-        finishedAt: new Date(),
+        finishedAt: new Date().toISOString() as any,
         error: "Agent not found",
       });
       const failedRun = await getRun(runId);
@@ -2053,7 +2053,7 @@ export function heartbeatService(db: Db) {
             providerType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "local_fs",
             providerRef: executionWorkspace.worktreePath,
             status: "active",
-            lastUsedAt: new Date(),
+            lastUsedAt: new Date().toISOString() as any,
             metadata: {
               ...(existingExecutionWorkspace.metadata ?? {}),
               source: executionWorkspace.source,
@@ -2083,8 +2083,8 @@ export function heartbeatService(db: Db) {
               branchName: executionWorkspace.branchName,
               providerType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "local_fs",
               providerRef: executionWorkspace.worktreePath,
-              lastUsedAt: new Date(),
-              openedAt: new Date(),
+              lastUsedAt: new Date().toISOString() as any,
+              openedAt: new Date().toISOString() as any,
               metadata: {
                 source: executionWorkspace.source,
                 createdByRuntime: executionWorkspace.created,
@@ -2555,7 +2555,7 @@ export function heartbeatService(db: Db) {
           : null;
 
       await setRunStatus(run.id, status, {
-        finishedAt: new Date(),
+        finishedAt: new Date().toISOString() as any,
         error:
           outcome === "succeeded"
             ? null
@@ -2583,7 +2583,7 @@ export function heartbeatService(db: Db) {
       });
 
       await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
-        finishedAt: new Date(),
+        finishedAt: new Date().toISOString() as any,
         error: adapterResult.errorMessage ?? null,
       });
 
@@ -2643,7 +2643,7 @@ export function heartbeatService(db: Db) {
       const failedRun = await setRunStatus(run.id, "failed", {
         error: message,
         errorCode: "adapter_failed",
-        finishedAt: new Date(),
+        finishedAt: new Date().toISOString() as any,
         stdoutExcerpt,
         stderrExcerpt,
         logBytes: logSummary?.bytes,
@@ -2651,7 +2651,7 @@ export function heartbeatService(db: Db) {
         logCompressed: logSummary?.compressed ?? false,
       });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
-        finishedAt: new Date(),
+        finishedAt: new Date().toISOString() as any,
         error: message,
       });
 
@@ -2697,10 +2697,10 @@ export function heartbeatService(db: Db) {
           await setRunStatus(runId, "failed", {
             error: message,
             errorCode: "adapter_failed",
-            finishedAt: new Date(),
+            finishedAt: new Date().toISOString() as any,
           }).catch(() => undefined);
           await setWakeupStatus(run.wakeupRequestId, "failed", {
-            finishedAt: new Date(),
+            finishedAt: new Date().toISOString() as any,
             error: message,
           }).catch(() => undefined);
           const failedRun = await getRun(runId).catch(() => null);
@@ -2786,7 +2786,7 @@ export function heartbeatService(db: Db) {
             .update(agentWakeupRequests)
             .set({
               status: "failed",
-              finishedAt: new Date(),
+              finishedAt: new Date().toISOString() as any,
               error: "Deferred wake could not be promoted: agent is not invokable",
               updatedAt: new Date().toISOString() as any,
             })
@@ -2926,7 +2926,7 @@ export function heartbeatService(db: Db) {
         requestedByActorType: opts.requestedByActorType ?? null,
         requestedByActorId: opts.requestedByActorId ?? null,
         idempotencyKey: opts.idempotencyKey ?? null,
-        finishedAt: new Date(),
+        finishedAt: new Date().toISOString() as any,
       });
     };
 
@@ -3006,7 +3006,7 @@ export function heartbeatService(db: Db) {
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,
             idempotencyKey: opts.idempotencyKey ?? null,
-            finishedAt: new Date(),
+            finishedAt: new Date().toISOString() as any,
           });
           return { kind: "skipped" as const };
         }
@@ -3065,7 +3065,7 @@ export function heartbeatService(db: Db) {
               .set({
                 executionRunId: legacyRun.id,
                 executionAgentNameKey: normalizeAgentNameKey(legacyAgent?.name),
-                executionLockedAt: new Date(),
+                executionLockedAt: new Date().toISOString() as any,
                 updatedAt: new Date().toISOString() as any,
               })
               .where(eq(issues.id, issue.id));
@@ -3116,7 +3116,7 @@ export function heartbeatService(db: Db) {
               requestedByActorId: opts.requestedByActorId ?? null,
               idempotencyKey: opts.idempotencyKey ?? null,
               runId: mergedRun.id,
-              finishedAt: new Date(),
+              finishedAt: new Date().toISOString() as any,
             });
 
             return { kind: "coalesced" as const, run: mergedRun };
@@ -3202,7 +3202,7 @@ export function heartbeatService(db: Db) {
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,
             idempotencyKey: opts.idempotencyKey ?? null,
-            finishedAt: new Date(),
+            finishedAt: new Date().toISOString() as any,
           });
           return { kind: "capped" as const };
         }
@@ -3252,7 +3252,7 @@ export function heartbeatService(db: Db) {
           .set({
             executionRunId: newRun.id,
             executionAgentNameKey: agentNameKey,
-            executionLockedAt: new Date(),
+            executionLockedAt: new Date().toISOString() as any,
             updatedAt: new Date().toISOString() as any,
           })
           .where(eq(issues.id, issue.id));
@@ -3327,7 +3327,7 @@ export function heartbeatService(db: Db) {
         requestedByActorId: opts.requestedByActorId ?? null,
         idempotencyKey: opts.idempotencyKey ?? null,
         runId: mergedRun.id,
-        finishedAt: new Date(),
+        finishedAt: new Date().toISOString() as any,
       });
       return mergedRun;
     }
@@ -3511,13 +3511,13 @@ export function heartbeatService(db: Db) {
     }
 
     const cancelled = await setRunStatus(run.id, "cancelled", {
-      finishedAt: new Date(),
+      finishedAt: new Date().toISOString() as any,
       error: reason,
       errorCode: "cancelled",
     });
 
     await setWakeupStatus(run.wakeupRequestId, "cancelled", {
-      finishedAt: new Date(),
+      finishedAt: new Date().toISOString() as any,
       error: reason,
     });
 
@@ -3545,13 +3545,13 @@ export function heartbeatService(db: Db) {
 
     for (const run of runs) {
       await setRunStatus(run.id, "cancelled", {
-        finishedAt: new Date(),
+        finishedAt: new Date().toISOString() as any,
         error: reason,
         errorCode: "cancelled",
       });
 
       await setWakeupStatus(run.wakeupRequestId, "cancelled", {
-        finishedAt: new Date(),
+        finishedAt: new Date().toISOString() as any,
         error: reason,
       });
 

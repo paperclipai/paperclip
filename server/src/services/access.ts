@@ -115,7 +115,7 @@ export function accessService(db: Db) {
             permissionKey: grant.permissionKey,
             scope: grant.scope ?? null,
             grantedByUserId,
-            createdAt: new Date(),
+            createdAt: new Date().toISOString() as any,
             updatedAt: new Date().toISOString() as any,
           })),
         );
@@ -244,7 +244,7 @@ export function accessService(db: Db) {
           permissionKey: grant.permissionKey,
           scope: grant.scope ?? null,
           grantedByUserId,
-          createdAt: new Date(),
+          createdAt: new Date().toISOString() as any,
           updatedAt: new Date().toISOString() as any,
         })),
       );

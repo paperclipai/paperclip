@@ -415,7 +415,7 @@ export function agentService(db: Db) {
         .set({
           status: "paused",
           pauseReason: reason,
-          pausedAt: new Date(),
+          pausedAt: new Date().toISOString() as any,
           updatedAt: new Date().toISOString() as any,
         })
         .where(eq(agents.id, id))
@@ -462,7 +462,7 @@ export function agentService(db: Db) {
 
       await db
         .update(agentApiKeys)
-        .set({ revokedAt: new Date() })
+        .set({ revokedAt: new Date().toISOString() as any })
         .where(eq(agentApiKeys.agentId, id));
 
       return getById(id);
@@ -606,7 +606,7 @@ export function agentService(db: Db) {
     revokeKey: async (keyId: string) => {
       const rows = await db
         .update(agentApiKeys)
-        .set({ revokedAt: new Date() })
+        .set({ revokedAt: new Date().toISOString() as any })
         .where(eq(agentApiKeys.id, keyId))
         .returning();
       return rows[0] ?? null;
