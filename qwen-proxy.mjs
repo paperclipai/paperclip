@@ -13,7 +13,7 @@
  * Model mapping (Claude → Qwen):
  *   claude-opus-4-6, opus     → qwen3-coder-plus
  *   claude-sonnet-4-6, sonnet → qwen3-coder-next
- *   claude-haiku-4-5*, haiku  → qwen3.5-plus
+ *   claude-haiku-*, haiku     → qwen3-coder-next (qwen3.5-plus was too slow/unreliable)
  *   (anything else)           → qwen3-coder-next
  */
 
@@ -31,13 +31,15 @@ const MODEL_MAP = {
 
   // Sonnet tier → balanced
   "claude-sonnet-4-6": "qwen3-coder-next",
+  "claude-sonnet-4-5-20250929": "qwen3-coder-next",
   "claude-sonnet-4-5-20241022": "qwen3-coder-next",
   sonnet: "qwen3-coder-next",
 
-  // Haiku tier → fast/cheap
-  "claude-haiku-4-5-20251001": "qwen3.5-plus",
-  "claude-haiku-3-5-20241022": "qwen3.5-plus",
-  haiku: "qwen3.5-plus",
+  // Haiku tier → use qwen3-coder-next (qwen3.5-plus is too slow and unreliable)
+  "claude-haiku-4-6": "qwen3-coder-next",
+  "claude-haiku-4-5-20251001": "qwen3-coder-next",
+  "claude-haiku-3-5-20241022": "qwen3-coder-next",
+  haiku: "qwen3-coder-next",
 };
 
 const DEFAULT_MODEL = "qwen3-coder-next";

@@ -133,9 +133,10 @@ export const QWEN_MODEL_DISPLAY: Record<string, string> = {
   "claude-sonnet-4-6": "Qwen3 Coder Next",
   "claude-sonnet-4-5-20241022": "Qwen3 Coder Next",
   "sonnet": "Qwen3 Coder Next",
-  "claude-haiku-4-5-20251001": "Qwen3.5 Plus",
-  "claude-haiku-3-5-20241022": "Qwen3.5 Plus",
-  "haiku": "Qwen3.5 Plus",
+  "claude-haiku-4-6": "Qwen3 Coder Next",
+  "claude-haiku-4-5-20251001": "Qwen3 Coder Next",
+  "claude-haiku-3-5-20241022": "Qwen3 Coder Next",
+  "haiku": "Qwen3 Coder Next",
 };
 
 /** Given credential type and model ID, return display name */
@@ -146,7 +147,7 @@ export function getModelDisplayName(credentialType: string | null | undefined, m
     if (QWEN_MODEL_DISPLAY[lower]) return QWEN_MODEL_DISPLAY[lower];
     if (lower.includes("opus")) return "Qwen3 Coder Plus";
     if (lower.includes("sonnet")) return "Qwen3 Coder Next";
-    if (lower.includes("haiku")) return "Qwen3.5 Plus";
+    if (lower.includes("haiku")) return "Qwen3 Coder Next";
     return `Qwen (${modelId})`;
   }
   // Claude models - clean up display
