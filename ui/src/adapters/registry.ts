@@ -9,6 +9,18 @@ import { openClawGatewayUIAdapter } from "./openclaw-gateway";
 import { processUIAdapter } from "./process";
 import { httpUIAdapter } from "./http";
 
+/** Cloud sandbox adapter — config is handled by CloudSandboxFields in AgentConfigForm */
+const cloudSandboxUIAdapter: UIAdapterModule = {
+  type: "cloud_sandbox",
+  label: "Cloud Sandbox",
+  parseStdoutLine: (_line, _ts) => [],
+  ConfigFields: () => null,
+  buildAdapterConfig: (values) => ({
+    runtime: values.runtime ?? "claude",
+    model: values.model || undefined,
+  }),
+};
+
 const uiAdapters: UIAdapterModule[] = [
   claudeLocalUIAdapter,
   codexLocalUIAdapter,
@@ -17,6 +29,7 @@ const uiAdapters: UIAdapterModule[] = [
   piLocalUIAdapter,
   cursorLocalUIAdapter,
   openClawGatewayUIAdapter,
+  cloudSandboxUIAdapter,
   processUIAdapter,
   httpUIAdapter,
 ];
