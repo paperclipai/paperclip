@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { heartbeatsApi } from "../api/heartbeats";
 import { pluginsApi } from "../api/plugins";
@@ -35,10 +35,25 @@ function scheduleLabel(kind: string | null, expr: string | null, everyMs: number
   return kind ?? "—";
 }
 
+function ragEmoji(label: string) {
+  if (label === "Red") return "🔴";
+  if (label === "Amber") return "🟠";
+  if (label === "Green") return "🟢";
+  return "⚪";
+}
+
+function agentEmoji(agentId: string | null) {
+  if (agentId === "main") return "🧠";
+  if (agentId === "katya") return "🧵";
+  return "🤖";
+}
+
 export function OpsHealth() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
+  const [agentFilter, setAgentFilter] = useState<"all" | "main" | "katya">("all");
+  const [showRedOnly, setShowRedOnly] = useState(false);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Ops Health" }]);
@@ -120,6 +135,20 @@ export function OpsHealth() {
     });
   }, [openclawCronJobs]);
 
+  const filteredCronRows = useMemo(() => {
+    return cronRows
+      .filter((row) => (agentFilter === "all" ? true : row.agentId === agentFilter))
+      .filter((row) => (showRedOnly ? row.rag.label === "Red" : true));
+  }, [agentFilter, cronRows, showRedOnly]);
+
+  const cronGroups = useMemo(() => {
+    return {
+      main: filteredCronRows.filter((row) => row.agentId === "main"),
+      katya: filteredCronRows.filter((row) => row.agentId === "katya"),
+      other: filteredCronRows.filter((row) => row.agentId !== "main" && row.agentId !== "katya"),
+    };
+  }, [filteredCronRows]);
+
   if (isLoading) return <PageSkeleton variant="dashboard" />;
   if (error) return <p className="text-sm text-destructive">{error instanceof Error ? error.message : "Failed to load ops health"}</p>;
 
@@ -145,21 +174,42 @@ export function OpsHealth() {
 
       <section className="rounded-lg border bg-card overflow-hidden">
         <div className="border-b px-3 py-2 text-sm font-semibold">OpenClaw cron jobs (cross-topic automation)</div>
+        <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2 text-xs">
+          <span className="text-muted-foreground">Filter:</span>
+          <button className={`rounded border px-2 py-1 ${agentFilter === "all" ? "bg-muted" : ""}`} onClick={() => setAgentFilter("all")}>All</button>
+          <button className={`rounded border px-2 py-1 ${agentFilter === "main" ? "bg-muted" : ""}`} onClick={() => setAgentFilter("main")}>🧠 Felix</button>
+          <button className={`rounded border px-2 py-1 ${agentFilter === "katya" ? "bg-muted" : ""}`} onClick={() => setAgentFilter("katya")}>🧵 Katya</button>
+          <button className={`rounded border px-2 py-1 ${showRedOnly ? "bg-muted" : ""}`} onClick={() => setShowRedOnly((v) => !v)}>{showRedOnly ? "Showing 🔴 only" : "Show 🔴 only"}</button>
+        </div>
         <div className="grid grid-cols-12 gap-2 px-3 py-2 text-[11px] uppercase tracking-wide text-muted-foreground border-b bg-muted/20">
           <div className="col-span-1">RAG</div><div className="col-span-3">Job</div><div className="col-span-1">Agent</div><div className="col-span-1">Topic</div><div className="col-span-2">Schedule</div><div className="col-span-2">Last run</div><div className="col-span-2">Next run</div>
         </div>
         <div className="divide-y">
-          {cronRows.length === 0 ? <div className="px-3 py-3 text-sm text-muted-foreground">No OpenClaw cron jobs found.</div> : cronRows.map((row) => (
-            <div key={row.id} className="grid grid-cols-12 gap-2 px-3 py-2 text-xs items-center">
-              <div className={`col-span-1 font-semibold ${row.rag.className}`}>{row.rag.label}</div>
-              <div className="col-span-3 truncate" title={row.name}>{row.name}</div>
-              <div className="col-span-1 text-muted-foreground">{row.agentId ?? "—"}</div>
-              <div className="col-span-1 text-muted-foreground">{row.topic}</div>
-              <div className="col-span-2 text-muted-foreground truncate" title={scheduleLabel(row.scheduleKind, row.scheduleExpr, row.everyMs)}>{scheduleLabel(row.scheduleKind, row.scheduleExpr, row.everyMs)}</div>
-              <div className="col-span-2 text-muted-foreground">{row.lastRunAtMs ? new Date(row.lastRunAtMs).toLocaleString() : "never"}</div>
-              <div className="col-span-2 text-muted-foreground">{row.nextRunAtMs ? new Date(row.nextRunAtMs).toLocaleString() : "n/a"}</div>
-            </div>
-          ))}
+          {filteredCronRows.length === 0 ? <div className="px-3 py-3 text-sm text-muted-foreground">No OpenClaw cron jobs match this filter.</div> : (
+            <>
+              {(["main", "katya", "other"] as const).map((groupKey) => {
+                const rows = cronGroups[groupKey];
+                if (rows.length === 0) return null;
+                const title = groupKey === "main" ? "🧠 Felix jobs" : groupKey === "katya" ? "🧵 Katya jobs" : "🤖 Other jobs";
+                return (
+                  <div key={groupKey} className="border-t first:border-t-0">
+                    <div className="px-3 py-2 text-xs font-semibold text-muted-foreground bg-muted/10">{title} ({rows.length})</div>
+                    {rows.map((row) => (
+                      <div key={row.id} className="grid grid-cols-12 gap-2 px-3 py-2 text-xs items-center">
+                        <div className={`col-span-1 font-semibold ${row.rag.className}`}>{ragEmoji(row.rag.label)} {row.rag.label}</div>
+                        <div className="col-span-3 truncate" title={row.name}>{row.name}</div>
+                        <div className="col-span-1 text-muted-foreground">{agentEmoji(row.agentId)} {row.agentId ?? "—"}</div>
+                        <div className="col-span-1 text-muted-foreground">{row.topic}</div>
+                        <div className="col-span-2 text-muted-foreground truncate" title={scheduleLabel(row.scheduleKind, row.scheduleExpr, row.everyMs)}>{scheduleLabel(row.scheduleKind, row.scheduleExpr, row.everyMs)}</div>
+                        <div className="col-span-2 text-muted-foreground">{row.lastRunAtMs ? new Date(row.lastRunAtMs).toLocaleString() : "never"}</div>
+                        <div className="col-span-2 text-muted-foreground">{row.nextRunAtMs ? new Date(row.nextRunAtMs).toLocaleString() : "n/a"}</div>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
+            </>
+          )}
         </div>
       </section>
 
@@ -171,7 +221,7 @@ export function OpsHealth() {
         <div className="divide-y">
           {ragRows.length === 0 ? <div className="px-3 py-3 text-sm text-muted-foreground">No scheduled plugin jobs found.</div> : ragRows.map((row) => (
             <div key={row.job.id} className="grid grid-cols-12 gap-2 px-3 py-2 text-xs items-center">
-              <div className={`col-span-2 font-semibold ${row.rag.className}`}>{row.rag.label}</div>
+              <div className={`col-span-2 font-semibold ${row.rag.className}`}>{ragEmoji(row.rag.label)} {row.rag.label}</div>
               <div className="col-span-2 truncate" title={row.plugin.pluginKey}>{row.plugin.pluginKey}</div>
               <div className="col-span-2 font-mono truncate" title={row.job.jobKey}>{row.job.jobKey}</div>
               <div className="col-span-2 text-muted-foreground">{row.lastRunAt ? row.lastRunAt.toLocaleString() : "never"}</div>
