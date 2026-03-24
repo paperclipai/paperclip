@@ -1,4 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
+
+const DEFAULT_TYPE_ORDER = [
+  "memory-integrity",
+  "nightly-dive",
+  "nightly-improvement",
+  "sprint-checkin",
+  "daily-notes",
+  "content-run",
+  "watchdog",
+  "publish",
+  "reminder",
+  "other",
+] as const;
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { heartbeatsApi } from "../api/heartbeats";
 import { pluginsApi } from "../api/plugins";
@@ -50,33 +63,25 @@ function agentEmoji(agentId: string | null) {
 
 function jobTypeMeta(name: string) {
   const n = name.toLowerCase();
-  if (n.includes("memory-integrity")) return { key: "memory-integrity", label: "Memory Integrity", emoji: "🧠" };
-  if (n.includes("nightly-memory-dive") || n.includes("nightly deep dive")) return { key: "nightly-dive", label: "Nightly Deep Dive", emoji: "🌙" };
-  if (n.includes("nightly-improvement")) return { key: "nightly-improvement", label: "Nightly Improvement", emoji: "🛠️" };
-  if (n.includes("sprint-checkin")) return { key: "sprint-checkin", label: "Sprint Check-in", emoji: "📋" };
-  if (n.includes("daily-notes")) return { key: "daily-notes", label: "Daily Notes", emoji: "📝" };
-  if (n.includes("cron-watchdog") || n.includes("watchdog")) return { key: "watchdog", label: "Watchdog", emoji: "🚨" };
-  if (n.includes("content-calendar") || n.includes("marketing")) return { key: "content-run", label: "Content Run", emoji: "📣" };
-  if (n.includes("publish") || n.includes("promote") || n.includes("preflight")) return { key: "publish", label: "Publish/Promote", emoji: "🚀" };
-  if (n.includes("reminder")) return { key: "reminder", label: "Reminder", emoji: "⏰" };
+  if (n === "memory-integrity" || n.includes("memory-integrity")) return { key: "memory-integrity", label: "Memory Integrity", emoji: "🧠" };
+  if (n === "nightly-dive" || n.includes("nightly-memory-dive") || n.includes("nightly deep dive")) return { key: "nightly-dive", label: "Nightly Deep Dive", emoji: "🌙" };
+  if (n === "nightly-improvement" || n.includes("nightly-improvement")) return { key: "nightly-improvement", label: "Nightly Improvement", emoji: "🛠️" };
+  if (n === "sprint-checkin" || n.includes("sprint-checkin")) return { key: "sprint-checkin", label: "Sprint Check-in", emoji: "📋" };
+  if (n === "daily-notes" || n.includes("daily-notes")) return { key: "daily-notes", label: "Daily Notes", emoji: "📝" };
+  if (n === "watchdog" || n.includes("cron-watchdog") || n.includes("watchdog")) return { key: "watchdog", label: "Watchdog", emoji: "🚨" };
+  if (n === "content-run" || n.includes("content-calendar") || n.includes("marketing")) return { key: "content-run", label: "Content Run", emoji: "📣" };
+  if (n === "publish" || n.includes("publish") || n.includes("promote") || n.includes("preflight")) return { key: "publish", label: "Publish/Promote", emoji: "🚀" };
+  if (n === "reminder" || n.includes("reminder")) return { key: "reminder", label: "Reminder", emoji: "⏰" };
   return { key: "other", label: "Other", emoji: "⚙️" };
 }
 
-function jobTypeRank(typeKey: string) {
-  const order = [
-    "memory-integrity",
-    "nightly-dive",
-    "nightly-improvement",
-    "sprint-checkin",
-    "daily-notes",
-    "content-run",
-    "watchdog",
-    "publish",
-    "reminder",
-    "other",
-  ];
-  const idx = order.indexOf(typeKey);
+function jobTypeRank(typeKey: string, typeOrder: string[]) {
+  const idx = typeOrder.indexOf(typeKey);
   return idx === -1 ? 999 : idx;
+}
+
+function architectureType(typeKey: string) {
+  return ["memory-integrity", "nightly-dive", "nightly-improvement", "sprint-checkin", "daily-notes", "watchdog", "reminder"].includes(typeKey);
 }
 
 export function OpsHealth() {
@@ -85,10 +90,30 @@ export function OpsHealth() {
   const queryClient = useQueryClient();
   const [agentFilter, setAgentFilter] = useState<"all" | "main" | "katya">("all");
   const [showRedOnly, setShowRedOnly] = useState(false);
+  const [showArchitectureOnly, setShowArchitectureOnly] = useState(false);
+  const [dragTypeKey, setDragTypeKey] = useState<string | null>(null);
+  const [typeOrder, setTypeOrder] = useState<string[]>([...DEFAULT_TYPE_ORDER]);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Ops Health" }]);
   }, [setBreadcrumbs]);
+
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem("ops-health:type-order:v1");
+      if (!saved) return;
+      const parsed = JSON.parse(saved) as string[];
+      if (!Array.isArray(parsed) || parsed.length === 0) return;
+      const merged = [...parsed, ...DEFAULT_TYPE_ORDER.filter((k) => !parsed.includes(k))];
+      setTypeOrder(merged);
+    } catch {
+      // ignore corrupted local preference
+    }
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem("ops-health:type-order:v1", JSON.stringify(typeOrder));
+  }, [typeOrder]);
 
   const { data: schedulerAgents, isLoading, error } = useQuery({
     queryKey: ["ops-health", "scheduler-agents"],
@@ -171,12 +196,13 @@ export function OpsHealth() {
   const filteredCronRows = useMemo(() => {
     return cronRows
       .filter((row) => (agentFilter === "all" ? true : row.agentId === agentFilter))
-      .filter((row) => (showRedOnly ? row.rag.label === "Red" : true));
-  }, [agentFilter, cronRows, showRedOnly]);
+      .filter((row) => (showRedOnly ? row.rag.label === "Red" : true))
+      .filter((row) => (showArchitectureOnly ? architectureType(row.type.key) : true));
+  }, [agentFilter, cronRows, showRedOnly, showArchitectureOnly]);
 
   const cronGroups = useMemo(() => {
     const sortRows = (rows: typeof filteredCronRows) => [...rows].sort((a, b) => {
-      const rankDelta = jobTypeRank(a.type.key) - jobTypeRank(b.type.key);
+      const rankDelta = jobTypeRank(a.type.key, typeOrder) - jobTypeRank(b.type.key, typeOrder);
       if (rankDelta !== 0) return rankDelta;
       return a.name.localeCompare(b.name);
     });
@@ -185,7 +211,7 @@ export function OpsHealth() {
       katya: sortRows(filteredCronRows.filter((row) => row.agentId === "katya")),
       other: sortRows(filteredCronRows.filter((row) => row.agentId !== "main" && row.agentId !== "katya")),
     };
-  }, [filteredCronRows]);
+  }, [filteredCronRows, typeOrder]);
 
   if (isLoading) return <PageSkeleton variant="dashboard" />;
   if (error) return <p className="text-sm text-destructive">{error instanceof Error ? error.message : "Failed to load ops health"}</p>;
@@ -218,6 +244,36 @@ export function OpsHealth() {
           <button className={`rounded border px-2 py-1 ${agentFilter === "main" ? "bg-muted" : ""}`} onClick={() => setAgentFilter("main")}>🧠 Felix</button>
           <button className={`rounded border px-2 py-1 ${agentFilter === "katya" ? "bg-muted" : ""}`} onClick={() => setAgentFilter("katya")}>🧵 Katya</button>
           <button className={`rounded border px-2 py-1 ${showRedOnly ? "bg-muted" : ""}`} onClick={() => setShowRedOnly((v) => !v)}>{showRedOnly ? "Showing 🔴 only" : "Show 🔴 only"}</button>
+          <button className={`rounded border px-2 py-1 ${showArchitectureOnly ? "bg-muted" : ""}`} onClick={() => setShowArchitectureOnly((v) => !v)}>{showArchitectureOnly ? "Architecture only 🏗️" : "Show architecture only 🏗️"}</button>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2 text-xs">
+          <span className="text-muted-foreground">Type order (drag):</span>
+          {typeOrder.map((typeKey) => {
+            const meta = jobTypeMeta(typeKey);
+            return (
+              <button
+                key={typeKey}
+                draggable
+                onDragStart={() => setDragTypeKey(typeKey)}
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={() => {
+                  if (!dragTypeKey || dragTypeKey === typeKey) return;
+                  setTypeOrder((current) => {
+                    const next = current.filter((k) => k !== dragTypeKey);
+                    const targetIndex = next.indexOf(typeKey);
+                    next.splice(targetIndex, 0, dragTypeKey);
+                    return next;
+                  });
+                  setDragTypeKey(null);
+                }}
+                onDragEnd={() => setDragTypeKey(null)}
+                className="rounded border px-2 py-1"
+                title="Drag to reorder"
+              >
+                {meta.emoji} {meta.label}
+              </button>
+            );
+          })}
         </div>
         <div className="grid grid-cols-12 gap-2 px-3 py-2 text-[11px] uppercase tracking-wide text-muted-foreground border-b bg-muted/20">
           <div className="col-span-1">RAG</div><div className="col-span-2">Job</div><div className="col-span-2">Type</div><div className="col-span-1">Agent</div><div className="col-span-1">Topic</div><div className="col-span-2">Schedule</div><div className="col-span-1">Last run</div><div className="col-span-2">Next run</div>
