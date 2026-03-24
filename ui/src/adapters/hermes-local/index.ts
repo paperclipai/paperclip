@@ -6,7 +6,7 @@ import { buildHermesConfig } from "./build-config";
 export const hermesLocalUIAdapter: UIAdapterModule = {
   type: "hermes_local",
   label: "Hermes Agent (local)",
-  mcpSupported: false,
+  mcpSupported: true,
   parseStdoutLine: parseHermesStdoutLine,
   ConfigFields: HermesLocalConfigFields,
   buildAdapterConfig: buildHermesConfig,

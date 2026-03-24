@@ -5,6 +5,11 @@ import type {
 } from "@paperclipai/adapter-utils";
 import { formatSelfContextBlock } from "@paperclipai/adapter-utils/self-context";
 import {
+  parseMcpServers,
+  expandMcpEnv,
+  type McpServersMap,
+} from "@paperclipai/adapter-utils/mcp";
+import {
   asString,
   asNumber,
   asBoolean,
@@ -21,6 +26,8 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import fs from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
+import yaml from "js-yaml";
 
 const HERMES_CLI = "hermes";
 const DEFAULT_MODEL = "anthropic/claude-sonnet-4";
@@ -32,61 +39,142 @@ const VALID_PROVIDERS = [
   "kilocode",
 ];
 
-// ---------------------------------------------------------------------------
-// Skills → ephemeral system prompt
-// ---------------------------------------------------------------------------
-// Hermes loads skills by name from ~/.hermes/skills/ via the -s flag.
-// For Paperclip-resolved skills (which live at arbitrary paths), we read each
-// SKILL.md and concatenate into the HERMES_EPHEMERAL_SYSTEM_PROMPT env var.
-// This injects them into Hermes's system prompt without modifying its skill
-// store or cached prompt.
-// ---------------------------------------------------------------------------
-
-async function readSkillContent(skill: AdapterSkill): Promise<string | null> {
-  const candidates = [
-    path.join(skill.path, "SKILL.md"),
-    path.join(skill.path, "skill.md"),
-    path.join(skill.path, "README.md"),
-  ];
-  for (const candidate of candidates) {
-    try {
-      return await fs.readFile(candidate, "utf-8");
-    } catch {
-      continue;
-    }
-  }
-  return null;
+function hermesHome(): string {
+  return process.env.HERMES_HOME ?? path.join(os.homedir(), ".hermes");
 }
 
-async function buildEphemeralSystemPrompt(
-  skills: AdapterSkill[] | undefined,
-  instructionsFilePath: string,
-): Promise<string> {
-  const sections: string[] = [];
+// ---------------------------------------------------------------------------
+// Skills → ~/.hermes/skills/paperclip/<name>/
+// ---------------------------------------------------------------------------
+// Hermes loads skills by name from ~/.hermes/skills/ via the `-s` flag.
+// We symlink Paperclip-resolved skills into a `paperclip` category dir,
+// then pass their names with `-s`.
+// ---------------------------------------------------------------------------
 
-  if (skills && skills.length > 0) {
-    for (const skill of skills) {
-      const content = await readSkillContent(skill);
-      if (content) {
-        sections.push(`<skill name="${skill.name}">\n${content}\n</skill>`);
+const PAPERCLIP_SKILL_CATEGORY = "paperclip";
+
+async function syncSkillsToHermes(skills: AdapterSkill[]): Promise<string[]> {
+  if (!skills || skills.length === 0) return [];
+
+  const targetDir = path.join(hermesHome(), "skills", PAPERCLIP_SKILL_CATEGORY);
+  await fs.mkdir(targetDir, { recursive: true });
+
+  const synced: string[] = [];
+
+  for (const skill of skills) {
+    const stat = await fs.stat(skill.path).catch(() => null);
+    if (!stat?.isDirectory()) continue;
+
+    const linkPath = path.join(targetDir, skill.name);
+    const existing = await fs.lstat(linkPath).catch(() => null);
+
+    if (existing) {
+      if (existing.isSymbolicLink()) {
+        const currentTarget = await fs.readlink(linkPath);
+        if (currentTarget === skill.path) {
+          synced.push(skill.name);
+          continue;
+        }
+        await fs.unlink(linkPath);
+      } else {
+        // Real dir exists with same name — don't overwrite
+        synced.push(skill.name);
+        continue;
       }
     }
+
+    await fs.symlink(skill.path, linkPath);
+    synced.push(skill.name);
   }
 
-  if (instructionsFilePath) {
-    try {
-      const content = await fs.readFile(instructionsFilePath, "utf-8");
-      const dir = path.dirname(instructionsFilePath);
-      sections.push(
-        `<agent-instructions source="${instructionsFilePath}">\n${content}\n` +
-        `Resolve relative file references from ${dir}/.\n</agent-instructions>`,
-      );
-    } catch {
-      // file not found — skip silently
+  return synced;
+}
+
+// ---------------------------------------------------------------------------
+// MCP → ~/.hermes/config.yaml  mcp_servers section
+// ---------------------------------------------------------------------------
+// Hermes reads MCP servers from its config.yaml. We merge Paperclip-configured
+// MCP servers into that file, prefixed with "paperclip_" to avoid collisions
+// with user-configured servers.
+// ---------------------------------------------------------------------------
+
+async function syncMcpToHermesConfig(
+  servers: McpServersMap,
+  runtimeEnv: Record<string, string>,
+): Promise<string[]> {
+  const expanded = expandMcpEnv(servers, runtimeEnv);
+  const configPath = path.join(hermesHome(), "config.yaml");
+
+  let existingConfig: Record<string, unknown> = {};
+  try {
+    const raw = await fs.readFile(configPath, "utf-8");
+    existingConfig = (yaml.load(raw) as Record<string, unknown>) ?? {};
+  } catch {
+    // config doesn't exist yet
+  }
+
+  const existingMcp = (existingConfig.mcp_servers as Record<string, unknown>) ?? {};
+  const merged = { ...existingMcp };
+  const synced: string[] = [];
+
+  for (const [name, srv] of Object.entries(expanded)) {
+    const hermesKey = `paperclip_${name}`;
+    const hermesSrv: Record<string, unknown> = { enabled: true };
+
+    if (srv.transport === "stdio") {
+      hermesSrv.command = srv.command ?? "";
+      if (srv.args && srv.args.length > 0) hermesSrv.args = srv.args;
+      if (srv.env && Object.keys(srv.env).length > 0) hermesSrv.env = srv.env;
+    } else {
+      hermesSrv.url = srv.url ?? "";
+      if (srv.headers && Object.keys(srv.headers).length > 0) hermesSrv.headers = srv.headers;
+      if (srv.env && Object.keys(srv.env).length > 0) hermesSrv.env = srv.env;
     }
+
+    merged[hermesKey] = hermesSrv;
+    synced.push(hermesKey);
   }
 
-  return sections.join("\n\n");
+  existingConfig.mcp_servers = merged;
+  await fs.writeFile(configPath, yaml.dump(existingConfig, { lineWidth: -1 }), "utf-8");
+
+  return synced;
+}
+
+// ---------------------------------------------------------------------------
+// Instructions file → AGENTS.md in cwd
+// ---------------------------------------------------------------------------
+// Hermes auto-loads AGENTS.md from the working directory. If the configured
+// instructionsFilePath points elsewhere, we symlink it into the cwd as
+// AGENTS.md so Hermes picks it up natively.
+// ---------------------------------------------------------------------------
+
+async function ensureInstructionsInCwd(
+  instructionsFilePath: string,
+  cwd: string,
+): Promise<void> {
+  if (!instructionsFilePath) return;
+
+  const agentsMdPath = path.join(cwd, "AGENTS.md");
+  const existingAgentsMd = await fs.lstat(agentsMdPath).catch(() => null);
+
+  // If AGENTS.md already exists (real file or symlink), check if it already
+  // points to our instructions. If it's a different file, don't overwrite.
+  if (existingAgentsMd) {
+    if (existingAgentsMd.isSymbolicLink()) {
+      const target = await fs.readlink(agentsMdPath);
+      if (path.resolve(target) === path.resolve(instructionsFilePath)) return;
+    }
+    // Already exists as a real file or different symlink — don't overwrite.
+    // Hermes will pick up the existing one.
+    return;
+  }
+
+  // Verify the source exists before linking
+  const sourceStat = await fs.stat(instructionsFilePath).catch(() => null);
+  if (!sourceStat?.isFile()) return;
+
+  await fs.symlink(instructionsFilePath, agentsMdPath);
 }
 
 // ---------------------------------------------------------------------------
@@ -321,16 +409,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
   const { command, cwd, workspaceId, workspaceRepoUrl, workspaceRepoRef, env, timeoutSec, graceSec, extraArgs } = runtimeConfig;
 
-  // Build ephemeral system prompt from Paperclip skills and instructions file.
-  // Hermes natively loads AGENTS.md from cwd, so we only inject the
-  // instructionsFilePath if it's configured (for explicit override).
-  // Skills are read from their resolved paths and injected as ephemeral content
-  // via HERMES_EPHEMERAL_SYSTEM_PROMPT so they appear in the system prompt
-  // without modifying ~/.hermes/skills/.
-  const ephemeralPrompt = await buildEphemeralSystemPrompt(ctx.skills, instructionsFilePath);
-  if (ephemeralPrompt) {
-    env.HERMES_EPHEMERAL_SYSTEM_PROMPT = ephemeralPrompt;
+  // Sync Paperclip skills into ~/.hermes/skills/paperclip/ so Hermes can load
+  // them natively via the -s flag.
+  const syncedSkills = await syncSkillsToHermes(ctx.skills ?? []);
+
+  // Sync MCP servers from agent config into ~/.hermes/config.yaml
+  const mcpServers = parseMcpServers(config);
+  let syncedMcp: string[] = [];
+  if (mcpServers) {
+    syncedMcp = await syncMcpToHermesConfig(mcpServers, { ...process.env as Record<string, string>, ...env });
   }
+
+  // If instructionsFilePath is set and there's no AGENTS.md in the cwd,
+  // symlink it so Hermes auto-loads it from the working directory.
+  await ensureInstructionsInCwd(instructionsFilePath, cwd);
 
   const prompt = renderTemplate(promptTemplate, {
     agentId: agent.id,
@@ -355,7 +447,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const prevSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
   const canResume = persistSession && prevSessionId.length > 0;
 
-  // Build CLI args. Hermes uses: hermes chat -q "prompt" -Q -m model ...
   const args = ["chat", "-q", effectivePrompt];
   if (useQuiet) args.push("-Q");
   args.push("-m", model);
@@ -369,6 +460,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (canResume) args.push("--resume", prevSessionId);
   // --yolo bypasses tool approval prompts (required for non-interactive use)
   args.push("--yolo");
+  // Load synced Paperclip skills via Hermes's native -s flag
+  if (syncedSkills.length > 0) {
+    args.push("-s", syncedSkills.join(","));
+  }
   if (extraArgs.length > 0) args.push(...extraArgs);
 
   if (onMeta) {
@@ -380,7 +475,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       env: redactEnvForLogs(env),
       prompt: effectivePrompt,
       context,
-      skillsInjected: ctx.skills?.map((s) => s.name),
+      skillsInjected: syncedSkills,
+      mcpServers: syncedMcp.length > 0 ? Object.fromEntries(syncedMcp.map(k => [k, true])) : undefined,
     });
   }
 

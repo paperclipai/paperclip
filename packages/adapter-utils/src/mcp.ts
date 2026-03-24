@@ -282,6 +282,8 @@ export function mcpConfigPath(adapterType: string): McpConfigPathInfo | null {
       return { filePath: ".cursor/mcp.json", format: "cursor" };
     case "codex_local":
       return { filePath: "config.toml", format: "codex" };
+    case "hermes_local":
+      return { filePath: "config.yaml", format: "hermes" as McpConfigFormat };
     default:
       return null;
   }

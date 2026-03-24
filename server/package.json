@@ -53,6 +53,7 @@
     "express": "^5.1.0",
     "grammy": "^1.41.1",
     "hermes-paperclip-adapter": "0.1.1",
+    "js-yaml": "^4.1.1",
     "multer": "^2.0.2",
     "open": "^11.0.0",
     "pino": "^9.6.0",
@@ -64,6 +65,7 @@
   "devDependencies": {
     "@types/express": "^5.0.0",
     "@types/express-serve-static-core": "^5.0.0",
+    "@types/js-yaml": "^4.0.9",
     "@types/multer": "^2.0.0",
     "@types/node": "^24.6.0",
     "@types/supertest": "^6.0.2",
