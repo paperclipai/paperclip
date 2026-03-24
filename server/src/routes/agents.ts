@@ -174,13 +174,14 @@ export function agentRoutes(db: Db) {
     );
   }
 
-  async function applyBidirectionalCeoAgentGrants(companyId: string, newAgentId: string) {
+  async function applyFullMeshGrantsForNewAgent(companyId: string, newAgentId: string) {
     const allAgents = await svc.list(companyId);
-    const ceoAgent = allAgents.find((a) => a.role === "ceo" && a.id !== newAgentId);
-    if (!ceoAgent) return;
-    for (const permission of ["assign", "comment"] as const) {
-      await agentAclSvc.createGrant(companyId, ceoAgent.id, newAgentId, permission);
-      await agentAclSvc.createGrant(companyId, newAgentId, ceoAgent.id, permission);
+    const others = allAgents.filter((a) => a.id !== newAgentId);
+    for (const other of others) {
+      for (const permission of ["assign", "comment"] as const) {
+        await agentAclSvc.createGrant(companyId, other.id, newAgentId, permission);
+        await agentAclSvc.createGrant(companyId, newAgentId, other.id, permission);
+      }
     }
   }
 
@@ -1396,7 +1397,7 @@ export function agentRoutes(db: Db) {
       agent.id,
       actor.actorType === "user" ? actor.actorId : null,
     );
-    await applyBidirectionalCeoAgentGrants(companyId, agent.id);
+    await applyFullMeshGrantsForNewAgent(companyId, agent.id);
 
     if (approval) {
       await logActivity(db, {
@@ -1479,7 +1480,7 @@ export function agentRoutes(db: Db) {
       agent.id,
       req.actor.type === "board" ? (req.actor.userId ?? null) : null,
     );
-    await applyBidirectionalCeoAgentGrants(companyId, agent.id);
+    await applyFullMeshGrantsForNewAgent(companyId, agent.id);
 
     if (agent.budgetMonthlyCents > 0) {
       await budgets.upsertPolicy(

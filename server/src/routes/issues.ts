@@ -106,6 +106,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
   async function assertCanManageIssueApprovalLinks(req: Request, res: Response, companyId: string) {
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "board") {
+      if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
       const allowed = await access.canUser(companyId, req.actor.userId, "agents:create");
       if (!allowed) {
         res.status(403).json({ error: "Missing permission to link approvals" });
@@ -142,6 +143,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
   async function assertCanAssignTasks(req: Request, companyId: string) {
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "board") {
+      if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
       if (!req.actor.userId) throw unauthorized();
       const allowed = await access.canUser(companyId, req.actor.userId, "tasks:assign");
       if (!allowed) throw forbidden("Missing permission: tasks:assign");
