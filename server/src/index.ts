@@ -18,13 +18,16 @@ import {
   companies,
   companyMemberships,
   instanceUserRoles,
+  principalPermissionGrants,
 } from "@paperclipai/db";
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
+import { accessService, agentService } from "./services/index.js";
 import { heartbeatService } from "./services/index.js";
+import { AGENT_ROLE_DEFAULT_PERMISSIONS } from "@paperclipai/shared";
 import { initTelegramNotifications } from "./services/telegram.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
@@ -562,6 +565,55 @@ if (config.databaseBackupEnabled) {
   setInterval(() => {
     void runScheduledBackup();
   }, backupIntervalMs);
+}
+
+// Backfill: ensure all existing agents have their role-default permissions.
+// Agents created before the auto-grant feature may be missing grants.
+{
+  const access = accessService(db);
+  const agentSvc = agentService(db);
+  const allCompanies = await db.select({ id: companies.id }).from(companies);
+  let backfilled = 0;
+  for (const company of allCompanies) {
+    const agentList = await agentSvc.list(company.id);
+    for (const agent of agentList) {
+      const defaultPerms = AGENT_ROLE_DEFAULT_PERMISSIONS[agent.role] ?? [];
+      if (defaultPerms.length === 0) continue;
+      // Check if agent already has grants
+      const membership = await access.getMembership(company.id, "agent", agent.id);
+      if (!membership) {
+        await access.ensureMembership(company.id, "agent", agent.id, "member", "active");
+      }
+      // Get existing grants and add missing ones
+      const existing = await db
+        .select()
+        .from(principalPermissionGrants)
+        .where(
+          and(
+            eq(principalPermissionGrants.companyId, company.id),
+            eq(principalPermissionGrants.principalType, "agent"),
+            eq(principalPermissionGrants.principalId, agent.id),
+          ),
+        );
+      const existingKeys = new Set(existing.map((g) => g.permissionKey));
+      const missing = defaultPerms.filter((k) => !existingKeys.has(k));
+      if (missing.length > 0) {
+        const allKeys = [...existingKeys, ...missing];
+        await access.setPrincipalGrants(
+          company.id,
+          "agent",
+          agent.id,
+          allKeys.map((key) => ({ permissionKey: key as any })),
+          null,
+        );
+        backfilled++;
+        logger.info({ agentId: agent.id, role: agent.role, added: missing }, "Backfilled agent permissions");
+      }
+    }
+  }
+  if (backfilled > 0) {
+    logger.info({ count: backfilled }, "Agent permission backfill complete");
+  }
 }
 
 server.listen(listenPort, config.host, () => {
