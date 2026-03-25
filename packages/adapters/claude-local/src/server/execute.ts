@@ -375,8 +375,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // Don't resume sessions on manual invocations (user wants a fresh start) or
   // event-triggered wakes (comment mentions open a new task context).
   const isManualInvoke = asString(context.wakeTriggerDetail, "") === "manual";
+  // Match the wakeCommentId resolution at lines 155-158: check both fields
   const isEventTriggered =
-    typeof context.wakeCommentId === "string" && context.wakeCommentId.trim().length > 0;
+    (typeof context.wakeCommentId === "string" && context.wakeCommentId.trim().length > 0) ||
+    (typeof context.commentId === "string" && context.commentId.trim().length > 0);
   const canResumeSession =
     runtimeSessionId.length > 0 &&
     hasMatchingPromptBundle &&
@@ -394,7 +396,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           : `cwd mismatch ("${runtimeSessionCwd}" vs "${cwd}")`;
     await onLog(
       "stdout",
-      `[paperclip] Skipping saved session resume because this is a ${reason}.\n`,
+      `[paperclip] Skipping saved session resume (session "${runtimeSessionId}"): ${reason}.\n`,
     );
   }
   if (runtimeSessionId && runtimePromptBundleKey.length > 0 && runtimePromptBundleKey !== promptBundle.bundleKey) {
