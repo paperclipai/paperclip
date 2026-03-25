@@ -58,4 +58,24 @@ export interface GitHubCheckRunEvent {
   repository: { full_name: string; html_url: string };
 }
 
-export type GitHubWebhookPayload = GitHubWorkflowRunEvent | GitHubCheckRunEvent;
+export interface GitHubPullRequestEvent {
+  action: "opened" | "closed" | "reopened" | "synchronize" | "edited" | string;
+  pull_request: {
+    number: number;
+    title: string;
+    body: string | null;
+    state: "open" | "closed";
+    merged: boolean;
+    html_url: string;
+    head: { ref: string; sha: string };
+    base: { ref: string };
+    user: { login: string } | null;
+    merged_by: { login: string } | null;
+  };
+  repository: { full_name: string; html_url: string };
+}
+
+export type GitHubWebhookPayload =
+  | GitHubWorkflowRunEvent
+  | GitHubCheckRunEvent
+  | GitHubPullRequestEvent;

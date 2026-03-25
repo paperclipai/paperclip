@@ -9,6 +9,7 @@ export const SUPPORTED_GITHUB_EVENTS = [
   "workflow_run",
   "check_run",
   "issues",
+  "pull_request",
 ] as const;
 
 export type SupportedGitHubEvent = (typeof SUPPORTED_GITHUB_EVENTS)[number];

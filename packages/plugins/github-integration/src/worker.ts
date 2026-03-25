@@ -14,6 +14,7 @@ import {
 } from "./constants.js";
 import type {
   GitHubCheckRunEvent,
+  GitHubPullRequestEvent,
   GitHubWorkflowRunEvent,
 } from "./github-types.js";
 import * as sync from "./sync.js";
@@ -398,6 +399,64 @@ async function handleIssueEvent(payload: GitHubIssueEvent): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Pull request event handler
+// ---------------------------------------------------------------------------
+
+async function handlePullRequestEvent(payload: GitHubPullRequestEvent): Promise<void> {
+  if (!ctx) return;
+
+  const { action, pull_request: pr, repository } = payload;
+
+  // Only act on lifecycle transitions that affect linked issue status.
+  if (action !== "opened" && action !== "closed" && action !== "reopened") return;
+
+  const [owner, repo] = repository.full_name.split("/");
+  if (!owner || !repo) return;
+
+  const link = await sync.getLinkByGitHub(ctx, owner, repo, pr.number);
+  if (!link) {
+    ctx.logger.info(
+      `No linked Paperclip issue for PR ${repository.full_name}#${pr.number}`,
+    );
+    return;
+  }
+
+  // Determine the new Paperclip status:
+  // - merged (closed + merged): done
+  // - closed without merge: blocked (PR rejected/abandoned)
+  // - opened / reopened: in_progress
+  let newStatus: "done" | "in_progress" | "blocked";
+  if (action === "closed") {
+    newStatus = pr.merged ? "done" : "blocked";
+  } else {
+    newStatus = "in_progress";
+  }
+
+  ctx.logger.info(
+    `Syncing PR ${repository.full_name}#${pr.number} (action=${action}, merged=${pr.merged}) → Paperclip status "${newStatus}" on issue ${link.paperclipIssueId}`,
+  );
+
+  const mergedBy = pr.merged_by?.login ?? pr.user?.login ?? "unknown";
+  const comment =
+    action === "closed" && pr.merged
+      ? `PR [#${pr.number}](${pr.html_url}) merged by @${mergedBy} — closing issue.`
+      : action === "closed"
+        ? `PR [#${pr.number}](${pr.html_url}) closed without merging.`
+        : `PR [#${pr.number}](${pr.html_url}) ${action}.`;
+
+  await ctx.issues.update(
+    link.paperclipIssueId,
+    { status: newStatus, comment },
+    link.paperclipCompanyId,
+  );
+
+  await sync.updateLink(ctx, link.paperclipIssueId, {
+    lastSyncAt: new Date().toISOString(),
+    lastGhState: pr.state,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Plugin definition
 // ---------------------------------------------------------------------------
 
@@ -479,6 +538,9 @@ const plugin = definePlugin({
         break;
       case "issues":
         await handleIssueEvent(payload as GitHubIssueEvent);
+        break;
+      case "pull_request":
+        await handlePullRequestEvent(payload as GitHubPullRequestEvent);
         break;
     }
 
