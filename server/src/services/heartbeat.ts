@@ -1665,33 +1665,23 @@ export function heartbeatService(db: Db) {
       }
 
       // Self-wake if agent has remaining actionable inbox items.
-      if (shouldSelfWake(outcome, adapterResult.errorCode)) {
+      // Skip for timer-only heartbeats to avoid converting idle polls into tight loops.
+      if (shouldSelfWake(outcome, adapterResult.errorCode) && run.invocationSource !== "timer") {
         void (async () => {
           try {
-            const remaining = await db
-              .select({ id: issues.id })
-              .from(issues)
-              .where(
-                and(
-                  eq(issues.assigneeAgentId, agent.id),
-                  inArray(issues.status, ["todo", "in_progress"]),
-                ),
-              )
-              .limit(1);
-            if (remaining.length > 0) {
-              logger.info({ agentId: agent.id, runId: run.id }, "Enqueueing self-wake for remaining inbox items");
-              await enqueueWakeup(agent.id, {
-                source: "automation",
-                triggerDetail: "system",
-                reason: "inbox_remaining",
-                payload: { completedRunId: run.id },
-                requestedByActorType: "system",
-                requestedByActorId: null,
-                contextSnapshot: { source: "heartbeat.inbox_remaining" },
-              });
-            }
+            logger.info({ agentId: agent.id, runId: run.id }, "Enqueueing self-wake for remaining inbox items");
+            await enqueueWakeup(agent.id, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "inbox_remaining",
+              payload: { completedRunId: run.id },
+              requestedByActorType: "system",
+              requestedByActorId: null,
+              contextSnapshot: { source: "heartbeat.inbox_remaining" },
+            });
           } catch (err) {
-            logger.warn({ err, agentId: agent.id, runId: run.id }, "failed to self-wake for remaining inbox");
+            const level = err instanceof Error && "statusCode" in err && (err as any).statusCode === 409 ? "debug" : "warn";
+            logger[level]({ err, agentId: agent.id, runId: run.id }, "failed to self-wake for remaining inbox");
           }
         })();
       }
