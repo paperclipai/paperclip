@@ -26,7 +26,8 @@ async function migrationHash(migrationFile: string): Promise<string> {
     new URL(`./migrations/${migrationFile}`, import.meta.url),
     "utf8",
   );
-  return createHash("sha256").update(content).digest("hex");
+  // Normalize CRLF → LF to match the hash stored by the migration engine.
+  return createHash("sha256").update(content.replace(/\r\n/g, "\n")).digest("hex");
 }
 
 afterEach(async () => {
