@@ -1,0 +1,9 @@
+{
+  "directories": [
+    "memory",
+    "workspace"
+  ],
+  "files": {
+    "workspace/README.md": "files/workspace/README.md"
+  }
+}

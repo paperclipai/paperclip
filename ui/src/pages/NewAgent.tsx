@@ -5,14 +5,14 @@ import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { agentsApi } from "../api/agents";
 import { queryKeys } from "../lib/queryKeys";
-import { AGENT_ROLES } from "@paperclipai/shared";
+import { AGENT_ROLES, AGENT_TEMPLATES, AGENT_TEMPLATE_LABELS } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { Shield, User } from "lucide-react";
+import { Layers, Shield, User } from "lucide-react";
 import { cn, agentUrl } from "../lib/utils";
 import { roleLabels } from "../components/agent-config-primitives";
 import { AgentConfigForm, type CreateConfigValues } from "../components/AgentConfigForm";
@@ -64,8 +64,10 @@ export function NewAgent() {
   const [role, setRole] = useState("general");
   const [reportsTo, setReportsTo] = useState("");
   const [configValues, setConfigValues] = useState<CreateConfigValues>(defaultCreateValues);
+  const [template, setTemplate] = useState<string>("base");
   const [roleOpen, setRoleOpen] = useState(false);
   const [reportsToOpen, setReportsToOpen] = useState(false);
+  const [templateOpen, setTemplateOpen] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
   const { data: agents } = useQuery({
@@ -168,6 +170,7 @@ export function NewAgent() {
     createAgent.mutate({
       name: name.trim(),
       role: effectiveRole,
+      template,
       ...(title.trim() ? { title: title.trim() } : {}),
       ...(reportsTo ? { reportsTo } : {}),
       adapterType: configValues.adapterType,
@@ -314,6 +317,31 @@ export function NewAgent() {
                   <AgentIcon icon={a.icon} className="shrink-0 h-3 w-3 text-muted-foreground" />
                   {a.name}
                   <span className="text-muted-foreground ml-auto">{roleLabels[a.role] ?? a.role}</span>
+                </button>
+              ))}
+            </PopoverContent>
+          </Popover>
+
+          <Popover open={templateOpen} onOpenChange={setTemplateOpen}>
+            <PopoverTrigger asChild>
+              <button
+                className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors"
+              >
+                <Layers className="h-3 w-3 text-muted-foreground" />
+                {AGENT_TEMPLATE_LABELS[template as keyof typeof AGENT_TEMPLATE_LABELS] ?? "Base"}
+              </button>
+            </PopoverTrigger>
+            <PopoverContent className="w-52 p-1" align="start">
+              {AGENT_TEMPLATES.map((t) => (
+                <button
+                  key={t}
+                  className={cn(
+                    "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                    t === template && "bg-accent"
+                  )}
+                  onClick={() => { setTemplate(t); setTemplateOpen(false); }}
+                >
+                  {AGENT_TEMPLATE_LABELS[t]}
                 </button>
               ))}
             </PopoverContent>

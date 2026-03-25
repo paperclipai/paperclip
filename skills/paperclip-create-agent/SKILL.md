@@ -65,6 +65,12 @@ curl -sS "$PAPERCLIP_API_URL/llms/agent-icons.txt" \
 - capabilities
 - run prompt in adapter config (`promptTemplate` where applicable)
 - source issue linkage (`sourceIssueId` or `sourceIssueIds`) when this hire came from an issue
+- `template` (optional): one of `base`, `operations`, `content`, `engineering`, `research`. Controls local directory scaffold and AGENTS.md generation. Pick the template that best fits the role:
+  - `base` — minimal, no extras (default)
+  - `operations` — admin, EA, coordination roles (adds team directory, AgentMail)
+  - `content` — marketing, brand, social (adds content pipeline, editorial workspace, AgentMail)
+  - `engineering` — dev, infra, platform (adds repos, projects, GitHub CLI)
+  - `research` — analyst, sales, lead-gen (adds leads, reports, AgentMail)
 
 7. Submit hire request.
 
@@ -77,6 +83,7 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-h
     "role": "cto",
     "title": "Chief Technology Officer",
     "icon": "crown",
+    "template": "engineering",
     "reportsTo": "<ceo-agent-id>",
     "capabilities": "Owns technical roadmap, architecture, staffing, execution",
     "adapterType": "codex_local",
@@ -123,6 +130,17 @@ curl -sS "$PAPERCLIP_API_URL/api/approvals/$PAPERCLIP_APPROVAL_ID/issues" \
 For each linked issue, either:
 - close it if approval resolved the request, or
 - comment in markdown with links to the approval and next actions.
+
+## Retroactive Scaffolding
+
+For agents created before templates existed, you can apply a template retroactively. This creates any missing directories and files without overwriting existing ones:
+
+```sh
+curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agents/<agent-id>/scaffold" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"template": "engineering"}'
+```
 
 ## Quality Bar
 

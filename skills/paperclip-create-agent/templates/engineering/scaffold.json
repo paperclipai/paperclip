@@ -1,0 +1,13 @@
+{
+  "directories": [
+    "memory",
+    "workspace",
+    "workspace/repos",
+    "workspace/projects"
+  ],
+  "files": {
+    "workspace/README.md": "files/workspace/README.md",
+    "workspace/repos/README.md": "files/workspace/repos/README.md",
+    "workspace/projects/README.md": "files/workspace/projects/README.md"
+  }
+}

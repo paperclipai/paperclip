@@ -4,7 +4,9 @@ import path from "node:path";
 import type { Db } from "@paperclipai/db";
 import { agents as agentsTable, companies, heartbeatRuns } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
+import { z } from "zod";
 import {
+  AGENT_TEMPLATES,
   createAgentKeySchema,
   createAgentHireSchema,
   createAgentSchema,
@@ -39,6 +41,8 @@ import {
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "@paperclipai/adapter-opencode-local/server";
+import { scaffoldAgent, type ScaffoldVars } from "../services/agent-scaffold.js";
+import type { AgentTemplate } from "@paperclipai/shared";
 
 export function agentRoutes(db: Db) {
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
@@ -273,6 +277,47 @@ export function agentRoutes(db: Db) {
       agentId: input.agent.id,
       ...payload,
     });
+  }
+
+  async function tryScaffoldAgent(
+    agent: {
+      id: string;
+      companyId: string;
+      name: string;
+      title: string | null;
+      template: string | null;
+      capabilities: string | null;
+      reportsTo: string | null;
+      adapterConfig: Record<string, unknown>;
+    },
+    companyName: string,
+  ) {
+    const template = agent.template as AgentTemplate | null;
+    if (!template) return null;
+
+    const cwd = asNonEmptyString(agent.adapterConfig?.cwd);
+    if (!cwd) return null;
+
+    let escalationTarget = "Alpha";
+    if (agent.reportsTo) {
+      const manager = await svc.getById(agent.reportsTo);
+      if (manager) escalationTarget = manager.name;
+    }
+
+    const vars: ScaffoldVars = {
+      name: agent.name,
+      title: agent.title ?? agent.name,
+      role_description: agent.capabilities ?? "",
+      escalation_target: escalationTarget,
+      company_name: companyName,
+    };
+
+    try {
+      return await scaffoldAgent(cwd, template, vars);
+    } catch (err) {
+      console.warn(`[scaffold] Failed to scaffold agent ${agent.name}: ${err}`);
+      return null;
+    }
   }
 
   function ensureGatewayDeviceKey(
@@ -769,6 +814,25 @@ export function agentRoutes(db: Db) {
           runtimeConfig: normalizedHireInput.runtimeConfig,
         });
 
+    if (!requiresApproval) {
+      const scaffoldResult = await tryScaffoldAgent(agent, company.name);
+      if (scaffoldResult) {
+        await logActivity(db, {
+          companyId,
+          actorType: "system",
+          actorId: "system",
+          action: "agent.scaffolded",
+          entityType: "agent",
+          entityId: agent.id,
+          details: {
+            template: agent.template,
+            created: scaffoldResult.created,
+            skipped: scaffoldResult.skipped,
+          },
+        });
+      }
+    }
+
     let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
     const actor = getActorInfo(req);
 
@@ -1183,6 +1247,31 @@ export function agentRoutes(db: Db) {
       return;
     }
 
+    const company = await db
+      .select()
+      .from(companies)
+      .where(eq(companies.id, agent.companyId))
+      .then((rows) => rows[0] ?? null);
+
+    if (company) {
+      const scaffoldResult = await tryScaffoldAgent(agent, company.name);
+      if (scaffoldResult) {
+        await logActivity(db, {
+          companyId: agent.companyId,
+          actorType: "system",
+          actorId: "system",
+          action: "agent.scaffolded",
+          entityType: "agent",
+          entityId: agent.id,
+          details: {
+            template: agent.template,
+            created: scaffoldResult.created,
+            skipped: scaffoldResult.skipped,
+          },
+        });
+      }
+    }
+
     await logActivity(db, {
       companyId: agent.companyId,
       actorType: "user",
@@ -1194,6 +1283,65 @@ export function agentRoutes(db: Db) {
 
     res.json(agent);
   });
+
+  router.post(
+    "/companies/:companyId/agents/:id/scaffold",
+    validate(
+      z.object({ template: z.enum(AGENT_TEMPLATES) }),
+    ),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      assertBoard(req);
+
+      const agentId = await normalizeAgentReference(req, req.params.id as string);
+      const agent = await svc.getById(agentId);
+      if (!agent || agent.companyId !== companyId) {
+        res.status(404).json({ error: "Agent not found" });
+        return;
+      }
+
+      const company = await db
+        .select()
+        .from(companies)
+        .where(eq(companies.id, companyId))
+        .then((rows) => rows[0] ?? null);
+      if (!company) {
+        res.status(404).json({ error: "Company not found" });
+        return;
+      }
+
+      const templateOverride = req.body.template as AgentTemplate;
+      const agentWithTemplate = { ...agent, template: templateOverride };
+      const scaffoldResult = await tryScaffoldAgent(agentWithTemplate, company.name);
+
+      if (scaffoldResult) {
+        await db
+          .update(agentsTable)
+          .set({ template: templateOverride, updatedAt: new Date() })
+          .where(eq(agentsTable.id, agentId));
+        await logActivity(db, {
+          companyId,
+          actorType: "user",
+          actorId: req.actor.userId ?? "board",
+          action: "agent.scaffolded",
+          entityType: "agent",
+          entityId: agent.id,
+          details: {
+            template: templateOverride,
+            created: scaffoldResult.created,
+            skipped: scaffoldResult.skipped,
+            retroactive: true,
+          },
+        });
+      }
+
+      res.json({
+        agent: { ...agent, template: templateOverride },
+        scaffold: scaffoldResult ?? { created: [], skipped: [] },
+      });
+    },
+  );
 
   router.post("/agents/:id/terminate", async (req, res) => {
     assertBoard(req);

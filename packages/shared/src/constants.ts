@@ -63,6 +63,23 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
   general: "General",
 };
 
+export const AGENT_TEMPLATES = [
+  "base",
+  "operations",
+  "content",
+  "engineering",
+  "research",
+] as const;
+export type AgentTemplate = (typeof AGENT_TEMPLATES)[number];
+
+export const AGENT_TEMPLATE_LABELS: Record<AgentTemplate, string> = {
+  base: "Base",
+  operations: "Operations & Admin",
+  content: "Content & Marketing",
+  engineering: "Engineering",
+  research: "Research & Sales",
+};
+
 export const AGENT_ICON_NAMES = [
   "bot",
   "cpu",

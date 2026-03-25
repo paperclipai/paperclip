@@ -274,6 +274,13 @@
       "when": 1774428873538,
       "tag": "0038_tough_anita_blake",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1774444542627,
+      "tag": "0039_small_nekra",
+      "breakpoints": true
     }
   ]
 }

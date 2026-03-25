@@ -1,0 +1,32 @@
+{
+  "directories": [
+    "memory",
+    "workspace",
+    "workspace/context",
+    "workspace/context/organization",
+    "workspace/context/people",
+    "workspace/context/products",
+    "workspace/content",
+    "workspace/content/drafts",
+    "workspace/content/drafts/people",
+    "workspace/content/drafts/company",
+    "workspace/content/approved",
+    "workspace/content/published",
+    "workspace/editorial",
+    "workspace/editorial/source-notes",
+    "workspace/editorial/briefs",
+    "workspace/editorial/campaigns",
+    "workspace/editorial/calendar"
+  ],
+  "files": {
+    "workspace/README.md": "files/workspace/README.md",
+    "workspace/context/index.md": "files/workspace/context/index.md",
+    "workspace/context/organization/README.md": "files/workspace/context/organization/README.md",
+    "workspace/context/people/README.md": "files/workspace/context/people/README.md",
+    "workspace/context/products/README.md": "files/workspace/context/products/README.md",
+    "workspace/editorial/source-notes/README.md": "files/workspace/editorial/source-notes/README.md",
+    "workspace/editorial/briefs/README.md": "files/workspace/editorial/briefs/README.md",
+    "workspace/editorial/campaigns/README.md": "files/workspace/editorial/campaigns/README.md",
+    "workspace/editorial/calendar/README.md": "files/workspace/editorial/calendar/README.md"
+  }
+}

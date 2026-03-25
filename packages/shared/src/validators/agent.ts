@@ -4,6 +4,7 @@ import {
   AGENT_ICON_NAMES,
   AGENT_ROLES,
   AGENT_STATUSES,
+  AGENT_TEMPLATES,
 } from "../constants.js";
 import { envConfigSchema } from "./secret.js";
 
@@ -42,6 +43,7 @@ export const createAgentSchema = z.object({
 export type CreateAgent = z.infer<typeof createAgentSchema>;
 
 export const createAgentHireSchema = createAgentSchema.extend({
+  template: z.enum(AGENT_TEMPLATES).optional().nullable(),
   sourceIssueId: z.string().uuid().optional().nullable(),
   sourceIssueIds: z.array(z.string().uuid()).optional(),
 });
