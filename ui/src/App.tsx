@@ -15,6 +15,7 @@ import { ProjectDetail } from "./pages/ProjectDetail";
 import { Issues } from "./pages/Issues";
 import { IssueDetail } from "./pages/IssueDetail";
 import { Goals } from "./pages/Goals";
+import { Runs } from "./pages/Runs";
 import { GoalDetail } from "./pages/GoalDetail";
 import { Approvals } from "./pages/Approvals";
 import { ApprovalDetail } from "./pages/ApprovalDetail";
@@ -134,6 +135,7 @@ function boardRoutes() {
       <Route path="issues/done" element={<Navigate to="/issues" replace />} />
       <Route path="issues/recent" element={<Navigate to="/issues" replace />} />
       <Route path="issues/:issueId" element={<IssueDetail />} />
+      <Route path="runs" element={<Runs />} />
       <Route path="goals" element={<Goals />} />
       <Route path="goals/:goalId" element={<GoalDetail />} />
       <Route path="approvals" element={<Navigate to="/approvals/pending" replace />} />
@@ -253,6 +255,7 @@ export function App() {
           <Route path="projects/:projectId/issues" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId/issues/:filter" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId/configuration" element={<UnprefixedBoardRedirect />} />
+          <Route path="runs" element={<UnprefixedBoardRedirect />} />
           <Route path="chat" element={<UnprefixedBoardRedirect />} />
           <Route path="chat/:agentId" element={<UnprefixedBoardRedirect />} />
           <Route path="skills" element={<UnprefixedBoardRedirect />} />
