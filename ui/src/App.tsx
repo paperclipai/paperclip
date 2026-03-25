@@ -136,6 +136,7 @@ function boardRoutes() {
       <Route path="issues/recent" element={<Navigate to="/issues" replace />} />
       <Route path="issues/:issueId" element={<IssueDetail />} />
       <Route path="runs" element={<Runs />} />
+      <Route path="runs/:runId" element={<Runs />} />
       <Route path="goals" element={<Goals />} />
       <Route path="goals/:goalId" element={<GoalDetail />} />
       <Route path="approvals" element={<Navigate to="/approvals/pending" replace />} />
@@ -256,6 +257,7 @@ export function App() {
           <Route path="projects/:projectId/issues/:filter" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId/configuration" element={<UnprefixedBoardRedirect />} />
           <Route path="runs" element={<UnprefixedBoardRedirect />} />
+          <Route path="runs/:runId" element={<UnprefixedBoardRedirect />} />
           <Route path="chat" element={<UnprefixedBoardRedirect />} />
           <Route path="chat/:agentId" element={<UnprefixedBoardRedirect />} />
           <Route path="skills" element={<UnprefixedBoardRedirect />} />

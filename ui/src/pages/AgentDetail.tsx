@@ -21,6 +21,7 @@ import { getUIAdapter, buildTranscript } from "../adapters";
 import type { TranscriptEntry } from "../adapters";
 import { StatusBadge } from "../components/StatusBadge";
 import { agentStatusDot, agentStatusDotDefault, invocationSourceLabel, invocationSourceBadge, invocationSourceBadgeDefault } from "../lib/status-colors";
+import { runStatusIcons as sharedRunStatusIcons, runMetrics as sharedRunMetrics, usageNumber as sharedUsageNumber, runSummary, SOURCE_FILTER_OPTIONS } from "../lib/run-utils";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { CopyText } from "../components/CopyText";
 import { EntityRow } from "../components/EntityRow";
@@ -69,14 +70,7 @@ import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
 import { isUuidLike, type Agent, type HeartbeatRun, type HeartbeatRunEvent, type AgentRuntimeState, type LiveEvent, type TaskCronSchedule } from "@paperclipai/shared";
 import { agentRouteRef } from "../lib/utils";
 
-const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string }> = {
-  succeeded: { icon: CheckCircle2, color: "text-green-600 dark:text-green-400" },
-  failed: { icon: XCircle, color: "text-red-600 dark:text-red-400" },
-  running: { icon: Loader2, color: "text-cyan-600 dark:text-cyan-400" },
-  queued: { icon: Clock, color: "text-yellow-600 dark:text-yellow-400" },
-  timed_out: { icon: Timer, color: "text-orange-600 dark:text-orange-400" },
-  cancelled: { icon: Slash, color: "text-neutral-500 dark:text-neutral-400" },
-};
+const runStatusIcons = sharedRunStatusIcons;
 
 const REDACTED_ENV_VALUE = "***REDACTED***";
 const SECRET_ENV_KEY_RE =
@@ -186,36 +180,10 @@ function parseAgentDetailView(value: string | null): AgentDetailView {
   return "dashboard";
 }
 
-function usageNumber(usage: Record<string, unknown> | null, ...keys: string[]) {
-  if (!usage) return 0;
-  for (const key of keys) {
-    const value = usage[key];
-    if (typeof value === "number" && Number.isFinite(value)) return value;
-  }
-  return 0;
-}
+const usageNumber = sharedUsageNumber;
 
 function runMetrics(run: HeartbeatRun) {
-  const usage = (run.usageJson ?? null) as Record<string, unknown> | null;
-  const result = (run.resultJson ?? null) as Record<string, unknown> | null;
-  const input = usageNumber(usage, "inputTokens", "input_tokens");
-  const output = usageNumber(usage, "outputTokens", "output_tokens");
-  const cached = usageNumber(
-    usage,
-    "cachedInputTokens",
-    "cached_input_tokens",
-    "cache_read_input_tokens",
-  );
-  const cost =
-    usageNumber(usage, "costUsd", "cost_usd", "total_cost_usd") ||
-    usageNumber(result, "total_cost_usd", "cost_usd", "costUsd");
-  return {
-    input,
-    output,
-    cached,
-    cost,
-    totalTokens: input + output,
-  };
+  return sharedRunMetrics(run);
 }
 
 type RunLogChunk = { ts: string; stream: "stdout" | "stderr" | "system"; chunk: string };
@@ -1227,9 +1195,7 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
   const statusInfo = runStatusIcons[run.status] ?? { icon: Clock, color: "text-neutral-400" };
   const StatusIcon = statusInfo.icon;
   const metrics = runMetrics(run);
-  const summary = run.resultJson
-    ? String((run.resultJson as Record<string, unknown>).summary ?? (run.resultJson as Record<string, unknown>).result ?? "")
-    : run.error ?? "";
+  const summary = runSummary(run);
 
   return (
     <Link
@@ -1269,14 +1235,7 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
   );
 }
 
-const SOURCE_FILTER_OPTIONS = [
-  { value: "all", label: "All" },
-  { value: "timer", label: "Timer" },
-  { value: "assignment", label: "Assignment" },
-  { value: "on_demand", label: "On-demand" },
-  { value: "automation", label: "Automation" },
-  { value: "chat", label: "Chat" },
-] as const;
+// SOURCE_FILTER_OPTIONS imported from ../lib/run-utils
 
 function RunsTab({
   runs,
