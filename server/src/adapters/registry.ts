@@ -226,7 +226,7 @@ const ozLocalAdapter: ServerAdapterModule = {
   sessionCodec: ozSessionCodec,
   models: ozModels,
   listModels: listOzModels,
-  supportsLocalAgentJwt: false,
+  supportsLocalAgentJwt: true,
   agentConfigurationDoc: ozAgentConfigurationDoc,
 };
 
