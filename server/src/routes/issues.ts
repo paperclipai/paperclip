@@ -3,16 +3,30 @@ import multer from "multer";
 import type { Db } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
+  containsGitHubCommitOrPrLink,
+  containsPassingPlaywrightEvidence,
   createIssueAttachmentMetadataSchema,
   createIssueWorkProductSchema,
   createIssueLabelSchema,
   checkoutIssueSchema,
   createIssueSchema,
+  issueHasImageAttachment,
+  issueRequiresCodeDoneEvidence,
+  issueRequiresUiDoneEvidence,
   linkIssueApprovalSchema,
+  resolveDoneTransitionEvidenceComment,
   issueDocumentKeySchema,
   updateIssueWorkProductSchema,
   upsertIssueDocumentSchema,
   updateIssueSchema,
+} from "@paperclipai/shared";
+export {
+  containsGitHubCommitOrPrLink,
+  containsPassingPlaywrightEvidence,
+  issueHasImageAttachment,
+  issueRequiresCodeDoneEvidence,
+  issueRequiresUiDoneEvidence,
+  resolveDoneTransitionEvidenceComment,
 } from "@paperclipai/shared";
 import type { StorageService } from "../storage/types.js";
 import { validate } from "../middleware/validate.js";
@@ -39,23 +53,6 @@ import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.
 import { verifyGitHubEvidenceIsRemoteVisible } from "./github-evidence.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
-const GITHUB_COMMIT_OR_PR_LINK_RE =
-  /https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/(?:commit\/[0-9a-fA-F]{7,40}|pull\/\d+)(?:[/?#][^\s<>)\]}]*)?/;
-
-export function containsGitHubCommitOrPrLink(body: string | null | undefined) {
-  if (!body) return false;
-  return GITHUB_COMMIT_OR_PR_LINK_RE.test(body);
-}
-
-export function resolveDoneTransitionEvidenceComment(
-  commentBody: string | null | undefined,
-  latestExistingCommentBody: string | null | undefined,
-) {
-  const directComment = commentBody?.trim();
-  if (directComment) return directComment;
-  const latestComment = latestExistingCommentBody?.trim();
-  return latestComment || null;
-}
 
 type CommentWakeActor = {
   actorType: "agent" | "user";
@@ -98,6 +95,47 @@ export function buildDoneEvidenceRequiredErrorResponse() {
   };
 }
 
+const UI_DONE_EVIDENCE_REQUIRED_ERROR =
+  "Cannot mark issue done for ui-labeled issues: attach at least one image screenshot and include passing Playwright evidence in the latest completion comment before closing. " +
+  "If this was not UI-changing work, remove the ui label before closing. Otherwise attach the screenshot proof bundle and cite the passing Playwright run.";
+
+export function buildUiDoneEvidenceRequiredDetails(input?: {
+  hasImageAttachment?: boolean;
+  hasPassingPlaywrightEvidence?: boolean;
+}) {
+  return {
+    requiredLabel: "ui",
+    latestCommentRule: "Paperclip checks the transition comment first, then the current latest issue comment.",
+    attachmentRule: "At least one image attachment must exist on the issue before the done transition.",
+    acceptedEvidence: {
+      screenshotAttachment: "Upload one or more PNG, JPEG, WebP, or GIF screenshots to the issue.",
+      playwrightExamples: [
+        "Playwright: 18 passed",
+        "npx playwright test ... -> 18 passed",
+      ],
+    },
+    fallback: {
+      nonUi: "Remove the ui label before marking done when the task did not change the UI.",
+      missingEvidence:
+        "Attach the screenshot proof bundle and add a latest comment summarizing the passing Playwright run before closing.",
+    },
+    missing: {
+      imageAttachment: input?.hasImageAttachment === false,
+      passingPlaywrightEvidence: input?.hasPassingPlaywrightEvidence === false,
+    },
+  };
+}
+
+export function buildUiDoneEvidenceRequiredErrorResponse(input?: {
+  hasImageAttachment?: boolean;
+  hasPassingPlaywrightEvidence?: boolean;
+}) {
+  return {
+    error: UI_DONE_EVIDENCE_REQUIRED_ERROR,
+    details: buildUiDoneEvidenceRequiredDetails(input),
+  };
+}
+
 export function buildDoneEvidenceUnreachableErrorResponse(remoteError: string) {
   return {
     error:
@@ -136,23 +174,12 @@ export function buildTaskAssignPermissionDeniedError() {
   );
 }
 
-function isCodeLabelName(name: string | null | undefined) {
-  return typeof name === "string" && name.trim().toLowerCase() === "code";
-}
-
 export function issueRequiresDoneEvidence(input: {
   currentLabels: Array<{ id: string; name: string }> | null | undefined;
   nextLabelIds?: string[] | null;
   companyLabels?: Array<{ id: string; name: string }> | null | undefined;
 }) {
-  if (Array.isArray(input.nextLabelIds)) {
-    if (input.nextLabelIds.length === 0) return false;
-    const nextLabelIdSet = new Set(input.nextLabelIds);
-    return (input.companyLabels ?? []).some(
-      (label) => nextLabelIdSet.has(label.id) && isCodeLabelName(label.name),
-    );
-  }
-  return (input.currentLabels ?? []).some((label) => isCodeLabelName(label.name));
+  return issueRequiresCodeDoneEvidence(input);
 }
 
 export function issueRoutes(db: Db, storage: StorageService) {
@@ -951,18 +978,41 @@ export function issueRoutes(db: Db, storage: StorageService) {
       const companyLabels = Array.isArray(updateFields.labelIds)
         ? await svc.listLabels(existing.companyId)
         : null;
-      const doneEvidenceRequired = issueRequiresDoneEvidence({
+      const codeDoneEvidenceRequired = issueRequiresCodeDoneEvidence({
         currentLabels: existing.labels,
         nextLabelIds: updateFields.labelIds,
         companyLabels,
       });
-      if (doneEvidenceRequired) {
+      const uiDoneEvidenceRequired = issueRequiresUiDoneEvidence({
+        currentLabels: existing.labels,
+        nextLabelIds: updateFields.labelIds,
+        companyLabels,
+      });
+      if (codeDoneEvidenceRequired || uiDoneEvidenceRequired) {
         let latestExistingCommentBody: string | null = null;
         if (!commentBody?.trim()) {
           const latestComments = await svc.listComments(id);
           latestExistingCommentBody = latestComments[0]?.body ?? null;
         }
         const evidenceCommentBody = resolveDoneTransitionEvidenceComment(commentBody, latestExistingCommentBody);
+
+        if (uiDoneEvidenceRequired) {
+          const attachments = await svc.listAttachments(id);
+          const hasImageAttachment = issueHasImageAttachment(attachments);
+          const hasPassingPlaywrightEvidence = containsPassingPlaywrightEvidence(evidenceCommentBody);
+          if (!hasImageAttachment || !hasPassingPlaywrightEvidence) {
+            res.status(422).json(buildUiDoneEvidenceRequiredErrorResponse({
+              hasImageAttachment,
+              hasPassingPlaywrightEvidence,
+            }));
+            return;
+          }
+        }
+
+        if (!codeDoneEvidenceRequired) {
+          // UI-only transitions do not need GitHub repository traceability.
+          updateFields.status = "done";
+        } else {
         if (!containsGitHubCommitOrPrLink(evidenceCommentBody)) {
           res.status(422).json(buildDoneEvidenceRequiredErrorResponse());
           return;
@@ -973,6 +1023,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
         if (!remoteCheck.valid) {
           res.status(422).json(buildDoneEvidenceUnreachableErrorResponse(remoteCheck.error!));
           return;
+        }
         }
       }
     }

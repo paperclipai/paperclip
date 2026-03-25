@@ -2,8 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   buildDoneEvidenceRequiredErrorResponse,
   buildDoneEvidenceUnreachableErrorResponse,
+  buildUiDoneEvidenceRequiredErrorResponse,
   containsGitHubCommitOrPrLink,
+  containsPassingPlaywrightEvidence,
+  issueHasImageAttachment,
   issueRequiresDoneEvidence,
+  issueRequiresUiDoneEvidence,
   resolveDoneTransitionEvidenceComment,
 } from "../routes/issues.js";
 
@@ -86,6 +90,47 @@ describe("buildDoneEvidenceUnreachableErrorResponse", () => {
   });
 });
 
+describe("containsPassingPlaywrightEvidence", () => {
+  it("accepts passed Playwright summaries", () => {
+    expect(
+      containsPassingPlaywrightEvidence("Validation: npx playwright test e2e/foo.spec.ts --project=chromium -> 18 passed"),
+    ).toBe(true);
+  });
+
+  it("rejects mixed pass/fail Playwright summaries", () => {
+    expect(
+      containsPassingPlaywrightEvidence("Playwright rerun: 16 passed, 1 failed"),
+    ).toBe(false);
+  });
+
+  it("rejects non-Playwright pass claims", () => {
+    expect(
+      containsPassingPlaywrightEvidence("Validation passed after fixing the issue"),
+    ).toBe(false);
+  });
+});
+
+describe("buildUiDoneEvidenceRequiredErrorResponse", () => {
+  it("documents the ui closeout fallback and missing evidence state", () => {
+    const payload = buildUiDoneEvidenceRequiredErrorResponse({
+      hasImageAttachment: false,
+      hasPassingPlaywrightEvidence: false,
+    });
+    expect(payload.error).toContain("ui-labeled issues");
+    expect(payload.error).toContain("passing Playwright evidence");
+    expect(payload.details).toMatchObject({
+      requiredLabel: "ui",
+      fallback: {
+        nonUi: "Remove the ui label before marking done when the task did not change the UI.",
+      },
+      missing: {
+        imageAttachment: true,
+        passingPlaywrightEvidence: true,
+      },
+    });
+  });
+});
+
 describe("issueRequiresDoneEvidence", () => {
   it("requires evidence when current labels include code", () => {
     expect(
@@ -134,6 +179,49 @@ describe("issueRequiresDoneEvidence", () => {
           { id: "2", name: "code" },
         ],
       }),
+    ).toBe(false);
+  });
+});
+
+describe("issueRequiresUiDoneEvidence", () => {
+  it("requires evidence when current labels include ui", () => {
+    expect(
+      issueRequiresUiDoneEvidence({
+        currentLabels: [{ id: "1", name: "UI" }],
+      }),
+    ).toBe(true);
+  });
+
+  it("does not require evidence when ui label is removed in the same patch", () => {
+    expect(
+      issueRequiresUiDoneEvidence({
+        currentLabels: [{ id: "2", name: "ui" }],
+        nextLabelIds: ["1"],
+        companyLabels: [
+          { id: "1", name: "ops" },
+          { id: "2", name: "ui" },
+        ],
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("issueHasImageAttachment", () => {
+  it("detects image attachments", () => {
+    expect(
+      issueHasImageAttachment([
+        { contentType: "application/pdf" },
+        { contentType: "image/png" },
+      ]),
+    ).toBe(true);
+  });
+
+  it("ignores non-image attachments", () => {
+    expect(
+      issueHasImageAttachment([
+        { contentType: "application/pdf" },
+        { contentType: "text/plain" },
+      ]),
     ).toBe(false);
   });
 });

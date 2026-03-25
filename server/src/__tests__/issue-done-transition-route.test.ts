@@ -21,6 +21,7 @@ describe("issue done transition route", () => {
   let app: Awaited<ReturnType<typeof createApp>>;
   let companyId = "";
   let codeLabelId = "";
+  let uiLabelId = "";
 
   beforeAll(async () => {
     databaseDir = await mkdtemp(join(tmpdir(), "paperclip-issue-done-route-db-"));
@@ -60,6 +61,11 @@ describe("issue done transition route", () => {
       color: "#64748b",
     });
     codeLabelId = codeLabel.id;
+    const uiLabel = await issues.createLabel(companyId, {
+      name: "ui",
+      color: "#0f766e",
+    });
+    uiLabelId = uiLabel.id;
 
     app = await createApp(db, {
       uiMode: "none",
@@ -86,6 +92,28 @@ describe("issue done transition route", () => {
       status: "todo",
       priority: "high",
       labelIds: [codeLabelId],
+    });
+  }
+
+  async function createUiIssue() {
+    return issueService(db).create(companyId, {
+      title: `UI issue ${randomUUID()}`,
+      status: "todo",
+      priority: "high",
+      labelIds: [uiLabelId],
+    });
+  }
+
+  async function attachImage(issueId: string) {
+    return issueService(db).createAttachment({
+      issueId,
+      provider: "paperclip",
+      objectKey: `${issueId}/proof.png`,
+      contentType: "image/png",
+      byteSize: 1024,
+      sha256: "a".repeat(64),
+      originalFilename: "proof.png",
+      createdByUserId: "local-board",
     });
   }
 
@@ -151,6 +179,72 @@ describe("issue done transition route", () => {
     await issueService(db).addComment(
       issue.id,
       "Shipped in https://github.com/acme/paperclip/commit/abc1234",
+      { userId: "local-board" },
+    );
+
+    const res = await request(app)
+      .patch(`/api/issues/${issue.id}`)
+      .send({ status: "done" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("done");
+  });
+
+  it("rejects done transitions for ui issues without screenshot attachments", async () => {
+    const issue = await createUiIssue();
+
+    const res = await request(app)
+      .patch(`/api/issues/${issue.id}`)
+      .send({ status: "done", comment: "Playwright: 18 passed" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("ui-labeled issues");
+    expect(res.body.details).toMatchObject({
+      requiredLabel: "ui",
+      missing: {
+        imageAttachment: true,
+        passingPlaywrightEvidence: false,
+      },
+    });
+  });
+
+  it("rejects done transitions for ui issues without passing Playwright evidence", async () => {
+    const issue = await createUiIssue();
+    await attachImage(issue.id);
+
+    const res = await request(app)
+      .patch(`/api/issues/${issue.id}`)
+      .send({ status: "done", comment: "Attached fresh UI screenshots for review." });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("passing Playwright evidence");
+    expect(res.body.details).toMatchObject({
+      requiredLabel: "ui",
+      missing: {
+        imageAttachment: false,
+        passingPlaywrightEvidence: true,
+      },
+    });
+  });
+
+  it("allows done when the same patch removes the ui label", async () => {
+    const issue = await createUiIssue();
+
+    const res = await request(app)
+      .patch(`/api/issues/${issue.id}`)
+      .send({ status: "done", labelIds: [] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("done");
+    expect(res.body.labelIds).toEqual([]);
+  });
+
+  it("allows done for ui issues when image attachments and Playwright evidence already exist", async () => {
+    const issue = await createUiIssue();
+    await attachImage(issue.id);
+    await issueService(db).addComment(
+      issue.id,
+      "Validation: npx playwright test e2e/ui.spec.ts --project=chromium -> 18 passed",
       { userId: "local-board" },
     );
 

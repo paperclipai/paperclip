@@ -501,6 +501,12 @@ Server behavior:
 2. if updated row count is 0, return `409` with current owner/status
 3. successful checkout sets `assignee_agent_id`, `status = in_progress`, and `started_at`
 
+### 10.4.2 Done Evidence Rules
+
+- `code`-labeled issues cannot transition to `done` unless the transition comment, or the current latest issue comment when no new comment is provided, includes a GitHub commit or pull request link. Commit links must resolve on the tracked remote, not only in a local clone.
+- `ui`-labeled issues cannot transition to `done` unless the issue already has at least one attached image screenshot and the transition comment, or current latest issue comment, cites a passing Playwright run.
+- If the work does not actually fall into that category, the corresponding label must be removed before closing instead of bypassing the evidence rule.
+
 ## 10.5 Projects
 
 - `GET /companies/:companyId/projects`

@@ -53,8 +53,16 @@ import {
   SlidersHorizontal,
   Trash2,
 } from "lucide-react";
-import type { ActivityEvent } from "@paperclipai/shared";
-import type { Agent, IssueAttachment } from "@paperclipai/shared";
+import {
+  containsGitHubCommitOrPrLink,
+  containsPassingPlaywrightEvidence,
+  issueHasImageAttachment,
+  issueRequiresCodeDoneEvidence,
+  issueRequiresUiDoneEvidence,
+  type ActivityEvent,
+  type Agent,
+  type IssueAttachment,
+} from "@paperclipai/shared";
 
 type CommentReassignment = {
   assigneeAgentId: string | null;
@@ -660,6 +668,21 @@ export function IssueDetail() {
   const isImageAttachment = (attachment: IssueAttachment) => attachment.contentType.startsWith("image/");
   const attachmentList = attachments ?? [];
   const hasAttachments = attachmentList.length > 0;
+  const latestCommentBody = commentsWithRunMeta[0]?.body ?? null;
+  const codeEvidenceRequired = issueRequiresCodeDoneEvidence({
+    currentLabels: issue.labels,
+  });
+  const codeEvidenceSatisfied = !codeEvidenceRequired || containsGitHubCommitOrPrLink(latestCommentBody);
+  const uiEvidenceRequired = issueRequiresUiDoneEvidence({
+    currentLabels: issue.labels,
+  });
+  const uiScreenshotSatisfied = !uiEvidenceRequired || issueHasImageAttachment(attachmentList);
+  const uiPlaywrightSatisfied = !uiEvidenceRequired || containsPassingPlaywrightEvidence(latestCommentBody);
+  const doneEvidenceMissing = (codeEvidenceRequired && !codeEvidenceSatisfied)
+    || (uiEvidenceRequired && (!uiScreenshotSatisfied || !uiPlaywrightSatisfied));
+  const doneEvidenceTone = doneEvidenceMissing
+    ? "border-amber-500/30 bg-amber-500/10 text-amber-900 dark:text-amber-100"
+    : "border-emerald-500/30 bg-emerald-500/10 text-emerald-900 dark:text-emerald-100";
   const attachmentUploadButton = (
     <>
       <input
@@ -854,9 +877,30 @@ export function IssueDetail() {
             </Popover>
           </div>
         </div>
-        <p className="text-xs text-muted-foreground">
-          Use the <code>code</code> label for tasks that change repository files. Those issues require the latest comment to include a GitHub commit or PR link before marking done. Non-code tasks can close without repo evidence.
-        </p>
+        <div className={cn("rounded-lg border px-3 py-2 text-xs", doneEvidenceTone)}>
+          <div className="font-medium">Done evidence</div>
+          {codeEvidenceRequired ? (
+            <p className="mt-1">
+              <code>code</code>: latest comment must include a GitHub commit or PR link.
+              {" "}
+              <span className="font-medium">{codeEvidenceSatisfied ? "Ready" : "Missing"}</span>
+            </p>
+          ) : null}
+          {uiEvidenceRequired ? (
+            <p className="mt-1">
+              <code>ui</code>: issue needs at least one image attachment plus a latest comment with passing Playwright evidence.
+              {" "}
+              <span className="font-medium">
+                Screenshots {uiScreenshotSatisfied ? "ready" : "missing"}; Playwright {uiPlaywrightSatisfied ? "ready" : "missing"}
+              </span>
+            </p>
+          ) : null}
+          {!codeEvidenceRequired && !uiEvidenceRequired ? (
+            <p className="mt-1 text-muted-foreground">
+              Use <code>code</code> for repo-changing work and <code>ui</code> for UI-changing work. The <code>ui</code> label turns on screenshot-attachment and passing Playwright requirements before <code>done</code>.
+            </p>
+          ) : null}
+        </div>
 
         <InlineEditor
           value={issue.title}

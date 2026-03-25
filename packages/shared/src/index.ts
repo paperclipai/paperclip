@@ -134,6 +134,17 @@ export {
   type PluginBridgeErrorCode,
 } from "./constants.js";
 
+export {
+  containsGitHubCommitOrPrLink,
+  containsPassingPlaywrightEvidence,
+  isCodeLabelName,
+  isUiLabelName,
+  issueHasImageAttachment,
+  issueRequiresCodeDoneEvidence,
+  issueRequiresUiDoneEvidence,
+  resolveDoneTransitionEvidenceComment,
+} from "./issue-done-policy.js";
+
 export type {
   Company,
   CompanySkillSourceType,
