@@ -324,14 +324,14 @@ jobs:
           ssh -F "$HOME/.ssh/config" \
             vultr-deploy \
             'set -euo pipefail
-            logs=$(docker logs --tail 80 paperclip-server-1 2>&1)
+            logs=$(docker logs --tail 200 paperclip-server-1 2>&1)
             printf "%s\n" "$logs"
             fatal_pattern="panic:|uncaught exception|unhandledpromiserejection|error: listen eaddrinuse|syntaxerror:|cannot find module|module_not_found|address already in use"
             if printf "%s\n" "$logs" | grep -Eiq "$fatal_pattern"; then
               echo "Detected fatal startup pattern in recent logs" >&2
               exit 1
             fi
-            success_pattern="started|listening|ready|server running|health|/api/health"
+            success_pattern="started|listening|ready|server running|health|/api/health|GET .* 200"
             if printf "%s\n" "$logs" | grep -Eiq "$success_pattern"; then
               exit 0
             fi
