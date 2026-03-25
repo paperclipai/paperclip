@@ -30,6 +30,9 @@ interface BotInstance {
   unsubscribeLiveEvents: () => void;
 }
 
+const pendingRetries = new Set<string>();
+const MAX_409_RETRIES = 3;
+
 type ConfigRow = typeof agentTelegramConfigs.$inferSelect;
 
 function toApiConfig(row: ConfigRow): AgentTelegramConfig {
@@ -471,15 +474,40 @@ export function telegramService(db: Db) {
     runner.task()?.catch(async (err) => {
       const is409 = err && typeof err === "object" && "error_code" in err && err.error_code === 409;
       if (is409) {
-        logger.warn({ agentId }, "telegram: 409 conflict (another instance polling), will retry in 30s");
         activeBots.delete(agentId);
         runner.isRunning() && (await runner.stop().catch(() => {}));
-        await new Promise((resolve) => setTimeout(resolve, 30_000));
-        const freshConfig = await getConfig(agentId);
-        if (freshConfig?.enabled && freshConfig.botToken) {
-          logger.info({ agentId }, "telegram: retrying bot start after 409");
-          startBot(freshConfig);
+
+        if (pendingRetries.has(agentId)) {
+          logger.warn({ agentId }, "telegram: 409 retry already in progress, skipping");
+          return;
         }
+        pendingRetries.add(agentId);
+
+        for (let attempt = 1; attempt <= MAX_409_RETRIES; attempt++) {
+          const delay = attempt * 30_000;
+          logger.warn({ agentId, attempt, delayMs: delay }, "telegram: 409 conflict, waiting before retry");
+          await new Promise((resolve) => setTimeout(resolve, delay));
+
+          if (activeBots.has(agentId)) {
+            logger.info({ agentId }, "telegram: bot already restarted by another path, aborting retry");
+            break;
+          }
+
+          const freshConfig = await getConfig(agentId);
+          if (!freshConfig?.enabled || !freshConfig.botToken) {
+            logger.info({ agentId }, "telegram: config disabled/missing, aborting retry");
+            break;
+          }
+
+          logger.info({ agentId, attempt }, "telegram: retrying bot start after 409");
+          try {
+            startBot(freshConfig);
+            break;
+          } catch (retryErr) {
+            logger.warn({ err: retryErr, agentId, attempt }, "telegram: retry attempt failed");
+          }
+        }
+        pendingRetries.delete(agentId);
       } else {
         logger.error({ err, agentId }, "telegram: runner crashed");
       }
