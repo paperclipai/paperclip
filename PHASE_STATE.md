@@ -1,76 +1,51 @@
-# PHASE STATE
+# Phase State — Paperclip
+Last updated: 2026-03-25 10:38 | Commit: 7d3f8c6
 
-**Last Updated:** 2026-03-25  
-**Current Phase:** NOT STARTED  
-**Plan:** STABILIZATION-PLAN-v2.md  
+## Workflow State
+workflow_mode: manual
+current_phase: Start Phase 1 - Refresh Token Implementation
+retry_count: 0
+verdict: PENDING
 
----
+## Completed Phases (DO NOT re-implement or modify these files)
 
-## Current Status
+- [Stabilization-Plan-Rewrite] commit 7d3f8c6 — Committed Wave 3 (082f6f3), created STABILIZATION-PLAN-v2.md with honest baseline: 11 type errors, 3-4 week timeline, reduced MVP scope (refresh tokens, types, iOS PWA, error boundaries)
+  Files:
+    - .env.example
+    - .gitignore
+    - STABILIZATION-PLAN.md
+    - doc/DESIGN-AI-PLATFORM.md
+    - doc/WAVE3-COMPLETION-REVIEW.md
+    - doc/plans/wave-3-pwa-telegram-plan.md
+    - package.json
+    - packages/adapters/claude-local/src/ui/build-config 2.ts
+    - packages/adapters/claude-local/src/ui/parse-stdout 2.ts
+    - packages/db/src/migrations/0028_add_objectives.sql
+    - packages/db/src/migrations/0029_business_os_phase_a.sql
+    - packages/db/src/migrations/0031_phase5_integration_wiring.sql
+    - packages/db/src/migrations/0032_newsletter_mvp.sql
+    - packages/db/src/migrations/0033_products_and_product_analytics.sql
+    - packages/db/src/migrations/0034_linkedin_crypto_support_surface.sql
+    - packages/db/src/schema/index.ts
+    - packages/shared/src/types/index.ts
+    - packages/shared/src/types/objectives.ts
+    - pnpm-lock.yaml
+    - server/src/__tests__/websocket.test.ts
+    - server/src/routes/ai-intelligence.ts
+    - server/src/services/ai-intelligence.ts
+    - ui/src/components/MissionStatusCard.tsx
+    - ui/src/components/Sidebar.tsx
+    - ui/src/pages/MissionDetail.tsx
+    - ui/src/pages/MissionWizard.tsx
+    - ui/src/pages/Missions.tsx
 
-**Overall:** 🟡 Ready to Start Stabilization  
-**Wave 3:** ✅ Complete at commit `082f6f3`  
+## Next Phase
+Start Phase 1 - Refresh Token Implementation
 
----
+## HARD RULE
+Never modify files listed under "Completed Phases" unless the user explicitly says to.
+If you are unsure whether a file is in scope for the current phase, STOP and ask before touching it.
 
-## Completed Phases
-
-| Phase | Status | Commit | Date |
-|-------|--------|--------|------|
-| Wave 1: Integration Testing | ✅ Complete | `4af2358` | 2026-03-12 |
-| Wave 2: Notification UX | ✅ Complete | `29a45e6` | 2026-03-24 |
-| Wave 3: PWA/WebSocket/Telegram | ✅ Complete | `082f6f3` | 2026-03-25 |
-
----
-
-## Pending Phases
-
-### **Phase 1: Refresh Tokens + Type Fixes (Week 1-2, Days 1-4)**
-- **Status:** NOT STARTED
-- **Priority:** P0 (Critical)
-- **Files:** `server/src/auth/better-auth.ts`, `server/src/routes/auth-refresh.ts`, 11 type error fixes
-- **Success:** `pnpm typecheck` passes, refresh tokens work
-
-### **Phase 2: iOS PWA + Error Boundaries (Week 1-2, Days 5-6)**
-- **Status:** NOT STARTED
-- **Priority:** P0 (Critical)
-- **Files:** `ui/src/components/PWAInstallPrompt.tsx`, `ui/src/components/ErrorBoundary.tsx`
-- **Success:** iOS install guide shows, errors don't crash app
-
-### **Phase 3: E2E Testing (Week 1-2, Days 7-8)**
-- **Status:** NOT STARTED
-- **Priority:** P0 (Critical)
-- **Files:** `scripts/e2e-test.sh`
-- **Success:** Login → dashboard → logout works end-to-end
-
-### **Phase 4: Optional Polish (Week 3-4)**
-- **Status:** NOT STARTED
-- **Priority:** P2 (Nice-to-have)
-- **Files:** Web push, session management, offline mode
-- **Success:** Can skip for MVP
-
----
-
-## Current Phase Files
-
-(to be filled by builder)
-
----
-
-## Quality Gates
-
-```bash
-# Must pass before stabilization complete:
-pnpm lint        # ✅ Pass
-pnpm typecheck   # ❌ 11 errors (target: 0)
-pnpm test        # ✅ Pass
-pnpm build       # ✅ Pass
-```
-
----
-
-## Next Action
-
-**Say:** "Start Phase 1 of Paperclip"  
-**Builder will:** Begin refresh token implementation + type fixes
-
+## Auto-Loop Info
+To enable automatic phase looping, set: workflow_mode: auto_loop
+Then run: bash .agent/scripts/brain.sh auto-loop Paperclip <run_id>
