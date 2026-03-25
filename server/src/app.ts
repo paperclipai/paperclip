@@ -119,14 +119,12 @@ export async function createApp(
     crossOriginEmbedderPolicy: false,
   }));
 
-  // CORS – defaults to PAPERCLIP_PUBLIC_URL when PAPERCLIP_CORS_ORIGIN is not set
+  // CORS – restrict to configured origins only. No CORS = reject cross-origin.
   const corsOrigin = process.env.PAPERCLIP_CORS_ORIGIN ?? process.env.PAPERCLIP_PUBLIC_URL;
-  if (corsOrigin) {
-    app.use(cors({
-      origin: corsOrigin.split(",").map(s => s.trim()),
-      credentials: true,
-    }));
-  }
+  app.use(cors({
+    origin: corsOrigin ? corsOrigin.split(",").map(s => s.trim()) : false,
+    credentials: true,
+  }));
 
   // Rate limiting (after security headers, before auth)
   const { createGlobalRateLimit, createAuthRateLimit, createWebhookRateLimit } =

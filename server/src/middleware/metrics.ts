@@ -253,7 +253,15 @@ async function renderMetrics(db?: Db): Promise<string> {
 export function metricsRoute(db?: Db): Router {
   const router = Router();
 
-  router.get("/metrics", async (_req, res) => {
+  router.get("/metrics", async (req, res) => {
+    // Restrict to internal/localhost requests only (Prometheus scrapes via ServiceMonitor)
+    const forwarded = req.headers["x-forwarded-for"];
+    const ip = typeof forwarded === "string" ? forwarded.split(",")[0]?.trim() : req.socket.remoteAddress;
+    const isInternal = !forwarded || ip === "127.0.0.1" || ip === "::1" || ip?.startsWith("10.") || ip?.startsWith("172.") || ip?.startsWith("192.168.");
+    if (!isInternal) {
+      res.status(403).json({ error: "Metrics endpoint is internal only" });
+      return;
+    }
     try {
       const body = await renderMetrics(db);
       res.status(200).set("Content-Type", "text/plain; version=0.0.4; charset=utf-8").end(body);
