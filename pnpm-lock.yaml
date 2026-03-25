@@ -639,9 +639,6 @@ importers:
       cmdk:
         specifier: ^1.1.1
         version: 1.1.1(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
-      hermes-paperclip-adapter:
-        specifier: 0.1.1
-        version: 0.1.1
       lexical:
         specifier: 0.35.0
         version: 0.35.0
