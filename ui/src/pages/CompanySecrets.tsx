@@ -385,7 +385,7 @@ export function CompanySecrets() {
                       >
                         Cancel
                       </Button>
-                      {updateMutation.isError && (
+                      {updateMutation.isError && updateMutation.variables?.id === secret.id && (
                         <span className="text-xs text-destructive">
                           {updateMutation.error instanceof Error
                             ? updateMutation.error.message
