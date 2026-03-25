@@ -436,6 +436,10 @@ export function OnboardingWizard() {
       const company = await companiesApi.create({ name: companyName.trim() });
       setCreatedCompanyId(company.id);
       setCreatedCompanyPrefix(company.issuePrefix);
+      // Clear stale agent/project from a previous attempt
+      setCreatedAgentId(null);
+      setCreatedProjectId(null);
+      setCreatedIssueRef(null);
       setSelectedCompanyId(company.id);
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
 
