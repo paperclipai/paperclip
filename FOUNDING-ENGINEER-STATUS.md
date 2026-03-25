@@ -125,10 +125,20 @@ open http://127.0.0.1:3100/IN/dashboard
 
 | Hash | Message |
 |------|---------|
+| 754d47b | refactor: apply company ID resolution globally via middleware |
+| b53787f | status: infrastructure fix complete — API now working |
 | e84ac60 | fix: improve company lookup to handle non-UUID identifiers |
 | 54fa687 | fix: support company lookup by issuePrefix in addition to UUID |
 | 0066197 | status: founding engineer infrastructure blocker report |
 | 22e3a1d | docs: add CLAUDE.md context for AI sessions and update dependencies |
+
+### Latest: Global Middleware Solution ✅
+
+Applied company ID resolution globally via middleware in `app.ts`:
+- **File**: `server/src/routes/company-id-resolver.ts` — Reusable utility
+- **Integration**: Middleware auto-resolves for ALL company-scoped routes
+- **Coverage**: Eliminates per-route fixes needed; scales to all endpoints
+- **Verification**: All routes tested working (issues, agents, projects, etc.)
 
 ---
 
