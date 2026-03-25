@@ -519,8 +519,9 @@ export function CompanySettings() {
         </div>
         <div className="space-y-3 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-4">
           <p className="text-sm text-muted-foreground">
-            Archive this company to hide it from the sidebar. This persists in
-            the database.
+            Archiving stops all running agents, cancels scheduled work, and
+            removes the company from your workspace. Data is retained and
+            can be restored.
           </p>
           <div className="flex items-center gap-2">
             <Button
@@ -533,7 +534,7 @@ export function CompanySettings() {
               onClick={() => {
                 if (!selectedCompanyId) return;
                 const confirmed = window.confirm(
-                  `Archive company "${selectedCompany.name}"? It will be hidden from the sidebar.`
+                  `Archive "${selectedCompany.name}"? All agents will be stopped and the company will be removed from your workspace.`
                 );
                 if (!confirmed) return;
                 const nextCompanyId =
