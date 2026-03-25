@@ -66,6 +66,21 @@ Different agent runtimes use different session concepts:
 
 The session codec should store the runtime's native session identifier plus `cwd` for cross-project contamination prevention. Use field name aliasing in deserialize (e.g. accept both `conversationId` and `conversation_id`) for resilience.
 
+### Hiding Thinking Effort for Combined Model/Effort Handles
+
+Some agent runtimes encode the effort level directly in the model ID (e.g. Oz uses `claude-4-6-sonnet-max`, `gpt-5-4-high`, `auto-genius`). In these cases, showing a separate "Thinking Effort" dropdown is redundant and confusing.
+
+Add the adapter type to the `showThinkingEffort` exclusion in `AgentConfigForm.tsx` (~line 418):
+
+```ts
+const showThinkingEffort =
+  adapterType === "gemini_local" || adapterType === "oz_local"
+    ? false
+    : // ... other adapter-specific logic
+```
+
+This pattern already exists for `gemini_local`. Any adapter where the model selector already captures effort should be added here.
+
 ### Custom Icon Components
 
 Adapters with brand logos should use a dedicated SVG icon component (e.g. `OzLogoIcon.tsx`, `OpenCodeLogoIcon.tsx`) rather than generic Lucide icons. Place these in `ui/src/components/` and import them in:

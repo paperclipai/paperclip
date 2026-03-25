@@ -499,10 +499,11 @@ const myAgentCLIAdapter: CLIAdapterModule = {
 
 These are separate from the adapter registries and control whether the adapter appears in UI forms and dialogs:
 
-**`ui/src/components/AgentConfigForm.tsx`** — TWO gates:
+**`ui/src/components/AgentConfigForm.tsx`** — multiple gates:
 - `ENABLED_ADAPTER_TYPES` set (~line 994) — add your type so it appears as selectable (not "Coming soon") in the adapter dropdown
 - `isLocal` boolean (~line 304) — add your type if it's a local CLI adapter, to show prompt template, model dropdown, command field, and permissions section
 - Command placeholder ternary (~line 696) — add your type to show the correct CLI command name as placeholder
+- `showThinkingEffort` (~line 418) — set to `false` if the adapter's model IDs already encode effort level (e.g. `model-high`, `model-max`), making a separate effort dropdown redundant
 
 **`ui/src/components/agent-config-primitives.tsx`** — `adapterLabels` record (~line 60):
 ```ts
@@ -780,6 +781,7 @@ UI visibility gates:
 - [ ] Added to `ENABLED_ADAPTER_TYPES` in `AgentConfigForm.tsx`
 - [ ] Added to `isLocal` check in `AgentConfigForm.tsx` (if local CLI adapter)
 - [ ] Added to command placeholder ternary in `AgentConfigForm.tsx`
+- [ ] Added to `showThinkingEffort` exclusion in `AgentConfigForm.tsx` (if model IDs encode effort)
 - [ ] Added to `adapterLabels` in `agent-config-primitives.tsx`
 - [ ] Added to `SUPPORTED_ADVANCED_ADAPTER_TYPES` in `NewAgent.tsx`
 - [ ] Added to `AdvancedAdapterType` and `ADVANCED_ADAPTER_OPTIONS` in `NewAgentDialog.tsx`
