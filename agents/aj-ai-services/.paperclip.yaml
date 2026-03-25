@@ -1,0 +1,86 @@
+schema: paperclip/v1
+
+agents:
+  ceo:
+    runtime:
+      heartbeat:
+        enabled: true
+        intervalSec: 300
+        wakeOnDemand: true
+  cto:
+    runtime:
+      heartbeat:
+        enabled: true
+        intervalSec: 300
+        wakeOnDemand: true
+  social-media-manager:
+    runtime:
+      heartbeat:
+        enabled: true
+        intervalSec: 300
+        wakeOnDemand: true
+  event-manager:
+    runtime:
+      heartbeat:
+        enabled: true
+        intervalSec: 300
+        wakeOnDemand: true
+  idea-generator:
+    runtime:
+      heartbeat:
+        enabled: true
+        intervalSec: 300
+        wakeOnDemand: true
+  designer:
+    runtime:
+      heartbeat:
+        enabled: true
+        intervalSec: 300
+        wakeOnDemand: true
+  publisher:
+    runtime:
+      heartbeat:
+        enabled: true
+        intervalSec: 300
+        wakeOnDemand: true
+    inputs:
+      env:
+        LINKEDIN_API_KEY:
+          kind: secret
+          requirement: optional
+  program-manager:
+    runtime:
+      heartbeat:
+        enabled: true
+        intervalSec: 300
+        wakeOnDemand: true
+  devops-engineer:
+    runtime:
+      heartbeat:
+        enabled: true
+        intervalSec: 300
+        wakeOnDemand: true
+    inputs:
+      env:
+        GH_TOKEN:
+          kind: secret
+          requirement: required
+  security-engineer:
+    runtime:
+      heartbeat:
+        enabled: true
+        intervalSec: 300
+        wakeOnDemand: true
+  responsible-ai:
+    runtime:
+      heartbeat:
+        enabled: true
+        intervalSec: 300
+        wakeOnDemand: true
+
+routines:
+  daily-standup:
+    task: tasks/daily-standup/TASK.md
+    schedule:
+      timezone: Asia/Kolkata
+      cron: "0 9 * * *"
