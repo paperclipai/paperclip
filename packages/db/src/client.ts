@@ -259,7 +259,10 @@ async function applyPendingMigrationsManually(
 
       await runInTransaction(sql, async () => {
         for (const statement of splitMigrationStatements(migrationContent)) {
-          await sql.unsafe(statement);
+          const alreadyApplied = await migrationStatementAlreadyApplied(sql, statement);
+          if (!alreadyApplied) {
+            await sql.unsafe(statement);
+          }
         }
 
         await recordMigrationHistoryEntry(
@@ -375,7 +378,12 @@ async function migrationStatementAlreadyApplied(
   sql: ReturnType<typeof postgres>,
   statement: string,
 ): Promise<boolean> {
-  const normalized = statement.replace(/\s+/g, " ").trim();
+  // Strip SQL line comments before normalizing — statement chunks from
+  // splitMigrationStatements may include leading rollback comments that
+  // prevent the DDL-detection regexes from matching.
+  // Only strip comments that start at the beginning of a line (or after
+  // whitespace) to avoid false positives inside quoted identifiers.
+  const normalized = statement.replace(/(?:^|(?<=\s))--[^\n]*/g, " ").replace(/\s+/g, " ").trim();
 
   const createTableMatch = normalized.match(/^CREATE TABLE(?: IF NOT EXISTS)? "([^"]+)"/i);
   if (createTableMatch) {
@@ -659,18 +667,21 @@ export async function applyPendingMigrations(url: string): Promise<void> {
   const initialState = await inspectMigrations(url);
   if (initialState.status === "upToDate") return;
 
-  // Reconcile first: mark already-applied migrations in the journal before
-  // Drizzle tries to re-run them (which would crash on "relation already exists").
-  // This handles hash mismatches from CRLF/LF differences on Windows.
-  // Only needed for the "pending-migrations" reason (not fresh installs or no-journal paths).
+  // --- Phase 1: Pre-reconcile (pending-migrations only) ---
+  // When the migration journal exists but some entries have stale hashes
+  // (e.g. CRLF vs LF), reconcile marks already-applied migrations in the
+  // journal *before* Drizzle tries to re-run them. We capture the result
+  // in postReconcileState to avoid a redundant inspectMigrations call later.
+  let postReconcileState: MigrationState | null = null;
   if (initialState.status === "needsMigrations" && initialState.reason === "pending-migrations") {
     const preRepair = await reconcilePendingMigrationHistory(url);
     if (preRepair.repairedMigrations.length > 0) {
-      const repairedState = await inspectMigrations(url);
-      if (repairedState.status === "upToDate") return;
+      postReconcileState = await inspectMigrations(url);
+      if (postReconcileState.status === "upToDate") return;
     }
   }
 
+  // --- Phase 2: Bootstrap (empty DB) ---
   if (initialState.reason === "no-migration-journal-empty-db") {
     const sql = createUtilitySql(url);
     try {
@@ -698,14 +709,17 @@ export async function applyPendingMigrations(url: string): Promise<void> {
     );
   }
 
+  // --- Phase 3: Unsafe state (tables exist, no journal) ---
   if (initialState.reason === "no-migration-journal-non-empty-db") {
     throw new Error(
       "Database has tables but no migration journal; automatic migration is unsafe. Initialize migration history manually.",
     );
   }
 
-  // Re-inspect after reconciliation above may have partially resolved pending migrations.
-  const state = await inspectMigrations(url);
+  // --- Phase 4: Apply remaining pending migrations ---
+  // Reuse the post-reconcile state from Phase 1 if available (avoids a
+  // redundant DB round-trip); otherwise re-inspect from scratch.
+  const state = postReconcileState ?? await inspectMigrations(url);
   if (state.status === "upToDate") return;
 
   if (state.status !== "needsMigrations" || state.reason !== "pending-migrations") {
