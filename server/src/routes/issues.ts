@@ -297,14 +297,30 @@ export function issueRoutes(db: Db, storage: StorageService) {
   });
 
   router.get("/companies/:companyId/labels", async (req, res) => {
-    const companyId = req.params.companyId as string;
+    const companyIdOrPrefix = req.params.companyId as string;
+
+    const resolvedCompany = await companySvc.getByIdOrPrefix(companyIdOrPrefix);
+    if (!resolvedCompany) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
+
+    const companyId = resolvedCompany.id;
     assertCompanyAccess(req, companyId);
     const result = await svc.listLabels(companyId);
     res.json(result);
   });
 
   router.post("/companies/:companyId/labels", validate(createIssueLabelSchema), async (req, res) => {
-    const companyId = req.params.companyId as string;
+    const companyIdOrPrefix = req.params.companyId as string;
+
+    const resolvedCompany = await companySvc.getByIdOrPrefix(companyIdOrPrefix);
+    if (!resolvedCompany) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
+
+    const companyId = resolvedCompany.id;
     assertCompanyAccess(req, companyId);
     const label = await svc.createLabel(companyId, req.body);
     const actor = getActorInfo(req);
@@ -859,7 +875,15 @@ export function issueRoutes(db: Db, storage: StorageService) {
   });
 
   router.post("/companies/:companyId/issues", validate(createIssueSchema), async (req, res) => {
-    const companyId = req.params.companyId as string;
+    const companyIdOrPrefix = req.params.companyId as string;
+
+    const resolvedCompany = await companySvc.getByIdOrPrefix(companyIdOrPrefix);
+    if (!resolvedCompany) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
+
+    const companyId = resolvedCompany.id;
     assertCompanyAccess(req, companyId);
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
       await assertCanAssignTasks(req, companyId);
