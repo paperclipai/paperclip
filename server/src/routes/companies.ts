@@ -96,7 +96,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     if (req.actor.type !== "agent") {
       assertBoard(req);
     }
-    const company = await svc.getById(companyId);
+    const company = await svc.getByIdOrPrefix(companyId);
     if (!company) {
       res.status(404).json({ error: "Company not found" });
       return;

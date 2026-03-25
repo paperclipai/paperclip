@@ -162,6 +162,24 @@ export function companyService(db: Db) {
       return enrichCompany(hydrated);
     },
 
+    getByIdOrPrefix: async (idOrPrefix: string) => {
+      // Try as UUID first
+      let row = await getCompanyQuery(db)
+        .where(eq(companies.id, idOrPrefix))
+        .then((rows) => rows[0] ?? null);
+
+      // If not found, try as issue prefix
+      if (!row) {
+        row = await getCompanyQuery(db)
+          .where(eq(companies.issuePrefix, idOrPrefix))
+          .then((rows) => rows[0] ?? null);
+      }
+
+      if (!row) return null;
+      const [hydrated] = await hydrateCompanySpend([row], db);
+      return enrichCompany(hydrated);
+    },
+
     create: async (data: typeof companies.$inferInsert) => {
       const created = await createCompanyWithUniquePrefix(data);
       const row = await getCompanyQuery(db)
