@@ -131,7 +131,7 @@ export async function discoverPiModels(input: {
     throw new Error(detail ? `\`pi --list-models\` failed: ${detail}` : "`pi --list-models` failed.");
   }
 
-  return sortModels(dedupeModels(parseModelsOutput(result.stdout)));
+  return sortModels(dedupeModels(parseModelsOutput(result.stderr)));
 }
 
 function normalizeEnv(input: unknown): Record<string, string> {

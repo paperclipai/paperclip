@@ -403,6 +403,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       onSpawn,
       onLog: bufferedOnLog,
       stdin: buildRpcStdin(),
+      keepStdinOpen: true,
     });
     
     // Flush any remaining buffer content
