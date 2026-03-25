@@ -42,6 +42,7 @@ const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 if (!BOT_TOKEN) throw new Error("Missing TELEGRAM_BOT_TOKEN");
 
 const WHALES_DB_PATH = process.env.WHALES_DB_PATH;
+const CEO_AGENT_ID = "32792b13-549a-4bf4-afbd-479a2a3e8f31";
 const TELEGRAM_API = "https://api.telegram.org";
 let offset = 0;
 
@@ -201,6 +202,8 @@ async function handleQuestion(chatId: string, question: string, chatKey: string,
   if (isNewSession) {
     prompt = `ĐỌC FILE SYSTEM PROMPT: /Users/amando/Desktop/Learn/metabase-sync/SYSTEM_PROMPT.md — làm theo hướng dẫn trong đó.
 Database SQLite tại: ${WHALES_DB_PATH}
+
+Bạn là CEO (agent ${CEO_AGENT_ID}) của Whales Market trong Paperclip. Team đang hỏi qua Telegram.
 
 Câu hỏi: "${question}"`;
   } else {
