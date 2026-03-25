@@ -2059,7 +2059,7 @@ export function heartbeatService(db: Db) {
     const policy = parseHeartbeatPolicy(agent);
     const timeoutFallback =
       !resolvedConfig.timeoutSec && policy.intervalSec > 0
-        ? { timeoutSec: Math.max(1, policy.intervalSec - 1) }
+        ? { timeoutSec: Math.max(30, policy.intervalSec - 1) }
         : {};
     const runtimeConfig = {
       ...resolvedConfig,

@@ -798,20 +798,21 @@ export async function runChildProcess(
           opts.idleTimeoutSec != null && opts.idleTimeoutSec > 0
             ? opts.idleTimeoutSec * 1000
             : 0;
-        const idleCheck =
-          idleTimeoutMs > 0
-            ? setInterval(() => {
-                if (Date.now() - lastActivityAt >= idleTimeoutMs) {
-                  timedOut = true;
-                  child.kill("SIGTERM");
-                  setTimeout(() => {
-                    if (!child.killed) {
-                      child.kill("SIGKILL");
-                    }
-                  }, Math.max(1, opts.graceSec) * 1000);
+        let idleCheck: ReturnType<typeof setInterval> | null = null;
+        if (idleTimeoutMs > 0) {
+          idleCheck = setInterval(() => {
+            if (Date.now() - lastActivityAt >= idleTimeoutMs) {
+              if (idleCheck) clearInterval(idleCheck);
+              timedOut = true;
+              child.kill("SIGTERM");
+              setTimeout(() => {
+                if (!child.killed) {
+                  child.kill("SIGKILL");
                 }
-              }, Math.min(idleTimeoutMs, 30_000))
-            : null;
+              }, Math.max(1, opts.graceSec) * 1000);
+            }
+          }, Math.min(idleTimeoutMs, 30_000));
+        }
 
         child.stdout?.on("data", (chunk: unknown) => {
           const text = String(chunk);
