@@ -51,6 +51,8 @@ export const help: Record<string, string> = {
   heartbeatInterval: "Run this agent automatically on a timer. Useful for periodic tasks like checking for new work.",
   intervalSec: "Seconds between automatic heartbeat invocations.",
   timeoutSec: "Maximum seconds a run can take before being terminated. 0 means no timeout.",
+  hermesInternalTimeouts:
+    "Hermes applies additional limits in ~/.hermes/config.yaml (independent of this setting): terminal.timeout caps shell commands (often 180s by default) and code_execution.timeout caps the code-execution tool (often 300s). Adjust those if Hermes stops while work is still in progress.",
   graceSec: "Seconds to wait after sending interrupt before force-killing the process.",
   wakeOnDemand: "Allow this agent to be woken by assignments, API calls, UI actions, or automated systems.",
   cooldownSec: "Minimum seconds between consecutive heartbeat runs.",

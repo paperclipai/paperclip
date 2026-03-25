@@ -820,7 +820,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               {/* Edit-only: timeout + grace period */}
               {!isCreate && (
                 <>
-                  <Field label="Timeout (sec)" hint={help.timeoutSec}>
+                  <Field
+                    label="Timeout (sec)"
+                    hint={
+                      adapterType === "hermes_local"
+                        ? `${help.timeoutSec} ${help.hermesInternalTimeouts}`
+                        : help.timeoutSec
+                    }
+                  >
                     <DraftNumberInput
                       value={eff(
                         "adapterConfig",

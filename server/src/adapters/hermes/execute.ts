@@ -126,7 +126,8 @@ async function syncSkillsToHermes(skills: AdapterSkill[]): Promise<string[]> {
 // ---------------------------------------------------------------------------
 // Hermes reads MCP servers from its config.yaml. We merge Paperclip-configured
 // MCP servers into that file, prefixed with "paperclip_" to avoid collisions
-// with user-configured servers.
+// with user-configured servers. We do not overwrite Hermes's own run limits
+// (e.g. terminal.timeout, code_execution.timeout); users tune those in yaml.
 // ---------------------------------------------------------------------------
 
 async function syncMcpToHermesConfig(
