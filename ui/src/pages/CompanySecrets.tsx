@@ -73,12 +73,18 @@ export function CompanySecrets() {
   );
 
   const createMutation = useMutation({
-    mutationFn: (vars: { companyId: string }) =>
+    mutationFn: (vars: {
+      companyId: string;
+      name: string;
+      value: string;
+      provider: SecretProvider;
+      description: string;
+    }) =>
       secretsApi.create(vars.companyId, {
-        name: newName.trim(),
-        value: newValue,
-        provider: newProvider,
-        description: newDescription.trim() || null,
+        name: vars.name.trim(),
+        value: vars.value,
+        provider: vars.provider,
+        description: vars.description.trim() || null,
       }),
     onSuccess: (_data, vars) => {
       setNewName("");
@@ -219,7 +225,13 @@ export function CompanySecrets() {
           <div className="flex items-center gap-2">
             <Button
               size="sm"
-              onClick={() => createMutation.mutate({ companyId: selectedCompanyId! })}
+              onClick={() => createMutation.mutate({
+                companyId: selectedCompanyId!,
+                name: newName,
+                value: newValue,
+                provider: newProvider,
+                description: newDescription,
+              })}
               disabled={createMutation.isPending || !newName.trim() || !newValue.trim()}
             >
               {createMutation.isPending ? "Creating..." : "Create Secret"}
@@ -362,9 +374,9 @@ export function CompanySecrets() {
                             value: editValue,
                           })
                         }
-                        disabled={updateMutation.isPending || !editName.trim()}
+                        disabled={(updateMutation.isPending && updateMutation.variables?.id === secret.id) || !editName.trim()}
                       >
-                        {updateMutation.isPending ? "Saving..." : "Save"}
+                        {updateMutation.isPending && updateMutation.variables?.id === secret.id ? "Saving..." : "Save"}
                       </Button>
                       <Button
                         size="sm"
