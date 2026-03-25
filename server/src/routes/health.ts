@@ -5,7 +5,7 @@ import { heartbeatRuns, instanceUserRoles, invites } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import { readPersistedDevServerStatus, toDevServerHealthStatus } from "../dev-server-status.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
-import { serverVersion } from "../version.js";
+import { buildGitSha, serverVersion } from "../version.js";
 
 export function healthRoutes(
   db?: Db,
@@ -25,7 +25,7 @@ export function healthRoutes(
 
   router.get("/", async (_req, res) => {
     if (!db) {
-      res.json({ status: "ok", version: serverVersion });
+      res.json({ status: "ok", version: serverVersion, ...(buildGitSha ? { gitSha: buildGitSha } : {}) });
       return;
     }
 
@@ -77,6 +77,7 @@ export function healthRoutes(
     res.json({
       status: "ok",
       version: serverVersion,
+      ...(buildGitSha ? { gitSha: buildGitSha } : {}),
       deploymentMode: opts.deploymentMode,
       deploymentExposure: opts.deploymentExposure,
       authReady: opts.authReady,
