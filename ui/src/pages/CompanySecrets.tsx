@@ -124,7 +124,7 @@ export function CompanySecrets() {
     },
     onError: () => {
       setDeletingId(null);
-      pushToast({ title: "Failed to delete secret", variant: "destructive" });
+      pushToast({ title: "Failed to delete secret", tone: "error" });
     },
   });
 
