@@ -21,6 +21,7 @@ export function StatusIcon({ status, onChange, className, showLabel }: StatusIco
   const [open, setOpen] = useState(false);
   const colorClass = issueStatusIcon[status] ?? issueStatusIconDefault;
   const isDone = status === "done";
+  const isCancelled = status === "cancelled";
 
   const circle = (
     <span
@@ -33,6 +34,19 @@ export function StatusIcon({ status, onChange, className, showLabel }: StatusIco
     >
       {isDone && (
         <span className="absolute inset-0 m-auto h-2 w-2 rounded-full bg-current" />
+      )}
+      {isCancelled && (
+        <svg
+          className="absolute inset-0 m-auto !w-2.5 text-card"
+          viewBox="0 0 12 12"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.5"
+          strokeLinecap="round"
+        >
+          <line x1="3" y1="3" x2="9" y2="9" />
+          <line x1="9" y1="3" x2="3" y2="9" />
+        </svg>
       )}
     </span>
   );
