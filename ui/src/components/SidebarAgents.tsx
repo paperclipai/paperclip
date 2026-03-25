@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ChevronRight, Plus } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
+import { useLiveUpdates } from "../context/LiveUpdatesProvider";
 import { useSidebar } from "../context/SidebarContext";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
@@ -23,6 +24,7 @@ export function SidebarAgents() {
   const [open, setOpen] = useState(true);
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialog();
+  const { isConnected: isWsConnected } = useLiveUpdates();
   const { isMobile, setSidebarOpen } = useSidebar();
   const location = useLocation();
 
@@ -40,7 +42,7 @@ export function SidebarAgents() {
     queryKey: queryKeys.liveRuns(selectedCompanyId!),
     queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
     enabled: !!selectedCompanyId,
-    refetchInterval: 10_000,
+    refetchInterval: isWsConnected ? false : 10_000,
   });
 
   const liveCountByAgent = useMemo(() => {

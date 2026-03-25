@@ -12,8 +12,6 @@ import { Identity } from "./Identity";
 import { RunTranscriptView } from "./transcript/RunTranscriptView";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
 
-const MIN_DASHBOARD_RUNS = 4;
-
 function isRunActive(run: LiveRunForIssue): boolean {
   return run.status === "queued" || run.status === "running";
 }
@@ -25,7 +23,7 @@ interface ActiveAgentsPanelProps {
 export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
   const { data: liveRuns } = useQuery({
     queryKey: [...queryKeys.liveRuns(companyId), "dashboard"],
-    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId, MIN_DASHBOARD_RUNS),
+    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId),
   });
 
   const runs = liveRuns ?? [];
@@ -59,17 +57,19 @@ export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
           <p className="text-sm text-muted-foreground">No recent agent runs.</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 sm:gap-4 xl:grid-cols-4">
-          {runs.map((run) => (
-            <AgentRunCard
-              key={run.id}
-              run={run}
-              issue={run.issueId ? issueById.get(run.issueId) : undefined}
-              transcript={transcriptByRun.get(run.id) ?? []}
-              hasOutput={hasOutputForRun(run.id)}
-              isActive={isRunActive(run)}
-            />
-          ))}
+        <div className="max-h-[600px] overflow-y-auto rounded-lg">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 sm:gap-4 xl:grid-cols-3">
+            {runs.map((run) => (
+              <AgentRunCard
+                key={run.id}
+                run={run}
+                issue={run.issueId ? issueById.get(run.issueId) : undefined}
+                transcript={transcriptByRun.get(run.id) ?? []}
+                hasOutput={hasOutputForRun(run.id)}
+                isActive={isRunActive(run)}
+              />
+            ))}
+          </div>
         </div>
       )}
     </div>
