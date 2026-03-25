@@ -31,8 +31,7 @@ Use when:
 Don't use when:
 - You need cloud-hosted execution (oz_local only runs locally)
 - The \`oz\` CLI is not installed (bundled with the Warp desktop app)
-- You need a simple one-shot script without an AI loop (use the process adapter instead)
-- You need structured JSON transcript events in the run viewer (oz local output is plain text)
+|- You need a simple one-shot script without an AI loop (use the process adapter instead)
 
 Core fields:
 - cwd (string, optional): absolute working directory for the agent process (created if missing)
@@ -54,7 +53,9 @@ Auth:
 - Falls back to the current \`oz login\` session if WARP_API_KEY is not set
 
 Notes:
+- Runs with \`--output-format json\` (NDJSON); transcript shows structured tool calls, reasoning, and agent responses
 - Session continuity uses Oz's \`--conversation <id>\` flag; the conversation ID is stored in session params
-- Oz local output is plain text (not structured JSON), so the run transcript shows raw agent output
+- \`pcurl\` and \`json2toon\` (from scripts/context-mode/) are injected into PATH so the agent can call the Paperclip API without triggering the curl denylist
 - Skills are injected into ~/.warp/skills/ via symlinks so Oz can discover them naturally
+- Set \`debug: true\` in config to enable \`--debug\` flag for verbose Oz diagnostic output
 `;

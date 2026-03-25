@@ -72,6 +72,7 @@ export function buildOzLocalConfig(v: CreateConfigValues): Record<string, unknow
 
   if (v.command) ac.command = v.command;
   if (v.extraArgs) ac.extraArgs = parseCommaArgs(v.extraArgs);
+  // debug: consumers can set ac.debug = true via extraArgs or direct config patch
 
   return ac;
 }

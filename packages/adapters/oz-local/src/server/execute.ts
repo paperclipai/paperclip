@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
+  asBoolean,
   asNumber,
   asString,
   asStringArray,
@@ -20,6 +21,7 @@ import {
   isOzUnknownConversationError,
   parseOzOutput,
 } from "./parse.js";
+import { resolveProfileByName } from "./profiles.js";
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
@@ -29,7 +31,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // -------------------------------------------------------------------------
   const command = asString(config.command, "oz");
   const model = asString(config.model, DEFAULT_OZ_MODEL).trim();
-  const profile = asString(config.profile, "").trim();
+  const profileId = asString(config.profile, "").trim();
+  const profileName = asString(config.profileName, "Paperclip").trim();
+  const debug = asBoolean(config.debug, false);
   const mcpSpec = asString(config.mcp, "").trim();
   const skillSpec = asString(config.skill, "").trim();
   const agentName = asString(config.name, "").trim();
@@ -130,8 +134,46 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
-  const runtimeEnv = ensurePathInEnv(effectiveEnv);
+  // Inject scripts/context-mode/ into PATH so pcurl and json2toon are
+  // discoverable by the Oz agent without triggering the curl denylist.
+  const scriptsModeDir = path.resolve(
+    path.dirname(new URL(import.meta.url).pathname),
+    "../../../../../scripts/context-mode",
+  );
+  const envWithScripts = {
+    ...effectiveEnv,
+    PATH: `${scriptsModeDir}:${effectiveEnv.PATH ?? process.env.PATH ?? ""}`,
+  };
+  const runtimeEnv = ensurePathInEnv(envWithScripts);
   await ensureCommandResolvable(command, cwd, runtimeEnv);
+
+  // -------------------------------------------------------------------------
+  // 2b. Resolve agent profile
+  // -------------------------------------------------------------------------
+  let profile = profileId;
+  if (!profile && profileName) {
+    try {
+      const resolved = await resolveProfileByName(profileName, command, env);
+      if (resolved) {
+        profile = resolved.id;
+        await onLog(
+          "stdout",
+          `[paperclip] Resolved Oz profile "${resolved.name}" → ${resolved.id}\n`,
+        );
+      } else {
+        await onLog(
+          "stdout",
+          `[paperclip] Warning: Oz profile "${profileName}" not found. Run will proceed without a profile.\n`,
+        );
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      await onLog(
+        "stdout",
+        `[paperclip] Warning: could not resolve Oz profile "${profileName}": ${reason}\n`,
+      );
+    }
+  }
 
   // -------------------------------------------------------------------------
   // 3. Resolve session (conversation ID)
@@ -212,6 +254,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // -------------------------------------------------------------------------
   const buildArgs = (resumeConversationId: string | null): string[] => {
     const args = ["agent", "run"];
+    // Structured JSON output for proper event parsing
+    args.push("--output-format", "json");
     // Prompt or conversation resume
     if (resumeConversationId) {
       args.push("--conversation", resumeConversationId);
@@ -237,6 +281,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     } else {
       args.push("--name", `paperclip-run-${runId.slice(0, 8)}`);
     }
+    // Debug logging
+    if (debug) args.push("--debug");
     // Extra args
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
@@ -278,7 +324,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const proc = await runChildProcess(runId, command, args, {
       cwd,
-      env,
+      env: envWithScripts,
       timeoutSec,
       graceSec,
       onSpawn,
