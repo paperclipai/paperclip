@@ -41,4 +41,12 @@ describe("shouldSelfWake", () => {
   it("returns false when outcome is cancelled", () => {
     expect(shouldSelfWake("cancelled", undefined)).toBe(false);
   });
+
+  it("returns false when outcome is timed_out with timeout errorCode", () => {
+    expect(shouldSelfWake("timed_out", "timeout")).toBe(false);
+  });
+
+  it("returns false when outcome is cancelled with cancelled errorCode", () => {
+    expect(shouldSelfWake("cancelled", "cancelled")).toBe(false);
+  });
 });

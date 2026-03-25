@@ -264,7 +264,7 @@ const SYSTEMIC_ERROR_CODES = new Set([
  * items after a heartbeat run completes.
  */
 export function shouldSelfWake(
-  outcome: string,
+  outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
   errorCode: string | null | undefined,
 ): boolean {
   if (outcome === "succeeded") return true;
