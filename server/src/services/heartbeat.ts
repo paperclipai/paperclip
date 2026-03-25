@@ -654,6 +654,38 @@ function isTrackedLocalChildProcessAdapter(adapterType: string) {
   return SESSIONED_LOCAL_ADAPTERS.has(adapterType);
 }
 
+/**
+ * Try to reconstruct a stderr excerpt from a persisted run log file.
+ * The log is NDJSON where each line has { ts, stream, chunk }.
+ * Returns the concatenated stderr chunks up to MAX_EXCERPT_BYTES, or null on failure.
+ */
+async function reconstructStderrExcerptFromLog(
+  logStore: ReturnType<typeof getRunLogStore>,
+  run: { logStore: string | null; logRef: string | null },
+): Promise<string | null> {
+  if (!run.logRef || !run.logStore) return null;
+  try {
+    const handle: RunLogHandle = { store: run.logStore as "local_file", logRef: run.logRef };
+    const result = await logStore.read(handle, { limitBytes: MAX_EXCERPT_BYTES * 4 });
+    if (!result.content) return null;
+    let excerpt = "";
+    for (const line of result.content.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const entry = JSON.parse(line) as { stream?: string; chunk?: string };
+        if (entry.stream === "stderr" && typeof entry.chunk === "string") {
+          excerpt = appendWithCap(excerpt, entry.chunk, MAX_EXCERPT_BYTES);
+        }
+      } catch {
+        // skip malformed lines
+      }
+    }
+    return excerpt || null;
+  } catch {
+    return null;
+  }
+}
+
 // A positive liveness check means some process currently owns the PID.
 // On Linux, PIDs can be recycled, so this is a best-effort signal rather
 // than proof that the original child is still alive.
@@ -1782,14 +1814,18 @@ export function heartbeatService(db: Db) {
         ? `Process lost -- child pid ${run.processPid} is no longer running`
         : "Process lost -- server may have restarted";
 
+      // Try to recover stderr from the persisted log so the UI can show it
+      const recoveredStderr = await reconstructStderrExcerptFromLog(runLogStore, run);
+
       let finalizedRun = await setRunStatus(run.id, "failed", {
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: shouldRetry ? `${baseMessage}; queued for retry` : `${baseMessage}; affected issues released`,
         errorCode: "process_lost",
         finishedAt: now,
+        ...(recoveredStderr ? { stderrExcerpt: recoveredStderr } : {}),
       });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: now,
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: shouldRetry ? `${baseMessage}; queued for retry` : `${baseMessage}; affected issues released`,
       });
       if (!finalizedRun) finalizedRun = await getRun(run.id);
       if (!finalizedRun) continue;
@@ -1804,16 +1840,18 @@ export function heartbeatService(db: Db) {
         await releaseIssueExecutionAndPromote(finalizedRun);
       }
 
+      const recoveryNote = retriedRun
+        ? `queued retry run ${retriedRun.id}`
+        : "affected issues released for next heartbeat";
       await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
         eventType: "lifecycle",
         stream: "system",
         level: "error",
-        message: shouldRetry
-          ? `${baseMessage}; queued retry ${retriedRun?.id ?? ""}`.trim()
-          : baseMessage,
+        message: `${baseMessage}; ${recoveryNote}`,
         payload: {
           ...(run.processPid ? { processPid: run.processPid } : {}),
           ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
+          recoveryAction: retriedRun ? "retry_queued" : "issues_released",
         },
       });
 

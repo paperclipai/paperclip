@@ -3811,6 +3811,22 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
       {(run.status === "failed" || run.status === "timed_out") && (
         <div className="rounded-lg border border-red-300 dark:border-red-500/30 bg-red-50 dark:bg-red-950/20 p-3 space-y-2">
           <div className="text-xs font-medium text-red-700 dark:text-red-300">Failure details</div>
+          {run.errorCode === "process_lost" && (
+            <div className="text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-700/40 rounded p-2 space-y-1">
+              <div className="font-medium">What happened</div>
+              <div>
+                {run.processPid
+                  ? `The agent process (pid ${run.processPid}) stopped unexpectedly — it may have been killed by the OS (OOM), crashed, or exited without proper cleanup.`
+                  : "The server restarted while this run was in progress. Any in-flight work was interrupted."}
+              </div>
+              <div className="font-medium mt-1">Recovery</div>
+              <div>
+                {run.error?.includes("queued for retry")
+                  ? "A retry run was automatically queued. No action needed — the agent will pick up where it left off."
+                  : "Affected issues were automatically released and will be picked up on the next heartbeat. No manual action needed."}
+              </div>
+            </div>
+          )}
           {run.error && (
             <div className="text-xs text-red-600 dark:text-red-200">
               <span className="text-red-700 dark:text-red-300">Error: </span>
