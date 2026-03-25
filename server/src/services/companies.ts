@@ -184,6 +184,12 @@ export function companyService(db: Db) {
       return hydrated.map((row) => enrichCompany(row));
     },
 
+    listArchived: async () => {
+      const rows = await getCompanyQuery(db).where(eq(companies.status, "archived"));
+      const hydrated = await hydrateCompanySpend(rows);
+      return hydrated.map((row) => enrichCompany(row));
+    },
+
     getById: async (id: string) => {
       const row = await getCompanyQuery(db)
         .where(eq(companies.id, id))

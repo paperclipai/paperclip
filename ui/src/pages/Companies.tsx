@@ -4,10 +4,13 @@ import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { companiesApi } from "../api/companies";
+import { healthApi } from "../api/health";
 import { queryKeys } from "../lib/queryKeys";
 import { formatCents, relativeTime } from "../lib/utils";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Tabs } from "@/components/ui/tabs";
+import { PageTabBar } from "../components/PageTabBar";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -26,6 +29,7 @@ import {
   CircleDot,
   DollarSign,
   Calendar,
+  ArchiveRestore,
 } from "lucide-react";
 
 export function Companies() {
@@ -40,10 +44,25 @@ export function Companies() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
 
+  const [tab, setTab] = useState<"active" | "archived">("active");
+
   const { data: stats } = useQuery({
     queryKey: queryKeys.companies.stats,
     queryFn: () => companiesApi.stats(),
   });
+
+  const { data: archivedCompanies = [], isLoading: archivedLoading } = useQuery({
+    queryKey: queryKeys.companies.archived,
+    queryFn: () => companiesApi.listArchived(),
+    enabled: tab === "archived",
+  });
+
+  const { data: health } = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+  });
+
+  const companyDeletionEnabled = health?.features?.companyDeletionEnabled ?? false;
 
   // Inline edit state
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -63,8 +82,18 @@ export function Companies() {
     mutationFn: (id: string) => companiesApi.remove(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.archived });
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.stats });
       setConfirmDeleteId(null);
+    },
+  });
+
+  const restoreMutation = useMutation({
+    mutationFn: (id: string) => companiesApi.update(id, { status: "active" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.archived });
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.stats });
     },
   });
 
@@ -89,209 +118,323 @@ export function Companies() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-end">
-        <Button size="sm" onClick={() => openOnboarding()}>
-          <Plus className="h-3.5 w-3.5 mr-1.5" />
-          New Company
-        </Button>
+      <div className="flex items-center justify-between">
+        <Tabs value={tab} onValueChange={(v) => setTab(v as "active" | "archived")}>
+          <PageTabBar
+            items={[
+              { value: "active", label: "Active" },
+              { value: "archived", label: "Archived" },
+            ]}
+            value={tab}
+            onValueChange={(v) => setTab(v as "active" | "archived")}
+            align="start"
+          />
+        </Tabs>
+        {tab === "active" && (
+          <Button size="sm" onClick={() => openOnboarding()}>
+            <Plus className="h-3.5 w-3.5 mr-1.5" />
+            New Company
+          </Button>
+        )}
       </div>
 
       <div className="h-6">
-        {loading && <p className="text-sm text-muted-foreground">Loading companies...</p>}
-        {error && <p className="text-sm text-destructive">{error.message}</p>}
+        {(tab === "active" ? loading : archivedLoading) && (
+          <p className="text-sm text-muted-foreground">Loading companies...</p>
+        )}
+        {tab === "active" && error && (
+          <p className="text-sm text-destructive">{error.message}</p>
+        )}
       </div>
 
-      <div className="grid gap-4">
-        {companies.map((company) => {
-          const selected = company.id === selectedCompanyId;
-          const isEditing = editingId === company.id;
-          const isConfirmingDelete = confirmDeleteId === company.id;
-          const companyStats = stats?.[company.id];
-          const agentCount = companyStats?.agentCount ?? 0;
-          const issueCount = companyStats?.issueCount ?? 0;
-          const budgetPct =
-            company.budgetMonthlyCents > 0
-              ? Math.round(
-                  (company.spentMonthlyCents / company.budgetMonthlyCents) * 100,
-                )
-              : 0;
+      {/* Active companies */}
+      {tab === "active" && (
+        <div className="grid gap-4">
+          {companies.map((company) => {
+            const selected = company.id === selectedCompanyId;
+            const isEditing = editingId === company.id;
+            const isConfirmingDelete = confirmDeleteId === company.id;
+            const companyStats = stats?.[company.id];
+            const agentCount = companyStats?.agentCount ?? 0;
+            const issueCount = companyStats?.issueCount ?? 0;
+            const budgetPct =
+              company.budgetMonthlyCents > 0
+                ? Math.round(
+                    (company.spentMonthlyCents / company.budgetMonthlyCents) * 100,
+                  )
+                : 0;
 
-          return (
-            <div
-              key={company.id}
-              role="button"
-              tabIndex={0}
-              onClick={() => setSelectedCompanyId(company.id)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  setSelectedCompanyId(company.id);
-                }
-              }}
-              className={`group text-left bg-card border rounded-lg p-5 transition-colors cursor-pointer ${
-                selected
-                  ? "border-primary ring-1 ring-primary"
-                  : "border-border hover:border-muted-foreground/30"
-              }`}
-            >
-              {/* Header row: name + menu */}
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex-1 min-w-0">
-                  {isEditing ? (
-                    <div
-                      className="flex items-center gap-2"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <Input
-                        value={editName}
-                        onChange={(e) => setEditName(e.target.value)}
-                        className="h-7 text-sm"
-                        autoFocus
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") saveEdit();
-                          if (e.key === "Escape") cancelEdit();
-                        }}
-                      />
-                      <Button
-                        variant="ghost"
-                        size="icon-xs"
-                        onClick={saveEdit}
-                        disabled={editMutation.isPending}
+            return (
+              <div
+                key={company.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => setSelectedCompanyId(company.id)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    setSelectedCompanyId(company.id);
+                  }
+                }}
+                className={`group text-left bg-card border rounded-lg p-5 transition-colors cursor-pointer ${
+                  selected
+                    ? "border-primary ring-1 ring-primary"
+                    : "border-border hover:border-muted-foreground/30"
+                }`}
+              >
+                {/* Header row: name + menu */}
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex-1 min-w-0">
+                    {isEditing ? (
+                      <div
+                        className="flex items-center gap-2"
+                        onClick={(e) => e.stopPropagation()}
                       >
-                        <Check className="h-3.5 w-3.5 text-green-500" />
-                      </Button>
-                      <Button variant="ghost" size="icon-xs" onClick={cancelEdit}>
-                        <X className="h-3.5 w-3.5 text-muted-foreground" />
-                      </Button>
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-2">
-                      <h3 className="font-semibold text-base">{company.name}</h3>
-                      <span
-                        className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${
-                          company.status === "active"
-                            ? "bg-green-500/10 text-green-600 dark:text-green-400"
-                            : company.status === "paused"
-                              ? "bg-yellow-500/10 text-yellow-600 dark:text-yellow-400"
-                              : "bg-muted text-muted-foreground"
-                        }`}
-                      >
-                        {company.status}
-                      </span>
-                      <Button
-                        variant="ghost"
-                        size="icon-xs"
-                        className="text-muted-foreground opacity-0 group-hover:opacity-100"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          startEdit(company.id, company.name);
-                        }}
-                      >
-                        <Pencil className="h-3 w-3" />
-                      </Button>
-                    </div>
-                  )}
-                  {company.description && !isEditing && (
-                    <p className="text-sm text-muted-foreground mt-1 line-clamp-2">
-                      {company.description}
-                    </p>
-                  )}
-                </div>
+                        <Input
+                          value={editName}
+                          onChange={(e) => setEditName(e.target.value)}
+                          className="h-7 text-sm"
+                          autoFocus
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") saveEdit();
+                            if (e.key === "Escape") cancelEdit();
+                          }}
+                        />
+                        <Button
+                          variant="ghost"
+                          size="icon-xs"
+                          onClick={saveEdit}
+                          disabled={editMutation.isPending}
+                        >
+                          <Check className="h-3.5 w-3.5 text-green-500" />
+                        </Button>
+                        <Button variant="ghost" size="icon-xs" onClick={cancelEdit}>
+                          <X className="h-3.5 w-3.5 text-muted-foreground" />
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <h3 className="font-semibold text-base">{company.name}</h3>
+                        <span
+                          className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                            company.status === "active"
+                              ? "bg-green-500/10 text-green-600 dark:text-green-400"
+                              : company.status === "paused"
+                                ? "bg-yellow-500/10 text-yellow-600 dark:text-yellow-400"
+                                : "bg-muted text-muted-foreground"
+                          }`}
+                        >
+                          {company.status}
+                        </span>
+                        <Button
+                          variant="ghost"
+                          size="icon-xs"
+                          className="text-muted-foreground opacity-0 group-hover:opacity-100"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            startEdit(company.id, company.name);
+                          }}
+                        >
+                          <Pencil className="h-3 w-3" />
+                        </Button>
+                      </div>
+                    )}
+                    {company.description && !isEditing && (
+                      <p className="text-sm text-muted-foreground mt-1 line-clamp-2">
+                        {company.description}
+                      </p>
+                    )}
+                  </div>
 
-                {/* Three-dot menu */}
-                <div onClick={(e) => e.stopPropagation()}>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon-xs"
-                        className="text-muted-foreground opacity-0 group-hover:opacity-100 data-[state=open]:opacity-100"
-                      >
-                        <MoreHorizontal className="h-4 w-4" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem
-                        onClick={() => startEdit(company.id, company.name)}
-                      >
-                        <Pencil className="h-3.5 w-3.5" />
-                        Rename
-                      </DropdownMenuItem>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem
-                        variant="destructive"
-                        onClick={() => setConfirmDeleteId(company.id)}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                        Delete Company
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-              </div>
-
-              {/* Stats row */}
-              <div className="flex items-center gap-3 sm:gap-5 mt-4 text-sm text-muted-foreground flex-wrap">
-                <div className="flex items-center gap-1.5">
-                  <Users className="h-3.5 w-3.5" />
-                  <span>
-                    {agentCount} {agentCount === 1 ? "agent" : "agents"}
-                  </span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <CircleDot className="h-3.5 w-3.5" />
-                  <span>
-                    {issueCount} {issueCount === 1 ? "issue" : "issues"}
-                  </span>
-                </div>
-                <div className="flex items-center gap-1.5 tabular-nums">
-                  <DollarSign className="h-3.5 w-3.5" />
-                  <span>
-                    {formatCents(company.spentMonthlyCents)}
-                    {company.budgetMonthlyCents > 0
-                      ? <> / {formatCents(company.budgetMonthlyCents)} <span className="text-xs">({budgetPct}%)</span></>
-                      : <span className="text-xs ml-1">Unlimited budget</span>}
-                  </span>
-                </div>
-                <div className="flex items-center gap-1.5 ml-auto">
-                  <Calendar className="h-3.5 w-3.5" />
-                  <span>Created {relativeTime(company.createdAt)}</span>
-                </div>
-              </div>
-
-              {/* Delete confirmation */}
-              {isConfirmingDelete && (
-                <div
-                  className="mt-4 flex items-center justify-between bg-destructive/5 border border-destructive/20 rounded-md px-4 py-3"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <p className="text-sm text-destructive font-medium">
-                    Delete this company and all its data? This cannot be undone.
-                  </p>
-                  <div className="flex items-center gap-2 ml-4 shrink-0">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setConfirmDeleteId(null)}
-                      disabled={deleteMutation.isPending}
-                    >
-                      Cancel
-                    </Button>
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      onClick={() => deleteMutation.mutate(company.id)}
-                      disabled={deleteMutation.isPending}
-                    >
-                      {deleteMutation.isPending ? "Deleting…" : "Delete"}
-                    </Button>
+                  {/* Three-dot menu */}
+                  <div onClick={(e) => e.stopPropagation()}>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon-xs"
+                          className="text-muted-foreground opacity-0 group-hover:opacity-100 data-[state=open]:opacity-100"
+                        >
+                          <MoreHorizontal className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem
+                          onClick={() => startEdit(company.id, company.name)}
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                          Rename
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          variant="destructive"
+                          onClick={() => setConfirmDeleteId(company.id)}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          Delete Company
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </div>
                 </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
+
+                {/* Stats row */}
+                <div className="flex items-center gap-3 sm:gap-5 mt-4 text-sm text-muted-foreground flex-wrap">
+                  <div className="flex items-center gap-1.5">
+                    <Users className="h-3.5 w-3.5" />
+                    <span>
+                      {agentCount} {agentCount === 1 ? "agent" : "agents"}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <CircleDot className="h-3.5 w-3.5" />
+                    <span>
+                      {issueCount} {issueCount === 1 ? "issue" : "issues"}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5 tabular-nums">
+                    <DollarSign className="h-3.5 w-3.5" />
+                    <span>
+                      {formatCents(company.spentMonthlyCents)}
+                      {company.budgetMonthlyCents > 0
+                        ? <> / {formatCents(company.budgetMonthlyCents)} <span className="text-xs">({budgetPct}%)</span></>
+                        : <span className="text-xs ml-1">Unlimited budget</span>}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5 ml-auto">
+                    <Calendar className="h-3.5 w-3.5" />
+                    <span>Created {relativeTime(company.createdAt)}</span>
+                  </div>
+                </div>
+
+                {/* Delete confirmation */}
+                {isConfirmingDelete && (
+                  <div
+                    className="mt-4 flex items-center justify-between bg-destructive/5 border border-destructive/20 rounded-md px-4 py-3"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <p className="text-sm text-destructive font-medium">
+                      Delete this company and all its data? This cannot be undone.
+                    </p>
+                    <div className="flex items-center gap-2 ml-4 shrink-0">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setConfirmDeleteId(null)}
+                        disabled={deleteMutation.isPending}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={() => deleteMutation.mutate(company.id)}
+                        disabled={deleteMutation.isPending}
+                      >
+                        {deleteMutation.isPending ? "Deleting\u2026" : "Delete"}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Archived companies */}
+      {tab === "archived" && (
+        <div className="grid gap-4">
+          {archivedCompanies.length === 0 && !archivedLoading && (
+            <p className="text-sm text-muted-foreground text-center py-8">
+              No archived companies.
+            </p>
+          )}
+          {archivedCompanies.map((company) => {
+            const isConfirmingDelete = confirmDeleteId === company.id;
+            const isRestoring = restoreMutation.isPending && restoreMutation.variables === company.id;
+
+            return (
+              <div
+                key={company.id}
+                className="group bg-card border border-border rounded-lg p-5 opacity-75"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-semibold text-base">{company.name}</h3>
+                      <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium bg-muted text-muted-foreground">
+                        archived
+                      </span>
+                    </div>
+                    {company.description && (
+                      <p className="text-sm text-muted-foreground mt-1 line-clamp-2">
+                        {company.description}
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={isRestoring}
+                      onClick={() => restoreMutation.mutate(company.id)}
+                    >
+                      <ArchiveRestore className="h-3.5 w-3.5 mr-1.5" />
+                      {isRestoring ? "Restoring\u2026" : "Restore"}
+                    </Button>
+                    {companyDeletionEnabled && (
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        disabled={restoreMutation.isPending || deleteMutation.isPending}
+                        onClick={() => setConfirmDeleteId(company.id)}
+                      >
+                        <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+                        Delete
+                      </Button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-3 sm:gap-5 mt-4 text-sm text-muted-foreground flex-wrap">
+                  <div className="flex items-center gap-1.5">
+                    <Calendar className="h-3.5 w-3.5" />
+                    <span>Created {relativeTime(company.createdAt)}</span>
+                  </div>
+                </div>
+
+                {isConfirmingDelete && (
+                  <div className="mt-4 flex items-center justify-between bg-destructive/5 border border-destructive/20 rounded-md px-4 py-3">
+                    <p className="text-sm text-destructive font-medium">
+                      Permanently delete this company and all its data? This cannot be undone.
+                    </p>
+                    <div className="flex items-center gap-2 ml-4 shrink-0">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setConfirmDeleteId(null)}
+                        disabled={deleteMutation.isPending}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={() => deleteMutation.mutate(company.id)}
+                        disabled={deleteMutation.isPending}
+                      >
+                        {deleteMutation.isPending ? "Deleting\u2026" : "Delete permanently"}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

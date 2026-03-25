@@ -15,6 +15,7 @@ export type CompanyStats = Record<string, { agentCount: number; issueCount: numb
 
 export const companiesApi = {
   list: () => api.get<Company[]>("/companies"),
+  listArchived: () => api.get<Company[]>("/companies/archived"),
   get: (companyId: string) => api.get<Company>(`/companies/${companyId}`),
   stats: () => api.get<CompanyStats>("/companies/stats"),
   create: (data: {
