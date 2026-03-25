@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
@@ -151,12 +152,39 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   // -------------------------------------------------------------------------
-  // 4. Render prompt
+  // 4. Load agent instructions file
+  // -------------------------------------------------------------------------
+  const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
+  const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
+  let instructionsPrefix = "";
+  if (instructionsFilePath) {
+    try {
+      const instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
+      instructionsPrefix =
+        `${instructionsContents}\n\n` +
+        `The above agent instructions were loaded from ${instructionsFilePath}. ` +
+        `Resolve any relative file references from ${instructionsDir}.\n\n`;
+      await onLog(
+        "stdout",
+        `[paperclip] Loaded agent instructions file: ${instructionsFilePath}\n`,
+      );
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      await onLog(
+        "stdout",
+        `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
+      );
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // 5. Render prompt
   // -------------------------------------------------------------------------
   const promptTemplate = asString(
     config.promptTemplate,
     "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
   );
+  const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
   const templateData = {
     agentId: agent.id,
     companyId: agent.companyId,
@@ -166,12 +194,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     run: { id: runId, source: "on_demand" },
     context,
   };
-  const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const renderedPrompt = renderTemplate(promptTemplate, templateData);
-  const prompt = joinPromptSections([sessionHandoffNote, renderedPrompt]);
+  const renderedBootstrapPrompt =
+    !conversationId && bootstrapPromptTemplate.trim().length > 0
+      ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
+      : "";
+  const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  const prompt = joinPromptSections([
+    instructionsPrefix,
+    renderedBootstrapPrompt,
+    sessionHandoffNote,
+    renderedPrompt,
+  ]);
 
   // -------------------------------------------------------------------------
-  // 5. Build args and run
+  // 6. Build args and run
   // -------------------------------------------------------------------------
   const buildArgs = (resumeConversationId: string | null): string[] => {
     const args = ["agent", "run"];
@@ -210,6 +247,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ...(conversationId ? [`Resuming conversation: ${conversationId}`] : ["Starting a new conversation."]),
     ...(mcpSpec ? [`MCP spec: ${mcpSpec}`] : []),
     ...(skillSpec ? [`Skill: ${skillSpec}`] : []),
+    ...(instructionsFilePath && instructionsPrefix
+      ? [`Loaded agent instructions from ${instructionsFilePath}`]
+      : []),
   ];
 
   const runAttempt = async (resumeConversationId: string | null) => {
@@ -228,6 +268,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       prompt,
       promptMetrics: {
         promptChars: prompt.length,
+        instructionsChars: instructionsPrefix.length,
+        bootstrapPromptChars: renderedBootstrapPrompt.length,
         sessionHandoffChars: sessionHandoffNote.length,
         heartbeatPromptChars: renderedPrompt.length,
       },
@@ -246,7 +288,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   // -------------------------------------------------------------------------
-  // 6. Execute (with session retry on stale conversation)
+  // 7. Execute (with session retry on stale conversation)
   // -------------------------------------------------------------------------
   const initial = await runAttempt(conversationId);
   const initialParsed = parseOzOutput(initial.stdout, initial.stderr);
