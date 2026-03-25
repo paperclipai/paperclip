@@ -175,6 +175,11 @@ export async function execute(
   const subagentEnabled = asBoolean(config.subagentEnabled as unknown, true);
   const timeoutSec = asNumber(config.timeoutSec as unknown, 600);
   const recursionLimit = asNumber(config.recursionLimit as unknown, 100);
+  const billingMode = asString(config.billingMode as unknown, "auto");
+  // DeerFlow is always API-billed (calls a remote LangGraph endpoint); allow
+  // explicit "subscription" override for self-hosted setups billed differently.
+  const billingType: "api" | "subscription" =
+    billingMode === "subscription" ? "subscription" : "api";
 
   // Resolve existing thread from session
   const sessionParams = parseObject(ctx.runtime.sessionParams);
@@ -329,7 +334,7 @@ export async function execute(
           const content = asString(msgData.content as unknown, "");
           if (content) {
             const truncated = content.length > 2000 ? content.slice(0, 2000) + "..." : content;
-            await onLog("stderr", `[tool_result] ${truncated}\n`);
+            await onLog("stdout", `[tool_result] ${truncated}\n`);
           }
         }
       } else if (sse.event === "values") {
@@ -366,7 +371,7 @@ export async function execute(
       sessionDisplayId: threadId,
       provider: "deerflow",
       model: model || undefined,
-      billingType: "api",
+      billingType,
       summary: summary || undefined,
     };
   } catch (err) {
@@ -387,7 +392,7 @@ export async function execute(
       sessionDisplayId: threadId || undefined,
       provider: "deerflow",
       model: model || undefined,
-      billingType: "api",
+      billingType,
     };
   } finally {
     if (timer) clearTimeout(timer);
