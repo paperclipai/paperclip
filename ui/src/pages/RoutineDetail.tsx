@@ -223,6 +223,7 @@ function TriggerEditor({
             size="sm"
             className="text-muted-foreground hover:text-destructive"
             onClick={() => onDelete(trigger.id)}
+            aria-label="Delete trigger"
           >
             <Trash2 className="h-3.5 w-3.5" />
           </Button>
@@ -973,7 +974,7 @@ export function RoutineDetail() {
                       {run.status.replaceAll("_", " ")}
                     </Badge>
                     {run.trigger && (
-                      <span className="text-muted-foreground truncate">{run.trigger.label ?? run.trigger.kind}</span>
+                      <span className="text-muted-foreground truncate" title={run.trigger.label ?? run.trigger.kind}>{run.trigger.label ?? run.trigger.kind}</span>
                     )}
                     {run.linkedIssue && (
                       <Link to={`/issues/${run.linkedIssue.identifier ?? run.linkedIssue.id}`} className="text-muted-foreground hover:underline truncate">

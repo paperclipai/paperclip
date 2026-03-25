@@ -548,7 +548,7 @@ export function Routines() {
                               className="shrink-0 h-3 w-3 rounded-sm"
                               style={{ backgroundColor: projectById.get(routine.projectId)?.color ?? "#6366f1" }}
                             />
-                            <span className="truncate">{projectById.get(routine.projectId)?.name ?? "Unknown"}</span>
+                            <span className="truncate" title={projectById.get(routine.projectId)?.name ?? "Unknown"}>{projectById.get(routine.projectId)?.name ?? "Unknown"}</span>
                           </div>
                         ) : (
                           <span className="text-xs text-muted-foreground">—</span>
@@ -560,7 +560,7 @@ export function Routines() {
                           return agent ? (
                             <div className="flex items-center gap-2 text-sm text-muted-foreground">
                               <AgentIcon icon={agent.icon} className="h-4 w-4 shrink-0" />
-                              <span className="truncate">{agent.name}</span>
+                              <span className="truncate" title={agent.name}>{agent.name}</span>
                             </div>
                           ) : (
                             <span className="text-xs text-muted-foreground">Unknown</span>

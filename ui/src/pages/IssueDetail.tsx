@@ -702,7 +702,7 @@ export function IssueDetail() {
             </span>
           ))}
           <ChevronRight className="h-3 w-3 shrink-0" />
-          <span className="text-foreground/60 truncate max-w-[200px]">{issue.title}</span>
+          <span className="text-foreground/60 truncate max-w-[200px]" title={issue.title}>{issue.title}</span>
         </nav>
       )}
 
@@ -1064,7 +1064,7 @@ export function IssueDetail() {
                     <span className="font-mono text-muted-foreground shrink-0">
                       {child.identifier ?? child.id.slice(0, 8)}
                     </span>
-                    <span className="truncate">{child.title}</span>
+                    <span className="truncate" title={child.title}>{child.title}</span>
                   </div>
                   {child.assigneeAgentId && (() => {
                     const name = agentMap.get(child.assigneeAgentId)?.name;
