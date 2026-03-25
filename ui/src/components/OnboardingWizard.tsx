@@ -49,9 +49,9 @@ import {
   Loader2,
   ChevronDown,
   Github,
-  Wand2,
   X
 } from "lucide-react";
+import { OzLogoIcon } from "./OzLogoIcon";
 
 type Step = 1 | 2 | 3 | 4;
 type AdapterType =
@@ -823,7 +823,7 @@ export function OnboardingWizard() {
                           {
                             value: "oz_local" as const,
                             label: "Oz",
-                            icon: Wand2,
+                            icon: OzLogoIcon,
                             desc: "Local Warp Oz agent"
                           }
                         ].map((opt) => (

@@ -19,10 +19,10 @@ import {
   MousePointer2,
   Sparkles,
   Terminal,
-  Wand2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
+import { OzLogoIcon } from "./OzLogoIcon";
 
 type AdvancedAdapterType =
   | "claude_local"
@@ -95,7 +95,7 @@ const ADVANCED_ADAPTER_OPTIONS: Array<{
   {
     value: "oz_local",
     label: "Oz",
-    icon: Wand2,
+    icon: OzLogoIcon,
     desc: "Local Warp Oz agent",
   },
 ];
