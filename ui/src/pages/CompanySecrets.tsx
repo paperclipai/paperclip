@@ -10,6 +10,8 @@ import { KeyRound, Pencil, Trash2 } from "lucide-react";
 import { Field } from "../components/agent-config-primitives";
 import type { CompanySecret, SecretProvider, SecretProviderDescriptor } from "@paperclipai/shared";
 
+const DEFAULT_PROVIDER: SecretProvider = "local_encrypted";
+
 export function CompanySecrets() {
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -19,7 +21,7 @@ export function CompanySecrets() {
   // --- Create form state ---
   const [newName, setNewName] = useState("");
   const [newValue, setNewValue] = useState("");
-  const [newProvider, setNewProvider] = useState<SecretProvider>("local_encrypted");
+  const [newProvider, setNewProvider] = useState<SecretProvider>(DEFAULT_PROVIDER);
   const [newDescription, setNewDescription] = useState("");
 
   // --- Edit state ---
@@ -37,9 +39,10 @@ export function CompanySecrets() {
     setNewName("");
     setNewValue("");
     setNewDescription("");
-    setNewProvider("local_encrypted");
+    setNewProvider(DEFAULT_PROVIDER);
     setEditingId(null);
     setConfirmDeleteId(null);
+    setDeletingId(null);
   }, []);
 
   useEffect(() => {
@@ -63,7 +66,7 @@ export function CompanySecrets() {
   useEffect(() => {
     if (providers.length > 0) {
       setNewProvider((prev) =>
-        providers.some((p) => p.id === prev) ? prev : providers[0]!.id,
+        providers.some((p) => p.id === prev) ? prev : providers[0]?.id ?? prev,
       );
     }
   }, [providers]);
@@ -96,14 +99,29 @@ export function CompanySecrets() {
       const cached = queryClient.getQueryData<SecretProviderDescriptor[]>(
         queryKeys.secrets.providers(vars.companyId),
       );
-      setNewProvider(cached?.[0]?.id ?? "local_encrypted");
+      setNewProvider(cached?.[0]?.id ?? DEFAULT_PROVIDER);
       pushToast({ title: "Secret created" });
       invalidateCompanySecrets(vars.companyId);
+    },
+    onError: () => {
+      pushToast({ title: "Failed to create secret", tone: "error" });
     },
   });
 
   const updateMutation = useMutation({
-    mutationFn: async ({ companyId, id, name, description, value }: { companyId: string; id: string; name: string; description: string; value: string }) => {
+    mutationFn: async ({
+      companyId,
+      id,
+      name,
+      description,
+      value,
+    }: {
+      companyId: string;
+      id: string;
+      name: string;
+      description: string;
+      value: string;
+    }) => {
       const updated = await secretsApi.update(id, {
         name: name.trim(),
         description: description.trim() || null,
@@ -216,7 +234,7 @@ export function CompanySecrets() {
                 </option>
               ))}
               {providers.length === 0 && (
-                <option value="local_encrypted">Local Encrypted</option>
+                <option value={DEFAULT_PROVIDER}>Local Encrypted</option>
               )}
             </select>
           </Field>
@@ -298,6 +316,7 @@ export function CompanySecrets() {
                       size="icon-sm"
                       variant="ghost"
                       title="Edit secret"
+                      aria-label={`Edit secret ${secret.name}`}
                       onClick={() => startEditing(secret)}
                     >
                       <Pencil className="h-3.5 w-3.5" />
@@ -306,6 +325,7 @@ export function CompanySecrets() {
                       size="icon-sm"
                       variant="ghost"
                       title="Delete secret"
+                      aria-label={`Delete secret ${secret.name}`}
                       onClick={() => { setEditingId(null); setConfirmDeleteId(secret.id); }}
                       disabled={deletingId === secret.id}
                     >
