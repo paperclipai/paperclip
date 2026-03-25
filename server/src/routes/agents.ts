@@ -2,7 +2,7 @@ import { Router, type Request } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
-import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable } from "@paperclipai/db";
+import { agents as agentsTable, agentManagers, companies, heartbeatRuns, issues as issuesTable } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
@@ -2096,8 +2096,22 @@ export function agentRoutes(db: Db) {
     assertCompanyAccess(req, agent.companyId);
 
     if (req.actor.type === "agent" && req.actor.agentId !== id) {
-      res.status(403).json({ error: "Agent can only invoke itself" });
-      return;
+      const isManager = await db
+        .select({ agentId: agentManagers.agentId })
+        .from(agentManagers)
+        .where(
+          and(
+            eq(agentManagers.agentId, id),
+            eq(agentManagers.managerId, req.actor.agentId!),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows.length > 0);
+
+      if (!isManager) {
+        res.status(403).json({ error: "Agent can only invoke itself or managed agents" });
+        return;
+      }
     }
 
     const run = await heartbeat.wakeup(id, {
@@ -2146,8 +2160,22 @@ export function agentRoutes(db: Db) {
     assertCompanyAccess(req, agent.companyId);
 
     if (req.actor.type === "agent" && req.actor.agentId !== id) {
-      res.status(403).json({ error: "Agent can only invoke itself" });
-      return;
+      const isManager = await db
+        .select({ agentId: agentManagers.agentId })
+        .from(agentManagers)
+        .where(
+          and(
+            eq(agentManagers.agentId, id),
+            eq(agentManagers.managerId, req.actor.agentId!),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows.length > 0);
+
+      if (!isManager) {
+        res.status(403).json({ error: "Agent can only invoke itself or managed agents" });
+        return;
+      }
     }
 
     const run = await heartbeat.invoke(
