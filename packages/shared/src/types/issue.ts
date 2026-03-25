@@ -76,6 +76,7 @@ export interface Issue {
   billingCode: string | null;
   assigneeAdapterOverrides: IssueAssigneeAdapterOverrides | null;
   executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
+  metadata: Record<string, unknown> | null;
   reviewBundleMode?: IssueReviewBundleMode;
   startedAt: Date | null;
   completedAt: Date | null;

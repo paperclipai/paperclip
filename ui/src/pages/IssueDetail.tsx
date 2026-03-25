@@ -872,6 +872,21 @@ export function IssueDetail() {
         />
       </div>
 
+      {issue.metadata && Object.keys(issue.metadata).length > 0 && (
+        <Collapsible>
+          <CollapsibleTrigger className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors">
+            <ChevronRight className="h-3 w-3 transition-transform [[data-state=open]>&]:rotate-90" />
+            Context metadata
+            <span className="text-muted-foreground/60">({Object.keys(issue.metadata).length} {Object.keys(issue.metadata).length === 1 ? "key" : "keys"})</span>
+          </CollapsibleTrigger>
+          <CollapsibleContent className="mt-2">
+            <pre className="rounded-md border bg-muted/50 p-3 text-xs font-mono overflow-x-auto max-h-64 overflow-y-auto whitespace-pre-wrap break-all">
+              {JSON.stringify(issue.metadata, null, 2)}
+            </pre>
+          </CollapsibleContent>
+        </Collapsible>
+      )}
+
       {(reviewRequired || reviewError) && (
         <div className={cn(
           "rounded-md border px-3 py-2 text-xs",

@@ -610,6 +610,7 @@ async function buildAgentSelfContext(
             status: issues.status,
             priority: issues.priority,
             description: issues.description,
+            metadata: issues.metadata,
           })
           .from(issues)
           .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
@@ -647,6 +648,15 @@ async function buildAgentSelfContext(
       lines.push("");
       lines.push("Description:");
       lines.push(desc);
+    }
+    if (currentIssue.metadata && Object.keys(currentIssue.metadata).length > 0) {
+      const metaJson = JSON.stringify(currentIssue.metadata, null, 2);
+      const truncated = metaJson.length > 2000 ? metaJson.slice(0, 2000) + "\n…" : metaJson;
+      lines.push("");
+      lines.push("Context metadata:");
+      lines.push("```json");
+      lines.push(truncated);
+      lines.push("```");
     }
   }
 

@@ -42,6 +42,7 @@ export const createIssueSchema = z.object({
   billingCode: z.string().optional().nullable(),
   assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema.optional().nullable(),
   executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
+  metadata: z.record(z.unknown()).optional().nullable(),
   reviewBundleMode: issueReviewBundleModeSchema.optional().default("inherit"),
   labelIds: z.array(z.string().uuid()).optional(),
 });

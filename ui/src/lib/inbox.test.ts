@@ -126,6 +126,7 @@ function makeIssue(id: string, isUnreadForMe: boolean): Issue {
     billingCode: null,
     assigneeAdapterOverrides: null,
     executionWorkspaceSettings: null,
+    metadata: null,
     checkoutRunId: null,
     executionRunId: null,
     executionAgentNameKey: null,
