@@ -42,7 +42,8 @@ export function dashboardService(db: Db) {
           and(
             eq(issues.companyId, companyId),
             eq(issues.status, "in_progress"),
-            sql`${issues.startedAt} < ${staleCutoff.toISOString()}`,
+            // Include issues with NULL startedAt — those are stuck with no start time.
+            sql`(${issues.startedAt} is null or ${issues.startedAt} < ${staleCutoff.toISOString()})`,
           ),
         )
         .then((rows) => Number(rows[0]?.count ?? 0));
@@ -158,8 +159,10 @@ export function dashboardService(db: Db) {
 
       return rows.map((r) => {
         const usage = r.usageJson as Record<string, unknown> | null;
-        const inputTokens = Number(usage?.inputTokens ?? usage?.input_tokens ?? 0) || null;
-        const outputTokens = Number(usage?.outputTokens ?? usage?.output_tokens ?? 0) || null;
+        const rawInput = usage?.inputTokens ?? usage?.input_tokens;
+        const rawOutput = usage?.outputTokens ?? usage?.output_tokens;
+        const inputTokens = rawInput != null ? Number(rawInput) : null;
+        const outputTokens = rawOutput != null ? Number(rawOutput) : null;
         const durationMs =
           r.startedAt && r.finishedAt
             ? new Date(r.finishedAt).getTime() - new Date(r.startedAt).getTime()
