@@ -683,6 +683,78 @@ async function ensureCodexSkillsInjected(onLog) {
 
 **Explicit vs. fuzzy skill invocation.** For production workflows where reliability matters (e.g. an agent that must always call the Paperclip API to report status), use explicit instructions in the prompt template: "Use the paperclip skill to report your progress." Fuzzy routing (letting the model decide based on description matching) is fine for exploratory tasks but unreliable for mandatory procedures.
 
+### 7.1 Best Practices from oz-local Adapter Development
+
+The oz-local adapter for Warp Oz revealed three critical patterns that significantly improve adapter reliability and user experience:
+
+#### Pattern 1: Bootstrap pcurl Instruction for Secure Network Access
+
+When an agent's CLI profile restricts the default `curl` command (for security), provide a stable alternative wrapper that bypasses the restriction. Inject a system-level bootstrap note into the prompt before every run.
+
+**Problem:** Agents with restricted CLIs may default to attempting forbidden commands, leading to permission errors and failed API calls.
+
+**Solution:** Prepend a clear, prioritized instruction:
+
+```ts
+const PCURL_NOTE = `System Note: To make network requests to Paperclip APIs or external services, use the 'pcurl' command instead of 'curl'. The 'pcurl' wrapper is available in your PATH and adds authentication headers and output compression automatically. Use it identically to curl: 'pcurl https://...'`;
+
+// In execute.ts, prepend to the prompt
+const fullPrompt = PCURL_NOTE + "\n\n" + (config.promptTemplate || defaultPrompt);
+```
+
+This ensures agents discover the safe escape hatch before attempting the blocked command.
+
+#### Pattern 2: Auto-Sync Skills and Ensure Availability
+
+Agent runtimes with dynamic skill discovery (like Warp Oz) require explicit pre-run skill injection. Without it, skills may not be discoverable, forcing agents to fail or request unavailable tools.
+
+**Problem:** Skills registered in Paperclip's repo are not automatically available in the agent's runtime environment.
+
+**Solution:** Before spawning the agent, synchronise Paperclip skills into the agent's discoverable location:
+
+```ts
+// In execute.ts, before runChildProcess:
+async function syncOzSkills() {
+  // Example: symlink skills/ directory into ~/.warp/skills/
+  // Create ~/.warp/skills directory if it doesn't exist
+  // Symlink each skill from repo skills/ into the agent's discoverable path
+}
+
+await syncOzSkills();
+
+// If no --skill flags configured, pass the primary skill explicitly
+if (!config.skills || config.skills.length === 0) {
+  args.push("--skill", "paperclipai/paperclip:paperclip");
+}
+```
+
+This guarantees that core Paperclip skills (like the `paperclip` API skill) are available from the start, avoiding initialization delays and skill-not-found errors.
+
+#### Pattern 3: Surface Credit Usage via Post-Run Queries
+
+Agent runtimes that expose run metadata (cost, token usage) through a separate query interface should be polled after execution completes. This surfaces billing information to the user and enables cost-aware orchestration.
+
+**Problem:** Run cost is not available in the agent's stdout; it requires a separate API call to the agent runtime.
+
+**Solution:** After the process completes successfully, fetch metadata and extract costs:
+
+```ts
+// In execute.ts, after runChildProcess completes
+if (parsed.runId) {
+  const metaCmd = `oz run get ${parsed.runId} --output-format json`;
+  const meta = await runChildProcess(ctx.runId, metaCmd, [], { cwd, env });
+  const metaJson = parseJson(meta.stdout);
+  
+  // Extract cost from inference_cost + compute_cost
+  const inferenceCost = asNumber(metaJson?.request_usage?.inference_cost, 0);
+  const computeCost = asNumber(metaJson?.request_usage?.compute_cost, 0);
+  result.costUsd = inferenceCost + computeCost;
+  result.billingType = "credits"; // or "tokens", depending on the runtime
+}
+```
+
+This enables cost tracking, budget enforcement, and transparent billing across agent runs.
+
 ---
 
 ## 8. Security Considerations
