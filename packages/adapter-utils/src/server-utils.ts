@@ -550,7 +550,11 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
     process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost",
   );
   const runtimePort = process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
-  const apiUrl = process.env.PAPERCLIP_API_URL ?? `http://${runtimeHost}:${runtimePort}`;
+  let apiUrl = process.env.PAPERCLIP_API_URL ?? `http://${runtimeHost}:${runtimePort}`;
+  // Child processes (e.g. Claude CLI) run inside the same container as the server.
+  // Docker service hostnames like "server" only resolve via Docker DNS for
+  // inter-container traffic — replace with localhost for child processes.
+  apiUrl = apiUrl.replace(/^(https?:\/\/)server(:\d+)/, "$1localhost$2");
   vars.PAPERCLIP_API_URL = apiUrl;
   return vars;
 }
