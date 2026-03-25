@@ -334,7 +334,7 @@ export function OnboardingWizard() {
     setBudgetAmount("");
     setShowBudget(false);
     setAgentName("CEO");
-    setAdapterType("claude_local");
+    setAdapterType("codex_local");
     setModel("");
     setCommand("");
     setArgs("");
@@ -1615,7 +1615,9 @@ export function OnboardingWizard() {
                       size="sm"
                       disabled={
                         !agentName.trim() || loading || adapterEnvLoading ||
-                        (cloudSandboxEnabled && inferenceChoice === "byok" && !byokApiKey.trim())
+                        (cloudSandboxEnabled && inferenceChoice === "byok" && (
+                          !byokApiKey.trim() || byokKeyStatus === "invalid" || byokKeyStatus === "validating"
+                        ))
                       }
                       onClick={handleStep2Next}
                     >
