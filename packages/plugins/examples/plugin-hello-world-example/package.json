@@ -1,5 +1,5 @@
 {
-  "name": "@paperclipai_dld/plugin-hello-world-example",
+  "name": "@paperclipai/plugin-hello-world-example",
   "version": "0.1.0",
   "description": "First-party reference plugin that adds a Hello World dashboard widget",
   "type": "module",
@@ -16,10 +16,10 @@
     "prebuild": "node ../../../../scripts/ensure-plugin-build-deps.mjs",
     "build": "tsc",
     "clean": "rm -rf dist",
-    "typecheck": "pnpm --filter @paperclipai_dld/plugin-sdk build && tsc --noEmit"
+    "typecheck": "pnpm --filter @paperclipai/plugin-sdk build && tsc --noEmit"
   },
   "dependencies": {
-    "@paperclipai_dld/plugin-sdk": "workspace:*"
+    "@paperclipai/plugin-sdk": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.6.0",

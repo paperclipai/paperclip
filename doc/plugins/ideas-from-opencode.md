@@ -460,7 +460,7 @@ Plugins ship their own React UI as a bundled module inside `dist/ui/`. The host 
 3. The plugin component fetches data from its own worker via the bridge and renders it however it wants.
 4. The host enforces capability gates through the bridge — if the worker doesn't have a capability, the bridge rejects the call.
 
-**What the host controls:** where plugin components appear, the bridge API, capability enforcement, and shared UI primitives (`@paperclipai_dld/plugin-sdk/ui`) with design tokens and common components.
+**What the host controls:** where plugin components appear, the bridge API, capability enforcement, and shared UI primitives (`@paperclipai/plugin-sdk/ui`) with design tokens and common components.
 
 **What the plugin controls:** how to render its data, what data to fetch, what actions to expose, and whether to use the host's shared components or build entirely custom UI.
 
@@ -572,7 +572,7 @@ This is critical for operators. Without observability, debugging plugin issues r
 
 ## 13. Ship a test harness and starter template
 
-A `@paperclipai_dld/plugin-test-harness` package should provide a mock host with in-memory stores, synthetic event emission, and `getData`/`performAction`/`executeTool` simulation. Plugin authors should be able to write unit tests without a running Paperclip instance.
+A `@paperclipai/plugin-test-harness` package should provide a mock host with in-memory stores, synthetic event emission, and `getData`/`performAction`/`executeTool` simulation. Plugin authors should be able to write unit tests without a running Paperclip instance.
 
 A `create-paperclip-plugin` CLI should scaffold a working plugin with manifest, worker, UI bundle, test file, and build config.
 
@@ -599,8 +599,8 @@ Each worker process is independent — starting, stopping, or replacing one work
 
 Recommended approach:
 
-- **Single SDK package**: `@paperclipai_dld/plugin-sdk` with subpath exports — root for worker code, `/ui` for frontend code. One dependency, one version, one changelog.
-- **SDK major version = API version**: `@paperclipai_dld/plugin-sdk@2.x` targets `apiVersion: 2`. Plugins built with SDK 1.x declare `apiVersion: 1` and continue to work.
+- **Single SDK package**: `@paperclipai/plugin-sdk` with subpath exports — root for worker code, `/ui` for frontend code. One dependency, one version, one changelog.
+- **SDK major version = API version**: `@paperclipai/plugin-sdk@2.x` targets `apiVersion: 2`. Plugins built with SDK 1.x declare `apiVersion: 1` and continue to work.
 - **Host multi-version support**: The host supports at least the current and one previous `apiVersion` simultaneously with separate IPC protocol handlers per version.
 - **`sdkVersion` in manifest**: Plugins declare a semver range (e.g. `">=1.4.0 <2.0.0"`). The host validates this at install time.
 - **Deprecation timeline**: Previous API versions get at least 6 months of continued support after a new version ships. The host logs deprecation warnings and shows a banner on the plugin settings page.
@@ -613,7 +613,7 @@ Recommended approach:
 An intentionally narrow first pass could look like this:
 
 ```ts
-import { definePlugin, z } from "@paperclipai_dld/plugin-sdk";
+import { definePlugin, z } from "@paperclipai/plugin-sdk";
 
 export default definePlugin({
   id: "@paperclip/plugin-linear",
@@ -679,7 +679,7 @@ The plugin's UI bundle (separate from the worker) might look like:
 
 ```tsx
 // dist/ui/index.tsx
-import { usePluginData, usePluginAction, MetricCard, ErrorBoundary } from "@paperclipai_dld/plugin-sdk/ui";
+import { usePluginData, usePluginAction, MetricCard, ErrorBoundary } from "@paperclipai/plugin-sdk/ui";
 
 export function DashboardWidget({ context }: PluginWidgetProps) {
   const { data, loading, error } = usePluginData("sync-health", { companyId: context.companyId });
@@ -1667,7 +1667,7 @@ Build:
 - scheduled jobs
 - webhook endpoints
 - activity logging helpers
-- plugin UI bundle loading, host bridge, `@paperclipai_dld/plugin-sdk/ui`
+- plugin UI bundle loading, host bridge, `@paperclipai/plugin-sdk/ui`
 - extension slot mounting for pages, tabs, widgets, sidebar entries
 - auto-generated settings form from `instanceConfigSchema`
 - bridge error propagation (`PluginBridgeError`)
@@ -1677,7 +1677,7 @@ Build:
 - graceful shutdown with configurable deadlines
 - plugin logging and health dashboard
 - uninstall with data retention grace period
-- `@paperclipai_dld/plugin-test-harness` and `create-paperclip-plugin` starter template
+- `@paperclipai/plugin-test-harness` and `create-paperclip-plugin` starter template
 - hot plugin lifecycle (install, uninstall, upgrade, config change without server restart)
 - SDK versioning with multi-version host support and deprecation policy
 
@@ -1732,7 +1732,7 @@ That gets the upside of `opencode`'s extensibility without importing the wrong t
 5. Add agent tool contributions — plugins register namespaced tools that agents can call during runs.
 6. Add plugin observability: structured logging via `ctx.logger`, health dashboard, internal health events.
 7. Add graceful shutdown policy and uninstall data lifecycle with retention grace period.
-8. Ship `@paperclipai_dld/plugin-test-harness` and `create-paperclip-plugin` starter template.
+8. Ship `@paperclipai/plugin-test-harness` and `create-paperclip-plugin` starter template.
 9. Implement hot plugin lifecycle — install, uninstall, upgrade, and config changes without server restart.
 10. Define SDK versioning policy — semver, multi-version host support, deprecation timeline, migration guides, published compatibility matrix.
 11. Build workspace plugins (file browser, terminal, git, process tracking) that resolve workspace paths from the host and handle OS-level operations directly.

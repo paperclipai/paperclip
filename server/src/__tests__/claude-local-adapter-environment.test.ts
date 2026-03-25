@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { testEnvironment } from "@paperclipai_dld/adapter-claude-local/server";
+import { testEnvironment } from "@paperclipai/adapter-claude-local/server";
 
 const ORIGINAL_ANTHROPIC = process.env.ANTHROPIC_API_KEY;
 

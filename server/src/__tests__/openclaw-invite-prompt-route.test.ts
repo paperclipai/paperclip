@@ -23,11 +23,22 @@ const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
 
+const mockBoardAuthService = vi.hoisted(() => ({
+  createCliAuthChallenge: vi.fn(),
+  describeCliAuthChallenge: vi.fn(),
+  approveCliAuthChallenge: vi.fn(),
+  cancelCliAuthChallenge: vi.fn(),
+  resolveBoardAccess: vi.fn(),
+  assertCurrentBoardKey: vi.fn(),
+  revokeBoardApiKey: vi.fn(),
+}));
+
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
+  boardAuthService: () => mockBoardAuthService,
   deduplicateAgentName: vi.fn(),
   logActivity: mockLogActivity,
   notifyHireApproved: vi.fn(),

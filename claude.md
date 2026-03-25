@@ -78,13 +78,13 @@ These can be overridden at build time with `--build-arg`. The values were last u
 
 ## Docker build: plugin-sdk must be compiled before server
 
-The server imports `@paperclipai_dld/plugin-sdk` (workspace package at `packages/plugins/sdk/`). TypeScript's NodeNext module resolution requires `dist/` to exist before `tsc` runs on the server. Both Dockerfiles now do:
+The server imports `@paperclipai/plugin-sdk` (workspace package at `packages/plugins/sdk/`). TypeScript's NodeNext module resolution requires `dist/` to exist before `tsc` runs on the server. Both Dockerfiles now do:
 
 ```
-RUN pnpm --filter @paperclipai_dld/plugin-sdk build && pnpm --filter @paperclipai_dld/server build
+RUN pnpm --filter @paperclipai/plugin-sdk build && pnpm --filter @paperclipai/server build
 ```
 
-The main `Dockerfile` also has `COPY packages/plugins/sdk/package.json packages/plugins/sdk/` in the `deps` stage. Omitting either step causes `TS2307: Cannot find module '@paperclipai_dld/plugin-sdk'` and cascading TypeScript errors throughout the plugin system files.
+The main `Dockerfile` also has `COPY packages/plugins/sdk/package.json packages/plugins/sdk/` in the `deps` stage. Omitting either step causes `TS2307: Cannot find module '@paperclipai/plugin-sdk'` and cascading TypeScript errors throughout the plugin system files.
 
 ## GitHub plugin (paperclip-github)
 
@@ -116,8 +116,7 @@ The main `Dockerfile` also has `COPY packages/plugins/sdk/package.json packages/
   2. The workflow pushes the updated lockfile to branch `chore/refresh-lockfile` but **cannot create the PR** (GitHub Actions lacks PR creation permission in this repo).
   3. Open the PR manually: `gh pr create --repo Viraforge/paperclip --head chore/refresh-lockfile --base master --title "chore(lockfile): refresh pnpm-lock.yaml" --body "Auto-generated lockfile refresh."`
   4. Post `ai-review/verdict`, then merge. The `pr-policy` check has a built-in exception for the `chore/refresh-lockfile` branch.
-- **npm package scope is `@paperclipai_dld`**: All 15 packages are published under `@paperclipai_dld/` (not `@paperclipai/`). The npm org name is `paperclipai_dld`. Do not rename packages back to `@paperclipai/` — that scope is owned by a third party on npm.
-- **npm publish requires Automation token**: The `NPM_TOKEN` stored in GitHub Environments `npm-canary` and `npm-stable` must be an **Automation** token (not a Publish token) to bypass 2FA in CI. If publish fails with `403 Two-factor authentication required`, the token type is wrong.
+- **npm package scope is `@paperclipai/`**: All packages use the upstream `@paperclipai/` scope and are marked `"private": true`. We do NOT publish to npm — packages are consumed only within the monorepo via pnpm workspace protocol. This alignment with upstream's scope eliminates merge conflicts on upgrades.
 
 ## Runtime auth state
 

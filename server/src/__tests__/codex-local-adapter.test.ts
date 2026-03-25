@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { isCodexUnknownSessionError, parseCodexJsonl } from "@paperclipai_dld/adapter-codex-local/server";
-import { parseCodexStdoutLine } from "@paperclipai_dld/adapter-codex-local/ui";
-import { printCodexStreamEvent } from "@paperclipai_dld/adapter-codex-local/cli";
+import { isCodexUnknownSessionError, parseCodexJsonl } from "@paperclipai/adapter-codex-local/server";
+import { parseCodexStdoutLine } from "@paperclipai/adapter-codex-local/ui";
+import { printCodexStreamEvent } from "@paperclipai/adapter-codex-local/cli";
 
 describe("codex_local parser", () => {
   it("extracts session, summary, usage, and terminal error message", () => {
@@ -117,7 +117,7 @@ describe("codex_local ui stdout parser", () => {
       {
         kind: "system",
         ts,
-        text: "file changes: update /Users/[]/project/ui/src/pages/AgentDetail.tsx",
+        text: "file changes: update /Users/paperclipuser/project/ui/src/pages/AgentDetail.tsx",
       },
     ]);
   });

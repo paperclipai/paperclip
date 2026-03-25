@@ -5,8 +5,6 @@ import { logger } from "../middleware/logger.js";
 export {
   type RunProcessResult,
   runningProcesses,
-  finishedWorkspacePaths,
-  FINISHED_WORKSPACE_PATH_RETENTION_MS,
   MAX_CAPTURE_BYTES,
   MAX_EXCERPT_BYTES,
   parseObject,
@@ -24,11 +22,11 @@ export {
   ensurePathInEnv,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
-} from "@paperclipai_dld/adapter-utils/server-utils";
+} from "@paperclipai/adapter-utils/server-utils";
 
 // Re-export runChildProcess with the server's pino logger wired in.
-import { runChildProcess as _runChildProcess } from "@paperclipai_dld/adapter-utils/server-utils";
-import type { RunProcessResult } from "@paperclipai_dld/adapter-utils/server-utils";
+import { runChildProcess as _runChildProcess } from "@paperclipai/adapter-utils/server-utils";
+import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 
 export async function runChildProcess(
   runId: string,

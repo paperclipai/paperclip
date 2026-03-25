@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { models as cursorFallbackModels } from "@paperclipai_dld/adapter-cursor-local";
+import { models as cursorFallbackModels } from "@paperclipai/adapter-cursor-local";
 import type { AdapterModel } from "./types.js";
 
 const CURSOR_MODELS_TIMEOUT_MS = 5_000;

@@ -1,4 +1,4 @@
-import type { CompanySecret, SecretProviderDescriptor, SecretProvider } from "@paperclipai_dld/shared";
+import type { CompanySecret, SecretProviderDescriptor, SecretProvider } from "@paperclipai/shared";
 import { api } from "./client";
 
 export const secretsApi = {

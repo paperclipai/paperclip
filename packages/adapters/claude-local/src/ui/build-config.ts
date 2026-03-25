@@ -1,4 +1,4 @@
-import type { CreateConfigValues } from "@paperclipai_dld/adapter-utils";
+import type { CreateConfigValues } from "@paperclipai/adapter-utils";
 import { DEFAULT_CLAUDE_LOCAL_SKIP_PERMISSIONS } from "../index.js";
 
 function parseCommaArgs(value: string): string[] {

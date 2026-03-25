@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo, type ChangeEvent, type DragEvent } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { pickTextColorForSolidBg } from "@/lib/color-contrast";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
@@ -56,15 +57,6 @@ import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySel
 const DRAFT_KEY = "paperclip:issue-draft";
 const DEBOUNCE_MS = 800;
 
-/** Return black or white hex based on background luminance (WCAG perceptual weights). */
-function getContrastTextColor(hexColor: string): string {
-  const hex = hexColor.replace("#", "");
-  const r = parseInt(hex.substring(0, 2), 16);
-  const g = parseInt(hex.substring(2, 4), 16);
-  const b = parseInt(hex.substring(4, 6), 16);
-  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-  return luminance > 0.5 ? "#000000" : "#ffffff";
-}
 
 interface IssueDraft {
   title: string;
@@ -376,6 +368,8 @@ export function NewIssueDialog() {
         id: `agent:${agent.id}`,
         name: agent.name,
         kind: "agent",
+        agentId: agent.id,
+        agentIcon: agent.icon,
       });
     }
     for (const project of orderedProjects) {
@@ -430,6 +424,9 @@ export function NewIssueDialog() {
     },
     onSuccess: ({ issue, companyId, failures }) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
       if (draftTimer.current) clearTimeout(draftTimer.current);
       if (failures.length > 0) {
         const prefix = (companies.find((company) => company.id === companyId)?.issuePrefix ?? "").trim();
@@ -910,7 +907,7 @@ export function NewIssueDialog() {
                     dialogCompany?.brandColor
                       ? {
                           backgroundColor: dialogCompany.brandColor,
-                          color: getContrastTextColor(dialogCompany.brandColor),
+                          color: pickTextColorForSolidBg(dialogCompany.brandColor),
                         }
                       : undefined
                   }
@@ -940,7 +937,7 @@ export function NewIssueDialog() {
                         c.brandColor
                           ? {
                               backgroundColor: c.brandColor,
-                              color: getContrastTextColor(c.brandColor),
+                              color: pickTextColorForSolidBg(c.brandColor),
                             }
                           : undefined
                       }
@@ -1208,6 +1205,7 @@ export function NewIssueDialog() {
                   <div className="flex items-center justify-between rounded-md border border-border px-2 py-1.5">
                     <div className="text-xs text-muted-foreground">Enable Chrome (--chrome)</div>
                     <button
+                      data-slot="toggle"
                       className={cn(
                         "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
                         assigneeChrome ? "bg-green-600" : "bg-muted"

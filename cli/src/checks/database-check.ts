@@ -16,7 +16,7 @@ export async function databaseCheck(config: PaperclipConfig, configPath?: string
     }
 
     try {
-      const { createDb } = await import("@paperclipai_dld/db");
+      const { createDb } = await import("@paperclipai/db");
       const db = createDb(config.database.connectionString);
       await db.execute("SELECT 1");
       return {

@@ -5,7 +5,7 @@
  * The original mvanhorn plugin used 2-arg form which no longer matches the SDK.
  */
 
-import type { PluginContext } from "@paperclipai_dld/plugin-sdk";
+import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { TOOL_NAMES } from "./constants.js";
 import * as github from "./github.js";
 import * as sync from "./sync.js";
@@ -107,9 +107,9 @@ export function registerTools(ctx: PluginContext): void {
       const ref = github.parseGitHubIssueRef(p.ghIssueUrl as string, defaultRepo);
       if (!ref) return { error: "Could not parse GitHub issue reference." };
 
-      const issueId = runCtx.projectId; // using projectId as proxy; real impl uses context issue
+      const issueId = runCtx.issueId;
       const companyId = runCtx.companyId;
-      if (!issueId || !companyId) return { error: "No issue context available." };
+      if (!issueId || !companyId) return { error: "No issue context available. The agent must be working on a Paperclip issue to use this tool." };
 
       try {
         const ghIssue = await github.getIssue(
@@ -158,9 +158,9 @@ export function registerTools(ctx: PluginContext): void {
       },
     },
     async (_params, runCtx) => {
-      const issueId = runCtx.projectId;
+      const issueId = runCtx.issueId;
       const companyId = runCtx.companyId;
-      if (!issueId || !companyId) return { error: "No issue context available." };
+      if (!issueId || !companyId) return { error: "No issue context available. The agent must be working on a Paperclip issue to use this tool." };
 
       const existing = await sync.getLink(ctx, issueId);
       if (!existing) return { error: "No GitHub link found for this issue." };

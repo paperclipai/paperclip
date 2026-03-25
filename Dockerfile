@@ -21,6 +21,7 @@ COPY packages/adapters/openclaw-gateway/package.json packages/adapters/openclaw-
 COPY packages/adapters/opencode-local/package.json packages/adapters/opencode-local/
 COPY packages/adapters/pi-local/package.json packages/adapters/pi-local/
 COPY packages/plugins/sdk/package.json packages/plugins/sdk/
+COPY patches/ patches/
 
 RUN pnpm install --frozen-lockfile
 
@@ -28,62 +29,26 @@ FROM base AS build
 WORKDIR /app
 COPY --from=deps /app /app
 COPY . .
-ENV NODE_OPTIONS=--max-old-space-size=1536
-RUN pnpm --filter @paperclipai_dld/ui build
-RUN pnpm --filter @paperclipai_dld/plugin-sdk build && pnpm --filter @paperclipai_dld/server build
+RUN pnpm --filter @paperclipai/ui build
+RUN pnpm --filter @paperclipai/plugin-sdk build
+RUN pnpm --filter @paperclipai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 
-# tools stage: installs system packages and CLI tools independently of app code.
-# BuildKit runs this in parallel with deps -> build, saving ~5-8 min on code-change rebuilds.
-FROM base AS tools
-ARG CLAUDE_CODE_VERSION=2.1.78
-ARG GEMINI_CLI_VERSION=0.34.0
-ARG CODEX_VERSION=0.115.0
-ARG OPENCODE_VERSION=1.2.27
-ARG PI_CODING_AGENT_VERSION=0.61.1
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends \
-    gh openssh-client ripgrep fd-find procps tree patch \
-    libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 libcairo2 libcups2t64 \
-    libdbus-1-3 libdrm2 libgbm1 libglib2.0-0t64 libnspr4 libnss3 libpango-1.0-0 libx11-6 libxcb1 \
-    libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2 libgtk-3-0t64 libgtk-4-1 \
-    libsoup-3.0-0 gstreamer1.0-libav gstreamer1.0-plugins-bad gstreamer1.0-plugins-base \
-    gstreamer1.0-plugins-good xvfb fonts-noto-color-emoji fonts-unifont fonts-liberation \
-  && ln -s /usr/bin/fdfind /usr/local/bin/fd \
-  && rm -rf /var/lib/apt/lists/*
-RUN --mount=type=cache,target=/root/.npm \
-    mkdir -p /opt/paperclip-opencode /paperclip \
-  && npm install --global --omit=dev \
-    "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
-    "@google/gemini-cli@${GEMINI_CLI_VERSION}" \
-    "@openai/codex@${CODEX_VERSION}" \
-    "@mariozechner/pi-coding-agent@${PI_CODING_AGENT_VERSION}" \
-  && npm install --prefix /opt/paperclip-opencode --omit=dev "opencode-ai@${OPENCODE_VERSION}"
-
-FROM tools AS production
+FROM base AS production
 WORKDIR /app
 COPY --chown=node:node --from=build /app /app
-ARG COMMIT_SHA=unknown
-LABEL org.opencontainers.image.revision=$COMMIT_SHA
-RUN mkdir -p /usr/local/lib/paperclip \
-  && mv /usr/bin/gh /usr/local/lib/paperclip/gh-real \
-  && ln -sf /app/scripts/gh.sh /usr/bin/gh \
-  && chmod +x /app/scripts/docker-entrypoint.sh /app/scripts/gh.sh \
-  && chown -R node:node /paperclip /opt/paperclip-opencode
+RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai \
+  && mkdir -p /paperclip \
+  && chown node:node /paperclip
 
 ENV NODE_ENV=production \
   HOME=/paperclip \
-  XDG_CONFIG_HOME=/paperclip/.config \
-  XDG_DATA_HOME=/paperclip/.local/share \
   HOST=0.0.0.0 \
   PORT=3100 \
   SERVE_UI=true \
-  PATH=/paperclip/bin:${PATH} \
   PAPERCLIP_HOME=/paperclip \
   PAPERCLIP_INSTANCE_ID=default \
   PAPERCLIP_CONFIG=/paperclip/instances/default/config.json \
-  PAPERCLIP_OPENCODE_COMMAND=/paperclip/bin/opencode \
-  PAPERCLIP_OPENCODE_INSTALL_DIR=/opt/paperclip-opencode \
   PAPERCLIP_DEPLOYMENT_MODE=authenticated \
   PAPERCLIP_DEPLOYMENT_EXPOSURE=private
 
@@ -91,5 +56,4 @@ VOLUME ["/paperclip"]
 EXPOSE 3100
 
 USER node
-ENTRYPOINT ["/app/scripts/docker-entrypoint.sh"]
 CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]

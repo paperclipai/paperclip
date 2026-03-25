@@ -14,10 +14,16 @@ export type {
   AdapterEnvironmentTestStatus,
   AdapterEnvironmentTestResult,
   AdapterEnvironmentTestContext,
+  AdapterSkillSyncMode,
+  AdapterSkillState,
+  AdapterSkillOrigin,
+  AdapterSkillEntry,
+  AdapterSkillSnapshot,
+  AdapterSkillContext,
   AdapterSessionCodec,
   AdapterModel,
   NativeContextManagement,
   ResolvedSessionCompactionPolicy,
   SessionCompactionPolicy,
   ServerAdapterModule,
-} from "@paperclipai_dld/adapter-utils";
+} from "@paperclipai/adapter-utils";

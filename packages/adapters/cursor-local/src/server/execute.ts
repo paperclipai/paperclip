@@ -2,25 +2,25 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai_dld/adapter-utils";
+import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
   asString,
   asNumber,
   asStringArray,
   parseObject,
-  applyLocalAgentFilesystemEnv,
   buildPaperclipEnv,
   redactEnvForLogs,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
   ensurePaperclipSkillSymlink,
   ensurePathInEnv,
-  listPaperclipSkillEntries,
+  readPaperclipRuntimeSkillEntries,
+  resolvePaperclipDesiredSkillNames,
   removeMaintainerOnlySkillSymlinks,
   renderTemplate,
   joinPromptSections,
   runChildProcess,
-} from "@paperclipai_dld/adapter-utils/server-utils";
+} from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "../index.js";
 import { parseCursorJsonl, isCursorUnknownSessionError } from "./parse.js";
 import { normalizeCursorStreamLine } from "../shared/stream.js";
@@ -95,7 +95,7 @@ function cursorSkillsHome(): string {
 
 type EnsureCursorSkillsInjectedOptions = {
   skillsDir?: string | null;
-  skillsEntries?: Array<{ name: string; source: string }>;
+  skillsEntries?: Array<{ key: string; runtimeName: string; source: string }>;
   skillsHome?: string;
   linkSkill?: (source: string, target: string) => Promise<void>;
 };
@@ -108,8 +108,12 @@ export async function ensureCursorSkillsInjected(
     ?? (options.skillsDir
       ? (await fs.readdir(options.skillsDir, { withFileTypes: true }))
           .filter((entry) => entry.isDirectory())
-          .map((entry) => ({ name: entry.name, source: path.join(options.skillsDir!, entry.name) }))
-      : await listPaperclipSkillEntries(__moduleDir));
+          .map((entry) => ({
+            key: entry.name,
+            runtimeName: entry.name,
+            source: path.join(options.skillsDir!, entry.name),
+          }))
+      : await readPaperclipRuntimeSkillEntries({}, __moduleDir));
   if (skillsEntries.length === 0) return;
 
   const skillsHome = options.skillsHome ?? cursorSkillsHome();
@@ -124,7 +128,7 @@ export async function ensureCursorSkillsInjected(
   }
   const removedSkills = await removeMaintainerOnlySkillSymlinks(
     skillsHome,
-    skillsEntries.map((entry) => entry.name),
+    skillsEntries.map((entry) => entry.runtimeName),
   );
   for (const skillName of removedSkills) {
     await onLog(
@@ -134,26 +138,26 @@ export async function ensureCursorSkillsInjected(
   }
   const linkSkill = options.linkSkill ?? ((source: string, target: string) => fs.symlink(source, target));
   for (const entry of skillsEntries) {
-    const target = path.join(skillsHome, entry.name);
+    const target = path.join(skillsHome, entry.runtimeName);
     try {
       const result = await ensurePaperclipSkillSymlink(entry.source, target, linkSkill);
       if (result === "skipped") continue;
 
       await onLog(
         "stderr",
-        `[paperclip] ${result === "repaired" ? "Repaired" : "Injected"} Cursor skill "${entry.name}" into ${skillsHome}\n`,
+        `[paperclip] ${result === "repaired" ? "Repaired" : "Injected"} Cursor skill "${entry.key}" into ${skillsHome}\n`,
       );
     } catch (err) {
       await onLog(
         "stderr",
-        `[paperclip] Failed to inject Cursor skill "${entry.name}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
+        `[paperclip] Failed to inject Cursor skill "${entry.key}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
       );
     }
   }
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const { runId, agent, runtime, config, context, onLog, onMeta, authToken } = ctx;
+  const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -180,13 +184,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
-  await ensureCursorSkillsInjected(onLog);
+  const cursorSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
+  const desiredCursorSkillNames = resolvePaperclipDesiredSkillNames(config, cursorSkillEntries);
+  await ensureCursorSkillsInjected(onLog, {
+    skillsEntries: cursorSkillEntries.filter((entry) => desiredCursorSkillNames.includes(entry.key)),
+  });
 
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
     typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
   const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
-  applyLocalAgentFilesystemEnv(env, { agentId: agent.id });
   env.PAPERCLIP_RUN_ID = runId;
   const wakeTaskId =
     (typeof context.taskId === "string" && context.taskId.trim().length > 0 && context.taskId.trim()) ||
@@ -283,7 +290,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const sessionId = canResumeSession ? runtimeSessionId : null;
   if (runtimeSessionId && !canResumeSession) {
     await onLog(
-      "stderr",
+      "stdout",
       `[paperclip] Cursor session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
     );
   }
@@ -300,14 +307,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `The above agent instructions were loaded from ${instructionsFilePath}. ` +
         `Resolve any relative file references from ${instructionsDir}.\n\n`;
       instructionsChars = instructionsPrefix.length;
-      await onLog(
-        "stderr",
-        `[paperclip] Loaded agent instructions file: ${instructionsFilePath}\n`,
-      );
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       await onLog(
-        "stderr",
+        "stdout",
         `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
       );
     }
@@ -421,6 +424,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timeoutSec,
       graceSec,
       stdin: prompt,
+      onSpawn,
       onLog: async (stream, chunk) => {
         if (stream !== "stdout") {
           await onLog(stream, chunk);
@@ -513,7 +517,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     isCursorUnknownSessionError(initial.proc.stdout, initial.proc.stderr)
   ) {
     await onLog(
-      "stderr",
+      "stdout",
       `[paperclip] Cursor resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
     );
     const retry = await runAttempt(null);

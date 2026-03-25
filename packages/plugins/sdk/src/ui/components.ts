@@ -1,7 +1,7 @@
 /**
  * Shared UI component declarations for plugin frontends.
  *
- * These components are exported from `@paperclipai_dld/plugin-sdk/ui` and are
+ * These components are exported from `@paperclipai/plugin-sdk/ui` and are
  * provided by the host at runtime.  They match the host's design tokens and
  * visual language, reducing the boilerplate needed to build consistent plugin UIs.
  *
@@ -13,7 +13,7 @@
  * only the type declarations; the runtime implementations are injected via the
  * host module registry.
  *
- * @see PLUGIN_SPEC.md §19.6 — Shared Components In `@paperclipai_dld/plugin-sdk/ui`
+ * @see PLUGIN_SPEC.md §19.6 — Shared Components In `@paperclipai/plugin-sdk/ui`
  */
 
 import type React from "react";

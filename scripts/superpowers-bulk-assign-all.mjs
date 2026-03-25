@@ -17,7 +17,7 @@
  *   -e PAPERCLIP_COMPANY_ID='<uuid>'   # only agents in this company (default: all companies)
  *   -e SUPER_GITHUB_REPO='obra/superpowers'   # default
  */
-import { createDb, pluginState, agents } from "@paperclipai_dld/db";
+import { createDb, pluginState, agents } from "@paperclipai/db";
 import { and, eq, notInArray } from "drizzle-orm";
 
 const SKILL_CATEGORIES = {

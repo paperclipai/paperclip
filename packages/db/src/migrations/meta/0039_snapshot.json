@@ -1,6 +1,6 @@
 {
-  "id": "process_lost_retry_snapshot_0039",
-  "prevId": "16efb170-8edd-4d8a-8cc9-49fe57ed3852",
+  "id": "1006727d-476b-474c-932b-51f1ba9626fb",
+  "prevId": "cb7f5c2d-8be7-4bd7-8adc-6d942a4f2589",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -3496,27 +3496,6 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "cost_events_agent_occurred_idx": {
-          "name": "cost_events_agent_occurred_idx",
-          "columns": [
-            {
-              "expression": "agent_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "occurred_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
       "foreignKeys": {
@@ -5189,6 +5168,31 @@
           "primaryKey": false,
           "notNull": false
         },
+        "process_pid": {
+          "name": "process_pid",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "process_started_at": {
+          "name": "process_started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "retry_of_run_id": {
+          "name": "retry_of_run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "process_loss_retry_count": {
+          "name": "process_loss_retry_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
         "context_snapshot": {
           "name": "context_snapshot",
           "type": "jsonb",
@@ -5228,27 +5232,6 @@
             },
             {
               "expression": "started_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "heartbeat_runs_agent_status_idx": {
-          "name": "heartbeat_runs_agent_status_idx",
-          "columns": [
-            {
-              "expression": "agent_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "status",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -5299,6 +5282,19 @@
           ],
           "onDelete": "no action",
           "onUpdate": "no action"
+        },
+        "heartbeat_runs_retry_of_run_id_heartbeat_runs_id_fk": {
+          "name": "heartbeat_runs_retry_of_run_id_heartbeat_runs_id_fk",
+          "tableFrom": "heartbeat_runs",
+          "tableTo": "heartbeat_runs",
+          "columnsFrom": [
+            "retry_of_run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -5324,6 +5320,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'default'"
+        },
+        "general": {
+          "name": "general",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
         },
         "experimental": {
           "name": "experimental",
@@ -7101,12 +7104,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "process_lost_retry_at": {
-          "name": "process_lost_retry_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -7283,22 +7280,6 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "issues_process_lost_retry_at_idx": {
-          "name": "issues_process_lost_retry_at_idx",
-          "columns": [
-            {
-              "expression": "process_lost_retry_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {},
-          "where": "\"process_lost_retry_at\" IS NOT NULL"
         }
       },
       "foreignKeys": {

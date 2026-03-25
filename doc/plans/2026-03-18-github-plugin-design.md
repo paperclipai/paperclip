@@ -48,7 +48,7 @@ The plugin should be treated as a general GitHub integration plugin, not a perma
 
 ## Architecture
 
-Create a new plugin package inside this repo, built against the current `@paperclipai_dld/plugin-sdk` contract and modeled on the current example plugin package shape.
+Create a new plugin package inside this repo, built against the current `@paperclipai/plugin-sdk` contract and modeled on the current example plugin package shape.
 
 Recommended package location:
 
@@ -56,7 +56,7 @@ Recommended package location:
 
 Recommended package identity:
 
-- npm/package name: `@paperclipai_dld/plugin-github`
+- npm/package name: `@paperclipai/plugin-github`
 - plugin manifest id: `paperclip.github`
 
 Core modules:

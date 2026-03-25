@@ -6,7 +6,8 @@ RUN corepack enable
 
 FROM base AS deps
 WORKDIR /app
-COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
+COPY patches/ patches/
 COPY cli/package.json cli/
 COPY server/package.json server/
 COPY ui/package.json ui/
@@ -31,9 +32,9 @@ WORKDIR /app
 COPY --from=deps /app /app
 COPY . .
 RUN test -f ui/dist/index.html || (echo "ERROR: ui/dist missing. Build UI before the VPS image." && exit 1)
-RUN pnpm --filter @paperclipai_dld/plugin-sdk build && \
-    pnpm --filter @paperclipai_dld/plugin-github build && \
-    pnpm --filter @paperclipai_dld/server build
+RUN pnpm --filter @paperclipai/plugin-sdk build && \
+    pnpm --filter @paperclipai/plugin-github build && \
+    pnpm --filter @paperclipai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 
 # tools stage: installs system packages and CLI tools independently of app code.

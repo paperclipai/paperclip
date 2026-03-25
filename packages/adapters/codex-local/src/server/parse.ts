@@ -1,4 +1,4 @@
-import { asString, asNumber, parseObject, parseJson } from "@paperclipai_dld/adapter-utils/server-utils";
+import { asString, asNumber, parseObject, parseJson } from "@paperclipai/adapter-utils/server-utils";
 
 export function parseCodexJsonl(stdout: string) {
   let sessionId: string | null = null;

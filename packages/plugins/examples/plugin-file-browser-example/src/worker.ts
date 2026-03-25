@@ -1,4 +1,4 @@
-import { definePlugin, runWorker } from "@paperclipai_dld/plugin-sdk";
+import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
 import * as fs from "node:fs";
 import * as path from "node:path";
 

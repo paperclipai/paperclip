@@ -43,6 +43,43 @@ function headers(token: string): Record<string, string> {
   };
 }
 
+const MAX_RETRIES = 1;
+const BASE_RETRY_DELAY_MS = 1000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Wraps fetch with one retry for rate-limit (429) and transient server (5xx) errors.
+ * On 429: honors the Retry-After header (seconds) before retrying.
+ * On 5xx: uses exponential backoff starting at BASE_RETRY_DELAY_MS.
+ */
+async function fetchWithRetry(
+  fetch: GitHubFetch,
+  url: string,
+  init?: RequestInit,
+  attempt = 0,
+): Promise<Response> {
+  const res = await fetch(url, init);
+
+  if (res.status === 429 && attempt < MAX_RETRIES) {
+    const retryAfterHeader = (res.headers as Headers).get("Retry-After");
+    const delayMs = retryAfterHeader
+      ? parseFloat(retryAfterHeader) * 1000
+      : BASE_RETRY_DELAY_MS;
+    await sleep(delayMs);
+    return fetchWithRetry(fetch, url, init, attempt + 1);
+  }
+
+  if (res.status >= 500 && attempt < MAX_RETRIES) {
+    await sleep(BASE_RETRY_DELAY_MS * Math.pow(2, attempt));
+    return fetchWithRetry(fetch, url, init, attempt + 1);
+  }
+
+  return res;
+}
+
 export async function searchIssues(
   fetch: GitHubFetch,
   token: string,
@@ -50,7 +87,7 @@ export async function searchIssues(
   query: string,
 ): Promise<GitHubSearchResult> {
   const q = encodeURIComponent(`repo:${repo} is:issue ${query}`);
-  const res = await fetch(`${GITHUB_API}/search/issues?q=${q}&per_page=10`, {
+  const res = await fetchWithRetry(fetch, `${GITHUB_API}/search/issues?q=${q}&per_page=10`, {
     headers: headers(token),
   });
   if (!res.ok) throw new Error(`GitHub search failed: ${res.status} ${res.statusText}`);
@@ -64,7 +101,7 @@ export async function getIssue(
   repo: string,
   number: number,
 ): Promise<GitHubIssue> {
-  const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/issues/${number}`, {
+  const res = await fetchWithRetry(fetch, `${GITHUB_API}/repos/${owner}/${repo}/issues/${number}`, {
     headers: headers(token),
   });
   if (!res.ok) throw new Error(`GitHub get issue failed: ${res.status} ${res.statusText}`);
@@ -79,7 +116,7 @@ export async function updateIssueState(
   number: number,
   state: "open" | "closed",
 ): Promise<GitHubIssue> {
-  const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/issues/${number}`, {
+  const res = await fetchWithRetry(fetch, `${GITHUB_API}/repos/${owner}/${repo}/issues/${number}`, {
     method: "PATCH",
     headers: { ...headers(token), "Content-Type": "application/json" },
     body: JSON.stringify({ state }),
@@ -97,7 +134,8 @@ export async function listComments(
   since?: string,
 ): Promise<GitHubComment[]> {
   const params = since ? `?since=${encodeURIComponent(since)}` : "";
-  const res = await fetch(
+  const res = await fetchWithRetry(
+    fetch,
     `${GITHUB_API}/repos/${owner}/${repo}/issues/${number}/comments${params}`,
     { headers: headers(token) },
   );
@@ -113,11 +151,15 @@ export async function createComment(
   number: number,
   body: string,
 ): Promise<GitHubComment> {
-  const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/issues/${number}/comments`, {
-    method: "POST",
-    headers: { ...headers(token), "Content-Type": "application/json" },
-    body: JSON.stringify({ body }),
-  });
+  const res = await fetchWithRetry(
+    fetch,
+    `${GITHUB_API}/repos/${owner}/${repo}/issues/${number}/comments`,
+    {
+      method: "POST",
+      headers: { ...headers(token), "Content-Type": "application/json" },
+      body: JSON.stringify({ body }),
+    },
+  );
   if (!res.ok) throw new Error(`GitHub create comment failed: ${res.status} ${res.statusText}`);
   return res.json() as Promise<GitHubComment>;
 }

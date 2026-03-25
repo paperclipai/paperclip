@@ -31,13 +31,13 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import type { Db } from "@paperclipai_dld/db";
+import type { Db } from "@paperclipai/db";
 import type {
   PaperclipPluginManifestV1,
   PluginLauncherDeclaration,
   PluginRecord,
   PluginUiSlotDeclaration,
-} from "@paperclipai_dld/shared";
+} from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { pluginManifestValidator } from "./plugin-manifest-validator.js";
 import { pluginCapabilityValidator } from "./plugin-capability-validator.js";
@@ -507,7 +507,7 @@ export interface PluginLoader {
  */
 export function isPluginPackageName(name: string): boolean {
   if (name.startsWith(NPM_PLUGIN_PACKAGE_PREFIX)) return true;
-  // Also accept scoped packages like @acme/plugin-linear or @paperclipai_dld/plugin-*
+  // Also accept scoped packages like @acme/plugin-linear or @paperclipai/plugin-*
   if (name.includes("/")) {
     const localPart = name.split("/")[1] ?? "";
     return localPart.startsWith("plugin-");
@@ -1735,7 +1735,7 @@ export function pluginLoader(
       };
 
       // Repo-local plugin installs can resolve workspace TS sources at runtime
-      // (for example @paperclipai_dld/shared exports). Run those workers through
+      // (for example @paperclipai/shared exports). Run those workers through
       // the tsx loader so first-party example plugins work in development.
       if (plugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
         workerOptions.execArgv = ["--import", DEV_TSX_LOADER_PATH];

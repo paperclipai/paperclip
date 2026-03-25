@@ -13,7 +13,7 @@ import {
   type PluginSettingsPageProps,
   type PluginSidebarProps,
   type PluginWidgetProps,
-} from "@paperclipai_dld/plugin-sdk/ui";
+} from "@paperclipai/plugin-sdk/ui";
 import {
   DEFAULT_CONFIG,
   JOB_KEYS,

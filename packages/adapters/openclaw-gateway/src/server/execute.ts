@@ -2,8 +2,8 @@ import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
   AdapterRuntimeServiceReport,
-} from "@paperclipai_dld/adapter-utils";
-import { asNumber, asString, buildPaperclipEnv, parseObject } from "@paperclipai_dld/adapter-utils/server-utils";
+} from "@paperclipai/adapter-utils";
+import { asNumber, asString, buildPaperclipEnv, parseObject } from "@paperclipai/adapter-utils/server-utils";
 import crypto, { randomUUID } from "node:crypto";
 import { WebSocket } from "ws";
 
@@ -605,6 +605,7 @@ class GatewayWsClient {
       this.resolveChallenge = resolve;
       this.rejectChallenge = reject;
     });
+    this.challengePromise.catch(() => {});
   }
 
   async connect(

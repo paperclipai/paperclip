@@ -3,8 +3,8 @@ import {
   runWorker,
   type PluginContext,
   type PluginWebhookInput,
-} from "@paperclipai_dld/plugin-sdk";
-import type { Agent } from "@paperclipai_dld/shared";
+} from "@paperclipai/plugin-sdk";
+import type { Agent } from "@paperclipai/shared";
 import {
   DEFAULT_CONFIG,
   SUPPORTED_GITHUB_EVENTS,
@@ -14,6 +14,7 @@ import {
 } from "./constants.js";
 import type {
   GitHubCheckRunEvent,
+  GitHubPullRequestEvent,
   GitHubWorkflowRunEvent,
 } from "./github-types.js";
 import * as sync from "./sync.js";
@@ -232,43 +233,31 @@ async function commentOnLinkedIssues(
 ): Promise<boolean> {
   if (!ctx) return false;
 
-  const issues = await ctx.issues.list({
-    companyId,
-    status: "in_progress",
-    limit: 50,
-  });
+  const [owner, repoName] = repo.split("/");
+  if (!owner || !repoName) return false;
 
   let commented = false;
 
-  for (const issue of issues) {
-    const haystack = `${issue.title} ${issue.description ?? ""}`.toLowerCase();
-    const repoLower = repo.toLowerCase();
+  for (const prNumber of prNumbers) {
+    const link = await sync.getLinkByGitHub(ctx, owner, repoName, prNumber);
+    if (!link) continue;
 
-    const matchesPR = prNumbers.some(
-      (n) =>
-        haystack.includes(`#${n}`) ||
-        haystack.includes(`pr ${n}`) ||
-        haystack.includes(`pull/${n}`),
-    );
-    const matchesRepo = haystack.includes(repoLower);
+    const commentBody = buildFailureComment(repo, failureContext);
+    await ctx.issues.createComment(link.paperclipIssueId, commentBody, companyId);
+    commented = true;
 
-    if (matchesPR || matchesRepo) {
-      const commentBody = buildFailureComment(repo, failureContext);
-      await ctx.issues.createComment(issue.id, commentBody, companyId);
-      commented = true;
+    ctx.logger.info(`Commented on issue ${link.paperclipIssueId} about CI failure (PR #${prNumber})`);
 
-      ctx.logger.info(`Commented on issue ${issue.identifier ?? issue.id} about CI failure`);
-
-      if (issue.assigneeAgentId) {
-        try {
-          const name = "name" in failureContext ? failureContext.name : "CI check";
-          await ctx.agents.invoke(issue.assigneeAgentId, companyId, {
-            prompt: `CI/PR gate failure on ${repo}: "${name}" failed. See issue ${issue.identifier ?? issue.id} for details.`,
-            reason: "github-ci-failure-on-linked-issue",
-          });
-        } catch {
-          ctx.logger.warn(`Could not invoke agent ${issue.assigneeAgentId}`);
-        }
+    const issue = await ctx.issues.get(link.paperclipIssueId, companyId);
+    if (issue?.assigneeAgentId) {
+      try {
+        const name = "name" in failureContext ? failureContext.name : "CI check";
+        await ctx.agents.invoke(issue.assigneeAgentId, companyId, {
+          prompt: `CI/PR gate failure on ${repo}: "${name}" failed. See issue ${issue.identifier ?? link.paperclipIssueId} for details.`,
+          reason: "github-ci-failure-on-linked-issue",
+        });
+      } catch {
+        ctx.logger.warn(`Could not invoke agent ${issue.assigneeAgentId}`);
       }
     }
   }
@@ -410,12 +399,93 @@ async function handleIssueEvent(payload: GitHubIssueEvent): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Pull request event handler
+// ---------------------------------------------------------------------------
+
+async function handlePullRequestEvent(payload: GitHubPullRequestEvent): Promise<void> {
+  if (!ctx) return;
+
+  const { action, pull_request: pr, repository } = payload;
+
+  // Only act on lifecycle transitions that affect linked issue status.
+  if (action !== "opened" && action !== "closed" && action !== "reopened") return;
+
+  const [owner, repo] = repository.full_name.split("/");
+  if (!owner || !repo) return;
+
+  const link = await sync.getLinkByGitHub(ctx, owner, repo, pr.number);
+  if (!link) {
+    ctx.logger.info(
+      `No linked Paperclip issue for PR ${repository.full_name}#${pr.number}`,
+    );
+    return;
+  }
+
+  // Determine the new Paperclip status:
+  // - merged (closed + merged): done
+  // - closed without merge: blocked (PR rejected/abandoned)
+  // - opened / reopened: in_progress
+  let newStatus: "done" | "in_progress" | "blocked";
+  if (action === "closed") {
+    newStatus = pr.merged ? "done" : "blocked";
+  } else {
+    newStatus = "in_progress";
+  }
+
+  ctx.logger.info(
+    `Syncing PR ${repository.full_name}#${pr.number} (action=${action}, merged=${pr.merged}) → Paperclip status "${newStatus}" on issue ${link.paperclipIssueId}`,
+  );
+
+  const mergedBy = pr.merged_by?.login ?? pr.user?.login ?? "unknown";
+  const comment =
+    action === "closed" && pr.merged
+      ? `PR [#${pr.number}](${pr.html_url}) merged by @${mergedBy} — closing issue.`
+      : action === "closed"
+        ? `PR [#${pr.number}](${pr.html_url}) closed without merging.`
+        : `PR [#${pr.number}](${pr.html_url}) ${action}.`;
+
+  await ctx.issues.update(
+    link.paperclipIssueId,
+    { status: newStatus },
+    link.paperclipCompanyId,
+  );
+
+  await ctx.issues.createComment(
+    link.paperclipIssueId,
+    comment,
+    link.paperclipCompanyId,
+  );
+
+  await sync.updateLink(ctx, link.paperclipIssueId, {
+    lastSyncAt: new Date().toISOString(),
+    lastGhState: pr.state,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Plugin definition
 // ---------------------------------------------------------------------------
 
 const plugin = definePlugin({
   async setup(pluginCtx) {
     ctx = pluginCtx;
+
+    // Validate required config at startup so misconfiguration fails fast
+    // rather than silently at event-processing time.
+    const raw = (await ctx.config.get()) as PluginConfig;
+    if (!raw.companyId) {
+      throw new Error("GitHub plugin config error: companyId is required");
+    }
+    if (!raw.skipSignatureVerification && !raw.webhookSecret) {
+      throw new Error(
+        "GitHub plugin config error: webhookSecret is required " +
+          "(or set skipSignatureVerification: true for development)",
+      );
+    }
+    if (!raw.githubTokenRef) {
+      ctx.logger.warn("githubTokenRef not configured — GitHub API tools will not function");
+    }
+
     registerTools(ctx);
     ctx.logger.info("GitHub plugin initialized");
   },
@@ -474,6 +544,9 @@ const plugin = definePlugin({
         break;
       case "issues":
         await handleIssueEvent(payload as GitHubIssueEvent);
+        break;
+      case "pull_request":
+        await handlePullRequestEvent(payload as GitHubPullRequestEvent);
         break;
     }
 

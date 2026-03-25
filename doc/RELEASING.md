@@ -75,9 +75,9 @@ The job computes the canary version for the current UTC date, publishes under np
 Users install canaries with:
 
 ```bash
-npx @paperclipai_dld/cli@canary onboard
+npx @paperclipai/cli@canary onboard
 # or
-npx @paperclipai_dld/cli@canary onboard --data-dir "$(mktemp -d /tmp/paperclip-canary.XXXXXX)"
+npx @paperclipai/cli@canary onboard --data-dir "$(mktemp -d /tmp/paperclip-canary.XXXXXX)"
 ```
 
 ### Stable
@@ -189,7 +189,7 @@ gh workflow run release-smoke.yml -f paperclip_version=latest
 
 Minimum checks:
 
-- `npx @paperclipai_dld/cli@canary onboard` installs
+- `npx @paperclipai/cli@canary onboard` installs
 - onboarding completes without crashes
 - authenticated login works with the smoke credentials
 - the browser lands in onboarding on a fresh instance

@@ -8,7 +8,7 @@ import {
   index,
 } from "drizzle-orm/pg-core";
 import { plugins } from "./plugins.js";
-import type { PluginWebhookDeliveryStatus } from "@paperclipai_dld/shared";
+import type { PluginWebhookDeliveryStatus } from "@paperclipai/shared";
 
 /**
  * `plugin_webhook_deliveries` table — inbound webhook delivery history for plugins.

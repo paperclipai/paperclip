@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   listPaperclipSkillEntries,
   removeMaintainerOnlySkillSymlinks,
-} from "@paperclipai_dld/adapter-utils/server-utils";
+} from "@paperclipai/adapter-utils/server-utils";
 
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -30,7 +30,8 @@ describe("paperclip skill utils", () => {
 
     const entries = await listPaperclipSkillEntries(moduleDir);
 
-    expect(entries.map((entry) => entry.name)).toEqual(["paperclip"]);
+    expect(entries.map((entry) => entry.key)).toEqual(["paperclipai/paperclip/paperclip"]);
+    expect(entries.map((entry) => entry.runtimeName)).toEqual(["paperclip"]);
     expect(entries[0]?.source).toBe(path.join(root, "skills", "paperclip"));
   });
 

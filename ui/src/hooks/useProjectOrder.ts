@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { Project } from "@paperclipai_dld/shared";
+import type { Project } from "@paperclipai/shared";
 import {
   getProjectOrderStorageKey,
   PROJECT_ORDER_UPDATED_EVENT,

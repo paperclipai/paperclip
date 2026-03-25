@@ -4,7 +4,7 @@ import type {
   IssueExecutionWorkspaceSettings,
   ProjectExecutionWorkspaceDefaultMode,
   ProjectExecutionWorkspacePolicy,
-} from "@paperclipai_dld/shared";
+} from "@paperclipai/shared";
 import { asString, parseObject } from "../adapters/utils.js";
 
 type ParsedExecutionWorkspaceMode = Exclude<ExecutionWorkspaceMode, "inherit" | "reuse_existing">;
@@ -130,6 +130,21 @@ export function defaultIssueExecutionWorkspaceSettingsForProject(
             ? "agent_default"
             : "shared_workspace",
   };
+}
+
+export function issueExecutionWorkspaceModeForPersistedWorkspace(
+  mode: string | null | undefined,
+): IssueExecutionWorkspaceSettings["mode"] {
+  if (mode === null || mode === undefined) {
+    return "agent_default";
+  }
+  if (mode === "isolated_workspace" || mode === "operator_branch" || mode === "shared_workspace") {
+    return mode;
+  }
+  if (mode === "adapter_managed" || mode === "cloud_sandbox") {
+    return "agent_default";
+  }
+  return "shared_workspace";
 }
 
 export function resolveExecutionWorkspaceMode(input: {

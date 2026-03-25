@@ -1,5 +1,6 @@
 {
-  "name": "@paperclipai_dld/adapter-claude-local",
+  "name": "@paperclipai/adapter-claude-local",
+  "private": true,
   "version": "0.3.1",
   "license": "MIT",
   "homepage": "https://github.com/paperclipai/paperclip",
@@ -53,7 +54,7 @@
     "probe:quota:raw": "pnpm exec tsx src/cli/quota-probe.ts --json --raw-cli"
   },
   "dependencies": {
-    "@paperclipai_dld/adapter-utils": "workspace:*",
+    "@paperclipai/adapter-utils": "workspace:*",
     "picocolors": "^1.1.1"
   },
   "devDependencies": {

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
-import type { PaperclipPluginManifestV1 } from "@paperclipai_dld/shared";
+import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import type { PluginCapabilityValidator } from "./plugin-capability-validator.js";
 
 export class PluginSandboxError extends Error {

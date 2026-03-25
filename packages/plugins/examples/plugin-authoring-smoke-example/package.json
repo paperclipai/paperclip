@@ -1,5 +1,5 @@
 {
-  "name": "@paperclipai_dld/plugin-authoring-smoke-example",
+  "name": "@paperclipai/plugin-authoring-smoke-example",
   "version": "0.1.0",
   "type": "module",
   "private": true,
@@ -11,7 +11,7 @@
     "dev": "node ./esbuild.config.mjs --watch",
     "dev:ui": "paperclip-plugin-dev-server --root . --ui-dir dist/ui --port 4177",
     "test": "vitest run --config ./vitest.config.ts",
-    "typecheck": "pnpm --filter @paperclipai_dld/plugin-sdk build && tsc --noEmit"
+    "typecheck": "pnpm --filter @paperclipai/plugin-sdk build && tsc --noEmit"
   },
   "paperclipPlugin": {
     "manifest": "./dist/manifest.js",
@@ -26,7 +26,7 @@
   "author": "Plugin Author",
   "license": "MIT",
   "dependencies": {
-    "@paperclipai_dld/plugin-sdk": "workspace:*"
+    "@paperclipai/plugin-sdk": "workspace:*"
   },
   "devDependencies": {
     "@rollup/plugin-node-resolve": "^16.0.1",

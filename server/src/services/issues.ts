@@ -1,6 +1,7 @@
-import { and, asc, desc, eq, gt, inArray, isNull, lt, or, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai_dld/db";
+import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import type { Db } from "@paperclipai/db";
 import {
+  activityLog,
   agents,
   assets,
   companies,
@@ -18,8 +19,8 @@ import {
   labels,
   projectWorkspaces,
   projects,
-} from "@paperclipai_dld/db";
-import { extractProjectMentionIds } from "@paperclipai_dld/shared";
+} from "@paperclipai/db";
+import { extractAgentMentionIds, extractProjectMentionIds } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
@@ -33,9 +34,6 @@ import { getDefaultCompanyGoal } from "./goals.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
-
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function assertTransition(from: string, to: string) {
   if (from === to) return;
@@ -65,12 +63,16 @@ function applyStatusSideEffects(
 export interface IssueFilters {
   status?: string;
   assigneeAgentId?: string;
+  participantAgentId?: string;
   assigneeUserId?: string;
   touchedByUserId?: string;
   unreadForUserId?: string;
   projectId?: string;
   parentId?: string;
   labelId?: string;
+  originKind?: string;
+  originId?: string;
+  includeRoutineExecutions?: boolean;
   q?: string;
 }
 
@@ -99,13 +101,7 @@ type IssueUserContextInput = {
   createdAt: Date | string;
   updatedAt: Date | string;
 };
-
-function redactIssueComment<T extends { body: string }>(comment: T): T {
-  return {
-    ...comment,
-    body: redactCurrentUserText(comment.body),
-  };
-}
+type ProjectGoalReader = Pick<Db, "select">;
 
 function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
   if (actorRunId) return checkoutRunId === actorRunId;
@@ -116,6 +112,20 @@ const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancell
 
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
+}
+
+async function getProjectDefaultGoalId(
+  db: ProjectGoalReader,
+  companyId: string,
+  projectId: string | null | undefined,
+) {
+  if (!projectId) return null;
+  const row = await db
+    .select({ goalId: projects.goalId })
+    .from(projects)
+    .where(and(eq(projects.id, projectId), eq(projects.companyId, companyId)))
+    .then((rows) => rows[0] ?? null);
+  return row?.goalId ?? null;
 }
 
 function touchedByUserCondition(companyId: string, userId: string) {
@@ -136,6 +146,30 @@ function touchedByUserCondition(companyId: string, userId: string) {
         WHERE ${issueComments.issueId} = ${issues.id}
           AND ${issueComments.companyId} = ${companyId}
           AND ${issueComments.authorUserId} = ${userId}
+      )
+    )
+  `;
+}
+
+function participatedByAgentCondition(companyId: string, agentId: string) {
+  return sql<boolean>`
+    (
+      ${issues.createdByAgentId} = ${agentId}
+      OR ${issues.assigneeAgentId} = ${agentId}
+      OR EXISTS (
+        SELECT 1
+        FROM ${issueComments}
+        WHERE ${issueComments.issueId} = ${issues.id}
+          AND ${issueComments.companyId} = ${companyId}
+          AND ${issueComments.authorAgentId} = ${agentId}
+      )
+      OR EXISTS (
+        SELECT 1
+        FROM ${activityLog}
+        WHERE ${activityLog.companyId} = ${companyId}
+          AND ${activityLog.entityType} = 'issue'
+          AND ${activityLog.entityId} = ${issues.id}::text
+          AND ${activityLog.agentId} = ${agentId}
       )
     )
   `;
@@ -197,6 +231,41 @@ function unreadForUserCondition(companyId: string, userId: string) {
       )
     )
   `;
+}
+
+/** Named entities commonly emitted in saved issue bodies; unknown `&name;` sequences are left unchanged. */
+const WELL_KNOWN_NAMED_HTML_ENTITIES: Readonly<Record<string, string>> = {
+  amp: "&",
+  apos: "'",
+  copy: "\u00A9",
+  gt: ">",
+  lt: "<",
+  nbsp: "\u00A0",
+  quot: '"',
+  ensp: "\u2002",
+  emsp: "\u2003",
+  thinsp: "\u2009",
+};
+
+function decodeNumericHtmlEntity(digits: string, radix: 16 | 10): string | null {
+  const n = Number.parseInt(digits, radix);
+  if (Number.isNaN(n) || n < 0 || n > 0x10ffff) return null;
+  try {
+    return String.fromCodePoint(n);
+  } catch {
+    return null;
+  }
+}
+
+/** Decodes HTML character references in a raw @mention capture so UI-encoded bodies match agent names. */
+export function normalizeAgentMentionToken(raw: string): string {
+  let s = raw.replace(/&#x([0-9a-fA-F]+);/gi, (full, hex: string) => decodeNumericHtmlEntity(hex, 16) ?? full);
+  s = s.replace(/&#([0-9]+);/g, (full, dec: string) => decodeNumericHtmlEntity(dec, 10) ?? full);
+  s = s.replace(/&([a-z][a-z0-9]*);/gi, (full, name: string) => {
+    const decoded = WELL_KNOWN_NAMED_HTML_ENTITIES[name.toLowerCase()];
+    return decoded !== undefined ? decoded : full;
+  });
+  return s.trim();
 }
 
 export function deriveIssueUserContext(
@@ -322,6 +391,13 @@ function withActiveRuns(
 
 export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
+
+  function redactIssueComment<T extends { body: string }>(comment: T, censorUsernameInLogs: boolean): T {
+    return {
+      ...comment,
+      body: redactCurrentUserText(comment.body, { enabled: censorUsernameInLogs }),
+    };
+  }
 
   async function assertAssignableAgent(companyId: string, agentId: string) {
     const assignee = await db
@@ -508,6 +584,9 @@ export function issueService(db: Db) {
       if (filters?.assigneeAgentId) {
         conditions.push(eq(issues.assigneeAgentId, filters.assigneeAgentId));
       }
+      if (filters?.participantAgentId) {
+        conditions.push(participatedByAgentCondition(companyId, filters.participantAgentId));
+      }
       if (filters?.assigneeUserId) {
         conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
       }
@@ -519,6 +598,8 @@ export function issueService(db: Db) {
       }
       if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
       if (filters?.parentId) conditions.push(eq(issues.parentId, filters.parentId));
+      if (filters?.originKind) conditions.push(eq(issues.originKind, filters.originKind));
+      if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
       if (filters?.labelId) {
         const labeledIssueIds = await db
           .select({ issueId: issueLabels.issueId })
@@ -536,6 +617,9 @@ export function issueService(db: Db) {
             commentContainsMatch,
           )!,
         );
+      }
+      if (!filters?.includeRoutineExecutions && !filters?.originKind && !filters?.originId) {
+        conditions.push(ne(issues.originKind, "routine_execution"));
       }
       conditions.push(isNull(issues.hiddenAt));
 
@@ -618,6 +702,7 @@ export function issueService(db: Db) {
         eq(issues.companyId, companyId),
         isNull(issues.hiddenAt),
         unreadForUserCondition(companyId, userId),
+        ne(issues.originKind, "routine_execution"),
       ];
       if (status) {
         const statuses = status.split(",").map((s) => s.trim()).filter(Boolean);
@@ -709,6 +794,7 @@ export function issueService(db: Db) {
       }
       return db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
+        const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
         let executionWorkspaceSettings =
           (issueData.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? null;
         if (executionWorkspaceSettings == null && issueData.projectId) {
@@ -756,9 +842,11 @@ export function issueService(db: Db) {
 
         const values = {
           ...issueData,
+          originKind: issueData.originKind ?? "manual",
           goalId: resolveIssueGoalId({
             projectId: issueData.projectId,
             goalId: issueData.goalId,
+            projectGoalId,
             defaultGoalId: defaultCompanyGoal?.id ?? null,
           }),
           ...(projectWorkspaceId ? { projectWorkspaceId } : {}),
@@ -859,11 +947,21 @@ export function issueService(db: Db) {
 
       return db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, existing.companyId);
+        const [currentProjectGoalId, nextProjectGoalId] = await Promise.all([
+          getProjectDefaultGoalId(tx, existing.companyId, existing.projectId),
+          getProjectDefaultGoalId(
+            tx,
+            existing.companyId,
+            issueData.projectId !== undefined ? issueData.projectId : existing.projectId,
+          ),
+        ]);
         patch.goalId = resolveNextIssueGoalId({
           currentProjectId: existing.projectId,
           currentGoalId: existing.goalId,
+          currentProjectGoalId,
           projectId: issueData.projectId,
           goalId: issueData.goalId,
+          projectGoalId: nextProjectGoalId,
           defaultGoalId: defaultCompanyGoal?.id ?? null,
         });
         const updated = await tx
@@ -1129,9 +1227,6 @@ export function issueService(db: Db) {
           status: "todo",
           assigneeAgentId: null,
           checkoutRunId: null,
-          executionRunId: null,
-          executionAgentNameKey: null,
-          executionLockedAt: null,
           updatedAt: new Date(),
         })
         .where(eq(issues.id, id))
@@ -1221,7 +1316,8 @@ export function issueService(db: Db) {
         );
 
       const comments = limit ? await query.limit(limit) : await query;
-      return comments.map(redactIssueComment);
+      const { censorUsernameInLogs } = await instanceSettings.getGeneral();
+      return comments.map((comment) => redactIssueComment(comment, censorUsernameInLogs));
     },
 
     getCommentCursor: async (issueId: string) => {
@@ -1253,14 +1349,15 @@ export function issueService(db: Db) {
     },
 
     getComment: (commentId: string) =>
-      db
+      instanceSettings.getGeneral().then(({ censorUsernameInLogs }) =>
+        db
         .select()
         .from(issueComments)
         .where(eq(issueComments.id, commentId))
         .then((rows) => {
           const comment = rows[0] ?? null;
-          return comment ? redactIssueComment(comment) : null;
-        }),
+          return comment ? redactIssueComment(comment, censorUsernameInLogs) : null;
+        })),
 
     addComment: async (issueId: string, body: string, actor: { agentId?: string; userId?: string }) => {
       const issue = await db
@@ -1271,7 +1368,10 @@ export function issueService(db: Db) {
 
       if (!issue) throw notFound("Issue not found");
 
-      const redactedBody = redactCurrentUserText(body);
+      const currentUserRedactionOptions = {
+        enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
+      };
+      const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
       const [comment] = await db
         .insert(issueComments)
         .values({
@@ -1289,7 +1389,7 @@ export function issueService(db: Db) {
         .set({ updatedAt: new Date() })
         .where(eq(issues.id, issueId));
 
-      return redactIssueComment(comment);
+      return redactIssueComment(comment, currentUserRedactionOptions.enabled);
     },
 
     createAttachment: async (input: {
@@ -1452,11 +1552,22 @@ export function issueService(db: Db) {
       const re = /\B@([^\s@,!?.]+)/g;
       const tokens = new Set<string>();
       let m: RegExpExecArray | null;
-      while ((m = re.exec(body)) !== null) tokens.add(m[1].toLowerCase());
-      if (tokens.size === 0) return [];
+      while ((m = re.exec(body)) !== null) {
+        const normalized = normalizeAgentMentionToken(m[1]);
+        if (normalized) tokens.add(normalized.toLowerCase());
+      }
+
+      const explicitAgentMentionIds = extractAgentMentionIds(body);
+      if (tokens.size === 0 && explicitAgentMentionIds.length === 0) return [];
       const rows = await db.select({ id: agents.id, name: agents.name })
         .from(agents).where(eq(agents.companyId, companyId));
-      return rows.filter(a => tokens.has(a.name.toLowerCase())).map(a => a.id);
+      const resolved = new Set<string>(explicitAgentMentionIds);
+      for (const agent of rows) {
+        if (tokens.has(agent.name.toLowerCase())) {
+          resolved.add(agent.id);
+        }
+      }
+      return [...resolved];
     },
 
     findMentionedProjectIds: async (issueId: string) => {

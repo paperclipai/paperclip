@@ -1,4 +1,4 @@
-# @paperclipai_dld/adapter-cursor-local
+# @paperclipai/adapter-cursor-local
 
 ## 0.3.1
 
@@ -6,7 +6,7 @@
 
 - Stable release preparation for 0.3.1
 - Updated dependencies
-  - @paperclipai_dld/adapter-utils@0.3.1
+  - @paperclipai/adapter-utils@0.3.1
 
 ## 0.3.0
 
@@ -17,7 +17,7 @@
 ### Patch Changes
 
 - Updated dependencies
-  - @paperclipai_dld/adapter-utils@0.3.0
+  - @paperclipai/adapter-utils@0.3.0
 
 ## 0.2.7
 

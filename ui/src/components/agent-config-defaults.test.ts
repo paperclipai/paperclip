@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildClaudeLocalConfig } from "@paperclipai_dld/adapter-claude-local/ui";
+import { buildClaudeLocalConfig } from "@paperclipai/adapter-claude-local/ui";
 import { defaultCreateValues } from "./agent-config-defaults.js";
 
 describe("defaultCreateValues", () => {

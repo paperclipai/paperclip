@@ -1,4 +1,4 @@
-import type { PluginWidgetProps } from "@paperclipai_dld/plugin-sdk/ui";
+import type { PluginWidgetProps } from "@paperclipai/plugin-sdk/ui";
 
 const WIDGET_LABEL = "Hello world plugin widget";
 
@@ -9,7 +9,7 @@ export function HelloWorldDashboardWidget({ context }: PluginWidgetProps) {
   return (
     <section aria-label={WIDGET_LABEL}>
       <strong>Hello world</strong>
-      <div>This widget was added by @paperclipai_dld/plugin-hello-world-example.</div>
+      <div>This widget was added by @paperclipai/plugin-hello-world-example.</div>
       {/* Include host context so authors can see where scoped IDs come from. */}
       <div>Company context: {context.companyId}</div>
     </section>

@@ -1,6 +1,6 @@
 import { lt, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai_dld/db";
-import { pluginLogs } from "@paperclipai_dld/db";
+import type { Db } from "@paperclipai/db";
+import { pluginLogs } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
 
 /** Default retention period: 7 days. */

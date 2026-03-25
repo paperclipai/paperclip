@@ -2,7 +2,7 @@ import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestContext,
   AdapterEnvironmentTestResult,
-} from "@paperclipai_dld/adapter-utils";
+} from "@paperclipai/adapter-utils";
 import {
   asString,
   asStringArray,
@@ -11,7 +11,7 @@ import {
   ensureCommandResolvable,
   ensurePathInEnv,
   runChildProcess,
-} from "@paperclipai_dld/adapter-utils/server-utils";
+} from "@paperclipai/adapter-utils/server-utils";
 import { discoverOpenCodeModels, ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
 import { parseOpenCodeJsonl } from "./parse.js";
 

@@ -24,17 +24,17 @@ import { fileURLToPath } from "node:url";
 import { Router } from "express";
 import type { Request } from "express";
 import { and, desc, eq, gte } from "drizzle-orm";
-import type { Db } from "@paperclipai_dld/db";
-import { companies, pluginLogs, pluginWebhookDeliveries } from "@paperclipai_dld/db";
+import type { Db } from "@paperclipai/db";
+import { companies, pluginLogs, pluginWebhookDeliveries } from "@paperclipai/db";
 import type {
   PluginStatus,
   PaperclipPluginManifestV1,
   PluginBridgeErrorCode,
   PluginLauncherRenderContextSnapshot,
-} from "@paperclipai_dld/shared";
+} from "@paperclipai/shared";
 import {
   PLUGIN_STATUSES,
-} from "@paperclipai_dld/shared";
+} from "@paperclipai/shared";
 import { pluginRegistryService } from "../services/plugin-registry.js";
 import { pluginLifecycleManager } from "../services/plugin-lifecycle.js";
 import { getPluginUiContributionMetadata, pluginLoader } from "../services/plugin-loader.js";
@@ -45,8 +45,8 @@ import type { PluginJobStore } from "../services/plugin-job-store.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import type { PluginStreamBus } from "../services/plugin-stream-bus.js";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
-import type { ToolRunContext } from "@paperclipai_dld/plugin-sdk";
-import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@paperclipai_dld/plugin-sdk";
+import type { ToolRunContext } from "@paperclipai/plugin-sdk";
+import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { validateInstanceConfig } from "../services/plugin-config-validator.js";
 
@@ -116,7 +116,7 @@ const REPO_ROOT = path.resolve(__dirname, "../../..");
 
 const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
   {
-    packageName: "@paperclipai_dld/plugin-hello-world-example",
+    packageName: "@paperclipai/plugin-hello-world-example",
     pluginKey: "paperclip.hello-world-example",
     displayName: "Hello World Widget (Example)",
     description: "Reference UI plugin that adds a simple Hello World widget to the Paperclip dashboard.",
@@ -124,7 +124,7 @@ const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
     tag: "example",
   },
   {
-    packageName: "@paperclipai_dld/plugin-file-browser-example",
+    packageName: "@paperclipai/plugin-file-browser-example",
     pluginKey: "paperclip-file-browser-example",
     displayName: "File Browser (Example)",
     description: "Example plugin that adds a Files link in project navigation plus a project detail file browser.",
@@ -132,7 +132,7 @@ const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
     tag: "example",
   },
   {
-    packageName: "@paperclipai_dld/plugin-kitchen-sink-example",
+    packageName: "@paperclipai/plugin-kitchen-sink-example",
     pluginKey: "paperclip-kitchen-sink-example",
     displayName: "Kitchen Sink (Example)",
     description: "Reference plugin that demonstrates the current Paperclip plugin API surface, bridge flows, UI extension surfaces, jobs, webhooks, tools, streams, and trusted local workspace/process demos.",
@@ -507,7 +507,7 @@ export function pluginRoutes(
    * Request body:
    * - `tool`: Fully namespaced tool name (e.g., "acme.linear:search-issues")
    * - `parameters`: Parameters matching the tool's declared JSON Schema
-   * - `runContext`: Agent run context with agentId, runId, companyId, projectId
+   * - `runContext`: Agent run context with agentId, runId, companyId, projectId, and optional issueId
    *
    * Response: `ToolExecutionResult`
    * Errors:

@@ -2,7 +2,7 @@
  * Core types for the Paperclip plugin worker-side SDK.
  *
  * These types define the stable public API surface that plugin workers import
- * from `@paperclipai_dld/plugin-sdk`.  The host provides a concrete implementation
+ * from `@paperclipai/plugin-sdk`.  The host provides a concrete implementation
  * of `PluginContext` to the plugin at initialisation time.
  *
  * @see PLUGIN_SPEC.md §14 — SDK Surface
@@ -23,10 +23,10 @@ import type {
   IssueDocumentSummary,
   Agent,
   Goal,
-} from "@paperclipai_dld/shared";
+} from "@paperclipai/shared";
 
 // ---------------------------------------------------------------------------
-// Re-exports from @paperclipai_dld/shared (plugin authors import from one place)
+// Re-exports from @paperclipai/shared (plugin authors import from one place)
 // ---------------------------------------------------------------------------
 
 export type {
@@ -67,7 +67,7 @@ export type {
   IssueDocumentSummary,
   Agent,
   Goal,
-} from "@paperclipai_dld/shared";
+} from "@paperclipai/shared";
 
 // ---------------------------------------------------------------------------
 // Scope key — identifies where plugin state is stored
@@ -183,6 +183,8 @@ export interface ToolRunContext {
   companyId: string;
   /** UUID of the project the run belongs to. */
   projectId: string;
+  /** UUID of the Paperclip issue the agent is currently working on, if any. */
+  issueId?: string;
 }
 
 /**
@@ -1040,7 +1042,7 @@ export interface PluginGoalsClient {
  * ctx.streams.close("chat");
  * ```
  *
- * @see usePluginStream in `@paperclipai_dld/plugin-sdk/ui`
+ * @see usePluginStream in `@paperclipai/plugin-sdk/ui`
  */
 export interface PluginStreamsClient {
   /**
@@ -1077,7 +1079,7 @@ export interface PluginStreamsClient {
  *
  * @example
  * ```ts
- * import { definePlugin } from "@paperclipai_dld/plugin-sdk";
+ * import { definePlugin } from "@paperclipai/plugin-sdk";
  *
  * export default definePlugin({
  *   async setup(ctx) {

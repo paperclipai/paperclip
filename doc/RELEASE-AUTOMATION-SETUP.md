@@ -14,7 +14,7 @@ Repo-side files that depend on this setup:
 
 ### Workflow prerequisites
 
-1. **Secret `NPM_TOKEN`** — Create an npm **automation** token with publish access to `@paperclipai_dld/*` (all 15 packages including `@paperclipai_dld/cli`). Add it as **`NPM_TOKEN`** in GitHub Environments **`npm-canary`** and **`npm-stable`**. [`.github/workflows/release.yml`](../.github/workflows/release.yml) sets `NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}` and runs **`npm whoami`** before `pnpm install` on publish jobs.
+1. **Secret `NPM_TOKEN`** — Create an npm **automation** token with publish access to `@paperclipai/*` (all 15 packages including `@paperclipai/cli`). Add it as **`NPM_TOKEN`** in GitHub Environments **`npm-canary`** and **`npm-stable`**. [`.github/workflows/release.yml`](../.github/workflows/release.yml) sets `NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}` and runs **`npm whoami`** before `pnpm install` on publish jobs.
 
 2. **`setup-node` registry URL** — Publish jobs use `actions/setup-node` with:
 
@@ -44,8 +44,8 @@ Do this for every public package that Paperclip publishes.
 
 At minimum that includes:
 
-- `@paperclipai_dld/cli`
-- `@paperclipai_dld/server`
+- `@paperclipai/cli`
+- `@paperclipai/server`
 - public packages under `packages/`
 
 ### 2.1. In npm, open each package settings page
@@ -221,7 +221,7 @@ After setup:
 Install-path check:
 
 ```bash
-npx @paperclipai_dld/cli@canary onboard
+npx @paperclipai/cli@canary onboard
 ```
 
 ## 12. Verify the Stable Workflow

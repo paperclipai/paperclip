@@ -1,4 +1,4 @@
-import type { CreateConfigValues } from "@paperclipai_dld/adapter-utils";
+import type { CreateConfigValues } from "@paperclipai/adapter-utils";
 
 function parseJsonObject(text: string): Record<string, unknown> | null {
   const trimmed = text.trim();

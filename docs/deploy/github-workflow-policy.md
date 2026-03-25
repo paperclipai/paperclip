@@ -3,7 +3,7 @@ title: GitHub workflow & release policy
 summary: PR pipeline, branch protection, deploy vs npm vs npx — aligned with current CI and releases
 ---
 
-This document supersedes informal “New GitHub Workflow” checklists (e.g. board issue DLD-236). It matches **how the repo actually ships today**: GHCR-based VPS deploys, **decoupled** npm publishes, and **`npx` as the public CLI install path** for `@paperclipai_dld/cli`.
+This document supersedes informal “New GitHub Workflow” checklists (e.g. board issue DLD-236). It matches **how the repo actually ships today**: GHCR-based VPS deploys, **decoupled** npm publishes, and **`npx` as the public CLI install path** for `@paperclipai/cli`.
 
 ## Goals
 
@@ -17,15 +17,15 @@ This document supersedes informal “New GitHub Workflow” checklists (e.g. boa
 |------|----------------|--------|
 | **Merge / CI** | Code lands on the default branch after PR + required checks | PR merge |
 | **VPS app deploy** | Docker image `ghcr.io/viraforge/paperclip:<sha>` is built in Actions; the Vultr host **pulls** that tag and recreates the server container | **`workflow_dispatch`** — [Deploy Vultr](https://github.com/Viraforge/paperclip/actions/workflows/deploy-vultr.yml) (not automatic on every push to `master`) |
-| **npm / `npx`** | Packages publish under the **`@paperclipai_dld`** scope; users run the CLI via **`npx`** + dist-tag (`canary` / `latest`) | **[Release](https://github.com/Viraforge/paperclip/actions/workflows/release.yml)** workflow (`workflow_dispatch`, plus nightly canary schedule) — **not** tied to merge |
+| **npm / `npx`** | Packages publish under the **`@paperclipai`** scope; users run the CLI via **`npx`** + dist-tag (`canary` / `latest`) | **[Release](https://github.com/Viraforge/paperclip/actions/workflows/release.yml)** workflow (`workflow_dispatch`, plus nightly canary schedule) — **not** tied to merge |
 
 **Invariant:** Merging to `master` **does not** deploy the VPS and **does not** publish npm. Shipping the app image and publishing packages are **deliberate** workflow runs. Details: [`doc/RELEASING.md`](../../doc/RELEASING.md).
 
 ## Public install surface (`npx`)
 
-- The published CLI is **`@paperclipai_dld/cli`** (binary: `paperclipai`). This is the same code path validated by release automation and Docker/onboarding smoke flows.
-- **Canary:** e.g. `npx @paperclipai_dld/cli@canary onboard` (see `doc/RELEASING.md` for exact commands and propagation notes).
-- **Stable:** `npx @paperclipai_dld/cli@latest …` (or the current stable dist-tag documented in `doc/RELEASING.md`).
+- The published CLI is **`@paperclipai/cli`** (binary: `paperclipai`). This is the same code path validated by release automation and Docker/onboarding smoke flows.
+- **Canary:** e.g. `npx @paperclipai/cli@canary onboard` (see `doc/RELEASING.md` for exact commands and propagation notes).
+- **Stable:** `npx @paperclipai/cli@latest …` (or the current stable dist-tag documented in `doc/RELEASING.md`).
 - **Repo development** still uses `pnpm` workspaces (`pnpm dev`, `pnpm paperclipai …`). Docs and runbooks should not imply `pnpm install` is the only way operators install Paperclip — **`npx` is the portable, published path**.
 
 npm registry propagation can lag several minutes after publish; CI allows for that (verify windows). Do not treat a failed immediate `npx` as a failed release until retries/timeouts are exhausted.
@@ -86,7 +86,7 @@ Developers:
 - Issues caught before merge (severity counts)
 - Post-deploy regressions tied to recent merges
 - **Deploy** success and image tag on the host vs expected `github.sha`
-- **`npx @paperclipai_dld/cli@<dist-tag>`** smoke after publish when releasing user-facing CLI changes
+- **`npx @paperclipai/cli@<dist-tag>`** smoke after publish when releasing user-facing CLI changes
 
 ## Related docs
 

@@ -1,4 +1,4 @@
-import type { PaperclipPluginManifestV1 } from "@paperclipai_dld/plugin-sdk";
+import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: "paperclipai.plugin-authoring-smoke-example",

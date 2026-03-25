@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Db } from "@paperclipai_dld/db";
+import type { Db } from "@paperclipai/db";
 import { notifyHireApproved } from "../services/hire-hook.js";
 
 // Mock the registry so we control whether the adapter has onHireApproved and what it does.

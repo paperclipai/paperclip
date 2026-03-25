@@ -1,12 +1,12 @@
 import { Router } from "express";
-import type { Db } from "@paperclipai_dld/db";
+import type { Db } from "@paperclipai/db";
 import {
   createCostEventSchema,
   createFinanceEventSchema,
   resolveBudgetIncidentSchema,
   updateBudgetSchema,
   upsertBudgetPolicySchema,
-} from "@paperclipai_dld/shared";
+} from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import {
   budgetService,
@@ -103,9 +103,9 @@ export function costRoutes(db: Db) {
   }
 
   function parseLimit(query: Record<string, unknown>) {
-    const raw = query.limit as string | undefined;
-    if (!raw) return 100;
-    const limit = Number.parseInt(raw, 10);
+    const raw = Array.isArray(query.limit) ? query.limit[0] : query.limit;
+    if (raw == null || raw === "") return 100;
+    const limit = typeof raw === "number" ? raw : Number.parseInt(String(raw), 10);
     if (!Number.isFinite(limit) || limit <= 0 || limit > 500) {
       throw badRequest("invalid 'limit' value");
     }

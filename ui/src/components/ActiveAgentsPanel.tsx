@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import type { Issue } from "@paperclipai_dld/shared";
+import type { Issue } from "@paperclipai/shared";
 import { heartbeatsApi, type LiveRunForIssue } from "../api/heartbeats";
 import { issuesApi } from "../api/issues";
 import type { TranscriptEntry } from "../adapters";

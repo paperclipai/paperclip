@@ -1,4 +1,4 @@
-# @paperclipai_dld/plugin-hello-world-example
+# @paperclipai/plugin-hello-world-example
 
 First-party reference plugin showing the smallest possible UI extension.
 
@@ -25,7 +25,7 @@ It is a repo-local example plugin for development, not a plugin that should be a
 From the repo root, build the plugin and install it by local path:
 
 ```bash
-pnpm --filter @paperclipai_dld/plugin-hello-world-example build
+pnpm --filter @paperclipai/plugin-hello-world-example build
 pnpm paperclipai plugin install ./packages/plugins/examples/plugin-hello-world-example
 ```
 

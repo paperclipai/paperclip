@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import type { Request, RequestHandler } from "express";
 import { and, eq, isNull } from "drizzle-orm";
-import type { Db } from "@paperclipai_dld/db";
-import { agentApiKeys, agents, companyMemberships, instanceUserRoles } from "@paperclipai_dld/db";
+import type { Db } from "@paperclipai/db";
+import { agentApiKeys, agents, companyMemberships, instanceUserRoles } from "@paperclipai/db";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
-import type { DeploymentMode } from "@paperclipai_dld/shared";
+import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
+import { boardAuthService } from "../services/board-auth.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -18,6 +19,7 @@ interface ActorMiddlewareOptions {
 }
 
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
+  const boardAuth = boardAuthService(db);
   return async (req, _res, next) => {
     req.actor =
       opts.deploymentMode === "local_trusted"
@@ -78,6 +80,25 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     if (!token) {
       next();
       return;
+    }
+
+    const boardKey = await boardAuth.findBoardApiKeyByToken(token);
+    if (boardKey) {
+      const access = await boardAuth.resolveBoardAccess(boardKey.userId);
+      if (access.user) {
+        await boardAuth.touchBoardApiKey(boardKey.id);
+        req.actor = {
+          type: "board",
+          userId: boardKey.userId,
+          companyIds: access.companyIds,
+          isInstanceAdmin: access.isInstanceAdmin,
+          keyId: boardKey.id,
+          runId: runIdHeader || undefined,
+          source: "board_key",
+        };
+        next();
+        return;
+      }
     }
 
     const tokenHash = hashToken(token);

@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { ProviderQuotaResult, QuotaWindow } from "@paperclipai_dld/adapter-utils";
+import type { ProviderQuotaResult, QuotaWindow } from "@paperclipai/adapter-utils";
 
 const execFileAsync = promisify(execFile);
 

@@ -237,7 +237,7 @@ Canary also publishes automatically on a nightly schedule (02:00 UTC). No action
 
 ### npm package scope
 
-All packages are scoped `@paperclipai_dld/` (npm org: `paperclipai_dld`). Do not rename to `@paperclipai/` — that scope is owned by a third party on npm. The CLI binary name (`paperclipai`) is independent of the package name (`@paperclipai_dld/cli`) and should not change.
+All packages are scoped `@paperclipai/` and marked `"private": true` to prevent accidental npm publishing. We use the upstream's scope for merge compatibility — packages are consumed only within the monorepo via pnpm workspace protocol, never published to npm.
 
 ## 12. Definition of Done
 

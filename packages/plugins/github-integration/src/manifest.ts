@@ -1,4 +1,4 @@
-import type { PaperclipPluginManifestV1 } from "@paperclipai_dld/plugin-sdk";
+import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 import { DEFAULT_CONFIG, PLUGIN_ID, PLUGIN_VERSION, WEBHOOK_KEYS } from "./constants.js";
 
 const manifest: PaperclipPluginManifestV1 = {

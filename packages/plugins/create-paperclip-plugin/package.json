@@ -1,5 +1,6 @@
 {
-  "name": "@paperclipai_dld/create-paperclip-plugin",
+  "name": "@paperclipai/create-paperclip-plugin",
+  "private": true,
   "version": "0.1.0",
   "license": "MIT",
   "homepage": "https://github.com/paperclipai/paperclip",
@@ -41,7 +42,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@paperclipai_dld/plugin-sdk": "workspace:*"
+    "@paperclipai/plugin-sdk": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.6.0",

@@ -1,4 +1,5 @@
 export { execute, ensureCodexSkillsInjected } from "./execute.js";
+export { listCodexSkills, syncCodexSkills } from "./skills.js";
 export { testEnvironment } from "./test.js";
 export { parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
 export {
@@ -12,7 +13,7 @@ export {
   fetchWithTimeout,
   codexHomeDir,
 } from "./quota.js";
-import type { AdapterSessionCodec } from "@paperclipai_dld/adapter-utils";
+import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;

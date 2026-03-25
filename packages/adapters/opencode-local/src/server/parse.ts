@@ -1,4 +1,4 @@
-import { asNumber, asString, parseJson, parseObject } from "@paperclipai_dld/adapter-utils/server-utils";
+import { asNumber, asString, parseJson, parseObject } from "@paperclipai/adapter-utils/server-utils";
 
 function errorText(value: unknown): string {
   if (typeof value === "string") return value;

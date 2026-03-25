@@ -19,7 +19,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { createDb, pluginState } from "@paperclipai_dld/db";
+import { createDb, pluginState } from "@paperclipai/db";
 import { and, eq, like } from "drizzle-orm";
 
 const pluginId = process.env.PAPERCLIP_SUPERPLUGIN_ID?.trim();

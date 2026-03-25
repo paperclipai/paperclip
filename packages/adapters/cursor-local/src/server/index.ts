@@ -1,7 +1,8 @@
 export { execute, ensureCursorSkillsInjected } from "./execute.js";
+export { listCursorSkills, syncCursorSkills } from "./skills.js";
 export { testEnvironment } from "./test.js";
 export { parseCursorJsonl, isCursorUnknownSessionError } from "./parse.js";
-import type { AdapterSessionCodec } from "@paperclipai_dld/adapter-utils";
+import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;

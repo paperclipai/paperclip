@@ -4,9 +4,9 @@
 
 **Goal:** Build a current-runtime-compatible GitHub integration plugin for Paperclip, shipping CI webhook failure ingestion first while preserving a clear path to the broader feature set modeled by the external GitHub Issues plugin.
 
-**Architecture:** Create a new first-party plugin package under `packages/plugins/github-integration/` that follows the current Paperclip example-plugin structure. Reuse as much logic and module separation as possible from the existing GitHub plugin sources, but port all SDK interactions to the current `@paperclipai_dld/plugin-sdk` contract and ship a built worker package that can be installed by local path.
+**Architecture:** Create a new first-party plugin package under `packages/plugins/github-integration/` that follows the current Paperclip example-plugin structure. Reuse as much logic and module separation as possible from the existing GitHub plugin sources, but port all SDK interactions to the current `@paperclipai/plugin-sdk` contract and ship a built worker package that can be installed by local path.
 
-**Tech Stack:** TypeScript, `@paperclipai_dld/plugin-sdk`, Paperclip plugin host runtime, Vitest, GitHub webhook payloads, HMAC-SHA256 verification
+**Tech Stack:** TypeScript, `@paperclipai/plugin-sdk`, Paperclip plugin host runtime, Vitest, GitHub webhook payloads, HMAC-SHA256 verification
 
 ---
 
@@ -51,15 +51,15 @@ Use `packages/plugins/examples/plugin-kitchen-sink-example/` as the structure mo
 
 Required package choices:
 
-- package name: `@paperclipai_dld/plugin-github`
+- package name: `@paperclipai/plugin-github`
 - module type: `module`
 - scripts:
   - `build`
   - `clean`
   - `typecheck`
 - dependencies:
-  - `@paperclipai_dld/plugin-sdk`
-  - `@paperclipai_dld/shared`
+  - `@paperclipai/plugin-sdk`
+  - `@paperclipai/shared`
 
 **Step 4: Run test to verify it passes**
 
@@ -67,7 +67,7 @@ Run:
 
 ```bash
 pnpm vitest run packages/plugins/github-integration/src/package-smoke.test.ts
-pnpm --filter @paperclipai_dld/plugin-github typecheck
+pnpm --filter @paperclipai/plugin-github typecheck
 ```
 
 Expected:
@@ -149,7 +149,7 @@ Run:
 
 ```bash
 pnpm vitest run packages/plugins/github-integration/src/config.test.ts
-pnpm --filter @paperclipai_dld/plugin-github typecheck
+pnpm --filter @paperclipai/plugin-github typecheck
 ```
 
 Expected:
@@ -222,7 +222,7 @@ Run:
 
 ```bash
 pnpm vitest run packages/plugins/github-integration/src/verify-signature.test.ts packages/plugins/github-integration/src/normalize.test.ts
-pnpm --filter @paperclipai_dld/plugin-github typecheck
+pnpm --filter @paperclipai/plugin-github typecheck
 ```
 
 Expected:
@@ -286,7 +286,7 @@ Run:
 
 ```bash
 pnpm vitest run packages/plugins/github-integration/src/dedupe.test.ts packages/plugins/github-integration/src/routing.test.ts
-pnpm --filter @paperclipai_dld/plugin-github typecheck
+pnpm --filter @paperclipai/plugin-github typecheck
 ```
 
 Expected:
@@ -348,7 +348,7 @@ Run:
 
 ```bash
 pnpm vitest run packages/plugins/github-integration/src/worker.test.ts
-pnpm --filter @paperclipai_dld/plugin-github build
+pnpm --filter @paperclipai/plugin-github build
 ```
 
 Expected:
@@ -510,7 +510,7 @@ Run:
 
 ```bash
 pnpm vitest run packages/plugins/github-integration/src/sync.test.ts packages/plugins/github-integration/src/tools.test.ts
-pnpm --filter @paperclipai_dld/plugin-github build
+pnpm --filter @paperclipai/plugin-github build
 ```
 
 Expected:
@@ -532,8 +532,8 @@ git commit -m "feat: port github issue sync features"
 **Step 1: Run package-local verification**
 
 ```bash
-pnpm --filter @paperclipai_dld/plugin-github typecheck
-pnpm --filter @paperclipai_dld/plugin-github build
+pnpm --filter @paperclipai/plugin-github typecheck
+pnpm --filter @paperclipai/plugin-github build
 pnpm vitest run packages/plugins/github-integration/src/*.test.ts
 ```
 

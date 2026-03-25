@@ -1,8 +1,8 @@
 import { and, desc, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai_dld/db";
-import { companySecrets, companySecretVersions } from "@paperclipai_dld/db";
-import type { AgentEnvConfig, EnvBinding, SecretProvider } from "@paperclipai_dld/shared";
-import { envBindingSchema } from "@paperclipai_dld/shared";
+import type { Db } from "@paperclipai/db";
+import { companySecrets, companySecretVersions } from "@paperclipai/db";
+import type { AgentEnvConfig, EnvBinding, SecretProvider } from "@paperclipai/shared";
+import { envBindingSchema } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { getSecretProvider, listSecretProviders } from "../secrets/provider-registry.js";
 
@@ -159,6 +159,7 @@ export function secretService(db: Db) {
 
     getById,
     getByName,
+    resolveSecretValue,
 
     create: async (
       companyId: string,

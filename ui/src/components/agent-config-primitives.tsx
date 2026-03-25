@@ -15,7 +15,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { HelpCircle, ChevronDown, ChevronRight } from "lucide-react";
 import { cn } from "../lib/utils";
-import { AGENT_ROLE_LABELS } from "@paperclipai_dld/shared";
+import { AGENT_ROLE_LABELS } from "@paperclipai/shared";
 
 /* ---- Help text for (?) tooltips ---- */
 export const help: Record<string, string> = {
@@ -25,7 +25,7 @@ export const help: Record<string, string> = {
   reportsTo: "The agent this one reports to in the org hierarchy.",
   capabilities: "Describes what this agent can do. Shown in the org chart and used for task routing.",
   adapterType: "How this agent runs: local CLI (Claude/Codex/OpenCode), OpenClaw Gateway, spawned process, or generic HTTP webhook.",
-  cwd: "Default working directory fallback for local adapters. Use an absolute path on the machine running Paperclip.",
+  cwd: "Deprecated legacy working directory fallback for local adapters. Existing agents may still carry this value, but new configurations should use project workspaces instead.",
   promptTemplate: "Sent on every heartbeat. Keep this small and dynamic. Use it for current-task framing, not large static instructions. Supports {{ agent.id }}, {{ agent.name }}, {{ agent.role }} and other template variables.",
   model: "Override the default model used by the adapter.",
   thinkingEffort: "Control model reasoning depth. Supported values vary by adapter/model.",
@@ -117,17 +117,16 @@ export function ToggleField({
         {hint && <HintIcon text={hint} />}
       </div>
       <button
-        type="button"
-        aria-pressed={checked}
+        data-slot="toggle"
         className={cn(
-          "relative inline-flex h-5 w-9 items-center rounded-full border transition-colors",
-          checked ? "bg-green-600 border-green-600" : "bg-muted border-border"
+          "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
+          checked ? "bg-green-600" : "bg-muted"
         )}
         onClick={() => onChange(!checked)}
       >
         <span
           className={cn(
-            "inline-block h-3.5 w-3.5 rounded-full bg-background shadow-sm ring-1 ring-border/80 transition-transform",
+            "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
             checked ? "translate-x-4.5" : "translate-x-0.5"
           )}
         />
@@ -167,17 +166,16 @@ export function ToggleWithNumber({
           {hint && <HintIcon text={hint} />}
         </div>
         <button
-          type="button"
-          aria-pressed={checked}
+          data-slot="toggle"
           className={cn(
-            "relative inline-flex h-5 w-9 items-center rounded-full border transition-colors shrink-0",
-            checked ? "bg-green-600 border-green-600" : "bg-muted border-border"
+            "relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0",
+            checked ? "bg-green-600" : "bg-muted"
           )}
           onClick={() => onCheckedChange(!checked)}
         >
           <span
             className={cn(
-              "inline-block h-3.5 w-3.5 rounded-full bg-background shadow-sm ring-1 ring-border/80 transition-transform",
+              "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
               checked ? "translate-x-4.5" : "translate-x-0.5"
             )}
           />

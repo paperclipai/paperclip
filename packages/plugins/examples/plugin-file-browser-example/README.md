@@ -38,7 +38,7 @@ This is a repo-local example plugin for development. It should not be assumed to
 From the repo root, build the plugin and install it by local path:
 
 ```bash
-pnpm --filter @paperclipai_dld/plugin-file-browser-example build
+pnpm --filter @paperclipai/plugin-file-browser-example build
 pnpm paperclipai plugin install ./packages/plugins/examples/plugin-file-browser-example
 ```
 

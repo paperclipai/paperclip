@@ -13,7 +13,7 @@ import {
   stopRuntimeServicesForExecutionWorkspace,
   type RealizedExecutionWorkspace,
 } from "../services/workspace-runtime.ts";
-import type { WorkspaceOperation } from "@paperclipai_dld/shared";
+import type { WorkspaceOperation } from "@paperclipai/shared";
 import type { WorkspaceOperationRecorder } from "../services/workspace-operations.ts";
 
 const execFileAsync = promisify(execFile);

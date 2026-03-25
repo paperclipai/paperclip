@@ -1,7 +1,7 @@
 import path from "node:path";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
-import { formatDatabaseBackupResult, runDatabaseBackup } from "@paperclipai_dld/db";
+import { formatDatabaseBackupResult, runDatabaseBackup } from "@paperclipai/db";
 import {
   expandHomePrefix,
   resolveDefaultBackupDir,

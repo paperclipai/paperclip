@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import type { Goal } from "@paperclipai_dld/shared";
-import { GOAL_STATUSES, GOAL_LEVELS } from "@paperclipai_dld/shared";
+import type { Goal } from "@paperclipai/shared";
+import { GOAL_STATUSES, GOAL_LEVELS } from "@paperclipai/shared";
 import { agentsApi } from "../api/agents";
 import { goalsApi } from "../api/goals";
 import { useCompany } from "../context/CompanyContext";

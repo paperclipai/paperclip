@@ -22,8 +22,8 @@
 import type {
   PaperclipPluginManifestV1,
   PluginToolDeclaration,
-} from "@paperclipai_dld/shared";
-import type { ToolRunContext, ToolResult, ExecuteToolParams } from "@paperclipai_dld/plugin-sdk";
+} from "@paperclipai/shared";
+import type { ToolRunContext, ToolResult, ExecuteToolParams } from "@paperclipai/plugin-sdk";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { logger } from "../middleware/logger.js";
 

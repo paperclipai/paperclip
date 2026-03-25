@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import type { AdapterModel } from "@paperclipai_dld/adapter-utils";
-import { asString, runChildProcess } from "@paperclipai_dld/adapter-utils/server-utils";
+import type { AdapterModel } from "@paperclipai/adapter-utils";
+import { asString, runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 
 const MODELS_CACHE_TTL_MS = 60_000;
 

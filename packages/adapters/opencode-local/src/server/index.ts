@@ -1,4 +1,4 @@
-import type { AdapterSessionCodec } from "@paperclipai_dld/adapter-utils";
+import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -61,6 +61,7 @@ export const sessionCodec: AdapterSessionCodec = {
 };
 
 export { execute } from "./execute.js";
+export { listOpenCodeSkills, syncOpenCodeSkills } from "./skills.js";
 export { testEnvironment } from "./test.js";
 export {
   listOpenCodeModels,

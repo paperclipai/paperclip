@@ -47,8 +47,4 @@ jobs:
       - name: Verify Dockerfile.vps build
         run: docker build -f Dockerfile.vps -t paperclip-vps-verify .
 
-      - name: Release canary dry run
-        run: |
-          git checkout -B master HEAD
-          git checkout -- pnpm-lock.yaml
-          ./scripts/release.sh canary --skip-verify --dry-run
+      # Canary dry-run skipped: all packages are private (no npm publishing)

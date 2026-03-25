@@ -1,5 +1,6 @@
 {
-  "name": "@paperclipai_dld/plugin-sdk",
+  "name": "@paperclipai/plugin-sdk",
+  "private": true,
   "version": "1.0.0",
   "description": "Stable public API for Paperclip plugins — worker-side context and UI bridge hooks",
   "license": "MIT",
@@ -101,13 +102,13 @@
     "dist"
   ],
   "scripts": {
-    "build": "pnpm --filter @paperclipai_dld/shared build && tsc",
+    "build": "pnpm --filter @paperclipai/shared build && tsc",
     "clean": "rm -rf dist",
-    "typecheck": "pnpm --filter @paperclipai_dld/shared build && tsc --noEmit",
+    "typecheck": "pnpm --filter @paperclipai/shared build && tsc --noEmit",
     "dev:server": "tsx src/dev-cli.ts"
   },
   "dependencies": {
-    "@paperclipai_dld/shared": "workspace:*",
+    "@paperclipai/shared": "workspace:*",
     "zod": "^3.24.2"
   },
   "devDependencies": {

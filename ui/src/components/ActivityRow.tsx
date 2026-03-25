@@ -2,7 +2,7 @@ import { Link } from "@/lib/router";
 import { Identity } from "./Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn } from "../lib/utils";
-import { deriveProjectUrlKey, type ActivityEvent, type Agent } from "@paperclipai_dld/shared";
+import { deriveProjectUrlKey, type ActivityEvent, type Agent } from "@paperclipai/shared";
 
 const ACTION_VERBS: Record<string, string> = {
   "issue.created": "created",

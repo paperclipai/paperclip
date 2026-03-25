@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { AdapterEnvironmentTestResult } from "@paperclipai_dld/shared";
+import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -8,6 +8,7 @@ import { companiesApi } from "../api/companies";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
 import { issuesApi } from "../api/issues";
+import { projectsApi } from "../api/projects";
 import { queryKeys } from "../lib/queryKeys";
 import { Dialog, DialogPortal } from "@/components/ui/dialog";
 import {
@@ -25,15 +26,18 @@ import { getUIAdapter } from "../adapters";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { parseOnboardingGoalInput } from "../lib/onboarding-goal";
 import {
+  buildOnboardingIssuePayload,
+  buildOnboardingProjectPayload,
+  selectDefaultCompanyGoalId
+} from "../lib/onboarding-launch";
+import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL
-} from "@paperclipai_dld/adapter-codex-local";
-import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai_dld/adapter-cursor-local";
-import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai_dld/adapter-gemini-local";
+} from "@paperclipai/adapter-codex-local";
+import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
+import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { resolveRouteOnboardingOptions } from "../lib/onboarding-route";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
-import { ChoosePathButton } from "./PathInstructionsModal";
-import { HintIcon } from "./agent-config-primitives";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 import {
   Building2,
@@ -49,7 +53,6 @@ import {
   MousePointer2,
   Check,
   Loader2,
-  FolderOpen,
   ChevronDown,
   X
 } from "lucide-react";
@@ -62,17 +65,14 @@ type AdapterType =
   | "opencode_local"
   | "pi_local"
   | "cursor"
-  | "process"
   | "http"
   | "openclaw_gateway";
 
-const DEFAULT_TASK_DESCRIPTION = `Setup yourself as the CEO. Use the ceo persona found here: 
+const DEFAULT_TASK_DESCRIPTION = `You are the CEO. You set the direction for the company.
 
-https://github.com/paperclipai/companies/blob/main/default/ceo/AGENTS.md
-
-Ensure you have a folder agents/ceo and then download this AGENTS.md, and sibling HEARTBEAT.md, SOUL.md, and TOOLS.md. and set that AGENTS.md as the path to your agents instruction file
-
-After that, hire yourself a Founding Engineer agent and then plan the roadmap and tasks for your new company.`;
+- hire a founding engineer
+- write a hiring plan
+- break the roadmap into concrete tasks and start delegating work`;
 
 export function OnboardingWizard() {
   const { onboardingOpen, onboardingOptions, closeOnboarding } = useDialog();
@@ -113,7 +113,6 @@ export function OnboardingWizard() {
   // Step 2
   const [agentName, setAgentName] = useState("CEO");
   const [adapterType, setAdapterType] = useState<AdapterType>("claude_local");
-  const [cwd, setCwd] = useState("");
   const [model, setModel] = useState("");
   const [command, setCommand] = useState("");
   const [args, setArgs] = useState("");
@@ -128,7 +127,9 @@ export function OnboardingWizard() {
   const [showMoreAdapters, setShowMoreAdapters] = useState(false);
 
   // Step 3
-  const [taskTitle, setTaskTitle] = useState("Create your CEO HEARTBEAT.md");
+  const [taskTitle, setTaskTitle] = useState(
+    "Hire your first engineer and create a hiring plan"
+  );
   const [taskDescription, setTaskDescription] = useState(
     DEFAULT_TASK_DESCRIPTION
   );
@@ -149,7 +150,11 @@ export function OnboardingWizard() {
   const [createdCompanyPrefix, setCreatedCompanyPrefix] = useState<
     string | null
   >(null);
+  const [createdCompanyGoalId, setCreatedCompanyGoalId] = useState<string | null>(
+    null
+  );
   const [createdAgentId, setCreatedAgentId] = useState<string | null>(null);
+  const [createdProjectId, setCreatedProjectId] = useState<string | null>(null);
   const [createdIssueRef, setCreatedIssueRef] = useState<string | null>(null);
 
   useEffect(() => {
@@ -165,6 +170,10 @@ export function OnboardingWizard() {
     setStep(effectiveOnboardingOptions.initialStep ?? 1);
     setCreatedCompanyId(cId);
     setCreatedCompanyPrefix(null);
+    setCreatedCompanyGoalId(null);
+    setCreatedProjectId(null);
+    setCreatedAgentId(null);
+    setCreatedIssueRef(null);
   }, [
     effectiveOnboardingOpen,
     effectiveOnboardingOptions.companyId,
@@ -200,6 +209,7 @@ export function OnboardingWizard() {
     adapterType === "codex_local" ||
     adapterType === "gemini_local" ||
     adapterType === "opencode_local" ||
+    adapterType === "pi_local" ||
     adapterType === "cursor";
   const effectiveAdapterCommand =
     command.trim() ||
@@ -207,6 +217,8 @@ export function OnboardingWizard() {
       ? "codex"
       : adapterType === "gemini_local"
         ? "gemini"
+      : adapterType === "pi_local"
+      ? "pi"
       : adapterType === "cursor"
       ? "agent"
       : adapterType === "opencode_local"
@@ -217,7 +229,7 @@ export function OnboardingWizard() {
     if (step !== 2) return;
     setAdapterEnvResult(null);
     setAdapterEnvError(null);
-  }, [step, adapterType, cwd, model, command, args, url]);
+  }, [step, adapterType, model, command, args, url]);
 
   const selectedModel = (adapterModels ?? []).find((m) => m.id === model);
   const hasAnthropicApiKeyOverrideCheck =
@@ -273,7 +285,6 @@ export function OnboardingWizard() {
     setCompanyGoal("");
     setAgentName("CEO");
     setAdapterType("claude_local");
-    setCwd("");
     setModel("");
     setCommand("");
     setArgs("");
@@ -283,11 +294,13 @@ export function OnboardingWizard() {
     setAdapterEnvLoading(false);
     setForceUnsetAnthropicApiKey(false);
     setUnsetAnthropicLoading(false);
-    setTaskTitle("Create your CEO HEARTBEAT.md");
+    setTaskTitle("Hire your first engineer and create a hiring plan");
     setTaskDescription(DEFAULT_TASK_DESCRIPTION);
     setCreatedCompanyId(null);
     setCreatedCompanyPrefix(null);
+    setCreatedCompanyGoalId(null);
     setCreatedAgentId(null);
+    setCreatedProjectId(null);
     setCreatedIssueRef(null);
   }
 
@@ -301,7 +314,6 @@ export function OnboardingWizard() {
     const config = adapter.buildAdapterConfig({
       ...defaultCreateValues,
       adapterType,
-      cwd,
       model:
         adapterType === "codex_local"
           ? model || DEFAULT_CODEX_LOCAL_MODEL
@@ -375,7 +387,7 @@ export function OnboardingWizard() {
 
       if (companyGoal.trim()) {
         const parsedGoal = parseOnboardingGoalInput(companyGoal);
-        await goalsApi.create(company.id, {
+        const goal = await goalsApi.create(company.id, {
           title: parsedGoal.title,
           ...(parsedGoal.description
             ? { description: parsedGoal.description }
@@ -383,9 +395,12 @@ export function OnboardingWizard() {
           level: "company",
           status: "active"
         });
+        setCreatedCompanyGoalId(goal.id);
         queryClient.invalidateQueries({
           queryKey: queryKeys.goals.list(company.id)
         });
+      } else {
+        setCreatedCompanyGoalId(null);
       }
 
       setStep(2);
@@ -526,16 +541,38 @@ export function OnboardingWizard() {
     setLoading(true);
     setError(null);
     try {
+      let goalId = createdCompanyGoalId;
+      if (!goalId) {
+        const goals = await goalsApi.list(createdCompanyId);
+        goalId = selectDefaultCompanyGoalId(goals);
+        setCreatedCompanyGoalId(goalId);
+      }
+
+      let projectId = createdProjectId;
+      if (!projectId) {
+        const project = await projectsApi.create(
+          createdCompanyId,
+          buildOnboardingProjectPayload(goalId)
+        );
+        projectId = project.id;
+        setCreatedProjectId(projectId);
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.projects.list(createdCompanyId)
+        });
+      }
+
       let issueRef = createdIssueRef;
       if (!issueRef) {
-        const issue = await issuesApi.create(createdCompanyId, {
-          title: taskTitle.trim(),
-          ...(taskDescription.trim()
-            ? { description: taskDescription.trim() }
-            : {}),
-          assigneeAgentId: createdAgentId,
-          status: "todo"
-        });
+        const issue = await issuesApi.create(
+          createdCompanyId,
+          buildOnboardingIssuePayload({
+            title: taskTitle,
+            description: taskDescription,
+            assigneeAgentId: createdAgentId,
+            projectId,
+            goalId
+          })
+        );
         issueRef = issue.identifier ?? issue.id;
         setCreatedIssueRef(issueRef);
         queryClient.invalidateQueries({
@@ -788,12 +825,6 @@ export function OnboardingWizard() {
                             desc: "Local Gemini agent"
                           },
                           {
-                            value: "process" as const,
-                            label: "Process",
-                            icon: Terminal,
-                            desc: "Run a local command"
-                          },
-                          {
                             value: "opencode_local" as const,
                             label: "OpenCode",
                             icon: OpenCodeLogoIcon,
@@ -874,24 +905,6 @@ export function OnboardingWizard() {
                     adapterType === "pi_local" ||
                     adapterType === "cursor") && (
                     <div className="space-y-3">
-                      <div>
-                        <div className="flex items-center gap-1.5 mb-1">
-                          <label className="text-xs text-muted-foreground">
-                            Working directory
-                          </label>
-                          <HintIcon text="Paperclip works best if you create a new folder for your agents to keep their memories and stay organized. Create a new folder and put the path here." />
-                        </div>
-                        <div className="flex items-center gap-2 rounded-md border border-border px-2.5 py-1.5">
-                          <FolderOpen className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                          <input
-                            className="w-full bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/50"
-                            placeholder="/path/to/project"
-                            value={cwd}
-                            onChange={(e) => setCwd(e.target.value)}
-                          />
-                          <ChoosePathButton />
-                        </div>
-                      </div>
                       <div>
                         <label className="text-xs text-muted-foreground mb-1 block">
                           Model
@@ -1107,33 +1120,6 @@ export function OnboardingWizard() {
                           )}
                         </div>
                       )}
-                    </div>
-                  )}
-
-                  {adapterType === "process" && (
-                    <div className="space-y-3">
-                      <div>
-                        <label className="text-xs text-muted-foreground mb-1 block">
-                          Command
-                        </label>
-                        <input
-                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                          placeholder="e.g. node, python"
-                          value={command}
-                          onChange={(e) => setCommand(e.target.value)}
-                        />
-                      </div>
-                      <div>
-                        <label className="text-xs text-muted-foreground mb-1 block">
-                          Args (comma-separated)
-                        </label>
-                        <input
-                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                          placeholder="e.g. script.js, --flag"
-                          value={args}
-                          onChange={(e) => setArgs(e.target.value)}
-                        />
-                      </div>
                     </div>
                   )}
 

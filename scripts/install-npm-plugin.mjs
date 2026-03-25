@@ -10,14 +10,14 @@
  *
  * Then restart the server container so the main process loads the plugin worker and tools.
  *
- * Local (repo root, `pnpm --filter @paperclipai_dld/server build`):
+ * Local (repo root, `pnpm --filter @paperclipai/server build`):
  *   DATABASE_URL=... PAPERCLIP_APP_ROOT=$PWD \
  *     node --import ./server/node_modules/tsx/dist/loader.mjs scripts/install-npm-plugin.mjs <pkg> [version]
  */
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { createDb } from "@paperclipai_dld/db";
-import { createHostClientHandlers } from "@paperclipai_dld/plugin-sdk";
+import { createDb } from "@paperclipai/db";
+import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = process.env.PAPERCLIP_APP_ROOT ?? path.resolve(__dirname, "..");

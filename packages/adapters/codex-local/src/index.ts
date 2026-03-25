@@ -40,7 +40,10 @@ Operational fields:
 
 Notes:
 - Prompts are piped via stdin (Codex receives "-" prompt argument).
-- Paperclip auto-injects local skills into Codex personal skills dir ("$CODEX_HOME/skills" or "~/.codex/skills") when missing, so Codex can discover "$paperclip" and related skills.
+- If instructionsFilePath is configured, Paperclip prepends that file's contents to the stdin prompt on every run.
+- Codex exec automatically applies repo-scoped AGENTS.md instructions from the active workspace. Paperclip cannot suppress that discovery in exec mode, so repo AGENTS.md files may still apply even when you only configured an explicit instructionsFilePath.
+- Paperclip injects desired local skills into the active workspace's ".agents/skills" directory at execution time so Codex can discover "$paperclip" and related skills without coupling them to the user's login home.
+- Unless explicitly overridden in adapter config, Paperclip runs Codex with a per-company managed CODEX_HOME under the active Paperclip instance and seeds auth/config from the shared Codex home (the CODEX_HOME env var, when set, or ~/.codex).
 - Some model/tool combinations reject certain effort levels (for example minimal with web search enabled).
 - When Paperclip realizes a workspace/runtime for a run, it injects PAPERCLIP_WORKSPACE_* and PAPERCLIP_RUNTIME_* env vars for agent-side tooling.
 `;

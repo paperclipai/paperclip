@@ -2,8 +2,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai_dld/adapter-utils";
-import type { RunProcessResult } from "@paperclipai_dld/adapter-utils/server-utils";
+import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 import {
   asString,
   asNumber,
@@ -11,8 +11,8 @@ import {
   asStringArray,
   parseObject,
   parseJson,
-  applyLocalAgentFilesystemEnv,
   buildPaperclipEnv,
+  readPaperclipRuntimeSkillEntries,
   joinPromptSections,
   redactEnvForLogs,
   ensureAbsoluteDirectory,
@@ -20,7 +20,7 @@ import {
   ensurePathInEnv,
   renderTemplate,
   runChildProcess,
-} from "@paperclipai_dld/adapter-utils/server-utils";
+} from "@paperclipai/adapter-utils/server-utils";
 import {
   parseClaudeStreamJson,
   describeClaudeFailure,
@@ -28,40 +28,32 @@ import {
   isClaudeMaxTurnsResult,
   isClaudeUnknownSessionError,
 } from "./parse.js";
+import { resolveClaudeDesiredSkillNames } from "./skills.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
-const PAPERCLIP_SKILLS_CANDIDATES = [
-  path.resolve(__moduleDir, "../../skills"),         // published: <pkg>/dist/server/ -> <pkg>/skills/
-  path.resolve(__moduleDir, "../../../../../skills"), // dev: src/server/ -> repo root/skills/
-];
-
-async function resolvePaperclipSkillsDir(): Promise<string | null> {
-  for (const candidate of PAPERCLIP_SKILLS_CANDIDATES) {
-    const isDir = await fs.stat(candidate).then((s) => s.isDirectory()).catch(() => false);
-    if (isDir) return candidate;
-  }
-  return null;
-}
 
 /**
  * Create a tmpdir with `.claude/skills/` containing symlinks to skills from
  * the repo's `skills/` directory, so `--add-dir` makes Claude Code discover
  * them as proper registered skills.
  */
-async function buildSkillsDir(): Promise<string> {
+async function buildSkillsDir(config: Record<string, unknown>): Promise<string> {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skills-"));
   const target = path.join(tmp, ".claude", "skills");
   await fs.mkdir(target, { recursive: true });
-  const skillsDir = await resolvePaperclipSkillsDir();
-  if (!skillsDir) return tmp;
-  const entries = await fs.readdir(skillsDir, { withFileTypes: true });
-  for (const entry of entries) {
-    if (entry.isDirectory()) {
-      await fs.symlink(
-        path.join(skillsDir, entry.name),
-        path.join(target, entry.name),
-      );
-    }
+  const availableEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
+  const desiredNames = new Set(
+    resolveClaudeDesiredSkillNames(
+      config,
+      availableEntries,
+    ),
+  );
+  for (const entry of availableEntries) {
+    if (!desiredNames.has(entry.key)) continue;
+    await fs.symlink(
+      entry.source,
+      path.join(target, entry.runtimeName),
+    );
   }
   return tmp;
 }
@@ -105,20 +97,9 @@ function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean 
   return typeof raw === "string" && raw.trim().length > 0;
 }
 
-/** True when Claude Code is pointed at OpenRouter (API key via OPENROUTER_API_KEY / ANTHROPIC_AUTH_TOKEN, not ANTHROPIC_API_KEY). */
-function isOpenRouterClaudeEnv(env: Record<string, string>): boolean {
-  const base = env.ANTHROPIC_BASE_URL?.trim().toLowerCase() ?? "";
-  if (!base.includes("openrouter")) return false;
-  return (
-    hasNonEmptyEnvValue(env, "OPENROUTER_API_KEY") ||
-    hasNonEmptyEnvValue(env, "ANTHROPIC_AUTH_TOKEN")
-  );
-}
-
 function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscription" {
-  if (hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY")) return "api";
-  if (isOpenRouterClaudeEnv(env)) return "api";
-  return "subscription";
+  // Claude uses API-key auth when ANTHROPIC_API_KEY is present; otherwise rely on local login/session auth.
+  return hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY") ? "api" : "subscription";
 }
 
 async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<ClaudeRuntimeConfig> {
@@ -161,7 +142,6 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   const hasExplicitApiKey =
     typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
   const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
-  applyLocalAgentFilesystemEnv(env, { agentId: agent.id });
   env.PAPERCLIP_RUN_ID = runId;
 
   const wakeTaskId =
@@ -316,7 +296,7 @@ export async function runClaudeLogin(input: {
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const { runId, agent, runtime, config, context, onLog, onMeta, authToken } = ctx;
+  const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -359,12 +339,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ),
   );
   const billingType = resolveClaudeBillingType(effectiveEnv);
-  const skillsDir = await buildSkillsDir();
+  const skillsDir = await buildSkillsDir(config);
 
   // When instructionsFilePath is configured, create a combined temp file that
   // includes both the file content and the path directive, so we only need
   // --append-system-prompt-file (Claude CLI forbids using both flags together).
-  let effectiveInstructionsFilePath = instructionsFilePath;
+  let effectiveInstructionsFilePath: string | undefined = instructionsFilePath;
   if (instructionsFilePath) {
     try {
       const instructionsContent = await fs.readFile(instructionsFilePath, "utf-8");
@@ -372,35 +352,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const combinedPath = path.join(skillsDir, "agent-instructions.md");
       await fs.writeFile(combinedPath, instructionsContent + pathDirective, "utf-8");
       effectiveInstructionsFilePath = combinedPath;
-    } catch (err: unknown) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code === "ENOENT") {
-        await onLog("stderr", `[paperclip] instructions file not found: ${instructionsFilePath}, skipping\n`);
-        effectiveInstructionsFilePath = "";
-      } else {
-        throw err;
-      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      await onLog(
+        "stderr",
+        `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
+      );
+      effectiveInstructionsFilePath = undefined;
     }
   }
 
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
   const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
-  const isValidUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(runtimeSessionId);
   const canResumeSession =
     runtimeSessionId.length > 0 &&
-    isValidUuid &&
     (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
   const sessionId = canResumeSession ? runtimeSessionId : null;
-  if (runtimeSessionId && !isValidUuid) {
-    await onLog(
-      "stdout",
-      `[paperclip] Claude session "${runtimeSessionId}" is not a valid UUID and will not be passed to --resume.\n`,
-    );
-  }
   if (runtimeSessionId && !canResumeSession) {
     await onLog(
-      "stderr",
+      "stdout",
       `[paperclip] Claude session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
     );
   }
@@ -486,6 +457,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stdin: prompt,
       timeoutSec,
       graceSec,
+      onSpawn,
       onLog,
     });
 
@@ -603,7 +575,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       isClaudeUnknownSessionError(initial.parsed)
     ) {
       await onLog(
-        "stderr",
+        "stdout",
         `[paperclip] Claude resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
       );
       const retry = await runAttempt(null);

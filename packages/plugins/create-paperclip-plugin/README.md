@@ -1,15 +1,15 @@
-# @paperclipai_dld/create-paperclip-plugin
+# @paperclipai/create-paperclip-plugin
 
 Scaffolding tool for creating new Paperclip plugins.
 
 ```bash
-npx @paperclipai_dld/create-paperclip-plugin my-plugin
+npx @paperclipai/create-paperclip-plugin my-plugin
 ```
 
 Or with options:
 
 ```bash
-npx @paperclipai_dld/create-paperclip-plugin @acme/my-plugin \
+npx @paperclipai/create-paperclip-plugin @acme/my-plugin \
   --template connector \
   --category connector \
   --display-name "Acme Connector" \
@@ -22,16 +22,16 @@ Supported categories: `connector`, `workspace`, `automation`, `ui`
 
 Generates:
 - typed manifest + worker entrypoint
-- example UI widget using the supported `@paperclipai_dld/plugin-sdk/ui` hooks
-- test file using `@paperclipai_dld/plugin-sdk/testing`
+- example UI widget using the supported `@paperclipai/plugin-sdk/ui` hooks
+- test file using `@paperclipai/plugin-sdk/testing`
 - `esbuild` and `rollup` config files using SDK bundler presets
 - dev server script for hot-reload (`paperclip-plugin-dev-server`)
 
 The scaffold intentionally uses plain React elements rather than host-provided UI kit components, because the current plugin runtime does not ship a stable shared component library yet.
 
-Inside this repo, the generated package uses `@paperclipai_dld/plugin-sdk` via `workspace:*`.
+Inside this repo, the generated package uses `@paperclipai/plugin-sdk` via `workspace:*`.
 
-Outside this repo, the scaffold snapshots `@paperclipai_dld/plugin-sdk` from your local Paperclip checkout into a `.paperclip-sdk/` tarball and points the generated package at that local file by default. You can override the SDK source explicitly:
+Outside this repo, the scaffold snapshots `@paperclipai/plugin-sdk` from your local Paperclip checkout into a `.paperclip-sdk/` tarball and points the generated package at that local file by default. You can override the SDK source explicitly:
 
 ```bash
 node packages/plugins/create-paperclip-plugin/dist/index.js @acme/my-plugin \

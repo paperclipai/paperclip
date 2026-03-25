@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { agents, createDb } from "@paperclipai_dld/db";
+import { agents, createDb } from "@paperclipai/db";
 import { secretService } from "../server/src/services/secrets.js";
 
 const SENSITIVE_ENV_KEY_RE =

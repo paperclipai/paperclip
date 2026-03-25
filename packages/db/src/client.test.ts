@@ -67,7 +67,7 @@ async function createTempDatabase(): Promise<string> {
     password: "paperclip",
     port,
     persistent: true,
-    initdbFlags: ["--encoding=UTF8", "--locale=C"],
+    initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
     onLog: () => {},
     onError: () => {},
   });
@@ -150,6 +150,80 @@ describe("applyPendingMigrations", () => {
         ]);
       } finally {
         await verifySql.end();
+      }
+    },
+    20_000,
+  );
+
+  it(
+    "replays migration 0044 safely when its schema changes already exist",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      await applyPendingMigrations(connectionString);
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const illegalToadHash = await migrationHash("0044_illegal_toad.sql");
+
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${illegalToadHash}'`,
+        );
+
+        const columns = await sql.unsafe<{ column_name: string }[]>(
+          `
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'instance_settings'
+              AND column_name = 'general'
+          `,
+        );
+        expect(columns).toHaveLength(1);
+      } finally {
+        await sql.end();
+      }
+
+      const pendingState = await inspectMigrations(connectionString);
+      expect(pendingState).toMatchObject({
+        status: "needsMigrations",
+        pendingMigrations: ["0044_illegal_toad.sql"],
+        reason: "pending-migrations",
+      });
+
+      await applyPendingMigrations(connectionString);
+
+      const finalState = await inspectMigrations(connectionString);
+      expect(finalState.status).toBe("upToDate");
+    },
+    20_000,
+  );
+
+  it(
+    "enforces a unique board_api_keys.key_hash after migration 0044",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      await applyPendingMigrations(connectionString);
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        await sql.unsafe(`
+          INSERT INTO "user" ("id", "name", "email", "email_verified", "created_at", "updated_at")
+          VALUES ('user-1', 'User One', 'user@example.com', true, now(), now())
+        `);
+        await sql.unsafe(`
+          INSERT INTO "board_api_keys" ("id", "user_id", "name", "key_hash", "created_at")
+          VALUES ('00000000-0000-0000-0000-000000000001', 'user-1', 'Key One', 'dup-hash', now())
+        `);
+        await expect(
+          sql.unsafe(`
+            INSERT INTO "board_api_keys" ("id", "user_id", "name", "key_hash", "created_at")
+            VALUES ('00000000-0000-0000-0000-000000000002', 'user-1', 'Key Two', 'dup-hash', now())
+          `),
+        ).rejects.toThrow();
+      } finally {
+        await sql.end();
       }
     },
     20_000,

@@ -1,8 +1,8 @@
 import type { ComponentType } from "react";
-import type { CreateConfigValues } from "@paperclipai_dld/adapter-utils";
+import type { CreateConfigValues } from "@paperclipai/adapter-utils";
 
 // Re-export shared types so local consumers don't need to change imports
-export type { TranscriptEntry, StdoutLineParser, CreateConfigValues } from "@paperclipai_dld/adapter-utils";
+export type { TranscriptEntry, StdoutLineParser, CreateConfigValues } from "@paperclipai/adapter-utils";
 
 export interface AdapterConfigFieldsProps {
   mode: "create" | "edit";
@@ -20,12 +20,14 @@ export interface AdapterConfigFieldsProps {
   mark: (group: "adapterConfig", field: string, value: unknown) => void;
   /** Available models for dropdowns */
   models: { id: string; label: string }[];
+  /** When true, hides the instructions file path field (e.g. during import where it's set automatically) */
+  hideInstructionsFile?: boolean;
 }
 
 export interface UIAdapterModule {
   type: string;
   label: string;
-  parseStdoutLine: (line: string, ts: string) => import("@paperclipai_dld/adapter-utils").TranscriptEntry[];
+  parseStdoutLine: (line: string, ts: string) => import("@paperclipai/adapter-utils").TranscriptEntry[];
   ConfigFields: ComponentType<AdapterConfigFieldsProps>;
   buildAdapterConfig: (values: CreateConfigValues) => Record<string, unknown>;
 }

@@ -7,7 +7,7 @@
  * calls — `scopeId` must be omitted for instance-scoped keys per current SDK contract.
  */
 
-import type { PluginContext } from "@paperclipai_dld/plugin-sdk";
+import type { PluginContext } from "@paperclipai/plugin-sdk";
 import * as github from "./github.js";
 
 const LINK_PREFIX = "link:";

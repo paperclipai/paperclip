@@ -1,4 +1,5 @@
 export { execute, runClaudeLogin } from "./execute.js";
+export { listClaudeSkills, syncClaudeSkills } from "./skills.js";
 export { testEnvironment } from "./test.js";
 export {
   parseClaudeStreamJson,
@@ -18,7 +19,7 @@ export {
   fetchWithTimeout,
   claudeConfigDir,
 } from "./quota.js";
-import type { AdapterSessionCodec } from "@paperclipai_dld/adapter-utils";
+import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;

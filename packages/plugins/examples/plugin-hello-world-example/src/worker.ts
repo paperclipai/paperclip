@@ -1,4 +1,4 @@
-import { definePlugin, runWorker } from "@paperclipai_dld/plugin-sdk";
+import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
 
 const PLUGIN_NAME = "hello-world-example";
 const HEALTH_MESSAGE = "Hello World example plugin ready";

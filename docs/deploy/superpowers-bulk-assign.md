@@ -20,7 +20,7 @@ docker exec paperclip-db-1 psql -U paperclip paperclip -t -A \
   -c "SELECT id FROM plugins WHERE plugin_key = 'superpowers';"
 ```
 
-Copy the script into the server container and run it **from `/app/server`** (so `@paperclipai_dld/db` resolves), with `DATABASE_URL` already set in the container:
+Copy the script into the server container and run it **from `/app/server`** (so `@paperclipai/db` resolves), with `DATABASE_URL` already set in the container:
 
 ```bash
 docker cp scripts/superpowers-bulk-assign-all.mjs paperclip-server-1:/tmp/superpowers-bulk-assign-all.mjs

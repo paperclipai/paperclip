@@ -35,7 +35,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build UI
-        run: pnpm --filter @paperclipai_dld/ui build
+        run: pnpm --filter @paperclipai/ui build
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

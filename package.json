@@ -6,14 +6,14 @@
     "dev": "node scripts/dev-runner.mjs watch",
     "dev:watch": "node scripts/dev-runner.mjs watch",
     "dev:once": "node scripts/dev-runner.mjs dev",
-    "dev:server": "pnpm --filter @paperclipai_dld/server dev",
-    "dev:ui": "pnpm --filter @paperclipai_dld/ui dev",
+    "dev:server": "pnpm --filter @paperclipai/server dev",
+    "dev:ui": "pnpm --filter @paperclipai/ui dev",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "test": "vitest",
     "test:run": "vitest run",
-    "db:generate": "pnpm --filter @paperclipai_dld/db generate",
-    "db:migrate": "pnpm --filter @paperclipai_dld/db migrate",
+    "db:generate": "pnpm --filter @paperclipai/db generate",
+    "db:migrate": "pnpm --filter @paperclipai/db migrate",
     "secrets:migrate-inline-env": "tsx scripts/migrate-inline-env-secrets.ts",
     "db:backup": "./scripts/backup-db.sh",
     "paperclipai": "node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts",
@@ -31,12 +31,13 @@
     "smoke:post-deploy-adapters": "./scripts/smoke/post-deploy-adapter-smoke.sh",
     "test:e2e": "npx playwright test --config tests/e2e/playwright.config.ts",
     "test:e2e:headed": "npx playwright test --config tests/e2e/playwright.config.ts --headed",
+    "evals:smoke": "cd evals/promptfoo && npx promptfoo@0.103.3 eval",
     "test:release-smoke": "npx playwright test --config tests/release-smoke/playwright.config.ts",
     "test:release-smoke:headed": "npx playwright test --config tests/release-smoke/playwright.config.ts --headed"
   },
   "devDependencies": {
-    "cross-env": "^10.1.0",
     "@playwright/test": "^1.58.2",
+    "cross-env": "^10.1.0",
     "esbuild": "^0.27.3",
     "typescript": "^5.7.3",
     "vitest": "^3.0.5"
@@ -44,5 +45,10 @@
   "engines": {
     "node": ">=20"
   },
-  "packageManager": "pnpm@9.15.4"
+  "packageManager": "pnpm@9.15.4",
+  "pnpm": {
+    "patchedDependencies": {
+      "embedded-postgres@18.1.0-beta.16": "patches/embedded-postgres@18.1.0-beta.16.patch"
+    }
+  }
 }

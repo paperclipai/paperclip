@@ -28,7 +28,7 @@ import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
 import type { PluginJobScheduler } from "./plugin-job-scheduler.js";
 import type { PluginJobStore } from "./plugin-job-store.js";
 import { pluginRegistryService } from "./plugin-registry.js";
-import type { Db } from "@paperclipai_dld/db";
+import type { Db } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
 
 // ---------------------------------------------------------------------------

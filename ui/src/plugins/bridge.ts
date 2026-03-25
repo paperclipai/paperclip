@@ -2,7 +2,7 @@
  * Plugin UI bridge runtime — concrete implementations of the bridge hooks.
  *
  * Plugin UI bundles import `usePluginData`, `usePluginAction`, and
- * `useHostContext` from `@paperclipai_dld/plugin-sdk/ui`.  Those are type-only
+ * `useHostContext` from `@paperclipai/plugin-sdk/ui`.  Those are type-only
  * declarations in the SDK package. The host provides the real implementations
  * by injecting this bridge runtime into the plugin's module scope.
  *
@@ -31,7 +31,7 @@ import type {
   PluginLauncherBounds,
   PluginLauncherRenderContextSnapshot,
   PluginLauncherRenderEnvironment,
-} from "@paperclipai_dld/shared";
+} from "@paperclipai/shared";
 import { pluginsApi } from "@/api/plugins";
 import { ApiError } from "@/api/client";
 import { useToast, type ToastInput } from "@/context/ToastContext";

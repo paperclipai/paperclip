@@ -1,6 +1,6 @@
 import { Router, type Request } from "express";
-import type { Db } from "@paperclipai_dld/db";
-import { AGENT_ICON_NAMES } from "@paperclipai_dld/shared";
+import type { Db } from "@paperclipai/db";
+import { AGENT_ICON_NAMES } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { listServerAdapters } from "../adapters/index.js";
 import { agentService } from "../services/agents.js";
