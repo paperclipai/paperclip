@@ -24,8 +24,14 @@ export const EXPORT_NAMES = {
 
 export const DATA_KEYS = {
   CHANNEL_LIST: "channel-list",
+  PLUGIN_CONFIG: "plugin-config",
+  PROJECTS_LIST: "projects-list",
   THREAD_FOR_ISSUE: "thread-for-issue",
   MESSAGE_TS_FOR_COMMENT: "message-ts-for-comment",
+} as const;
+
+export const ACTION_KEYS = {
+  TEST_TOKENS: "test-tokens",
 } as const;
 
 /**

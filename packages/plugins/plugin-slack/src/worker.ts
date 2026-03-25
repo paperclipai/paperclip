@@ -8,7 +8,7 @@ import {
   type PluginWebhookInput,
 } from "@paperclipai/plugin-sdk";
 import type { SlackConfig } from "./types.js";
-import { PLUGIN_ID, JOB_KEYS, WEBHOOK_KEYS, DATA_KEYS } from "./constants.js";
+import { PLUGIN_ID, JOB_KEYS, WEBHOOK_KEYS, DATA_KEYS, ACTION_KEYS } from "./constants.js";
 import { verifySlackSignature } from "./utils/signature.js";
 import { handleSlackEvent } from "./event-handlers/slack-to-paperclip.js";
 import { registerPaperclipEventHandlers } from "./event-handlers/paperclip-to-slack.js";
@@ -57,6 +57,45 @@ async function registerDataHandlers(ctx: PluginContext): Promise<void> {
     if (!token) return [];
     const client = new SlackClient(token, ctx.http);
     return client.listChannels().catch(() => []);
+  });
+
+  // Full plugin config + pluginId UUID for the settings page
+  ctx.data.register(DATA_KEYS.PLUGIN_CONFIG, async () => {
+    const config = await getConfig(ctx);
+    return {
+      ...config,
+      pluginId: process.env.PAPERCLIP_PLUGIN_ID ?? "",
+    };
+  });
+
+  // Available projects for the channel→project mapping dropdown
+  ctx.data.register(DATA_KEYS.PROJECTS_LIST, async (params) => {
+    const companyId = typeof params.companyId === "string" ? params.companyId : "";
+    if (!companyId) return [];
+    return ctx.projects.list({ companyId, limit: 100 }).catch(() => []);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Action handlers
+// ---------------------------------------------------------------------------
+
+async function registerActions(ctx: PluginContext): Promise<void> {
+  // Test all configured bot tokens and return per-agent results
+  ctx.actions.register(ACTION_KEYS.TEST_TOKENS, async () => {
+    const config = await getConfig(ctx);
+    const results: Array<{ name: string; ok: boolean; userId?: string; error?: string }> = [];
+    for (const agent of config.agents ?? []) {
+      const client = new SlackClient(agent.botToken, ctx.http);
+      const res = await client.authTest().catch((err: unknown) => ({ ok: false as const, error: String(err) }));
+      results.push({
+        name: agent.displayName ?? agent.agentId,
+        ok: res.ok,
+        userId: "userId" in res ? res.userId : undefined,
+        error: res.error,
+      });
+    }
+    return results;
   });
 }
 
@@ -126,6 +165,9 @@ const plugin: PaperclipPlugin = definePlugin({
 
     // Data for UI components
     await registerDataHandlers(ctx);
+
+    // Actions for UI components
+    await registerActions(ctx);
 
     // Slack → Paperclip via Socket Mode (if appToken configured)
     const config = await getConfig(ctx);
