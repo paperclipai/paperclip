@@ -521,7 +521,7 @@ export async function startServer(): Promise<StartedServer> {
     emailEnabled,
     socialProviders: [
       ...(config.googleClientId && config.googleClientSecret ? ["google" as const] : []),
-      ...(config.appleClientId && config.appleClientSecret ? ["apple" as const] : []),
+      ...(config.appleClientId && (config.appleClientSecret || (config.appleTeamId && config.appleKeyId && config.applePrivateKey)) ? ["apple" as const] : []),
     ],
     cloudSandboxEnabled: config.cloudSandboxEnabled,
     managedInferenceEnabled: config.managedInferenceEnabled,

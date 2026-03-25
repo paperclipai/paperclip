@@ -32,14 +32,16 @@ export type HealthStatus = {
 
 export const healthApi = {
   get: async (): Promise<HealthStatus> => {
-    const res = await fetch("/api/health/details", {
+    const detailsRes = await fetch("/api/health/details", {
       credentials: "include",
       headers: { Accept: "application/json" },
     });
-    if (!res.ok) {
-      const payload = await res.json().catch(() => null) as { error?: string } | null;
-      throw new Error(payload?.error ?? `Failed to load health (${res.status})`);
-    }
-    return res.json();
+    if (detailsRes.ok) return detailsRes.json();
+    // Fall back to public health (no auth) to at least get deploymentMode
+    const publicRes = await fetch("/api/health", {
+      headers: { Accept: "application/json" },
+    });
+    if (publicRes.ok) return publicRes.json();
+    throw new Error("Failed to load health");
   },
 };
