@@ -219,7 +219,7 @@ export function CompanySecrets() {
             <Button
               size="sm"
               onClick={() => createMutation.mutate({ companyId: selectedCompanyId! })}
-              disabled={createMutation.isPending || !newName.trim() || !newValue}
+              disabled={createMutation.isPending || !newName.trim() || !newValue.trim()}
             >
               {createMutation.isPending ? "Creating..." : "Create Secret"}
             </Button>
