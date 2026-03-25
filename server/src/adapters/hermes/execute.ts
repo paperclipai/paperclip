@@ -31,8 +31,27 @@ import yaml from "js-yaml";
 
 const HERMES_CLI = "hermes";
 const DEFAULT_MODEL = "anthropic/claude-sonnet-4";
-const DEFAULT_TIMEOUT_SEC = 300;
+/** 0 = no Paperclip wall-clock kill (matches other local adapters). */
+const DEFAULT_TIMEOUT_SEC = 0;
 const DEFAULT_GRACE_SEC = 10;
+
+/**
+ * adapter_config may store numbers as strings after import/API merges.
+ * asNumber("0", 300) incorrectly returned 300 — that looked like "0 in UI" but still timed out.
+ */
+function adapterTimeoutSec(value: unknown, whenMissing: number): number {
+  if (value === undefined || value === null) return whenMissing;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.max(0, Math.floor(value));
+  }
+  if (typeof value === "string") {
+    const t = value.trim();
+    if (t === "") return whenMissing;
+    const n = Number(t);
+    if (Number.isFinite(n)) return Math.max(0, Math.floor(n));
+  }
+  return whenMissing;
+}
 const VALID_PROVIDERS = [
   "auto", "openrouter", "nous", "openai-codex", "copilot-acp",
   "copilot", "anthropic", "zai", "kimi-coding", "minimax", "minimax-cn",
@@ -375,7 +394,7 @@ async function buildHermesRuntimeConfig(input: {
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   await ensureCommandResolvable(command, cwd, runtimeEnv);
 
-  const timeoutSec = asNumber(config.timeoutSec, DEFAULT_TIMEOUT_SEC);
+  const timeoutSec = adapterTimeoutSec(config.timeoutSec, DEFAULT_TIMEOUT_SEC);
   const graceSec = asNumber(config.graceSec, DEFAULT_GRACE_SEC);
   const extraArgs = asStringArray(config.extraArgs);
 

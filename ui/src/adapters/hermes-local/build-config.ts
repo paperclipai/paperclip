@@ -1,7 +1,8 @@
 import type { CreateConfigValues } from "@paperclipai/adapter-utils";
 
 const DEFAULT_MODEL = "anthropic/claude-sonnet-4";
-const DEFAULT_TIMEOUT_SEC = 300;
+/** 0 = unlimited Hermes run duration at the Paperclip process layer (user can set a positive cap in agent settings). */
+const DEFAULT_TIMEOUT_SEC = 0;
 
 export function buildHermesConfig(v: CreateConfigValues): Record<string, unknown> {
   const ac: Record<string, unknown> = {};
