@@ -132,21 +132,41 @@ open http://127.0.0.1:3100/IN/dashboard
 | 0066197 | status: founding engineer infrastructure blocker report |
 | 22e3a1d | docs: add CLAUDE.md context for AI sessions and update dependencies |
 
-### Latest: Global Middleware Solution ✅
+### Latest: Per-Route Resolution Fixes ✅ (2026-03-25 23:10 UTC)
 
-Applied company ID resolution globally via middleware in `app.ts`:
-- **File**: `server/src/routes/company-id-resolver.ts` — Reusable utility
-- **Integration**: Middleware auto-resolves for ALL company-scoped routes
-- **Coverage**: Eliminates per-route fixes needed; scales to all endpoints
-- **Verification**: All routes tested working (issues, agents, projects, etc.)
+Global middleware approach was insufficient — routes still returning 500 errors for prefix-based lookups. Updated routes to resolve company ID explicitly using `getByIdOrPrefix()`:
+
+**Files Updated:**
+1. `server/src/routes/dashboard.ts` — Dashboard endpoint
+2. `server/src/routes/agents.ts` — Agents listing endpoint
+3. `server/src/routes/issues.ts` — Issues listing endpoint
+
+**Pattern Applied:**
+```typescript
+const resolvedCompany = await companySvc.getByIdOrPrefix(companyIdOrPrefix);
+if (!resolvedCompany) {
+  res.status(404).json({ error: "Company not found" });
+  return;
+}
+const companyId = resolvedCompany.id;
+```
+
+**Commit:** `052aef7` — "fix: resolve company IDs in dashboard, agents, and issues routes"
+
+**Status:** ✅ Code changes committed; **pending Paperclip server restart** to test
+
+**Next:** Once server restarts, verify:
+- ✅ GET /api/companies/IN/dashboard
+- ✅ GET /api/companies/IN/agents
+- ✅ GET /api/companies/IN/issues
 
 ---
 
 ## Agent Heartbeat Status
 
 - **Heartbeat Interval:** 15 minutes
-- **Current State:** IDLE (blocked on API)
+- **Current State:** IDLE (awaiting server restart)
 - **Last Check-in:** 2026-03-25 20:45 UTC
-- **Next Scheduled Run:** When API is fixed or manual wake
+- **Next Scheduled Run:** After Paperclip server restart
 
-**Recommendation:** Fix database/API issue before next heartbeat runs, or tasks will keep reporting 500 errors.
+**Recommendation:** Restart Paperclip server to apply route fixes and resume heartbeat operations.
