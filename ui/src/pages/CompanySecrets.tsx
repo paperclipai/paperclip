@@ -84,6 +84,7 @@ export function CompanySecrets() {
       setNewName("");
       setNewValue("");
       setNewDescription("");
+      setNewProvider(providers[0]?.id ?? "local_encrypted");
       pushToast({ title: "Secret created" });
       invalidateCompanySecrets(vars.companyId);
     },
