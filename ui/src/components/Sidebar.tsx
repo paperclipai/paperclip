@@ -13,6 +13,7 @@ import {
   Blocks,
   Webhook,
   MessageSquare,
+  CalendarClock,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarSection } from "./SidebarSection";
@@ -90,6 +91,7 @@ export function Sidebar() {
           <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} />
           <SidebarNavItem to="/runs" label="Runs" icon={Play} />
           <SidebarNavItem to="/goals" label="Goals" icon={Target} />
+          <SidebarNavItem to="/schedules" label="Schedules" icon={CalendarClock} />
         </SidebarSection>
 
         <SidebarProjects />

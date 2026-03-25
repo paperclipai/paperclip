@@ -316,11 +316,18 @@ export function IssuesList({
 
   const upcomingSchedules = useMemo(() => {
     const now = Date.now();
+    // When viewing inside a project, only show schedules linked to issues in this project
+    const projectIssueIds = projectId ? new Set(issues.map((i) => i.id)) : null;
     return recurringSchedules
-      .filter((s) => s.enabled && s.nextTriggerAt && new Date(s.nextTriggerAt).getTime() > now)
+      .filter((s) => {
+        if (!s.enabled || !s.nextTriggerAt || new Date(s.nextTriggerAt).getTime() <= now) return false;
+        // If scoped to a project, only include schedules whose linked issue belongs to this project
+        if (projectIssueIds) return s.issueId != null && projectIssueIds.has(s.issueId);
+        return true;
+      })
       .sort((a, b) => new Date(a.nextTriggerAt!).getTime() - new Date(b.nextTriggerAt!).getTime())
       .slice(0, 8);
-  }, [recurringSchedules]);
+  }, [recurringSchedules, projectId, issues]);
 
   const activeIssues = useMemo(() => filtered.filter((i) => !pastStatuses.has(i.status)), [filtered]);
   const pastIssues = useMemo(() => filtered.filter((i) => pastStatuses.has(i.status)), [filtered]);
