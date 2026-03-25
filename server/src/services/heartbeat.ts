@@ -272,6 +272,43 @@ export function shouldSelfWake(
   return false;
 }
 
+/**
+ * Computes a 0-100 quality score for a completed heartbeat run.
+ */
+export function computeRunQualityScore(opts: {
+  outcome: string;
+  startedAt: Date | null;
+  finishedAt: Date;
+  exitCode: number | null;
+  invocationSource: string;
+  issueId: string | null | undefined;
+}): number {
+  let score = 0;
+
+  // Outcome: succeeded = 50pts
+  if (opts.outcome === "succeeded") score += 50;
+
+  // Had a task assigned: 15pts
+  if (opts.issueId) score += 15;
+
+  // Duration scoring: 15pts max
+  if (opts.startedAt) {
+    const durationMs = opts.finishedAt.getTime() - opts.startedAt.getTime();
+    const durationMin = durationMs / 60000;
+    if (durationMin < 2) score += 15;
+    else if (durationMin < 5) score += 10;
+    else if (durationMin < 10) score += 5;
+  }
+
+  // Clean exit: 10pts
+  if (opts.exitCode === 0) score += 10;
+
+  // Not a timer wake (actual triggered work): 10pts
+  if (opts.invocationSource !== "timer") score += 10;
+
+  return score;
+}
+
 function describeSessionResetReason(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
@@ -1596,7 +1633,17 @@ export function heartbeatService(db: Db) {
         exitCode: adapterResult.exitCode,
         signal: adapterResult.signal,
         usageJson,
-        resultJson: adapterResult.resultJson ?? null,
+        resultJson: {
+          ...(adapterResult.resultJson ?? {}),
+          qualityScore: computeRunQualityScore({
+            outcome,
+            startedAt: run.startedAt ? new Date(run.startedAt) : null,
+            finishedAt: new Date(),
+            exitCode: adapterResult.exitCode,
+            invocationSource: run.invocationSource,
+            issueId: readNonEmptyString(run.contextSnapshot?.issueId),
+          }),
+        },
         sessionIdAfter: nextSessionState.displayId ?? nextSessionState.legacySessionId,
         stdoutExcerpt,
         stderrExcerpt,
