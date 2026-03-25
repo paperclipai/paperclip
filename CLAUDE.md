@@ -126,15 +126,27 @@ Documentation Writer folder structure: `docs/api-reference/`, `docs/guides/`, `d
 
 ### Agents — Amaravati Ltd (Workspace: `AMA`)
 
-| Agent | Slug | Model | Heartbeat |
+| Agent | Model | Heartbeat | Notes |
 |---|---|---|---|
-| CEO | `ceo` | claude-sonnet-4-6 | ✅ active |
-| SRE Monitor | `sre-monitor` | claude-sonnet-4-6 | ✅ active |
-| Incident Responder | `incident-responder` | claude-sonnet-4-6 | ✅ active |
-| Prod Support Lead | `prod-support-lead` | claude-sonnet-4-6 | ✅ active |
-| Security Auditor | `security-auditor` | claude-sonnet-4-6 | ✅ active |
+| CEO | claude-haiku-4-5 | ✅ active (1h) | |
+| SRE Monitor | claude-haiku-4-5 | ✅ active (8h) | |
+| Incident Responder | claude-haiku-4-5 | ✅ active (1h) | |
+| Prod Support Lead | claude-haiku-4-5 | ✅ active (1h) | |
+| Security Auditor | claude-haiku-4-5 | ✅ active (1h) | |
+| M&A Scout | claude-haiku-4-5 | ✅ active (24h) | Added 2026-03-25; monitors Companies House + London Gazette for insolvent/winding-up companies; posts daily digest issue to AMA workspace |
 
 Note: CEO (Nemotron/openclaw) was removed 2026-03-23 — to be revisited when NemoClaw matures.
+
+### M&A Scout — Configuration Notes
+
+- **Agent ID**: `799283e6-ee61-42c6-9dad-46e42bec8573`
+- **Model**: `claude-haiku-4-5-20251001`
+- **Heartbeat**: every 24h (`intervalSec: 86400`)
+- **Instructions file**: `/Users/nag/work/247365/AGENTS-ma-scout.md`
+- **Workspace**: `~/.paperclip/instances/default/workspaces/6095209e-4254-4535-b229-4579df1bccc8/`
+- **Purpose**: Scans Companies House API (liquidation/administration/voluntary-arrangement) and London Gazette (winding-up petitions, admin orders) daily. Scores targets 1–10 for Amaravati fit (IT/SaaS/B2B sector, England/Wales, 5–150 staff). Posts digest issue for targets scoring ≥ 6.
+- **⚠️ API key needed**: Set `companiesHouseApiKey` in agent's adapter_config via Paperclip UI. Get free key at https://developer.company-information.service.gov.uk/
+- **How to trigger manually**: "Assign Task" → any wakeOnDemand wake, or wait for 24h heartbeat
 
 ---
 

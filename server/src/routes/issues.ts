@@ -19,6 +19,7 @@ import { validate } from "../middleware/validate.js";
 import {
   accessService,
   agentService,
+  companyService,
   executionWorkspaceService,
   goalService,
   heartbeatService,
@@ -43,6 +44,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
   const router = Router();
   const svc = issueService(db);
   const access = accessService(db);
+  const companySvc = companyService(db);
   const heartbeat = heartbeatService(db);
   const agentsSvc = agentService(db);
   const projectsSvc = projectService(db);
@@ -226,7 +228,15 @@ export function issueRoutes(db: Db, storage: StorageService) {
   });
 
   router.get("/companies/:companyId/issues", async (req, res) => {
-    const companyId = req.params.companyId as string;
+    const companyIdOrPrefix = req.params.companyId as string;
+
+    const resolvedCompany = await companySvc.getByIdOrPrefix(companyIdOrPrefix);
+    if (!resolvedCompany) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
+
+    const companyId = resolvedCompany.id;
     assertCompanyAccess(req, companyId);
     const assigneeUserFilterRaw = req.query.assigneeUserId as string | undefined;
     const touchedByUserFilterRaw = req.query.touchedByUserId as string | undefined;
