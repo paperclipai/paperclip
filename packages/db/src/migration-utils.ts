@@ -10,13 +10,17 @@ export function normalizeMigrationContent(content: string): string {
 
 /**
  * Compute a SHA-256 hex digest for migration content.
- * @param content Must already be normalized (CRLF → LF) via {@link normalizeMigrationContent}.
+ * Normalizes CRLF → LF internally so callers don't need to pre-normalize.
  */
 export function computeMigrationHash(content: string): string {
-  return createHash("sha256").update(content).digest("hex");
+  return createHash("sha256").update(normalizeMigrationContent(content)).digest("hex");
 }
 
-/** Split a Drizzle migration file on `--> statement-breakpoint` markers. */
+/**
+ * Split a Drizzle migration file on `--> statement-breakpoint` markers.
+ * @param content Should already be normalized (CRLF → LF) via {@link normalizeMigrationContent}
+ *   so that line-ending differences don't affect statement boundaries or downstream hashing.
+ */
 export function splitMigrationStatements(content: string): string[] {
   return content
     .split("--> statement-breakpoint")

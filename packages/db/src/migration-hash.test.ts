@@ -75,12 +75,13 @@ describe("CRLF normalization produces consistent hashes", () => {
     expect(computeMigrationHash(normalizedLf)).toBe(computeMigrationHash(normalizedCrlf));
   });
 
-  it("without normalization, CRLF and LF produce different hashes", () => {
+  it("computeMigrationHash normalizes internally so CRLF and LF produce the same hash", () => {
     const lfContent = "CREATE TABLE foo (\n  id INT\n);\n";
     const crlfContent = "CREATE TABLE foo (\r\n  id INT\r\n);\r\n";
 
-    // This is the bug that normalization fixes: raw hashes differ
-    expect(computeMigrationHash(lfContent)).not.toBe(computeMigrationHash(crlfContent));
+    // computeMigrationHash normalizes CRLF → LF before hashing,
+    // so callers don't need to pre-normalize.
+    expect(computeMigrationHash(lfContent)).toBe(computeMigrationHash(crlfContent));
   });
 
   it("handles realistic multi-statement migration with CRLF", () => {
