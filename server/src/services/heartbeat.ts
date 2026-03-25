@@ -1664,6 +1664,38 @@ export function heartbeatService(db: Db) {
         }
       }
 
+      // Self-wake if agent has remaining actionable inbox items.
+      if (shouldSelfWake(outcome, adapterResult.errorCode)) {
+        void (async () => {
+          try {
+            const remaining = await db
+              .select({ id: issues.id })
+              .from(issues)
+              .where(
+                and(
+                  eq(issues.assigneeAgentId, agent.id),
+                  inArray(issues.status, ["todo", "in_progress"]),
+                ),
+              )
+              .limit(1);
+            if (remaining.length > 0) {
+              logger.info({ agentId: agent.id, runId: run.id }, "Enqueueing self-wake for remaining inbox items");
+              await enqueueWakeup(agent.id, {
+                source: "automation",
+                triggerDetail: "system",
+                reason: "inbox_remaining",
+                payload: { completedRunId: run.id },
+                requestedByActorType: "system",
+                requestedByActorId: null,
+                contextSnapshot: { source: "heartbeat.inbox_remaining" },
+              });
+            }
+          } catch (err) {
+            logger.warn({ err, agentId: agent.id, runId: run.id }, "failed to self-wake for remaining inbox");
+          }
+        })();
+      }
+
       // When an engineer's run completes with real work, wake the CTO to review.
       // Skip for timer-only heartbeats (idle inbox checks) to avoid cascading wakes.
       if (outcome === "succeeded" && agent.role === "engineer" && run.invocationSource !== "timer") {
