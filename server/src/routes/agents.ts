@@ -95,6 +95,21 @@ export function agentRoutes(db: Db) {
   const router = Router();
   const svc = agentService(db);
   const access = accessService(db);
+
+  /** Returns true if actorAgentId is a registered manager of targetAgentId. */
+  async function isManagerOf(actorAgentId: string, targetAgentId: string): Promise<boolean> {
+    return db
+      .select({ agentId: agentManagers.agentId })
+      .from(agentManagers)
+      .where(
+        and(
+          eq(agentManagers.agentId, targetAgentId),
+          eq(agentManagers.managerId, actorAgentId),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows.length > 0);
+  }
   const approvalsSvc = approvalService(db);
   const budgets = budgetService(db);
   const heartbeat = heartbeatService(db);
@@ -2096,19 +2111,7 @@ export function agentRoutes(db: Db) {
     assertCompanyAccess(req, agent.companyId);
 
     if (req.actor.type === "agent" && req.actor.agentId !== id) {
-      const isManager = await db
-        .select({ agentId: agentManagers.agentId })
-        .from(agentManagers)
-        .where(
-          and(
-            eq(agentManagers.agentId, id),
-            eq(agentManagers.managerId, req.actor.agentId!),
-          ),
-        )
-        .limit(1)
-        .then((rows) => rows.length > 0);
-
-      if (!isManager) {
+      if (!await isManagerOf(req.actor.agentId!, id)) {
         res.status(403).json({ error: "Agent can only invoke itself or managed agents" });
         return;
       }
@@ -2160,19 +2163,7 @@ export function agentRoutes(db: Db) {
     assertCompanyAccess(req, agent.companyId);
 
     if (req.actor.type === "agent" && req.actor.agentId !== id) {
-      const isManager = await db
-        .select({ agentId: agentManagers.agentId })
-        .from(agentManagers)
-        .where(
-          and(
-            eq(agentManagers.agentId, id),
-            eq(agentManagers.managerId, req.actor.agentId!),
-          ),
-        )
-        .limit(1)
-        .then((rows) => rows.length > 0);
-
-      if (!isManager) {
+      if (!await isManagerOf(req.actor.agentId!, id)) {
         res.status(403).json({ error: "Agent can only invoke itself or managed agents" });
         return;
       }
