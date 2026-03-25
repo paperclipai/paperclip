@@ -188,7 +188,11 @@ for (const arch of arches) {
   console.log(`[prepare-server] Downloading Node ${NODE_VERSION} for ${nodePlatform}-${arch}...`);
 
   // Download
-  execSync(`curl -fsSL -o "${archivePath}" "${url}"`, { stdio: "inherit" });
+  if (platform === "win32") {
+    execSync(`powershell -Command "Invoke-WebRequest -Uri '${url}' -OutFile '${archivePath}'"`, { stdio: "inherit" });
+  } else {
+    execSync(`curl -fsSL -o "${archivePath}" "${url}"`, { stdio: "inherit" });
+  }
 
   // Extract just the node binary
   if (platform === "win32") {

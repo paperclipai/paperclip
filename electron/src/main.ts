@@ -1,7 +1,6 @@
 import { app, BrowserWindow, dialog, shell } from "electron";
 import { execSync, spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
-import os from "node:os";
 import fs from "node:fs";
 import net from "node:net";
 import treeKill from "tree-kill";
@@ -175,10 +174,11 @@ function resolveShellPath(): string {
     if (shellPath) return shellPath;
   } catch { /* shell probe failed */ }
 
+  const sep = path.delimiter;
   const current = process.env.PATH ?? "";
-  const existing = new Set(current.split(":"));
+  const existing = new Set(current.split(sep));
   const missing = fallbackDirs.filter((d) => !existing.has(d));
-  return missing.length > 0 ? current + ":" + missing.join(":") : current;
+  return missing.length > 0 ? current + sep + missing.join(sep) : current;
 }
 
 // ---------------------------------------------------------------------------
@@ -233,7 +233,7 @@ function startServer(port: number): ChildProcess {
         PATH: enrichedPath,
         NODE_ENV: "production",
         PORT: String(port),
-        PAPERCLIP_HOME: path.join(os.homedir(), ".paperclip"),
+        PAPERCLIP_HOME: app.getPath("userData"),
         // Always auto-apply pending migrations on startup — Electron spawns the
         // server with stdin ignored (not a TTY) so the TTY heuristic in the
         // server would auto-apply anyway, but this makes the intent explicit and
