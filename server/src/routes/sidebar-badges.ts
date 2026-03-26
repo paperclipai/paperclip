@@ -2,7 +2,11 @@ import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { and, eq, sql } from "drizzle-orm";
 import { joinRequests } from "@paperclipai/db";
-import { computeSidebarInboxCount, sidebarBadgeService } from "../services/sidebar-badges.js";
+import {
+  computeSidebarAlertsCount,
+  computeSidebarInboxCount,
+  sidebarBadgeService,
+} from "../services/sidebar-badges.js";
 import { inboxDismissalService } from "../services/inbox-dismissals.js";
 import { chatReadStateService } from "../services/chat-read-states.js";
 import { accessService } from "../services/access.js";
@@ -51,6 +55,11 @@ export function sidebarBadgeRoutes(db: Db) {
         ? await inboxDismissals.listItemIdsByType(companyId, req.actor.userId, "failed_run")
         : [];
 
+    const dismissedAlertIds =
+      req.actor.type === "board" && typeof req.actor.userId === "string"
+        ? await inboxDismissals.listItemIdsByType(companyId, req.actor.userId, "alert")
+        : [];
+
     const boardUserId =
       req.actor.type === "board" && typeof req.actor.userId === "string"
         ? req.actor.userId
@@ -73,9 +82,14 @@ export function sidebarBadgeRoutes(db: Db) {
 
     const summary = await dashboard.summary(companyId);
     const hasFailedRuns = badges.failedRuns > 0;
-    const alertsCount =
-      (summary.agents.error > 0 && !hasFailedRuns ? 1 : 0) +
-      (summary.costs.monthBudgetCents > 0 && summary.costs.monthUtilizationPercent >= 80 ? 1 : 0);
+    const dismissedAlertIdSet = new Set(dismissedAlertIds);
+    const alertsCount = computeSidebarAlertsCount({
+      agentErrorCount: summary.agents.error,
+      hasFailedRuns,
+      monthBudgetCents: summary.costs.monthBudgetCents,
+      monthUtilizationPercent: summary.costs.monthUtilizationPercent,
+      dismissedAlertItemIds: dismissedAlertIdSet,
+    });
     badges.alerts = alertsCount;
     badges.inbox = computeSidebarInboxCount({
       approvals: badges.approvals,

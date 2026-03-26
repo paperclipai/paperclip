@@ -22,6 +22,32 @@ export function computeSidebarInboxCount(input: {
   );
 }
 
+/** Agent-error and budget alerts; itemIds match inbox dismissals (`agent-errors`, `budget`). */
+export function computeSidebarAlertsCount(input: {
+  agentErrorCount: number;
+  hasFailedRuns: boolean;
+  monthBudgetCents: number;
+  monthUtilizationPercent: number;
+  dismissedAlertItemIds: Set<string>;
+}): number {
+  let n = 0;
+  if (
+    input.agentErrorCount > 0 &&
+    !input.hasFailedRuns &&
+    !input.dismissedAlertItemIds.has("agent-errors")
+  ) {
+    n += 1;
+  }
+  if (
+    input.monthBudgetCents > 0 &&
+    input.monthUtilizationPercent >= 80 &&
+    !input.dismissedAlertItemIds.has("budget")
+  ) {
+    n += 1;
+  }
+  return n;
+}
+
 export function sidebarBadgeService(db: Db) {
   return {
     get: async (
