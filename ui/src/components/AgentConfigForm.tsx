@@ -43,6 +43,15 @@ import { getUIAdapter } from "../adapters";
 import { ClaudeLocalAdvancedFields } from "../adapters/claude-local/config-fields";
 import { CopilotCliAdvancedFields } from "../adapters/copilot-cli/config-fields";
 import { modelEffortSupport as copilotModelEffortSupport } from "@paperclipai/adapter-copilot-cli";
+import {
+  SHARED_ADAPTER_FIELDS,
+  CURSOR_THINKING_MODELS,
+  resolveCanonicalModel,
+  translateModel,
+  getAdapterEffortValue,
+  resolveCanonicalEffort,
+  translateEffort,
+} from "../lib/canonical-models";
 import { MarkdownEditor } from "./MarkdownEditor";
 import { ChoosePathButton } from "./PathInstructionsModal";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
@@ -257,17 +266,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     }
     if (overlay.adapterType !== undefined) {
       patch.adapterType = overlay.adapterType;
-      // When adapter type changes, send only the new config — don't merge
-      // with old config since old adapter fields are meaningless for the new type.
-      // Exception: instructionsFilePath is shared across all local adapters and
-      // must be preserved unless the user explicitly changed it in the overlay.
+      // When adapter type changes, preserve all semantically shared fields from
+      // the old config (unless the user already overrode them in the overlay via
+      // the adapter-switch handler below, which pre-populates model + effort).
       const existing = (agent.adapterConfig ?? {}) as Record<string, unknown>;
       const preserved: Record<string, unknown> = {};
-      if (
-        existing.instructionsFilePath !== undefined &&
-        !("instructionsFilePath" in overlay.adapterConfig)
-      ) {
-        preserved.instructionsFilePath = existing.instructionsFilePath;
+      for (const field of SHARED_ADAPTER_FIELDS) {
+        if (existing[field] !== undefined && !(field in overlay.adapterConfig)) {
+          preserved[field] = existing[field];
+        }
       }
       patch.adapterConfig = { ...preserved, ...overlay.adapterConfig };
     } else if (Object.keys(overlay.adapterConfig).length > 0) {
@@ -584,24 +591,64 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     }
                     set!(nextValues);
                   } else {
-                    // Clear all adapter config and explicitly blank out model + effort/mode keys
-                    // so the old adapter's values don't bleed through via eff()
+                    // Translate model + effort from the current displayed values to the new adapter.
+                    // All other effort fields are explicitly blanked so old values don't bleed
+                    // through eff() for fields the new adapter doesn't use.
+                    const oldAdapterType = adapterType;
+
+                    // Resolve canonical model (handles cursor thinking-suffix models too)
+                    const canonicalModel = currentModelId
+                      ? resolveCanonicalModel(oldAdapterType, currentModelId)
+                      : undefined;
+
+                    // Resolve canonical effort:
+                    // - cursor: thinking level is encoded in the model ID, not a config field
+                    // - other adapters: read the effort field from the effective config
+                    let canonicalEffort: string | undefined;
+                    if (oldAdapterType === "cursor") {
+                      canonicalEffort = CURSOR_THINKING_MODELS[currentModelId];
+                    } else {
+                      const effectiveConfig = { ...config, ...overlay.adapterConfig };
+                      const rawEffort = getAdapterEffortValue(oldAdapterType, effectiveConfig);
+                      canonicalEffort = resolveCanonicalEffort(oldAdapterType, rawEffort);
+                    }
+
+                    const translatedModel = canonicalModel
+                      ? translateModel(canonicalModel, t, canonicalEffort)
+                      : undefined;
+                    const translatedEffort = canonicalEffort
+                      ? translateEffort(canonicalEffort, t)
+                      : undefined;
+
+                    // Determine model for the new adapter
+                    let newModel: string;
+                    if (t === "codex_local") {
+                      newModel = translatedModel ?? DEFAULT_CODEX_LOCAL_MODEL;
+                    } else if (t === "gemini_local") {
+                      newModel = translatedModel ?? DEFAULT_GEMINI_LOCAL_MODEL;
+                    } else if (t === "cursor") {
+                      newModel = translatedModel ?? DEFAULT_CURSOR_LOCAL_MODEL;
+                    } else {
+                      newModel = translatedModel ?? "";
+                    }
+
                     setOverlay((prev) => ({
                       ...prev,
                       adapterType: t,
                       adapterConfig: {
-                        model:
-                          t === "codex_local"
-                            ? DEFAULT_CODEX_LOCAL_MODEL
-                            : t === "gemini_local"
-                              ? DEFAULT_GEMINI_LOCAL_MODEL
-                            : t === "cursor"
-                              ? DEFAULT_CURSOR_LOCAL_MODEL
-                            : "",
+                        model: newModel,
+                        // Blank all known effort fields so old values don't bleed through
                         effort: "",
                         modelReasoningEffort: "",
+                        reasoningEffort: "",
                         variant: "",
                         mode: "",
+                        thinking: "",
+                        // Set the translated effort for the new adapter (if any)
+                        ...(translatedEffort
+                          ? { [translatedEffort.field]: translatedEffort.value }
+                          : {}),
+                        // Adapter-specific defaults
                         ...(t === "codex_local"
                           ? {
                               dangerouslyBypassApprovalsAndSandbox:
