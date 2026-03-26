@@ -2770,8 +2770,12 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
           {summary.slice(0, 60)}
         </span>
       )}
-      {(metrics.totalTokens > 0 || metrics.cost > 0) && (
+      {(metrics.totalTokens > 0 || metrics.cost > 0 || (run.startedAt && run.finishedAt)) && (
         <div className="flex items-center gap-2 pl-5.5 text-[11px] text-muted-foreground tabular-nums">
+          {run.startedAt && run.finishedAt && (() => {
+            const sec = Math.round((new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime()) / 1000);
+            return <span>{sec >= 60 ? `${Math.floor(sec / 60)}m ${sec % 60}s` : `${sec}s`}</span>;
+          })()}
           {metrics.totalTokens > 0 && <span>{formatTokens(metrics.totalTokens)} tok</span>}
           {metrics.cost > 0 && <span>${metrics.cost.toFixed(3)}</span>}
         </div>
