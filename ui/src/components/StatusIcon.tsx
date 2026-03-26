@@ -22,6 +22,7 @@ export function StatusIcon({ status, onChange, className, showLabel }: StatusIco
   const colorClass = issueStatusIcon[status] ?? issueStatusIconDefault;
   const isDone = status === "done";
 
+  const label = statusLabel(status);
   const circle = (
     <span
       className={cn(
@@ -30,6 +31,9 @@ export function StatusIcon({ status, onChange, className, showLabel }: StatusIco
         onChange && !showLabel && "cursor-pointer",
         className
       )}
+      title={label}
+      aria-label={label}
+      role="img"
     >
       {isDone && (
         <span className="absolute inset-0 m-auto h-2 w-2 rounded-full bg-current" />
