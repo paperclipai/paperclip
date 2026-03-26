@@ -309,7 +309,8 @@ export type TranscriptEntry =
   | { kind: "result"; ts: string; text: string; inputTokens: number; outputTokens: number; cachedTokens: number; costUsd: number; subtype: string; isError: boolean; errors: string[] }
   | { kind: "stderr"; ts: string; text: string }
   | { kind: "system"; ts: string; text: string }
-  | { kind: "stdout"; ts: string; text: string };
+  | { kind: "stdout"; ts: string; text: string }
+  | { kind: "skill_injection"; ts: string; text: string };
 
 export type StdoutLineParser = (line: string, ts: string) => TranscriptEntry[];
 

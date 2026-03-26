@@ -85,6 +85,19 @@ export function parseClaudeStdoutLine(line: string, ts: string): TranscriptEntry
   }
 
   if (type === "user") {
+    // isSynthetic messages are skill/system-prompt injections emitted by Claude Code.
+    // Emit as skill_injection so the UI can render them collapsed by default.
+    if (parsed.isSynthetic === true) {
+      const message = asRecord(parsed.message) ?? {};
+      const content = Array.isArray(message.content) ? message.content : [];
+      const parts: string[] = [];
+      for (const blockRaw of content) {
+        const block = asRecord(blockRaw);
+        if (block && typeof block.text === "string") parts.push(block.text);
+      }
+      const text = parts.join("\n");
+      return text ? [{ kind: "skill_injection", ts, text }] : [];
+    }
     const message = asRecord(parsed.message) ?? {};
     const content = Array.isArray(message.content) ? message.content : [];
     const entries: TranscriptEntry[] = [];

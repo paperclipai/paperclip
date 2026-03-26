@@ -3310,6 +3310,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
   const [isFollowing, setIsFollowing] = useState(false);
   const [isStreamingConnected, setIsStreamingConnected] = useState(false);
   const [transcriptMode, setTranscriptMode] = useState<TranscriptMode>("nice");
+  const [invocationOpen, setInvocationOpen] = useState(false);
   const logEndRef = useRef<HTMLDivElement>(null);
   const pendingLogLineRef = useRef("");
   const scrollContainerRef = useRef<ScrollContainer | null>(null);
@@ -3708,7 +3709,14 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
       />
       {adapterInvokePayload && (
         <div className="rounded-lg border border-border bg-background/60 p-3 space-y-2">
-          <div className="text-xs font-medium text-muted-foreground">Invocation</div>
+          <button
+            className="flex w-full items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+            onClick={() => setInvocationOpen(o => !o)}
+          >
+            {invocationOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+            Invocation
+          </button>
+          {invocationOpen && <>
           {typeof adapterInvokePayload.adapterType === "string" && (
             <div className="text-xs"><span className="text-muted-foreground">Adapter: </span>{adapterInvokePayload.adapterType}</div>
           )}
@@ -3768,6 +3776,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
               </pre>
             </div>
           )}
+          </>}
         </div>
       )}
 
