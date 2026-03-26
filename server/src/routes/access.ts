@@ -24,6 +24,7 @@ import {
   createOpenClawInvitePromptSchema,
   listJoinRequestsQuerySchema,
   updateMemberPermissionsSchema,
+  createMemberSchema,
   updateUserCompanyAccessSchema,
   PERMISSION_KEYS
 } from "@paperclipai/shared";
@@ -2539,6 +2540,35 @@ export function accessRoutes(
     const members = await access.listMembers(companyId);
     res.json(members);
   });
+
+  router.get(
+    "/companies/:companyId/members/:memberId/permissions",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const memberId = req.params.memberId as string;
+      await assertCompanyPermission(req, companyId, "users:manage_permissions");
+      const result = await access.getMemberGrants(companyId, memberId);
+      if (!result) throw notFound("Member not found");
+      res.json(result);
+    }
+  );
+
+  router.post(
+    "/companies/:companyId/members",
+    validate(createMemberSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      await assertCompanyPermission(req, companyId, "users:manage_permissions");
+      const membership = await access.ensureMembership(
+        companyId,
+        req.body.principalType,
+        req.body.principalId,
+        req.body.membershipRole,
+        "active",
+      );
+      res.status(201).json(membership);
+    }
+  );
 
   router.patch(
     "/companies/:companyId/members/:memberId/permissions",

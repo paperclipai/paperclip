@@ -184,6 +184,26 @@ export function accessService(db: Db) {
     return listUserCompanyAccess(userId);
   }
 
+  async function getMemberGrants(companyId: string, memberId: string) {
+    const member = await db
+      .select()
+      .from(companyMemberships)
+      .where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.id, memberId)))
+      .then((rows) => rows[0] ?? null);
+    if (!member) return null;
+    const grants = await db
+      .select()
+      .from(principalPermissionGrants)
+      .where(
+        and(
+          eq(principalPermissionGrants.companyId, companyId),
+          eq(principalPermissionGrants.principalType, member.principalType),
+          eq(principalPermissionGrants.principalId, member.principalId),
+        ),
+      );
+    return { ...member, grants };
+  }
+
   async function ensureMembership(
     companyId: string,
     principalType: PrincipalType,
@@ -256,6 +276,7 @@ export function accessService(db: Db) {
     canUser,
     hasPermission,
     getMembership,
+    getMemberGrants,
     ensureMembership,
     listMembers,
     setMemberPermissions,

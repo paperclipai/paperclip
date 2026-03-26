@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, Link, Navigate, useBeforeUnload } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { agentsApi, type AgentKey, type ClaudeLoginResult } from "../api/agents";
+import { accessApi, type MemberWithGrants, type CompanyMembership } from "../api/access";
 import { heartbeatsApi } from "../api/heartbeats";
 import { ApiError } from "../api/client";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
@@ -68,7 +69,7 @@ import {
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
-import { isUuidLike, type Agent, type HeartbeatRun, type HeartbeatRunEvent, type AgentRuntimeState, type LiveEvent, type TaskCronSchedule } from "@paperclipai/shared";
+import { isUuidLike, PERMISSION_KEYS, type PermissionKey, type Agent, type HeartbeatRun, type HeartbeatRunEvent, type AgentRuntimeState, type LiveEvent, type TaskCronSchedule } from "@paperclipai/shared";
 import { agentRouteRef } from "../lib/utils";
 
 const runStatusIcons = sharedRunStatusIcons;
@@ -1169,7 +1170,7 @@ function ConfigurationTab({
 
       <div>
         <h3 className="text-sm font-medium mb-3">Permissions</h3>
-        <div className="border border-border rounded-lg p-4">
+        <div className="border border-border rounded-lg p-4 space-y-3">
           <div className="flex items-center justify-between text-sm">
             <span>Can create new agents</span>
             <Button
@@ -1185,6 +1186,127 @@ function ConfigurationTab({
             </Button>
           </div>
         </div>
+      </div>
+
+      {companyId && (
+        <AgentRbacPermissions agentId={agent.id} companyId={companyId} />
+      )}
+    </div>
+  );
+}
+
+/* ---- RBAC Permissions Panel ---- */
+
+const PERMISSION_LABELS: Record<string, string> = {
+  "agents:create": "Create agents",
+  "users:invite": "Invite users",
+  "users:manage_permissions": "Manage permissions",
+  "tasks:assign": "Assign tasks",
+  "tasks:assign_scope": "Scoped task assignment",
+  "joins:approve": "Approve join requests",
+};
+
+function AgentRbacPermissions({ agentId, companyId }: { agentId: string; companyId: string }) {
+  const queryClient = useQueryClient();
+
+  const { data: members, isLoading: membersLoading } = useQuery({
+    queryKey: queryKeys.access.members(companyId),
+    queryFn: () => accessApi.listMembers(companyId),
+  });
+
+  const agentMembership = members?.find(
+    (m) => m.principalType === "agent" && m.principalId === agentId,
+  );
+
+  const { data: memberWithGrants, isLoading: grantsLoading } = useQuery({
+    queryKey: queryKeys.access.memberPermissions(companyId, agentMembership?.id ?? ""),
+    queryFn: () => accessApi.getMemberPermissions(companyId, agentMembership!.id),
+    enabled: Boolean(agentMembership),
+  });
+
+  const createMembership = useMutation({
+    mutationFn: () =>
+      accessApi.createMember(companyId, { principalType: "agent", principalId: agentId }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.access.members(companyId) });
+    },
+  });
+
+  const updateGrants = useMutation({
+    mutationFn: (grants: Array<{ permissionKey: PermissionKey }>) =>
+      accessApi.updateMemberPermissions(companyId, agentMembership!.id, grants),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.access.memberPermissions(companyId, agentMembership!.id),
+      });
+    },
+  });
+
+  const activeKeys = new Set(memberWithGrants?.grants.map((g) => g.permissionKey) ?? []);
+
+  function togglePermission(key: PermissionKey) {
+    const current = memberWithGrants?.grants.map((g) => ({ permissionKey: g.permissionKey })) ?? [];
+    const next = activeKeys.has(key)
+      ? current.filter((g) => g.permissionKey !== key)
+      : [...current, { permissionKey: key }];
+    updateGrants.mutate(next);
+  }
+
+  if (membersLoading) {
+    return (
+      <div>
+        <h3 className="text-sm font-medium mb-3">RBAC Permissions</h3>
+        <div className="border border-border rounded-lg p-4 text-sm text-muted-foreground">
+          Loading…
+        </div>
+      </div>
+    );
+  }
+
+  if (!agentMembership) {
+    return (
+      <div>
+        <h3 className="text-sm font-medium mb-3">RBAC Permissions</h3>
+        <div className="border border-border rounded-lg p-4">
+          <p className="text-sm text-muted-foreground mb-3">
+            This agent has no company membership. RBAC permissions require an active membership.
+          </p>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 px-2.5 text-xs"
+            onClick={() => createMembership.mutate()}
+            disabled={createMembership.isPending}
+          >
+            {createMembership.isPending ? "Creating…" : "Create membership"}
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <h3 className="text-sm font-medium mb-3">RBAC Permissions</h3>
+      <div className="border border-border rounded-lg p-4 space-y-2">
+        {grantsLoading ? (
+          <p className="text-sm text-muted-foreground">Loading…</p>
+        ) : (
+          PERMISSION_KEYS.map((key) => (
+            <div key={key} className="flex items-center justify-between text-sm">
+              <span>{PERMISSION_LABELS[key] ?? key}</span>
+              <Button
+                variant={activeKeys.has(key) ? "default" : "outline"}
+                size="sm"
+                className="h-7 px-2.5 text-xs"
+                onClick={() => togglePermission(key)}
+                disabled={updateGrants.isPending}
+              >
+                {activeKeys.has(key) ? "Enabled" : "Disabled"}
+              </Button>
+            </div>
+          ))
+        )}
       </div>
     </div>
   );

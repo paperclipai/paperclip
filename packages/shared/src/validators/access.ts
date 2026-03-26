@@ -63,6 +63,14 @@ export const updateMemberPermissionsSchema = z.object({
 
 export type UpdateMemberPermissions = z.infer<typeof updateMemberPermissionsSchema>;
 
+export const createMemberSchema = z.object({
+  principalType: z.enum(["user", "agent"]),
+  principalId: z.string().uuid(),
+  membershipRole: z.string().max(120).optional().default("member"),
+});
+
+export type CreateMember = z.infer<typeof createMemberSchema>;
+
 export const updateUserCompanyAccessSchema = z.object({
   companyIds: z.array(z.string().uuid()).default([]),
 });

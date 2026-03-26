@@ -1,5 +1,24 @@
-import type { AgentAdapterType, JoinRequest } from "@paperclipai/shared";
+import type { AgentAdapterType, JoinRequest, PermissionKey } from "@paperclipai/shared";
 import { api } from "./client";
+
+export type CompanyMembership = {
+  id: string;
+  companyId: string;
+  principalType: "user" | "agent";
+  principalId: string;
+  status: string;
+  membershipRole: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type MemberWithGrants = CompanyMembership & {
+  grants: Array<{
+    id: string;
+    permissionKey: PermissionKey;
+    scope: Record<string, unknown> | null;
+  }>;
+};
 
 type InviteSummary = {
   id: string;
@@ -127,4 +146,16 @@ export const accessApi = {
 
   claimBoard: (token: string, code: string) =>
     api.post<{ claimed: true; userId: string }>(`/board-claim/${token}/claim`, { code }),
+
+  listMembers: (companyId: string) =>
+    api.get<CompanyMembership[]>(`/companies/${companyId}/members`),
+
+  getMemberPermissions: (companyId: string, memberId: string) =>
+    api.get<MemberWithGrants>(`/companies/${companyId}/members/${memberId}/permissions`),
+
+  createMember: (companyId: string, input: { principalType: "user" | "agent"; principalId: string; membershipRole?: string }) =>
+    api.post<CompanyMembership>(`/companies/${companyId}/members`, input),
+
+  updateMemberPermissions: (companyId: string, memberId: string, grants: Array<{ permissionKey: PermissionKey; scope?: Record<string, unknown> | null }>) =>
+    api.patch<CompanyMembership>(`/companies/${companyId}/members/${memberId}/permissions`, { grants }),
 };
