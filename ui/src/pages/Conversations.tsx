@@ -506,6 +506,8 @@ interface ConversationViewProps {
 function ConversationView({ issueId, companyId, agents, onClose }: ConversationViewProps) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
+  const scrollEndRef = useRef<HTMLDivElement>(null);
+  const prevCommentCountRef = useRef(0);
 
   const agentMap = useMemo(
     () => new Map(agents.map((a) => [a.id, a])),
@@ -535,6 +537,18 @@ function ConversationView({ issueId, companyId, agents, onClose }: ConversationV
     enabled: !!issueId,
     refetchInterval: 4000,
   });
+
+  // Auto-scroll to bottom when comments load or new messages arrive
+  const commentCount = comments?.length ?? 0;
+  useEffect(() => {
+    if (commentCount > 0 && commentCount !== prevCommentCountRef.current) {
+      const isInitialLoad = prevCommentCountRef.current === 0;
+      prevCommentCountRef.current = commentCount;
+      setTimeout(() => {
+        scrollEndRef.current?.scrollIntoView({ behavior: isInitialLoad ? "auto" : "smooth" });
+      }, 50);
+    }
+  }, [commentCount]);
 
   const { data: linkedRuns } = useQuery({
     queryKey: queryKeys.issues.runs(issueId),
@@ -589,6 +603,14 @@ function ConversationView({ issueId, companyId, agents, onClose }: ConversationV
       }
     },
   });
+
+  const imageUploadHandler = useCallback(
+    async (file: File): Promise<string> => {
+      const attachment = await issuesApi.uploadAttachment(companyId, issueId, file);
+      return attachment.contentPath;
+    },
+    [companyId, issueId],
+  );
 
   const agentName = issue?.assigneeAgentId
     ? agentMap.get(issue.assigneeAgentId)?.name ?? "Agent"
@@ -720,6 +742,9 @@ function ConversationView({ issueId, companyId, agents, onClose }: ConversationV
           agentMap={agentMap}
           draftKey={`paperclip:convo-draft:${issueId}`}
           submitLabel="Send"
+          placeholder="Type your message here..."
+          imageUploadHandler={imageUploadHandler}
+          stickyInput
           hideReopen
           hideHeader
           emptyState={
@@ -737,6 +762,7 @@ function ConversationView({ issueId, companyId, agents, onClose }: ConversationV
             <LiveRunWidget issueId={issueId} companyId={companyId} />
           }
         />
+        <div ref={scrollEndRef} />
       </ScrollArea>
     </div>
   );
