@@ -6,7 +6,7 @@ export const companySecrets = pgTable(
   "company_secrets",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    companyId: uuid("company_id").notNull().references(() => companies.id),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     provider: text("provider").notNull().default("local_encrypted"),
     externalRef: text("external_ref"),

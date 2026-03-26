@@ -13,7 +13,7 @@ export const goals = pgTable(
   "goals",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    companyId: uuid("company_id").notNull().references(() => companies.id),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     title: text("title").notNull(),
     description: text("description"),
     level: text("level").notNull().default("task"),

@@ -5,7 +5,7 @@ export const principalPermissionGrants = pgTable(
   "principal_permission_grants",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    companyId: uuid("company_id").notNull().references(() => companies.id),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     principalType: text("principal_type").notNull(),
     principalId: text("principal_id").notNull(),
     permissionKey: text("permission_key").notNull(),
