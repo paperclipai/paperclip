@@ -101,6 +101,7 @@ type IssueUserContextInput = {
   createdAt: Date | string;
   updatedAt: Date | string;
 };
+type ProjectGoalReader = Pick<Db, "select">;
 
 function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
   if (actorRunId) return checkoutRunId === actorRunId;
@@ -111,6 +112,20 @@ const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancell
 
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
+}
+
+async function getProjectDefaultGoalId(
+  db: ProjectGoalReader,
+  companyId: string,
+  projectId: string | null | undefined,
+) {
+  if (!projectId) return null;
+  const row = await db
+    .select({ goalId: projects.goalId })
+    .from(projects)
+    .where(and(eq(projects.id, projectId), eq(projects.companyId, companyId)))
+    .then((rows) => rows[0] ?? null);
+  return row?.goalId ?? null;
 }
 
 function touchedByUserCondition(companyId: string, userId: string) {
@@ -216,6 +231,41 @@ function unreadForUserCondition(companyId: string, userId: string) {
       )
     )
   `;
+}
+
+/** Named entities commonly emitted in saved issue bodies; unknown `&name;` sequences are left unchanged. */
+const WELL_KNOWN_NAMED_HTML_ENTITIES: Readonly<Record<string, string>> = {
+  amp: "&",
+  apos: "'",
+  copy: "\u00A9",
+  gt: ">",
+  lt: "<",
+  nbsp: "\u00A0",
+  quot: '"',
+  ensp: "\u2002",
+  emsp: "\u2003",
+  thinsp: "\u2009",
+};
+
+function decodeNumericHtmlEntity(digits: string, radix: 16 | 10): string | null {
+  const n = Number.parseInt(digits, radix);
+  if (Number.isNaN(n) || n < 0 || n > 0x10ffff) return null;
+  try {
+    return String.fromCodePoint(n);
+  } catch {
+    return null;
+  }
+}
+
+/** Decodes HTML character references in a raw @mention capture so UI-encoded bodies match agent names. */
+export function normalizeAgentMentionToken(raw: string): string {
+  let s = raw.replace(/&#x([0-9a-fA-F]+);/gi, (full, hex: string) => decodeNumericHtmlEntity(hex, 16) ?? full);
+  s = s.replace(/&#([0-9]+);/g, (full, dec: string) => decodeNumericHtmlEntity(dec, 10) ?? full);
+  s = s.replace(/&([a-z][a-z0-9]*);/gi, (full, name: string) => {
+    const decoded = WELL_KNOWN_NAMED_HTML_ENTITIES[name.toLowerCase()];
+    return decoded !== undefined ? decoded : full;
+  });
+  return s.trim();
 }
 
 export function deriveIssueUserContext(
@@ -744,6 +794,7 @@ export function issueService(db: Db) {
       }
       return db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
+        const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
         let executionWorkspaceSettings =
           (issueData.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? null;
         if (executionWorkspaceSettings == null && issueData.projectId) {
@@ -795,6 +846,7 @@ export function issueService(db: Db) {
           goalId: resolveIssueGoalId({
             projectId: issueData.projectId,
             goalId: issueData.goalId,
+            projectGoalId,
             defaultGoalId: defaultCompanyGoal?.id ?? null,
           }),
           ...(projectWorkspaceId ? { projectWorkspaceId } : {}),
@@ -895,11 +947,21 @@ export function issueService(db: Db) {
 
       return db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, existing.companyId);
+        const [currentProjectGoalId, nextProjectGoalId] = await Promise.all([
+          getProjectDefaultGoalId(tx, existing.companyId, existing.projectId),
+          getProjectDefaultGoalId(
+            tx,
+            existing.companyId,
+            issueData.projectId !== undefined ? issueData.projectId : existing.projectId,
+          ),
+        ]);
         patch.goalId = resolveNextIssueGoalId({
           currentProjectId: existing.projectId,
           currentGoalId: existing.goalId,
+          currentProjectGoalId,
           projectId: issueData.projectId,
           goalId: issueData.goalId,
+          projectGoalId: nextProjectGoalId,
           defaultGoalId: defaultCompanyGoal?.id ?? null,
         });
         const updated = await tx
@@ -1490,11 +1552,13 @@ export function issueService(db: Db) {
       const re = /\B@([^\s@,!?.]+)/g;
       const tokens = new Set<string>();
       let m: RegExpExecArray | null;
-      while ((m = re.exec(body)) !== null) tokens.add(m[1].toLowerCase());
+      while ((m = re.exec(body)) !== null) {
+        const normalized = normalizeAgentMentionToken(m[1]);
+        if (normalized) tokens.add(normalized.toLowerCase());
+      }
 
       const explicitAgentMentionIds = extractAgentMentionIds(body);
       if (tokens.size === 0 && explicitAgentMentionIds.length === 0) return [];
-
       const rows = await db.select({ id: agents.id, name: agents.name })
         .from(agents).where(eq(agents.companyId, companyId));
       const resolved = new Set<string>(explicitAgentMentionIds);

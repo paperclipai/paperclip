@@ -171,6 +171,33 @@ export function issueRoutes(db: Db, storage: StorageService) {
     return rawId;
   }
 
+  async function resolveIssueProjectAndGoal(issue: {
+    companyId: string;
+    projectId: string | null;
+    goalId: string | null;
+  }) {
+    const projectPromise = issue.projectId ? projectsSvc.getById(issue.projectId) : Promise.resolve(null);
+    const directGoalPromise = issue.goalId ? goalsSvc.getById(issue.goalId) : Promise.resolve(null);
+    const [project, directGoal] = await Promise.all([projectPromise, directGoalPromise]);
+
+    if (directGoal) {
+      return { project, goal: directGoal };
+    }
+
+    const projectGoalId = project?.goalId ?? project?.goalIds[0] ?? null;
+    if (projectGoalId) {
+      const projectGoal = await goalsSvc.getById(projectGoalId);
+      return { project, goal: projectGoal };
+    }
+
+    if (!issue.projectId) {
+      const defaultGoal = await goalsSvc.getDefaultCompanyGoal(issue.companyId);
+      return { project, goal: defaultGoal };
+    }
+
+    return { project, goal: null };
+  }
+
   // Resolve issue identifiers (e.g. "PAP-39") to UUIDs for all /issues/:id routes
   router.param("id", async (req, res, next, rawId) => {
     try {
@@ -311,14 +338,9 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    const [ancestors, project, goal, mentionedProjectIds, documentPayload] = await Promise.all([
+    const [{ project, goal }, ancestors, mentionedProjectIds, documentPayload] = await Promise.all([
+      resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
-      issue.projectId ? projectsSvc.getById(issue.projectId) : null,
-      issue.goalId
-        ? goalsSvc.getById(issue.goalId)
-        : !issue.projectId
-          ? goalsSvc.getDefaultCompanyGoal(issue.companyId)
-          : null,
       svc.findMentionedProjectIds(issue.id),
       documentsSvc.getIssueDocumentPayload(issue),
     ]);
@@ -356,14 +378,9 @@ export function issueRoutes(db: Db, storage: StorageService) {
         ? req.query.wakeCommentId.trim()
         : null;
 
-    const [ancestors, project, goal, commentCursor, wakeComment] = await Promise.all([
+    const [{ project, goal }, ancestors, commentCursor, wakeComment] = await Promise.all([
+      resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
-      issue.projectId ? projectsSvc.getById(issue.projectId) : null,
-      issue.goalId
-        ? goalsSvc.getById(issue.goalId)
-        : !issue.projectId
-          ? goalsSvc.getDefaultCompanyGoal(issue.companyId)
-          : null,
       svc.getCommentCursor(issue.id),
       wakeCommentId ? svc.getComment(wakeCommentId) : null,
     ]);

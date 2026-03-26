@@ -94,8 +94,8 @@ export async function startServer(): Promise<StartedServer> {
   }
   
   async function promptApplyMigrations(migrations: string[]): Promise<boolean> {
-    if (process.env.PAPERCLIP_MIGRATION_PROMPT === "never") return false;
     if (process.env.PAPERCLIP_MIGRATION_AUTO_APPLY === "true") return true;
+    if (process.env.PAPERCLIP_MIGRATION_PROMPT === "never") return false;
     if (!stdin.isTTY || !stdout.isTTY) return true;
   
     const prompt = createInterface({ input: stdin, output: stdout });
@@ -347,7 +347,7 @@ export async function startServer(): Promise<StartedServer> {
           password: "paperclip",
           port,
           persistent: true,
-          initdbFlags: ["--encoding=UTF8", "--locale=C"],
+          initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
           onLog: appendEmbeddedPostgresLog,
           onError: appendEmbeddedPostgresLog,
         });

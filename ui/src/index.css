@@ -355,7 +355,7 @@
   font-size: 0.75rem;
   line-height: 1.3;
   text-decoration: none;
-  vertical-align: baseline;
+  vertical-align: middle;
   white-space: nowrap;
   user-select: none;
 }
@@ -746,7 +746,7 @@ a.paperclip-project-mention-chip {
   font-size: 0.75rem;
   line-height: 1.3;
   text-decoration: none;
-  vertical-align: baseline;
+  vertical-align: middle;
   white-space: nowrap;
 }
 

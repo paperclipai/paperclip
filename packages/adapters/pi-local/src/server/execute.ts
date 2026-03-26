@@ -266,10 +266,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `The above agent instructions were loaded from ${resolvedInstructionsFilePath}. ` +
         `Resolve any relative file references from ${instructionsFileDir}.\n\n` +
         `You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.`;
-      await onLog(
-        "stdout",
-        `[paperclip] Loaded agent instructions file: ${resolvedInstructionsFilePath}\n`,
-      );
     } catch (err) {
       instructionsReadFailed = true;
       const reason = err instanceof Error ? err.message : String(err);
