@@ -43,6 +43,7 @@ export const help: Record<string, string> = {
   localCommand: "Override the path to the CLI command you want the adapter to call (e.g. /usr/local/bin/claude, codex, opencode).",
   args: "Command-line arguments, comma-separated.",
   extraArgs: "Extra CLI arguments for local adapters, comma-separated.",
+  mcpUrls: "MCP server URLs. Each agent run will connect to these servers. Paste your OCC agent MCP link here.",
   envVars: "Environment variables injected into the adapter process. Use plain values or secret references.",
   bootstrapPrompt: "Only sent when Paperclip starts a fresh session. Use this for stable setup guidance that should not be repeated on every heartbeat.",
   payloadTemplateJson: "Optional JSON merged into remote adapter request payloads before Paperclip adds its standard wake and workspace fields.",

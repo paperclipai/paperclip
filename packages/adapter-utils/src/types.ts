@@ -334,6 +334,7 @@ export interface CreateConfigValues {
   command: string;
   args: string;
   extraArgs: string;
+  mcpUrls: Record<string, string>; // name → MCP server URL
   envVars: string;
   envBindings: Record<string, unknown>;
   url: string;

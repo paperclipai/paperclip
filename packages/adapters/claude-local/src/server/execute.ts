@@ -341,6 +341,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const billingType = resolveClaudeBillingType(effectiveEnv);
   const skillsDir = await buildSkillsDir(config);
 
+  // MCP server configuration — write temp file if mcpUrls are set
+  const mcpUrls = (config.mcpUrls ?? {}) as Record<string, string>;
+  let mcpConfigPath: string | undefined;
+  if (Object.keys(mcpUrls).length > 0) {
+    const mcpServers: Record<string, { url: string }> = {};
+    for (const [name, url] of Object.entries(mcpUrls)) {
+      if (url) mcpServers[name] = { url };
+    }
+    if (Object.keys(mcpServers).length > 0) {
+      mcpConfigPath = path.join(skillsDir, "mcp-config.json");
+      await fs.writeFile(mcpConfigPath, JSON.stringify({ mcpServers }, null, 2), "utf-8");
+    }
+  }
+
   // When instructionsFilePath is configured, create a combined temp file that
   // includes both the file content and the path directive, so we only need
   // --append-system-prompt-file (Claude CLI forbids using both flags together).
@@ -415,6 +429,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args.push("--append-system-prompt-file", effectiveInstructionsFilePath);
     }
     args.push("--add-dir", skillsDir);
+    if (mcpConfigPath) args.push("--mcp-config", mcpConfigPath);
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
   };

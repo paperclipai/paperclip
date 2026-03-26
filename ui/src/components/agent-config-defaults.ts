@@ -14,6 +14,7 @@ export const defaultCreateValues: CreateConfigValues = {
   command: "",
   args: "",
   extraArgs: "",
+  mcpUrls: {},
   envVars: "",
   envBindings: {},
   url: "",

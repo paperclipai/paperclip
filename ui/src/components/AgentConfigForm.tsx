@@ -773,6 +773,21 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 <ClaudeLocalAdvancedFields {...adapterFieldProps} />
               )}
 
+              <Field label="MCP server URLs" hint={help.mcpUrls}>
+                <McpUrlsEditor
+                  value={
+                    isCreate
+                      ? (val!.mcpUrls ?? {})
+                      : ((eff("adapterConfig", "mcpUrls", (config.mcpUrls ?? {})) ?? {}) as Record<string, string>)
+                  }
+                  onChange={(urls) =>
+                    isCreate
+                      ? set!({ mcpUrls: urls })
+                      : mark("adapterConfig", "mcpUrls", Object.keys(urls).length > 0 ? urls : undefined)
+                  }
+                />
+              </Field>
+
               <Field label="Extra args (comma-separated)" hint={help.extraArgs}>
                 <DraftInput
                   value={
@@ -1463,5 +1478,85 @@ function ThinkingEffortDropdown({
         </PopoverContent>
       </Popover>
     </Field>
+  );
+}
+
+/* ---- MCP URLs Editor ---- */
+
+function McpUrlsEditor({
+  value,
+  onChange,
+}: {
+  value: Record<string, string>;
+  onChange: (urls: Record<string, string>) => void;
+}) {
+  type Row = { name: string; url: string };
+
+  function toRows(rec: Record<string, string>): Row[] {
+    const entries = Object.entries(rec).map(([name, url]) => ({ name, url }));
+    return [...entries, { name: "", url: "" }];
+  }
+
+  const [rows, setRows] = useState<Row[]>(() => toRows(value));
+  const valueRef = useRef(value);
+
+  useEffect(() => {
+    if (value !== valueRef.current) {
+      valueRef.current = value;
+      setRows(toRows(value));
+    }
+  }, [value]);
+
+  function commit(updated: Row[]) {
+    setRows(updated);
+    const rec: Record<string, string> = {};
+    for (const r of updated) {
+      if (r.name.trim() && r.url.trim()) rec[r.name.trim()] = r.url.trim();
+    }
+    valueRef.current = rec;
+    onChange(rec);
+  }
+
+  function updateRow(i: number, field: "name" | "url", v: string) {
+    const next = rows.map((r, j) => (j === i ? { ...r, [field]: v } : r));
+    const last = next[next.length - 1];
+    if (last && (last.name || last.url)) next.push({ name: "", url: "" });
+    commit(next);
+  }
+
+  function removeRow(i: number) {
+    const next = rows.filter((_, j) => j !== i);
+    if (next.length === 0) next.push({ name: "", url: "" });
+    commit(next);
+  }
+
+  return (
+    <div className="space-y-2">
+      {rows.map((row, i) => (
+        <div key={i} className="flex gap-2 items-center">
+          <input
+            className="flex-[1] min-w-0 px-2 py-1.5 text-sm rounded border bg-background"
+            placeholder="Name (e.g. jimbo)"
+            value={row.name}
+            onChange={(e) => updateRow(i, "name", e.target.value)}
+          />
+          <input
+            className="flex-[3] min-w-0 px-2 py-1.5 text-sm rounded border bg-background font-mono"
+            placeholder="https://agent.occ.wtf/mcp/..."
+            value={row.url}
+            onChange={(e) => updateRow(i, "url", e.target.value)}
+          />
+          {(row.name || row.url) && (
+            <button
+              type="button"
+              className="text-muted-foreground hover:text-destructive text-sm px-1"
+              onClick={() => removeRow(i)}
+            >
+              ✕
+            </button>
+          )}
+        </div>
+      ))}
+    </div>
   );
 }
