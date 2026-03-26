@@ -1123,7 +1123,7 @@ function EnvVarEditor({
 
   const [rows, setRows] = useState<Row[]>(() => toRows(value));
   const [sealError, setSealError] = useState<string | null>(null);
-  const valueRef = useRef(value);
+  const valueRef = useRef<Record<string, EnvBinding> | undefined>(value);
 
   // Sync when value identity changes (overlay reset after save)
   useEffect(() => {
@@ -1145,7 +1145,11 @@ function EnvVarEditor({
         rec[k] = { type: "plain", value: row.plainValue };
       }
     }
-    onChange(Object.keys(rec).length > 0 ? rec : undefined);
+    const next = Object.keys(rec).length > 0 ? rec : undefined;
+    // Keep valueRef in sync with what we emit so the useEffect sync guard
+    // doesn't mistake our own onChange round-trip for an external reset.
+    valueRef.current = next;
+    onChange(next);
   }
 
   function updateRow(i: number, patch: Partial<Row>) {
