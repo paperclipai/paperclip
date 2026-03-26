@@ -47,6 +47,7 @@ import {
 import { notFound, unprocessable } from "../errors.js";
 import type { StorageService } from "../storage/types.js";
 import { accessService } from "./access.js";
+import { prepareAdapterConfigForPersistence } from "./agent-adapter-config.js";
 import { agentService } from "./agents.js";
 import { agentInstructionsService } from "./agent-instructions.js";
 import { assetService } from "./assets.js";
@@ -58,6 +59,7 @@ import { validateCron } from "./cron.js";
 import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
 import { routineService } from "./routines.js";
+import { secretService } from "./secrets.js";
 
 /** Build OrgNode tree from manifest agent list (slug + reportsToSlug). */
 function buildOrgTreeFromManifest(agents: CompanyPortabilityManifest["agents"]): OrgNode[] {
@@ -2621,9 +2623,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   const assetRecords = assetService(db);
   const instructions = agentInstructionsService();
   const access = accessService(db);
+  const secrets = secretService(db);
   const projects = projectService(db);
   const issues = issueService(db);
   const companySkills = companySkillService(db);
+  const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
 
   async function resolveSource(source: CompanyPortabilityPreview["source"]): Promise<ResolvedSource> {
     if (source.type === "inline") {
@@ -3900,6 +3904,13 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         delete adapterConfigWithSkills.instructionsBundleMode;
         delete adapterConfigWithSkills.instructionsRootPath;
         delete adapterConfigWithSkills.instructionsEntryFile;
+        const normalizedAdapterConfig = await prepareAdapterConfigForPersistence({
+          companyId: targetCompany.id,
+          adapterType: effectiveAdapterType,
+          adapterConfig: adapterConfigWithSkills,
+          strictMode: strictSecretsMode,
+          secretsSvc: secrets,
+        });
         const patch = {
           name: planAgent.plannedName,
           role: manifestAgent.role,
@@ -3908,7 +3919,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           capabilities: manifestAgent.capabilities,
           reportsTo: null,
           adapterType: effectiveAdapterType,
-          adapterConfig: adapterConfigWithSkills,
+          adapterConfig: normalizedAdapterConfig,
           runtimeConfig: disableImportedTimerHeartbeat(manifestAgent.runtimeConfig),
           budgetMonthlyCents: manifestAgent.budgetMonthlyCents,
           permissions: manifestAgent.permissions,
@@ -3933,7 +3944,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               clearLegacyPromptTemplate: true,
               replaceExisting: true,
             });
-            updated = await agents.update(updated.id, { adapterConfig: materialized.adapterConfig }) ?? updated;
+            const normalizedMaterializedConfig = await prepareAdapterConfigForPersistence({
+              companyId: targetCompany.id,
+              adapterType: updated.adapterType,
+              adapterConfig: materialized.adapterConfig as Record<string, unknown>,
+              strictMode: strictSecretsMode,
+              secretsSvc: secrets,
+            });
+            updated = await agents.update(updated.id, { adapterConfig: normalizedMaterializedConfig }) ?? updated;
           } catch (err) {
             warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
           }
@@ -3964,7 +3982,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             clearLegacyPromptTemplate: true,
             replaceExisting: true,
           });
-          created = await agents.update(created.id, { adapterConfig: materialized.adapterConfig }) ?? created;
+          const normalizedMaterializedConfig = await prepareAdapterConfigForPersistence({
+            companyId: targetCompany.id,
+            adapterType: created.adapterType,
+            adapterConfig: materialized.adapterConfig as Record<string, unknown>,
+            strictMode: strictSecretsMode,
+            secretsSvc: secrets,
+          });
+          created = await agents.update(created.id, { adapterConfig: normalizedMaterializedConfig }) ?? created;
         } catch (err) {
           warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
         }

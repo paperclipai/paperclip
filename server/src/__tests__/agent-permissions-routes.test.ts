@@ -96,7 +96,9 @@ vi.mock("../services/index.js", () => ({
   heartbeatService: () => mockHeartbeatService,
   issueApprovalService: () => mockIssueApprovalService,
   issueService: () => mockIssueService,
+  applyCreateDefaultsByAdapterType: vi.fn((_adapterType: string, config: Record<string, unknown>) => config),
   logActivity: mockLogActivity,
+  prepareAdapterConfigForPersistence: vi.fn(async ({ adapterConfig }: { adapterConfig: Record<string, unknown> }) => adapterConfig),
   secretService: () => mockSecretService,
   syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
   workspaceOperationService: () => mockWorkspaceOperationService,
@@ -106,13 +108,11 @@ function createDbStub() {
   return {
     select: vi.fn().mockReturnValue({
       from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          then: vi.fn().mockResolvedValue([{
+        where: vi.fn().mockResolvedValue([{
             id: companyId,
             name: "Paperclip",
             requireBoardApprovalForNewAgents: false,
           }]),
-        }),
       }),
     }),
   };

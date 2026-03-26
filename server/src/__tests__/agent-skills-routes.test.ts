@@ -67,7 +67,9 @@ vi.mock("../services/index.js", () => ({
   heartbeatService: () => mockHeartbeatService,
   issueApprovalService: () => mockIssueApprovalService,
   issueService: () => ({}),
+  applyCreateDefaultsByAdapterType: vi.fn((_adapterType: string, config: Record<string, unknown>) => config),
   logActivity: mockLogActivity,
+  prepareAdapterConfigForPersistence: vi.fn(async ({ adapterConfig }: { adapterConfig: Record<string, unknown> }) => adapterConfig),
   secretService: () => mockSecretService,
   syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
   workspaceOperationService: () => mockWorkspaceOperationService,
@@ -136,6 +138,7 @@ describe("agent skill routes", () => {
       ambiguous: false,
       agent: makeAgent("claude_local"),
     });
+    mockSecretService.normalizeAdapterConfigForPersistence.mockImplementation(async (_companyId: string, config: Record<string, unknown>) => config);
     mockSecretService.resolveAdapterConfigForRuntime.mockResolvedValue({ config: { env: {} } });
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([
       {
@@ -343,7 +346,7 @@ describe("agent skill routes", () => {
         }),
       }),
     );
-    expect(mockAgentService.update.mock.calls.at(-1)?.[1]).not.toMatchObject({
+    expect(mockAgentService.update.mock.calls[mockAgentService.update.mock.calls.length - 1]?.[1]).not.toMatchObject({
       adapterConfig: expect.objectContaining({
         promptTemplate: expect.anything(),
       }),
@@ -454,7 +457,7 @@ describe("agent skill routes", () => {
         }),
       }),
     );
-    const approvalInput = mockApprovalService.create.mock.calls.at(-1)?.[1] as
+    const approvalInput = mockApprovalService.create.mock.calls[mockApprovalService.create.mock.calls.length - 1]?.[1] as
       | { payload?: { adapterConfig?: Record<string, unknown> } }
       | undefined;
     expect(approvalInput?.payload?.adapterConfig?.promptTemplate).toBeUndefined();

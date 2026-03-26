@@ -3,15 +3,19 @@ import type { Db } from "@paperclipai/db";
 import { approvalComments, approvals } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { redactCurrentUserText } from "../log-redaction.js";
+import { prepareAdapterConfigForPersistence } from "./agent-adapter-config.js";
 import { agentService } from "./agents.js";
 import { budgetService } from "./budgets.js";
 import { notifyHireApproved } from "./hire-hook.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { secretService } from "./secrets.js";
 
 export function approvalService(db: Db) {
   const agentsSvc = agentService(db);
   const budgets = budgetService(db);
   const instanceSettings = instanceSettingsService(db);
+  const secrets = secretService(db);
+  const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
   const canResolveStatuses = new Set(["pending", "revision_requested"]);
   const resolvableStatuses = Array.from(canResolveStatuses);
   type ApprovalRecord = typeof approvals.$inferSelect;
@@ -100,6 +104,26 @@ export function approvalService(db: Db) {
         .then((rows) => rows[0]),
 
     approve: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
+      const existing = await getExistingApproval(id);
+      let prevalidatedAdapterConfig: Record<string, unknown> | null = null;
+      if (existing.type === "hire_agent") {
+        const payload = existing.payload as Record<string, unknown>;
+        const payloadAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
+        if (!payloadAgentId) {
+          const adapterType = String(payload.adapterType ?? "process");
+          prevalidatedAdapterConfig = await prepareAdapterConfigForPersistence({
+            companyId: existing.companyId,
+            adapterType,
+            adapterConfig:
+              typeof payload.adapterConfig === "object" && payload.adapterConfig !== null
+                ? (payload.adapterConfig as Record<string, unknown>)
+                : {},
+            strictMode: strictSecretsMode,
+            secretsSvc: secrets,
+          });
+        }
+      }
+
       const { approval: updated, applied } = await resolveApproval(
         id,
         "approved",
@@ -116,17 +140,26 @@ export function approvalService(db: Db) {
           await agentsSvc.activatePendingApproval(payloadAgentId);
           hireApprovedAgentId = payloadAgentId;
         } else {
+          const adapterType = String(payload.adapterType ?? "process");
+          const normalizedAdapterConfig = prevalidatedAdapterConfig
+            ?? await prepareAdapterConfigForPersistence({
+              companyId: updated.companyId,
+              adapterType,
+              adapterConfig:
+                typeof payload.adapterConfig === "object" && payload.adapterConfig !== null
+                  ? (payload.adapterConfig as Record<string, unknown>)
+                  : {},
+              strictMode: strictSecretsMode,
+              secretsSvc: secrets,
+            });
           const created = await agentsSvc.create(updated.companyId, {
             name: String(payload.name ?? "New Agent"),
             role: String(payload.role ?? "general"),
             title: typeof payload.title === "string" ? payload.title : null,
             reportsTo: typeof payload.reportsTo === "string" ? payload.reportsTo : null,
             capabilities: typeof payload.capabilities === "string" ? payload.capabilities : null,
-            adapterType: String(payload.adapterType ?? "process"),
-            adapterConfig:
-              typeof payload.adapterConfig === "object" && payload.adapterConfig !== null
-                ? (payload.adapterConfig as Record<string, unknown>)
-                : {},
+            adapterType,
+            adapterConfig: normalizedAdapterConfig,
             budgetMonthlyCents:
               typeof payload.budgetMonthlyCents === "number" ? payload.budgetMonthlyCents : 0,
             metadata:

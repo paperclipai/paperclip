@@ -24,12 +24,20 @@ const mockBoardAuthService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockPrepareAdapterConfigForPersistence = vi.hoisted(
+  () => vi.fn(async ({ adapterConfig }: { adapterConfig: Record<string, unknown> }) => adapterConfig),
+);
 
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
   boardAuthService: () => mockBoardAuthService,
   logActivity: mockLogActivity,
+  prepareAdapterConfigForPersistence: mockPrepareAdapterConfigForPersistence,
+  secretService: vi.fn(() => ({
+    normalizeAdapterConfigForPersistence: vi.fn(),
+    resolveAdapterConfigForRuntime: vi.fn(),
+  })),
   notifyHireApproved: vi.fn(),
   deduplicateAgentName: vi.fn((name: string) => name),
 }));
@@ -38,7 +46,7 @@ function createApp(actor: any) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    req.actor = actor;
+    (req as any).actor = actor;
     next();
   });
   return import("../routes/access.js").then(({ accessRoutes }) =>
