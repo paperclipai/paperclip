@@ -5,6 +5,9 @@ import type {
 } from "@paperclipai/adapter-utils";
 import { asNumber, asString, buildPaperclipEnv, parseObject } from "@paperclipai/adapter-utils/server-utils";
 import crypto, { randomUUID } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { WebSocket } from "ws";
 
 type SessionKeyStrategy = "fixed" | "issue" | "run";
@@ -336,7 +339,7 @@ function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: Wak
 }
 
 function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string>): string {
-  const claimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
+  const runKeyPath = "~/.openclaw/runs/$PAPERCLIP_RUN_ID.key";
   const orderedKeys = [
     "PAPERCLIP_RUN_ID",
     "PAPERCLIP_AGENT_ID",
@@ -369,9 +372,9 @@ function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string
     "",
     "Set these values in your run context:",
     ...envLines,
-    `PAPERCLIP_API_KEY=<token from ${claimedApiKeyPath}>`,
     "",
-    `Load PAPERCLIP_API_KEY from ${claimedApiKeyPath} (the token you saved after claim-api-key).`,
+    `Before making any API calls, run this once to load your auth token:`,
+    `export PAPERCLIP_API_KEY=$(cat ${runKeyPath})`,
     "",
     `api_base=${apiBaseHint}`,
     `task_id=${payload.taskId ?? ""}`,
@@ -1083,6 +1086,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const wakePayload = buildWakePayload(ctx);
   const paperclipEnv = buildPaperclipEnvForWake(ctx, wakePayload);
+
+  if (ctx.authToken) {
+    const runsDir = join(homedir(), ".openclaw", "runs");
+    await mkdir(runsDir, { recursive: true });
+    await writeFile(join(runsDir, `${ctx.runId}.key`), ctx.authToken, { mode: 0o600 });
+  }
+
   const wakeText = buildWakeText(wakePayload, paperclipEnv);
 
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
