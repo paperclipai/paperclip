@@ -31,6 +31,20 @@ import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 
+// ---------------------------------------------------------------------------
+// Global error handlers — prevent silent process death from unhandled errors.
+// Without these, Node 25 kills the process on any unhandled rejection with
+// zero logging. These ensure we at least get a fatal log line before exit.
+// ---------------------------------------------------------------------------
+process.on("uncaughtException", (err) => {
+  logger.fatal({ err }, "uncaughtException — shutting down");
+  process.exit(1);
+});
+process.on("unhandledRejection", (reason) => {
+  logger.fatal({ err: reason }, "unhandledRejection — shutting down");
+  process.exit(1);
+});
+
 type BetterAuthSessionUser = {
   id: string;
   email?: string | null;
