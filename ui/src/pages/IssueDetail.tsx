@@ -965,9 +965,9 @@ export function IssueDetail() {
                 <button
                   type="button"
                   className="text-muted-foreground hover:text-destructive"
-                  onClick={() => deleteAttachment.mutate(attachment.id)}
+                  onClick={() => { if (window.confirm(`Delete "${attachment.originalFilename ?? "this attachment"}"?`)) deleteAttachment.mutate(attachment.id); }}
                   disabled={deleteAttachment.isPending}
-                  title="Delete attachment"
+                  title={deleteAttachment.isPending ? "Deleting..." : "Delete attachment"}
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>

@@ -4016,10 +4016,10 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
                   variant="ghost"
                   size="sm"
                   className="text-destructive hover:text-destructive text-xs"
-                  onClick={() => revokeKey.mutate(key.id)}
+                  onClick={() => { if (window.confirm("Revoke this API key? Applications using it will stop working immediately.")) revokeKey.mutate(key.id); }}
                   disabled={revokeKey.isPending}
                 >
-                  Revoke
+                  {revokeKey.isPending ? "Revoking..." : "Revoke"}
                 </Button>
               </div>
             ))}

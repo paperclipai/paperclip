@@ -222,7 +222,7 @@ function TriggerEditor({
             variant="ghost"
             size="sm"
             className="text-muted-foreground hover:text-destructive"
-            onClick={() => onDelete(trigger.id)}
+            onClick={() => { if (window.confirm("Delete this trigger? This cannot be undone.")) onDelete(trigger.id); }}
           >
             <Trash2 className="h-3.5 w-3.5" />
           </Button>
