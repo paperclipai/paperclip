@@ -212,7 +212,6 @@ export function AgentChatSessionTab({
       closeStream();
       setCompletedMessageId(null);
       autoExpandedRunIdRef.current = result.runId ?? null;
-      if (result.runId) setExpandedRunId(result.runId);
       setStreamState({
         sourceMessageId: result.message.id,
         runId: result.runId,
@@ -229,7 +228,7 @@ export function AgentChatSessionTab({
         const payload = JSON.parse((event as MessageEvent).data) as { runId: string };
         const previousAutoRunId = autoExpandedRunIdRef.current;
         autoExpandedRunIdRef.current = payload.runId;
-        setExpandedRunId((current) => (current === null || current === previousAutoRunId ? payload.runId : current));
+        // Do not auto-expand run details — keep them collapsed by default (COM-153).
         setStreamState((current) =>
           current && current.sourceMessageId === result.message.id
             ? { ...current, runId: payload.runId, status: "streaming" }
@@ -520,7 +519,7 @@ export function AgentChatSessionTab({
   const renderInlineRunDetails = (runId: string | null) => {
     if (!runId || runId !== expandedRunId) return null;
     return (
-      <div className="mt-3 space-y-2 rounded-md border border-border/60 bg-background/60 p-3 text-xs">
+      <div className="mt-3 max-h-64 space-y-2 overflow-y-auto rounded-md border border-border/60 bg-background/60 p-3 text-xs">
         {runDetail && (
           <div className="space-y-1">
             <div className="flex items-center justify-between gap-3">
