@@ -591,7 +591,7 @@ export function agentRoutes(db: Db) {
     };
   }
 
-  function redactAgentSecrets<T extends { adapterConfig: unknown }>(agent: T): T {
+  function redactAgentSecrets<T extends { adapterConfig?: unknown }>(agent: T): T {
     const config = asRecord(agent.adapterConfig);
     if (!config) return agent;
     const env = asRecord(config.env);
