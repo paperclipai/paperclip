@@ -19,6 +19,7 @@ export interface LiveRunForIssue {
   agentName: string;
   adapterType: string;
   issueId?: string | null;
+  projectId?: string | null;
 }
 
 export interface HeartbeatRunListResult {

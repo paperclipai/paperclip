@@ -5,6 +5,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
+import { useProjectLiveRuns } from "../hooks/useProjectLiveRuns";
 import { EntityRow } from "../components/EntityRow";
 import { StatusBadge } from "../components/StatusBadge";
 import { EmptyState } from "../components/EmptyState";
@@ -28,6 +29,7 @@ export function Projects() {
     enabled: !!selectedCompanyId,
   });
   const activeProjects = (projects ?? []).filter((project) => !project.archivedAt);
+  const projectLiveRuns = useProjectLiveRuns(selectedCompanyId ?? undefined);
 
   if (!selectedCompanyId) {
     return <EmptyState icon={Hexagon} message="Select a company to view projects." />;
@@ -67,6 +69,17 @@ export function Projects() {
               to={projectUrl(project)}
               trailing={
                 <div className="flex items-center gap-3">
+                  {projectLiveRuns.has(project.id) && (
+                    <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-blue-500/10">
+                      <span className="relative flex h-2 w-2">
+                        <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+                      </span>
+                      <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">
+                        Live{projectLiveRuns.get(project.id)!.count > 1 ? ` (${projectLiveRuns.get(project.id)!.count})` : ""}
+                      </span>
+                    </span>
+                  )}
                   {project.targetDate && (
                     <span className="text-xs text-muted-foreground">
                       {formatDate(project.targetDate)}

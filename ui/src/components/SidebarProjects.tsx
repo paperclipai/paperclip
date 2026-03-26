@@ -26,17 +26,20 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import type { Project } from "@paperclipai/shared";
+import { useProjectLiveRuns } from "../hooks/useProjectLiveRuns";
 
 function SortableProjectItem({
   activeProjectRef,
   isMobile,
   project,
   setSidebarOpen,
+  hasLiveRuns,
 }: {
   activeProjectRef: string | null;
   isMobile: boolean;
   project: Project;
   setSidebarOpen: (open: boolean) => void;
+  hasLiveRuns?: boolean;
 }) {
   const {
     attributes,
@@ -78,7 +81,44 @@ function SortableProjectItem({
           style={{ backgroundColor: project.color ?? "#6366f1" }}
         />
         <span className="flex-1 truncate">{project.name}</span>
+        {hasLiveRuns && (
+          <span className="relative flex h-1.5 w-1.5 shrink-0">
+            <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+            <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-blue-500" />
+          </span>
+        )}
       </NavLink>
+    </div>
+  );
+}
+
+function SidebarProjectItems({
+  orderedProjects,
+  activeProjectRef,
+  isMobile,
+  setSidebarOpen,
+  companyId,
+}: {
+  orderedProjects: Project[];
+  activeProjectRef: string | null;
+  isMobile: boolean;
+  setSidebarOpen: (open: boolean) => void;
+  companyId: string | null | undefined;
+}) {
+  const projectLiveRuns = useProjectLiveRuns(companyId ?? undefined);
+
+  return (
+    <div className="flex flex-col gap-0.5 mt-0.5">
+      {orderedProjects.map((project: Project) => (
+        <SortableProjectItem
+          key={project.id}
+          activeProjectRef={activeProjectRef}
+          isMobile={isMobile}
+          project={project}
+          setSidebarOpen={setSidebarOpen}
+          hasLiveRuns={projectLiveRuns.has(project.id)}
+        />
+      ))}
     </div>
   );
 }
@@ -179,17 +219,13 @@ export function SidebarProjects() {
             items={orderedProjects.map((project) => project.id)}
             strategy={verticalListSortingStrategy}
           >
-            <div className="flex flex-col gap-0.5 mt-0.5">
-              {orderedProjects.map((project: Project) => (
-                <SortableProjectItem
-                  key={project.id}
-                  activeProjectRef={activeProjectRef}
-                  isMobile={isMobile}
-                  project={project}
-                  setSidebarOpen={setSidebarOpen}
-                />
-              ))}
-            </div>
+            <SidebarProjectItems
+              orderedProjects={orderedProjects}
+              activeProjectRef={activeProjectRef}
+              isMobile={isMobile}
+              setSidebarOpen={setSidebarOpen}
+              companyId={selectedCompanyId}
+            />
           </SortableContext>
         </DndContext>
       </CollapsibleContent>

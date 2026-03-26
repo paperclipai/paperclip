@@ -18,6 +18,7 @@ import { IssuesList } from "../components/IssuesList";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
 import { projectRouteRef, cn } from "../lib/utils";
+import { useProjectLiveRuns } from "../hooks/useProjectLiveRuns";
 import { Tabs } from "@/components/ui/tabs";
 
 /* ── Top-level tab types ── */
@@ -372,6 +373,9 @@ export function ProjectDetail() {
     return <Navigate to={`/projects/${canonicalProjectRef}/issues`} replace />;
   }
 
+  const projectLiveRuns = useProjectLiveRuns(resolvedCompanyId ?? undefined);
+  const currentProjectLive = project ? projectLiveRuns.get(project.id) : undefined;
+
   if (isLoading) return <PageSkeleton variant="detail" />;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
   if (!project) return null;
@@ -419,6 +423,17 @@ export function ProjectDetail() {
           as="h2"
           className="text-xl font-bold"
         />
+        {currentProjectLive && (
+          <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-blue-500/10 self-center">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+            </span>
+            <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">
+              {currentProjectLive.count} {currentProjectLive.count === 1 ? "run" : "runs"} active
+            </span>
+          </span>
+        )}
       </div>
 
       <Tabs value={activeTab ?? "list"} onValueChange={(value) => handleTabChange(value as ProjectTab)}>

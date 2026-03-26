@@ -2,7 +2,7 @@ import { Router, type Request } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
-import { agents as agentsTable, companies, heartbeatRuns } from "@paperclipai/db";
+import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
@@ -1584,12 +1584,16 @@ export function agentRoutes(db: Db) {
       agentName: agentsTable.name,
       adapterType: agentsTable.adapterType,
       issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("issueId"),
+      projectId: sql<string | null>`${issuesTable.projectId}`.as("projectId"),
     };
+
+    const issueIdExpr = sql`${heartbeatRuns.contextSnapshot} ->> 'issueId'`;
 
     const liveRuns = await db
       .select(columns)
       .from(heartbeatRuns)
       .innerJoin(agentsTable, eq(heartbeatRuns.agentId, agentsTable.id))
+      .leftJoin(issuesTable, sql`${issuesTable.id}::text = ${issueIdExpr}`)
       .where(
         and(
           eq(heartbeatRuns.companyId, companyId),
@@ -1604,6 +1608,7 @@ export function agentRoutes(db: Db) {
         .select(columns)
         .from(heartbeatRuns)
         .innerJoin(agentsTable, eq(heartbeatRuns.agentId, agentsTable.id))
+        .leftJoin(issuesTable, sql`${issuesTable.id}::text = ${issueIdExpr}`)
         .where(
           and(
             eq(heartbeatRuns.companyId, companyId),
