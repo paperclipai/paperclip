@@ -19,6 +19,7 @@ import {
   renderTemplate,
   joinPromptSections,
   runChildProcess,
+  applyBillingModeOverride,
 } from "@paperclipai/adapter-utils/server-utils";
 import { parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
 import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
@@ -57,9 +58,10 @@ function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean 
   return typeof raw === "string" && raw.trim().length > 0;
 }
 
-function resolveCodexBillingType(env: Record<string, string>): "api" | "subscription" {
+function resolveCodexBillingType(env: Record<string, string>, billingMode: string): "api" | "subscription" {
   // Codex uses API-key auth when OPENAI_API_KEY is present; otherwise rely on local login/session auth.
-  return hasNonEmptyEnvValue(env, "OPENAI_API_KEY") ? "api" : "subscription";
+  const autoDetected = hasNonEmptyEnvValue(env, "OPENAI_API_KEY") ? "api" : "subscription";
+  return applyBillingModeOverride(autoDetected, billingMode);
 }
 
 function resolveCodexBiller(env: Record<string, string>, billingType: "api" | "subscription"): string {
@@ -380,7 +382,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
-  const billingType = resolveCodexBillingType(effectiveEnv);
+  const billingType = resolveCodexBillingType(effectiveEnv, asString(config.billingMode, "auto"));
   const runtimeEnv = ensurePathInEnv(effectiveEnv);
   await ensureCommandResolvable(command, cwd, runtimeEnv);
 

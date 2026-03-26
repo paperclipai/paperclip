@@ -20,6 +20,7 @@ import {
   ensurePathInEnv,
   renderTemplate,
   runChildProcess,
+  applyBillingModeOverride,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   parseClaudeStreamJson,
@@ -97,9 +98,10 @@ function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean 
   return typeof raw === "string" && raw.trim().length > 0;
 }
 
-function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscription" {
+function resolveClaudeBillingType(env: Record<string, string>, billingMode: string): "api" | "subscription" {
   // Claude uses API-key auth when ANTHROPIC_API_KEY is present; otherwise rely on local login/session auth.
-  return hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY") ? "api" : "subscription";
+  const autoDetected = hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY") ? "api" : "subscription";
+  return applyBillingModeOverride(autoDetected, billingMode);
 }
 
 async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<ClaudeRuntimeConfig> {
@@ -338,7 +340,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
-  const billingType = resolveClaudeBillingType(effectiveEnv);
+  const billingType = resolveClaudeBillingType(effectiveEnv, asString(config.billingMode, "auto"));
   const skillsDir = await buildSkillsDir(config);
 
   // When instructionsFilePath is configured, create a combined temp file that

@@ -22,6 +22,7 @@ import {
   redactEnvForLogs,
   renderTemplate,
   runChildProcess,
+  applyBillingModeOverride,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "../index.js";
 import {
@@ -40,10 +41,11 @@ function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean 
   return typeof raw === "string" && raw.trim().length > 0;
 }
 
-function resolveGeminiBillingType(env: Record<string, string>): "api" | "subscription" {
-  return hasNonEmptyEnvValue(env, "GEMINI_API_KEY") || hasNonEmptyEnvValue(env, "GOOGLE_API_KEY")
+function resolveGeminiBillingType(env: Record<string, string>, billingMode: string): "api" | "subscription" {
+  const autoDetected = hasNonEmptyEnvValue(env, "GEMINI_API_KEY") || hasNonEmptyEnvValue(env, "GOOGLE_API_KEY")
     ? "api"
     : "subscription";
+  return applyBillingModeOverride(autoDetected, billingMode);
 }
 
 function renderPaperclipEnvNote(env: Record<string, string>): string {
@@ -217,7 +219,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
-  const billingType = resolveGeminiBillingType(effectiveEnv);
+  const billingType = resolveGeminiBillingType(effectiveEnv, asString(config.billingMode, "auto"));
   const runtimeEnv = ensurePathInEnv(effectiveEnv);
   await ensureCommandResolvable(command, cwd, runtimeEnv);
 

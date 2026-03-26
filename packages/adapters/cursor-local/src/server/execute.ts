@@ -20,6 +20,7 @@ import {
   renderTemplate,
   joinPromptSections,
   runChildProcess,
+  applyBillingModeOverride,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "../index.js";
 import { parseCursorJsonl, isCursorUnknownSessionError } from "./parse.js";
@@ -42,10 +43,11 @@ function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean 
   return typeof raw === "string" && raw.trim().length > 0;
 }
 
-function resolveCursorBillingType(env: Record<string, string>): "api" | "subscription" {
-  return hasNonEmptyEnvValue(env, "CURSOR_API_KEY") || hasNonEmptyEnvValue(env, "OPENAI_API_KEY")
+function resolveCursorBillingType(env: Record<string, string>, billingMode: string): "api" | "subscription" {
+  const autoDetected = hasNonEmptyEnvValue(env, "CURSOR_API_KEY") || hasNonEmptyEnvValue(env, "OPENAI_API_KEY")
     ? "api"
     : "subscription";
+  return applyBillingModeOverride(autoDetected, billingMode);
 }
 
 function resolveCursorBiller(
@@ -268,7 +270,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
-  const billingType = resolveCursorBillingType(effectiveEnv);
+  const billingType = resolveCursorBillingType(effectiveEnv, asString(config.billingMode, "auto"));
   const runtimeEnv = ensurePathInEnv(effectiveEnv);
   await ensureCommandResolvable(command, cwd, runtimeEnv);
 

@@ -20,6 +20,7 @@ import {
   removeMaintainerOnlySkillSymlinks,
   renderTemplate,
   runChildProcess,
+  applyBillingModeOverride,
 } from "@paperclipai/adapter-utils/server-utils";
 import { isPiUnknownSessionError, parsePiJsonl } from "./parse.js";
 import { ensurePiModelConfiguredAndAvailable } from "./models.js";
@@ -460,7 +461,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       provider: provider,
       biller: resolvePiBiller(runtimeEnv, provider),
       model: model,
-      billingType: "unknown",
+      billingType: (() => {
+        const mode = asString(config.billingMode, "auto").trim().toLowerCase();
+        return mode === "auto" || mode === "" ? "unknown" : applyBillingModeOverride("api", mode);
+      })(),
       costUsd: attempt.parsed.usage.costUsd,
       resultJson: {
         stdout: attempt.proc.stdout,

@@ -55,6 +55,7 @@ export const help: Record<string, string> = {
   cooldownSec: "Minimum seconds between consecutive heartbeat runs.",
   maxConcurrentRuns: "Maximum number of heartbeat runs that can execute simultaneously for this agent.",
   budgetMonthlyCents: "Monthly spending limit in cents. 0 means no limit.",
+  billingMode: "Controls how runs are billed. Auto detects from API keys. Set to Subscription if you're on a plan (e.g. Claude Max, GPT Plus) so runs don't count toward spend.",
 };
 
 export const adapterLabels: Record<string, string> = {

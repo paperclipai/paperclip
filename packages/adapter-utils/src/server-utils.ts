@@ -144,6 +144,23 @@ export function asStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
+/**
+ * Resolve an adapter billing type with an optional user-configured override.
+ *
+ * When `billingMode` is `"subscription"` or `"metered"`, the override takes
+ * precedence over the auto-detected value.  Any other value (including the
+ * default `"auto"` or empty string) falls through to `autoDetected`.
+ */
+export function applyBillingModeOverride(
+  autoDetected: "api" | "subscription",
+  billingMode: string,
+): "api" | "subscription" {
+  const normalized = billingMode.trim().toLowerCase();
+  if (normalized === "subscription") return "subscription";
+  if (normalized === "metered" || normalized === "api") return "api";
+  return autoDetected;
+}
+
 export function parseJson(value: string): Record<string, unknown> | null {
   try {
     return JSON.parse(value) as Record<string, unknown>;
