@@ -169,6 +169,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
+  // Prevent OpenCode from writing an opencode.json config file into the
+  // project working directory (which would pollute the git repo).  Model
+  // selection is already handled via the --model CLI flag.  Set after the
+  // envConfig loop so user overrides cannot disable this guard.
+  env.OPENCODE_DISABLE_PROJECT_CONFIG = "true";
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }

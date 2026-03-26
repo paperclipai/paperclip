@@ -40,6 +40,46 @@ jobs:
         with:
           node-version: 24
 
+      - name: Validate Dockerfile deps stage
+        run: |
+          missing=0
+
+          # Extract only the deps stage from the Dockerfile
+          deps_stage="$(awk '/^FROM .* AS deps$/{found=1; next} found && /^FROM /{exit} found{print}' Dockerfile)"
+
+          if [ -z "$deps_stage" ]; then
+            echo "::error::Could not extract deps stage from Dockerfile (expected 'FROM ... AS deps')"
+            exit 1
+          fi
+
+          # Derive workspace search roots from pnpm-workspace.yaml (exclude dev-only packages)
+          search_roots="$(grep '^ *- ' pnpm-workspace.yaml | sed 's/^ *- //' | sed 's/\*$//' | grep -v 'examples' | grep -v 'create-paperclip-plugin' | tr '\n' ' ')"
+
+          if [ -z "$search_roots" ]; then
+            echo "::error::Could not derive workspace roots from pnpm-workspace.yaml"
+            exit 1
+          fi
+
+          # Check all workspace package.json files are copied in the deps stage
+          for pkg in $(find $search_roots -maxdepth 2 -name package.json -not -path '*/examples/*' -not -path '*/create-paperclip-plugin/*' -not -path '*/node_modules/*' 2>/dev/null | sort -u); do
+            dir="$(dirname "$pkg")"
+            if ! echo "$deps_stage" | grep -q "^COPY ${dir}/package.json"; then
+              echo "::error::Dockerfile deps stage missing: COPY ${pkg} ${dir}/"
+              missing=1
+            fi
+          done
+
+          # Check patches directory is copied if it exists
+          if [ -d patches ] && ! echo "$deps_stage" | grep -q '^COPY patches/'; then
+            echo "::error::Dockerfile deps stage missing: COPY patches/ patches/"
+            missing=1
+          fi
+
+          if [ "$missing" -eq 1 ]; then
+            echo "Dockerfile deps stage is out of sync. Update it to include the missing files."
+            exit 1
+          fi
+
       - name: Validate dependency resolution when manifests change
         run: |
           changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}")"

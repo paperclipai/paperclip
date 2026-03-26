@@ -90,6 +90,8 @@ export async function testEnvironment(
     });
   }
 
+  // Prevent OpenCode from writing an opencode.json into the working directory.
+  env.OPENCODE_DISABLE_PROJECT_CONFIG = "true";
   const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...env }));
 
   const cwdInvalid = checks.some((check) => check.code === "opencode_cwd_invalid");
