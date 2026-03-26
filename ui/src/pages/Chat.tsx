@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate, Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -8,6 +8,8 @@ import {
   LayoutDashboard,
   FolderOpen,
   ExternalLink,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from "lucide-react";
 import type { Agent, ChatSession } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
@@ -51,6 +53,8 @@ function AgentListPanel({
   onSelectAgent,
   searchQuery,
   onSearchChange,
+  collapsed,
+  onToggleCollapse,
 }: {
   agents: Agent[];
   liveCountByAgent: Map<string, number>;
@@ -59,6 +63,8 @@ function AgentListPanel({
   onSelectAgent: (agent: Agent) => void;
   searchQuery: string;
   onSearchChange: (q: string) => void;
+  collapsed: boolean;
+  onToggleCollapse: () => void;
 }) {
   const filtered = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -73,24 +79,40 @@ function AgentListPanel({
   return (
     <aside className="flex h-full flex-col border-r border-border bg-card/40">
       <div className="shrink-0 border-b border-border p-3">
-        <div className="mb-2 flex items-center gap-2">
-          <MessageSquare className="h-4 w-4 text-muted-foreground" />
-          <span
-            className="text-sm font-semibold"
-            style={{ fontFamily: "var(--font-family-display)" }}
+        <div className={cn("flex items-center", collapsed ? "justify-center" : "mb-2 justify-between")}>
+          <div className={cn("flex items-center gap-2", collapsed && "hidden")}>
+            <MessageSquare className="h-4 w-4 text-muted-foreground" />
+            <span
+              className="text-sm font-semibold"
+              style={{ fontFamily: "var(--font-family-display)" }}
+            >
+              Chat
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={onToggleCollapse}
+            className="flex items-center justify-center rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+            title={collapsed ? "Expand agent list" : "Collapse agent list"}
           >
-            Chat
-          </span>
+            {collapsed ? (
+              <PanelLeftOpen className="h-4 w-4" />
+            ) : (
+              <PanelLeftClose className="h-4 w-4" />
+            )}
+          </button>
         </div>
-        <Input
-          value={searchQuery}
-          onChange={(e) => onSearchChange(e.target.value)}
-          className="h-8 text-xs"
-          placeholder="Search agents..."
-        />
+        {!collapsed && (
+          <Input
+            value={searchQuery}
+            onChange={(e) => onSearchChange(e.target.value)}
+            className="h-8 text-xs"
+            placeholder="Search agents..."
+          />
+        )}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto scrollbar-auto-hide">
-        {filtered.length === 0 && (
+        {!collapsed && filtered.length === 0 && (
           <div className="px-3 py-6 text-center text-xs text-muted-foreground">
             No agents found
           </div>
@@ -107,14 +129,16 @@ function AgentListPanel({
               key={agent.id}
               type="button"
               onClick={() => onSelectAgent(agent)}
+              title={collapsed ? agent.name : undefined}
               className={cn(
-                "flex w-full items-start gap-3 px-3 py-3 text-left transition-colors",
+                "flex w-full items-start gap-3 text-left transition-colors",
+                collapsed ? "justify-center px-0 py-2.5" : "px-3 py-3",
                 isSelected
                   ? "bg-accent text-foreground"
                   : "text-foreground/80 hover:bg-accent/50",
               )}
             >
-              <div className="relative mt-0.5 shrink-0">
+              <div className={cn("relative shrink-0", !collapsed && "mt-0.5")}>
                 <AgentIcon
                   icon={agent.icon}
                   className="h-5 w-5 text-muted-foreground"
@@ -126,31 +150,33 @@ function AgentListPanel({
                   )}
                 />
               </div>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="truncate text-[13px] font-medium">
-                    {agent.name}
-                  </span>
-                  {runCount > 0 && (
-                    <span className="flex items-center gap-1 shrink-0">
-                      <span className="relative flex h-1.5 w-1.5">
-                        <span className="animate-pulse-amber absolute inline-flex h-full w-full rounded-full bg-primary opacity-75" />
-                        <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-primary" />
-                      </span>
+              {!collapsed && (
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate text-[13px] font-medium">
+                      {agent.name}
                     </span>
-                  )}
-                </div>
-                <div className="truncate text-[11px] text-muted-foreground">
-                  {agent.role ? agent.role.replace(/_/g, " ") : "agent"}
-                </div>
-                {recentSession && (
-                  <div className="mt-0.5 truncate text-[10px] text-muted-foreground/70">
-                    {relativeTime(
-                      recentSession.lastMessageAt ?? recentSession.updatedAt,
+                    {runCount > 0 && (
+                      <span className="flex items-center gap-1 shrink-0">
+                        <span className="relative flex h-1.5 w-1.5">
+                          <span className="animate-pulse-amber absolute inline-flex h-full w-full rounded-full bg-primary opacity-75" />
+                          <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-primary" />
+                        </span>
+                      </span>
                     )}
                   </div>
-                )}
-              </div>
+                  <div className="truncate text-[11px] text-muted-foreground">
+                    {agent.role ? agent.role.replace(/_/g, " ") : "agent"}
+                  </div>
+                  {recentSession && (
+                    <div className="mt-0.5 truncate text-[10px] text-muted-foreground/70">
+                      {relativeTime(
+                        recentSession.lastMessageAt ?? recentSession.updatedAt,
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
             </button>
           );
         })}
@@ -230,6 +256,23 @@ export function Chat() {
   const params = useParams<{ agentId?: string }>();
 
   const [agentSearch, setAgentSearch] = useState("");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem("chat-sidebar-collapsed") === "true";
+    } catch {
+      return false;
+    }
+  });
+
+  const toggleSidebar = useCallback(() => {
+    setSidebarCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("chat-sidebar-collapsed", String(next));
+      } catch {}
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Chat" }]);
@@ -303,7 +346,10 @@ export function Chat() {
 
   return (
     <div className="flex h-[calc(100vh-6.5rem)] min-h-[36rem] overflow-hidden rounded-lg border border-border bg-background">
-      <div className="w-56 shrink-0 lg:w-64">
+      <div className={cn(
+        "shrink-0 transition-[width] duration-200 ease-in-out",
+        sidebarCollapsed ? "w-12" : "w-56 lg:w-64",
+      )}>
         <AgentListPanel
           agents={visibleAgents}
           liveCountByAgent={liveCountByAgent}
@@ -312,6 +358,8 @@ export function Chat() {
           onSelectAgent={handleSelectAgent}
           searchQuery={agentSearch}
           onSearchChange={setAgentSearch}
+          collapsed={sidebarCollapsed}
+          onToggleCollapse={toggleSidebar}
         />
       </div>
       <div className="flex min-w-0 flex-1 flex-col">
