@@ -192,7 +192,7 @@ export function ScheduleEditor({
     }
   };
 
-  const preview = value ? describeSchedule(value) : null;
+  const preview = useMemo(() => (value ? describeSchedule(value) : null), [value]);
 
   return (
     <div className="space-y-3">
