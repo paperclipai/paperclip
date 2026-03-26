@@ -7,6 +7,7 @@ import {
   ChevronDown,
   ChevronRight,
   CircleAlert,
+  Copy,
   TerminalSquare,
   User,
   Wrench,
@@ -893,6 +894,7 @@ function TranscriptStdoutRow({
   collapseByDefault: boolean;
 }) {
   const [open, setOpen] = useState(!collapseByDefault);
+  const [copied, setCopied] = useState(false);
 
   return (
     <div>
@@ -908,6 +910,20 @@ function TranscriptStdoutRow({
         >
           {open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
         </button>
+        {open && (
+          <button
+            type="button"
+            className="inline-flex h-5 w-5 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+            onClick={() => {
+              navigator.clipboard.writeText(block.text);
+              setCopied(true);
+              setTimeout(() => setCopied(false), 2000);
+            }}
+            aria-label="Copy stdout"
+          >
+            {copied ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
+          </button>
+        )}
       </div>
       {open && (
         <pre className={cn(
