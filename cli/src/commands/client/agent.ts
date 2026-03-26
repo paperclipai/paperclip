@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import type { Agent } from "@paperclipai/shared";
 import {
+  removeDanglingSkillSymlinks,
   removeMaintainerOnlySkillSymlinks,
   resolvePaperclipSkillsDir,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -72,11 +73,12 @@ async function installSkillsForTarget(
   };
 
   await fs.mkdir(targetSkillsDir, { recursive: true });
+  const danglingRemoved = await removeDanglingSkillSymlinks(targetSkillsDir);
   const entries = await fs.readdir(sourceSkillsDir, { withFileTypes: true });
-  summary.removed = await removeMaintainerOnlySkillSymlinks(
+  summary.removed = [...danglingRemoved, ...await removeMaintainerOnlySkillSymlinks(
     targetSkillsDir,
     entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name),
-  );
+  )];
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const source = path.join(sourceSkillsDir, entry.name);
