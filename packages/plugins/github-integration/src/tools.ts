@@ -24,6 +24,7 @@ export function registerTools(ctx: PluginContext): void {
         properties: {
           query: { type: "string", description: "Search query string" },
           repo: { type: "string", description: "Repository in owner/repo format (optional, uses default if configured)" },
+          maxResults: { type: "number", description: "Maximum number of results to return (1–100, default 10)" },
         },
         required: ["query"],
       },
@@ -44,11 +45,13 @@ export function registerTools(ctx: PluginContext): void {
       }
 
       try {
+        const perPage = typeof p.maxResults === "number" ? p.maxResults : 10;
         const results = await github.searchIssues(
           ctx.http.fetch.bind(ctx.http),
           token,
           repo,
           p.query as string,
+          perPage,
         );
         return {
           content: `Found ${results.total_count} issues`,

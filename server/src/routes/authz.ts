@@ -1,4 +1,7 @@
 import type { Request } from "express";
+import { eq } from "drizzle-orm";
+import type { Db } from "@paperclipai/db";
+import { agents } from "@paperclipai/db";
 import { forbidden, unauthorized } from "../errors.js";
 
 export function assertBoard(req: Request) {
@@ -28,6 +31,19 @@ export function assertCompanyAccess(req: Request, companyId: string) {
       throw forbidden("User does not have access to this company");
     }
   }
+}
+
+export async function assertBoardOrCeoAgent(req: Request, db: Db) {
+  if (req.actor.type === "board") return;
+  if (req.actor.type === "agent" && req.actor.agentId) {
+    const agent = await db
+      .select({ role: agents.role })
+      .from(agents)
+      .where(eq(agents.id, req.actor.agentId))
+      .then((rows) => rows[0] ?? null);
+    if (agent?.role === "ceo") return;
+  }
+  throw forbidden("Board or CEO agent access required");
 }
 
 export function getActorInfo(req: Request) {

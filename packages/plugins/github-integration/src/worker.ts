@@ -84,17 +84,39 @@ async function resolveAgent(
 }
 
 /**
- * Store the last processed delivery ID to avoid duplicate processing
- * on retries from GitHub.
+ * Duplicate delivery detection using a bounded ring buffer stored in a single
+ * state key. This avoids unbounded state accumulation since the plugin SDK
+ * has no TTL or list/scan support for cleanup.
  */
+const DEDUP_STATE_KEY = "delivery-dedup-ring";
+const DEDUP_MAX_ENTRIES = 200;
+const DEDUP_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+interface DedupEntry {
+  id: string;
+  ts: number; // epoch ms
+}
+
+async function getDedupRing(): Promise<DedupEntry[]> {
+  if (!ctx) return [];
+  try {
+    const raw = await ctx.state.get({
+      scopeKind: "instance",
+      stateKey: DEDUP_STATE_KEY,
+    });
+    if (Array.isArray(raw)) return raw as DedupEntry[];
+    if (typeof raw === "string") return JSON.parse(raw) as DedupEntry[];
+    return [];
+  } catch {
+    return [];
+  }
+}
+
 async function isDuplicate(deliveryId: string): Promise<boolean> {
   if (!ctx) return false;
   try {
-    const last = (await ctx.state.get({
-      scopeKind: "instance",
-      stateKey: `last-delivery-${deliveryId}`,
-    })) as string | null;
-    return last != null;
+    const ring = await getDedupRing();
+    return ring.some((e) => e.id === deliveryId);
   } catch {
     return false;
   }
@@ -103,9 +125,22 @@ async function isDuplicate(deliveryId: string): Promise<boolean> {
 async function markDelivery(deliveryId: string): Promise<void> {
   if (!ctx) return;
   try {
+    const now = Date.now();
+    const ring = await getDedupRing();
+
+    // Prune entries older than 24h, then append the new one
+    const pruned = ring.filter((e) => now - e.ts < DEDUP_MAX_AGE_MS);
+    pruned.push({ id: deliveryId, ts: now });
+
+    // Keep only the most recent entries if we exceed the cap
+    const trimmed =
+      pruned.length > DEDUP_MAX_ENTRIES
+        ? pruned.slice(pruned.length - DEDUP_MAX_ENTRIES)
+        : pruned;
+
     await ctx.state.set(
-      { scopeKind: "instance", stateKey: `last-delivery-${deliveryId}` },
-      new Date().toISOString(),
+      { scopeKind: "instance", stateKey: DEDUP_STATE_KEY },
+      trimmed,
     );
   } catch {
     // best-effort

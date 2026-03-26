@@ -85,9 +85,11 @@ export async function searchIssues(
   token: string,
   repo: string,
   query: string,
+  perPage = 10,
 ): Promise<GitHubSearchResult> {
+  const clampedPerPage = Math.max(1, Math.min(perPage, 100));
   const q = encodeURIComponent(`repo:${repo} is:issue ${query}`);
-  const res = await fetchWithRetry(fetch, `${GITHUB_API}/search/issues?q=${q}&per_page=10`, {
+  const res = await fetchWithRetry(fetch, `${GITHUB_API}/search/issues?q=${q}&per_page=${clampedPerPage}`, {
     headers: headers(token),
   });
   if (!res.ok) throw new Error(`GitHub search failed: ${res.status} ${res.statusText}`);
@@ -125,6 +127,14 @@ export async function updateIssueState(
   return res.json() as Promise<GitHubIssue>;
 }
 
+/**
+ * Fetch all comments for an issue, paginating automatically.
+ * GitHub returns up to 100 comments per page; we follow pagination
+ * up to a safety cap to avoid runaway requests.
+ */
+const COMMENTS_PER_PAGE = 100;
+const MAX_COMMENT_PAGES = 10; // 1000 comments max
+
 export async function listComments(
   fetch: GitHubFetch,
   token: string,
@@ -133,14 +143,29 @@ export async function listComments(
   number: number,
   since?: string,
 ): Promise<GitHubComment[]> {
-  const params = since ? `?since=${encodeURIComponent(since)}` : "";
-  const res = await fetchWithRetry(
-    fetch,
-    `${GITHUB_API}/repos/${owner}/${repo}/issues/${number}/comments${params}`,
-    { headers: headers(token) },
-  );
-  if (!res.ok) throw new Error(`GitHub list comments failed: ${res.status} ${res.statusText}`);
-  return res.json() as Promise<GitHubComment[]>;
+  const all: GitHubComment[] = [];
+  let page = 1;
+
+  while (page <= MAX_COMMENT_PAGES) {
+    const qs = new URLSearchParams({ per_page: String(COMMENTS_PER_PAGE), page: String(page) });
+    if (since) qs.set("since", since);
+
+    const res = await fetchWithRetry(
+      fetch,
+      `${GITHUB_API}/repos/${owner}/${repo}/issues/${number}/comments?${qs}`,
+      { headers: headers(token) },
+    );
+    if (!res.ok) throw new Error(`GitHub list comments failed: ${res.status} ${res.statusText}`);
+
+    const batch = (await res.json()) as GitHubComment[];
+    all.push(...batch);
+
+    // If we got fewer than a full page, there are no more pages
+    if (batch.length < COMMENTS_PER_PAGE) break;
+    page++;
+  }
+
+  return all;
 }
 
 export async function createComment(
