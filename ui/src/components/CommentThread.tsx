@@ -441,7 +441,7 @@ export function CommentThread({
 
       {liveRunSlot}
 
-      <div className={stickyInput ? "space-y-2 sticky bottom-0 bg-background pt-2 pb-1" : "space-y-2"}>
+      <div className={stickyInput ? "space-y-2 sticky bottom-0 bg-background pt-2 pb-1 max-h-[33vh] overflow-y-auto border-t border-border" : "space-y-2"}>
         <MarkdownEditor
           ref={editorRef}
           value={body}

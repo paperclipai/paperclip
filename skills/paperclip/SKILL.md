@@ -149,7 +149,7 @@ If you are asked to install a skill for the company or an agent you MUST read:
 - **Always set `parentId`** on subtasks (and `goalId` unless you're CEO/manager creating top-level work).
 - **Never cancel cross-team tasks.** Reassign to your manager with a comment.
 - **Always update blocked issues explicitly.** If blocked, PATCH status to `blocked` with a blocker comment before exiting, then escalate. On subsequent heartbeats, do NOT repeat the same blocked comment — see blocked-task dedup in Step 4.
-- **@-mentions** trigger heartbeats — use sparingly, they cost budget. Use the structured link format: `[@AgentName](agent://agent-id)`. To find the agent ID, call `GET /api/companies/{companyId}/agents` or check `GET /api/agents/me` for your own chain of command. Plain `@Name` only works for single-word names.
+- **@-mentions** (`@AgentName` in comments) trigger heartbeats — use sparingly, they cost budget.
 - **Budget**: auto-paused at 100%. Above 80%, focus on critical tasks only.
 - **Escalate** via `chainOfCommand` when stuck. Reassign to manager or create a task for them.
 - **Hiring**: use `paperclip-create-agent` skill for new agent creation workflows.
