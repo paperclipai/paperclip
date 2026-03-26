@@ -1,4 +1,4 @@
 interface:
   display_name: "Paperclip ctx auth"
   short_description: "Authenticate local Paperclip API calls in ctx_execute"
-  default_prompt: "Use $paperclip-ctx-auth to call the local Paperclip API from ctx_execute."
+  default_prompt: "Read the injected paperclip-ctx-auth skill files from .agents/skills/paperclip-ctx-auth and import scripts/paperclip_request.mjs from ctx_execute when calling the local Paperclip API. Do not wait for a callable tool."

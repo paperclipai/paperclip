@@ -1,4 +1,0 @@
-interface:
-  display_name: "Debug Paperclip"
-  short_description: "Inspect Paperclip heartbeat failures and logs"
-  default_prompt: "Use $debug-paperclip to inspect heartbeat failures, run diagnostics, and Paperclip logs."

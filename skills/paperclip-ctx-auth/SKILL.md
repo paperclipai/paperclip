@@ -6,6 +6,7 @@ description: "Mint and use a local Paperclip agent JWT from inside `ctx_execute`
 # Paperclip ctx auth
 
 Use this skill when `ctx_execute` needs to call the local Paperclip API in authenticated dev mode.
+This is an injected file-backed skill, not a callable tool. In Codex runtimes, Paperclip exposes it by linking the skill directory into the active workspace under `.agents/skills/paperclip-ctx-auth`. Use the helper script from that directory via `import(...)`.
 
 The key point: inside `ctx_execute`, `PAPERCLIP_API_KEY` may be the fallback `pcli-local`. In authenticated mode that fails. Mint a real local agent JWT inside the sandbox instead.
 
@@ -15,7 +16,7 @@ Import the bundled helper from `ctx_execute`:
 
 ```javascript
 const { paperclipRequest } = await import(
-  'file:///absolute/path/to/paperclip-ctx-auth/scripts/paperclip_request.mjs'
+  'file:///absolute/path/to/.agents/skills/paperclip-ctx-auth/scripts/paperclip_request.mjs'
 );
 
 const { response, runId, identity } = await paperclipRequest('/agents/me');
@@ -23,7 +24,7 @@ const body = await response.json();
 console.log(JSON.stringify({ status: response.status, runId, identity, body }, null, 2));
 ```
 
-If you are working from a worktree, change the import path to that worktree copy of the skill.
+If you are working from a worktree, change the absolute prefix but keep the `.agents/skills/paperclip-ctx-auth/...` suffix.
 
 ## Workflow
 
