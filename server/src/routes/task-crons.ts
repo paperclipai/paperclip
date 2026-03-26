@@ -1,12 +1,12 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
-import { agents, cronSchedules } from "@paperclipai/db";
+import { agents, cronSchedules, issues as issuesTable } from "@paperclipai/db";
 import {
   attachTaskCronIssueSchema,
   createTaskCronScheduleSchema,
   updateTaskCronScheduleSchema,
 } from "@paperclipai/shared";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { validate } from "../middleware/validate.js";
 import { assertBoardOrOwnAgent, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { issueService, logActivity, taskCronService } from "../services/index.js";
@@ -29,6 +29,42 @@ export function taskCronRoutes(db: Db) {
   router.get("/companies/:companyId/task-cron-schedules", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+
+    const projectId = req.query.projectId as string | undefined;
+
+    if (projectId) {
+      // When scoped to a project, only return schedules linked to issues in that project
+      const rows = await db
+        .select({
+          id: schedulesTable.id,
+          companyId: schedulesTable.companyId,
+          agentId: schedulesTable.agentId,
+          issueId: schedulesTable.issueId,
+          name: schedulesTable.name,
+          expression: schedulesTable.expression,
+          timezone: schedulesTable.timezone,
+          enabled: schedulesTable.enabled,
+          issueMode: schedulesTable.issueMode,
+          issueTemplate: schedulesTable.issueTemplate,
+          payload: schedulesTable.payload,
+          lastTriggeredAt: schedulesTable.lastTriggeredAt,
+          nextTriggerAt: schedulesTable.nextTriggerAt,
+          createdAt: schedulesTable.createdAt,
+          updatedAt: schedulesTable.updatedAt,
+        })
+        .from(schedulesTable)
+        .innerJoin(issuesTable, eq(schedulesTable.issueId, issuesTable.id))
+        .where(
+          and(
+            eq(schedulesTable.companyId, companyId),
+            eq(issuesTable.projectId, projectId),
+          ),
+        )
+        .orderBy(schedulesTable.createdAt);
+      res.json(rows);
+      return;
+    }
+
     const rows = await db
       .select()
       .from(schedulesTable)

@@ -13,8 +13,10 @@ export interface TaskCronScheduleInput {
 }
 
 export const taskCronsApi = {
-  listCompanySchedules: (companyId: string) =>
-    api.get<TaskCronSchedule[]>(`/companies/${encodeURIComponent(companyId)}/task-cron-schedules`),
+  listCompanySchedules: (companyId: string, projectId?: string) => {
+    const suffix = projectId ? `?projectId=${encodeURIComponent(projectId)}` : "";
+    return api.get<TaskCronSchedule[]>(`/companies/${encodeURIComponent(companyId)}/task-cron-schedules${suffix}`);
+  },
   listAgentSchedules: (agentId: string, companyId?: string) => {
     const suffix = companyId ? `?companyId=${encodeURIComponent(companyId)}` : "";
     return api.get<TaskCronSchedule[]>(`/agents/${encodeURIComponent(agentId)}/task-cron-schedules${suffix}`);

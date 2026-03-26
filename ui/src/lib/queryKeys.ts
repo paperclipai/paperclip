@@ -92,7 +92,8 @@ export const queryKeys = {
       ["webhooks", companyId, "events", endpointId ?? "__all__"] as const,
   },
   taskCrons: {
-    company: (companyId: string) => ["task-crons", companyId, "company"] as const,
+    company: (companyId: string, projectId?: string) =>
+      ["task-crons", companyId, "company", projectId ?? "__all__"] as const,
     byAgent: (agentId: string) => ["task-crons", "agent", agentId] as const,
     byIssue: (issueId: string) => ["task-crons", "issue", issueId] as const,
   },

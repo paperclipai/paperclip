@@ -259,8 +259,8 @@ export function IssuesList({
   });
 
   const { data: recurringSchedules = [] } = useQuery({
-    queryKey: queryKeys.taskCrons.company(selectedCompanyId!),
-    queryFn: () => taskCronsApi.listCompanySchedules(selectedCompanyId!),
+    queryKey: queryKeys.taskCrons.company(selectedCompanyId!, projectId),
+    queryFn: () => taskCronsApi.listCompanySchedules(selectedCompanyId!, projectId),
     enabled: !!selectedCompanyId,
   });
 
@@ -291,7 +291,7 @@ export function IssuesList({
       taskCronsApi.updateSchedule(scheduleId, patch, selectedCompanyId ?? undefined),
     onSuccess: () => {
       if (!selectedCompanyId) return;
-      queryClient.invalidateQueries({ queryKey: queryKeys.taskCrons.company(selectedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.taskCrons.company(selectedCompanyId, projectId) });
     },
   });
 
