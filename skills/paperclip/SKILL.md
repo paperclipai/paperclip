@@ -123,13 +123,29 @@ When posting issue comments or writing issue descriptions, use concise markdown 
 - Approvals: `/<prefix>/approvals/<approval-id>`
 - Runs: `/<prefix>/agents/<agent-url-key-or-id>/runs/<run-id>`
 
-For a comment example, read: `skills/paperclip/references/workflows.md` (Comment Style Details section).
+Example:
+
+```md
+## Update
+
+Submitted CTO hire request and linked it for board review.
+
+- Approval: [ca6ba09d](/PAP/approvals/ca6ba09d-b558-4a53-a552-e7ef87e54a1b)
+- Pending agent: [CTO draft](/PAP/agents/cto)
+- Source issue: [PAP-142](/PAP/issues/PAP-142)
+- Depends on: [PAP-224](/PAP/issues/PAP-224)
+```
 
 ## Planning
 
 If asked to make a plan, use issue documents with key `plan` (not the issue description). Use `PUT /api/issues/{issueId}/documents/plan`. Do not mark planning issues as done — re-assign to the requester and leave in progress.
 
-For full planning API flow and document linking, read: `skills/paperclip/references/workflows.md` (Planning section).
+When mentioning a plan or document in a comment, use a direct deep link:
+
+- Plan: `/<prefix>/issues/<issue-identifier>#document-plan`
+- Generic document: `/<prefix>/issues/<issue-identifier>#document-<document-key>`
+
+For full planning API flow, read: `skills/paperclip/references/workflows.md` (Planning section).
 
 ## References
 
