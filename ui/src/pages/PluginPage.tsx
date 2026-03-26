@@ -1,6 +1,7 @@
 import { useEffect, useMemo } from "react";
 import { Link, Navigate, useParams } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { pluginsApi } from "@/api/plugins";
@@ -19,6 +20,7 @@ import { NotFoundPage } from "./NotFound";
  * @see doc/plugins/PLUGIN_SPEC.md §24.4 — Company-Context Plugin Page
  */
 export function PluginPage() {
+  const { t } = useTranslation();
   const { companyPrefix: routeCompanyPrefix, pluginId, pluginRoutePath } = useParams<{
     companyPrefix?: string;
     pluginId?: string;
@@ -110,7 +112,7 @@ export function PluginPage() {
   }
 
   if (!contributions) {
-    return <div className="text-sm text-muted-foreground">Loading…</div>;
+    return <div className="text-sm text-muted-foreground">{t("pluginPage.loading")}</div>;
   }
 
   if (!pluginId && pluginRoutePath) {
@@ -141,7 +143,7 @@ export function PluginPage() {
         <Button variant="ghost" size="sm" asChild>
           <Link to={companyPrefix ? `/${companyPrefix}/dashboard` : "/dashboard"}>
             <ArrowLeft className="h-4 w-4 mr-1" />
-            Back
+            {t("pluginPage.back")}
           </Link>
         </Button>
       </div>

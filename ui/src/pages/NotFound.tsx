@@ -4,6 +4,7 @@ import { AlertTriangle, Compass } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
+import { useTranslation } from "react-i18next";
 
 type NotFoundScope = "board" | "invalid_company_prefix" | "global";
 
@@ -13,6 +14,7 @@ interface NotFoundPageProps {
 }
 
 export function NotFoundPage({ scope = "global", requestedPrefix }: NotFoundPageProps) {
+  const { t } = useTranslation();
   const location = useLocation();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { companies, selectedCompany } = useCompany();
@@ -26,7 +28,7 @@ export function NotFoundPage({ scope = "global", requestedPrefix }: NotFoundPage
   const currentPath = `${location.pathname}${location.search}${location.hash}`;
   const normalizedPrefix = requestedPrefix?.toUpperCase();
 
-  const title = scope === "invalid_company_prefix" ? "Company not found" : "Page not found";
+  const title = scope === "invalid_company_prefix" ? "Company not found" : t("notFound.pageNotFound");
   const description =
     scope === "invalid_company_prefix"
       ? `No company matches prefix "${normalizedPrefix ?? "unknown"}".`
@@ -57,7 +59,7 @@ export function NotFoundPage({ scope = "global", requestedPrefix }: NotFoundPage
             </Link>
           </Button>
           <Button variant="outline" asChild>
-            <Link to="/">Go home</Link>
+            <Link to="/">{t("notFound.goHome")}</Link>
           </Button>
         </div>
       </div>

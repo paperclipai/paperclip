@@ -53,6 +53,7 @@ import {
   Save,
   Search,
 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 type SkillTreeNode = {
   name: string;
@@ -733,6 +734,7 @@ function SkillPane({
 }
 
 export function CompanySkills() {
+  const { t } = useTranslation();
   const { "*": routePath } = useParams<{ "*": string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -1049,7 +1051,7 @@ export function CompanySkills() {
           <div className="border-b border-border px-4 py-3">
             <div className="flex items-center justify-between gap-2">
               <div>
-                <h1 className="text-base font-semibold">Skills</h1>
+                <h1 className="text-base font-semibold">{t("companySkills.title")}</h1>
                 <p className="text-xs text-muted-foreground">
                   {skillsQuery.data?.length ?? 0} available
                 </p>
@@ -1075,7 +1077,7 @@ export function CompanySkills() {
               <input
                 value={skillFilter}
                 onChange={(event) => setSkillFilter(event.target.value)}
-                placeholder="Filter skills"
+                placeholder={t("companySkills.searchSkills")}
                 className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
               />
             </div>

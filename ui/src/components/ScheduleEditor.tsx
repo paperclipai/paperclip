@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
@@ -6,15 +7,17 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 
 type SchedulePreset = "every_minute" | "every_hour" | "every_day" | "weekdays" | "weekly" | "monthly" | "custom";
 
-const PRESETS: { value: SchedulePreset; label: string }[] = [
-  { value: "every_minute", label: "Every minute" },
-  { value: "every_hour", label: "Every hour" },
-  { value: "every_day", label: "Every day" },
-  { value: "weekdays", label: "Weekdays" },
-  { value: "weekly", label: "Weekly" },
-  { value: "monthly", label: "Monthly" },
-  { value: "custom", label: "Custom (cron)" },
-];
+const PRESET_KEYS: Record<SchedulePreset, string> = {
+  every_minute: "scheduleEditor.everyMinute",
+  every_hour: "scheduleEditor.everyHour",
+  every_day: "scheduleEditor.everyDay",
+  weekdays: "scheduleEditor.weekdays",
+  weekly: "scheduleEditor.weekly",
+  monthly: "scheduleEditor.monthly",
+  custom: "scheduleEditor.customCron",
+};
+
+const PRESET_VALUES: SchedulePreset[] = ["every_minute", "every_hour", "every_day", "weekdays", "weekly", "monthly", "custom"];
 
 const HOURS = Array.from({ length: 24 }, (_, i) => ({
   value: String(i),
@@ -134,7 +137,7 @@ function describeSchedule(cron: string): string {
     case "monthly":
       return `Monthly on the ${dayOfMonth}${ordinalSuffix(Number(dayOfMonth))} at ${timeStr}`;
     case "custom":
-      return cron || "No schedule set";
+      return cron || "No schedule set"; // Note: describeSchedule is a utility, not a component — i18n handled at call site
   }
 }
 
@@ -153,6 +156,7 @@ export function ScheduleEditor({
   value: string;
   onChange: (cron: string) => void;
 }) {
+  const { t } = useTranslation();
   const parsed = useMemo(() => parseCronToPreset(value), [value]);
   const [preset, setPreset] = useState<SchedulePreset>(parsed.preset);
   const [hour, setHour] = useState(parsed.hour);
@@ -196,12 +200,12 @@ export function ScheduleEditor({
     <div className="space-y-3">
       <Select value={preset} onValueChange={(v) => handlePresetChange(v as SchedulePreset)}>
         <SelectTrigger className="w-full">
-          <SelectValue placeholder="Choose frequency..." />
+          <SelectValue placeholder={t("scheduleEditor.chooseFrequency")} />
         </SelectTrigger>
         <SelectContent>
-          {PRESETS.map((p) => (
-            <SelectItem key={p.value} value={p.value}>
-              {p.label}
+          {PRESET_VALUES.map((p) => (
+            <SelectItem key={p} value={p}>
+              {t(PRESET_KEYS[p])}
             </SelectItem>
           ))}
         </SelectContent>

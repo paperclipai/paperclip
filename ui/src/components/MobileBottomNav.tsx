@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { NavLink, useLocation } from "@/lib/router";
 import {
   House,
@@ -34,6 +35,7 @@ interface MobileNavActionItem {
 type MobileNavItem = MobileNavLinkItem | MobileNavActionItem;
 
 export function MobileBottomNav({ visible }: MobileBottomNavProps) {
+  const { t } = useTranslation();
   const location = useLocation();
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialog();
@@ -42,18 +44,18 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
   const items = useMemo<MobileNavItem[]>(
     () => [
       { type: "link", to: "/dashboard", label: "Home", icon: House },
-      { type: "link", to: "/issues", label: "Issues", icon: CircleDot },
-      { type: "action", label: "Create", icon: SquarePen, onClick: () => openNewIssue() },
-      { type: "link", to: "/agents/all", label: "Agents", icon: Users },
+      { type: "link", to: "/issues", label: t("mobileNav.issues"), icon: CircleDot },
+      { type: "action", label: t("mobileNav.create"), icon: SquarePen, onClick: () => openNewIssue() },
+      { type: "link", to: "/agents/all", label: t("mobileNav.agents"), icon: Users },
       {
         type: "link",
         to: "/inbox",
-        label: "Inbox",
+        label: t("mobileNav.inbox"),
         icon: Inbox,
         badge: inboxBadge.inbox,
       },
     ],
-    [openNewIssue, inboxBadge.inbox],
+    [openNewIssue, inboxBadge.inbox, t],
   );
 
   return (
@@ -62,7 +64,7 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
         "fixed bottom-0 left-0 right-0 z-30 border-t border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85 transition-transform duration-200 ease-out md:hidden pb-[env(safe-area-inset-bottom)]",
         visible ? "translate-y-0" : "translate-y-full",
       )}
-      aria-label="Mobile navigation"
+      aria-label={t("mobileNav.mobileNavigation")}
     >
       <div className="grid h-16 grid-cols-5 px-1">
         {items.map((item) => {

@@ -24,6 +24,7 @@ import { projectRouteRef, cn } from "../lib/utils";
 import { Tabs } from "@/components/ui/tabs";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
+import { useTranslation } from "react-i18next";
 
 /* ── Top-level tab types ── */
 
@@ -58,6 +59,7 @@ function OverviewContent({
   onUpdate: (data: Record<string, unknown>) => void;
   imageUploadHandler?: (file: File) => Promise<string>;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-6">
       <InlineEditor
@@ -65,21 +67,21 @@ function OverviewContent({
         onSave={(description) => onUpdate({ description })}
         as="p"
         className="text-sm text-muted-foreground"
-        placeholder="Add a description..."
+        placeholder={t("projectDetail.addDescription")}
         multiline
         imageUploadHandler={imageUploadHandler}
       />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
         <div>
-          <span className="text-muted-foreground">Status</span>
+          <span className="text-muted-foreground">{t("projectDetail.status")}</span>
           <div className="mt-1">
             <StatusBadge status={project.status} />
           </div>
         </div>
         {project.targetDate && (
           <div>
-            <span className="text-muted-foreground">Target Date</span>
+            <span className="text-muted-foreground">{t("projectDetail.targetDate")}</span>
             <p>{project.targetDate}</p>
           </div>
         )}
@@ -203,6 +205,7 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
 /* ── Main project page ── */
 
 export function ProjectDetail() {
+  const { t } = useTranslation();
   const { companyPrefix, projectId, filter } = useParams<{
     companyPrefix?: string;
     projectId: string;
@@ -559,10 +562,10 @@ export function ProjectDetail() {
       <Tabs value={activeTab ?? "list"} onValueChange={(value) => handleTabChange(value as ProjectTab)}>
         <PageTabBar
           items={[
-            { value: "list", label: "Issues" },
-            { value: "overview", label: "Overview" },
-            { value: "configuration", label: "Configuration" },
-            { value: "budget", label: "Budget" },
+            { value: "list", label: t("projectDetail.issues") },
+            { value: "overview", label: t("projectDetail.overview") },
+            { value: "configuration", label: t("projectDetail.configuration") },
+            { value: "budget", label: t("projectDetail.budget") },
             ...pluginTabItems.map((item) => ({
               value: item.value,
               label: item.label,

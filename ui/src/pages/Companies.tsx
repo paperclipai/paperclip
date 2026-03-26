@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -29,6 +30,7 @@ import {
 } from "lucide-react";
 
 export function Companies() {
+  const { t } = useTranslation();
   const {
     companies,
     selectedCompanyId,
@@ -69,7 +71,7 @@ export function Companies() {
   });
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Companies" }]);
+    setBreadcrumbs([{ label: t("companies.title") }]);
   }, [setBreadcrumbs]);
 
   function startEdit(companyId: string, currentName: string) {
@@ -92,12 +94,12 @@ export function Companies() {
       <div className="flex items-center justify-end">
         <Button size="sm" onClick={() => openOnboarding()}>
           <Plus className="h-3.5 w-3.5 mr-1.5" />
-          New Company
+          {t("companies.newCompany")}
         </Button>
       </div>
 
       <div className="h-6">
-        {loading && <p className="text-sm text-muted-foreground">Loading companies...</p>}
+        {loading && <p className="text-sm text-muted-foreground">{t("companies.loading")}</p>}
         {error && <p className="text-sm text-destructive">{error.message}</p>}
       </div>
 
@@ -215,7 +217,7 @@ export function Companies() {
                         onClick={() => startEdit(company.id, company.name)}
                       >
                         <Pencil className="h-3.5 w-3.5" />
-                        Rename
+                        {t("companies.rename")}
                       </DropdownMenuItem>
                       <DropdownMenuSeparator />
                       <DropdownMenuItem
@@ -223,7 +225,7 @@ export function Companies() {
                         onClick={() => setConfirmDeleteId(company.id)}
                       >
                         <Trash2 className="h-3.5 w-3.5" />
-                        Delete Company
+                        {t("companies.deleteCompany")}
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
@@ -266,7 +268,7 @@ export function Companies() {
                   onClick={(e) => e.stopPropagation()}
                 >
                   <p className="text-sm text-destructive font-medium">
-                    Delete this company and all its data? This cannot be undone.
+                    {t("companies.deleteConfirm")}
                   </p>
                   <div className="flex items-center gap-2 ml-4 shrink-0">
                     <Button
@@ -275,7 +277,7 @@ export function Companies() {
                       onClick={() => setConfirmDeleteId(null)}
                       disabled={deleteMutation.isPending}
                     >
-                      Cancel
+                      {t("common.cancel")}
                     </Button>
                     <Button
                       variant="destructive"
@@ -283,7 +285,7 @@ export function Companies() {
                       onClick={() => deleteMutation.mutate(company.id)}
                       disabled={deleteMutation.isPending}
                     >
-                      {deleteMutation.isPending ? "Deleting…" : "Delete"}
+                      {deleteMutation.isPending ? t("companies.deleting") : t("common.delete")}
                     </Button>
                   </div>
                 </div>

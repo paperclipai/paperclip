@@ -15,8 +15,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { CheckCircle2, ChevronRight, Sparkles } from "lucide-react";
 import type { ApprovalComment } from "@paperclipai/shared";
 import { MarkdownBody } from "../components/MarkdownBody";
+import { useTranslation } from "react-i18next";
 
 export function ApprovalDetail() {
+  const { t } = useTranslation();
   const { approvalId } = useParams<{ approvalId: string }>();
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -142,7 +144,7 @@ export function ApprovalDetail() {
   });
 
   if (isLoading) return <PageSkeleton variant="detail" />;
-  if (!approval) return <p className="text-sm text-muted-foreground">Approval not found.</p>;
+  if (!approval) return <p className="text-sm text-muted-foreground">{t("approvalDetail.notFound")}</p>;
 
   const payload = approval.payload as Record<string, unknown>;
   const linkedAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
@@ -212,7 +214,7 @@ export function ApprovalDetail() {
         <div className="text-sm space-y-1">
           {approval.requestedByAgentId && (
             <div className="flex items-center gap-2">
-              <span className="text-muted-foreground text-xs">Requested by</span>
+              <span className="text-muted-foreground text-xs">{t("approvalDetail.requestedBy")}</span>
               <Identity
                 name={agentNameById.get(approval.requestedByAgentId) ?? approval.requestedByAgentId.slice(0, 8)}
                 size="sm"
@@ -269,7 +271,7 @@ export function ApprovalDetail() {
                 onClick={() => approveMutation.mutate()}
                 disabled={approveMutation.isPending}
               >
-                Approve
+                {t("approvalDetail.approve")}
               </Button>
               <Button
                 variant="destructive"
@@ -277,7 +279,7 @@ export function ApprovalDetail() {
                 onClick={() => rejectMutation.mutate()}
                 disabled={rejectMutation.isPending}
               >
-                Reject
+                {t("approvalDetail.reject")}
               </Button>
             </>
           )}
@@ -324,7 +326,7 @@ export function ApprovalDetail() {
       </div>
 
       <div className="border border-border rounded-lg p-4 space-y-3">
-        <h3 className="text-sm font-medium">Comments ({comments?.length ?? 0})</h3>
+        <h3 className="text-sm font-medium">{t("approvalDetail.comments")} ({comments?.length ?? 0})</h3>
         <div className="space-y-2">
           {(comments ?? []).map((comment: ApprovalComment) => (
             <div key={comment.id} className="border border-border/60 rounded-md p-3">

@@ -20,8 +20,10 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Plus } from "lucide-react";
 import type { Goal, Project } from "@paperclipai/shared";
+import { useTranslation } from "react-i18next";
 
 export function GoalDetail() {
+  const { t } = useTranslation();
   const { goalId } = useParams<{ goalId: string }>();
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { openNewGoal } = useDialog();
@@ -148,10 +150,10 @@ export function GoalDetail() {
       <Tabs defaultValue="children">
         <TabsList>
           <TabsTrigger value="children">
-            Sub-Goals ({childGoals.length})
+            {t("goalDetail.overview")} ({childGoals.length})
           </TabsTrigger>
           <TabsTrigger value="projects">
-            Projects ({linkedProjects.length})
+            {t("goalDetail.projects")} ({linkedProjects.length})
           </TabsTrigger>
         </TabsList>
 
@@ -167,7 +169,7 @@ export function GoalDetail() {
             </Button>
           </div>
           {childGoals.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No sub-goals.</p>
+            <p className="text-sm text-muted-foreground">{t("goalDetail.noProjectsLinked")}</p>
           ) : (
             <GoalTree goals={childGoals} goalLink={(g) => `/goals/${g.id}`} />
           )}
@@ -175,7 +177,7 @@ export function GoalDetail() {
 
         <TabsContent value="projects" className="mt-4">
           {linkedProjects.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No linked projects.</p>
+            <p className="text-sm text-muted-foreground">{t("goalDetail.noProjectsLinked")}</p>
           ) : (
             <div className="border border-border">
               {linkedProjects.map((project) => (

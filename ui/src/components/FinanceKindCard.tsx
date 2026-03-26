@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import type { FinanceByKind } from "@paperclipai/shared";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { financeEventKindDisplayName, formatCents } from "@/lib/utils";
@@ -7,15 +8,16 @@ interface FinanceKindCardProps {
 }
 
 export function FinanceKindCard({ rows }: FinanceKindCardProps) {
+  const { t } = useTranslation();
   return (
     <Card>
       <CardHeader className="px-4 pt-4 pb-1">
-        <CardTitle className="text-base">Financial event mix</CardTitle>
-        <CardDescription>Account-level charges grouped by event kind.</CardDescription>
+        <CardTitle className="text-base">{t("financeKindCard.title")}</CardTitle>
+        <CardDescription>{t("financeKindCard.description")}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-2 px-4 pb-4 pt-3">
         {rows.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No finance events in this period.</p>
+          <p className="text-sm text-muted-foreground">{t("financeKindCard.noEvents")}</p>
         ) : (
           rows.map((row) => (
             <div

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { BudgetIncident } from "@paperclipai/shared";
 import { AlertOctagon, ArrowUpRight, PauseCircle } from "lucide-react";
 import { formatCents } from "../lib/utils";
@@ -27,6 +28,7 @@ export function BudgetIncidentCard({
   onKeepPaused: () => void;
   isMutating?: boolean;
 }) {
+  const { t } = useTranslation();
   const [draftAmount, setDraftAmount] = useState(
     centsInputValue(Math.max(incident.amountObserved + 1000, incident.amountLimit)),
   );
@@ -55,8 +57,8 @@ export function BudgetIncidentCard({
           <PauseCircle className="mt-0.5 h-4 w-4 shrink-0" />
           <div>
             {incident.scopeType === "project"
-              ? "Project execution is paused. New work in this project will not start until you resolve the budget incident."
-              : "This scope is paused. New heartbeats will not start until you resolve the budget incident."}
+              ? t("budgetIncident.projectPaused")
+              : t("budgetIncident.scopePaused")}
           </div>
         </div>
 
@@ -79,7 +81,7 @@ export function BudgetIncidentCard({
               }}
             >
               <ArrowUpRight className="h-4 w-4" />
-              {isMutating ? "Applying..." : "Raise budget & resume"}
+              {isMutating ? t("budgetIncident.applying") : t("budgetIncident.raiseAndResume")}
             </Button>
           </div>
           {parsed !== null && parsed <= incident.amountObserved ? (

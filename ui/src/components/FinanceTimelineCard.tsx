@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import type { FinanceEvent } from "@paperclipai/shared";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -16,17 +17,19 @@ interface FinanceTimelineCardProps {
 
 export function FinanceTimelineCard({
   rows,
-  emptyMessage = "No financial events in this period.",
+  emptyMessage,
 }: FinanceTimelineCardProps) {
+  const { t } = useTranslation();
+  const resolvedEmptyMessage = emptyMessage ?? t("financeTimelineCard.noEvents");
   return (
     <Card>
       <CardHeader className="px-4 pt-4 pb-1">
-        <CardTitle className="text-base">Recent financial events</CardTitle>
-        <CardDescription>Top-ups, fees, credits, commitments, and other non-request charges.</CardDescription>
+        <CardTitle className="text-base">{t("financeTimelineCard.title")}</CardTitle>
+        <CardDescription>{t("financeTimelineCard.description")}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3 px-4 pb-4 pt-3">
         {rows.length === 0 ? (
-          <p className="text-sm text-muted-foreground">{emptyMessage}</p>
+          <p className="text-sm text-muted-foreground">{resolvedEmptyMessage}</p>
         ) : (
           rows.map((row) => (
             <div

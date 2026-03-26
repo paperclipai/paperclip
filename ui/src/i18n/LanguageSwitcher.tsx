@@ -5,12 +5,6 @@ import { Globe } from "lucide-react";
 export function LanguageSwitcher({ compact = false }: { compact?: boolean }) {
   const { i18n } = useTranslation();
 
-  const handleChange = (lang: string) => {
-    setLanguage(lang);
-  };
-
-  const currentLabel = supportedLanguages.find((l) => l.code === i18n.language)?.label ?? "EN";
-
   if (compact) {
     // Cycle through languages on click
     const currentIndex = supportedLanguages.findIndex((l) => l.code === i18n.language);
@@ -20,12 +14,11 @@ export function LanguageSwitcher({ compact = false }: { compact?: boolean }) {
 
     return (
       <button
-        onClick={() => handleChange(nextLang.code)}
-        className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-        title={`${currentLabel} → ${nextLang.label}`}
+        onClick={() => setLanguage(nextLang.code)}
+        className="inline-flex items-center justify-center rounded-md w-7 h-7 shrink-0 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+        title={`${shortLabel[i18n.language] ?? "EN"} → ${nextLang.label}`}
       >
-        <Globe className="h-3.5 w-3.5" />
-        <span>{shortLabel[i18n.language] ?? "EN"}</span>
+        <Globe className="h-4 w-4" />
       </button>
     );
   }
@@ -35,7 +28,7 @@ export function LanguageSwitcher({ compact = false }: { compact?: boolean }) {
       <Globe className="h-4 w-4 text-muted-foreground" />
       <select
         value={i18n.language}
-        onChange={(e) => handleChange(e.target.value)}
+        onChange={(e) => setLanguage(e.target.value)}
         className="rounded-md border border-border bg-background px-2 py-1 text-sm"
       >
         {supportedLanguages.map((lang) => (

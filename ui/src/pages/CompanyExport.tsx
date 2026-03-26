@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import type {
   Agent,
@@ -578,6 +579,7 @@ function expandAncestors(filePath: string): string[] {
 }
 
 export function CompanyExport() {
+  const { t } = useTranslation();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
@@ -673,7 +675,7 @@ export function CompanyExport() {
   useEffect(() => {
     setBreadcrumbs([
       { label: "Org Chart", href: "/org" },
-      { label: "Export" },
+      { label: t("companyExport.export") },
     ]);
   }, [setBreadcrumbs]);
 
@@ -935,7 +937,7 @@ export function CompanyExport() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-4 text-sm">
             <span className="font-medium">
-              {selectedCompany?.name ?? "Company"} export
+              {selectedCompany?.name ?? t("companyExport.exportCompany")}
             </span>
             <span className="text-muted-foreground">
               {selectedCount} / {totalFiles} file{totalFiles === 1 ? "" : "s"} selected
@@ -953,8 +955,8 @@ export function CompanyExport() {
           >
             <Download className="mr-1.5 h-3.5 w-3.5" />
             {downloadMutation.isPending
-              ? "Building export..."
-              : `Export ${selectedCount} file${selectedCount === 1 ? "" : "s"}`}
+              ? t("companyExport.exporting")
+              : t("companyExport.export")}
           </Button>
         </div>
       </div>

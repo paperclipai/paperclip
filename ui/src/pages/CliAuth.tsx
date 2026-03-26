@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams, useSearchParams } from "@/lib/router";
 import { Button } from "@/components/ui/button";
@@ -7,6 +8,7 @@ import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
 
 export function CliAuthPage() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const params = useParams();
   const [searchParams] = useSearchParams();
@@ -74,7 +76,7 @@ export function CliAuthPage() {
     return (
       <div className="mx-auto max-w-xl py-10">
         <div className="rounded-lg border border-border bg-card p-6">
-          <h1 className="text-xl font-semibold">CLI access approved</h1>
+          <h1 className="text-xl font-semibold">{t("cliAuth.authorizationSuccessful")}</h1>
           <p className="mt-2 text-sm text-muted-foreground">
             The Paperclip CLI can now finish authentication on the requesting machine.
           </p>
@@ -120,7 +122,7 @@ export function CliAuthPage() {
   return (
     <div className="mx-auto max-w-xl py-10">
       <div className="rounded-lg border border-border bg-card p-6">
-        <h1 className="text-xl font-semibold">Approve Paperclip CLI access</h1>
+        <h1 className="text-xl font-semibold">{t("cliAuth.cliAuthorization")}</h1>
         <p className="mt-2 text-sm text-muted-foreground">
           A local Paperclip CLI process is requesting board access to this instance.
         </p>
@@ -152,7 +154,7 @@ export function CliAuthPage() {
           <p className="mt-4 text-sm text-destructive">
             {(approveMutation.error ?? cancelMutation.error) instanceof Error
               ? ((approveMutation.error ?? cancelMutation.error) as Error).message
-              : "Failed to update CLI auth challenge"}
+              : t("cliAuth.failedToAuthorize")}
           </p>
         )}
 
@@ -167,7 +169,7 @@ export function CliAuthPage() {
             onClick={() => approveMutation.mutate()}
             disabled={!challenge.canApprove || approveMutation.isPending || cancelMutation.isPending}
           >
-            {approveMutation.isPending ? "Approving..." : "Approve CLI access"}
+            {approveMutation.isPending ? t("cliAuth.authorizing") : t("cliAuth.authorize")}
           </Button>
           <Button
             type="button"

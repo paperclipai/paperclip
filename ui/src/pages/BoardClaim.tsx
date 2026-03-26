@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams, useSearchParams } from "@/lib/router";
 import { accessApi } from "../api/access";
@@ -7,6 +8,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 
 export function BoardClaimPage() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const params = useParams();
   const [searchParams] = useSearchParams();
@@ -70,7 +72,7 @@ export function BoardClaimPage() {
     return (
       <div className="mx-auto max-w-xl py-10">
         <div className="rounded-lg border border-border bg-card p-6">
-          <h1 className="text-lg font-semibold">Board ownership claimed</h1>
+          <h1 className="text-lg font-semibold">{t("boardClaim.boardAccessClaimed")}</h1>
           <p className="mt-2 text-sm text-muted-foreground">
             This instance is now linked to your authenticated user.
           </p>
@@ -101,14 +103,14 @@ export function BoardClaimPage() {
   return (
     <div className="mx-auto max-w-xl py-10">
       <div className="rounded-lg border border-border bg-card p-6">
-        <h1 className="text-xl font-semibold">Claim Board ownership</h1>
+        <h1 className="text-xl font-semibold">{t("boardClaim.claimBoardAccess")}</h1>
         <p className="mt-2 text-sm text-muted-foreground">
           This will promote your user to instance admin and migrate company ownership access from local trusted mode.
         </p>
 
         {claimMutation.error && (
           <p className="mt-3 text-sm text-destructive">
-            {claimMutation.error instanceof Error ? claimMutation.error.message : "Failed to claim board ownership"}
+            {claimMutation.error instanceof Error ? claimMutation.error.message : t("boardClaim.failedToClaim")}
           </p>
         )}
 
@@ -117,7 +119,7 @@ export function BoardClaimPage() {
           onClick={() => claimMutation.mutate()}
           disabled={claimMutation.isPending}
         >
-          {claimMutation.isPending ? "Claiming…" : "Claim ownership"}
+          {claimMutation.isPending ? t("boardClaim.claiming") : t("boardClaim.claim")}
         </Button>
       </div>
     </div>

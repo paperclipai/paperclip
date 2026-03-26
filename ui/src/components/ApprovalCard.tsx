@@ -1,4 +1,5 @@
 import { CheckCircle2, XCircle, Clock } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { Identity } from "./Identity";
@@ -31,8 +32,9 @@ export function ApprovalCard({
   detailLink?: string;
   isPending: boolean;
 }) {
+  const { t } = useTranslation();
   const Icon = typeIcon[approval.type] ?? defaultTypeIcon;
-  const label = approvalLabel(approval.type, approval.payload as Record<string, unknown> | null);
+  const label = approvalLabel(approval.type, approval.payload as Record<string, unknown> | null, t);
   const showResolutionButtons =
     approval.type !== "budget_override_required" &&
     (approval.status === "pending" || approval.status === "revision_requested");
@@ -93,11 +95,11 @@ export function ApprovalCard({
       <div className="mt-3">
         {detailLink ? (
           <Button variant="ghost" size="sm" className="text-xs px-0" asChild>
-            <Link to={detailLink}>View details</Link>
+            <Link to={detailLink}>{t("approvalCard.viewDetails")}</Link>
           </Button>
         ) : (
           <Button variant="ghost" size="sm" className="text-xs px-0" onClick={onOpen}>
-            View details
+            {t("approvalCard.viewDetails")}
           </Button>
         )}
       </div>

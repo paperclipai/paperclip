@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams } from "@/lib/router";
 import { accessApi } from "../api/access";
@@ -40,6 +41,7 @@ function readNestedString(value: unknown, path: string[]): string | null {
 }
 
 export function InviteLandingPage() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const params = useParams();
   const token = (params.token ?? "").trim();
@@ -127,9 +129,9 @@ export function InviteLandingPage() {
     return (
       <div className="mx-auto max-w-xl py-10">
         <div className="rounded-lg border border-border bg-card p-6">
-          <h1 className="text-lg font-semibold">Invite not available</h1>
+          <h1 className="text-lg font-semibold">{t("inviteLanding.youveBeenInvited")}</h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            This invite may be expired, revoked, or already used.
+            {t("inviteLanding.inviteLinkInvalid")}
           </p>
         </div>
       </div>
@@ -140,7 +142,7 @@ export function InviteLandingPage() {
     return (
       <div className="mx-auto max-w-xl py-10">
         <div className="rounded-lg border border-border bg-card p-6">
-          <h1 className="text-lg font-semibold">Bootstrap complete</h1>
+          <h1 className="text-lg font-semibold">{t("inviteLanding.invitationAccepted")}</h1>
           <p className="mt-2 text-sm text-muted-foreground">
             The first instance admin is now configured. You can continue to the board.
           </p>
@@ -308,10 +310,8 @@ export function InviteLandingPage() {
           onClick={() => acceptMutation.mutate()}
         >
           {acceptMutation.isPending
-            ? "Submitting…"
-            : invite.inviteType === "bootstrap_ceo"
-              ? "Accept bootstrap invite"
-              : "Submit join request"}
+            ? t("inviteLanding.accepting")
+            : t("inviteLanding.acceptInvitation")}
         </Button>
       </div>
     </div>

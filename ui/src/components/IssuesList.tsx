@@ -1,4 +1,5 @@
 import { startTransition, useEffect, useMemo, useState, useCallback, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { useDialog } from "../context/DialogContext";
@@ -181,6 +182,7 @@ interface IssuesSearchInputProps {
 }
 
 function IssuesSearchInput({ initialValue, onValueCommitted }: IssuesSearchInputProps) {
+  const { t } = useTranslation();
   const [value, setValue] = useState(initialValue);
   const onValueCommittedRef = useRef(onValueCommitted);
 
@@ -205,7 +207,7 @@ function IssuesSearchInput({ initialValue, onValueCommitted }: IssuesSearchInput
       <Input
         value={value}
         onChange={(e) => setValue(e.target.value)}
-        placeholder="Search issues..."
+        placeholder={t("issuesList.searchIssues")}
         className="pl-7 text-xs sm:text-sm"
         aria-label="Search issues"
       />
@@ -229,6 +231,7 @@ export function IssuesList({
   onSearchChange,
   onUpdateIssue,
 }: IssuesListProps) {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialog();
   const { data: session } = useQuery({
@@ -370,7 +373,7 @@ export function IssuesList({
         <div className="flex min-w-0 items-center gap-2 sm:gap-3">
           <Button size="sm" variant="outline" onClick={() => openNewIssue(newIssueDefaults())}>
             <Plus className="h-4 w-4 sm:mr-1" />
-            <span className="hidden sm:inline">New Issue</span>
+            <span className="hidden sm:inline">{t("issuesList.newIssue")}</span>
           </Button>
           <IssuesSearchInput
             initialValue={initialSearch ?? ""}
@@ -384,14 +387,14 @@ export function IssuesList({
             <button
               className={`p-1.5 transition-colors ${viewState.viewMode === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "list" })}
-              title="List view"
+              title={t("issuesList.listView")}
             >
               <List className="h-3.5 w-3.5" />
             </button>
             <button
               className={`p-1.5 transition-colors ${viewState.viewMode === "board" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "board" })}
-              title="Board view"
+              title={t("issuesList.boardView")}
             >
               <Columns3 className="h-3.5 w-3.5" />
             </button>
@@ -402,7 +405,7 @@ export function IssuesList({
             <PopoverTrigger asChild>
               <Button variant="ghost" size="sm" className={`text-xs ${activeFilterCount > 0 ? "text-blue-600 dark:text-blue-400" : ""}`}>
                 <Filter className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
-                <span className="hidden sm:inline">{activeFilterCount > 0 ? `Filters: ${activeFilterCount}` : "Filter"}</span>
+                <span className="hidden sm:inline">{activeFilterCount > 0 ? `${t("issuesList.filters")}: ${activeFilterCount}` : t("issuesList.filters")}</span>
                 {activeFilterCount > 0 && (
                   <span className="sm:hidden text-[10px] font-medium ml-0.5">{activeFilterCount}</span>
                 )}
@@ -420,20 +423,20 @@ export function IssuesList({
             <PopoverContent align="end" className="w-[min(480px,calc(100vw-2rem))] p-0">
               <div className="p-3 space-y-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium">Filters</span>
+                  <span className="text-sm font-medium">{t("issuesList.filters")}</span>
                   {activeFilterCount > 0 && (
                     <button
                       className="text-xs text-muted-foreground hover:text-foreground"
                       onClick={() => updateView({ statuses: [], priorities: [], assignees: [], labels: [] })}
                     >
-                      Clear
+                      {t("issuesList.clear")}
                     </button>
                   )}
                 </div>
 
                 {/* Quick filters */}
                 <div className="space-y-1.5">
-                  <span className="text-xs text-muted-foreground">Quick filters</span>
+                  <span className="text-xs text-muted-foreground">{t("issuesList.quickFilters")}</span>
                   <div className="flex flex-wrap gap-1.5">
                     {quickFilterPresets.map((preset) => {
                       const isActive = arraysEqual(viewState.statuses, preset.statuses);
@@ -460,7 +463,7 @@ export function IssuesList({
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
                   {/* Status */}
                   <div className="space-y-1">
-                    <span className="text-xs text-muted-foreground">Status</span>
+                    <span className="text-xs text-muted-foreground">{t("issuesList.status")}</span>
                     <div className="space-y-0.5">
                       {statusOrder.map((s) => (
                         <label key={s} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
@@ -479,7 +482,7 @@ export function IssuesList({
                   <div className="space-y-3">
                     {/* Priority */}
                     <div className="space-y-1">
-                      <span className="text-xs text-muted-foreground">Priority</span>
+                      <span className="text-xs text-muted-foreground">{t("issuesList.priority")}</span>
                       <div className="space-y-0.5">
                         {priorityOrder.map((p) => (
                           <label key={p} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
@@ -496,14 +499,14 @@ export function IssuesList({
 
                     {/* Assignee */}
                     <div className="space-y-1">
-                      <span className="text-xs text-muted-foreground">Assignee</span>
+                      <span className="text-xs text-muted-foreground">{t("issuesList.assignee")}</span>
                       <div className="space-y-0.5 max-h-32 overflow-y-auto">
                         <label className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
                           <Checkbox
                             checked={viewState.assignees.includes("__unassigned")}
                             onCheckedChange={() => updateView({ assignees: toggleInArray(viewState.assignees, "__unassigned") })}
                           />
-                          <span className="text-sm">No assignee</span>
+                          <span className="text-sm">{t("issuesList.noAssignee")}</span>
                         </label>
                         {currentUserId && (
                           <label className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
@@ -512,7 +515,7 @@ export function IssuesList({
                               onCheckedChange={() => updateView({ assignees: toggleInArray(viewState.assignees, "__me") })}
                             />
                             <User className="h-3.5 w-3.5 text-muted-foreground" />
-                            <span className="text-sm">Me</span>
+                            <span className="text-sm">{t("issuesList.me")}</span>
                           </label>
                         )}
                         {(agents ?? []).map((agent) => (
@@ -529,7 +532,7 @@ export function IssuesList({
 
                     {labels && labels.length > 0 && (
                       <div className="space-y-1">
-                        <span className="text-xs text-muted-foreground">Labels</span>
+                        <span className="text-xs text-muted-foreground">{t("issuesList.labels")}</span>
                         <div className="space-y-0.5 max-h-32 overflow-y-auto">
                           {labels.map((label) => (
                             <label key={label.id} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
@@ -547,7 +550,7 @@ export function IssuesList({
 
                     {projects && projects.length > 0 && (
                       <div className="space-y-1">
-                        <span className="text-xs text-muted-foreground">Project</span>
+                        <span className="text-xs text-muted-foreground">{t("issuesList.project")}</span>
                         <div className="space-y-0.5 max-h-32 overflow-y-auto">
                           {projects.map((project) => (
                             <label key={project.id} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
@@ -573,7 +576,7 @@ export function IssuesList({
               <PopoverTrigger asChild>
                 <Button variant="ghost" size="sm" className="text-xs">
                   <ArrowUpDown className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
-                  <span className="hidden sm:inline">Sort</span>
+                  <span className="hidden sm:inline">{t("issuesList.sort")}</span>
                 </Button>
               </PopoverTrigger>
               <PopoverContent align="end" className="w-48 p-0">
@@ -617,7 +620,7 @@ export function IssuesList({
               <PopoverTrigger asChild>
                 <Button variant="ghost" size="sm" className="text-xs">
                   <Layers className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
-                  <span className="hidden sm:inline">Group</span>
+                  <span className="hidden sm:inline">{t("issuesList.group")}</span>
                 </Button>
               </PopoverTrigger>
               <PopoverContent align="end" className="w-44 p-0">
@@ -652,8 +655,8 @@ export function IssuesList({
       {!isLoading && filtered.length === 0 && viewState.viewMode === "list" && (
         <EmptyState
           icon={CircleDot}
-          message="No issues match the current filters or search."
-          action="Create Issue"
+          message={t("issuesList.noIssuesMatch")}
+          action={t("issuesList.createIssue")}
           onAction={() => openNewIssue(newIssueDefaults())}
         />
       )}
@@ -740,7 +743,7 @@ export function IssuesList({
                             <span className="relative inline-flex h-2 w-2 rounded-full bg-blue-500" />
                           </span>
                           <span className="hidden text-[11px] font-medium text-blue-600 dark:text-blue-400 sm:inline">
-                            Live
+                            {t("issuesList.live")}
                           </span>
                         </span>
                       )}

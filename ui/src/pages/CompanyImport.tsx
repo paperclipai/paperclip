@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   CompanyPortabilityCollisionStrategy,
@@ -644,6 +645,7 @@ async function readLocalPackageZip(file: File): Promise<{
 // ── Main page ─────────────────────────────────────────────────────────
 
 export function CompanyImport() {
+  const { t } = useTranslation();
   const {
     selectedCompanyId,
     selectedCompany,
@@ -708,7 +710,7 @@ export function CompanyImport() {
   useEffect(() => {
     setBreadcrumbs([
       { label: "Org Chart", href: "/org" },
-      { label: "Import" },
+      { label: t("companyImport.import") },
     ]);
   }, [setBreadcrumbs]);
 
@@ -1294,8 +1296,8 @@ export function CompanyImport() {
             >
               <Download className="mr-1.5 h-3.5 w-3.5" />
               {importMutation.isPending
-                ? "Importing..."
-                : `Import ${selectedCount} file${selectedCount === 1 ? "" : "s"}`}
+                ? t("companyImport.importing")
+                : t("companyImport.import")}
             </Button>
           </div>
 
