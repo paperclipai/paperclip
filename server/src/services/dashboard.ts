@@ -1,6 +1,6 @@
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, approvals, companies, costEvents, issues } from "@paperclipai/db";
+import { agents, approvals, companies, costEvents, heartbeatRuns, issues } from "@paperclipai/db";
 import { notFound } from "../errors.js";
 import { budgetService } from "./budgets.js";
 
@@ -103,6 +103,101 @@ export function dashboardService(db: Db) {
           pausedAgents: budgetOverview.pausedAgentCount,
           pausedProjects: budgetOverview.pausedProjectCount,
         },
+      };
+    },
+
+    runs: async (companyId: string) => {
+      const rows = await db
+        .select({
+          id: heartbeatRuns.id,
+          agentId: heartbeatRuns.agentId,
+          agentName: agents.name,
+          issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("issueId"),
+          status: heartbeatRuns.status,
+          invocationSource: heartbeatRuns.invocationSource,
+          startedAt: heartbeatRuns.startedAt,
+          finishedAt: heartbeatRuns.finishedAt,
+          errorCode: heartbeatRuns.errorCode,
+          usageJson: heartbeatRuns.usageJson,
+          createdAt: heartbeatRuns.id, // use id as proxy; actual createdAt not on schema
+        })
+        .from(heartbeatRuns)
+        .leftJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+        .where(eq(heartbeatRuns.companyId, companyId))
+        .orderBy(desc(heartbeatRuns.startedAt))
+        .limit(50);
+
+      const issueIds = [...new Set(rows.map((r) => r.issueId).filter(Boolean))] as string[];
+      const issueMap = new Map<string, { title: string; identifier: string | null }>();
+      if (issueIds.length > 0) {
+        const issueRows = await db
+          .select({ id: issues.id, title: issues.title, identifier: issues.identifier })
+          .from(issues)
+          .where(inArray(issues.id, issueIds));
+        for (const row of issueRows) {
+          issueMap.set(row.id, { title: row.title, identifier: row.identifier ?? null });
+        }
+      }
+
+      return rows.map((r) => {
+        const usage = r.usageJson as Record<string, unknown> | null;
+        const inputTokens = Number(usage?.inputTokens ?? usage?.input_tokens ?? 0) || null;
+        const outputTokens = Number(usage?.outputTokens ?? usage?.output_tokens ?? 0) || null;
+        const durationMs =
+          r.startedAt && r.finishedAt
+            ? new Date(r.finishedAt).getTime() - new Date(r.startedAt).getTime()
+            : null;
+        const issue = r.issueId ? issueMap.get(r.issueId) : null;
+
+        return {
+          id: r.id,
+          agentId: r.agentId,
+          agentName: r.agentName ?? null,
+          issueId: r.issueId ?? null,
+          issueTitle: issue?.title ?? null,
+          issueIdentifier: issue?.identifier ?? null,
+          status: r.status,
+          invocationSource: r.invocationSource,
+          startedAt: r.startedAt?.toISOString() ?? null,
+          finishedAt: r.finishedAt?.toISOString() ?? null,
+          durationMs,
+          inputTokens,
+          outputTokens,
+          errorCode: r.errorCode ?? null,
+          createdAt: r.id, // stable sort key
+        };
+      });
+    },
+
+    runStats: async (companyId: string) => {
+      const fourteenDaysAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
+
+      const [stats] = await db
+        .select({
+          totalRuns: sql<number>`count(*)::int`,
+          succeededRuns: sql<number>`count(*) filter (where ${heartbeatRuns.status} = 'succeeded')::int`,
+          failedRuns: sql<number>`count(*) filter (where ${heartbeatRuns.status} = 'failed')::int`,
+          avgDurationMs: sql<number | null>`avg(extract(epoch from (${heartbeatRuns.finishedAt} - ${heartbeatRuns.startedAt})) * 1000)::int`,
+          avgInputTokens: sql<number | null>`avg(coalesce((${heartbeatRuns.usageJson} ->> 'inputTokens')::int, (${heartbeatRuns.usageJson} ->> 'input_tokens')::int))::int`,
+          avgOutputTokens: sql<number | null>`avg(coalesce((${heartbeatRuns.usageJson} ->> 'outputTokens')::int, (${heartbeatRuns.usageJson} ->> 'output_tokens')::int))::int`,
+        })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            gte(heartbeatRuns.startedAt, fourteenDaysAgo),
+          ),
+        );
+
+      const totalRuns = Number(stats.totalRuns);
+      return {
+        totalRuns,
+        succeededRuns: Number(stats.succeededRuns),
+        failedRuns: Number(stats.failedRuns),
+        successRate: totalRuns > 0 ? Number(((Number(stats.succeededRuns) / totalRuns) * 100).toFixed(1)) : 0,
+        avgDurationMs: stats.avgDurationMs != null ? Number(stats.avgDurationMs) : null,
+        avgInputTokens: stats.avgInputTokens != null ? Number(stats.avgInputTokens) : null,
+        avgOutputTokens: stats.avgOutputTokens != null ? Number(stats.avgOutputTokens) : null,
       };
     },
   };

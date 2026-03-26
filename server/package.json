@@ -1,16 +1,6 @@
 {
   "name": "@paperclipai/server",
   "version": "0.3.1",
-  "license": "MIT",
-  "homepage": "https://github.com/paperclipai/paperclip",
-  "bugs": {
-    "url": "https://github.com/paperclipai/paperclip/issues"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/paperclipai/paperclip",
-    "directory": "server"
-  },
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
@@ -33,9 +23,9 @@
   ],
   "scripts": {
     "dev": "tsx src/index.ts",
-    "dev:watch": "cross-env PAPERCLIP_MIGRATION_PROMPT=never PAPERCLIP_MIGRATION_AUTO_APPLY=true tsx watch --ignore ../ui/node_modules --ignore ../ui/.vite --ignore ../ui/dist src/index.ts",
+    "dev:watch": "cross-env PAPERCLIP_MIGRATION_PROMPT=never tsx watch --ignore ../ui/node_modules --ignore ../ui/.vite --ignore ../ui/dist src/index.ts",
     "prepare:ui-dist": "bash ../scripts/prepare-server-ui-dist.sh",
-    "build": "tsc && mkdir -p dist/onboarding-assets && cp -R src/onboarding-assets/. dist/onboarding-assets/",
+    "build": "tsc",
     "prepack": "pnpm run prepare:ui-dist",
     "postpack": "rm -rf ui-dist",
     "clean": "rm -rf dist",
@@ -50,7 +40,9 @@
     "@paperclipai/adapter-gemini-local": "workspace:*",
     "@paperclipai/adapter-openclaw-gateway": "workspace:*",
     "@paperclipai/adapter-opencode-local": "workspace:*",
+    "@paperclipai/adapter-deerflow": "workspace:*",
     "@paperclipai/adapter-pi-local": "workspace:*",
+    "hermes-paperclip-adapter": "0.1.1",
     "@paperclipai/adapter-utils": "workspace:*",
     "@paperclipai/db": "workspace:*",
     "@paperclipai/plugin-sdk": "workspace:*",
@@ -62,11 +54,10 @@
     "detect-port": "^2.1.0",
     "dompurify": "^3.3.2",
     "dotenv": "^17.0.1",
+    "jsdom": "^28.1.0",
     "drizzle-orm": "^0.38.4",
     "embedded-postgres": "^18.1.0-beta.16",
     "express": "^5.1.0",
-    "hermes-paperclip-adapter": "0.1.1",
-    "jsdom": "^28.1.0",
     "multer": "^2.0.2",
     "open": "^11.0.0",
     "pino": "^9.6.0",
@@ -79,8 +70,8 @@
   "devDependencies": {
     "@types/express": "^5.0.0",
     "@types/express-serve-static-core": "^5.0.0",
-    "@types/jsdom": "^28.0.0",
     "@types/multer": "^2.0.0",
+    "@types/jsdom": "^28.0.0",
     "@types/node": "^24.6.0",
     "@types/sharp": "^0.32.0",
     "@types/supertest": "^6.0.2",

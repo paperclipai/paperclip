@@ -75,6 +75,15 @@ import {
   agentConfigurationDoc as hermesAgentConfigurationDoc,
   models as hermesModels,
 } from "hermes-paperclip-adapter";
+import {
+  execute as deerflowExecute,
+  testEnvironment as deerflowTestEnvironment,
+  sessionCodec as deerflowSessionCodec,
+} from "@paperclipai/adapter-deerflow/server";
+import {
+  agentConfigurationDoc as deerflowAgentConfigurationDoc,
+  models as deerflowModels,
+} from "@paperclipai/adapter-deerflow";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
 
@@ -181,6 +190,16 @@ const hermesLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: hermesAgentConfigurationDoc,
 };
 
+const deerflowAdapter: ServerAdapterModule = {
+  type: "deerflow",
+  execute: deerflowExecute,
+  testEnvironment: deerflowTestEnvironment,
+  sessionCodec: deerflowSessionCodec,
+  models: deerflowModels,
+  supportsLocalAgentJwt: false,
+  agentConfigurationDoc: deerflowAgentConfigurationDoc,
+};
+
 const adaptersByType = new Map<string, ServerAdapterModule>(
   [
     claudeLocalAdapter,
@@ -191,6 +210,7 @@ const adaptersByType = new Map<string, ServerAdapterModule>(
     geminiLocalAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,
+    deerflowAdapter,
     processAdapter,
     httpAdapter,
   ].map((a) => [a.type, a]),
