@@ -723,7 +723,17 @@ export function IssueDetail() {
             priority={issue.priority}
             onChange={(priority) => updateIssue.mutate({ priority })}
           />
-          <span className="text-sm font-mono text-muted-foreground shrink-0">{issue.identifier ?? issue.id.slice(0, 8)}</span>
+          <button
+            type="button"
+            className="text-sm font-mono text-muted-foreground shrink-0 hover:text-foreground transition-colors cursor-pointer"
+            title="Click to copy identifier"
+            onClick={() => {
+              navigator.clipboard.writeText(issue.identifier ?? issue.id.slice(0, 8));
+              pushToast({ title: "Identifier copied", tone: "success" });
+            }}
+          >
+            {issue.identifier ?? issue.id.slice(0, 8)}
+          </button>
 
           {hasLiveRuns && (
             <span className="inline-flex items-center gap-1.5 rounded-full bg-cyan-500/10 border border-cyan-500/30 px-2 py-0.5 text-[10px] font-medium text-cyan-600 dark:text-cyan-400 shrink-0">
