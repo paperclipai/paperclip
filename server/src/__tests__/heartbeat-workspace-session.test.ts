@@ -8,6 +8,7 @@ import {
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
   resolveRuntimeSessionParamsForWorkspace,
+  shouldRecoverAssignedIssueOnStartup,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
 } from "../services/heartbeat.ts";
@@ -232,6 +233,22 @@ describe("buildExplicitResumeSessionOverride", () => {
         sessionId: "session-after",
       },
     });
+  });
+});
+
+describe("shouldRecoverAssignedIssueOnStartup", () => {
+  it("recovers assigned in-progress issues after startup", () => {
+    expect(shouldRecoverAssignedIssueOnStartup("in_progress")).toBe(true);
+  });
+
+  it("recovers assigned todo issues after startup", () => {
+    expect(shouldRecoverAssignedIssueOnStartup("todo")).toBe(true);
+  });
+
+  it("skips statuses that should not trigger startup recovery", () => {
+    expect(shouldRecoverAssignedIssueOnStartup("blocked")).toBe(false);
+    expect(shouldRecoverAssignedIssueOnStartup("done")).toBe(false);
+    expect(shouldRecoverAssignedIssueOnStartup(null)).toBe(false);
   });
 });
 

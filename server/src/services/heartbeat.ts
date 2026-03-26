@@ -61,6 +61,7 @@ import {
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
+const STARTUP_ASSIGNMENT_RECOVERY_STATUSES = ["in_progress", "todo"] as const;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 const startLocksByAgent = new Map<string, Promise<void>>();
@@ -547,6 +548,11 @@ export function shouldResetTaskSessionForWake(
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (wakeReason === "issue_assigned") return true;
   return false;
+}
+
+export function shouldRecoverAssignedIssueOnStartup(status: string | null | undefined) {
+  if (!status) return false;
+  return STARTUP_ASSIGNMENT_RECOVERY_STATUSES.includes(status as (typeof STARTUP_ASSIGNMENT_RECOVERY_STATUSES)[number]);
 }
 
 export function formatRuntimeWorkspaceWarningLog(warning: string) {
@@ -1839,6 +1845,81 @@ export function heartbeatService(db: Db) {
     for (const agentId of agentIds) {
       await startNextQueuedRunForAgent(agentId);
     }
+  }
+
+  async function recoverAssignedIssueWakeupsOnStartup() {
+    const rows = await db
+      .select({
+        agentId: agents.id,
+        companyId: agents.companyId,
+        agentStatus: agents.status,
+        issueId: issues.id,
+        issueStatus: issues.status,
+      })
+      .from(issues)
+      .innerJoin(agents, eq(issues.assigneeAgentId, agents.id))
+      .where(inArray(issues.status, [...STARTUP_ASSIGNMENT_RECOVERY_STATUSES]));
+
+    const grouped = new Map<string, {
+      companyId: string;
+      issueIds: string[];
+      issueStatuses: string[];
+    }>();
+
+    for (const row of rows) {
+      if (
+        row.agentStatus === "paused" ||
+        row.agentStatus === "terminated" ||
+        row.agentStatus === "pending_approval" ||
+        !shouldRecoverAssignedIssueOnStartup(row.issueStatus)
+      ) {
+        continue;
+      }
+
+      const existing = grouped.get(row.agentId);
+      if (existing) {
+        if (!existing.issueIds.includes(row.issueId)) existing.issueIds.push(row.issueId);
+        if (!existing.issueStatuses.includes(row.issueStatus)) existing.issueStatuses.push(row.issueStatus);
+        continue;
+      }
+
+      grouped.set(row.agentId, {
+        companyId: row.companyId,
+        issueIds: [row.issueId],
+        issueStatuses: [row.issueStatus],
+      });
+    }
+
+    let enqueued = 0;
+    let skipped = 0;
+
+    for (const [agentId, recovery] of grouped) {
+      const primaryIssueId = recovery.issueIds.length === 1 ? recovery.issueIds[0] : null;
+      const run = await enqueueWakeup(agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "startup_recovery_assigned_issue",
+        requestedByActorType: "system",
+        requestedByActorId: "heartbeat_startup_recovery",
+        contextSnapshot: {
+          source: "startup_recovery",
+          reason: "assigned_issue_recovery",
+          issueId: primaryIssueId,
+          issueIds: recovery.issueIds,
+          recoveredIssueStatuses: recovery.issueStatuses,
+        },
+      });
+
+      if (run) enqueued += 1;
+      else skipped += 1;
+    }
+
+    return {
+      checked: grouped.size,
+      enqueued,
+      skipped,
+      agentIds: [...grouped.keys()],
+    };
   }
 
   async function updateRuntimeState(
@@ -3802,6 +3883,8 @@ export function heartbeatService(db: Db) {
     reapOrphanedRuns,
 
     resumeQueuedRuns,
+
+    recoverAssignedIssueWakeupsOnStartup,
 
     tickTimers: async (now = new Date()) => {
       const allAgents = await db.select().from(agents);

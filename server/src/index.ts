@@ -571,6 +571,12 @@ export async function startServer(): Promise<StartedServer> {
     void heartbeat
       .reapOrphanedRuns()
       .then(() => heartbeat.resumeQueuedRuns())
+      .then(() => heartbeat.recoverAssignedIssueWakeupsOnStartup())
+      .then((result) => {
+        if (result.enqueued > 0) {
+          logger.info({ ...result }, "startup heartbeat assignment recovery enqueued runs");
+        }
+      })
       .catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
       });
