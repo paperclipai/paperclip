@@ -281,4 +281,52 @@ describe("issueService.list participantAgentId", () => {
 
     expect(result.map((issue) => issue.id)).toEqual([matchedIssueId]);
   });
+
+  it("lists comments after a cursor in ascending order", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const firstCommentId = randomUUID();
+    const secondCommentId = randomUUID();
+    const firstCreatedAt = new Date("2026-01-01T00:00:00.000Z");
+    const secondCreatedAt = new Date("2026-01-01T00:00:01.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Incremental comments",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await db.insert(issueComments).values([
+      {
+        id: firstCommentId,
+        companyId,
+        issueId,
+        body: "First comment",
+        createdAt: firstCreatedAt,
+      },
+      {
+        id: secondCommentId,
+        companyId,
+        issueId,
+        body: "Second comment",
+        createdAt: secondCreatedAt,
+      },
+    ]);
+
+    const comments = await svc.listComments(issueId, {
+      afterCommentId: firstCommentId,
+      order: "asc",
+    });
+
+    expect(comments.map((comment) => comment.id)).toEqual([secondCommentId]);
+  });
 });
