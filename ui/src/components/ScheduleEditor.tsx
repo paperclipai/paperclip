@@ -192,8 +192,15 @@ export function ScheduleEditor({
     }
   };
 
+  const preview = value ? describeSchedule(value) : null;
+
   return (
     <div className="space-y-3">
+      {preview && (
+        <p className="text-xs text-muted-foreground bg-muted/50 rounded px-2.5 py-1.5 font-medium">
+          {preview}
+        </p>
+      )}
       <Select value={preset} onValueChange={(v) => handlePresetChange(v as SchedulePreset)}>
         <SelectTrigger className="w-full">
           <SelectValue placeholder="Choose frequency..." />
