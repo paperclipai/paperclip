@@ -5,7 +5,7 @@ import { boardMutationGuard, buildAllowedBoardOrigins } from "../middleware/boar
 
 function createApp(
   actorType: "board" | "agent",
-  boardSource: "session" | "local_implicit" = "session",
+  boardSource: "session" | "local_implicit" | "board_key" = "session",
   allowedOrigins?: string[],
 ) {
   const app = express();
@@ -48,15 +48,36 @@ describe("boardMutationGuard", () => {
     expect(res.status).toBe(204);
   });
 
-  it("blocks board mutations without trusted origin", async () => {
-    const app = createApp("board");
-    const res = await request(app).post("/mutate").send({ ok: true });
-    expect(res.status).toBe(403);
-    expect(res.body).toEqual({ error: "Board mutation requires trusted browser origin" });
+  it("blocks board mutations without trusted origin", () => {
+    const middleware = boardMutationGuard();
+    const req = {
+      method: "POST",
+      actor: { type: "board", userId: "board", source: "session" },
+      header: () => undefined,
+    } as any;
+    const res = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn(),
+    } as any;
+    const next = vi.fn();
+
+    middleware(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith({
+      error: "Board mutation requires trusted browser origin",
+    });
   });
 
   it("allows local implicit board mutations without origin", async () => {
     const app = createApp("board", "local_implicit");
+    const res = await request(app).post("/mutate").send({ ok: true });
+    expect(res.status).toBe(204);
+  });
+
+  it("allows board bearer-key mutations without origin", async () => {
+    const app = createApp("board", "board_key");
     const res = await request(app).post("/mutate").send({ ok: true });
     expect(res.status).toBe(204);
   });

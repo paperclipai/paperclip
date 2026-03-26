@@ -58,4 +58,26 @@ describe("PaperclipApiClient", () => {
       details: { issueId: "1" },
     } satisfies Partial<ApiRequestError>);
   });
+
+  it("retries once after interactive auth recovery", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: "Board access required" }), { status: 403 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const recoverAuth = vi.fn().mockResolvedValue("board-token-123");
+    const client = new PaperclipApiClient({
+      apiBase: "http://localhost:3100",
+      recoverAuth,
+    });
+
+    const result = await client.post<{ ok: boolean }>("/api/test", { hello: "world" });
+
+    expect(result).toEqual({ ok: true });
+    expect(recoverAuth).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const retryHeaders = fetchMock.mock.calls[1]?.[1]?.headers as Record<string, string>;
+    expect(retryHeaders.authorization).toBe("Bearer board-token-123");
+  });
 });

@@ -28,7 +28,7 @@ These define the contract between server, CLI, and UI.
 
 | File | What it defines |
 |---|---|
-| `packages/shared/src/types/company-portability.ts` | TypeScript interfaces: `CompanyPortabilityManifest`, `CompanyPortabilityFileEntry`, `CompanyPortabilityEnvInput`, export/import/preview request and result types, manifest entry types for agents, skills, projects, issues, companies. |
+| `packages/shared/src/types/company-portability.ts` | TypeScript interfaces: `CompanyPortabilityManifest`, `CompanyPortabilityFileEntry`, `CompanyPortabilityEnvInput`, export/import/preview request and result types, manifest entry types for agents, skills, projects, issues, recurring routines, companies. |
 | `packages/shared/src/validators/company-portability.ts` | Zod schemas for all portability request/response shapes — used by both server routes and CLI. |
 | `packages/shared/src/types/index.ts` | Re-exports portability types. |
 | `packages/shared/src/validators/index.ts` | Re-exports portability validators. |
@@ -37,7 +37,8 @@ These define the contract between server, CLI, and UI.
 
 | File | Responsibility |
 |---|---|
-| `server/src/services/company-portability.ts` | **Core portability service.** Export (manifest generation, markdown file emission, `.paperclip.yaml` sidecars), import (graph resolution, collision handling, entity creation), preview (planned-action summary). Handles skill key derivation, task recurrence parsing, and package README generation. References `agentcompanies/v1` version string. |
+| `server/src/services/company-portability.ts` | **Core portability service.** Export (manifest generation, markdown file emission, `.paperclip.yaml` sidecars), import (graph resolution, collision handling, entity creation), preview (planned-action summary). Handles skill key derivation, recurring task <-> routine mapping, legacy recurrence migration, and package README generation. References `agentcompanies/v1` version string. |
+| `server/src/services/routines.ts` | Paperclip routine runtime service. Portability now exports routines as recurring `TASK.md` entries and imports recurring tasks back through this service. |
 | `server/src/services/company-export-readme.ts` | Generates `README.md` and Mermaid org-chart for exported company packages. |
 | `server/src/services/index.ts` | Re-exports `companyPortabilityService`. |
 
@@ -60,7 +61,7 @@ Route registration lives in `server/src/app.ts` via `companyRoutes(db, storage)`
 
 | File | Commands |
 |---|---|
-| `cli/src/commands/client/company.ts` | `company export` — exports a company package to disk (flags: `--out`, `--include`, `--projects`, `--issues`, `--projectIssues`).<br>`company import` — imports a company package from a file or folder (flags: `--from`, `--include`, `--target`, `--companyId`, `--newCompanyName`, `--agents`, `--collision`, `--dryRun`).<br>Reads/writes portable file entries and handles `.paperclip.yaml` filtering. |
+| `cli/src/commands/client/company.ts` | `company export` — exports a company package to disk (flags: `--out`, `--include`, `--projects`, `--issues`, `--projectIssues`).<br>`company import <fromPathOrUrl>` — imports a company package from a file or folder (flags: positional source path/URL or GitHub shorthand, `--include`, `--target`, `--companyId`, `--newCompanyName`, `--agents`, `--collision`, `--ref`, `--dryRun`).<br>Reads/writes portable file entries and handles `.paperclip.yaml` filtering. |
 
 ## 7. UI — Pages
 
@@ -106,7 +107,7 @@ Route registration lives in `server/src/app.ts` via `companyRoutes(db, storage)`
 | `PROJECT.md` frontmatter & body | `company-portability.ts` |
 | `TASK.md` frontmatter & body | `company-portability.ts` |
 | `SKILL.md` packages | `company-portability.ts`, `company-skills.ts` |
-| `.paperclip.yaml` vendor sidecar | `company-portability.ts`, `CompanyExport.tsx`, `company.ts` (CLI) |
+| `.paperclip.yaml` vendor sidecar | `company-portability.ts`, `routines.ts`, `CompanyExport.tsx`, `company.ts` (CLI) |
 | `manifest.json` | `company-portability.ts` (generation), shared types (schema) |
 | ZIP package format | `zip.ts` (UI), `company.ts` (CLI file I/O) |
 | Collision resolution | `company-portability.ts` (server), `CompanyImport.tsx` (UI) |

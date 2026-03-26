@@ -38,10 +38,12 @@ POST /api/companies/{companyId}/goals
 ```
 PATCH /api/goals/{goalId}
 {
-  "status": "completed",
+  "status": "achieved",
   "description": "Updated description"
 }
 ```
+
+Valid status values: `planned`, `active`, `achieved`, `cancelled`.
 
 ## Projects
 

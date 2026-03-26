@@ -2,7 +2,6 @@ import type { ReactNode } from "react";
 import type { Issue } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { cn } from "../lib/utils";
-import { PriorityIcon } from "./PriorityIcon";
 import { StatusIcon } from "./StatusIcon";
 
 type UnreadState = "hidden" | "visible" | "fading";
@@ -61,9 +60,6 @@ export function IssueRow({
           ) : null}
           {desktopMetaLeading ?? (
             <>
-              <span className="hidden sm:inline-flex">
-                <PriorityIcon priority={issue.priority} />
-              </span>
               <span className="hidden shrink-0 sm:inline-flex">
                 <StatusIcon status={issue.status} />
               </span>

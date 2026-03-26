@@ -115,6 +115,52 @@ function makeAttachment(overrides: Record<string, unknown> = {}) {
   } as any;
 }
 
+function makeProject(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "project-1",
+    companyId: "company-1",
+    goalId: null,
+    name: "Project",
+    description: null,
+    status: "in_progress",
+    leadAgentId: null,
+    targetDate: null,
+    color: "#22c55e",
+    pauseReason: null,
+    pausedAt: null,
+    executionWorkspacePolicy: null,
+    archivedAt: null,
+    createdAt: new Date("2026-03-20T00:00:00.000Z"),
+    updatedAt: new Date("2026-03-20T00:00:00.000Z"),
+    ...overrides,
+  } as any;
+}
+
+function makeProjectWorkspace(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "workspace-1",
+    companyId: "company-1",
+    projectId: "project-1",
+    name: "Workspace",
+    sourceType: "local_path",
+    cwd: "/tmp/project",
+    repoUrl: "https://github.com/example/project.git",
+    repoRef: "main",
+    defaultRef: "main",
+    visibility: "default",
+    setupCommand: null,
+    cleanupCommand: null,
+    remoteProvider: null,
+    remoteWorkspaceRef: null,
+    sharedWorkspaceKey: null,
+    metadata: null,
+    isPrimary: true,
+    createdAt: new Date("2026-03-20T00:00:00.000Z"),
+    updatedAt: new Date("2026-03-20T00:00:00.000Z"),
+    ...overrides,
+  } as any;
+}
+
 describe("worktree merge history planner", () => {
   it("parses default scopes", () => {
     expect(parseWorktreeMergeScopes(undefined)).toEqual(["issues", "comments"]);
@@ -234,6 +280,60 @@ describe("worktree merge history planner", () => {
     expect(insert.mappedProjectName).toBe("Mapped project");
     expect(insert.targetProjectWorkspaceId).toBeNull();
     expect(insert.adjustments).toEqual(["clear_project_workspace"]);
+  });
+
+  it("plans selected project imports and preserves project workspace links", () => {
+    const sourceProject = makeProject({
+      id: "source-project-1",
+      name: "Paperclip Evals",
+      goalId: "goal-1",
+    });
+    const sourceWorkspace = makeProjectWorkspace({
+      id: "source-workspace-1",
+      projectId: "source-project-1",
+      cwd: "/Users/dotta/paperclip-evals",
+      repoUrl: "https://github.com/paperclipai/paperclip-evals.git",
+    });
+
+    const plan = buildWorktreeMergePlan({
+      companyId: "company-1",
+      companyName: "Paperclip",
+      issuePrefix: "PAP",
+      previewIssueCounterStart: 10,
+      scopes: ["issues"],
+      sourceIssues: [
+        makeIssue({
+          id: "issue-project-import",
+          identifier: "PAP-88",
+          projectId: "source-project-1",
+          projectWorkspaceId: "source-workspace-1",
+        }),
+      ],
+      targetIssues: [],
+      sourceComments: [],
+      targetComments: [],
+      sourceProjects: [sourceProject],
+      sourceProjectWorkspaces: [sourceWorkspace],
+      targetAgents: [],
+      targetProjects: [],
+      targetProjectWorkspaces: [],
+      targetGoals: [{ id: "goal-1" }] as any,
+      importProjectIds: ["source-project-1"],
+    });
+
+    expect(plan.counts.projectsToImport).toBe(1);
+    expect(plan.projectImports[0]).toMatchObject({
+      source: { id: "source-project-1", name: "Paperclip Evals" },
+      targetGoalId: "goal-1",
+      workspaces: [{ id: "source-workspace-1" }],
+    });
+
+    const insert = plan.issuePlans[0] as any;
+    expect(insert.targetProjectId).toBe("source-project-1");
+    expect(insert.targetProjectWorkspaceId).toBe("source-workspace-1");
+    expect(insert.projectResolution).toBe("imported");
+    expect(insert.mappedProjectName).toBe("Paperclip Evals");
+    expect(insert.adjustments).toEqual([]);
   });
 
   it("imports comments onto shared or newly imported issues while skipping existing comments", () => {

@@ -327,26 +327,33 @@
     {
       "idx": 46,
       "version": "7",
+      "when": 1774269579794,
+      "tag": "0044_illegal_toad",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
       "when": 1774300000000,
       "tag": "0046_knowledge_store",
       "breakpoints": true
     },
     {
-      "idx": 47,
+      "idx": 48,
       "version": "7",
       "when": 1774400000000,
       "tag": "0047_circuit_breaker_config",
       "breakpoints": true
     },
     {
-      "idx": 48,
+      "idx": 49,
       "version": "7",
       "when": 1774500000000,
       "tag": "0048_heartbeat_runs_missing_columns",
       "breakpoints": true
     },
     {
-      "idx": 49,
+      "idx": 50,
       "version": "7",
       "when": 1774600000000,
       "tag": "0049_artifacts_table",

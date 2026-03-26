@@ -17,21 +17,30 @@ interface RequestOptions {
   ignoreNotFound?: boolean;
 }
 
+interface RecoverAuthInput {
+  path: string;
+  method: string;
+  error: ApiRequestError;
+}
+
 interface ApiClientOptions {
   apiBase: string;
   apiKey?: string;
   runId?: string;
+  recoverAuth?: (input: RecoverAuthInput) => Promise<string | null>;
 }
 
 export class PaperclipApiClient {
   readonly apiBase: string;
-  readonly apiKey?: string;
+  apiKey?: string;
   readonly runId?: string;
+  readonly recoverAuth?: (input: RecoverAuthInput) => Promise<string | null>;
 
   constructor(opts: ApiClientOptions) {
     this.apiBase = opts.apiBase.replace(/\/+$/, "");
     this.apiKey = opts.apiKey?.trim() || undefined;
     this.runId = opts.runId?.trim() || undefined;
+    this.recoverAuth = opts.recoverAuth;
   }
 
   get<T>(path: string, opts?: RequestOptions): Promise<T | null> {
@@ -56,7 +65,16 @@ export class PaperclipApiClient {
     return this.request<T>(path, { method: "DELETE" }, opts);
   }
 
-  private async request<T>(path: string, init: RequestInit, opts?: RequestOptions): Promise<T | null> {
+  setApiKey(apiKey: string | undefined) {
+    this.apiKey = apiKey?.trim() || undefined;
+  }
+
+  private async request<T>(
+    path: string,
+    init: RequestInit,
+    opts?: RequestOptions,
+    hasRetriedAuth = false,
+  ): Promise<T | null> {
     const url = buildUrl(this.apiBase, path);
 
     const headers: Record<string, string> = {
@@ -86,7 +104,19 @@ export class PaperclipApiClient {
     }
 
     if (!response.ok) {
-      throw await toApiError(response);
+      const apiError = await toApiError(response);
+      if (!hasRetriedAuth && this.recoverAuth) {
+        const recoveredToken = await this.recoverAuth({
+          path,
+          method: String(init.method ?? "GET").toUpperCase(),
+          error: apiError,
+        });
+        if (recoveredToken) {
+          this.setApiKey(recoveredToken);
+          return this.request<T>(path, init, opts, true);
+        }
+      }
+      throw apiError;
     }
 
     if (response.status === 204) {
