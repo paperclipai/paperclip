@@ -725,11 +725,15 @@ export function IssueDetail() {
           />
           <button
             type="button"
-            className="text-sm font-mono text-muted-foreground shrink-0 hover:text-foreground transition-colors cursor-pointer"
+            className="bg-transparent border-0 p-0 text-sm font-mono text-muted-foreground shrink-0 hover:text-foreground transition-colors cursor-pointer"
             title="Click to copy identifier"
-            onClick={() => {
-              navigator.clipboard.writeText(issue.identifier ?? issue.id.slice(0, 8));
-              pushToast({ title: "Identifier copied", tone: "success" });
+            onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(issue.identifier ?? issue.id.slice(0, 8));
+                pushToast({ title: "Identifier copied", tone: "success" });
+              } catch {
+                pushToast({ title: "Failed to copy", tone: "error" });
+              }
             }}
           >
             {issue.identifier ?? issue.id.slice(0, 8)}
