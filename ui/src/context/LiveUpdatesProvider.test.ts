@@ -25,6 +25,9 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     );
 
     expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.listMineByMe("company-1"),
+    });
+    expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.listTouchedByMe("company-1"),
     });
     expect(invalidations).toContainEqual({

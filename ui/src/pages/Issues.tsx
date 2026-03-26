@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useCallback, useRef } from "react";
+import { useEffect, useMemo, useCallback } from "react";
 import { useLocation, useSearchParams } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
@@ -22,28 +22,20 @@ export function Issues() {
 
   const initialSearch = searchParams.get("q") ?? "";
   const participantAgentId = searchParams.get("participantAgentId") ?? undefined;
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const handleSearchChange = useCallback((search: string) => {
-    clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      const trimmedSearch = search.trim();
-      const currentSearch = new URLSearchParams(window.location.search).get("q") ?? "";
-      if (currentSearch === trimmedSearch) return;
+    const trimmedSearch = search.trim();
+    const currentSearch = new URLSearchParams(window.location.search).get("q") ?? "";
+    if (currentSearch === trimmedSearch) return;
 
-      const url = new URL(window.location.href);
-      if (trimmedSearch) {
-        url.searchParams.set("q", trimmedSearch);
-      } else {
-        url.searchParams.delete("q");
-      }
+    const url = new URL(window.location.href);
+    if (trimmedSearch) {
+      url.searchParams.set("q", trimmedSearch);
+    } else {
+      url.searchParams.delete("q");
+    }
 
-      const nextUrl = `${url.pathname}${url.search}${url.hash}`;
-      window.history.replaceState(window.history.state, "", nextUrl);
-    }, 300);
-  }, []);
-
-  useEffect(() => {
-    return () => clearTimeout(debounceRef.current);
+    const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+    window.history.replaceState(window.history.state, "", nextUrl);
   }, []);
 
   const { data: agents } = useQuery({

@@ -1,105 +1,45 @@
 import { randomUUID } from "node:crypto";
-import fs from "node:fs";
-import net from "node:net";
-import os from "node:os";
-import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agents,
-  applyPendingMigrations,
   companies,
   createDb,
-  ensurePostgresDatabase,
   issueComments,
+  issueInboxArchives,
   issues,
   projects,
   projectWorkspaces,
 } from "@paperclipai/db";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "./helpers/embedded-postgres.js";
 import { issueService } from "../services/issues.ts";
 
-type EmbeddedPostgresInstance = {
-  initialise(): Promise<void>;
-  start(): Promise<void>;
-  stop(): Promise<void>;
-};
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
-type EmbeddedPostgresCtor = new (opts: {
-  databaseDir: string;
-  user: string;
-  password: string;
-  port: number;
-  persistent: boolean;
-  initdbFlags?: string[];
-  onLog?: (message: unknown) => void;
-  onError?: (message: unknown) => void;
-}) => EmbeddedPostgresInstance;
-
-async function getEmbeddedPostgresCtor(): Promise<EmbeddedPostgresCtor> {
-  const mod = await import("embedded-postgres");
-  return mod.default as EmbeddedPostgresCtor;
+if (!embeddedPostgresSupport.supported) {
+  console.warn(
+    `Skipping embedded Postgres issue service tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
+  );
 }
 
-async function getAvailablePort(): Promise<number> {
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.unref();
-    server.on("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (!address || typeof address === "string") {
-        server.close(() => reject(new Error("Failed to allocate test port")));
-        return;
-      }
-      const { port } = address;
-      server.close((error) => {
-        if (error) reject(error);
-        else resolve(port);
-      });
-    });
-  });
-}
-
-async function startTempDatabase() {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-issues-service-"));
-  const port = await getAvailablePort();
-  const EmbeddedPostgres = await getEmbeddedPostgresCtor();
-  const instance = new EmbeddedPostgres({
-    databaseDir: dataDir,
-    user: "paperclip",
-    password: "paperclip",
-    port,
-    persistent: true,
-    initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
-    onLog: () => {},
-    onError: () => {},
-  });
-  await instance.initialise();
-  await instance.start();
-
-  const adminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
-  await ensurePostgresDatabase(adminConnectionString, "paperclip");
-  const connectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;
-  await applyPendingMigrations(connectionString);
-  return { connectionString, dataDir, instance };
-}
-
-describe("issueService.list participantAgentId", () => {
+describeEmbeddedPostgres("issueService.list participantAgentId", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof issueService>;
-  let instance: EmbeddedPostgresInstance | null = null;
-  let dataDir = "";
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    const started = await startTempDatabase();
-    db = createDb(started.connectionString);
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-service-");
+    db = createDb(tempDb.connectionString);
     svc = issueService(db);
-    instance = started.instance;
-    dataDir = started.dataDir;
   }, 20_000);
 
   afterEach(async () => {
     await db.delete(issueComments);
+    await db.delete(issueInboxArchives);
     await db.delete(activityLog);
     await db.delete(issues);
     await db.delete(agents);
@@ -107,10 +47,7 @@ describe("issueService.list participantAgentId", () => {
   });
 
   afterAll(async () => {
-    await instance?.stop();
-    if (dataDir) {
-      fs.rmSync(dataDir, { recursive: true, force: true });
-    }
+    await tempDb?.cleanup();
   });
 
   it("returns issues an agent participated in across the supported signals", async () => {
@@ -283,22 +220,114 @@ describe("issueService.list participantAgentId", () => {
 
     expect(result.map((issue) => issue.id)).toEqual([matchedIssueId]);
   });
+
+  it("hides archived inbox issues until new external activity arrives", async () => {
+    const companyId = randomUUID();
+    const userId = "user-1";
+    const otherUserId = "user-2";
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const visibleIssueId = randomUUID();
+    const archivedIssueId = randomUUID();
+    const resurfacedIssueId = randomUUID();
+
+    await db.insert(issues).values([
+      {
+        id: visibleIssueId,
+        companyId,
+        title: "Visible issue",
+        status: "todo",
+        priority: "medium",
+        createdByUserId: userId,
+        createdAt: new Date("2026-03-26T10:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T10:00:00.000Z"),
+      },
+      {
+        id: archivedIssueId,
+        companyId,
+        title: "Archived issue",
+        status: "todo",
+        priority: "medium",
+        createdByUserId: userId,
+        createdAt: new Date("2026-03-26T11:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T11:00:00.000Z"),
+      },
+      {
+        id: resurfacedIssueId,
+        companyId,
+        title: "Resurfaced issue",
+        status: "todo",
+        priority: "medium",
+        createdByUserId: userId,
+        createdAt: new Date("2026-03-26T12:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T12:00:00.000Z"),
+      },
+    ]);
+
+    await svc.archiveInbox(
+      companyId,
+      archivedIssueId,
+      userId,
+      new Date("2026-03-26T12:30:00.000Z"),
+    );
+    await svc.archiveInbox(
+      companyId,
+      resurfacedIssueId,
+      userId,
+      new Date("2026-03-26T13:00:00.000Z"),
+    );
+
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: resurfacedIssueId,
+      authorUserId: otherUserId,
+      body: "This should bring the issue back into Mine.",
+      createdAt: new Date("2026-03-26T13:30:00.000Z"),
+      updatedAt: new Date("2026-03-26T13:30:00.000Z"),
+    });
+
+    const archivedFiltered = await svc.list(companyId, {
+      touchedByUserId: userId,
+      inboxArchivedByUserId: userId,
+    });
+
+    expect(archivedFiltered.map((issue) => issue.id)).toEqual([
+      resurfacedIssueId,
+      visibleIssueId,
+    ]);
+
+    await svc.unarchiveInbox(companyId, archivedIssueId, userId);
+
+    const afterUnarchive = await svc.list(companyId, {
+      touchedByUserId: userId,
+      inboxArchivedByUserId: userId,
+    });
+
+    expect(new Set(afterUnarchive.map((issue) => issue.id))).toEqual(new Set([
+      visibleIssueId,
+      archivedIssueId,
+      resurfacedIssueId,
+    ]));
+  });
 });
 
 // ─── Conversation project auto-association ───────────────────────────────────
 
-describe("issueService.create conversation project auto-association", () => {
+describeEmbeddedPostgres("issueService.create conversation project auto-association", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof issueService>;
-  let instance: EmbeddedPostgresInstance | null = null;
-  let dataDir = "";
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    const started = await startTempDatabase();
-    db = createDb(started.connectionString);
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-convo-assoc-");
+    db = createDb(tempDb.connectionString);
     svc = issueService(db);
-    instance = started.instance;
-    dataDir = started.dataDir;
   }, 20_000);
 
   afterEach(async () => {
@@ -310,10 +339,7 @@ describe("issueService.create conversation project auto-association", () => {
   });
 
   afterAll(async () => {
-    await instance?.stop();
-    if (dataDir) {
-      fs.rmSync(dataDir, { recursive: true, force: true });
-    }
+    await tempDb?.cleanup();
   });
 
   async function seedCompany() {

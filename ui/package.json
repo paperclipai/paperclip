@@ -1,13 +1,29 @@
 {
   "name": "@paperclipai/ui",
-  "version": "0.0.1",
-  "private": true,
+  "version": "0.3.1",
+  "description": "Prebuilt Paperclip board UI assets.",
+  "license": "MIT",
+  "homepage": "https://github.com/paperclipai/paperclip",
+  "bugs": {
+    "url": "https://github.com/paperclipai/paperclip/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/paperclipai/paperclip",
+    "directory": "ui"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc -b"
+    "typecheck": "tsc -b",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo",
+    "prepack": "rm -f package.dev.json && cp package.json package.dev.json && node ../scripts/generate-ui-package-json.mjs",
+    "postpack": "if [ -f package.dev.json ]; then mv package.dev.json package.json; fi"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

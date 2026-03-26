@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -13,6 +14,7 @@ import {
   stopRuntimeServicesForExecutionWorkspace,
   type RealizedExecutionWorkspace,
 } from "../services/workspace-runtime.ts";
+import { resolvePaperclipConfigPath } from "../paths.ts";
 import type { WorkspaceOperation } from "@paperclipai/shared";
 import type { WorkspaceOperationRecorder } from "../services/workspace-operations.ts";
 
@@ -124,6 +126,7 @@ afterEach(async () => {
   delete process.env.PAPERCLIP_CONFIG;
   delete process.env.PAPERCLIP_HOME;
   delete process.env.PAPERCLIP_INSTANCE_ID;
+  delete process.env.PAPERCLIP_WORKTREES_DIR;
   delete process.env.DATABASE_URL;
 });
 
@@ -280,6 +283,156 @@ describe("realizeExecutionWorkspace", () => {
     });
 
     await expect(fs.readFile(path.join(reused.cwd, ".paperclip-provision-created"), "utf8")).resolves.toBe("false\n");
+  });
+
+  it("writes an isolated repo-local Paperclip config and worktree branding when provisioning", async () => {
+    const repoRoot = await createTempRepo();
+    const previousCwd = process.cwd();
+    const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-home-"));
+    const isolatedWorktreeHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktrees-"));
+    const instanceId = "worktree-base";
+    const sharedConfigDir = path.join(paperclipHome, "instances", instanceId);
+    const sharedConfigPath = path.join(sharedConfigDir, "config.json");
+    const sharedEnvPath = path.join(sharedConfigDir, ".env");
+
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = instanceId;
+    process.env.PAPERCLIP_WORKTREES_DIR = isolatedWorktreeHome;
+
+    await fs.mkdir(sharedConfigDir, { recursive: true });
+    await fs.writeFile(
+      sharedConfigPath,
+      JSON.stringify(
+        {
+          $meta: {
+            version: 1,
+            updatedAt: "2026-03-26T00:00:00.000Z",
+            source: "doctor",
+          },
+          database: {
+            mode: "embedded-postgres",
+            embeddedPostgresDataDir: path.join(sharedConfigDir, "db"),
+            embeddedPostgresPort: 54329,
+            backup: {
+              enabled: true,
+              intervalMinutes: 60,
+              retentionDays: 30,
+              dir: path.join(sharedConfigDir, "backups"),
+            },
+          },
+          logging: {
+            mode: "file",
+            logDir: path.join(sharedConfigDir, "logs"),
+          },
+          server: {
+            deploymentMode: "local_trusted",
+            exposure: "private",
+            host: "127.0.0.1",
+            port: 3100,
+            allowedHostnames: [],
+            serveUi: true,
+          },
+          auth: {
+            baseUrlMode: "auto",
+            disableSignUp: false,
+          },
+          storage: {
+            provider: "local_disk",
+            localDisk: {
+              baseDir: path.join(sharedConfigDir, "storage"),
+            },
+            s3: {
+              bucket: "paperclip",
+              region: "us-east-1",
+              prefix: "",
+              forcePathStyle: false,
+            },
+          },
+          secrets: {
+            provider: "local_encrypted",
+            strictMode: false,
+            localEncrypted: {
+              keyFilePath: path.join(sharedConfigDir, "master.key"),
+            },
+          },
+        },
+        null,
+        2,
+      ) + "\n",
+      "utf8",
+    );
+    await fs.writeFile(sharedEnvPath, 'DATABASE_URL="postgres://worktree:test@db.example.com:6543/paperclip"\n', "utf8");
+
+    await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
+    await fs.copyFile(
+      fileURLToPath(new URL("../../../scripts/provision-worktree.sh", import.meta.url)),
+      path.join(repoRoot, "scripts", "provision-worktree.sh"),
+    );
+    await runGit(repoRoot, ["add", "scripts/provision-worktree.sh"]);
+    await runGit(repoRoot, ["commit", "-m", "Add worktree provision script"]);
+
+    try {
+      const workspace = await realizeExecutionWorkspace({
+        base: {
+          baseCwd: repoRoot,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: null,
+          repoRef: "HEAD",
+        },
+        config: {
+          workspaceStrategy: {
+            type: "git_worktree",
+            branchTemplate: "{{issue.identifier}}-{{slug}}",
+            provisionCommand: "bash ./scripts/provision-worktree.sh",
+          },
+        },
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-885",
+          title: "Show worktree banner",
+        },
+        agent: {
+          id: "agent-1",
+          name: "Codex Coder",
+          companyId: "company-1",
+        },
+      });
+
+      const configPath = path.join(workspace.cwd, ".paperclip", "config.json");
+      const envPath = path.join(workspace.cwd, ".paperclip", ".env");
+      const envContents = await fs.readFile(envPath, "utf8");
+      const configContents = JSON.parse(await fs.readFile(configPath, "utf8"));
+      const configStats = await fs.lstat(configPath);
+      const expectedInstanceId = "pap-885-show-worktree-banner";
+      const expectedInstanceRoot = path.join(
+        isolatedWorktreeHome,
+        "instances",
+        expectedInstanceId,
+      );
+
+      expect(configStats.isSymbolicLink()).toBe(false);
+      expect(configContents.database.embeddedPostgresDataDir).toBe(path.join(expectedInstanceRoot, "db"));
+      expect(configContents.database.embeddedPostgresDataDir).not.toBe(path.join(sharedConfigDir, "db"));
+      expect(configContents.server.port).not.toBe(3100);
+      expect(configContents.secrets.localEncrypted.keyFilePath).toBe(
+        path.join(expectedInstanceRoot, "secrets", "master.key"),
+      );
+      expect(envContents).not.toContain("DATABASE_URL=");
+      expect(envContents).toContain(`PAPERCLIP_HOME=${JSON.stringify(isolatedWorktreeHome)}`);
+      expect(envContents).toContain(`PAPERCLIP_INSTANCE_ID=${JSON.stringify(expectedInstanceId)}`);
+      expect(envContents).toContain(`PAPERCLIP_CONFIG=${JSON.stringify(configPath)}`);
+      expect(envContents).toContain("PAPERCLIP_IN_WORKTREE=true");
+      expect(envContents).toContain(
+        `PAPERCLIP_WORKTREE_NAME=${JSON.stringify("PAP-885-show-worktree-banner")}`,
+      );
+
+      process.chdir(workspace.cwd);
+      expect(resolvePaperclipConfigPath()).toBe(configPath);
+    } finally {
+      process.chdir(previousCwd);
+    }
   });
 
   it("records worktree setup and provision operations when a recorder is provided", async () => {
