@@ -2,7 +2,7 @@ import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { notFound } from "../errors.js";
-import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { resolveIronworksInstanceRoot } from "../home-paths.js";
 
 export type WorkspaceOperationLogStoreType = "local_file";
 
@@ -150,7 +150,7 @@ let cachedStore: WorkspaceOperationLogStore | null = null;
 export function getWorkspaceOperationLogStore() {
   if (cachedStore) return cachedStore;
   const basePath = process.env.WORKSPACE_OPERATION_LOG_BASE_PATH
-    ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "workspace-operation-logs");
+    ?? path.resolve(resolveIronworksInstanceRoot(), "data", "workspace-operation-logs");
   cachedStore = createLocalFileWorkspaceOperationLogStore(basePath);
   return cachedStore;
 }

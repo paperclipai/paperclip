@@ -1,10 +1,10 @@
-# Paperclip Module System
+# Ironworks Module System
 
 > Supersession note: the company-template/package-format direction in this document is no longer current. For the current markdown-first company import/export plan, see `doc/plans/2026-03-13-company-import-export-v2.md` and `docs/companies/companies-spec.md`.
 
 ## Overview
 
-Paperclip's module system lets you extend the control plane with new capabilities — revenue tracking, observability, notifications, dashboards — without forking core. Modules are self-contained packages that register routes, UI pages, database tables, and lifecycle hooks.
+Ironworks's module system lets you extend the control plane with new capabilities — revenue tracking, observability, notifications, dashboards — without forking core. Modules are self-contained packages that register routes, UI pages, database tables, and lifecycle hooks.
 
 Separately, **Company Templates** are code-free data packages (agent teams, org charts, goal hierarchies) that you can import to bootstrap a new company.
 
@@ -16,7 +16,7 @@ Both are discoverable through the **Company Store**.
 
 | Concept | What it is | Contains code? |
 |---------|-----------|----------------|
-| **Module** | A package that extends Paperclip's API, UI, and data model | Yes |
+| **Module** | A package that extends Ironworks's API, UI, and data model | Yes |
 | **Company Template** | A data snapshot — agents, projects, goals, org structure | No (JSON only) |
 | **Company Store** | Registry for browsing/installing modules and templates | — |
 | **Hook** | A named event in the core that modules can subscribe to | — |
@@ -31,7 +31,7 @@ Both are discoverable through the **Company Store**.
 ```
 modules/
   observability/
-    paperclip.module.json     # manifest (required)
+    ironworks.module.json     # manifest (required)
     src/
       index.ts                # entry point — exports register function
       routes.ts               # Express router
@@ -45,7 +45,7 @@ modules/
 
 Modules live in a top-level `modules/` directory. Each module is a pnpm workspace package.
 
-### Manifest (`paperclip.module.json`)
+### Manifest (`ironworks.module.json`)
 
 ```json
 {
@@ -53,7 +53,7 @@ Modules live in a top-level `modules/` directory. Each module is a pnpm workspac
   "name": "Observability",
   "description": "Token tracking, cost metrics, and agent performance instrumentation",
   "version": "0.1.0",
-  "author": "paperclip",
+  "author": "ironworks",
 
   "slot": "observability",
 
@@ -106,7 +106,7 @@ Modules live in a top-level `modules/` directory. Each module is a pnpm workspac
 
 Key fields:
 
-- **`id`**: Unique identifier, used as the npm package name suffix (`@paperclipai/mod-observability`)
+- **`id`**: Unique identifier, used as the npm package name suffix (`@ironworksai/mod-observability`)
 - **`slot`**: Optional exclusive category. If set, only one module with this slot can be active. Omit for modules that can coexist freely.
 - **`hooks`**: Which core events this module subscribes to. Declared upfront so the core knows what to emit.
 - **`routes.prefix`**: Mounted under `/api/modules/<prefix>`. The module owns this namespace.
@@ -120,7 +120,7 @@ Key fields:
 The module's `src/index.ts` exports a `register` function that receives the module API:
 
 ```typescript
-import type { ModuleAPI } from "@paperclipai/core";
+import type { ModuleAPI } from "@ironworksai/core";
 import { createRouter } from "./routes.js";
 import { onHeartbeat, onBudgetThreshold } from "./hooks.js";
 
@@ -238,7 +238,7 @@ This keeps the core fast and resilient. If you need pre-commit validation (e.g.,
 
 ```typescript
 // modules/observability/src/hooks.ts
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@ironworksai/db";
 import { tokenMetrics } from "./schema.js";
 
 export function createHeartbeatHandler(db: Db) {
@@ -315,7 +315,7 @@ Modules can reference core tables via foreign keys (e.g., `agent_id → agents.i
 On server startup:
 
 ```
-1. Scan modules/ directory for paperclip.module.json manifests
+1. Scan modules/ directory for ironworks.module.json manifests
 2. Validate each manifest (JSON Schema check on configSchema, required fields)
 3. Check slot conflicts (error if two active modules claim the same slot)
 4. Topological sort by dependencies (if module A requires module B)
@@ -333,7 +333,7 @@ On server startup:
 Module config lives in the server's environment or a config file:
 
 ```jsonc
-// paperclip.config.json (or env vars)
+// ironworks.config.json (or env vars)
 {
   "modules": {
     "enabled": ["observability", "revenue", "notifications"],
@@ -384,7 +384,7 @@ export const modulePages = [
   {
     path: "/observability",
     label: "Observability",
-    component: lazy(() => import("@paperclipai/mod-observability/ui")),
+    component: lazy(() => import("@ironworksai/mod-observability/ui")),
   },
 ];
 
@@ -393,7 +393,7 @@ export const dashboardWidgets = [
     id: "token-burn-rate",
     label: "Token Burn Rate",
     placement: "dashboard",
-    component: lazy(() => import("@paperclipai/mod-observability/ui").then(m => ({ default: m.TokenBurnRateWidget }))),
+    component: lazy(() => import("@ironworksai/mod-observability/ui").then(m => ({ default: m.TokenBurnRateWidget }))),
   },
 ];
 ```
@@ -439,7 +439,7 @@ A company template is a JSON file describing a full company structure:
   "name": "Startup in a Box",
   "description": "A 5-agent startup team with engineering, product, and ops",
   "version": "1.0.0",
-  "author": "paperclip",
+  "author": "ironworks",
 
   "agents": [
     {
@@ -569,7 +569,7 @@ The Company Store is a registry for discovering and installing modules and templ
       "id": "observability",
       "name": "Observability",
       "description": "Token tracking, cost metrics, and agent performance",
-      "repo": "github:paperclip/mod-observability",
+      "repo": "github:ironworks/mod-observability",
       "version": "0.1.0",
       "tags": ["metrics", "monitoring", "tokens"]
     }
@@ -579,7 +579,7 @@ The Company Store is a registry for discovering and installing modules and templ
       "id": "startup-in-a-box",
       "name": "Startup in a Box",
       "description": "5-agent startup team",
-      "url": "https://store.paperclip.ing/templates/startup-in-a-box.json",
+      "url": "https://store.PLACEHOLDER_IRONWORKS_DOT_ING/templates/startup-in-a-box.json",
       "tags": ["startup", "team"]
     }
   ]
@@ -589,10 +589,10 @@ The Company Store is a registry for discovering and installing modules and templ
 ### CLI Commands
 
 ```bash
-pnpm paperclipai store list                    # browse available modules and templates
-pnpm paperclipai store install <module-id>     # install a module
-pnpm paperclipai store import <template-id>    # import a company template
-pnpm paperclipai store export                  # export current company as template
+pnpm ironworksai store list                    # browse available modules and templates
+pnpm ironworksai store install <module-id>     # install a module
+pnpm ironworksai store import <template-id>    # import a company template
+pnpm ironworksai store export                  # export current company as template
 ```
 
 ---
@@ -621,7 +621,7 @@ pnpm paperclipai store export                  # export current company as templ
 |--------|-------------|-----------|
 | **Audit & Compliance** | Immutable audit trail, approval workflows, spend authorization | All write hooks |
 | **Agent Logs / Replay** | Full execution traces per agent, token-by-token replay | `agent:heartbeat` |
-| **Multi-tenant** | Separate companies/orgs within one Paperclip instance | `server:started` |
+| **Multi-tenant** | Separate companies/orgs within one Ironworks instance | `server:started` |
 
 ---
 
@@ -629,16 +629,16 @@ pnpm paperclipai store export                  # export current company as templ
 
 ### Phase 1: Core infrastructure
 
-Add to `@paperclipai/server`:
+Add to `@ironworksai/server`:
 
 1. **HookBus** — Event emitter with `register()` and `emit()`, using `Promise.allSettled`
 2. **Module loader** — Scans `modules/`, validates manifests, calls `register(api)`
 3. **Module API object** — `registerRoutes()`, `on()`, `registerService()`, logger, core service access
-4. **Module config** — `paperclip.config.json` with per-module config, env var interpolation
+4. **Module config** — `ironworks.config.json` with per-module config, env var interpolation
 5. **Module migration runner** — Extends `db:migrate` to discover and run module migrations
 6. **Emit hooks from core services** — Add `hookBus.emit()` calls to existing CRUD operations
 
-Add to `@paperclipai/ui`:
+Add to `@ironworksai/ui`:
 
 7. **Module page loader** — Reads module manifests, generates lazy routes
 8. **Dashboard widget slots** — Render module-contributed widgets on the Dashboard page
@@ -646,7 +646,7 @@ Add to `@paperclipai/ui`:
 
 Add new package:
 
-10. **`@paperclipai/module-sdk`** — TypeScript types for `ModuleAPI`, `HookEvent`, `HookHandler`, manifest schema
+10. **`@ironworksai/module-sdk`** — TypeScript types for `ModuleAPI`, `HookEvent`, `HookHandler`, manifest schema
 
 ### Phase 2: First module (observability)
 

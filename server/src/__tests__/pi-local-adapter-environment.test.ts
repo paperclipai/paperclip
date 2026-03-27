@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { testEnvironment } from "@paperclipai/adapter-pi-local/server";
+import { testEnvironment } from "@ironworksai/adapter-pi-local/server";
 
 async function writeFakePiCommand(binDir: string, mode: "success" | "stale-package"): Promise<void> {
   const commandPath = path.join(binDir, "pi");
@@ -42,7 +42,7 @@ describe("pi_local environment diagnostics", () => {
   it("passes a hello probe when model discovery and execution succeed", async () => {
     const root = path.join(
       os.tmpdir(),
-      `paperclip-pi-local-probe-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      `ironworks-pi-local-probe-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     );
     const binDir = path.join(root, "bin");
     const cwd = path.join(root, "workspace");
@@ -73,7 +73,7 @@ describe("pi_local environment diagnostics", () => {
   it("surfaces stale configured package installs with a targeted hint", async () => {
     const root = path.join(
       os.tmpdir(),
-      `paperclip-pi-local-stale-package-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      `ironworks-pi-local-stale-package-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     );
     const binDir = path.join(root, "bin");
     const cwd = path.join(root, "workspace");

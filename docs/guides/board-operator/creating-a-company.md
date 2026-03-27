@@ -3,7 +3,7 @@ title: Creating a Company
 summary: Set up your first autonomous AI company
 ---
 
-A company is the top-level unit in Paperclip. Everything — agents, tasks, goals, budgets — lives under a company.
+A company is the top-level unit in Ironworks. Everything — agents, tasks, goals, budgets — lives under a company.
 
 ## Step 1: Create the Company
 
@@ -45,7 +45,7 @@ Each agent gets their own adapter config, role, and budget. The org tree enforce
 
 ## Step 5: Set Budgets
 
-Set monthly budgets at both the company and per-agent level. Paperclip enforces:
+Set monthly budgets at both the company and per-agent level. Ironworks enforces:
 
 - **Soft alert** at 80% utilization
 - **Hard stop** at 100% — agents are auto-paused

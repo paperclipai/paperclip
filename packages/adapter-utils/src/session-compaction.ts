@@ -28,7 +28,7 @@ const DEFAULT_SESSION_COMPACTION_POLICY: SessionCompactionPolicy = {
 };
 
 // Adapters with native context management still participate in session resume,
-// but Paperclip should not rotate them using threshold-based compaction.
+// but Ironworks should not rotate them using threshold-based compaction.
 const ADAPTER_MANAGED_SESSION_POLICY: SessionCompactionPolicy = {
   enabled: true,
   maxSessionRuns: 0,

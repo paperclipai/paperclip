@@ -33,7 +33,7 @@ Common adapter choices:
 - `process` for generic local command execution
 
 For `opencode_local`, configure an explicit `adapterConfig.model` (`provider/model`).
-Paperclip validates the selected model against live `opencode models` output.
+Ironworks validates the selected model against live `opencode models` output.
 
 ## Agent Hiring via Governance
 

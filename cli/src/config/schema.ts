@@ -1,5 +1,5 @@
 export {
-  paperclipConfigSchema,
+  ironworksConfigSchema,
   configMetaSchema,
   llmConfigSchema,
   databaseBackupConfigSchema,
@@ -12,7 +12,7 @@ export {
   storageS3ConfigSchema,
   secretsConfigSchema,
   secretsLocalEncryptedConfigSchema,
-  type PaperclipConfig,
+  type IronworksConfig,
   type LlmConfig,
   type DatabaseBackupConfig,
   type DatabaseConfig,
@@ -25,4 +25,4 @@ export {
   type SecretsConfig,
   type SecretsLocalEncryptedConfig,
   type ConfigMeta,
-} from "@paperclipai/shared";
+} from "@ironworksai/shared";

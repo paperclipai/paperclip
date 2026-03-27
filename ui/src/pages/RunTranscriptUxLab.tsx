@@ -210,7 +210,7 @@ export function RunTranscriptUxLab() {
               </div>
               <h1 className="mt-4 text-2xl font-semibold tracking-tight">Run Transcript Fixtures</h1>
               <p className="mt-2 text-sm text-muted-foreground">
-                Built from a real Paperclip development run, then sanitized so no secrets, local paths, or environment details survive into the fixture.
+                Built from a real Ironworks development run, then sanitized so no secrets, local paths, or environment details survive into the fixture.
               </p>
             </div>
 

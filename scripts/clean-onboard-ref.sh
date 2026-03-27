@@ -17,9 +17,9 @@ Examples:
 Environment overrides:
   KEEP_TEMP=1                 Keep the temp directory and detached worktree for debugging
   PC_TEST_ROOT=/tmp/custom    Base temp directory to use
-  PC_DATA=/tmp/data           Paperclip data dir to use
-  PAPERCLIP_HOST=127.0.0.1    Host passed to the onboarded server
-  PAPERCLIP_PORT=3232         Port passed to the onboarded server
+  PC_DATA=/tmp/data           Ironworks data dir to use
+  IRONWORKS_HOST=127.0.0.1    Host passed to the onboarded server
+  IRONWORKS_PORT=3232         Port passed to the onboarded server
 
 Notes:
   - Defaults to the current committed ref (HEAD), not uncommitted local edits.
@@ -40,14 +40,14 @@ fi
 TARGET_COMMIT="$(git -C "$REPO_ROOT" rev-parse --verify "${TARGET_REF}^{commit}")"
 
 export KEEP_TEMP="${KEEP_TEMP:-0}"
-export PC_TEST_ROOT="${PC_TEST_ROOT:-$(mktemp -d /tmp/paperclip-clean-ref.XXXXXX)}"
+export PC_TEST_ROOT="${PC_TEST_ROOT:-$(mktemp -d /tmp/ironworks-clean-ref.XXXXXX)}"
 export PC_HOME="${PC_HOME:-$PC_TEST_ROOT/home}"
 export PC_CACHE="${PC_CACHE:-$PC_TEST_ROOT/npm-cache}"
-export PC_DATA="${PC_DATA:-$PC_TEST_ROOT/paperclip-data}"
+export PC_DATA="${PC_DATA:-$PC_TEST_ROOT/ironworks-data}"
 export PC_REPO="${PC_REPO:-$PC_TEST_ROOT/repo}"
-export PAPERCLIP_HOST="${PAPERCLIP_HOST:-127.0.0.1}"
-export PAPERCLIP_PORT="${PAPERCLIP_PORT:-3100}"
-export PAPERCLIP_OPEN_ON_LISTEN="${PAPERCLIP_OPEN_ON_LISTEN:-false}"
+export IRONWORKS_HOST="${IRONWORKS_HOST:-127.0.0.1}"
+export IRONWORKS_PORT="${IRONWORKS_PORT:-3100}"
+export IRONWORKS_OPEN_ON_LISTEN="${IRONWORKS_OPEN_ON_LISTEN:-false}"
 
 cleanup() {
   if [ "$KEEP_TEMP" = "1" ]; then
@@ -68,8 +68,8 @@ echo "PC_TEST_ROOT: $PC_TEST_ROOT"
 echo "PC_HOME: $PC_HOME"
 echo "PC_DATA: $PC_DATA"
 echo "PC_REPO: $PC_REPO"
-echo "PAPERCLIP_HOST: $PAPERCLIP_HOST"
-echo "PAPERCLIP_PORT: $PAPERCLIP_PORT"
+echo "IRONWORKS_HOST: $IRONWORKS_HOST"
+echo "IRONWORKS_PORT: $IRONWORKS_PORT"
 
 git -C "$REPO_ROOT" worktree add --detach "$PC_REPO" "$TARGET_COMMIT"
 
@@ -80,7 +80,7 @@ env \
   HOME="$PC_HOME" \
   npm_config_cache="$PC_CACHE" \
   npm_config_userconfig="$PC_HOME/.npmrc" \
-  HOST="$PAPERCLIP_HOST" \
-  PORT="$PAPERCLIP_PORT" \
-  PAPERCLIP_OPEN_ON_LISTEN="$PAPERCLIP_OPEN_ON_LISTEN" \
-  pnpm paperclipai onboard --yes --data-dir "$PC_DATA"
+  HOST="$IRONWORKS_HOST" \
+  PORT="$IRONWORKS_PORT" \
+  IRONWORKS_OPEN_ON_LISTEN="$IRONWORKS_OPEN_ON_LISTEN" \
+  pnpm ironworksai onboard --yes --data-dir "$PC_DATA"

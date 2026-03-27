@@ -9,7 +9,7 @@ description: >
   "create a team of agents", "hire some agents", or when given a repo URL and
   asked to turn it into a company. Do NOT use for importing an existing company
   package (use the CLI import command instead) or for modifying a company that
-  is already running in Paperclip.
+  is already running in Ironworks.
 ---
 
 # Company Creator
@@ -122,20 +122,20 @@ Create the directory structure and all files. Follow the spec's conventions exac
 │   └── <slug>/TASK.md        (if tasks are needed)
 ├── skills/
 │   └── <slug>/SKILL.md       (if custom skills are needed)
-└── .paperclip.yaml            (Paperclip vendor extension)
+└── .ironworks.yaml            (Ironworks vendor extension)
 ```
 
 **Rules:**
 
 - Slugs must be URL-safe, lowercase, hyphenated
 - COMPANY.md gets `schema: agentcompanies/v1` - other files inherit it
-- Agent instructions go in the AGENTS.md body, not in .paperclip.yaml
+- Agent instructions go in the AGENTS.md body, not in .ironworks.yaml
 - Skills referenced by shortname in AGENTS.md resolve to `skills/<shortname>/SKILL.md`
 - For external skills, use `sources` with `usage: referenced` (see spec section 12)
 - Do not export secrets, machine-local paths, or database IDs
 - Omit empty/default fields
 - For companies generated from a repo, add a references footer at the bottom of COMPANY.md body:
-  `Generated from [repo-name](repo-url) with the company-creator skill from [Paperclip](https://github.com/paperclipai/paperclip)`
+  `Generated from [repo-name](repo-url) with the company-creator skill from [Ironworks](https://github.com/ironworksai/ironworks)`
 
 **Reporting structure:**
 
@@ -170,8 +170,8 @@ Ask the user where to write the package. Common options:
 - The workflow / how the company operates
 - Org chart as a markdown list or table showing agents, titles, reporting structure, and skills
 - Brief description of each agent's role
-- Citations and references: link to the source repo (if from-repo), link to the Agent Companies spec (https://agentcompanies.io/specification), and link to Paperclip (https://github.com/paperclipai/paperclip)
-- A "Getting Started" section explaining how to import: `paperclipai company import --from <path>`
+- Citations and references: link to the source repo (if from-repo), link to the Agent Companies spec (https://agentcompanies.io/specification), and link to Ironworks (https://github.com/ironworksai/ironworks)
+- A "Getting Started" section explaining how to import: `ironworksai company import --from <path>`
 
 **LICENSE** — include a LICENSE file. The copyright holder is the user creating the company, not the upstream repo author (they made the skills, the user is making the company). Use the same license type as the source repo (if from-repo) or ask the user (if from-scratch). Default to MIT if unclear.
 
@@ -185,15 +185,15 @@ Write all files, then give a brief summary:
 - Projects and tasks if any
 - The output path
 
-## .paperclip.yaml Guidelines
+## .ironworks.yaml Guidelines
 
-The `.paperclip.yaml` file is the Paperclip vendor extension. It configures adapters and env inputs per agent.
+The `.ironworks.yaml` file is the Ironworks vendor extension. It configures adapters and env inputs per agent.
 
 ### Adapter Rules
 
-**Do not specify an adapter unless the repo or user context warrants it.** If you don't know what adapter the user wants, omit the adapter block entirely — Paperclip will use its default. Specifying an unknown adapter type causes an import error.
+**Do not specify an adapter unless the repo or user context warrants it.** If you don't know what adapter the user wants, omit the adapter block entirely — Ironworks will use its default. Specifying an unknown adapter type causes an import error.
 
-Paperclip's supported adapter types (these are the ONLY valid values):
+Ironworks's supported adapter types (these are the ONLY valid values):
 - `claude_local` — Claude Code CLI
 - `codex_local` — Codex CLI
 - `opencode_local` — OpenCode CLI
@@ -216,7 +216,7 @@ Only set an adapter when:
 
 Example with adapter (only when warranted):
 ```yaml
-schema: paperclip/v1
+schema: ironworks/v1
 agents:
   release-engineer:
     adapter:
@@ -232,7 +232,7 @@ agents:
 
 Example — only agents with actual overrides appear:
 ```yaml
-schema: paperclip/v1
+schema: ironworks/v1
 agents:
   release-engineer:
     inputs:
@@ -242,7 +242,7 @@ agents:
           requirement: optional
 ```
 
-In this example, only `release-engineer` appears because it needs `GH_TOKEN`. The other agents (ceo, cto, etc.) have no overrides, so they are omitted entirely from `.paperclip.yaml`.
+In this example, only `release-engineer` appears because it needs `GH_TOKEN`. The other agents (ceo, cto, etc.) have no overrides, so they are omitted entirely from `.ironworks.yaml`.
 
 ## External Skill References
 

@@ -7,7 +7,7 @@ import {
   index,
   unique,
 } from "drizzle-orm/pg-core";
-import type { PluginStateScopeKind } from "@paperclipai/shared";
+import type { PluginStateScopeKind } from "@ironworksai/shared";
 import { plugins } from "./plugins.js";
 
 /**
@@ -19,7 +19,7 @@ import { plugins } from "./plugins.js";
  * `ctx.state.delete()` in the SDK.
  *
  * Scope kinds determine the granularity of isolation:
- * - `instance` — one value shared across the whole Paperclip instance
+ * - `instance` — one value shared across the whole Ironworks instance
  * - `company` — one value per company
  * - `project` — one value per project
  * - `project_workspace` — one value per project workspace

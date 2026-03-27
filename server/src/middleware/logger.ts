@@ -6,7 +6,7 @@ import { readConfigFile } from "../config-file.js";
 import { resolveDefaultLogsDir, resolveHomeAwarePath } from "../home-paths.js";
 
 function resolveServerLogDir(): string {
-  const envOverride = process.env.PAPERCLIP_LOG_DIR?.trim();
+  const envOverride = process.env.IRONWORKS_LOG_DIR?.trim();
   if (envOverride) return resolveHomeAwarePath(envOverride);
 
   const fileLogDir = readConfigFile()?.logging.logDir?.trim();

@@ -189,14 +189,14 @@ describe("createZipArchive", () => {
         "COMPANY.md": "# Company\n",
         "agents/ceo/AGENTS.md": "# CEO\n",
       },
-      "paperclip-demo",
+      "ironworks-demo",
     );
 
     expect(readUint32(archive, 0)).toBe(0x04034b50);
 
     const firstNameLength = readUint16(archive, 26);
     const firstBodyLength = readUint32(archive, 18);
-    expect(readString(archive, 30, firstNameLength)).toBe("paperclip-demo/agents/ceo/AGENTS.md");
+    expect(readString(archive, 30, firstNameLength)).toBe("ironworks-demo/agents/ceo/AGENTS.md");
     expect(readString(archive, 30 + firstNameLength, firstBodyLength)).toBe("# CEO\n");
 
     const secondOffset = 30 + firstNameLength + firstBodyLength;
@@ -204,7 +204,7 @@ describe("createZipArchive", () => {
 
     const secondNameLength = readUint16(archive, secondOffset + 26);
     const secondBodyLength = readUint32(archive, secondOffset + 18);
-    expect(readString(archive, secondOffset + 30, secondNameLength)).toBe("paperclip-demo/COMPANY.md");
+    expect(readString(archive, secondOffset + 30, secondNameLength)).toBe("ironworks-demo/COMPANY.md");
     expect(readString(archive, secondOffset + 30 + secondNameLength, secondBodyLength)).toBe("# Company\n");
 
     const endOffset = archive.length - 22;
@@ -213,22 +213,22 @@ describe("createZipArchive", () => {
     expect(readUint16(archive, endOffset + 10)).toBe(2);
   });
 
-  it("reads a Paperclip zip archive back into rootPath and file contents", async () => {
+  it("reads a Ironworks zip archive back into rootPath and file contents", async () => {
     const archive = createZipArchive(
       {
         "COMPANY.md": "# Company\n",
         "agents/ceo/AGENTS.md": "# CEO\n",
-        ".paperclip.yaml": "schema: paperclip/v1\n",
+        ".ironworks.yaml": "schema: ironworks/v1\n",
       },
-      "paperclip-demo",
+      "ironworks-demo",
     );
 
     await expect(readZipArchive(archive)).resolves.toEqual({
-      rootPath: "paperclip-demo",
+      rootPath: "ironworks-demo",
       files: {
         "COMPANY.md": "# Company\n",
         "agents/ceo/AGENTS.md": "# CEO\n",
-        ".paperclip.yaml": "schema: paperclip/v1\n",
+        ".ironworks.yaml": "schema: ironworks/v1\n",
       },
     });
   });
@@ -242,11 +242,11 @@ describe("createZipArchive", () => {
           contentType: "image/png",
         },
       },
-      "paperclip-demo",
+      "ironworks-demo",
     );
 
     await expect(readZipArchive(archive)).resolves.toEqual({
-      rootPath: "paperclip-demo",
+      rootPath: "ironworks-demo",
       files: {
         "images/company-logo.png": {
           encoding: "base64",
@@ -257,17 +257,17 @@ describe("createZipArchive", () => {
     });
   });
 
-  it("reads standard DEFLATE zip archives created outside Paperclip", async () => {
+  it("reads standard DEFLATE zip archives created outside Ironworks", async () => {
     const archive = createDeflatedZipArchive(
       {
         "COMPANY.md": "# Company\n",
         "agents/ceo/AGENTS.md": "# CEO\n",
       },
-      "paperclip-demo",
+      "ironworks-demo",
     );
 
     await expect(readZipArchive(archive)).resolves.toEqual({
-      rootPath: "paperclip-demo",
+      rootPath: "ironworks-demo",
       files: {
         "COMPANY.md": "# Company\n",
         "agents/ceo/AGENTS.md": "# CEO\n",
@@ -276,10 +276,10 @@ describe("createZipArchive", () => {
   });
 
   it("ignores directory entries from standard zip archives", async () => {
-    const archive = createZipArchiveWithDirectoryEntries("paperclip-demo");
+    const archive = createZipArchiveWithDirectoryEntries("ironworks-demo");
 
     await expect(readZipArchive(archive)).resolves.toEqual({
-      rootPath: "paperclip-demo",
+      rootPath: "ironworks-demo",
       files: {
         "COMPANY.md": "# Company\n",
         "agents/ceo/AGENTS.md": "# CEO\n",

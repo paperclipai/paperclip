@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { $createLinkNode, LinkNode } from "@lexical/link";
-import { buildAgentMentionHref } from "@paperclipai/shared";
+import { buildAgentMentionHref } from "@ironworksai/shared";
 import {
   createEditor,
   $createParagraphNode,

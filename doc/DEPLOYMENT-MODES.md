@@ -5,7 +5,7 @@ Date: 2026-02-23
 
 ## 1. Purpose
 
-Paperclip supports two runtime modes:
+Ironworks supports two runtime modes:
 
 1. `local_trusted`
 2. `authenticated`
@@ -50,7 +50,7 @@ This keeps one authenticated auth stack while still separating low-friction priv
 Default onboarding remains interactive and flagless:
 
 ```sh
-pnpm paperclipai onboard
+pnpm ironworksai onboard
 ```
 
 Server prompt behavior:
@@ -71,7 +71,7 @@ Server prompt behavior:
 Default doctor remains flagless:
 
 ```sh
-pnpm paperclipai doctor
+pnpm ironworksai doctor
 ```
 
 Doctor reads configured mode/exposure and applies mode-aware checks. Optional override flags are secondary.
@@ -90,7 +90,7 @@ This is required because user assignment paths validate active membership for `a
 
 ## 7. Local Trusted -> Authenticated Claim Flow
 
-When running `authenticated` mode, if the only instance admin is `local-board`, Paperclip emits a startup warning with a one-time high-entropy claim URL.
+When running `authenticated` mode, if the only instance admin is `local-board`, Ironworks emits a startup warning with a one-time high-entropy claim URL.
 
 - URL format: `/board-claim/<token>?code=<code>`
 - intended use: signed-in human claims board ownership

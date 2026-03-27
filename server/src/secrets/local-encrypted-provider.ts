@@ -12,7 +12,7 @@ interface LocalEncryptedMaterial extends StoredSecretVersionMaterial {
 }
 
 function resolveMasterKeyFilePath() {
-  const fromEnv = process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
+  const fromEnv = process.env.IRONWORKS_SECRETS_MASTER_KEY_FILE;
   if (fromEnv && fromEnv.trim().length > 0) return path.resolve(fromEnv.trim());
   return path.resolve(process.cwd(), "data/secrets/master.key");
 }
@@ -39,12 +39,12 @@ function decodeMasterKey(raw: string): Buffer | null {
 }
 
 function loadOrCreateMasterKey(): Buffer {
-  const envKeyRaw = process.env.PAPERCLIP_SECRETS_MASTER_KEY;
+  const envKeyRaw = process.env.IRONWORKS_SECRETS_MASTER_KEY;
   if (envKeyRaw && envKeyRaw.trim().length > 0) {
     const fromEnv = decodeMasterKey(envKeyRaw);
     if (!fromEnv) {
       throw badRequest(
-        "Invalid PAPERCLIP_SECRETS_MASTER_KEY (expected 32-byte base64, 64-char hex, or raw 32-char string)",
+        "Invalid IRONWORKS_SECRETS_MASTER_KEY (expected 32-byte base64, 64-char hex, or raw 32-char string)",
       );
     }
     return fromEnv;

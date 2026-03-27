@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Paperclip, Plus } from "lucide-react";
+import { Ironworks, Plus } from "lucide-react";
 import { useQueries } from "@tanstack/react-query";
 import {
   DndContext,
@@ -28,10 +28,10 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import type { Company } from "@paperclipai/shared";
+import type { Company } from "@ironworksai/shared";
 import { CompanyPatternIcon } from "./CompanyPatternIcon";
 
-const ORDER_STORAGE_KEY = "paperclip.companyOrder";
+const ORDER_STORAGE_KEY = "ironworks.companyOrder";
 
 function getStoredOrder(): string[] {
   try {
@@ -268,9 +268,9 @@ export function CompanyRail() {
 
   return (
     <div className="flex flex-col items-center w-[72px] shrink-0 h-full bg-background border-r border-border">
-      {/* Paperclip icon - aligned with top sections (implied line, no visible border) */}
+      {/* Ironworks icon - aligned with top sections (implied line, no visible border) */}
       <div className="flex items-center justify-center h-12 w-full shrink-0">
-        <Paperclip className="h-5 w-5 text-foreground" />
+        <Ironworks className="h-5 w-5 text-foreground" />
       </div>
 
       {/* Company list */}

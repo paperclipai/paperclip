@@ -1,6 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { and, eq, isNull, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@ironworksai/db";
 import {
   authUsers,
   boardApiKeys,
@@ -8,7 +8,7 @@ import {
   companies,
   companyMemberships,
   instanceUserRoles,
-} from "@paperclipai/db";
+} from "@ironworksai/db";
 import { conflict, forbidden, notFound } from "../errors.js";
 
 export const BOARD_API_KEY_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -164,7 +164,7 @@ export function boardAuthService(db: Db) {
     const challengeSecret = createCliAuthSecret();
     const pendingBoardToken = createBoardApiToken();
     const expiresAt = cliAuthChallengeExpiresAt();
-    const labelBase = input.clientName?.trim() || "paperclipai cli";
+    const labelBase = input.clientName?.trim() || "ironworksai cli";
     const pendingKeyName =
       input.requestedAccess === "instance_admin_required"
         ? `${labelBase} (instance admin)`

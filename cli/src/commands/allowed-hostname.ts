@@ -8,7 +8,7 @@ export async function addAllowedHostname(host: string, opts: { config?: string }
   const config = readConfig(opts.config);
 
   if (!config) {
-    p.log.error(`No config found at ${configPath}. Run ${pc.cyan("paperclip onboard")} first.`);
+    p.log.error(`No config found at ${configPath}. Run ${pc.cyan("ironworks onboard")} first.`);
     return;
   }
 
@@ -27,7 +27,7 @@ export async function addAllowedHostname(host: string, opts: { config?: string }
   } else {
     p.log.success(`Added allowed hostname: ${pc.cyan(normalized)}`);
     p.log.message(
-      pc.dim("Restart the Paperclip server for this change to take effect."),
+      pc.dim("Restart the Ironworks server for this change to take effect."),
     );
   }
 

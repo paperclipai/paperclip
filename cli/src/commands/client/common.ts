@@ -4,7 +4,7 @@ import { getStoredBoardCredential, loginBoardCli } from "../../client/board-auth
 import { buildCliCommandLabel } from "../../client/command-label.js";
 import { readConfig } from "../../config/store.js";
 import { readContext, resolveProfile, type ClientContextProfile } from "../../client/context.js";
-import { ApiRequestError, PaperclipApiClient } from "../../client/http.js";
+import { ApiRequestError, IronworksApiClient } from "../../client/http.js";
 
 export interface BaseClientOptions {
   config?: string;
@@ -18,7 +18,7 @@ export interface BaseClientOptions {
 }
 
 export interface ResolvedClientContext {
-  api: PaperclipApiClient;
+  api: IronworksApiClient;
   companyId?: string;
   profileName: string;
   profile: ClientContextProfile;
@@ -27,11 +27,11 @@ export interface ResolvedClientContext {
 
 export function addCommonClientOptions(command: Command, opts?: { includeCompany?: boolean }): Command {
   command
-    .option("-c, --config <path>", "Path to Paperclip config file")
-    .option("-d, --data-dir <path>", "Paperclip data directory root (isolates state from ~/.paperclip)")
+    .option("-c, --config <path>", "Path to Ironworks config file")
+    .option("-d, --data-dir <path>", "Ironworks data directory root (isolates state from ~/.ironworks)")
     .option("--context <path>", "Path to CLI context file")
     .option("--profile <name>", "CLI context profile name")
-    .option("--api-base <url>", "Base URL for the Paperclip API")
+    .option("--api-base <url>", "Base URL for the Ironworks API")
     .option("--api-key <token>", "Bearer token for agent-authenticated calls")
     .option("--json", "Output raw JSON");
 
@@ -51,29 +51,29 @@ export function resolveCommandContext(
 
   const apiBase =
     options.apiBase?.trim() ||
-    process.env.PAPERCLIP_API_URL?.trim() ||
+    process.env.IRONWORKS_API_URL?.trim() ||
     profile.apiBase ||
     inferApiBaseFromConfig(options.config);
 
   const explicitApiKey =
     options.apiKey?.trim() ||
-    process.env.PAPERCLIP_API_KEY?.trim() ||
+    process.env.IRONWORKS_API_KEY?.trim() ||
     readKeyFromProfileEnv(profile);
   const storedBoardCredential = explicitApiKey ? null : getStoredBoardCredential(apiBase);
   const apiKey = explicitApiKey || storedBoardCredential?.token;
 
   const companyId =
     options.companyId?.trim() ||
-    process.env.PAPERCLIP_COMPANY_ID?.trim() ||
+    process.env.IRONWORKS_COMPANY_ID?.trim() ||
     profile.companyId;
 
   if (opts?.requireCompany && !companyId) {
     throw new Error(
-      "Company ID is required. Pass --company-id, set PAPERCLIP_COMPANY_ID, or set context profile companyId via `paperclipai context set`.",
+      "Company ID is required. Pass --company-id, set IRONWORKS_COMPANY_ID, or set context profile companyId via `ironworksai context set`.",
     );
   }
 
-  const api = new PaperclipApiClient({
+  const api = new IronworksApiClient({
     apiBase,
     apiKey,
     recoverAuth: explicitApiKey || !canAttemptInteractiveBoardAuth()
@@ -184,8 +184,8 @@ function renderValue(value: unknown): string {
 }
 
 function inferApiBaseFromConfig(configPath?: string): string {
-  const envHost = process.env.PAPERCLIP_SERVER_HOST?.trim() || "localhost";
-  let port = Number(process.env.PAPERCLIP_SERVER_PORT || "");
+  const envHost = process.env.IRONWORKS_SERVER_HOST?.trim() || "localhost";
+  let port = Number(process.env.IRONWORKS_SERVER_PORT || "");
 
   if (!Number.isFinite(port) || port <= 0) {
     try {

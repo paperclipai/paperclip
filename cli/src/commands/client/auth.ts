@@ -33,7 +33,7 @@ export function registerClientAuthCommands(auth: Command): void {
             apiBase: ctx.api.apiBase,
             requestedAccess: opts.instanceAdmin ? "instance_admin_required" : "board",
             requestedCompanyId: ctx.companyId ?? null,
-            command: "paperclipai auth login",
+            command: "ironworksai auth login",
           });
           printOutput(
             {

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { isCursorUnknownSessionError, parseCursorJsonl } from "@paperclipai/adapter-cursor-local/server";
-import { parseCursorStdoutLine } from "@paperclipai/adapter-cursor-local/ui";
-import { printCursorStreamEvent } from "@paperclipai/adapter-cursor-local/cli";
+import { isCursorUnknownSessionError, parseCursorJsonl } from "@ironworksai/adapter-cursor-local/server";
+import { parseCursorStdoutLine } from "@ironworksai/adapter-cursor-local/ui";
+import { printCursorStreamEvent } from "@ironworksai/adapter-cursor-local/cli";
 
 describe("cursor parser", () => {
   it("extracts session, summary, usage, cost, and terminal error message", () => {
@@ -139,7 +139,7 @@ describe("cursor ui stdout parser", () => {
 
   it("compacts shellToolCall and shell tool result for run log", () => {
     const ts = "2026-03-05T00:00:00.000Z";
-    const longCommand = "curl -s -X POST \"$PAPERCLIP_API_URL/api/issues/abc/checkout\" -H \"Authorization: Bearer $PAPERCLIP_API_KEY\"";
+    const longCommand = "curl -s -X POST \"$IRONWORKS_API_URL/api/issues/abc/checkout\" -H \"Authorization: Bearer $IRONWORKS_API_KEY\"";
 
     expect(
       parseCursorStdoutLine(

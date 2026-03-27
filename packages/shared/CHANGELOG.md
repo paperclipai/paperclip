@@ -1,4 +1,4 @@
-# @paperclipai/shared
+# @ironworksai/shared
 
 ## 0.3.1
 

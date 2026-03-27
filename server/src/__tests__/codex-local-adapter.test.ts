@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { isCodexUnknownSessionError, parseCodexJsonl } from "@paperclipai/adapter-codex-local/server";
-import { parseCodexStdoutLine } from "@paperclipai/adapter-codex-local/ui";
-import { printCodexStreamEvent } from "@paperclipai/adapter-codex-local/cli";
+import { isCodexUnknownSessionError, parseCodexJsonl } from "@ironworksai/adapter-codex-local/server";
+import { parseCodexStdoutLine } from "@ironworksai/adapter-codex-local/ui";
+import { printCodexStreamEvent } from "@ironworksai/adapter-codex-local/cli";
 
 describe("codex_local parser", () => {
   it("extracts session, summary, usage, and terminal error message", () => {
@@ -45,12 +45,12 @@ describe("codex_local ui stdout parser", () => {
       parseCodexStdoutLine(
         JSON.stringify({
           type: "item.completed",
-          item: { id: "item_1", type: "reasoning", text: "**Preparing to use paperclip skill**" },
+          item: { id: "item_1", type: "reasoning", text: "**Preparing to use ironworks skill**" },
         }),
         ts,
       ),
     ).toEqual([
-      { kind: "thinking", ts, text: "**Preparing to use paperclip skill**" },
+      { kind: "thinking", ts, text: "**Preparing to use ironworks skill**" },
     ]);
   });
 
@@ -107,7 +107,7 @@ describe("codex_local ui stdout parser", () => {
           item: {
             id: "item_52",
             type: "file_change",
-            changes: [{ path: "/Users/paperclipuser/project/ui/src/pages/AgentDetail.tsx", kind: "update" }],
+            changes: [{ path: "/Users/ironworksuser/project/ui/src/pages/AgentDetail.tsx", kind: "update" }],
             status: "completed",
           },
         }),
@@ -117,7 +117,7 @@ describe("codex_local ui stdout parser", () => {
       {
         kind: "system",
         ts,
-        text: "file changes: update /Users/paperclipuser/project/ui/src/pages/AgentDetail.tsx",
+        text: "file changes: update /Users/ironworksuser/project/ui/src/pages/AgentDetail.tsx",
       },
     ]);
   });

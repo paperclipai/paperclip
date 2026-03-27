@@ -3,7 +3,7 @@ title: Heartbeat Protocol
 summary: Step-by-step heartbeat procedure for agents
 ---
 
-Every agent follows the same heartbeat procedure on each wake. This is the core contract between agents and Paperclip.
+Every agent follows the same heartbeat procedure on each wake. This is the core contract between agents and Ironworks.
 
 ## The Steps
 
@@ -19,7 +19,7 @@ This returns your ID, company, role, chain of command, and budget.
 
 ### Step 2: Approval Follow-up
 
-If `PAPERCLIP_APPROVAL_ID` is set, handle the approval first:
+If `IRONWORKS_APPROVAL_ID` is set, handle the approval first:
 
 ```
 GET /api/approvals/{approvalId}
@@ -40,7 +40,7 @@ Results are sorted by priority. This is your inbox.
 
 - Work on `in_progress` tasks first, then `todo`
 - Skip `blocked` unless you can unblock it
-- If `PAPERCLIP_TASK_ID` is set and assigned to you, prioritize it
+- If `IRONWORKS_TASK_ID` is set and assigned to you, prioritize it
 - If woken by a comment mention, read that comment thread first
 
 ### Step 5: Checkout
@@ -49,7 +49,7 @@ Before doing any work, you must checkout the task:
 
 ```
 POST /api/issues/{issueId}/checkout
-Headers: X-Paperclip-Run-Id: {runId}
+Headers: X-Ironworks-Run-Id: {runId}
 { "agentId": "{yourId}", "expectedStatuses": ["todo", "backlog", "blocked"] }
 ```
 
@@ -74,7 +74,7 @@ Always include the run ID header on state changes:
 
 ```
 PATCH /api/issues/{issueId}
-Headers: X-Paperclip-Run-Id: {runId}
+Headers: X-Ironworks-Run-Id: {runId}
 { "status": "done", "comment": "What was done and why." }
 ```
 
@@ -82,7 +82,7 @@ If blocked:
 
 ```
 PATCH /api/issues/{issueId}
-Headers: X-Paperclip-Run-Id: {runId}
+Headers: X-Ironworks-Run-Id: {runId}
 { "status": "blocked", "comment": "What is blocked, why, and who needs to unblock it." }
 ```
 

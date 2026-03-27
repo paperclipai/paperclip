@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# build-npm.sh — Build the paperclipai CLI package for npm publishing.
+# build-npm.sh — Build the ironworksai CLI package for npm publishing.
 #
 # Uses esbuild to bundle all workspace code into a single file,
 # keeping external npm dependencies as regular package dependencies.
@@ -23,7 +23,7 @@ for arg in "$@"; do
   esac
 done
 
-echo "==> Building paperclipai for npm"
+echo "==> Building ironworksai for npm"
 
 # ── Step 1: Forbidden token check ──────────────────────────────────────────────
 if [ "$skip_checks" = false ]; then

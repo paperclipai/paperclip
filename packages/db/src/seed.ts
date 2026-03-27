@@ -11,7 +11,7 @@ console.log("Seeding database...");
 const [company] = await db
   .insert(companies)
   .values({
-    name: "Paperclip Demo Co",
+    name: "Ironworks Demo Co",
     description: "A demo autonomous company",
     status: "active",
     budgetMonthlyCents: 50000,

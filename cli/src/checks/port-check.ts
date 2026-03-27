@@ -1,8 +1,8 @@
-import type { PaperclipConfig } from "../config/schema.js";
+import type { IronworksConfig } from "../config/schema.js";
 import { checkPort } from "../utils/net.js";
 import type { CheckResult } from "./index.js";
 
-export async function portCheck(config: PaperclipConfig): Promise<CheckResult> {
+export async function portCheck(config: IronworksConfig): Promise<CheckResult> {
   const port = config.server.port;
   const result = await checkPort(port);
 

@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { projects, projectGoals, goals, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
+import type { Db } from "@ironworksai/db";
+import { projects, projectGoals, goals, projectWorkspaces, workspaceRuntimeServices } from "@ironworksai/db";
 import {
   PROJECT_COLORS,
   deriveProjectUrlKey,
@@ -11,7 +11,7 @@ import {
   type ProjectGoalRef,
   type ProjectWorkspace,
   type WorkspaceRuntimeService,
-} from "@paperclipai/shared";
+} from "@ironworksai/shared";
 import { listWorkspaceRuntimeServicesForProjectWorkspaces } from "./workspace-runtime.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
@@ -19,7 +19,7 @@ import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 type ProjectRow = typeof projects.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
-const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
+const REPO_ONLY_CWD_SENTINEL = "/__ironworks_repo_only__";
 type CreateWorkspaceInput = {
   name?: string | null;
   sourceType?: string | null;

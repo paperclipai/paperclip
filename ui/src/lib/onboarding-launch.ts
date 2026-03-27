@@ -1,4 +1,4 @@
-import type { Goal } from "@paperclipai/shared";
+import type { Goal } from "@ironworksai/shared";
 
 export const ONBOARDING_PROJECT_NAME = "Onboarding";
 

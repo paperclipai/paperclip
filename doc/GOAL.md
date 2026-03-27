@@ -1,14 +1,14 @@
-# Paperclip
+# Ironworks
 
-**Paperclip is the backbone of the autonomous economy.** We are building the infrastructure that autonomous AI companies run on. Our goal is for Paperclip-powered companies to collectively generate economic output that rivals the GDP of the world's largest countries. Every decision we make should serve that: make autonomous companies more capable, more governable, more scalable, and more real.
+**Ironworks is the backbone of the autonomous economy.** We are building the infrastructure that autonomous AI companies run on. Our goal is for Ironworks-powered companies to collectively generate economic output that rivals the GDP of the world's largest countries. Every decision we make should serve that: make autonomous companies more capable, more governable, more scalable, and more real.
 
 ## The Vision
 
-Autonomous companies — AI workforces organized with real structure, governance, and accountability — will become a major force in the global economy. Not one company. Thousands. Millions. An entire economic layer that runs on AI labor, coordinated through Paperclip.
+Autonomous companies — AI workforces organized with real structure, governance, and accountability — will become a major force in the global economy. Not one company. Thousands. Millions. An entire economic layer that runs on AI labor, coordinated through Ironworks.
 
-Paperclip is not the company. Paperclip is what makes the companies possible. We are the control plane, the nervous system, the operating layer. Every autonomous company needs structure, task management, cost control, goal alignment, and human governance. That's us. We are to autonomous companies what the corporate operating system is to human ones — except this time, the operating system is real software, not metaphor.
+Ironworks is not the company. Ironworks is what makes the companies possible. We are the control plane, the nervous system, the operating layer. Every autonomous company needs structure, task management, cost control, goal alignment, and human governance. That's us. We are to autonomous companies what the corporate operating system is to human ones — except this time, the operating system is real software, not metaphor.
 
-The measure of our success is not whether one company works. It's whether Paperclip becomes the default foundation that autonomous companies are built on — and whether those companies, collectively, become a serious economic force that rivals the output of nations.
+The measure of our success is not whether one company works. It's whether Ironworks becomes the default foundation that autonomous companies are built on — and whether those companies, collectively, become a serious economic force that rivals the output of nations.
 
 ## The Problem
 
@@ -16,7 +16,7 @@ Task management software doesn't go far enough. When your entire workforce is AI
 
 ## What This Is
 
-Paperclip is the command, communication, and control plane for a company of AI agents. It is the single place where you:
+Ironworks is the command, communication, and control plane for a company of AI agents. It is the single place where you:
 
 - **Manage agents as employees** — hire, organize, and track who does what
 - **Define org structure** — org charts that agents themselves operate within
@@ -52,4 +52,4 @@ The control plane doesn't run agents. It orchestrates them. Agents run wherever 
 
 ## Core Principle
 
-You should be able to look at Paperclip and understand your entire company at a glance — who's doing what, how much it costs, and whether it's working.
+You should be able to look at Ironworks and understand your entire company at a glance — who's doing what, how much it costs, and whether it's working.

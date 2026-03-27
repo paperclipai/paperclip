@@ -1,4 +1,4 @@
-# @paperclipai/adapter-codex-local
+# @ironworksai/adapter-codex-local
 
 ## 0.3.1
 
@@ -6,7 +6,7 @@
 
 - Stable release preparation for 0.3.1
 - Updated dependencies
-  - @paperclipai/adapter-utils@0.3.1
+  - @ironworksai/adapter-utils@0.3.1
 
 ## 0.3.0
 
@@ -17,7 +17,7 @@
 ### Patch Changes
 
 - Updated dependencies
-  - @paperclipai/adapter-utils@0.3.0
+  - @ironworksai/adapter-utils@0.3.0
 
 ## 0.2.7
 
@@ -25,7 +25,7 @@
 
 - Version bump (patch)
 - Updated dependencies
-  - @paperclipai/adapter-utils@0.2.7
+  - @ironworksai/adapter-utils@0.2.7
 
 ## 0.2.6
 
@@ -33,7 +33,7 @@
 
 - Version bump (patch)
 - Updated dependencies
-  - @paperclipai/adapter-utils@0.2.6
+  - @ironworksai/adapter-utils@0.2.6
 
 ## 0.2.5
 
@@ -41,7 +41,7 @@
 
 - Version bump (patch)
 - Updated dependencies
-  - @paperclipai/adapter-utils@0.2.5
+  - @ironworksai/adapter-utils@0.2.5
 
 ## 0.2.4
 
@@ -49,7 +49,7 @@
 
 - Version bump (patch)
 - Updated dependencies
-  - @paperclipai/adapter-utils@0.2.4
+  - @ironworksai/adapter-utils@0.2.4
 
 ## 0.2.3
 
@@ -57,7 +57,7 @@
 
 - Version bump (patch)
 - Updated dependencies
-  - @paperclipai/adapter-utils@0.2.3
+  - @ironworksai/adapter-utils@0.2.3
 
 ## 0.2.2
 
@@ -65,7 +65,7 @@
 
 - Version bump (patch)
 - Updated dependencies
-  - @paperclipai/adapter-utils@0.2.2
+  - @ironworksai/adapter-utils@0.2.2
 
 ## 0.2.1
 
@@ -73,4 +73,4 @@
 
 - Version bump (patch)
 - Updated dependencies
-  - @paperclipai/adapter-utils@0.2.1
+  - @ironworksai/adapter-utils@0.2.1

@@ -1,6 +1,6 @@
 # Database
 
-Paperclip uses PostgreSQL via [Drizzle ORM](https://orm.drizzle.team/). There are three ways to run the database, from simplest to most production-ready.
+Ironworks uses PostgreSQL via [Drizzle ORM](https://orm.drizzle.team/). There are three ways to run the database, from simplest to most production-ready.
 
 ## 1. Embedded PostgreSQL — zero config
 
@@ -12,12 +12,12 @@ pnpm dev
 
 That's it. On first start the server:
 
-1. Creates a `~/.paperclip/instances/default/db/` directory for storage
-2. Ensures the `paperclip` database exists
+1. Creates a `~/.ironworks/instances/default/db/` directory for storage
+2. Ensures the `ironworks` database exists
 3. Runs migrations automatically for empty databases
 4. Starts serving requests
 
-Data persists across restarts in `~/.paperclip/instances/default/db/`. To reset local dev data, delete that directory.
+Data persists across restarts in `~/.ironworks/instances/default/db/`. To reset local dev data, delete that directory.
 
 If you need to apply pending migrations manually, run:
 
@@ -25,11 +25,11 @@ If you need to apply pending migrations manually, run:
 pnpm db:migrate
 ```
 
-When `DATABASE_URL` is unset, this command targets the current embedded PostgreSQL instance for your active Paperclip config/instance.
+When `DATABASE_URL` is unset, this command targets the current embedded PostgreSQL instance for your active Ironworks config/instance.
 
 This mode is ideal for local development and one-command installs.
 
-Docker note: the Docker quickstart image also uses embedded PostgreSQL by default. Persist `/paperclip` to keep DB state across container restarts (see `doc/DOCKER.md`).
+Docker note: the Docker quickstart image also uses embedded PostgreSQL by default. Persist `/ironworks` to keep DB state across container restarts (see `doc/DOCKER.md`).
 
 ## 2. Local PostgreSQL (Docker)
 
@@ -44,13 +44,13 @@ This starts PostgreSQL 17 on `localhost:5432`. Then set the connection string:
 ```sh
 cp .env.example .env
 # .env already contains:
-# DATABASE_URL=postgres://paperclip:paperclip@localhost:5432/paperclip
+# DATABASE_URL=postgres://ironworks:ironworks@localhost:5432/ironworks
 ```
 
 Run migrations (once the migration generation issue is fixed) or use `drizzle-kit push`:
 
 ```sh
-DATABASE_URL=postgres://paperclip:paperclip@localhost:5432/paperclip \
+DATABASE_URL=postgres://ironworks:ironworks@localhost:5432/ironworks \
   npx drizzle-kit push
 ```
 
@@ -125,7 +125,7 @@ The database mode is controlled by `DATABASE_URL`:
 
 | `DATABASE_URL` | Mode |
 |---|---|
-| Not set | Embedded PostgreSQL (`~/.paperclip/instances/default/db/`) |
+| Not set | Embedded PostgreSQL (`~/.ironworks/instances/default/db/`) |
 | `postgres://...localhost...` | Local Docker PostgreSQL |
 | `postgres://...supabase.com...` | Hosted Supabase |
 
@@ -133,7 +133,7 @@ Your Drizzle schema (`packages/db/src/schema/`) stays the same regardless of mod
 
 ## Secret storage
 
-Paperclip stores secret metadata and versions in:
+Ironworks stores secret metadata and versions in:
 
 - `company_secrets`
 - `company_secret_versions`
@@ -141,24 +141,24 @@ Paperclip stores secret metadata and versions in:
 For local/default installs, the active provider is `local_encrypted`:
 
 - Secret material is encrypted at rest with a local master key.
-- Default key file: `~/.paperclip/instances/default/secrets/master.key` (auto-created if missing).
-- CLI config location: `~/.paperclip/instances/default/config.json` under `secrets.localEncrypted.keyFilePath`.
+- Default key file: `~/.ironworks/instances/default/secrets/master.key` (auto-created if missing).
+- CLI config location: `~/.ironworks/instances/default/config.json` under `secrets.localEncrypted.keyFilePath`.
 
 Optional overrides:
 
-- `PAPERCLIP_SECRETS_MASTER_KEY` (32-byte key as base64, hex, or raw 32-char string)
-- `PAPERCLIP_SECRETS_MASTER_KEY_FILE` (custom key file path)
+- `IRONWORKS_SECRETS_MASTER_KEY` (32-byte key as base64, hex, or raw 32-char string)
+- `IRONWORKS_SECRETS_MASTER_KEY_FILE` (custom key file path)
 
 Strict mode to block new inline sensitive env values:
 
 ```sh
-PAPERCLIP_SECRETS_STRICT_MODE=true
+IRONWORKS_SECRETS_STRICT_MODE=true
 ```
 
 You can set strict mode and provider defaults via:
 
 ```sh
-pnpm paperclipai configure --section secrets
+pnpm ironworksai configure --section secrets
 ```
 
 Inline secret migration command:

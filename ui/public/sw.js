@@ -1,4 +1,4 @@
-const CACHE_NAME = "paperclip-v2";
+const CACHE_NAME = "ironworks-v2";
 
 self.addEventListener("install", () => {
   self.skipWaiting();

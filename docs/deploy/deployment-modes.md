@@ -3,7 +3,7 @@ title: Deployment Modes
 summary: local_trusted vs authenticated (private/public)
 ---
 
-Paperclip supports two runtime modes with different security profiles.
+Ironworks supports two runtime modes with different security profiles.
 
 ## `local_trusted`
 
@@ -16,7 +16,7 @@ The default mode. Optimized for single-operator local use.
 
 ```sh
 # Set during onboard
-pnpm paperclipai onboard
+pnpm ironworksai onboard
 # Choose "local_trusted"
 ```
 
@@ -33,14 +33,14 @@ For private network access (Tailscale, VPN, LAN).
 - **Host trust**: private-host trust policy required
 
 ```sh
-pnpm paperclipai onboard
+pnpm ironworksai onboard
 # Choose "authenticated" -> "private"
 ```
 
 Allow custom Tailscale hostnames:
 
 ```sh
-pnpm paperclipai allowed-hostname my-machine
+pnpm ironworksai allowed-hostname my-machine
 ```
 
 ### `authenticated` + `public`
@@ -52,13 +52,13 @@ For internet-facing deployment.
 - **Security**: stricter deployment checks in doctor
 
 ```sh
-pnpm paperclipai onboard
+pnpm ironworksai onboard
 # Choose "authenticated" -> "public"
 ```
 
 ## Board Claim Flow
 
-When migrating from `local_trusted` to `authenticated`, Paperclip emits a one-time claim URL at startup:
+When migrating from `local_trusted` to `authenticated`, Ironworks emits a one-time claim URL at startup:
 
 ```
 /board-claim/<token>?code=<code>
@@ -75,11 +75,11 @@ A signed-in user visits this URL to claim board ownership. This:
 Update the deployment mode:
 
 ```sh
-pnpm paperclipai configure --section server
+pnpm ironworksai configure --section server
 ```
 
 Runtime override via environment variable:
 
 ```sh
-PAPERCLIP_DEPLOYMENT_MODE=authenticated pnpm paperclipai run
+IRONWORKS_DEPLOYMENT_MODE=authenticated pnpm ironworksai run
 ```

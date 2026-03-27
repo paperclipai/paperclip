@@ -1,5 +1,5 @@
 /**
- * PluginEventBus — typed in-process event bus for the Paperclip plugin system.
+ * PluginEventBus — typed in-process event bus for the Ironworks plugin system.
  *
  * Responsibilities:
  * - Deliver core domain events to subscribing plugin workers (server-side).
@@ -20,8 +20,8 @@
  * @see PLUGIN_SPEC.md §16.2 — Plugin-to-Plugin Events
  */
 
-import type { PluginEventType } from "@paperclipai/shared";
-import type { PluginEvent, EventFilter } from "@paperclipai/plugin-sdk";
+import type { PluginEventType } from "@ironworksai/shared";
+import type { PluginEvent, EventFilter } from "@ironworksai/plugin-sdk";
 
 // ---------------------------------------------------------------------------
 // Internal types

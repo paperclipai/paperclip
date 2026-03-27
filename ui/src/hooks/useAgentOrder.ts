@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent } from "@ironworksai/shared";
 import {
   AGENT_ORDER_UPDATED_EVENT,
   getAgentOrderStorageKey,

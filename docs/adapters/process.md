@@ -7,7 +7,7 @@ The `process` adapter executes arbitrary shell commands. Use it for simple scrip
 
 ## When to Use
 
-- Running a Python script that calls the Paperclip API
+- Running a Python script that calls the Ironworks API
 - Executing a custom agent loop
 - Any runtime that can be invoked as a shell command
 
@@ -27,8 +27,8 @@ The `process` adapter executes arbitrary shell commands. Use it for simple scrip
 
 ## How It Works
 
-1. Paperclip spawns the configured command as a child process
-2. Standard Paperclip environment variables are injected (`PAPERCLIP_AGENT_ID`, `PAPERCLIP_API_KEY`, etc.)
+1. Ironworks spawns the configured command as a child process
+2. Standard Ironworks environment variables are injected (`IRONWORKS_AGENT_ID`, `IRONWORKS_API_KEY`, etc.)
 3. The process runs to completion
 4. Exit code determines success/failure
 
@@ -47,4 +47,4 @@ An agent that runs a Python script:
 }
 ```
 
-The script can use the injected environment variables to authenticate with the Paperclip API and perform work.
+The script can use the injected environment variables to authenticate with the Ironworks API and perform work.

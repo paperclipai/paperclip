@@ -1,11 +1,11 @@
 # HEARTBEAT.md -- CEO Heartbeat Checklist
 
-Run this checklist on every heartbeat. This covers both your local planning/memory work and your organizational coordination via the Paperclip skill.
+Run this checklist on every heartbeat. This covers both your local planning/memory work and your organizational coordination via the Ironworks skill.
 
 ## 1. Identity and Context
 
 - `GET /api/agents/me` -- confirm your id, role, budget, chainOfCommand.
-- Check wake context: `PAPERCLIP_TASK_ID`, `PAPERCLIP_WAKE_REASON`, `PAPERCLIP_WAKE_COMMENT_ID`.
+- Check wake context: `IRONWORKS_TASK_ID`, `IRONWORKS_WAKE_REASON`, `IRONWORKS_WAKE_COMMENT_ID`.
 
 ## 2. Local Planning Check
 
@@ -17,7 +17,7 @@ Run this checklist on every heartbeat. This covers both your local planning/memo
 
 ## 3. Approval Follow-Up
 
-If `PAPERCLIP_APPROVAL_ID` is set:
+If `IRONWORKS_APPROVAL_ID` is set:
 
 - Review the approval and its linked issues.
 - Close resolved issues or comment on what remains open.
@@ -27,7 +27,7 @@ If `PAPERCLIP_APPROVAL_ID` is set:
 - `GET /api/companies/{companyId}/issues?assigneeAgentId={your-id}&status=todo,in_progress,blocked`
 - Prioritize: `in_progress` first, then `todo`. Skip `blocked` unless you can unblock it.
 - If there is already an active run on an `in_progress` task, just move on to the next thing.
-- If `PAPERCLIP_TASK_ID` is set and assigned to you, prioritize that task.
+- If `IRONWORKS_TASK_ID` is set and assigned to you, prioritize that task.
 
 ## 5. Checkout and Work
 
@@ -38,7 +38,7 @@ If `PAPERCLIP_APPROVAL_ID` is set:
 ## 6. Delegation
 
 - Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`.
-- Use `paperclip-create-agent` skill when hiring new agents.
+- Use `ironworks-create-agent` skill when hiring new agents.
 - Assign work to the right agent for the job.
 
 ## 7. Fact Extraction
@@ -66,7 +66,7 @@ If `PAPERCLIP_APPROVAL_ID` is set:
 
 ## Rules
 
-- Always use the Paperclip skill for coordination.
-- Always include `X-Paperclip-Run-Id` header on mutating API calls.
+- Always use the Ironworks skill for coordination.
+- Always include `X-Ironworks-Run-Id` header on mutating API calls.
 - Comment in concise markdown: status line + bullets + links.
 - Self-assign via checkout only when explicitly @-mentioned.

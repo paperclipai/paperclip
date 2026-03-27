@@ -1,4 +1,4 @@
-# Paperclip Skill Tightening Plan
+# Ironworks Skill Tightening Plan
 
 ## Status
 
@@ -6,7 +6,7 @@ Deferred follow-up. Do not include in the current token-optimization PR beyond d
 
 ## Why This Is Deferred
 
-The `paperclip` skill is part of the critical control-plane safety surface. Tightening it may reduce fresh-session token use, but it also carries prompt-regression risk. We do not yet have evals that would let us safely prove behavior preservation across assignment handling, checkout rules, comment etiquette, approval workflows, and escalation paths.
+The `ironworks` skill is part of the critical control-plane safety surface. Tightening it may reduce fresh-session token use, but it also carries prompt-regression risk. We do not yet have evals that would let us safely prove behavior preservation across assignment handling, checkout rules, comment etiquette, approval workflows, and escalation paths.
 
 The current PR should ship the lower-risk infrastructure wins first:
 
@@ -18,7 +18,7 @@ The current PR should ship the lower-risk infrastructure wins first:
 
 ## Current Problem
 
-Fresh runs still spend substantial input tokens even after the context-path fixes. The remaining large startup cost appears to come from loading the full `paperclip` skill and related instruction surface into context at run start.
+Fresh runs still spend substantial input tokens even after the context-path fixes. The remaining large startup cost appears to come from loading the full `ironworks` skill and related instruction surface into context at run start.
 
 The skill currently mixes three kinds of content in one file:
 
@@ -31,14 +31,14 @@ That structure is safe but expensive.
 ## Goals
 
 - reduce first-run instruction tokens without weakening agent safety
-- preserve all current Paperclip control-plane capabilities
+- preserve all current Ironworks control-plane capabilities
 - keep common heartbeat behavior explicit and easy for agents to follow
 - move rare workflows and reference material out of the hot path
 - create a structure that can later be evaluated systematically
 
 ## Non-Goals
 
-- changing Paperclip API semantics
+- changing Ironworks API semantics
 - removing required governance rules
 - deleting rare workflows
 - changing agent defaults in the current PR
@@ -175,12 +175,12 @@ Do not change this loading policy without validation.
 ## Preconditions Before Implementation
 
 - define acceptance scenarios for control-plane correctness
-- add at least lightweight eval or scripted scenario coverage for key Paperclip flows
+- add at least lightweight eval or scripted scenario coverage for key Ironworks flows
 - confirm how adapter/bootstrap layering should load skill content versus references
 
 ## Success Criteria
 
-- materially lower first-run input tokens for Paperclip-coordinated agents
+- materially lower first-run input tokens for Ironworks-coordinated agents
 - no regression in checkout discipline, issue updates, blocked handling, or delegation
 - no increase in malformed API usage or ownership mistakes
 - agents still complete rare workflows correctly when explicitly asked

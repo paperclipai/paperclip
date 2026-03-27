@@ -16,7 +16,7 @@ const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 async function createTempDatabase(): Promise<string> {
-  const db = await startEmbeddedPostgresTestDatabase("paperclip-db-client-");
+  const db = await startEmbeddedPostgresTestDatabase("ironworks-db-client-");
   cleanups.push(db.cleanup);
   return db.connectionString;
 }

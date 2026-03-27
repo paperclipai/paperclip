@@ -1,7 +1,7 @@
 /**
  * Shared UI component declarations for plugin frontends.
  *
- * These components are exported from `@paperclipai/plugin-sdk/ui` and are
+ * These components are exported from `@ironworksai/plugin-sdk/ui` and are
  * provided by the host at runtime.  They match the host's design tokens and
  * visual language, reducing the boilerplate needed to build consistent plugin UIs.
  *
@@ -13,7 +13,7 @@
  * only the type declarations; the runtime implementations are injected via the
  * host module registry.
  *
- * @see PLUGIN_SPEC.md §19.6 — Shared Components In `@paperclipai/plugin-sdk/ui`
+ * @see PLUGIN_SPEC.md §19.6 — Shared Components In `@ironworksai/plugin-sdk/ui`
  */
 
 import type React from "react";
@@ -231,7 +231,7 @@ export interface ErrorBoundaryProps {
  * @see PLUGIN_SPEC.md §19.6 — Shared Components
  */
 function createSdkUiComponent<TProps>(name: string): React.ComponentType<TProps> {
-  return function PaperclipSdkUiComponent(props: TProps) {
+  return function IronworksSdkUiComponent(props: TProps) {
     return renderSdkUiComponent(name, props) as React.ReactNode;
   };
 }

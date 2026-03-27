@@ -6,7 +6,7 @@ Date: 2026-02-23
 
 ## Goal
 
-Keep Paperclip low-friction while making the mode model simpler and safer:
+Keep Ironworks low-friction while making the mode model simpler and safer:
 
 1. `local_trusted` remains the default and easiest path.
 2. one authenticated runtime mode supports both private-network local use and public cloud use.
@@ -76,7 +76,7 @@ This is one authenticated mode with two safety policies, not two different auth 
 Default command remains:
 
 ```sh
-pnpm paperclipai onboard
+pnpm ironworksai onboard
 ```
 
 Interactive server step:
@@ -97,7 +97,7 @@ Flags are optional power-user overrides, not required for normal setup.
 Default command remains interactive:
 
 ```sh
-pnpm paperclipai configure --section server
+pnpm ironworksai configure --section server
 ```
 
 Same mode/exposure questions and defaults as onboarding.
@@ -107,7 +107,7 @@ Same mode/exposure questions and defaults as onboarding.
 Default command remains flagless:
 
 ```sh
-pnpm paperclipai doctor
+pnpm ironworksai doctor
 ```
 
 Doctor reads configured mode/exposure and applies relevant checks.
@@ -209,9 +209,9 @@ This change is a clean cut:
 
 ## Acceptance Criteria
 
-1. `pnpm paperclipai onboard` is interactive-first and defaults to `local_trusted`.
+1. `pnpm ironworksai onboard` is interactive-first and defaults to `local_trusted`.
 2. authenticated mode is one runtime mode with `private/public` exposure guidance.
-3. `pnpm paperclipai doctor` works flagless with mode-aware checks.
+3. `pnpm ironworksai doctor` works flagless with mode-aware checks.
 4. no extra compatibility aliases for dropped naming variants.
 5. Board identity is represented by real DB user/role/membership integration points, enabling consistent task assignment and permission behavior.
 

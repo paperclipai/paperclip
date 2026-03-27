@@ -1,14 +1,14 @@
 {
-  "name": "@paperclipai/db",
+  "name": "@ironworksai/db",
   "version": "0.3.1",
   "license": "MIT",
-  "homepage": "https://github.com/paperclipai/paperclip",
+  "homepage": "https://github.com/ironworksai/ironworks",
   "bugs": {
-    "url": "https://github.com/paperclipai/paperclip/issues"
+    "url": "https://github.com/ironworksai/ironworks/issues"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/paperclipai/paperclip",
+    "url": "https://github.com/ironworksai/ironworks",
     "directory": "packages/db"
   },
   "type": "module",
@@ -43,7 +43,7 @@
     "seed": "tsx src/seed.ts"
   },
   "dependencies": {
-    "@paperclipai/shared": "workspace:*",
+    "@ironworksai/shared": "workspace:*",
     "drizzle-orm": "^0.38.4",
     "embedded-postgres": "^18.1.0-beta.16",
     "postgres": "^3.4.5"

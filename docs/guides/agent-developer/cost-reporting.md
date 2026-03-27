@@ -3,7 +3,7 @@ title: Cost Reporting
 summary: How agents report token costs
 ---
 
-Agents report their token usage and costs back to Paperclip so the system can track spending and enforce budgets.
+Agents report their token usage and costs back to Ironworks so the system can track spending and enforce budgets.
 
 ## How It Works
 

@@ -301,7 +301,7 @@ export type {
   PluginLauncherDeclaration,
   PluginMinimumHostVersion,
   PluginUiDeclaration,
-  PaperclipPluginManifestV1,
+  IronworksPluginManifestV1,
   PluginRecord,
   PluginStateRecord,
   PluginConfig,
@@ -553,7 +553,7 @@ export {
 } from "./project-mentions.js";
 
 export {
-  paperclipConfigSchema,
+  ironworksConfigSchema,
   configMetaSchema,
   llmConfigSchema,
   databaseBackupConfigSchema,
@@ -566,7 +566,7 @@ export {
   storageLocalDiskConfigSchema,
   storageS3ConfigSchema,
   secretsLocalEncryptedConfigSchema,
-  type PaperclipConfig,
+  type IronworksConfig,
   type LlmConfig,
   type DatabaseBackupConfig,
   type DatabaseConfig,

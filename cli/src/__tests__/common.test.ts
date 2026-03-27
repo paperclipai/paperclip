@@ -8,16 +8,16 @@ import { resolveCommandContext } from "../commands/client/common.js";
 const ORIGINAL_ENV = { ...process.env };
 
 function createTempPath(name: string): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-cli-common-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ironworks-cli-common-"));
   return path.join(dir, name);
 }
 
 describe("resolveCommandContext", () => {
   beforeEach(() => {
     process.env = { ...ORIGINAL_ENV };
-    delete process.env.PAPERCLIP_API_URL;
-    delete process.env.PAPERCLIP_API_KEY;
-    delete process.env.PAPERCLIP_COMPANY_ID;
+    delete process.env.IRONWORKS_API_URL;
+    delete process.env.IRONWORKS_API_KEY;
+    delete process.env.IRONWORKS_COMPANY_ID;
   });
 
   afterEach(() => {

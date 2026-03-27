@@ -1,8 +1,8 @@
 import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { Link, useLocation } from "react-router-dom";
-import type { IssueComment, Agent } from "@paperclipai/shared";
+import type { IssueComment, Agent } from "@ironworksai/shared";
 import { Button } from "@/components/ui/button";
-import { Check, Copy, Paperclip } from "lucide-react";
+import { Check, Copy, Ironworks } from "lucide-react";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { MarkdownBody } from "./MarkdownBody";
@@ -441,7 +441,7 @@ export function CommentThread({
                 disabled={attaching}
                 title="Attach image"
               >
-                <Paperclip className="h-4 w-4" />
+                <Ironworks className="h-4 w-4" />
               </Button>
             </div>
           )}

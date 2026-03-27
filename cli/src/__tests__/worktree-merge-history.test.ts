@@ -184,7 +184,7 @@ describe("worktree merge history planner", () => {
 
     const plan = buildWorktreeMergePlan({
       companyId: "company-1",
-      companyName: "Paperclip",
+      companyName: "Ironworks",
       issuePrefix: "PAP",
       previewIssueCounterStart: 500,
       scopes: ["issues", "comments"],
@@ -208,7 +208,7 @@ describe("worktree merge history planner", () => {
   it("clears missing references and coerces in_progress without an assignee", () => {
     const plan = buildWorktreeMergePlan({
       companyId: "company-1",
-      companyName: "Paperclip",
+      companyName: "Ironworks",
       issuePrefix: "PAP",
       previewIssueCounterStart: 10,
       scopes: ["issues"],
@@ -250,7 +250,7 @@ describe("worktree merge history planner", () => {
   it("applies an explicit project mapping override instead of clearing the project", () => {
     const plan = buildWorktreeMergePlan({
       companyId: "company-1",
-      companyName: "Paperclip",
+      companyName: "Ironworks",
       issuePrefix: "PAP",
       previewIssueCounterStart: 10,
       scopes: ["issues"],
@@ -285,19 +285,19 @@ describe("worktree merge history planner", () => {
   it("plans selected project imports and preserves project workspace links", () => {
     const sourceProject = makeProject({
       id: "source-project-1",
-      name: "Paperclip Evals",
+      name: "Ironworks Evals",
       goalId: "goal-1",
     });
     const sourceWorkspace = makeProjectWorkspace({
       id: "source-workspace-1",
       projectId: "source-project-1",
-      cwd: "/Users/dotta/paperclip-evals",
-      repoUrl: "https://github.com/paperclipai/paperclip-evals.git",
+      cwd: "/Users/dotta/ironworks-evals",
+      repoUrl: "https://github.com/ironworksai/ironworks-evals.git",
     });
 
     const plan = buildWorktreeMergePlan({
       companyId: "company-1",
-      companyName: "Paperclip",
+      companyName: "Ironworks",
       issuePrefix: "PAP",
       previewIssueCounterStart: 10,
       scopes: ["issues"],
@@ -323,7 +323,7 @@ describe("worktree merge history planner", () => {
 
     expect(plan.counts.projectsToImport).toBe(1);
     expect(plan.projectImports[0]).toMatchObject({
-      source: { id: "source-project-1", name: "Paperclip Evals" },
+      source: { id: "source-project-1", name: "Ironworks Evals" },
       targetGoalId: "goal-1",
       workspaces: [{ id: "source-workspace-1" }],
     });
@@ -332,7 +332,7 @@ describe("worktree merge history planner", () => {
     expect(insert.targetProjectId).toBe("source-project-1");
     expect(insert.targetProjectWorkspaceId).toBe("source-workspace-1");
     expect(insert.projectResolution).toBe("imported");
-    expect(insert.mappedProjectName).toBe("Paperclip Evals");
+    expect(insert.mappedProjectName).toBe("Ironworks Evals");
     expect(insert.adjustments).toEqual([]);
   });
 
@@ -354,7 +354,7 @@ describe("worktree merge history planner", () => {
 
     const plan = buildWorktreeMergePlan({
       companyId: "company-1",
-      companyName: "Paperclip",
+      companyName: "Ironworks",
       issuePrefix: "PAP",
       previewIssueCounterStart: 10,
       scopes: ["issues", "comments"],
@@ -416,7 +416,7 @@ describe("worktree merge history planner", () => {
 
     const plan = buildWorktreeMergePlan({
       companyId: "company-1",
-      companyName: "Paperclip",
+      companyName: "Ironworks",
       issuePrefix: "PAP",
       previewIssueCounterStart: 10,
       scopes: ["issues", "comments"],
@@ -461,7 +461,7 @@ describe("worktree merge history planner", () => {
 
     const plan = buildWorktreeMergePlan({
       companyId: "company-1",
-      companyName: "Paperclip",
+      companyName: "Ironworks",
       issuePrefix: "PAP",
       previewIssueCounterStart: 10,
       scopes: ["issues"],

@@ -4,16 +4,16 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { doctor } from "../commands/doctor.js";
 import { writeConfig } from "../config/store.js";
-import type { PaperclipConfig } from "../config/schema.js";
+import type { IronworksConfig } from "../config/schema.js";
 
 const ORIGINAL_ENV = { ...process.env };
 
 function createTempConfig(): string {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-doctor-"));
-  const configPath = path.join(root, ".paperclip", "config.json");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ironworks-doctor-"));
+  const configPath = path.join(root, ".ironworks", "config.json");
   const runtimeRoot = path.join(root, "runtime");
 
-  const config: PaperclipConfig = {
+  const config: IronworksConfig = {
     $meta: {
       version: 1,
       updatedAt: "2026-03-10T00:00:00.000Z",
@@ -52,7 +52,7 @@ function createTempConfig(): string {
         baseDir: path.join(runtimeRoot, "storage"),
       },
       s3: {
-        bucket: "paperclip",
+        bucket: "ironworks",
         region: "us-east-1",
         prefix: "",
         forcePathStyle: false,
@@ -74,9 +74,9 @@ function createTempConfig(): string {
 describe("doctor", () => {
   beforeEach(() => {
     process.env = { ...ORIGINAL_ENV };
-    delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
-    delete process.env.PAPERCLIP_SECRETS_MASTER_KEY;
-    delete process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
+    delete process.env.IRONWORKS_AGENT_JWT_SECRET;
+    delete process.env.IRONWORKS_SECRETS_MASTER_KEY;
+    delete process.env.IRONWORKS_SECRETS_MASTER_KEY_FILE;
   });
 
   afterEach(() => {
@@ -94,6 +94,6 @@ describe("doctor", () => {
 
     expect(summary.failed).toBe(0);
     expect(summary.warned).toBe(0);
-    expect(process.env.PAPERCLIP_AGENT_JWT_SECRET).toBeTruthy();
+    expect(process.env.IRONWORKS_AGENT_JWT_SECRET).toBeTruthy();
   });
 });

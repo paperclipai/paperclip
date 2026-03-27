@@ -7,12 +7,12 @@ import {
 
 describe("openCode models", () => {
   afterEach(() => {
-    delete process.env.PAPERCLIP_OPENCODE_COMMAND;
+    delete process.env.IRONWORKS_OPENCODE_COMMAND;
     resetOpenCodeModelsCacheForTests();
   });
 
   it("returns an empty list when discovery command is unavailable", async () => {
-    process.env.PAPERCLIP_OPENCODE_COMMAND = "__paperclip_missing_opencode_command__";
+    process.env.IRONWORKS_OPENCODE_COMMAND = "__ironworks_missing_opencode_command__";
     await expect(listOpenCodeModels()).resolves.toEqual([]);
   });
 
@@ -23,7 +23,7 @@ describe("openCode models", () => {
   });
 
   it("rejects when discovery cannot run for configured model", async () => {
-    process.env.PAPERCLIP_OPENCODE_COMMAND = "__paperclip_missing_opencode_command__";
+    process.env.IRONWORKS_OPENCODE_COMMAND = "__ironworks_missing_opencode_command__";
     await expect(
       ensureOpenCodeModelConfiguredAndAvailable({
         model: "openai/gpt-5",

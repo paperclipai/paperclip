@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { LiveEvent, LiveEventType } from "@paperclipai/shared";
+import type { LiveEvent, LiveEventType } from "@ironworksai/shared";
 
 type LiveEventPayload = Record<string, unknown>;
 type LiveEventListener = (event: LiveEvent) => void;

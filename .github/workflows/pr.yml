@@ -53,7 +53,7 @@ jobs:
           fi
 
           # Derive workspace search roots from pnpm-workspace.yaml (exclude dev-only packages)
-          search_roots="$(grep '^ *- ' pnpm-workspace.yaml | sed 's/^ *- //' | sed 's/\*$//' | grep -v 'examples' | grep -v 'create-paperclip-plugin' | tr '\n' ' ')"
+          search_roots="$(grep '^ *- ' pnpm-workspace.yaml | sed 's/^ *- //' | sed 's/\*$//' | grep -v 'examples' | grep -v 'create-ironworks-plugin' | tr '\n' ' ')"
 
           if [ -z "$search_roots" ]; then
             echo "::error::Could not derive workspace roots from pnpm-workspace.yaml"
@@ -61,7 +61,7 @@ jobs:
           fi
 
           # Check all workspace package.json files are copied in the deps stage
-          for pkg in $(find $search_roots -maxdepth 2 -name package.json -not -path '*/examples/*' -not -path '*/create-paperclip-plugin/*' -not -path '*/node_modules/*' 2>/dev/null | sort -u); do
+          for pkg in $(find $search_roots -maxdepth 2 -name package.json -not -path '*/examples/*' -not -path '*/create-ironworks-plugin/*' -not -path '*/node_modules/*' 2>/dev/null | sort -u); do
             dir="$(dirname "$pkg")"
             if ! echo "$deps_stage" | grep -q "^COPY ${dir}/package.json"; then
               echo "::error::Dockerfile deps stage missing: COPY ${pkg} ${dir}/"
@@ -155,10 +155,10 @@ jobs:
       - name: Install Playwright
         run: npx playwright install --with-deps chromium
 
-      - name: Generate Paperclip config
+      - name: Generate Ironworks config
         run: |
-          mkdir -p ~/.paperclip/instances/default
-          cat > ~/.paperclip/instances/default/config.json << 'CONF'
+          mkdir -p ~/.ironworks/instances/default
+          cat > ~/.ironworks/instances/default/config.json << 'CONF'
           {
             "$meta": { "version": 1, "updatedAt": "2026-01-01T00:00:00.000Z", "source": "onboard" },
             "database": { "mode": "embedded-postgres" },
@@ -172,7 +172,7 @@ jobs:
 
       - name: Run e2e tests
         env:
-          PAPERCLIP_E2E_SKIP_LLM: "true"
+          IRONWORKS_E2E_SKIP_LLM: "true"
         run: pnpm run test:e2e
 
       - name: Upload Playwright report

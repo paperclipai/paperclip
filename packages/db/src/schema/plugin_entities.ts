@@ -8,10 +8,10 @@ import {
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { plugins } from "./plugins.js";
-import type { PluginStateScopeKind } from "@paperclipai/shared";
+import type { PluginStateScopeKind } from "@ironworksai/shared";
 
 /**
- * `plugin_entities` table — persistent high-level mapping between Paperclip
+ * `plugin_entities` table — persistent high-level mapping between Ironworks
  * objects and external plugin-defined entities.
  *
  * This table is used by plugins (e.g. `linear`, `github`) to store pointers

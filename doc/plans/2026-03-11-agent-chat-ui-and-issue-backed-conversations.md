@@ -4,10 +4,10 @@
 
 `PAP-475` asks two related questions:
 
-1. What UI kit should Paperclip use if we add a chat surface with an agent?
+1. What UI kit should Ironworks use if we add a chat surface with an agent?
 2. How should chat fit the product without breaking the current issue-centric model?
 
-This is not only a component-library decision. In Paperclip today:
+This is not only a component-library decision. In Ironworks today:
 
 - V1 explicitly says communication is `tasks + comments only`, with no separate chat system.
 - Issues already carry assignment, audit trail, billing code, project linkage, goal linkage, and active run linkage.
@@ -15,13 +15,13 @@ This is not only a component-library decision. In Paperclip today:
 - Agent sessions already persist by `taskKey`, and today `taskKey` falls back to `issueId`.
 - The OpenClaw gateway adapter already supports an issue-scoped session key strategy.
 
-That means the cheapest useful path is not "add a second messaging product inside Paperclip." It is "add a better conversational UI on top of issue and run primitives we already have."
+That means the cheapest useful path is not "add a second messaging product inside Ironworks." It is "add a better conversational UI on top of issue and run primitives we already have."
 
 ## Current Constraints From the Codebase
 
 ### Durable work object
 
-The durable object in Paperclip is the issue, not a chat thread.
+The durable object in Ironworks is the issue, not a chat thread.
 
 - `IssueDetail` already combines comments, linked runs, live runs, and activity into one timeline.
 - `CommentThread` already renders markdown comments and supports reply/reassignment flows.
@@ -33,7 +33,7 @@ Session continuity is already task-shaped.
 
 - `heartbeat.ts` derives `taskKey` from `taskKey`, then `taskId`, then `issueId`.
 - `agent_task_sessions` stores session state per company + agent + adapter + task key.
-- OpenClaw gateway supports `sessionKeyStrategy=issue|fixed|run`, and `issue` already matches the Paperclip mental model well.
+- OpenClaw gateway supports `sessionKeyStrategy=issue|fixed|run`, and `issue` already matches the Ironworks mental model well.
 
 That means "chat with the CEO about this issue" naturally maps to one durable session per issue today without inventing a second session system.
 
@@ -44,7 +44,7 @@ Billing is already issue-aware.
 - `cost_events` can attach to `issueId`, `projectId`, `goalId`, and `billingCode`.
 - heartbeat context already propagates issue linkage into runs and cost rollups.
 
-If chat leaves the issue model, Paperclip would need a second billing story. That is avoidable.
+If chat leaves the issue model, Ironworks would need a second billing story. That is avoidable.
 
 ## UI Kit Recommendation
 
@@ -52,23 +52,23 @@ If chat leaves the issue model, Paperclip would need a second billing story. Tha
 
 Use `assistant-ui` as the chat presentation layer.
 
-Why it fits Paperclip:
+Why it fits Ironworks:
 
 - It is a real chat UI kit, not just a hook.
 - It is composable and aligned with shadcn-style primitives, which matches the current UI stack well.
-- It explicitly supports custom backends, which matters because Paperclip talks to agents through issue comments, heartbeats, and run streams rather than direct provider calls.
+- It explicitly supports custom backends, which matters because Ironworks talks to agents through issue comments, heartbeats, and run streams rather than direct provider calls.
 - It gives us polished chat affordances quickly: message list, composer, streaming text, attachments, thread affordances, and markdown-oriented rendering.
 
 Why not make "the Vercel one" the primary choice:
 
 - Vercel AI SDK is stronger today than the older "just `useChat` over `/api/chat`" framing. Its transport layer is flexible and can support custom protocols.
-- But AI SDK is still better understood here as a transport/runtime protocol layer than as the best end-user chat surface for Paperclip.
-- Paperclip does not need Vercel to own message state, persistence, or the backend contract. Paperclip already has its own issue, run, and session model.
+- But AI SDK is still better understood here as a transport/runtime protocol layer than as the best end-user chat surface for Ironworks.
+- Ironworks does not need Vercel to own message state, persistence, or the backend contract. Ironworks already has its own issue, run, and session model.
 
 So the clean split is:
 
 - `assistant-ui` for UI primitives
-- Paperclip-owned runtime/store for state, persistence, and transport
+- Ironworks-owned runtime/store for state, persistence, and transport
 - optional AI SDK usage later only if we want its stream protocol or client transport abstraction
 
 ## Product Options
@@ -140,7 +140,7 @@ More specifically:
 - streaming output comes from the existing live run stream for that issue
 - durable assistant output remains comments and run history, not an extra transcript store
 
-This keeps Paperclip honest about what it is:
+This keeps Ironworks honest about what it is:
 
 - the control plane stays issue-centric
 - chat is a better way to interact with issue work, not a new collaboration product
@@ -181,10 +181,10 @@ This means "resume the CEO conversation later" works by reopening the same issue
 
 Do not add multi-thread-per-issue chat in the first pass.
 
-If Paperclip later needs several parallel threads on one issue, then add an explicit conversation identity and derive:
+If Ironworks later needs several parallel threads on one issue, then add an explicit conversation identity and derive:
 
 - `taskKey = issue:<issueId>:conversation:<conversationId>`
-- OpenClaw `sessionKey = paperclip:conversation:<conversationId>`
+- OpenClaw `sessionKey = ironworks:conversation:<conversationId>`
 
 Until that requirement becomes real, one issue == one durable conversation is the simpler and better rule.
 
@@ -206,9 +206,9 @@ This is another reason ephemeral freeform chat should not be the default.
 
 ### Recommended stack
 
-1. Keep Paperclip as the source of truth for message history and run state.
+1. Keep Ironworks as the source of truth for message history and run state.
 2. Add `assistant-ui` as the rendering/composer layer.
-3. Build a Paperclip runtime adapter that maps:
+3. Build a Ironworks runtime adapter that maps:
    - issue comments -> user/assistant messages
    - live run deltas -> streaming assistant messages
    - issue attachments -> chat attachments
@@ -227,7 +227,7 @@ This is another reason ephemeral freeform chat should not be the default.
 
 ### Why this fits the current code
 
-Paperclip already has most of the backend pieces:
+Ironworks already has most of the backend pieces:
 
 - issue comments
 - run timeline
@@ -294,7 +294,7 @@ If the question is "what should we use?", the answer is:
 - keep chat issue-backed in V1
 - use the current issue comment + run + session + billing model rather than inventing a parallel chat subsystem
 
-If the question is "how should we think about chat in Paperclip?", the answer is:
+If the question is "how should we think about chat in Ironworks?", the answer is:
 
 - chat is a mode of interacting with issue-backed agent work
 - not a separate product silo

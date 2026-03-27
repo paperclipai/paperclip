@@ -4,14 +4,14 @@ import type {
   HeartbeatRun,
   Issue,
   JoinRequest,
-} from "@paperclipai/shared";
+} from "@ironworksai/shared";
 
 export const RECENT_ISSUES_LIMIT = 100;
 export const FAILED_RUN_STATUSES = new Set(["failed", "timed_out"]);
 export const ACTIONABLE_APPROVAL_STATUSES = new Set(["pending", "revision_requested"]);
-export const DISMISSED_KEY = "paperclip:inbox:dismissed";
-export const READ_ITEMS_KEY = "paperclip:inbox:read-items";
-export const INBOX_LAST_TAB_KEY = "paperclip:inbox:last-tab";
+export const DISMISSED_KEY = "ironworks:inbox:dismissed";
+export const READ_ITEMS_KEY = "ironworks:inbox:read-items";
+export const INBOX_LAST_TAB_KEY = "ironworks:inbox:last-tab";
 export type InboxTab = "mine" | "recent" | "unread" | "all";
 export type InboxApprovalFilter = "all" | "actionable" | "resolved";
 export type InboxWorkItem =

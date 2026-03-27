@@ -31,7 +31,7 @@ import { Router } from "express";
 import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@ironworksai/db";
 import { pluginRegistryService } from "../services/plugin-registry.js";
 import { logger } from "../middleware/logger.js";
 
@@ -187,7 +187,7 @@ export interface PluginUiStaticRouteOptions {
   /**
    * The local plugin installation directory.
    * This is where plugins are installed via `npm install --prefix`.
-   * Defaults to the standard `~/.paperclip/plugins/` location.
+   * Defaults to the standard `~/.ironworks/plugins/` location.
    */
   localPluginDir: string;
 }

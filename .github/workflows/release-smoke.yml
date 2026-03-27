@@ -3,8 +3,8 @@ name: Release Smoke
 on:
   workflow_dispatch:
     inputs:
-      paperclip_version:
-        description: Published Paperclip dist-tag to test
+      ironworks_version:
+        description: Published Ironworks dist-tag to test
         required: true
         default: canary
         type: choice
@@ -23,7 +23,7 @@ on:
         type: string
   workflow_call:
     inputs:
-      paperclip_version:
+      ironworks_version:
         required: true
         type: string
       host_port:
@@ -66,7 +66,7 @@ jobs:
           metadata_file="$RUNNER_TEMP/release-smoke.env"
           HOST_PORT="${{ inputs.host_port }}" \
           DATA_DIR="$RUNNER_TEMP/release-smoke-data" \
-          PAPERCLIPAI_VERSION="${{ inputs.paperclip_version }}" \
+          IRONWORKSAI_VERSION="${{ inputs.ironworks_version }}" \
           SMOKE_DETACH=true \
           SMOKE_METADATA_FILE="$metadata_file" \
           ./scripts/docker-onboard-smoke.sh
@@ -80,15 +80,15 @@ jobs:
             echo "SMOKE_CONTAINER_NAME=$SMOKE_CONTAINER_NAME"
             echo "SMOKE_DATA_DIR=$SMOKE_DATA_DIR"
             echo "SMOKE_IMAGE_NAME=$SMOKE_IMAGE_NAME"
-            echo "SMOKE_PAPERCLIPAI_VERSION=$SMOKE_PAPERCLIPAI_VERSION"
+            echo "SMOKE_IRONWORKSAI_VERSION=$SMOKE_IRONWORKSAI_VERSION"
             echo "SMOKE_METADATA_FILE=$metadata_file"
           } >> "$GITHUB_ENV"
 
       - name: Run release smoke Playwright suite
         env:
-          PAPERCLIP_RELEASE_SMOKE_BASE_URL: ${{ env.SMOKE_BASE_URL }}
-          PAPERCLIP_RELEASE_SMOKE_EMAIL: ${{ env.SMOKE_ADMIN_EMAIL }}
-          PAPERCLIP_RELEASE_SMOKE_PASSWORD: ${{ env.SMOKE_ADMIN_PASSWORD }}
+          IRONWORKS_RELEASE_SMOKE_BASE_URL: ${{ env.SMOKE_BASE_URL }}
+          IRONWORKS_RELEASE_SMOKE_EMAIL: ${{ env.SMOKE_ADMIN_EMAIL }}
+          IRONWORKS_RELEASE_SMOKE_PASSWORD: ${{ env.SMOKE_ADMIN_PASSWORD }}
         run: pnpm run test:release-smoke
 
       - name: Capture Docker logs

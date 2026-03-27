@@ -1,13 +1,13 @@
 # Plugin Authoring Guide
 
-This guide describes the current, implemented way to create a Paperclip plugin in this repo.
+This guide describes the current, implemented way to create a Ironworks plugin in this repo.
 
 It is intentionally narrower than [PLUGIN_SPEC.md](./PLUGIN_SPEC.md). The spec includes future ideas; this guide only covers the alpha surface that exists now.
 
 ## Current reality
 
 - Treat plugin workers and plugin UI as trusted code.
-- Plugin UI runs as same-origin JavaScript inside the main Paperclip app.
+- Plugin UI runs as same-origin JavaScript inside the main Ironworks app.
 - Worker-side host APIs are capability-gated.
 - Plugin UI is not sandboxed by manifest capabilities.
 - There is no host-provided shared React component kit for plugins yet.
@@ -18,17 +18,17 @@ It is intentionally narrower than [PLUGIN_SPEC.md](./PLUGIN_SPEC.md). The spec i
 Use the scaffold package:
 
 ```bash
-pnpm --filter @paperclipai/create-paperclip-plugin build
-node packages/plugins/create-paperclip-plugin/dist/index.js @yourscope/plugin-name --output ./packages/plugins/examples
+pnpm --filter @ironworksai/create-ironworks-plugin build
+node packages/plugins/create-ironworks-plugin/dist/index.js @yourscope/plugin-name --output ./packages/plugins/examples
 ```
 
-For a plugin that lives outside the Paperclip repo:
+For a plugin that lives outside the Ironworks repo:
 
 ```bash
-pnpm --filter @paperclipai/create-paperclip-plugin build
-node packages/plugins/create-paperclip-plugin/dist/index.js @yourscope/plugin-name \
+pnpm --filter @ironworksai/create-ironworks-plugin build
+node packages/plugins/create-ironworks-plugin/dist/index.js @yourscope/plugin-name \
   --output /absolute/path/to/plugin-repos \
-  --sdk-path /absolute/path/to/paperclip/packages/plugins/sdk
+  --sdk-path /absolute/path/to/ironworks/packages/plugins/sdk
 ```
 
 That creates a package with:
@@ -40,9 +40,9 @@ That creates a package with:
 - `esbuild.config.mjs`
 - `rollup.config.mjs`
 
-Inside this monorepo, the scaffold uses `workspace:*` for `@paperclipai/plugin-sdk`.
+Inside this monorepo, the scaffold uses `workspace:*` for `@ironworksai/plugin-sdk`.
 
-Outside this monorepo, the scaffold snapshots `@paperclipai/plugin-sdk` from the local Paperclip checkout into a `.paperclip-sdk/` tarball so you can build and test a plugin without publishing anything to npm first.
+Outside this monorepo, the scaffold snapshots `@ironworksai/plugin-sdk` from the local Ironworks checkout into a `.ironworks-sdk/` tarball so you can build and test a plugin without publishing anything to npm first.
 
 ## Recommended local workflow
 
@@ -55,7 +55,7 @@ pnpm test
 pnpm build
 ```
 
-For local development, install it into Paperclip from an absolute local path through the plugin manager or API. The server supports local filesystem installs and watches local-path plugins for file changes so worker restarts happen automatically after rebuilds.
+For local development, install it into Ironworks from an absolute local path through the plugin manager or API. The server supports local filesystem installs and watches local-path plugins for file changes so worker restarts happen automatically after rebuilds.
 
 Example:
 
@@ -96,7 +96,7 @@ UI:
 - `usePluginStream`
 - `usePluginToast`
 - `useHostContext`
-- typed slot props from `@paperclipai/plugin-sdk/ui`
+- typed slot props from `@ironworksai/plugin-sdk/ui`
 
 Mount surfaces currently wired in the host include:
 

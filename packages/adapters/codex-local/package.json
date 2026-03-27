@@ -1,14 +1,14 @@
 {
-  "name": "@paperclipai/adapter-codex-local",
+  "name": "@ironworksai/adapter-codex-local",
   "version": "0.3.1",
   "license": "MIT",
-  "homepage": "https://github.com/paperclipai/paperclip",
+  "homepage": "https://github.com/ironworksai/ironworks",
   "bugs": {
-    "url": "https://github.com/paperclipai/paperclip/issues"
+    "url": "https://github.com/ironworksai/ironworks/issues"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/paperclipai/paperclip",
+    "url": "https://github.com/ironworksai/ironworks",
     "directory": "packages/adapters/codex-local"
   },
   "type": "module",
@@ -52,7 +52,7 @@
     "probe:quota": "pnpm exec tsx src/cli/quota-probe.ts --json"
   },
   "dependencies": {
-    "@paperclipai/adapter-utils": "workspace:*",
+    "@ironworksai/adapter-utils": "workspace:*",
     "picocolors": "^1.1.1"
   },
   "devDependencies": {

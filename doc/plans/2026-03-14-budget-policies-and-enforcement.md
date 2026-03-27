@@ -2,7 +2,7 @@
 
 ## Context
 
-Paperclip already treats budgets as a core control-plane responsibility:
+Ironworks already treats budgets as a core control-plane responsibility:
 
 - `doc/SPEC.md` gives the Board authority to set budgets, pause agents, pause work, and override any budget.
 - `doc/SPEC-implementation.md` says V1 must support monthly UTC budget windows, soft alerts, and hard auto-pause.
@@ -24,11 +24,11 @@ That leaves major product gaps:
 - no durable incident tracking to prevent duplicate alerts
 - no separation between enforceable spend budgets and advisory usage quotas
 
-This plan defines the concrete budgeting model Paperclip should implement next.
+This plan defines the concrete budgeting model Ironworks should implement next.
 
 ## Product Goals
 
-Paperclip should let operators:
+Ironworks should let operators:
 
 1. Set budgets on agents and projects.
 2. Understand whether a budget is based on money or usage.
@@ -48,7 +48,7 @@ They are related, but they are not the same concept.
 
 ### V1 Budget Defaults
 
-For the next implementation pass, Paperclip should enforce these defaults:
+For the next implementation pass, Ironworks should enforce these defaults:
 
 - agent budgets are recurring monthly budgets
 - project budgets are lifetime total budgets
@@ -78,7 +78,7 @@ They should come later as advisory usage controls once the money-based system is
 
 ### Subscription Usage Decision
 
-Paperclip should separate subscription-included usage from billed spend:
+Ironworks should separate subscription-included usage from billed spend:
 
 - `subscription_included`
   - visible in reporting
@@ -98,7 +98,7 @@ This keeps the budget system honest:
 
 ### Soft Alert Versus Hard Stop
 
-Paperclip should have two threshold classes:
+Ironworks should have two threshold classes:
 
 - soft alert
   - creates visible notification state
@@ -253,7 +253,7 @@ If that is too large for the immediate pass, a smaller version is:
 - add `pause_reason`
 
 The key requirement is behavioral, not cosmetic:
-Paperclip must know that a project is budget-paused and enforce it.
+Ironworks must know that a project is budget-paused and enforce it.
 
 ### 4. Compatibility With Existing Budget Columns
 
@@ -310,7 +310,7 @@ When a new `cost_event` is written:
 
 Budget enforcement cannot rely only on post-hoc cost ingestion.
 
-Paperclip must also block execution before new work starts.
+Ironworks must also block execution before new work starts.
 
 Add budget checks to:
 

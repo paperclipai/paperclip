@@ -28,7 +28,7 @@ export const runTranscriptFixtureEntries: TranscriptEntry[] = [
   {
     kind: "stderr",
     ts: "2026-03-11T15:21:05.594Z",
-    text: "[paperclip] Skipping saved session resume for task \"PAP-473\" because wake reason is issue_assigned.",
+    text: "[ironworks] Skipping saved session resume for task \"PAP-473\" because wake reason is issue_assigned.",
   },
   {
     kind: "init",
@@ -44,7 +44,7 @@ export const runTranscriptFixtureEntries: TranscriptEntry[] = [
   {
     kind: "assistant",
     ts: "2026-03-11T15:21:18.851Z",
-    text: "I’m starting with the Paperclip heartbeat procedure and the repo-required docs so I can see what task is actually assigned and then work only on that scope.",
+    text: "I’m starting with the Ironworks heartbeat procedure and the repo-required docs so I can see what task is actually assigned and then work only on that scope.",
   },
   {
     kind: "tool_call",
@@ -53,7 +53,7 @@ export const runTranscriptFixtureEntries: TranscriptEntry[] = [
     toolUseId: "item_1",
     input: {
       command: "sed -n '1,220p' doc/GOAL.md",
-      cwd: "/workspace/paperclip",
+      cwd: "/workspace/ironworks",
     },
   },
   {
@@ -63,21 +63,21 @@ export const runTranscriptFixtureEntries: TranscriptEntry[] = [
     toolUseId: "item_2",
     input: {
       command: "sed -n '1,320p' doc/SPEC-implementation.md",
-      cwd: "/workspace/paperclip",
+      cwd: "/workspace/ironworks",
     },
   },
   {
     kind: "tool_result",
     ts: "2026-03-11T15:21:19.034Z",
     toolUseId: "item_1",
-    content: "command: sed -n '1,220p' doc/GOAL.md\nstatus: completed\nexit_code: 0\n\n# Paperclip\n\nPaperclip is the backbone of the autonomous economy.",
+    content: "command: sed -n '1,220p' doc/GOAL.md\nstatus: completed\nexit_code: 0\n\n# Ironworks\n\nIronworks is the backbone of the autonomous economy.",
     isError: false,
   },
   {
     kind: "tool_result",
     ts: "2026-03-11T15:21:19.035Z",
     toolUseId: "item_2",
-    content: "command: sed -n '1,320p' doc/SPEC-implementation.md\nstatus: completed\nexit_code: 0\n\n# Paperclip V1 Implementation Spec\n\nPaperclip V1 must provide a full control-plane loop for autonomous agents.",
+    content: "command: sed -n '1,320p' doc/SPEC-implementation.md\nstatus: completed\nexit_code: 0\n\n# Ironworks V1 Implementation Spec\n\nIronworks V1 must provide a full control-plane loop for autonomous agents.",
     isError: false,
   },
   {
@@ -97,7 +97,7 @@ export const runTranscriptFixtureEntries: TranscriptEntry[] = [
     toolUseId: "item_3",
     input: {
       command: "rg -n \"LiveRunWidget|ActiveAgentsPanel|buildTranscript|TranscriptEntry|transcript\" ui/src server/src packages",
-      cwd: "/workspace/paperclip",
+      cwd: "/workspace/ironworks",
     },
   },
   {
@@ -129,7 +129,7 @@ export const runTranscriptFixtureEntries: TranscriptEntry[] = [
     toolUseId: "item_4",
     input: {
       command: "pnpm -r typecheck",
-      cwd: "/workspace/paperclip",
+      cwd: "/workspace/ironworks",
     },
   },
   {
@@ -151,7 +151,7 @@ export const runTranscriptFixtureEntries: TranscriptEntry[] = [
     toolUseId: "item_5",
     input: {
       command: "pnpm test:run",
-      cwd: "/workspace/paperclip",
+      cwd: "/workspace/ironworks",
     },
   },
   {
@@ -178,7 +178,7 @@ export const runTranscriptFixtureEntries: TranscriptEntry[] = [
     toolUseId: "item_6",
     input: {
       command: "pnpm build",
-      cwd: "/workspace/paperclip",
+      cwd: "/workspace/ironworks",
     },
   },
   {
@@ -195,7 +195,7 @@ export const runTranscriptFixtureEntries: TranscriptEntry[] = [
     toolUseId: "item_7",
     input: {
       command: "git commit -m \"Humanize run transcripts across run detail and live surfaces\"",
-      cwd: "/workspace/paperclip",
+      cwd: "/workspace/ironworks",
     },
   },
   {

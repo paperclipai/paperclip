@@ -1,4 +1,4 @@
-import type { ActivityEvent } from "@paperclipai/shared";
+import type { ActivityEvent } from "@ironworksai/shared";
 import { api } from "./client";
 
 export interface RunForIssue {

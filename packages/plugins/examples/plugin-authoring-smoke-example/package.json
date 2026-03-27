@@ -1,32 +1,32 @@
 {
-  "name": "@paperclipai/plugin-authoring-smoke-example",
+  "name": "@ironworksai/plugin-authoring-smoke-example",
   "version": "0.1.0",
   "type": "module",
   "private": true,
-  "description": "A Paperclip plugin",
+  "description": "A Ironworks plugin",
   "scripts": {
     "prebuild": "node ../../../../scripts/ensure-plugin-build-deps.mjs",
     "build": "node ./esbuild.config.mjs",
     "build:rollup": "rollup -c",
     "dev": "node ./esbuild.config.mjs --watch",
-    "dev:ui": "paperclip-plugin-dev-server --root . --ui-dir dist/ui --port 4177",
+    "dev:ui": "ironworks-plugin-dev-server --root . --ui-dir dist/ui --port 4177",
     "test": "vitest run --config ./vitest.config.ts",
-    "typecheck": "pnpm --filter @paperclipai/plugin-sdk build && tsc --noEmit"
+    "typecheck": "pnpm --filter @ironworksai/plugin-sdk build && tsc --noEmit"
   },
-  "paperclipPlugin": {
+  "ironworksPlugin": {
     "manifest": "./dist/manifest.js",
     "worker": "./dist/worker.js",
     "ui": "./dist/ui/"
   },
   "keywords": [
-    "paperclip",
+    "ironworks",
     "plugin",
     "connector"
   ],
   "author": "Plugin Author",
   "license": "MIT",
   "dependencies": {
-    "@paperclipai/plugin-sdk": "workspace:*"
+    "@ironworksai/plugin-sdk": "workspace:*"
   },
   "devDependencies": {
     "@rollup/plugin-node-resolve": "^16.0.1",

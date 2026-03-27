@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { buildAgentMentionHref, buildProjectMentionHref } from "@paperclipai/shared";
+import { buildAgentMentionHref, buildProjectMentionHref } from "@ironworksai/shared";
 import { ThemeProvider } from "../context/ThemeContext";
 import { MarkdownBody } from "./MarkdownBody";
 
@@ -34,16 +34,16 @@ describe("MarkdownBody", () => {
     const html = renderToStaticMarkup(
       <ThemeProvider>
         <MarkdownBody>
-          {`[@CodexCoder](${buildAgentMentionHref("agent-123", "code")}) [@Paperclip App](${buildProjectMentionHref("project-456", "#336699")})`}
+          {`[@CodexCoder](${buildAgentMentionHref("agent-123", "code")}) [@Ironworks App](${buildProjectMentionHref("project-456", "#336699")})`}
         </MarkdownBody>
       </ThemeProvider>,
     );
 
     expect(html).toContain('href="/agents/agent-123"');
     expect(html).toContain('data-mention-kind="agent"');
-    expect(html).toContain("--paperclip-mention-icon-mask");
+    expect(html).toContain("--ironworks-mention-icon-mask");
     expect(html).toContain('href="/projects/project-456"');
     expect(html).toContain('data-mention-kind="project"');
-    expect(html).toContain("--paperclip-mention-project-color:#336699");
+    expect(html).toContain("--ironworks-mention-project-color:#336699");
   });
 });

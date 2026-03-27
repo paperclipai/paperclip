@@ -17,7 +17,7 @@ So even though the CEO has hire permission, the route still enforces old self-on
 
 ## 1.2 Why comment quality felt wrong
 
-- `skills/paperclip/SKILL.md` and `skills/paperclip/references/api-reference.md` do not currently require markdown formatting quality for status comments (links, structure, readable updates).
+- `skills/ironworks/SKILL.md` and `skills/ironworks/references/api-reference.md` do not currently require markdown formatting quality for status comments (links, structure, readable updates).
 - Agents therefore produce plain prose comments with raw IDs, not linked entities.
 
 ## 1.3 Issue↔Approval linkage gap
@@ -190,7 +190,7 @@ No hard editor enforcement initially; update helper text and templates to encour
 
 ## 6. Skill Updates
 
-## 6.1 `skills/paperclip/SKILL.md`
+## 6.1 `skills/ironworks/SKILL.md`
 
 Add comment standard:
 
@@ -200,7 +200,7 @@ Add comment standard:
   - agent: `/agents/{id}`
   - issue: `/issues/{id}`
 
-## 6.2 `skills/paperclip-create-agent/SKILL.md`
+## 6.2 `skills/ironworks-create-agent/SKILL.md`
 
 Require:
 

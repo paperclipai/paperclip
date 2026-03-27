@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { testEnvironment } from "@paperclipai/adapter-claude-local/server";
+import { testEnvironment } from "@ironworksai/adapter-claude-local/server";
 
 const ORIGINAL_ANTHROPIC = process.env.ANTHROPIC_API_KEY;
 
@@ -67,7 +67,7 @@ describe("claude_local environment diagnostics", () => {
   it("creates a missing working directory when cwd is absolute", async () => {
     const cwd = path.join(
       os.tmpdir(),
-      `paperclip-claude-local-cwd-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      `ironworks-claude-local-cwd-${Date.now()}-${Math.random().toString(16).slice(2)}`,
       "workspace",
     );
 

@@ -5,32 +5,32 @@ summary: Onboard, run, doctor, and configure
 
 Instance setup and diagnostics commands.
 
-## `paperclipai run`
+## `ironworksai run`
 
 One-command bootstrap and start:
 
 ```sh
-pnpm paperclipai run
+pnpm ironworksai run
 ```
 
 Does:
 
 1. Auto-onboards if config is missing
-2. Runs `paperclipai doctor` with repair enabled
+2. Runs `ironworksai doctor` with repair enabled
 3. Starts the server when checks pass
 
 Choose a specific instance:
 
 ```sh
-pnpm paperclipai run --instance dev
+pnpm ironworksai run --instance dev
 ```
 
-## `paperclipai onboard`
+## `ironworksai onboard`
 
 Interactive first-time setup:
 
 ```sh
-pnpm paperclipai onboard
+pnpm ironworksai onboard
 ```
 
 First prompt:
@@ -41,22 +41,22 @@ First prompt:
 Start immediately after onboarding:
 
 ```sh
-pnpm paperclipai onboard --run
+pnpm ironworksai onboard --run
 ```
 
 Non-interactive defaults + immediate start (opens browser on server listen):
 
 ```sh
-pnpm paperclipai onboard --yes
+pnpm ironworksai onboard --yes
 ```
 
-## `paperclipai doctor`
+## `ironworksai doctor`
 
 Health checks with optional auto-repair:
 
 ```sh
-pnpm paperclipai doctor
-pnpm paperclipai doctor --repair
+pnpm ironworksai doctor
+pnpm ironworksai doctor --repair
 ```
 
 Validates:
@@ -67,51 +67,51 @@ Validates:
 - Storage configuration
 - Missing key files
 
-## `paperclipai configure`
+## `ironworksai configure`
 
 Update configuration sections:
 
 ```sh
-pnpm paperclipai configure --section server
-pnpm paperclipai configure --section secrets
-pnpm paperclipai configure --section storage
+pnpm ironworksai configure --section server
+pnpm ironworksai configure --section secrets
+pnpm ironworksai configure --section storage
 ```
 
-## `paperclipai env`
+## `ironworksai env`
 
 Show resolved environment configuration:
 
 ```sh
-pnpm paperclipai env
+pnpm ironworksai env
 ```
 
-## `paperclipai allowed-hostname`
+## `ironworksai allowed-hostname`
 
 Allow a private hostname for authenticated/private mode:
 
 ```sh
-pnpm paperclipai allowed-hostname my-tailscale-host
+pnpm ironworksai allowed-hostname my-tailscale-host
 ```
 
 ## Local Storage Paths
 
 | Data | Default Path |
 |------|-------------|
-| Config | `~/.paperclip/instances/default/config.json` |
-| Database | `~/.paperclip/instances/default/db` |
-| Logs | `~/.paperclip/instances/default/logs` |
-| Storage | `~/.paperclip/instances/default/data/storage` |
-| Secrets key | `~/.paperclip/instances/default/secrets/master.key` |
+| Config | `~/.ironworks/instances/default/config.json` |
+| Database | `~/.ironworks/instances/default/db` |
+| Logs | `~/.ironworks/instances/default/logs` |
+| Storage | `~/.ironworks/instances/default/data/storage` |
+| Secrets key | `~/.ironworks/instances/default/secrets/master.key` |
 
 Override with:
 
 ```sh
-PAPERCLIP_HOME=/custom/home PAPERCLIP_INSTANCE_ID=dev pnpm paperclipai run
+IRONWORKS_HOME=/custom/home IRONWORKS_INSTANCE_ID=dev pnpm ironworksai run
 ```
 
 Or pass `--data-dir` directly on any command:
 
 ```sh
-pnpm paperclipai run --data-dir ./tmp/paperclip-dev
-pnpm paperclipai doctor --data-dir ./tmp/paperclip-dev
+pnpm ironworksai run --data-dir ./tmp/ironworks-dev
+pnpm ironworksai doctor --data-dir ./tmp/ironworks-dev
 ```

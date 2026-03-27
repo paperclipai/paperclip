@@ -16,7 +16,7 @@ afterEach(async () => {
 });
 
 async function makeConfigHome(initialConfig?: Record<string, unknown>) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-test-"));
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ironworks-opencode-test-"));
   cleanupPaths.add(root);
   const configDir = path.join(root, "opencode");
   await fs.mkdir(configDir, { recursive: true });

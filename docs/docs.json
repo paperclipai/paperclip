@@ -1,6 +1,6 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "name": "Paperclip",
+  "name": "Ironworks",
   "description": "The control plane for autonomous AI companies",
   "theme": "mint",
   "colors": {
@@ -16,7 +16,7 @@
   "topbarLinks": [
     {
       "name": "GitHub",
-      "url": "https://github.com/paperclip-ai/paperclip"
+      "url": "https://github.com/ironworks-ai/ironworks"
     }
   ],
   "navigation": {
@@ -27,7 +27,7 @@
           {
             "group": "Introduction",
             "pages": [
-              "start/what-is-paperclip",
+              "start/what-is-ironworks",
               "start/quickstart",
               "start/core-concepts",
               "start/architecture"
@@ -139,6 +139,6 @@
     ]
   },
   "footerSocials": {
-    "github": "https://github.com/paperclip-ai/paperclip"
+    "github": "https://github.com/ironworks-ai/ironworks"
   }
 }

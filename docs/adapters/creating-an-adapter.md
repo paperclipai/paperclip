@@ -3,7 +3,7 @@ title: Creating an Adapter
 summary: Guide to building a custom adapter
 ---
 
-Build a custom adapter to connect Paperclip to any agent runtime.
+Build a custom adapter to connect Ironworks to any agent runtime.
 
 <Tip>
 If you're using Claude Code, the `.agents/skills/create-agent-adapter` skill can guide you through the full adapter creation process interactively. Just ask Claude to create a new adapter and it will walk you through each step.
@@ -55,7 +55,7 @@ Core fields: ...
 Key responsibilities:
 
 1. Read config using safe helpers (`asString`, `asNumber`, etc.)
-2. Build environment with `buildPaperclipEnv(agent)` plus context vars
+2. Build environment with `buildIronworksEnv(agent)` plus context vars
 3. Resolve session state from `runtime.sessionParams`
 4. Render prompt with `renderTemplate(template, data)`
 5. Spawn the process with `runChildProcess()` or call via `fetch()`
@@ -80,7 +80,7 @@ Return structured diagnostics:
 
 ## Step 5: CLI Module
 
-`format-event.ts` — pretty-prints stdout for `paperclipai run --watch` using `picocolors`.
+`format-event.ts` — pretty-prints stdout for `ironworksai run --watch` using `picocolors`.
 
 ## Step 6: Register
 
@@ -92,7 +92,7 @@ Add the adapter to all three registries:
 
 ## Skills Injection
 
-Make Paperclip skills discoverable to your agent runtime without writing to the agent's working directory:
+Make Ironworks skills discoverable to your agent runtime without writing to the agent's working directory:
 
 1. **Best: tmpdir + flag** — create tmpdir, symlink skills, pass via CLI flag, clean up after
 2. **Acceptable: global config dir** — symlink to the runtime's global plugins directory

@@ -2,7 +2,7 @@
 
 ## Context
 
-Paperclip's current release flow is documented in `doc/RELEASING.md` and implemented through:
+Ironworks's current release flow is documented in `doc/RELEASING.md` and implemented through:
 
 - `.github/workflows/release.yml`
 - `scripts/release-lib.sh`
@@ -39,13 +39,13 @@ The target state from this discussion is simpler:
 
 ## Recommendation In One Sentence
 
-Move Paperclip to semver-compatible calendar versioning, auto-publish canaries from `master`, promote stable from a chosen tested commit, and use npm trusted publishing plus GitHub environments so no long-lived npm or LLM token needs to live in Actions.
+Move Ironworks to semver-compatible calendar versioning, auto-publish canaries from `master`, promote stable from a chosen tested commit, and use npm trusted publishing plus GitHub environments so no long-lived npm or LLM token needs to live in Actions.
 
 ## Core Decisions
 
 ### 1. Use calendar versions, but keep semver syntax
 
-The repo and npm tooling still assume semver-shaped version strings in many places. That does not mean Paperclip must keep semver as a product policy. It does mean the version format should remain semver-valid.
+The repo and npm tooling still assume semver-shaped version strings in many places. That does not mean Ironworks must keep semver as a product policy. It does mean the version format should remain semver-valid.
 
 Recommended format:
 
@@ -79,13 +79,13 @@ This is effectively CalVer on semver rails.
 
 This is not semver in spirit anymore. It is semver in syntax only.
 
-That tradeoff is probably acceptable for Paperclip, but it should be explicit:
+That tradeoff is probably acceptable for Ironworks, but it should be explicit:
 
 - consumers no longer infer compatibility from `major/minor/patch`
 - release notes become the compatibility signal
 - downstream users should prefer exact pins or deliberate upgrades
 
-This is especially relevant for public library packages like `@paperclipai/shared`, `@paperclipai/db`, and the adapter packages.
+This is especially relevant for public library packages like `@ironworksai/shared`, `@ironworksai/db`, and the adapter packages.
 
 ### 3. Drop release branches for normal publishing
 
@@ -109,8 +109,8 @@ This is the most important mechanical constraint.
 
 npm can move dist-tags, but it does not let you rename an already-published version. That means:
 
-- you can move `latest` to `paperclipai@1.2.3`
-- you cannot turn `paperclipai@2026.317.0-canary.8` into `paperclipai@2026.317.0`
+- you can move `latest` to `ironworksai@1.2.3`
+- you cannot turn `ironworksai@2026.317.0-canary.8` into `ironworksai@2026.317.0`
 
 So "promote canary to stable" really means:
 
@@ -365,7 +365,7 @@ Recommended implementation order:
 2. replace version computation with a small explicit versioning script
 3. if Changesets keeps fighting the model, remove it from release publishing entirely
 
-Paperclip's release problem is now "publish the whole fixed package set at one explicit version", not "derive the next semantic bump from human intent".
+Ironworks's release problem is now "publish the whole fixed package set at one explicit version", not "derive the next semantic bump from human intent".
 
 ### 4. Add a dedicated versioning script
 
@@ -464,7 +464,7 @@ That is acceptable if canaries stay clearly separate:
 
 ## Concrete Recommendation
 
-Paperclip should adopt this model:
+Ironworks should adopt this model:
 
 - stable versions: `YYYY.MDD.P`
 - canary versions: `YYYY.MDD.P-canary.N`

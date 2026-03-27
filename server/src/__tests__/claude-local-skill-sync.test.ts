@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   listClaudeSkills,
   syncClaudeSkills,
-} from "@paperclipai/adapter-claude-local/server";
+} from "@ironworksai/adapter-claude-local/server";
 
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -19,8 +19,8 @@ async function createSkillDir(root: string, name: string) {
 }
 
 describe("claude local skill sync", () => {
-  const paperclipKey = "paperclipai/paperclip/paperclip";
-  const createAgentKey = "paperclipai/paperclip/paperclip-create-agent";
+  const ironworksKey = "ironworksai/ironworks/ironworks";
+  const createAgentKey = "ironworksai/ironworks/ironworks-create-agent";
   const cleanupDirs = new Set<string>();
 
   afterEach(async () => {
@@ -28,7 +28,7 @@ describe("claude local skill sync", () => {
     cleanupDirs.clear();
   });
 
-  it("defaults to mounting all built-in Paperclip skills when no explicit selection exists", async () => {
+  it("defaults to mounting all built-in Ironworks skills when no explicit selection exists", async () => {
     const snapshot = await listClaudeSkills({
       agentId: "agent-1",
       companyId: "company-1",
@@ -38,9 +38,9 @@ describe("claude local skill sync", () => {
 
     expect(snapshot.mode).toBe("ephemeral");
     expect(snapshot.supported).toBe(true);
-    expect(snapshot.desiredSkills).toContain(paperclipKey);
-    expect(snapshot.entries.find((entry) => entry.key === paperclipKey)?.required).toBe(true);
-    expect(snapshot.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("configured");
+    expect(snapshot.desiredSkills).toContain(ironworksKey);
+    expect(snapshot.entries.find((entry) => entry.key === ironworksKey)?.required).toBe(true);
+    expect(snapshot.entries.find((entry) => entry.key === ironworksKey)?.state).toBe("configured");
   });
 
   it("respects an explicit desired skill list without mutating a persistent home", async () => {
@@ -49,38 +49,38 @@ describe("claude local skill sync", () => {
       companyId: "company-1",
       adapterType: "claude_local",
       config: {
-        paperclipSkillSync: {
-          desiredSkills: [paperclipKey],
+        ironworksSkillSync: {
+          desiredSkills: [ironworksKey],
         },
       },
-    }, [paperclipKey]);
+    }, [ironworksKey]);
 
-    expect(snapshot.desiredSkills).toContain(paperclipKey);
-    expect(snapshot.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("configured");
+    expect(snapshot.desiredSkills).toContain(ironworksKey);
+    expect(snapshot.entries.find((entry) => entry.key === ironworksKey)?.state).toBe("configured");
     expect(snapshot.entries.find((entry) => entry.key === createAgentKey)?.state).toBe("configured");
   });
 
-  it("normalizes legacy flat Paperclip skill refs to canonical keys", async () => {
+  it("normalizes legacy flat Ironworks skill refs to canonical keys", async () => {
     const snapshot = await listClaudeSkills({
       agentId: "agent-3",
       companyId: "company-1",
       adapterType: "claude_local",
       config: {
-        paperclipSkillSync: {
-          desiredSkills: ["paperclip"],
+        ironworksSkillSync: {
+          desiredSkills: ["ironworks"],
         },
       },
     });
 
     expect(snapshot.warnings).toEqual([]);
-    expect(snapshot.desiredSkills).toContain(paperclipKey);
-    expect(snapshot.desiredSkills).not.toContain("paperclip");
-    expect(snapshot.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("configured");
-    expect(snapshot.entries.find((entry) => entry.key === "paperclip")).toBeUndefined();
+    expect(snapshot.desiredSkills).toContain(ironworksKey);
+    expect(snapshot.desiredSkills).not.toContain("ironworks");
+    expect(snapshot.entries.find((entry) => entry.key === ironworksKey)?.state).toBe("configured");
+    expect(snapshot.entries.find((entry) => entry.key === "ironworks")).toBeUndefined();
   });
 
   it("shows host-level user-installed Claude skills as read-only external entries", async () => {
-    const home = await makeTempDir("paperclip-claude-user-skills-");
+    const home = await makeTempDir("ironworks-claude-user-skills-");
     cleanupDirs.add(home);
     await createSkillDir(path.join(home, ".claude", "skills"), "crack-python");
 
@@ -104,7 +104,7 @@ describe("claude local skill sync", () => {
       originLabel: "User-installed",
       locationLabel: "~/.claude/skills",
       readOnly: true,
-      detail: "Installed outside Paperclip management in the Claude skills home.",
+      detail: "Installed outside Ironworks management in the Claude skills home.",
     }));
   });
 });

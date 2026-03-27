@@ -3,10 +3,10 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { and, asc, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { companySkills } from "@paperclipai/db";
-import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
-import type { PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
+import type { Db } from "@ironworksai/db";
+import { companySkills } from "@ironworksai/db";
+import { readIronworksSkillSyncPreference, writeIronworksSkillSyncPreference } from "@ironworksai/adapter-utils/server-utils";
+import type { IronworksSkillEntry } from "@ironworksai/adapter-utils/server-utils";
 import type {
   CompanySkill,
   CompanySkillCreateRequest,
@@ -25,10 +25,10 @@ import type {
   CompanySkillTrustLevel,
   CompanySkillUpdateStatus,
   CompanySkillUsageAgent,
-} from "@paperclipai/shared";
-import { normalizeAgentUrlKey } from "@paperclipai/shared";
+} from "@ironworksai/shared";
+import { normalizeAgentUrlKey } from "@ironworksai/shared";
 import { findServerAdapter } from "../adapters/index.js";
-import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { resolveIronworksInstanceRoot } from "../home-paths.js";
 import { notFound, unprocessable } from "../errors.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
@@ -230,7 +230,7 @@ function uniqueImportedSkillKey(companyId: string, baseSlug: string, usedKeys: S
 }
 
 function buildSkillRuntimeName(key: string, slug: string) {
-  if (key.startsWith("paperclipai/paperclip/")) return slug;
+  if (key.startsWith("ironworksai/ironworks/")) return slug;
   return `${slug}--${hashSkillValue(key)}`;
 }
 
@@ -240,13 +240,13 @@ function readCanonicalSkillKey(frontmatter: Record<string, unknown>, metadata: R
     ?? asString(frontmatter.skillKey)
     ?? asString(metadata?.skillKey)
     ?? asString(metadata?.canonicalKey)
-    ?? asString(metadata?.paperclipSkillKey),
+    ?? asString(metadata?.ironworksSkillKey),
   );
   if (direct) return direct;
-  const paperclip = isPlainRecord(metadata?.paperclip) ? metadata?.paperclip as Record<string, unknown> : null;
+  const ironworks = isPlainRecord(metadata?.ironworks) ? metadata?.ironworks as Record<string, unknown> : null;
   return normalizeSkillKey(
-    asString(paperclip?.skillKey)
-    ?? asString(paperclip?.key),
+    asString(ironworks?.skillKey)
+    ?? asString(ironworks?.key),
   );
 }
 
@@ -260,8 +260,8 @@ function deriveCanonicalSkillKey(
   if (explicitKey) return explicitKey;
 
   const sourceKind = asString(metadata?.sourceKind);
-  if (sourceKind === "paperclip_bundled") {
-    return `paperclipai/paperclip/${slug}`;
+  if (sourceKind === "ironworks_bundled") {
+    return `ironworksai/ironworks/${slug}`;
   }
 
   const owner = normalizeSkillSlug(asString(metadata?.owner));
@@ -1232,7 +1232,7 @@ function resolveDesiredSkillKeys(
   skills: CompanySkill[],
   config: Record<string, unknown>,
 ) {
-  const preference = readPaperclipSkillSyncPreference(config);
+  const preference = readIronworksSkillSyncPreference(config);
   return Array.from(new Set(
     preference.desiredSkills
       .map((reference) => resolveSkillReference(skills, reference).skill?.key ?? normalizeSkillKey(reference))
@@ -1279,7 +1279,7 @@ export async function findMissingLocalSkillIds(
 }
 
 function resolveManagedSkillsRoot(companyId: string) {
-  return path.resolve(resolvePaperclipInstanceRoot(), "skills", companyId);
+  return path.resolve(resolveIronworksInstanceRoot(), "skills", companyId);
 }
 
 function resolveLocalSkillFilePath(skill: CompanySkill, relativePath: string) {
@@ -1325,12 +1325,12 @@ function deriveSkillSourceInfo(skill: CompanySkill): {
 } {
   const metadata = getSkillMeta(skill);
   const localSkillDir = normalizeSkillDirectory(skill);
-  if (metadata.sourceKind === "paperclip_bundled") {
+  if (metadata.sourceKind === "ironworks_bundled") {
     return {
       editable: false,
-      editableReason: "Bundled Paperclip skills are read-only.",
-      sourceLabel: "Paperclip bundled",
-      sourceBadge: "paperclip",
+      editableReason: "Bundled Ironworks skills are read-only.",
+      sourceLabel: "Ironworks bundled",
+      sourceBadge: "ironworks",
       sourcePath: null,
     };
   }
@@ -1378,8 +1378,8 @@ function deriveSkillSourceInfo(skill: CompanySkill): {
       return {
         editable: true,
         editableReason: null,
-        sourceLabel: "Paperclip workspace",
-        sourceBadge: "paperclip",
+        sourceLabel: "Ironworks workspace",
+        sourceBadge: "ironworks",
         sourcePath: managedRoot,
       };
     }
@@ -1457,12 +1457,12 @@ export function companySkillService(db: Db) {
             ...skill,
             metadata: {
               ...(skill.metadata ?? {}),
-              sourceKind: "paperclip_bundled",
+              sourceKind: "ironworks_bundled",
             },
           }),
           metadata: {
             ...(skill.metadata ?? {}),
-            sourceKind: "paperclip_bundled",
+            sourceKind: "ironworks_bundled",
           },
         })))
         .catch(() => [] as ImportedSkill[]);
@@ -1580,7 +1580,7 @@ export function companySkillService(db: Db) {
               adapterType: agent.adapterType,
               config: {
                 ...runtimeConfig,
-                paperclipRuntimeSkills: runtimeSkillEntries,
+                ironworksRuntimeSkills: runtimeSkillEntries,
               },
             });
             actualState = snapshot.entries.find((entry) => entry.key === key)?.state
@@ -2040,10 +2040,10 @@ export function companySkillService(db: Db) {
   async function listRuntimeSkillEntries(
     companyId: string,
     options: RuntimeSkillEntryOptions = {},
-  ): Promise<PaperclipSkillEntry[]> {
+  ): Promise<IronworksSkillEntry[]> {
     const skills = await listFull(companyId);
 
-    const out: PaperclipSkillEntry[] = [];
+    const out: IronworksSkillEntry[] = [];
     for (const skill of skills) {
       const sourceKind = asString(getSkillMeta(skill).sourceKind);
       let source = normalizeSkillDirectory(skill);
@@ -2054,14 +2054,14 @@ export function companySkillService(db: Db) {
       }
       if (!source) continue;
 
-      const required = sourceKind === "paperclip_bundled";
+      const required = sourceKind === "ironworks_bundled";
       out.push({
         key: skill.key,
         runtimeName: buildSkillRuntimeName(skill.key, skill.slug),
         source,
         required,
         requiredReason: required
-          ? "Bundled Paperclip skills are always available for local adapters."
+          ? "Bundled Ironworks skills are always available for local adapters."
           : null,
       });
     }
@@ -2202,10 +2202,10 @@ export function companySkillService(db: Db) {
       const incomingKind = asString(incomingMeta.sourceKind);
       if (
         existing
-        && existingMeta.sourceKind === "paperclip_bundled"
+        && existingMeta.sourceKind === "ironworks_bundled"
         && incomingKind === "github"
-        && incomingOwner === "paperclipai"
-        && incomingRepo === "paperclip"
+        && incomingOwner === "ironworksai"
+        && incomingRepo === "ironworks"
       ) {
         out.push(existing);
         continue;
@@ -2304,7 +2304,7 @@ export function companySkillService(db: Db) {
     const allSkills = await listFull(companyId);
     for (const agent of agentRows) {
       const config = agent.adapterConfig as Record<string, unknown>;
-      const preference = readPaperclipSkillSyncPreference(config);
+      const preference = readIronworksSkillSyncPreference(config);
       const referencesSkill = preference.desiredSkills.some((ref) => {
         const resolved = resolveSkillReference(allSkills, ref);
         return resolved.skill?.id === skillId;
@@ -2315,7 +2315,7 @@ export function companySkillService(db: Db) {
           return resolved.skill?.id !== skillId;
         });
         await agents.update(agent.id, {
-          adapterConfig: writePaperclipSkillSyncPreference(config, filtered),
+          adapterConfig: writeIronworksSkillSyncPreference(config, filtered),
         });
       }
     }

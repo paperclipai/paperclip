@@ -1,5 +1,5 @@
-import type { Db } from "@paperclipai/db";
-import { pluginLogs, agentTaskSessions as agentTaskSessionsTable } from "@paperclipai/db";
+import type { Db } from "@ironworksai/db";
+import { pluginLogs, agentTaskSessions as agentTaskSessionsTable } from "@ironworksai/db";
 import { eq, and, like, desc } from "drizzle-orm";
 import type {
   HostServices,
@@ -10,7 +10,7 @@ import type {
   Goal,
   PluginWorkspace,
   IssueComment,
-} from "@paperclipai/plugin-sdk";
+} from "@ironworksai/plugin-sdk";
 import { companyService } from "./companies.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
@@ -424,7 +424,7 @@ if (_logFlushInterval.unref) _logFlushInterval.unref();
  * buildHostServices — creates a concrete implementation of the `HostServices`
  * interface for a specific plugin.
  *
- * This implementation delegates to the core Paperclip domain services,
+ * This implementation delegates to the core Ironworks domain services,
  * providing the bridge between the plugin worker's SDK and the host platform.
  *
  * @param db - Database connection instance.
@@ -559,7 +559,7 @@ export function buildHostServices(
         await scopedBus.emit(params.name, params.companyId, params.payload);
       },
       async subscribe(params: { eventPattern: string; filter?: Record<string, unknown> | null }) {
-        const handler = async (event: import("@paperclipai/plugin-sdk").PluginEvent) => {
+        const handler = async (event: import("@ironworksai/plugin-sdk").PluginEvent) => {
           if (notifyWorker) {
             notifyWorker("onEvent", { event });
           }

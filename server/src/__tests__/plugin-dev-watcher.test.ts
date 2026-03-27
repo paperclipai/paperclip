@@ -14,7 +14,7 @@ afterEach(() => {
 });
 
 function makeTempPluginDir(): string {
-  const dir = mkdtempSync(path.join(os.tmpdir(), "paperclip-plugin-watch-"));
+  const dir = mkdtempSync(path.join(os.tmpdir(), "ironworks-plugin-watch-"));
   tempDirs.push(dir);
   return dir;
 }
@@ -27,7 +27,7 @@ describe("resolvePluginWatchTargets", () => {
       path.join(pluginDir, "package.json"),
       JSON.stringify({
         name: "@acme/example",
-        paperclipPlugin: {
+        ironworksPlugin: {
           manifest: "./dist/manifest.js",
           worker: "./dist/worker.js",
           ui: "./dist/ui",

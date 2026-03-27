@@ -1,6 +1,6 @@
 import { Router, type Request } from "express";
-import type { Db } from "@paperclipai/db";
-import { AGENT_ICON_NAMES } from "@paperclipai/shared";
+import type { Db } from "@ironworksai/db";
+import { AGENT_ICON_NAMES } from "@ironworksai/shared";
 import { forbidden } from "../errors.js";
 import { listServerAdapters } from "../adapters/index.js";
 import { agentService } from "../services/agents.js";
@@ -29,7 +29,7 @@ export function llmRoutes(db: Db) {
     await assertCanRead(req);
     const adapters = listServerAdapters().sort((a, b) => a.type.localeCompare(b.type));
     const lines = [
-      "# Paperclip Agent Configuration Index",
+      "# Ironworks Agent Configuration Index",
       "",
       "Installed adapters:",
       ...adapters.map((adapter) => `- ${adapter.type}: /llms/agent-configuration/${adapter.type}.txt`),
@@ -53,7 +53,7 @@ export function llmRoutes(db: Db) {
   router.get("/llms/agent-icons.txt", async (req, res) => {
     await assertCanRead(req);
     const lines = [
-      "# Paperclip Agent Icon Names",
+      "# Ironworks Agent Icon Names",
       "",
       "Set the `icon` field on hire/create payloads to one of:",
       ...AGENT_ICON_NAMES.map((name) => `- ${name}`),

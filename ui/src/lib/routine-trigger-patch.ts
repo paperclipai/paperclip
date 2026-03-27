@@ -1,4 +1,4 @@
-import type { RoutineTrigger } from "@paperclipai/shared";
+import type { RoutineTrigger } from "@ironworksai/shared";
 
 export type RoutineTriggerEditorDraft = {
   label: string;

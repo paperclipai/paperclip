@@ -1,8 +1,8 @@
 Use this exact checklist.
 
-1. Start Paperclip in auth mode.
+1. Start Ironworks in auth mode.
 ```bash
-cd <paperclip-repo-root>
+cd <ironworks-repo-root>
 pnpm dev --tailscale-auth
 ```
 Then verify:
@@ -16,7 +16,7 @@ OPENCLAW_RESET_STATE=1 OPENCLAW_BUILD=1 ./scripts/smoke/openclaw-docker-ui.sh
 ```
 Open the printed `Dashboard URL` (includes `#token=...`) in your browser.
 
-3. In Paperclip UI, go to `http://127.0.0.1:3100/CLA/company/settings`.
+3. In Ironworks UI, go to `http://127.0.0.1:3100/CLA/company/settings`.
 
 4. Use the OpenClaw invite prompt flow.
 - In the Invites section, click `Generate OpenClaw Invite Prompt`.
@@ -30,7 +30,7 @@ Security/control note:
   - board users with invite permission can call it
   - agent callers are limited to the company CEO agent
 
-5. Approve the join request in Paperclip UI, then confirm the OpenClaw agent appears in CLA agents.
+5. Approve the join request in Ironworks UI, then confirm the OpenClaw agent appears in CLA agents.
 
 6. Gateway preflight (required before task tests).
 - Confirm the created agent uses `openclaw_gateway` (not `openclaw`).
@@ -43,7 +43,7 @@ Security/control note:
 - If you can run API checks with board auth:
 ```bash
 AGENT_ID="<newly-created-agent-id>"
-curl -sS -H "Cookie: $PAPERCLIP_COOKIE" "http://127.0.0.1:3100/api/agents/$AGENT_ID" | jq '{adapterType,adapterConfig:{url:.adapterConfig.url,tokenLen:(.adapterConfig.headers["x-openclaw-token"] // .adapterConfig.headers["x-openclaw-auth"] // "" | length),disableDeviceAuth:(.adapterConfig.disableDeviceAuth // false),hasDeviceKey:(.adapterConfig.devicePrivateKeyPem // "" | length > 0)}}'
+curl -sS -H "Cookie: $IRONWORKS_COOKIE" "http://127.0.0.1:3100/api/agents/$AGENT_ID" | jq '{adapterType,adapterConfig:{url:.adapterConfig.url,tokenLen:(.adapterConfig.headers["x-openclaw-token"] // .adapterConfig.headers["x-openclaw-auth"] // "" | length),disableDeviceAuth:(.adapterConfig.disableDeviceAuth // false),hasDeviceKey:(.adapterConfig.devicePrivateKeyPem // "" | length > 0)}}'
 ```
 - Expected: `adapterType=openclaw_gateway`, `tokenLen >= 16`, `hasDeviceKey=true`, and `disableDeviceAuth=false`.
 
@@ -51,7 +51,7 @@ Pairing handshake note:
 - Clean run expectation: first task should succeed without manual pairing commands.
 - The adapter attempts one automatic pairing approval + retry on first `pairing required` (when shared gateway auth token/password is valid).
 - If auto-pair cannot complete (for example token mismatch or no pending request), the first gateway run may still return `pairing required`.
-- This is a separate approval from Paperclip invite approval. You must approve the pending device in OpenClaw itself.
+- This is a separate approval from Ironworks invite approval. You must approve the pending device in OpenClaw itself.
 - Approve it in OpenClaw, then retry the task.
 - For local docker smoke, you can approve from host:
 ```bash
@@ -76,12 +76,12 @@ docker exec openclaw-docker-openclaw-gateway-1 sh -lc 'TOK="$(node -e \"const fs
 
 9. Case C (new session memory/skills test).
 - In OpenClaw, start `/new` session.
-- Ask it to create a new CLA issue in Paperclip with unique title `OPENCLAW_CASE_C_CREATED_<timestamp>`.
-- Verify in Paperclip UI that new issue exists.
+- Ask it to create a new CLA issue in Ironworks with unique title `OPENCLAW_CASE_C_CREATED_<timestamp>`.
+- Verify in Ironworks UI that new issue exists.
 
 10. Watch logs during test (optional but helpful):
 ```bash
-docker compose -f /tmp/openclaw-docker/docker-compose.yml -f /tmp/openclaw-docker/.paperclip-openclaw.override.yml logs -f openclaw-gateway
+docker compose -f /tmp/openclaw-docker/docker-compose.yml -f /tmp/openclaw-docker/.ironworks-openclaw.override.yml logs -f openclaw-gateway
 ```
 
 11. Expected pass criteria.

@@ -2,7 +2,7 @@
 
 ## Role of This Document
 
-This document translates [workspace-product-model-and-work-product.md](/Users/dotta/paperclip-subissues/doc/plans/workspace-product-model-and-work-product.md) into an implementation-ready engineering plan.
+This document translates [workspace-product-model-and-work-product.md](/Users/dotta/ironworks-subissues/doc/plans/workspace-product-model-and-work-product.md) into an implementation-ready engineering plan.
 
 It is intentionally concrete:
 
@@ -83,7 +83,7 @@ The work product remains the deliverable/output unit.
 
 ## Important correction
 
-This repo already uses `PAPERCLIP_DEPLOYMENT_MODE` for auth/deployment behavior (`local_trusted | authenticated`).
+This repo already uses `IRONWORKS_DEPLOYMENT_MODE` for auth/deployment behavior (`local_trusted | authenticated`).
 
 Do not overload that variable for workspace execution topology.
 
@@ -91,7 +91,7 @@ Do not overload that variable for workspace execution topology.
 
 Add a separate execution-host hint:
 
-- `PAPERCLIP_EXECUTION_TOPOLOGY=local|cloud|hybrid`
+- `IRONWORKS_EXECUTION_TOPOLOGY=local|cloud|hybrid`
 
 Default:
 
@@ -106,9 +106,9 @@ Purpose:
 ### Semantics
 
 - `local`
-  - Paperclip may create host-local worktrees, processes, and paths
+  - Ironworks may create host-local worktrees, processes, and paths
 - `cloud`
-  - Paperclip should assume no durable host-local execution workspace management
+  - Ironworks should assume no durable host-local execution workspace management
   - adapter-managed and cloud-sandbox flows should be treated as first-class
 - `hybrid`
   - both local and remote execution strategies may exist
@@ -264,7 +264,7 @@ Create a new durable table for outputs.
 - `type text not null`
   - `preview_url | runtime_service | pull_request | branch | commit | artifact | document`
 - `provider text not null`
-  - `paperclip | github | vercel | s3 | custom`
+  - `ironworks | github | vercel | s3 | custom`
 - `external_id text null`
 - `title text not null`
 - `url text null`
@@ -857,7 +857,7 @@ Mitigation:
 
 - make `cwd` optional for execution workspaces
 - use `provider_type` and `provider_ref`
-- use `PAPERCLIP_EXECUTION_TOPOLOGY` as a defaulting guardrail
+- use `IRONWORKS_EXECUTION_TOPOLOGY` as a defaulting guardrail
 
 ## Risk: turning PRs into a bespoke subsystem too early
 

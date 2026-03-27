@@ -1,9 +1,9 @@
 import fs from "node:fs";
-import type { PaperclipConfig } from "../config/schema.js";
+import type { IronworksConfig } from "../config/schema.js";
 import type { CheckResult } from "./index.js";
 import { resolveRuntimeLikePath } from "./path-resolver.js";
 
-export function logCheck(config: PaperclipConfig, configPath?: string): CheckResult {
+export function logCheck(config: IronworksConfig, configPath?: string): CheckResult {
   const logDir = resolveRuntimeLikePath(config.logging.logDir, configPath);
   const reportedDir = logDir;
 

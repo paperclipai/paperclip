@@ -1,4 +1,4 @@
-import type { CLIAdapterModule } from "@paperclipai/adapter-utils";
+import type { CLIAdapterModule } from "@ironworksai/adapter-utils";
 import { printHttpStdoutEvent } from "./format-event.js";
 
 export const httpCLIAdapter: CLIAdapterModule = {

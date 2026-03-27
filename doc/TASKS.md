@@ -1,6 +1,6 @@
 # Task Management Data Model
 
-Reference for how task tracking works in Paperclip. Describes the entities, their
+Reference for how task tracking works in Ironworks. Describes the entities, their
 relationships, and the rules governing task lifecycle. Written as a target model
 -- some of this is already implemented, some is aspirational.
 

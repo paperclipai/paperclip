@@ -6,7 +6,7 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import type { PluginRecord } from "@paperclipai/shared";
+import type { PluginRecord } from "@ironworksai/shared";
 import { Link } from "@/lib/router";
 import { AlertTriangle, FlaskConical, Plus, Power, Puzzle, Settings, Trash } from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
@@ -46,7 +46,7 @@ function getPluginErrorSummary(plugin: PluginRecord): string {
 /**
  * PluginManager page component.
  *
- * Provides a management UI for the Paperclip plugin system:
+ * Provides a management UI for the Ironworks plugin system:
  * - Lists all installed plugins with their status, version, and category badges.
  * - Allows installing new plugins by npm package name.
  * - Provides per-plugin actions: enable, disable, navigate to settings.
@@ -185,7 +185,7 @@ export function PluginManager() {
                 <Label htmlFor="packageName">npm Package Name</Label>
                 <Input
                   id="packageName"
-                  placeholder="@paperclipai/plugin-example"
+                  placeholder="@ironworksai/plugin-example"
                   value={installPackage}
                   onChange={(e) => setInstallPackage(e.target.value)}
                 />

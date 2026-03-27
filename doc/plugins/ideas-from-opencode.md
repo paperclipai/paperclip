@@ -2,9 +2,9 @@
 
 Status: design report, not a V1 commitment
 
-Paperclip V1 explicitly excludes a plugin framework in [doc/SPEC-implementation.md](../SPEC-implementation.md), but the long-horizon spec says the architecture should leave room for extensions. This report studies the `opencode` plugin system and translates the useful patterns into a Paperclip-shaped design.
+Ironworks V1 explicitly excludes a plugin framework in [doc/SPEC-implementation.md](../SPEC-implementation.md), but the long-horizon spec says the architecture should leave room for extensions. This report studies the `opencode` plugin system and translates the useful patterns into a Ironworks-shaped design.
 
-Assumption for this document: Paperclip is a single-tenant operator-controlled instance. Plugin installation should therefore be global across the instance. "Companies" are still first-class Paperclip objects, but they are organizational records, not tenant-isolation boundaries for plugin trust or installation.
+Assumption for this document: Ironworks is a single-tenant operator-controlled instance. Plugin installation should therefore be global across the instance. "Companies" are still first-class Ironworks objects, but they are organizational records, not tenant-isolation boundaries for plugin trust or installation.
 
 ## Executive Summary
 
@@ -17,20 +17,20 @@ Assumption for this document: Paperclip is a single-tenant operator-controlled i
 - they can extend provider auth flows
 - they run in-process and can mutate runtime behavior directly
 
-That model works well for a local coding tool. It should not be copied literally into Paperclip.
+That model works well for a local coding tool. It should not be copied literally into Ironworks.
 
 The main conclusion is:
 
-- Paperclip should copy `opencode`'s typed SDK, deterministic loading, low authoring friction, and clear extension surfaces.
-- Paperclip should not copy `opencode`'s trust model, project-local plugin loading, "override by name collision" behavior, or arbitrary in-process mutation hooks for core business logic.
-- Paperclip should use multiple extension classes instead of one generic plugin bag:
+- Ironworks should copy `opencode`'s typed SDK, deterministic loading, low authoring friction, and clear extension surfaces.
+- Ironworks should not copy `opencode`'s trust model, project-local plugin loading, "override by name collision" behavior, or arbitrary in-process mutation hooks for core business logic.
+- Ironworks should use multiple extension classes instead of one generic plugin bag:
   - trusted in-process modules for low-level platform concerns like agent adapters, storage providers, secret providers, and possibly run-log backends
   - out-of-process plugins for most third-party integrations like Linear, GitHub Issues, Grafana, Stripe, and schedulers
   - plugin-contributed agent tools (namespaced, not override-by-collision)
   - plugin-shipped React UI loaded into host extension slots via a typed bridge
   - a typed event bus with server-side filtering and plugin-to-plugin events, plus scheduled jobs for automation
 
-If Paperclip does this well, the examples you listed become straightforward:
+If Ironworks does this well, the examples you listed become straightforward:
 
 - file browser / terminal / git workflow / child process tracking become workspace plugins that resolve paths from the host and handle OS operations directly
 - Linear / GitHub / Grafana / Stripe become connector plugins
@@ -54,7 +54,7 @@ Primary files reviewed:
 - `https://github.com/anomalyco/opencode/blob/a965a062595403a8e0083e85770315d5dc9628ab/packages/web/src/content/docs/custom-tools.mdx`
 - `https://github.com/anomalyco/opencode/blob/a965a062595403a8e0083e85770315d5dc9628ab/packages/web/src/content/docs/ecosystem.mdx`
 
-Relevant Paperclip files reviewed for current extension seams:
+Relevant Ironworks files reviewed for current extension seams:
 
 - [server/src/adapters/registry.ts](../../server/src/adapters/registry.ts)
 - [ui/src/adapters/registry.ts](../../ui/src/adapters/registry.ts)
@@ -192,9 +192,9 @@ The most aggressive part of the design:
 - custom tools can override built-in tools by name
 
 That is very powerful for a local coding assistant.
-It is too dangerous for Paperclip core actions.
+It is too dangerous for Ironworks core actions.
 
-However, the concept of plugins contributing agent-usable tools is very valuable for Paperclip — as long as plugin tools are namespaced (cannot shadow core tools) and capability-gated.
+However, the concept of plugins contributing agent-usable tools is very valuable for Ironworks — as long as plugin tools are namespaced (cannot shadow core tools) and capability-gated.
 
 ## 7. Auth is also a plugin surface
 
@@ -237,7 +237,7 @@ This is one of the best parts of the design.
 - host internals can evolve behind the loader
 - runtime code and plugin code have a clean contract boundary
 
-Paperclip should absolutely do this.
+Ironworks should absolutely do this.
 
 ## 2. Deterministic loading and precedence
 
@@ -247,7 +247,7 @@ Paperclip should absolutely do this.
 - how config merges
 - what order wins
 
-Paperclip should copy this discipline.
+Ironworks should copy this discipline.
 
 ## 3. Low-ceremony authoring
 
@@ -268,29 +268,29 @@ The `tool()` helper is excellent:
 - easy to document
 - easy for runtime validation
 
-Paperclip should adopt this style for plugin actions, automations, and UI schemas.
+Ironworks should adopt this style for plugin actions, automations, and UI schemas.
 
 ## 5. Built-in features and plugins use similar shapes
 
 `opencode` uses the same hook system for internal and external plugin-style behavior in several places.
 That reduces special cases.
 
-Paperclip can benefit from that with adapters, secret backends, storage providers, and connector modules.
+Ironworks can benefit from that with adapters, secret backends, storage providers, and connector modules.
 
 ## 6. Incremental extension, not giant abstraction upfront
 
 `opencode` did not design a giant marketplace platform first.
 It added concrete extension points that real features needed.
 
-That is the correct mindset for Paperclip too.
+That is the correct mindset for Ironworks too.
 
-## What Paperclip Should Not Copy Directly
+## What Ironworks Should Not Copy Directly
 
 ## 1. In-process arbitrary plugin code as the default
 
 `opencode` is basically a local agent runtime, so unsandboxed plugin execution is acceptable for its audience.
 
-Paperclip is a control plane for an operator-managed instance with company objects.
+Ironworks is a control plane for an operator-managed instance with company objects.
 The risk profile is different:
 
 - secrets matter
@@ -304,12 +304,12 @@ Default third-party plugins should not run with unrestricted in-process access t
 
 `opencode` has project-local plugin folders because the tool is centered around a codebase.
 
-Paperclip is not project-scoped. It is instance-scoped.
+Ironworks is not project-scoped. It is instance-scoped.
 The comparable unit is:
 
 - instance-installed plugin package
 
-Paperclip should not auto-load arbitrary code from a workspace repo like `.paperclip/plugins` or project directories.
+Ironworks should not auto-load arbitrary code from a workspace repo like `.ironworks/plugins` or project directories.
 
 ## 3. Arbitrary mutation hooks on core business decisions
 
@@ -322,7 +322,7 @@ Hooks like:
 
 make sense in `opencode`.
 
-For Paperclip, equivalent hooks into:
+For Ironworks, equivalent hooks into:
 
 - approval decisions
 - issue checkout semantics
@@ -337,7 +337,7 @@ Core invariants should stay in core code, not become hook-rewritable.
 
 Allowing a plugin to replace a built-in tool by name is useful in a local agent product.
 
-Paperclip should not allow plugins to silently replace:
+Ironworks should not allow plugins to silently replace:
 
 - core routes
 - core mutating actions
@@ -351,7 +351,7 @@ Extension should be additive or explicitly delegated, never accidental shadowing
 ## 5. Auto-install and execute from user config
 
 `opencode`'s "install dependencies at startup" flow is ergonomic.
-For Paperclip it would be risky because it combines:
+For Ironworks it would be risky because it combines:
 
 - package installation
 - code loading
@@ -359,26 +359,26 @@ For Paperclip it would be risky because it combines:
 
 inside the control-plane server startup path.
 
-Paperclip should require an explicit operator install step.
+Ironworks should require an explicit operator install step.
 
-## Why Paperclip Needs A Different Shape
+## Why Ironworks Needs A Different Shape
 
 The products are solving different problems.
 
-| Topic | OpenCode | Paperclip |
+| Topic | OpenCode | Ironworks |
 |---|---|---|
 | Primary unit | local project/worktree | single-tenant operator instance with company objects |
-| Trust assumption | local power user on own machine | operator managing one trusted Paperclip instance |
+| Trust assumption | local power user on own machine | operator managing one trusted Ironworks instance |
 | Failure blast radius | local session/runtime | entire company control plane |
 | Extension style | mutate runtime behavior freely | preserve governance and auditability |
 | UI model | local app can load local behavior | board UI must stay coherent and safe |
 | Security model | host-trusted local plugins | needs capability boundaries and auditability |
 
-That means Paperclip should borrow the good ideas from `opencode` but use a stricter architecture.
+That means Ironworks should borrow the good ideas from `opencode` but use a stricter architecture.
 
-## Paperclip Already Has Useful Pre-Plugin Seams
+## Ironworks Already Has Useful Pre-Plugin Seams
 
-Paperclip has several extension-like seams already:
+Ironworks has several extension-like seams already:
 
 - server adapter registry: [server/src/adapters/registry.ts](../../server/src/adapters/registry.ts)
 - UI adapter registry: [ui/src/adapters/registry.ts](../../ui/src/adapters/registry.ts)
@@ -388,10 +388,10 @@ Paperclip has several extension-like seams already:
 - activity log and live event emission: [server/src/services/activity-log.ts](../../server/src/services/activity-log.ts)
 
 This is good news.
-Paperclip does not need to invent extensibility from scratch.
+Ironworks does not need to invent extensibility from scratch.
 It needs to unify and harden existing seams.
 
-## Recommended Paperclip Plugin Model
+## Recommended Ironworks Plugin Model
 
 ## 1. Use multiple extension classes
 
@@ -411,7 +411,7 @@ This split is the most important design recommendation in this report.
 
 ## 2. Keep low-level modules separate from third-party plugins
 
-Paperclip already has this pattern implicitly:
+Ironworks already has this pattern implicitly:
 
 - adapters are one thing
 - storage providers are another
@@ -422,7 +422,7 @@ Keep that separation.
 I would formalize it like this:
 
 - `module` means trusted code loaded by the host for low-level runtime services
-- `plugin` means integration code that talks to Paperclip through a typed plugin protocol and capability model
+- `plugin` means integration code that talks to Ironworks through a typed plugin protocol and capability model
 
 This avoids trying to force Stripe, a PTY terminal, and a new agent adapter into the same abstraction.
 
@@ -438,7 +438,7 @@ For third-party plugins, the primary API should be:
 - contribute tools that agents can use during runs
 - write plugin-owned state
 - add additive UI surfaces
-- invoke explicit Paperclip actions through the API
+- invoke explicit Ironworks actions through the API
 
 Do not make third-party plugins responsible for:
 
@@ -460,7 +460,7 @@ Plugins ship their own React UI as a bundled module inside `dist/ui/`. The host 
 3. The plugin component fetches data from its own worker via the bridge and renders it however it wants.
 4. The host enforces capability gates through the bridge — if the worker doesn't have a capability, the bridge rejects the call.
 
-**What the host controls:** where plugin components appear, the bridge API, capability enforcement, and shared UI primitives (`@paperclipai/plugin-sdk/ui`) with design tokens and common components.
+**What the host controls:** where plugin components appear, the bridge API, capability enforcement, and shared UI primitives (`@ironworksai/plugin-sdk/ui`) with design tokens and common components.
 
 **What the plugin controls:** how to render its data, what data to fetch, what actions to expose, and whether to use the host's shared components or build entirely custom UI.
 
@@ -479,17 +479,17 @@ Later, if untrusted third-party plugins become common, the host can move to ifra
 ## 5. Make installation global and keep mappings/config separate
 
 `opencode` is mostly user-level local config.
-Paperclip should treat plugin installation as a global instance-level action.
+Ironworks should treat plugin installation as a global instance-level action.
 
 Examples:
 
-- install `@paperclip/plugin-linear` once
+- install `@ironworks/plugin-linear` once
 - make it available everywhere immediately
-- optionally store mappings over Paperclip objects if one company maps to a different Linear team than another
+- optionally store mappings over Ironworks objects if one company maps to a different Linear team than another
 
 ## 6. Use project workspaces as the primary anchor for local tooling
 
-Paperclip already has a concrete workspace model for projects:
+Ironworks already has a concrete workspace model for projects:
 
 - projects expose `workspaces` and `primaryWorkspace`
 - the database already has `project_workspaces`
@@ -514,7 +514,7 @@ In other words:
 
 ## 7. Let plugins contribute agent tools
 
-`opencode` makes tools a first-class extension point. This is one of the highest-value surfaces for Paperclip too.
+`opencode` makes tools a first-class extension point. This is one of the highest-value surfaces for Ironworks too.
 
 A Linear plugin should be able to contribute a `search-linear-issues` tool that agents use during runs. A git plugin should contribute `create-branch` and `get-diff`. A file browser plugin should contribute `read-file` and `list-directory`.
 
@@ -529,7 +529,7 @@ This is a natural fit — the plugin already has the SDK context, the external A
 
 ## 8. Support plugin-to-plugin events
 
-Plugins should be able to emit custom events that other plugins can subscribe to. For example, the git plugin detects a push and emits `plugin.@paperclip/plugin-git.push-detected`. The GitHub Issues plugin subscribes to that event and updates PR links.
+Plugins should be able to emit custom events that other plugins can subscribe to. For example, the git plugin detects a push and emits `plugin.@ironworks/plugin-git.push-detected`. The GitHub Issues plugin subscribes to that event and updates PR links.
 
 This avoids plugins needing to coordinate through shared state or external channels. The host routes plugin events through the same event bus with the same delivery semantics as core events.
 
@@ -572,15 +572,15 @@ This is critical for operators. Without observability, debugging plugin issues r
 
 ## 13. Ship a test harness and starter template
 
-A `@paperclipai/plugin-test-harness` package should provide a mock host with in-memory stores, synthetic event emission, and `getData`/`performAction`/`executeTool` simulation. Plugin authors should be able to write unit tests without a running Paperclip instance.
+A `@ironworksai/plugin-test-harness` package should provide a mock host with in-memory stores, synthetic event emission, and `getData`/`performAction`/`executeTool` simulation. Plugin authors should be able to write unit tests without a running Ironworks instance.
 
-A `create-paperclip-plugin` CLI should scaffold a working plugin with manifest, worker, UI bundle, test file, and build config.
+A `create-ironworks-plugin` CLI should scaffold a working plugin with manifest, worker, UI bundle, test file, and build config.
 
-Low authoring friction was called out as one of `opencode`'s best qualities. The test harness and starter template are how Paperclip achieves the same.
+Low authoring friction was called out as one of `opencode`'s best qualities. The test harness and starter template are how Ironworks achieves the same.
 
 ## 14. Support hot plugin lifecycle
 
-Plugin install, uninstall, upgrade, and config changes should take effect without restarting the Paperclip server. This is critical for developer workflow and operator experience.
+Plugin install, uninstall, upgrade, and config changes should take effect without restarting the Ironworks server. This is critical for developer workflow and operator experience.
 
 The out-of-process worker architecture makes this natural:
 
@@ -595,12 +595,12 @@ Each worker process is independent — starting, stopping, or replacing one work
 
 ## 15. Define SDK versioning and compatibility
 
-`opencode` does not have a formal SDK versioning story because plugins run in-process and are effectively pinned to the current runtime. Paperclip's out-of-process model means plugins may be built against one SDK version and run on a host that has moved forward. This needs explicit rules.
+`opencode` does not have a formal SDK versioning story because plugins run in-process and are effectively pinned to the current runtime. Ironworks's out-of-process model means plugins may be built against one SDK version and run on a host that has moved forward. This needs explicit rules.
 
 Recommended approach:
 
-- **Single SDK package**: `@paperclipai/plugin-sdk` with subpath exports — root for worker code, `/ui` for frontend code. One dependency, one version, one changelog.
-- **SDK major version = API version**: `@paperclipai/plugin-sdk@2.x` targets `apiVersion: 2`. Plugins built with SDK 1.x declare `apiVersion: 1` and continue to work.
+- **Single SDK package**: `@ironworksai/plugin-sdk` with subpath exports — root for worker code, `/ui` for frontend code. One dependency, one version, one changelog.
+- **SDK major version = API version**: `@ironworksai/plugin-sdk@2.x` targets `apiVersion: 2`. Plugins built with SDK 1.x declare `apiVersion: 1` and continue to work.
 - **Host multi-version support**: The host supports at least the current and one previous `apiVersion` simultaneously with separate IPC protocol handlers per version.
 - **`sdkVersion` in manifest**: Plugins declare a semver range (e.g. `">=1.4.0 <2.0.0"`). The host validates this at install time.
 - **Deprecation timeline**: Previous API versions get at least 6 months of continued support after a new version ships. The host logs deprecation warnings and shows a banner on the plugin settings page.
@@ -608,15 +608,15 @@ Recommended approach:
 - **UI surface versioned with worker**: Both worker and UI surfaces are in the same package, so they version together. Breaking changes to shared UI components require a major version bump just like worker API changes.
 - **Published compatibility matrix**: The host publishes a matrix of supported API versions and SDK ranges, queryable via API.
 
-## A Concrete SDK Shape For Paperclip
+## A Concrete SDK Shape For Ironworks
 
 An intentionally narrow first pass could look like this:
 
 ```ts
-import { definePlugin, z } from "@paperclipai/plugin-sdk";
+import { definePlugin, z } from "@ironworksai/plugin-sdk";
 
 export default definePlugin({
-  id: "@paperclip/plugin-linear",
+  id: "@ironworks/plugin-linear",
   version: "0.1.0",
   categories: ["connector", "ui"],
   capabilities: [
@@ -639,7 +639,7 @@ export default definePlugin({
   }),
   async register(ctx) {
     ctx.jobs.register("linear-pull", { cron: "*/5 * * * *" }, async (job) => {
-      // sync Linear issues into plugin-owned state or explicit Paperclip entities
+      // sync Linear issues into plugin-owned state or explicit Ironworks entities
     });
 
     // subscribe with optional server-side filter
@@ -648,7 +648,7 @@ export default definePlugin({
     });
 
     // subscribe to events from another plugin
-    ctx.events.on("plugin.@paperclip/plugin-git.push-detected", async (event) => {
+    ctx.events.on("plugin.@ironworks/plugin-git.push-detected", async (event) => {
       // react to the git plugin detecting a push
     });
 
@@ -679,7 +679,7 @@ The plugin's UI bundle (separate from the worker) might look like:
 
 ```tsx
 // dist/ui/index.tsx
-import { usePluginData, usePluginAction, MetricCard, ErrorBoundary } from "@paperclipai/plugin-sdk/ui";
+import { usePluginData, usePluginAction, MetricCard, ErrorBoundary } from "@ironworksai/plugin-sdk/ui";
 
 export function DashboardWidget({ context }: PluginWidgetProps) {
   const { data, loading, error } = usePluginData("sync-health", { companyId: context.companyId });
@@ -762,7 +762,7 @@ The host does not wrap or proxy these operations. This keeps the core lean — n
 
 ## Governance And Safety Requirements
 
-Any Paperclip plugin system has to preserve core control-plane invariants from the repo docs.
+Any Ironworks plugin system has to preserve core control-plane invariants from the repo docs.
 
 That means:
 
@@ -799,14 +799,14 @@ The board/operator sees this before installation.
 ## 2. Global installation
 
 A plugin is installed once and becomes available across the instance.
-If it needs mappings over specific Paperclip objects, those are plugin data, not enable/disable boundaries.
+If it needs mappings over specific Ironworks objects, those are plugin data, not enable/disable boundaries.
 
 ## 3. Activity logging
 
 Plugin-originated mutations should flow through the same activity log mechanism, with a dedicated `plugin` actor type:
 
 - `actor_type = plugin`
-- `actor_id = <plugin-id>` (e.g. `@paperclip/plugin-linear`)
+- `actor_id = <plugin-id>` (e.g. `@ironworks/plugin-linear`)
 
 ## 4. Health and failure reporting
 
@@ -842,7 +842,7 @@ That is too much power too early.
 
 The right mental model is:
 
-- reuse core tables when the data is clearly part of Paperclip itself
+- reuse core tables when the data is clearly part of Ironworks itself
 - use generic extension tables for most plugin-owned state
 - only allow plugin-specific tables later, and only for trusted platform modules or a tightly controlled migration workflow
 
@@ -850,11 +850,11 @@ The right mental model is:
 
 ### 1. Core tables stay core
 
-If a concept is becoming part of Paperclip's actual product model, it should get a normal first-party table.
+If a concept is becoming part of Ironworks's actual product model, it should get a normal first-party table.
 
 Examples:
 
-- `project_workspaces` is already a core table because project workspaces are now part of Paperclip itself
+- `project_workspaces` is already a core table because project workspaces are now part of Ironworks itself
 - if a future "project git state" becomes a core feature rather than plugin-owned metadata, that should also be a first-party table
 
 ### 2. Most plugins should start in generic extension tables
@@ -869,9 +869,9 @@ This keeps the system manageable:
 - easier operator review
 - fewer chances for plugin schema drift to break the instance
 
-### 3. Scope plugin data to Paperclip objects before adding custom schemas
+### 3. Scope plugin data to Ironworks objects before adding custom schemas
 
-A lot of plugin data naturally hangs off existing Paperclip objects:
+A lot of plugin data naturally hangs off existing Ironworks objects:
 
 - project workspace plugin state should often scope to `project` or `project_workspace`
 - issue sync state should scope to `issue`
@@ -882,7 +882,7 @@ That gives a good default keying model before introducing custom tables.
 
 ### 4. Add trusted module migrations later, not arbitrary plugin migrations now
 
-If Paperclip eventually needs extension-owned tables, I would only allow that for:
+If Ironworks eventually needs extension-owned tables, I would only allow that for:
 
 - trusted first-party packages
 - trusted platform modules
@@ -1017,7 +1017,7 @@ This is a useful middle ground:
 
 ## Workspace File Browser
 
-Package idea: `@paperclip/plugin-workspace-files`
+Package idea: `@ironworks/plugin-workspace-files`
 
 This plugin lets the board inspect project workspaces, agent workspaces, generated artifacts, and issue-related files without dropping to the shell. It is useful for:
 
@@ -1094,7 +1094,7 @@ Optional event subscriptions:
 
 ## Workspace Terminal
 
-Package idea: `@paperclip/plugin-terminal`
+Package idea: `@ironworks/plugin-terminal`
 
 This plugin gives the board a controlled terminal UI for project workspaces and agent workspaces. It is useful for:
 
@@ -1165,7 +1165,7 @@ Optional event subscriptions:
 
 ## Git Workflow
 
-Package idea: `@paperclip/plugin-git`
+Package idea: `@ironworks/plugin-git`
 
 This plugin adds repo-aware workflow tooling around issues and workspaces. It is useful for:
 
@@ -1216,8 +1216,8 @@ Main screens and interactions:
 Core workflows:
 
 - Board creates a branch from an issue and ties it to the project's primary workspace.
-- Board opens a project page and reviews the diff for that project's workspace without leaving Paperclip.
-- Board reviews the diff after a run without leaving Paperclip.
+- Board opens a project page and reviews the diff for that project's workspace without leaving Ironworks.
+- Board reviews the diff after a run without leaving Ironworks.
 - Board opens a worktree list to understand parallel branches across agents.
 
 ### Hooks needed
@@ -1232,7 +1232,7 @@ Recommended capabilities and extension points:
 - `projects.read`
 - `project.workspaces.read`
 - optional `agent.tools.register` (e.g. `create-branch`, `get-diff`, `get-status`)
-- optional `events.emit` (e.g. `plugin.@paperclip/plugin-git.push-detected`)
+- optional `events.emit` (e.g. `plugin.@ironworks/plugin-git.push-detected`)
 - `activity.log.write`
 
 The plugin resolves workspace paths through `ctx.projects` and handles all git operations (status, diff, log, branch create, commit, worktree create, push) directly using git CLI or a git library.
@@ -1243,18 +1243,18 @@ Optional event subscriptions:
 - `events.subscribe(issue.updated)`
 - `events.subscribe(agent.run.finished)`
 
-The git plugin can emit `plugin.@paperclip/plugin-git.push-detected` events that other plugins (e.g. GitHub Issues) subscribe to for cross-plugin coordination.
+The git plugin can emit `plugin.@ironworks/plugin-git.push-detected` events that other plugins (e.g. GitHub Issues) subscribe to for cross-plugin coordination.
 
 Note: GitHub/GitLab PR creation should likely live in a separate connector plugin rather than overloading the local git plugin.
 
 ## Linear Issue Tracking
 
-Package idea: `@paperclip/plugin-linear`
+Package idea: `@ironworks/plugin-linear`
 
-This plugin syncs Paperclip work with Linear. It is useful for:
+This plugin syncs Ironworks work with Linear. It is useful for:
 
 - importing backlog from Linear
-- linking Paperclip issues to Linear issues
+- linking Ironworks issues to Linear issues
 - syncing status, comments, and assignees
 - mapping company goals/projects to external product planning
 - giving board operators a single place to see sync health
@@ -1272,7 +1272,7 @@ Main screens and interactions:
 - Plugin settings:
   - Linear API token secret ref
   - workspace/team/project mappings
-  - status mapping between Paperclip and Linear
+  - status mapping between Ironworks and Linear
   - sync direction: import only, export only, bidirectional
   - comment sync toggle
 - Linear overview page:
@@ -1293,8 +1293,8 @@ Main screens and interactions:
 
 Core workflows:
 
-- Board enables the plugin, maps a Linear team, and imports a backlog into Paperclip.
-- Paperclip issue status changes push to Linear and Linear comments arrive back through webhooks.
+- Board enables the plugin, maps a Linear team, and imports a backlog into Ironworks.
+- Ironworks issue status changes push to Linear and Linear comments arrive back through webhooks.
 - Board resolves mapping conflicts from the plugin page instead of silently drifting state.
 
 ### Hooks needed
@@ -1329,15 +1329,15 @@ Important constraint:
 
 ## GitHub Issue Tracking
 
-Package idea: `@paperclip/plugin-github-issues`
+Package idea: `@ironworks/plugin-github-issues`
 
-This plugin syncs Paperclip issues with GitHub Issues and optionally links PRs. It is useful for:
+This plugin syncs Ironworks issues with GitHub Issues and optionally links PRs. It is useful for:
 
 - importing repo backlogs
 - mirroring issue status and comments
-- linking PRs to Paperclip issues
+- linking PRs to Ironworks issues
 - tracking cross-repo work from inside one company view
-- bridging engineering workflow with Paperclip task governance
+- bridging engineering workflow with Ironworks task governance
 
 ### UX
 
@@ -1354,7 +1354,7 @@ Main screens and interactions:
   - org/repo mappings
   - label/status mapping
   - whether PR linking is enabled
-  - whether new Paperclip issues should create GitHub issues automatically
+  - whether new Ironworks issues should create GitHub issues automatically
 - GitHub overview page:
   - repo mapping list
   - sync health and recent webhook events
@@ -1365,15 +1365,15 @@ Main screens and interactions:
   - actions: create GitHub issue, link existing issue, unlink, resync
   - comment/status sync timeline
 - Dashboard widget:
-  - open PRs linked to active Paperclip issues
+  - open PRs linked to active Ironworks issues
   - webhook failures
   - sync lag metrics
 
 Core workflows:
 
-- Board imports GitHub Issues for a repo into Paperclip.
-- GitHub webhooks update status/comment state in Paperclip.
-- A PR is linked back to the Paperclip issue so the board can follow delivery status.
+- Board imports GitHub Issues for a repo into Ironworks.
+- GitHub webhooks update status/comment state in Ironworks.
+- A PR is linked back to the Ironworks issue so the board can follow delivery status.
 
 ### Hooks needed
 
@@ -1387,7 +1387,7 @@ Recommended capabilities and extension points:
 - `events.subscribe(issue.created)`
 - `events.subscribe(issue.updated)`
 - `events.subscribe(issue.comment.created)`
-- `events.subscribe(plugin.@paperclip/plugin-git.push-detected)` (cross-plugin coordination)
+- `events.subscribe(plugin.@ironworks/plugin-git.push-detected)` (cross-plugin coordination)
 - `jobs.schedule`
 - `webhooks.receive`
 - `http.outbound`
@@ -1405,14 +1405,14 @@ Important constraint:
 
 ## Grafana Metrics
 
-Package idea: `@paperclip/plugin-grafana`
+Package idea: `@ironworks/plugin-grafana`
 
-This plugin surfaces external metrics and dashboards inside Paperclip. It is useful for:
+This plugin surfaces external metrics and dashboards inside Ironworks. It is useful for:
 
 - company KPI visibility
 - infrastructure/incident monitoring
 - showing deploy, traffic, latency, or revenue charts next to work
-- creating Paperclip issues from anomalous metrics
+- creating Ironworks issues from anomalous metrics
 
 ### UX
 
@@ -1432,7 +1432,7 @@ Main screens and interactions:
 - Dashboard widgets:
   - one or more metric cards on the main dashboard
   - quick trend view and last refresh time
-  - link out to Grafana and link in to the full Paperclip plugin page
+  - link out to Grafana and link in to the full Ironworks plugin page
 - Full metrics page:
   - selected dashboard panels embedded or proxied
   - metric selector
@@ -1443,9 +1443,9 @@ Main screens and interactions:
 
 Core workflows:
 
-- Board sees service degradation or business KPI movement directly on the Paperclip dashboard.
+- Board sees service degradation or business KPI movement directly on the Ironworks dashboard.
 - Board clicks into the full metrics page to inspect the relevant Grafana panels.
-- Board creates a Paperclip issue from a threshold breach with a metric snapshot attached.
+- Board creates a Ironworks issue from a threshold breach with a metric snapshot attached.
 
 ### Hooks needed
 
@@ -1472,11 +1472,11 @@ Optional event subscriptions:
 Important constraint:
 
 - start read-only first
-- do not make Grafana alerting logic part of Paperclip core; keep it as additive signal and issue creation
+- do not make Grafana alerting logic part of Ironworks core; keep it as additive signal and issue creation
 
 ## Child Process / Server Tracking
 
-Package idea: `@paperclip/plugin-runtime-processes`
+Package idea: `@ironworks/plugin-runtime-processes`
 
 This plugin tracks long-lived local processes and dev servers started in project workspaces. It is useful for:
 
@@ -1549,9 +1549,9 @@ Optional event subscriptions:
 
 ## Stripe Revenue Tracking
 
-Package idea: `@paperclip/plugin-stripe`
+Package idea: `@ironworks/plugin-stripe`
 
-This plugin pulls Stripe revenue and subscription data into Paperclip. It is useful for:
+This plugin pulls Stripe revenue and subscription data into Ironworks. It is useful for:
 
 - showing MRR and churn next to company goals
 - tracking trials, conversions, and failed payments
@@ -1590,7 +1590,7 @@ Core workflows:
 - Board enables the plugin and connects a Stripe account.
 - Webhooks and scheduled reconciliation keep plugin state current.
 - Revenue widgets appear on the main dashboard and can be linked to company goals.
-- Failed payment spikes or churn events can generate Paperclip issues for follow-up.
+- Failed payment spikes or churn events can generate Ironworks issues for follow-up.
 
 ### Hooks needed
 
@@ -1611,7 +1611,7 @@ Recommended capabilities and extension points:
 
 Important constraint:
 
-- Stripe data should stay additive to Paperclip core
+- Stripe data should stay additive to Ironworks core
 - it should not leak into core budgeting logic, which is specifically about model/token spend in V1
 
 ## Specific Patterns From OpenCode Worth Adopting
@@ -1667,7 +1667,7 @@ Build:
 - scheduled jobs
 - webhook endpoints
 - activity logging helpers
-- plugin UI bundle loading, host bridge, `@paperclipai/plugin-sdk/ui`
+- plugin UI bundle loading, host bridge, `@ironworksai/plugin-sdk/ui`
 - extension slot mounting for pages, tabs, widgets, sidebar entries
 - auto-generated settings form from `instanceConfigSchema`
 - bridge error propagation (`PluginBridgeError`)
@@ -1677,7 +1677,7 @@ Build:
 - graceful shutdown with configurable deadlines
 - plugin logging and health dashboard
 - uninstall with data retention grace period
-- `@paperclipai/plugin-test-harness` and `create-paperclip-plugin` starter template
+- `@ironworksai/plugin-test-harness` and `create-ironworks-plugin` starter template
 - hot plugin lifecycle (install, uninstall, upgrade, config change without server restart)
 - SDK versioning with multi-version host support and deprecation policy
 
@@ -1707,8 +1707,8 @@ Only after Phase 1 is stable:
 
 If I had to collapse this report into one architectural decision, it would be:
 
-Paperclip should not implement "an OpenCode-style generic in-process hook system."
-Paperclip should implement "a plugin platform with multiple trust tiers":
+Ironworks should not implement "an OpenCode-style generic in-process hook system."
+Ironworks should implement "a plugin platform with multiple trust tiers":
 
 - trusted platform modules for low-level runtime integration
 - typed out-of-process plugins for instance-wide integrations and automation
@@ -1723,7 +1723,7 @@ Paperclip should implement "a plugin platform with multiple trust tiers":
 
 That gets the upside of `opencode`'s extensibility without importing the wrong threat model.
 
-## Concrete Next Steps I Would Take In Paperclip
+## Concrete Next Steps I Would Take In Ironworks
 
 1. Write a short extension architecture RFC that formalizes the distinction between `platform modules` and `plugins`.
 2. Introduce a small plugin manifest type in `packages/shared` and a `plugins` install/config section in the instance config.
@@ -1732,7 +1732,7 @@ That gets the upside of `opencode`'s extensibility without importing the wrong t
 5. Add agent tool contributions — plugins register namespaced tools that agents can call during runs.
 6. Add plugin observability: structured logging via `ctx.logger`, health dashboard, internal health events.
 7. Add graceful shutdown policy and uninstall data lifecycle with retention grace period.
-8. Ship `@paperclipai/plugin-test-harness` and `create-paperclip-plugin` starter template.
+8. Ship `@ironworksai/plugin-test-harness` and `create-ironworks-plugin` starter template.
 9. Implement hot plugin lifecycle — install, uninstall, upgrade, and config changes without server restart.
 10. Define SDK versioning policy — semver, multi-version host support, deprecation timeline, migration guides, published compatibility matrix.
 11. Build workspace plugins (file browser, terminal, git, process tracking) that resolve workspace paths from the host and handle OS-level operations directly.

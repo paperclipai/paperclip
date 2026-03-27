@@ -11,12 +11,12 @@ services:
       HOME: "/home/reviewer"
       CODEX_HOME: "/home/reviewer/.codex"
       CLAUDE_HOME: "/home/reviewer/.claude"
-      PAPERCLIP_HOME: "/home/reviewer/.paperclip-review"
+      IRONWORKS_HOME: "/home/reviewer/.ironworks-review"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
     ports:
-      - "${REVIEW_PAPERCLIP_PORT:-3100}:3100"
+      - "${REVIEW_IRONWORKS_PORT:-3100}:3100"
       - "${REVIEW_VITE_PORT:-5173}:5173"
     volumes:
       - review-home:/home/reviewer

@@ -1,4 +1,4 @@
-# Paperclip V1 Implementation Spec
+# Ironworks V1 Implementation Spec
 
 Status: Implementation contract for first release (V1)
 Date: 2026-02-17
@@ -13,7 +13,7 @@ When there is a conflict, `SPEC-implementation.md` controls V1 behavior.
 
 ## 2. V1 Outcomes
 
-Paperclip V1 must provide a full control-plane loop for autonomous agents:
+Ironworks V1 must provide a full control-plane loop for autonomous agents:
 
 1. A human board creates a company and defines goals.
 2. The board creates and manages agents in an org tree.
@@ -92,11 +92,11 @@ V1 implementation extends this baseline into a company-centric, governance-aware
 ## 6.2 Data Stores
 
 - Primary: PostgreSQL
-- Local default: embedded PostgreSQL at `~/.paperclip/instances/default/db`
+- Local default: embedded PostgreSQL at `~/.ironworks/instances/default/db`
 - Optional local prod-like: Docker Postgres
 - Optional hosted: Supabase/Postgres-compatible
 - File/object storage:
-  - local default: `~/.paperclip/instances/default/data/storage` (`local_disk`)
+  - local default: `~/.ironworks/instances/default/data/storage` (`local_disk`)
   - cloud: S3-compatible object storage (`s3`)
 
 ## 6.3 Background Processing
@@ -846,7 +846,7 @@ V1 supports company import/export using a portable package contract:
 
 - markdown-first package rooted at `COMPANY.md`
 - implicit folder discovery by convention
-- `.paperclip.yaml` sidecar for Paperclip-specific fidelity
+- `.ironworks.yaml` sidecar for Ironworks-specific fidelity
 - canonical base package is vendor-neutral and aligned with `docs/companies/companies-spec.md`
 - common conventions:
   - `agents/<slug>/AGENTS.md`
@@ -858,11 +858,11 @@ V1 supports company import/export using a portable package contract:
 
 Export/import behavior in V1:
 
-- export emits a clean vendor-neutral markdown package plus `.paperclip.yaml`
+- export emits a clean vendor-neutral markdown package plus `.ironworks.yaml`
 - projects and starter tasks are opt-in export content rather than default package content
-- recurring `TASK.md` entries use `recurring: true` in the base package and Paperclip routine fidelity in `.paperclip.yaml`
-- Paperclip imports recurring task packages as routines instead of downgrading them to one-time issues
-- export strips environment-specific paths (`cwd`, local instruction file paths, inline prompt duplication) while preserving portable project repo/workspace metadata such as `repoUrl`, refs, and workspace-policy references keyed in `.paperclip.yaml`
+- recurring `TASK.md` entries use `recurring: true` in the base package and Ironworks routine fidelity in `.ironworks.yaml`
+- Ironworks imports recurring task packages as routines instead of downgrading them to one-time issues
+- export strips environment-specific paths (`cwd`, local instruction file paths, inline prompt duplication) while preserving portable project repo/workspace metadata such as `repoUrl`, refs, and workspace-policy references keyed in `.ironworks.yaml`
 - export never includes secret values; env inputs are reported as portable declarations instead
 - import supports target modes:
   - create a new company

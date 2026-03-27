@@ -9,7 +9,7 @@ import {
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { plugins } from "./plugins.js";
-import type { PluginJobStatus, PluginJobRunStatus, PluginJobRunTrigger } from "@paperclipai/shared";
+import type { PluginJobStatus, PluginJobRunStatus, PluginJobRunTrigger } from "@ironworksai/shared";
 
 /**
  * `plugin_jobs` table — registration and runtime configuration for

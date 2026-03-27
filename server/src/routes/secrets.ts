@@ -1,12 +1,12 @@
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@ironworksai/db";
 import {
   SECRET_PROVIDERS,
   type SecretProvider,
   createSecretSchema,
   rotateSecretSchema,
   updateSecretSchema,
-} from "@paperclipai/shared";
+} from "@ironworksai/shared";
 import { validate } from "../middleware/validate.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { logActivity, secretService } from "../services/index.js";
@@ -14,7 +14,7 @@ import { logActivity, secretService } from "../services/index.js";
 export function secretRoutes(db: Db) {
   const router = Router();
   const svc = secretService(db);
-  const configuredDefaultProvider = process.env.PAPERCLIP_SECRETS_PROVIDER;
+  const configuredDefaultProvider = process.env.IRONWORKS_SECRETS_PROVIDER;
   const defaultProvider = (
     configuredDefaultProvider && SECRET_PROVIDERS.includes(configuredDefaultProvider as SecretProvider)
       ? configuredDefaultProvider

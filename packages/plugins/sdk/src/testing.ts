@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type {
-  PaperclipPluginManifestV1,
+  IronworksPluginManifestV1,
   PluginCapability,
   PluginEventType,
   Company,
@@ -9,7 +9,7 @@ import type {
   IssueComment,
   Agent,
   Goal,
-} from "@paperclipai/shared";
+} from "@ironworksai/shared";
 import type {
   EventFilter,
   PluginContext,
@@ -28,7 +28,7 @@ import type {
 
 export interface TestHarnessOptions {
   /** Plugin manifest used to seed capability checks and metadata. */
-  manifest: PaperclipPluginManifestV1;
+  manifest: IronworksPluginManifestV1;
   /** Optional capability override. Defaults to `manifest.capabilities`. */
   capabilities?: PluginCapability[];
   /** Initial config returned by `ctx.config.get()`. */
@@ -101,7 +101,7 @@ function allowsEvent(filter: EventFilter | undefined, event: PluginEvent): boole
   return true;
 }
 
-function requireCapability(manifest: PaperclipPluginManifestV1, allowed: Set<PluginCapability>, capability: PluginCapability) {
+function requireCapability(manifest: IronworksPluginManifestV1, allowed: Set<PluginCapability>, capability: PluginCapability) {
   if (allowed.has(capability)) return;
   throw new Error(`Plugin '${manifest.id}' is missing required capability '${capability}' in test harness`);
 }
@@ -122,7 +122,7 @@ function isInCompany<T extends { companyId: string | null | undefined }>(
  * Create an in-memory host harness for plugin worker tests.
  *
  * The harness enforces declared capabilities and simulates host APIs, so tests
- * can validate plugin behavior without spinning up the Paperclip server runtime.
+ * can validate plugin behavior without spinning up the Ironworks server runtime.
  */
 export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const manifest = options.manifest;

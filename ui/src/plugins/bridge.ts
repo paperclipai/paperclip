@@ -2,7 +2,7 @@
  * Plugin UI bridge runtime — concrete implementations of the bridge hooks.
  *
  * Plugin UI bundles import `usePluginData`, `usePluginAction`, and
- * `useHostContext` from `@paperclipai/plugin-sdk/ui`.  Those are type-only
+ * `useHostContext` from `@ironworksai/plugin-sdk/ui`.  Those are type-only
  * declarations in the SDK package. The host provides the real implementations
  * by injecting this bridge runtime into the plugin's module scope.
  *
@@ -31,7 +31,7 @@ import type {
   PluginLauncherBounds,
   PluginLauncherRenderContextSnapshot,
   PluginLauncherRenderEnvironment,
-} from "@paperclipai/shared";
+} from "@ironworksai/shared";
 import { pluginsApi } from "@/api/plugins";
 import { ApiError } from "@/api/client";
 import { useToast, type ToastInput } from "@/context/ToastContext";
@@ -133,7 +133,7 @@ export type PluginBridgeContextValue = {
  * resolve the current plugin without ambient mutable globals.
  *
  * Because plugin bundles share the host's React instance (via the bridge
- * registry on `globalThis.__paperclipPluginBridge__`), context propagation
+ * registry on `globalThis.__ironworksPluginBridge__`), context propagation
  * works correctly across the host/plugin boundary.
  */
 export const PluginBridgeContext =

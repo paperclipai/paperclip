@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local";
-import { models as cursorFallbackModels } from "@paperclipai/adapter-cursor-local";
-import { resetOpenCodeModelsCacheForTests } from "@paperclipai/adapter-opencode-local/server";
+import { models as codexFallbackModels } from "@ironworksai/adapter-codex-local";
+import { models as cursorFallbackModels } from "@ironworksai/adapter-cursor-local";
+import { resetOpenCodeModelsCacheForTests } from "@ironworksai/adapter-opencode-local/server";
 import { listAdapterModels } from "../adapters/index.js";
 import { resetCodexModelsCacheForTests } from "../adapters/codex-models.js";
 import { resetCursorModelsCacheForTests, setCursorModelsRunnerForTests } from "../adapters/cursor-models.js";
@@ -9,7 +9,7 @@ import { resetCursorModelsCacheForTests, setCursorModelsRunnerForTests } from ".
 describe("adapter model listing", () => {
   beforeEach(() => {
     delete process.env.OPENAI_API_KEY;
-    delete process.env.PAPERCLIP_OPENCODE_COMMAND;
+    delete process.env.IRONWORKS_OPENCODE_COMMAND;
     resetCodexModelsCacheForTests();
     resetCursorModelsCacheForTests();
     setCursorModelsRunnerForTests(null);
@@ -96,7 +96,7 @@ describe("adapter model listing", () => {
   });
 
   it("returns no opencode models when opencode command is unavailable", async () => {
-    process.env.PAPERCLIP_OPENCODE_COMMAND = "__paperclip_missing_opencode_command__";
+    process.env.IRONWORKS_OPENCODE_COMMAND = "__ironworks_missing_opencode_command__";
 
     const models = await listAdapterModels("opencode_local");
     expect(models).toEqual([]);

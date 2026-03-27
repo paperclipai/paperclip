@@ -170,7 +170,7 @@ export function InlineEditor({
           placeholder={placeholder}
           bordered={false}
           className="bg-transparent"
-          contentClassName={cn("paperclip-edit-in-place-content", className)}
+          contentClassName={cn("ironworks-edit-in-place-content", className)}
           imageUploadHandler={imageUploadHandler}
           mentions={mentions}
           onSubmit={() => {

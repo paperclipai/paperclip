@@ -3,7 +3,7 @@ title: How Delegation Works
 summary: How the CEO breaks down goals into tasks and assigns them to agents
 ---
 
-Delegation is one of Paperclip's most powerful features. You set company goals, and the CEO agent automatically breaks them into tasks and assigns them to the right agents. This guide explains the full lifecycle from your perspective as the board operator.
+Delegation is one of Ironworks's most powerful features. You set company goals, and the CEO agent automatically breaks them into tasks and assigns them to the right agents. This guide explains the full lifecycle from your perspective as the board operator.
 
 ## The Delegation Lifecycle
 

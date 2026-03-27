@@ -25,8 +25,8 @@ require_cmd docker
 require_cmd node
 require_cmd shasum
 
-PAPERCLIP_API_URL="${PAPERCLIP_API_URL:-http://127.0.0.1:3100}"
-API_BASE="${PAPERCLIP_API_URL%/}/api"
+IRONWORKS_API_URL="${IRONWORKS_API_URL:-http://127.0.0.1:3100}"
+API_BASE="${IRONWORKS_API_URL%/}/api"
 
 COMPANY_SELECTOR="${COMPANY_SELECTOR:-CLA}"
 OPENCLAW_AGENT_NAME="${OPENCLAW_AGENT_NAME:-OpenClaw Gateway Smoke Agent}"
@@ -35,7 +35,7 @@ OPENCLAW_GATEWAY_TOKEN="${OPENCLAW_GATEWAY_TOKEN:-}"
 OPENCLAW_TMP_DIR="${OPENCLAW_TMP_DIR:-${TMPDIR:-/tmp}}"
 OPENCLAW_TMP_DIR="${OPENCLAW_TMP_DIR%/}"
 OPENCLAW_TMP_DIR="${OPENCLAW_TMP_DIR:-/tmp}"
-OPENCLAW_CONFIG_DIR="${OPENCLAW_CONFIG_DIR:-${OPENCLAW_TMP_DIR}/openclaw-paperclip-smoke}"
+OPENCLAW_CONFIG_DIR="${OPENCLAW_CONFIG_DIR:-${OPENCLAW_TMP_DIR}/openclaw-ironworks-smoke}"
 OPENCLAW_WORKSPACE_DIR="${OPENCLAW_WORKSPACE_DIR:-${OPENCLAW_CONFIG_DIR}/workspace}"
 OPENCLAW_CONTAINER_NAME="${OPENCLAW_CONTAINER_NAME:-openclaw-docker-openclaw-gateway-1}"
 OPENCLAW_IMAGE="${OPENCLAW_IMAGE:-openclaw:local}"
@@ -45,7 +45,7 @@ OPENCLAW_BUILD="${OPENCLAW_BUILD:-1}"
 OPENCLAW_WAIT_SECONDS="${OPENCLAW_WAIT_SECONDS:-60}"
 OPENCLAW_RESET_STATE="${OPENCLAW_RESET_STATE:-1}"
 
-PAPERCLIP_API_URL_FOR_OPENCLAW="${PAPERCLIP_API_URL_FOR_OPENCLAW:-http://host.docker.internal:3100}"
+IRONWORKS_API_URL_FOR_OPENCLAW="${IRONWORKS_API_URL_FOR_OPENCLAW:-http://host.docker.internal:3100}"
 CASE_TIMEOUT_SEC="${CASE_TIMEOUT_SEC:-420}"
 RUN_TIMEOUT_SEC="${RUN_TIMEOUT_SEC:-300}"
 STRICT_CASES="${STRICT_CASES:-1}"
@@ -57,13 +57,13 @@ PAIRING_AUTO_APPROVE="${PAIRING_AUTO_APPROVE:-1}"
 PAYLOAD_TEMPLATE_MESSAGE_APPEND="${PAYLOAD_TEMPLATE_MESSAGE_APPEND:-}"
 
 AUTH_HEADERS=()
-if [[ -n "${PAPERCLIP_AUTH_HEADER:-}" ]]; then
-  AUTH_HEADERS+=( -H "Authorization: ${PAPERCLIP_AUTH_HEADER}" )
+if [[ -n "${IRONWORKS_AUTH_HEADER:-}" ]]; then
+  AUTH_HEADERS+=( -H "Authorization: ${IRONWORKS_AUTH_HEADER}" )
 fi
-if [[ -n "${PAPERCLIP_COOKIE:-}" ]]; then
-  AUTH_HEADERS+=( -H "Cookie: ${PAPERCLIP_COOKIE}" )
-  PAPERCLIP_BROWSER_ORIGIN="${PAPERCLIP_BROWSER_ORIGIN:-${PAPERCLIP_API_URL%/}}"
-  AUTH_HEADERS+=( -H "Origin: ${PAPERCLIP_BROWSER_ORIGIN}" -H "Referer: ${PAPERCLIP_BROWSER_ORIGIN}/" )
+if [[ -n "${IRONWORKS_COOKIE:-}" ]]; then
+  AUTH_HEADERS+=( -H "Cookie: ${IRONWORKS_COOKIE}" )
+  IRONWORKS_BROWSER_ORIGIN="${IRONWORKS_BROWSER_ORIGIN:-${IRONWORKS_API_URL%/}}"
+  AUTH_HEADERS+=( -H "Origin: ${IRONWORKS_BROWSER_ORIGIN}" -H "Referer: ${IRONWORKS_BROWSER_ORIGIN}/" )
 fi
 
 RESPONSE_CODE=""
@@ -91,7 +91,7 @@ api_request() {
   if [[ "$path" == http://* || "$path" == https://* ]]; then
     url="$path"
   elif [[ "$path" == /api/* ]]; then
-    url="${PAPERCLIP_API_URL%/}${path}"
+    url="${IRONWORKS_API_URL%/}${path}"
   else
     url="${API_BASE}${path}"
   fi
@@ -175,7 +175,7 @@ assert_status() {
 
 require_board_auth() {
   if [[ ${#AUTH_HEADERS[@]} -eq 0 ]]; then
-    fail "board auth required. Set PAPERCLIP_COOKIE or PAPERCLIP_AUTH_HEADER."
+    fail "board auth required. Set IRONWORKS_COOKIE or IRONWORKS_AUTH_HEADER."
   fi
   api_request "GET" "/companies"
   if [[ "$RESPONSE_CODE" != "200" ]]; then
@@ -406,7 +406,7 @@ create_and_approve_gateway_join() {
     --arg name "$OPENCLAW_AGENT_NAME" \
     --arg url "$OPENCLAW_GATEWAY_URL" \
     --arg token "$gateway_token" \
-    --arg paperclipApiUrl "$PAPERCLIP_API_URL_FOR_OPENCLAW" \
+    --arg ironworksApiUrl "$IRONWORKS_API_URL_FOR_OPENCLAW" \
     --argjson timeoutSec "$OPENCLAW_ADAPTER_TIMEOUT_SEC" \
     --argjson waitTimeoutMs "$OPENCLAW_ADAPTER_WAIT_TIMEOUT_MS" \
     '{
@@ -420,10 +420,10 @@ create_and_approve_gateway_join() {
         role: "operator",
         scopes: ["operator.admin"],
         sessionKeyStrategy: "fixed",
-        sessionKey: "paperclip",
+        sessionKey: "ironworks",
         timeoutSec: $timeoutSec,
         waitTimeoutMs: $waitTimeoutMs,
-        paperclipApiUrl: $paperclipApiUrl
+        ironworksApiUrl: $ironworksApiUrl
       }
     }')"
 
@@ -460,9 +460,9 @@ create_and_approve_gateway_join() {
 persist_claimed_key_artifacts() {
   local claim_json="$1"
   local workspace_dir="${OPENCLAW_CONFIG_DIR%/}/workspace"
-  local skill_dir="${OPENCLAW_CONFIG_DIR%/}/skills/paperclip"
-  local claimed_file="${workspace_dir}/paperclip-claimed-api-key.json"
-  local claimed_raw_file="${workspace_dir}/paperclip-claimed-api-key.raw.json"
+  local skill_dir="${OPENCLAW_CONFIG_DIR%/}/skills/ironworks"
+  local claimed_file="${workspace_dir}/ironworks-claimed-api-key.json"
+  local claimed_raw_file="${workspace_dir}/ironworks-claimed-api-key.raw.json"
 
   mkdir -p "$workspace_dir" "$skill_dir"
   local token
@@ -480,15 +480,15 @@ persist_claimed_key_artifacts() {
   container="$(detect_openclaw_container || true)"
   if [[ -n "$container" ]]; then
     docker exec "$container" sh -lc "mkdir -p /home/node/.openclaw/workspace" >/dev/null 2>&1 || true
-    docker cp "$claimed_file" "${container}:/home/node/.openclaw/workspace/paperclip-claimed-api-key.json" >/dev/null 2>&1 || true
-    docker exec "$container" sh -lc "chmod 644 /home/node/.openclaw/workspace/paperclip-claimed-api-key.json" >/dev/null 2>&1 || true
+    docker cp "$claimed_file" "${container}:/home/node/.openclaw/workspace/ironworks-claimed-api-key.json" >/dev/null 2>&1 || true
+    docker exec "$container" sh -lc "chmod 644 /home/node/.openclaw/workspace/ironworks-claimed-api-key.json" >/dev/null 2>&1 || true
   fi
 
   if [[ "$AUTO_INSTALL_SKILL" == "1" ]]; then
-    api_request "GET" "/skills/paperclip"
+    api_request "GET" "/skills/ironworks"
     assert_status "200"
     {
-      echo "PAPERCLIP_API_URL=${PAPERCLIP_API_URL_FOR_OPENCLAW}"
+      echo "IRONWORKS_API_URL=${IRONWORKS_API_URL_FOR_OPENCLAW}"
       echo
       printf "%s\n" "$RESPONSE_BODY"
     } > "${skill_dir}/SKILL.md"
@@ -506,7 +506,7 @@ inject_agent_api_key_payload_template() {
   assert_status "200"
 
   local base_message
-  base_message="Set PAPERCLIP_API_KEY=${AGENT_API_KEY} in your run context before running Paperclip heartbeat steps."
+  base_message="Set IRONWORKS_API_KEY=${AGENT_API_KEY} in your run context before running Ironworks heartbeat steps."
   if [[ -n "$PAYLOAD_TEMPLATE_MESSAGE_APPEND" ]]; then
     base_message="${base_message}\n\n${PAYLOAD_TEMPLATE_MESSAGE_APPEND}"
   fi
@@ -787,7 +787,7 @@ run_case_b() {
   local marker="OPENCLAW_CASE_B_OK_$(date +%s)"
   local message_text="${marker}"
   local description
-  description="Case B validation.\n\nUse the message tool to send this exact text to the user's main chat session in webchat:\n${message_text}\n\nAfter sending, post a Paperclip issue comment containing exactly: ${marker}\nThen mark this issue done."
+  description="Case B validation.\n\nUse the message tool to send this exact text to the user's main chat session in webchat:\n${message_text}\n\nAfter sending, post a Ironworks issue comment containing exactly: ${marker}\nThen mark this issue done."
 
   local created
   created="$(create_issue_for_case "[OpenClaw Gateway Smoke] Case B" "$description")"
@@ -833,7 +833,7 @@ run_case_c() {
   local ack_marker="OPENCLAW_CASE_C_ACK_$(date +%s)"
   local original_issue_reference="the original case issue you are currently reading"
   local description
-  description="Case C validation.\n\nTreat this run as a fresh/new session.\nCreate a NEW Paperclip issue in this same company with title exactly:\n${marker}\nUse description: 'created by case C smoke'.\n\nThen post a comment on ${original_issue_reference} containing exactly: ${ack_marker}\nDo NOT post the ACK comment on the newly created issue.\nThen mark the original case issue done."
+  description="Case C validation.\n\nTreat this run as a fresh/new session.\nCreate a NEW Ironworks issue in this same company with title exactly:\n${marker}\nUse description: 'created by case C smoke'.\n\nThen post a comment on ${original_issue_reference} containing exactly: ${ack_marker}\nDo NOT post the ACK comment on the newly created issue.\nThen mark the original case issue done."
 
   local created
   created="$(create_issue_for_case "[OpenClaw Gateway Smoke] Case C" "$description")"
@@ -884,10 +884,10 @@ main() {
   mkdir -p "$OPENCLAW_DIAG_DIR"
   log "diagnostics dir: ${OPENCLAW_DIAG_DIR}"
 
-  wait_http_ready "${PAPERCLIP_API_URL%/}/api/health" 15 || fail "Paperclip API health endpoint not reachable"
+  wait_http_ready "${IRONWORKS_API_URL%/}/api/health" 15 || fail "Ironworks API health endpoint not reachable"
   api_request "GET" "/health"
   assert_status "200"
-  log "paperclip health deploymentMode=$(jq -r '.deploymentMode // "unknown"' <<<"$RESPONSE_BODY") exposure=$(jq -r '.deploymentExposure // "unknown"' <<<"$RESPONSE_BODY")"
+  log "ironworks health deploymentMode=$(jq -r '.deploymentMode // "unknown"' <<<"$RESPONSE_BODY") exposure=$(jq -r '.deploymentExposure // "unknown"' <<<"$RESPONSE_BODY")"
 
   require_board_auth
   resolve_company_id

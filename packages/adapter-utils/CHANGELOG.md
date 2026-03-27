@@ -1,4 +1,4 @@
-# @paperclipai/adapter-utils
+# @ironworksai/adapter-utils
 
 ## 0.3.1
 

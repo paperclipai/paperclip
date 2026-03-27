@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { testEnvironment } from "@paperclipai/adapter-codex-local/server";
+import { testEnvironment } from "@ironworksai/adapter-codex-local/server";
 
 const itWindows = process.platform === "win32" ? it : it.skip;
 
@@ -16,7 +16,7 @@ describe("codex_local environment diagnostics", () => {
   it("creates a missing working directory when cwd is absolute", async () => {
     const cwd = path.join(
       os.tmpdir(),
-      `paperclip-codex-local-cwd-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      `ironworks-codex-local-cwd-${Date.now()}-${Math.random().toString(16).slice(2)}`,
       "workspace",
     );
 
@@ -41,7 +41,7 @@ describe("codex_local environment diagnostics", () => {
   it("emits codex_native_auth_present when ~/.codex/auth.json exists and OPENAI_API_KEY is unset", async () => {
     const root = path.join(
       os.tmpdir(),
-      `paperclip-codex-auth-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      `ironworks-codex-auth-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     );
     const codexHome = path.join(root, ".codex");
     const cwd = path.join(root, "workspace");
@@ -73,7 +73,7 @@ describe("codex_local environment diagnostics", () => {
   it("emits codex_openai_api_key_missing when neither env var nor native auth exists", async () => {
     const root = path.join(
       os.tmpdir(),
-      `paperclip-codex-noauth-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      `ironworks-codex-noauth-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     );
     const codexHome = path.join(root, ".codex");
     const cwd = path.join(root, "workspace");
@@ -102,7 +102,7 @@ describe("codex_local environment diagnostics", () => {
   itWindows("runs the hello probe when Codex is available via a Windows .cmd wrapper", async () => {
     const root = path.join(
       os.tmpdir(),
-      `paperclip-codex-local-probe-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      `ironworks-codex-local-probe-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     );
     const binDir = path.join(root, "bin");
     const cwd = path.join(root, "workspace");

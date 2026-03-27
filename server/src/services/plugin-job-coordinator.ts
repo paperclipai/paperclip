@@ -16,7 +16,7 @@
  * The lifecycle manager, scheduler, and job store are independent services
  * with clean single-responsibility boundaries. The coordinator provides
  * the "glue" between them without adding coupling. This pattern is used
- * throughout Paperclip (e.g. heartbeat service coordinates timers + runs).
+ * throughout Ironworks (e.g. heartbeat service coordinates timers + runs).
  *
  * @see PLUGIN_SPEC.md §17 — Scheduled Jobs
  * @see ./plugin-job-scheduler.ts — Scheduler service
@@ -28,7 +28,7 @@ import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
 import type { PluginJobScheduler } from "./plugin-job-scheduler.js";
 import type { PluginJobStore } from "./plugin-job-store.js";
 import { pluginRegistryService } from "./plugin-registry.js";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@ironworksai/db";
 import { logger } from "../middleware/logger.js";
 
 // ---------------------------------------------------------------------------

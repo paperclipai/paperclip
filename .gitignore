@@ -7,7 +7,7 @@ drizzle/meta/
 coverage/
 .DS_Store
 data/
-.paperclip/
+.ironworks/
 .pnpm-store/
 tmp-*
 cli/tmp/
@@ -36,7 +36,7 @@ tmp/
 *.tmp
 .vscode/
 .claude/settings.local.json
-.paperclip-local/
+.ironworks-local/
 /.idea/
 /.agents/
 

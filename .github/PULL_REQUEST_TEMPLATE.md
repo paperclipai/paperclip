@@ -2,12 +2,12 @@
 
 <!--
   Required. Trace your reasoning from the top of the project down to this
-  specific change. Start with what Paperclip is, then narrow through the
+  specific change. Start with what Ironworks is, then narrow through the
   subsystem, the problem, and why this PR exists. Use blockquote style.
   Aim for 5–8 steps. See CONTRIBUTING.md for full examples.
 -->
 
-> - Paperclip orchestrates AI agents for zero-human companies
+> - Ironworks orchestrates AI agents for zero-human companies
 > - [Which subsystem or capability is involved]
 > - [What problem or gap exists]
 > - [Why it needs to be addressed]

@@ -85,7 +85,7 @@ function writeTestConfig(configPath: string, tempRoot: string, port: number, con
         baseDir: path.join(tempRoot, "storage"),
       },
       s3: {
-        bucket: "paperclip",
+        bucket: "ironworks",
         region: "us-east-1",
         prefix: "",
         forcePathStyle: false,
@@ -107,7 +107,7 @@ function writeTestConfig(configPath: string, tempRoot: string, port: number, con
 function createServerEnv(configPath: string, port: number, connectionString: string) {
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
-    if (key.startsWith("PAPERCLIP_")) {
+    if (key.startsWith("IRONWORKS_")) {
       delete env[key];
     }
   }
@@ -117,15 +117,15 @@ function createServerEnv(configPath: string, port: number, connectionString: str
   delete env.SERVE_UI;
   delete env.HEARTBEAT_SCHEDULER_ENABLED;
 
-  env.PAPERCLIP_CONFIG = configPath;
+  env.IRONWORKS_CONFIG = configPath;
   env.DATABASE_URL = connectionString;
   env.HOST = "127.0.0.1";
   env.PORT = String(port);
   env.SERVE_UI = "false";
-  env.PAPERCLIP_DB_BACKUP_ENABLED = "false";
+  env.IRONWORKS_DB_BACKUP_ENABLED = "false";
   env.HEARTBEAT_SCHEDULER_ENABLED = "false";
-  env.PAPERCLIP_MIGRATION_AUTO_APPLY = "true";
-  env.PAPERCLIP_UI_DEV_MIDDLEWARE = "false";
+  env.IRONWORKS_MIGRATION_AUTO_APPLY = "true";
+  env.IRONWORKS_UI_DEV_MIDDLEWARE = "false";
 
   return env;
 }
@@ -133,7 +133,7 @@ function createServerEnv(configPath: string, port: number, connectionString: str
 function createCliEnv() {
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
-    if (key.startsWith("PAPERCLIP_")) {
+    if (key.startsWith("IRONWORKS_")) {
       delete env[key];
     }
   }
@@ -141,10 +141,10 @@ function createCliEnv() {
   delete env.PORT;
   delete env.HOST;
   delete env.SERVE_UI;
-  delete env.PAPERCLIP_DB_BACKUP_ENABLED;
+  delete env.IRONWORKS_DB_BACKUP_ENABLED;
   delete env.HEARTBEAT_SCHEDULER_ENABLED;
-  delete env.PAPERCLIP_MIGRATION_AUTO_APPLY;
-  delete env.PAPERCLIP_UI_DEV_MIDDLEWARE;
+  delete env.IRONWORKS_MIGRATION_AUTO_APPLY;
+  delete env.IRONWORKS_UI_DEV_MIDDLEWARE;
   return env;
 }
 
@@ -187,7 +187,7 @@ async function runCliJson<T>(args: string[], opts: { apiBase: string; configPath
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
   const result = await execFileAsync(
     "pnpm",
-    ["--silent", "paperclipai", ...args, "--api-base", opts.apiBase, "--config", opts.configPath, "--json"],
+    ["--silent", "ironworksai", ...args, "--api-base", opts.apiBase, "--config", opts.configPath, "--json"],
     {
       cwd: repoRoot,
       env: createCliEnv(),
@@ -211,7 +211,7 @@ async function waitForServer(
   while (Date.now() - startedAt < 30_000) {
     if (child.exitCode !== null) {
       throw new Error(
-        `paperclipai run exited before healthcheck succeeded.\nstdout:\n${output.stdout.join("")}\nstderr:\n${output.stderr.join("")}`,
+        `ironworksai run exited before healthcheck succeeded.\nstdout:\n${output.stdout.join("")}\nstderr:\n${output.stderr.join("")}`,
       );
     }
 
@@ -230,7 +230,7 @@ async function waitForServer(
   );
 }
 
-describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
+describeEmbeddedPostgres("ironworksai company import/export e2e", () => {
   let tempRoot = "";
   let configPath = "";
   let exportDir = "";
@@ -239,11 +239,11 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempRoot = mkdtempSync(path.join(os.tmpdir(), "paperclip-company-cli-e2e-"));
+    tempRoot = mkdtempSync(path.join(os.tmpdir(), "ironworks-company-cli-e2e-"));
     configPath = path.join(tempRoot, "config", "config.json");
     exportDir = path.join(tempRoot, "exported-company");
 
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-company-cli-db-");
+    tempDb = await startEmbeddedPostgresTestDatabase("ironworks-company-cli-db-");
 
     const port = await getAvailablePort();
     writeTestConfig(configPath, tempRoot, port, tempDb.connectionString);
@@ -253,7 +253,7 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
     const output = { stdout: [] as string[], stderr: [] as string[] };
     const child = spawn(
       "pnpm",
-      ["paperclipai", "run", "--config", configPath],
+      ["ironworksai", "run", "--config", configPath],
       {
         cwd: repoRoot,
         env: createServerEnv(configPath, port, tempDb.connectionString),
@@ -356,7 +356,7 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
     expect(exportResult.ok).toBe(true);
     expect(exportResult.filesWritten).toBeGreaterThan(0);
     expect(readFileSync(path.join(exportDir, "COMPANY.md"), "utf8")).toContain(sourceCompany.name);
-    expect(readFileSync(path.join(exportDir, ".paperclip.yaml"), "utf8")).toContain('schema: "paperclip/v1"');
+    expect(readFileSync(path.join(exportDir, ".ironworks.yaml"), "utf8")).toContain('schema: "ironworks/v1"');
 
     const importedNew = await runCliJson<{
       company: { id: string; name: string; action: string };
@@ -475,7 +475,7 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
     const zipPath = path.join(tempRoot, "exported-company.zip");
     const portableFiles: Record<string, string> = {};
     collectTextFiles(exportDir, exportDir, portableFiles);
-    writeFileSync(zipPath, createStoredZipArchive(portableFiles, "paperclip-demo"));
+    writeFileSync(zipPath, createStoredZipArchive(portableFiles, "ironworks-demo"));
 
     const importedFromZip = await runCliJson<{
       company: { id: string; name: string; action: string };

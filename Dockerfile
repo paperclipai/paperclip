@@ -29,30 +29,30 @@ FROM base AS build
 WORKDIR /app
 COPY --from=deps /app /app
 COPY . .
-RUN pnpm --filter @paperclipai/ui build
-RUN pnpm --filter @paperclipai/plugin-sdk build
-RUN pnpm --filter @paperclipai/server build
+RUN pnpm --filter @ironworksai/ui build
+RUN pnpm --filter @ironworksai/plugin-sdk build
+RUN pnpm --filter @ironworksai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 
 FROM base AS production
 WORKDIR /app
 COPY --chown=node:node --from=build /app /app
 RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai \
-  && mkdir -p /paperclip \
-  && chown node:node /paperclip
+  && mkdir -p /ironworks \
+  && chown node:node /ironworks
 
 ENV NODE_ENV=production \
-  HOME=/paperclip \
+  HOME=/ironworks \
   HOST=0.0.0.0 \
   PORT=3100 \
   SERVE_UI=true \
-  PAPERCLIP_HOME=/paperclip \
-  PAPERCLIP_INSTANCE_ID=default \
-  PAPERCLIP_CONFIG=/paperclip/instances/default/config.json \
-  PAPERCLIP_DEPLOYMENT_MODE=authenticated \
-  PAPERCLIP_DEPLOYMENT_EXPOSURE=private
+  IRONWORKS_HOME=/ironworks \
+  IRONWORKS_INSTANCE_ID=default \
+  IRONWORKS_CONFIG=/ironworks/instances/default/config.json \
+  IRONWORKS_DEPLOYMENT_MODE=authenticated \
+  IRONWORKS_DEPLOYMENT_EXPOSURE=private
 
-VOLUME ["/paperclip"]
+VOLUME ["/ironworks"]
 EXPOSE 3100
 
 USER node

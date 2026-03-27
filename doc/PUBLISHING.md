@@ -1,6 +1,6 @@
 # Publishing to npm
 
-Low-level reference for how Paperclip packages are prepared and published to npm.
+Low-level reference for how Ironworks packages are prepared and published to npm.
 
 For the maintainer workflow, use [doc/RELEASING.md](RELEASING.md). This document focuses on packaging internals.
 
@@ -13,15 +13,15 @@ Use these scripts:
 - [`scripts/rollback-latest.sh`](../scripts/rollback-latest.sh) to repoint `latest`
 - [`scripts/build-npm.sh`](../scripts/build-npm.sh) for the CLI packaging build
 
-Paperclip no longer uses release branches or Changesets for publishing.
+Ironworks no longer uses release branches or Changesets for publishing.
 
 ## Why the CLI needs special packaging
 
-The CLI package, `paperclipai`, imports code from workspace packages such as:
+The CLI package, `ironworksai`, imports code from workspace packages such as:
 
-- `@paperclipai/server`
-- `@paperclipai/db`
-- `@paperclipai/shared`
+- `@ironworksai/server`
+- `@ironworksai/db`
+- `@ironworksai/shared`
 - adapter packages under `packages/adapters/`
 
 Those workspace references are valid in development but not in a publishable npm package. The release flow rewrites versions temporarily, then builds a publishable CLI bundle.
@@ -64,7 +64,7 @@ The version rewrite step now uses [`scripts/release-package-map.mjs`](../scripts
 
 Those rewrites are temporary. The working tree is restored after publish or dry-run.
 
-## `@paperclipai/ui` packaging
+## `@ironworksai/ui` packaging
 
 The UI package publishes prebuilt static assets, not the source workspace.
 
@@ -78,7 +78,7 @@ After packing or publishing, `postpack` restores the development manifest automa
 
 ## Version formats
 
-Paperclip uses calendar versions:
+Ironworks uses calendar versions:
 
 - stable: `YYYY.MDD.P`
 - canary: `YYYY.MDD.P-canary.N`
@@ -96,12 +96,12 @@ Canaries publish under the npm dist-tag `canary`.
 
 Example:
 
-- `paperclipai@2026.318.1-canary.2`
+- `ironworksai@2026.318.1-canary.2`
 
 This keeps the default install path unchanged while allowing explicit installs with:
 
 ```bash
-npx paperclipai@canary onboard
+npx ironworksai@canary onboard
 ```
 
 ### Stable
@@ -110,7 +110,7 @@ Stable publishes use the npm dist-tag `latest`.
 
 Example:
 
-- `paperclipai@2026.318.0`
+- `ironworksai@2026.318.0`
 
 Stable publishes do not create a release commit. Instead:
 

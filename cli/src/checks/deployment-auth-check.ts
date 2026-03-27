@@ -1,4 +1,4 @@
-import type { PaperclipConfig } from "../config/schema.js";
+import type { IronworksConfig } from "../config/schema.js";
 import type { CheckResult } from "./index.js";
 
 function isLoopbackHost(host: string) {
@@ -6,7 +6,7 @@ function isLoopbackHost(host: string) {
   return normalized === "127.0.0.1" || normalized === "localhost" || normalized === "::1";
 }
 
-export function deploymentAuthCheck(config: PaperclipConfig): CheckResult {
+export function deploymentAuthCheck(config: IronworksConfig): CheckResult {
   const mode = config.server.deploymentMode;
   const exposure = config.server.exposure;
   const auth = config.auth;
@@ -18,7 +18,7 @@ export function deploymentAuthCheck(config: PaperclipConfig): CheckResult {
         status: "fail",
         message: `local_trusted requires loopback host binding (found ${config.server.host})`,
         canRepair: false,
-        repairHint: "Run `paperclipai configure --section server` and set host to 127.0.0.1",
+        repairHint: "Run `ironworksai configure --section server` and set host to 127.0.0.1",
       };
     }
     return {
@@ -30,14 +30,14 @@ export function deploymentAuthCheck(config: PaperclipConfig): CheckResult {
 
   const secret =
     process.env.BETTER_AUTH_SECRET?.trim() ??
-    process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim();
+    process.env.IRONWORKS_AGENT_JWT_SECRET?.trim();
   if (!secret) {
     return {
       name: "Deployment/auth mode",
       status: "fail",
-      message: "authenticated mode requires BETTER_AUTH_SECRET (or PAPERCLIP_AGENT_JWT_SECRET)",
+      message: "authenticated mode requires BETTER_AUTH_SECRET (or IRONWORKS_AGENT_JWT_SECRET)",
       canRepair: false,
-      repairHint: "Set BETTER_AUTH_SECRET before starting Paperclip",
+      repairHint: "Set BETTER_AUTH_SECRET before starting Ironworks",
     };
   }
 
@@ -47,7 +47,7 @@ export function deploymentAuthCheck(config: PaperclipConfig): CheckResult {
       status: "fail",
       message: "auth.baseUrlMode=explicit requires auth.publicBaseUrl",
       canRepair: false,
-      repairHint: "Run `paperclipai configure --section server` and provide a base URL",
+      repairHint: "Run `ironworksai configure --section server` and provide a base URL",
     };
   }
 
@@ -58,7 +58,7 @@ export function deploymentAuthCheck(config: PaperclipConfig): CheckResult {
         status: "fail",
         message: "authenticated/public requires explicit auth.publicBaseUrl",
         canRepair: false,
-        repairHint: "Run `paperclipai configure --section server` and select public exposure",
+        repairHint: "Run `ironworksai configure --section server` and select public exposure",
       };
     }
     try {
@@ -78,7 +78,7 @@ export function deploymentAuthCheck(config: PaperclipConfig): CheckResult {
         status: "fail",
         message: "auth.publicBaseUrl is not a valid URL",
         canRepair: false,
-        repairHint: "Run `paperclipai configure --section server` and provide a valid URL",
+        repairHint: "Run `ironworksai configure --section server` and provide a valid URL",
       };
     }
   }

@@ -9,11 +9,11 @@ Supersedes for package-format direction:
 
 ## 1. Purpose
 
-This document defines the next-stage plan for Paperclip company import/export.
+This document defines the next-stage plan for Ironworks company import/export.
 
 The core shift is:
 
-- move from a Paperclip-specific JSON-first portability package toward a markdown-first package format
+- move from a Ironworks-specific JSON-first portability package toward a markdown-first package format
 - make GitHub repositories first-class package sources
 - treat the company package model as an extension of the existing Agent Skills ecosystem instead of inventing a separate skill format
 - support company, team, agent, and skill reuse without requiring a central registry
@@ -22,7 +22,7 @@ The normative package format draft lives in:
 
 - `docs/companies/companies-spec.md`
 
-This plan is about implementation and rollout inside Paperclip.
+This plan is about implementation and rollout inside Ironworks.
 
 Adapter-wide skill rollout details live in:
 
@@ -30,7 +30,7 @@ Adapter-wide skill rollout details live in:
 
 ## 2. Executive Summary
 
-Paperclip already has portability primitives in the repo:
+Ironworks already has portability primitives in the repo:
 
 - server import/export/preview APIs
 - CLI import/export commands
@@ -42,21 +42,21 @@ The new direction is:
 
 1. markdown-first package authoring
 2. GitHub repo or local folder as the default source of truth
-3. a vendor-neutral base package spec for agent-company runtimes, not just Paperclip
+3. a vendor-neutral base package spec for agent-company runtimes, not just Ironworks
 4. the company package model is explicitly an extension of Agent Skills
-5. no future dependency on `paperclip.manifest.json`
+5. no future dependency on `ironworks.manifest.json`
 6. implicit folder discovery by convention for the common case
-7. an always-emitted `.paperclip.yaml` sidecar for high-fidelity Paperclip-specific details
+7. an always-emitted `.ironworks.yaml` sidecar for high-fidelity Ironworks-specific details
 8. package graph resolution at import time
 9. entity-level import UI with dependency-aware tree selection
 10. `skills.sh` compatibility is a V1 requirement for skill packages and skill installation flows
-11. adapter-aware skill sync surfaces so Paperclip can read, diff, enable, disable, and reconcile skills where the adapter supports it
+11. adapter-aware skill sync surfaces so Ironworks can read, diff, enable, disable, and reconcile skills where the adapter supports it
 
 ## 3. Product Goals
 
 ### 3.1 Goals
 
-- A user can point Paperclip at a local folder or GitHub repo and import a company package without any registry.
+- A user can point Ironworks at a local folder or GitHub repo and import a company package without any registry.
 - A package is readable and writable by humans with normal git workflows.
 - A package can contain:
   - company definition
@@ -75,7 +75,7 @@ The new direction is:
   - what is referenced externally
   - what needs secrets or approvals
 - Export preserves attribution, licensing, and pinned upstream references.
-- Export produces a clean vendor-neutral package plus a Paperclip sidecar.
+- Export produces a clean vendor-neutral package plus a Ironworks sidecar.
 - `companies.sh` can later act as a discovery/index layer over repos implementing this format.
 
 ### 3.2 Non-Goals
@@ -127,15 +127,15 @@ The normative draft is:
 
 ### 5.2 Relationship To Agent Skills
 
-Paperclip must not redefine `SKILL.md`.
+Ironworks must not redefine `SKILL.md`.
 
 Rules:
 
 - `SKILL.md` stays Agent Skills compatible
 - the company package model is an extension of Agent Skills
 - the base package is vendor-neutral and intended for any agent-company runtime
-- Paperclip-specific fidelity lives in `.paperclip.yaml`
-- Paperclip may resolve and install `SKILL.md` packages, but it must not require a Paperclip-only skill format
+- Ironworks-specific fidelity lives in `.ironworks.yaml`
+- Ironworks may resolve and install `SKILL.md` packages, but it must not require a Ironworks-only skill format
 - `skills.sh` compatibility is a V1 requirement, not a future nice-to-have
 
 ### 5.3 Agent-To-Skill Association
@@ -152,22 +152,22 @@ Resolution model:
 - if the skill is external or referenced, the skill package owns that complexity
 - exporters should prefer shortname-based associations in `AGENTS.md`
 - importers should resolve the shortname against local package skills first, then referenced or installed company skills
-### 5.4 Base Package Vs Paperclip Extension
+### 5.4 Base Package Vs Ironworks Extension
 
 The repo format should have two layers:
 
 - base package:
   - minimal, readable, social, vendor-neutral
   - implicit folder discovery by convention
-  - no Paperclip-only runtime fields by default
-- Paperclip extension:
-  - `.paperclip.yaml`
+  - no Ironworks-only runtime fields by default
+- Ironworks extension:
+  - `.ironworks.yaml`
   - adapter/runtime/permissions/budget/workspace fidelity
-  - emitted by Paperclip tools as a sidecar while the base package stays readable
+  - emitted by Ironworks tools as a sidecar while the base package stays readable
 
 ### 5.5 Relationship To Current V1 Manifest
 
-`paperclip.manifest.json` is not part of the future package direction.
+`ironworks.manifest.json` is not part of the future package direction.
 
 This should be treated as a hard cutover in product direction.
 
@@ -179,7 +179,7 @@ This should be treated as a hard cutover in product direction.
 
 ### 6.1 Entity Kinds
 
-Paperclip import/export should support these entity kinds:
+Ironworks import/export should support these entity kinds:
 
 - company
 - team
@@ -192,7 +192,7 @@ Paperclip import/export should support these entity kinds:
 
 `team` is a package concept first, not a database-table requirement.
 
-In Paperclip V2 portability:
+In Ironworks V2 portability:
 
 - a team is an importable org subtree
 - it is rooted at a manager agent
@@ -203,7 +203,7 @@ This avoids blocking portability on a future runtime `teams` model.
 Imported-team tracking should initially be package/provenance-based:
 
 - if a team package was imported, the imported agents should carry enough provenance to reconstruct that grouping
-- Paperclip can treat “this set of agents came from team package X” as the imported-team model
+- Ironworks can treat “this set of agents came from team package X” as the imported-team model
 - provenance grouping is the intended near- and medium-term team model for import/export
 - only add a first-class runtime `teams` table later if product needs move beyond what provenance grouping can express
 
@@ -232,7 +232,7 @@ Some packages will:
 
 ### 7.2 Policy
 
-Paperclip should support source references in package metadata with:
+Ironworks should support source references in package metadata with:
 
 - repo
 - path
@@ -320,7 +320,7 @@ People want skill management in the UI, but skills are adapter-dependent.
 
 That means portability and UI planning must include an adapter capability model for skills.
 
-Paperclip should define a new adapter surface area around skills:
+Ironworks should define a new adapter surface area around skills:
 
 - list currently enabled skills for an agent
 - report how those skills are represented by the adapter
@@ -349,11 +349,11 @@ Baseline adapter interface:
 - `removeSkill(agent, skillId)` optional
 - `getSkillSyncState(agent, desiredSkills)` optional
 
-Planned Paperclip behavior:
+Planned Ironworks behavior:
 
-- if an adapter supports read, Paperclip should show current skills in the UI
-- if an adapter supports write, Paperclip should let the user enable/disable imported skills
-- if an adapter supports sync, Paperclip should compute desired vs actual state and offer reconcile actions
+- if an adapter supports read, Ironworks should show current skills in the UI
+- if an adapter supports write, Ironworks should let the user enable/disable imported skills
+- if an adapter supports sync, Ironworks should compute desired vs actual state and offer reconcile actions
 - if an adapter does not support these capabilities, the UI should still show the package-level desired skills but mark them unmanaged
 
 ## 9. Export Behavior
@@ -380,9 +380,9 @@ Exports should:
 - omit timestamps and counters unless explicitly needed
 - omit secret values
 - omit local absolute paths
-- omit duplicated inline prompt content from `.paperclip.yaml` when `AGENTS.md` already carries the instructions
+- omit duplicated inline prompt content from `.ironworks.yaml` when `AGENTS.md` already carries the instructions
 - preserve references and attribution
-- emit `.paperclip.yaml` alongside the base package
+- emit `.ironworks.yaml` alongside the base package
 - express adapter env/secrets as portable env input declarations rather than exported secret binding ids
 - preserve compatible `SKILL.md` content as-is
 
@@ -409,7 +409,7 @@ Later optional units:
 - skill pack export
 - seed projects/tasks bundle
 
-## 10. Storage Model Inside Paperclip
+## 10. Storage Model Inside Ironworks
 
 ### 10.1 Short-Term
 
@@ -422,7 +422,7 @@ In the first phase, imported entities can continue mapping onto current runtime 
 
 ### 10.2 Medium-Term
 
-Paperclip should add managed package/provenance records so imports are not anonymous one-off copies.
+Ironworks should add managed package/provenance records so imports are not anonymous one-off copies.
 
 Needed capabilities:
 
@@ -483,9 +483,9 @@ The CLI should continue to support direct import/export without a registry.
 
 Target commands:
 
-- `paperclipai company export <company-id> --out <path>`
-- `paperclipai company import <path-or-url> --dry-run`
-- `paperclipai company import <path-or-url> --target existing -C <company-id>`
+- `ironworksai company export <company-id> --out <path>`
+- `ironworksai company import <path-or-url> --dry-run`
+- `ironworksai company import <path-or-url> --target existing -C <company-id>`
 
 Planned additions:
 
@@ -614,11 +614,11 @@ Docs to update later as implementation lands:
 
 ## 16. Open Questions
 
-1. Should imported skill packages be stored as managed package files in Paperclip storage, or only referenced at import time?
+1. Should imported skill packages be stored as managed package files in Ironworks storage, or only referenced at import time?
    Decision: managed package files should support both company-scoped reuse and agent-scoped attachment.
 2. What is the minimum adapter skill interface needed to make the UI useful across Claude Code, Codex, OpenClaw, and future adapters?
    Decision: use the baseline interface in section 8.5.
-3. Should Paperclip support direct local folder selection in the web UI, or keep that CLI-only initially?
+3. Should Ironworks support direct local folder selection in the web UI, or keep that CLI-only initially?
 4. Do we want optional generated lock files in phase 2, or defer them until provenance work?
 5. How strict should pinning be by default for GitHub references:
    - warn on unpinned
@@ -637,7 +637,7 @@ Immediate next steps:
 3. build phase 2 markdown-first package reader before expanding ClipHub or `companies.sh`
 4. treat the old manifest-based format as deprecated and not part of the future surface
 
-This keeps Paperclip aligned with:
+This keeps Ironworks aligned with:
 
 - GitHub-native distribution
 - Agent Skills compatibility

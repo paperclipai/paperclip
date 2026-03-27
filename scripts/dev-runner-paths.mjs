@@ -21,7 +21,7 @@ export function shouldTrackDevServerPath(relativePath) {
   const segments = normalizedPath.split("/");
   const basename = segments.at(-1) ?? normalizedPath;
 
-  if (segments.includes(".paperclip")) {
+  if (segments.includes(".ironworks")) {
     return false;
   }
   if (ignoredTestConfigBasenames.has(basename)) {

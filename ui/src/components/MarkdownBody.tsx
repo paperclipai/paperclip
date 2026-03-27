@@ -55,7 +55,7 @@ function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: b
           fontFamily: "inherit",
           suppressErrorRendering: true,
         });
-        const rendered = await mermaid.render(`paperclip-mermaid-${renderId}`, source);
+        const rendered = await mermaid.render(`ironworks-mermaid-${renderId}`, source);
         if (!active) return;
         setSvg(rendered.svg);
       })
@@ -74,15 +74,15 @@ function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: b
   }, [darkMode, renderId, source]);
 
   return (
-    <div className="paperclip-mermaid">
+    <div className="ironworks-mermaid">
       {svg ? (
         <div dangerouslySetInnerHTML={{ __html: svg }} />
       ) : (
         <>
-          <p className={cn("paperclip-mermaid-status", error && "paperclip-mermaid-status-error")}>
+          <p className={cn("ironworks-mermaid-status", error && "ironworks-mermaid-status-error")}>
             {error ? `Unable to render Mermaid diagram: ${error}` : "Rendering Mermaid diagram..."}
           </p>
-          <pre className="paperclip-mermaid-source">
+          <pre className="ironworks-mermaid-source">
             <code className="language-mermaid">{source}</code>
           </pre>
         </>
@@ -111,9 +111,9 @@ export function MarkdownBody({ children, className, resolveImageSrc }: MarkdownB
           <a
             href={targetHref}
             className={cn(
-              "paperclip-mention-chip",
-              `paperclip-mention-chip--${parsed.kind}`,
-              parsed.kind === "project" && "paperclip-project-mention-chip",
+              "ironworks-mention-chip",
+              `ironworks-mention-chip--${parsed.kind}`,
+              parsed.kind === "project" && "ironworks-project-mention-chip",
             )}
             data-mention-kind={parsed.kind}
             style={mentionChipInlineStyle(parsed)}
@@ -139,7 +139,7 @@ export function MarkdownBody({ children, className, resolveImageSrc }: MarkdownB
   return (
     <div
       className={cn(
-        "paperclip-markdown prose prose-sm max-w-none break-words overflow-hidden",
+        "ironworks-markdown prose prose-sm max-w-none break-words overflow-hidden",
         theme === "dark" && "prose-invert",
         className,
       )}

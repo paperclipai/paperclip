@@ -1,7 +1,7 @@
 ---
 name: design-guide
 description: >
-  Paperclip UI design system guide for building consistent, reusable frontend
+  Ironworks UI design system guide for building consistent, reusable frontend
   components. Use when creating new UI components, modifying existing ones,
   adding pages or features to the frontend, styling UI elements, or when you
   need to understand the design language and conventions. Covers: component
@@ -11,9 +11,9 @@ description: >
   web-design-guidelines skill (for web best practices).
 ---
 
-# Paperclip Design Guide
+# Ironworks Design Guide
 
-Paperclip's UI is a professional-grade control plane — dense, keyboard-driven, dark-themed by default. Every pixel earns its place.
+Ironworks's UI is a professional-grade control plane — dense, keyboard-driven, dark-themed by default. Every pixel earns its place.
 
 **Always use with:** `frontend-design` (visual polish) and `web-design-guidelines` (web best practices).
 
@@ -133,7 +133,7 @@ Inline colored dots: running (cyan, animate-pulse), active (green), paused (yell
 Three tiers:
 
 1. **shadcn/ui primitives** (`ui/src/components/ui/`) — Button, Card, Input, Badge, Dialog, Tabs, etc. Do not modify these directly; extend via composition.
-2. **Custom composites** (`ui/src/components/`) — StatusBadge, EntityRow, MetricCard, etc. These capture Paperclip-specific design language.
+2. **Custom composites** (`ui/src/components/`) — StatusBadge, EntityRow, MetricCard, etc. These capture Ironworks-specific design language.
 3. **Page components** (`ui/src/pages/`) — Compose primitives and composites into full views.
 
 **See [references/component-index.md](references/component-index.md) for the complete component inventory with usage guidance.**

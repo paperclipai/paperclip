@@ -3,7 +3,7 @@ title: Costs and Budgets
 summary: Budget caps, cost tracking, and auto-pause enforcement
 ---
 
-Paperclip tracks every token spent by every agent and enforces budget limits to prevent runaway costs.
+Ironworks tracks every token spent by every agent and enforces budget limits to prevent runaway costs.
 
 ## How Cost Tracking Works
 
@@ -39,7 +39,7 @@ PATCH /api/agents/{agentId}
 
 ## Budget Enforcement
 
-Paperclip enforces budgets automatically:
+Ironworks enforces budgets automatically:
 
 | Threshold | Action |
 |-----------|--------|

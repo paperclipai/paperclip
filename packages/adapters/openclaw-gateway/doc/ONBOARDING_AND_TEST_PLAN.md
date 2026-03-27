@@ -1,7 +1,7 @@
 # OpenClaw Gateway Onboarding and Test Plan
 
 ## Scope
-This plan is now **gateway-only**. Paperclip supports OpenClaw through `openclaw_gateway` only.
+This plan is now **gateway-only**. Ironworks supports OpenClaw through `openclaw_gateway` only.
 
 - Removed path: legacy `openclaw` adapter (`/v1/responses`, `/hooks/*`, SSE/webhook transport switching)
 - Supported path: `openclaw_gateway` over WebSocket (`ws://` or `wss://`)
@@ -24,7 +24,7 @@ This plan is now **gateway-only**. Paperclip supports OpenClaw through `openclaw
 - `agentDefaultsPayload.url: ws://... | wss://...`
 - `agentDefaultsPayload.headers["x-openclaw-token"]`
 5. Board approves join request.
-6. OpenClaw claims API key and installs/uses Paperclip skill.
+6. OpenClaw claims API key and installs/uses Ironworks skill.
 7. First task run may trigger pairing approval once; after approval, pairing persists via stored device key.
 
 ## Technical Contract (Gateway)
@@ -39,7 +39,7 @@ This plan is now **gateway-only**. Paperclip supports OpenClaw through `openclaw
 Recommended fields:
 ```json
 {
-  "paperclipApiUrl": "http://host.docker.internal:3100",
+  "ironworksApiUrl": "http://host.docker.internal:3100",
   "waitTimeoutMs": 120000,
   "sessionKeyStrategy": "issue",
   "role": "operator",
@@ -64,7 +64,7 @@ docker image rm openclaw:local || true
 OPENCLAW_RESET_STATE=1 OPENCLAW_BUILD=1 ./scripts/smoke/openclaw-docker-ui.sh
 ```
 
-### 1) Start Paperclip
+### 1) Start Ironworks
 ```bash
 pnpm dev --tailscale-auth
 curl -fsS http://127.0.0.1:3100/api/health
@@ -87,7 +87,7 @@ curl -fsS http://127.0.0.1:3100/api/health
 ### 4) Functional E2E assertions
 1. Task assigned to OpenClaw is completed and closed.
 2. Task asking OpenClaw to send main-webchat message succeeds (message visible in main chat).
-3. In `/new` OpenClaw session, OpenClaw can still create a Paperclip task.
+3. In `/new` OpenClaw session, OpenClaw can still create a Ironworks task.
 
 ## Manual Smoke Checklist
 Use [doc/OPENCLAW_ONBOARDING.md](../../../../doc/OPENCLAW_ONBOARDING.md) as the operator runbook.
@@ -102,8 +102,8 @@ pnpm build
 
 If full suite is too heavy locally, run at least:
 ```bash
-pnpm --filter @paperclipai/server test:run -- openclaw-gateway
-pnpm --filter @paperclipai/server typecheck
-pnpm --filter @paperclipai/ui typecheck
-pnpm --filter paperclipai typecheck
+pnpm --filter @ironworksai/server test:run -- openclaw-gateway
+pnpm --filter @ironworksai/server typecheck
+pnpm --filter @ironworksai/ui typecheck
+pnpm --filter ironworksai typecheck
 ```

@@ -129,7 +129,7 @@ git commit -m "docs: update documentation for accuracy
 
 - [list each fix briefly]
 
-Co-Authored-By: Paperclip <noreply@paperclip.ing>"
+Co-Authored-By: Ironworks <noreply@PLACEHOLDER_IRONWORKS_DOT_ING>"
 
 git push -u origin "$BRANCH"
 

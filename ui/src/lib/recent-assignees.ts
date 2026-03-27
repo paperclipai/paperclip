@@ -1,4 +1,4 @@
-const STORAGE_KEY = "paperclip:recent-assignees";
+const STORAGE_KEY = "ironworks:recent-assignees";
 const MAX_RECENT = 10;
 
 export function getRecentAssigneeIds(): string[] {

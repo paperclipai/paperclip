@@ -20,10 +20,10 @@
  */
 
 import type {
-  PaperclipPluginManifestV1,
+  IronworksPluginManifestV1,
   PluginToolDeclaration,
-} from "@paperclipai/shared";
-import type { ToolRunContext, ToolResult, ExecuteToolParams } from "@paperclipai/plugin-sdk";
+} from "@ironworksai/shared";
+import type { ToolRunContext, ToolResult, ExecuteToolParams } from "@ironworksai/plugin-sdk";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { logger } from "../middleware/logger.js";
 
@@ -112,7 +112,7 @@ export interface PluginToolRegistry {
    * @param pluginDbId - The plugin's database UUID, used for worker routing
    *   and availability checks. If omitted, `pluginId` is used (backwards-compat).
    */
-  registerPlugin(pluginId: string, manifest: PaperclipPluginManifestV1, pluginDbId?: string): void;
+  registerPlugin(pluginId: string, manifest: IronworksPluginManifestV1, pluginDbId?: string): void;
 
   /**
    * Remove all tool registrations for a plugin.
@@ -295,7 +295,7 @@ export function createPluginToolRegistry(
   // -----------------------------------------------------------------------
 
   return {
-    registerPlugin(pluginId: string, manifest: PaperclipPluginManifestV1, pluginDbId?: string): void {
+    registerPlugin(pluginId: string, manifest: IronworksPluginManifestV1, pluginDbId?: string): void {
       const dbId = pluginDbId ?? pluginId;
 
       // Remove any previously registered tools for this plugin (idempotent)

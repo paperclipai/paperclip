@@ -1,4 +1,4 @@
-# Paperclip Agent Evals - Phase 0: Promptfoo Bootstrap
+# Ironworks Agent Evals - Phase 0: Promptfoo Bootstrap
 #
 # Tests narrow heartbeat behaviors across models with deterministic assertions.
 # Test cases are organized by category in tests/*.yaml files.
@@ -13,7 +13,7 @@
 #
 # Requires OPENROUTER_API_KEY or individual provider keys.
 
-description: "Paperclip heartbeat behavior evals"
+description: "Ironworks heartbeat behavior evals"
 
 prompts:
   - file://prompts/heartbeat-system.txt

@@ -1,4 +1,4 @@
-# paperclipai
+# ironworksai
 
 ## 0.3.1
 
@@ -6,17 +6,17 @@
 
 - Stable release preparation for 0.3.1
 - Updated dependencies
-  - @paperclipai/adapter-utils@0.3.1
-  - @paperclipai/adapter-claude-local@0.3.1
-  - @paperclipai/adapter-codex-local@0.3.1
-  - @paperclipai/adapter-cursor-local@0.3.1
-  - @paperclipai/adapter-gemini-local@0.3.1
-  - @paperclipai/adapter-openclaw-gateway@0.3.1
-  - @paperclipai/adapter-opencode-local@0.3.1
-  - @paperclipai/adapter-pi-local@0.3.1
-  - @paperclipai/db@0.3.1
-  - @paperclipai/shared@0.3.1
-  - @paperclipai/server@0.3.1
+  - @ironworksai/adapter-utils@0.3.1
+  - @ironworksai/adapter-claude-local@0.3.1
+  - @ironworksai/adapter-codex-local@0.3.1
+  - @ironworksai/adapter-cursor-local@0.3.1
+  - @ironworksai/adapter-gemini-local@0.3.1
+  - @ironworksai/adapter-openclaw-gateway@0.3.1
+  - @ironworksai/adapter-opencode-local@0.3.1
+  - @ironworksai/adapter-pi-local@0.3.1
+  - @ironworksai/db@0.3.1
+  - @ironworksai/shared@0.3.1
+  - @ironworksai/server@0.3.1
 
 ## 0.3.0
 
@@ -28,16 +28,16 @@
 
 - Updated dependencies [6077ae6]
 - Updated dependencies
-  - @paperclipai/shared@0.3.0
-  - @paperclipai/adapter-utils@0.3.0
-  - @paperclipai/adapter-claude-local@0.3.0
-  - @paperclipai/adapter-codex-local@0.3.0
-  - @paperclipai/adapter-cursor-local@0.3.0
-  - @paperclipai/adapter-openclaw-gateway@0.3.0
-  - @paperclipai/adapter-opencode-local@0.3.0
-  - @paperclipai/adapter-pi-local@0.3.0
-  - @paperclipai/db@0.3.0
-  - @paperclipai/server@0.3.0
+  - @ironworksai/shared@0.3.0
+  - @ironworksai/adapter-utils@0.3.0
+  - @ironworksai/adapter-claude-local@0.3.0
+  - @ironworksai/adapter-codex-local@0.3.0
+  - @ironworksai/adapter-cursor-local@0.3.0
+  - @ironworksai/adapter-openclaw-gateway@0.3.0
+  - @ironworksai/adapter-opencode-local@0.3.0
+  - @ironworksai/adapter-pi-local@0.3.0
+  - @ironworksai/db@0.3.0
+  - @ironworksai/server@0.3.0
 
 ## 0.2.7
 
@@ -45,13 +45,13 @@
 
 - Version bump (patch)
 - Updated dependencies
-  - @paperclipai/shared@0.2.7
-  - @paperclipai/adapter-utils@0.2.7
-  - @paperclipai/db@0.2.7
-  - @paperclipai/adapter-claude-local@0.2.7
-  - @paperclipai/adapter-codex-local@0.2.7
-  - @paperclipai/adapter-openclaw@0.2.7
-  - @paperclipai/server@0.2.7
+  - @ironworksai/shared@0.2.7
+  - @ironworksai/adapter-utils@0.2.7
+  - @ironworksai/db@0.2.7
+  - @ironworksai/adapter-claude-local@0.2.7
+  - @ironworksai/adapter-codex-local@0.2.7
+  - @ironworksai/adapter-openclaw@0.2.7
+  - @ironworksai/server@0.2.7
 
 ## 0.2.6
 
@@ -59,13 +59,13 @@
 
 - Version bump (patch)
 - Updated dependencies
-  - @paperclipai/shared@0.2.6
-  - @paperclipai/adapter-utils@0.2.6
-  - @paperclipai/db@0.2.6
-  - @paperclipai/adapter-claude-local@0.2.6
-  - @paperclipai/adapter-codex-local@0.2.6
-  - @paperclipai/adapter-openclaw@0.2.6
-  - @paperclipai/server@0.2.6
+  - @ironworksai/shared@0.2.6
+  - @ironworksai/adapter-utils@0.2.6
+  - @ironworksai/db@0.2.6
+  - @ironworksai/adapter-claude-local@0.2.6
+  - @ironworksai/adapter-codex-local@0.2.6
+  - @ironworksai/adapter-openclaw@0.2.6
+  - @ironworksai/server@0.2.6
 
 ## 0.2.5
 
@@ -73,13 +73,13 @@
 
 - Version bump (patch)
 - Updated dependencies
-  - @paperclipai/shared@0.2.5
-  - @paperclipai/adapter-utils@0.2.5
-  - @paperclipai/db@0.2.5
-  - @paperclipai/adapter-claude-local@0.2.5
-  - @paperclipai/adapter-codex-local@0.2.5
-  - @paperclipai/adapter-openclaw@0.2.5
-  - @paperclipai/server@0.2.5
+  - @ironworksai/shared@0.2.5
+  - @ironworksai/adapter-utils@0.2.5
+  - @ironworksai/db@0.2.5
+  - @ironworksai/adapter-claude-local@0.2.5
+  - @ironworksai/adapter-codex-local@0.2.5
+  - @ironworksai/adapter-openclaw@0.2.5
+  - @ironworksai/server@0.2.5
 
 ## 0.2.4
 
@@ -87,13 +87,13 @@
 
 - Version bump (patch)
 - Updated dependencies
-  - @paperclipai/shared@0.2.4
-  - @paperclipai/adapter-utils@0.2.4
-  - @paperclipai/db@0.2.4
-  - @paperclipai/adapter-claude-local@0.2.4
-  - @paperclipai/adapter-codex-local@0.2.4
-  - @paperclipai/adapter-openclaw@0.2.4
-  - @paperclipai/server@0.2.4
+  - @ironworksai/shared@0.2.4
+  - @ironworksai/adapter-utils@0.2.4
+  - @ironworksai/db@0.2.4
+  - @ironworksai/adapter-claude-local@0.2.4
+  - @ironworksai/adapter-codex-local@0.2.4
+  - @ironworksai/adapter-openclaw@0.2.4
+  - @ironworksai/server@0.2.4
 
 ## 0.2.3
 
@@ -101,13 +101,13 @@
 
 - Version bump (patch)
 - Updated dependencies
-  - @paperclipai/shared@0.2.3
-  - @paperclipai/adapter-utils@0.2.3
-  - @paperclipai/db@0.2.3
-  - @paperclipai/adapter-claude-local@0.2.3
-  - @paperclipai/adapter-codex-local@0.2.3
-  - @paperclipai/adapter-openclaw@0.2.3
-  - @paperclipai/server@0.2.3
+  - @ironworksai/shared@0.2.3
+  - @ironworksai/adapter-utils@0.2.3
+  - @ironworksai/db@0.2.3
+  - @ironworksai/adapter-claude-local@0.2.3
+  - @ironworksai/adapter-codex-local@0.2.3
+  - @ironworksai/adapter-openclaw@0.2.3
+  - @ironworksai/server@0.2.3
 
 ## 0.2.2
 
@@ -115,13 +115,13 @@
 
 - Version bump (patch)
 - Updated dependencies
-  - @paperclipai/shared@0.2.2
-  - @paperclipai/adapter-utils@0.2.2
-  - @paperclipai/db@0.2.2
-  - @paperclipai/adapter-claude-local@0.2.2
-  - @paperclipai/adapter-codex-local@0.2.2
-  - @paperclipai/adapter-openclaw@0.2.2
-  - @paperclipai/server@0.2.2
+  - @ironworksai/shared@0.2.2
+  - @ironworksai/adapter-utils@0.2.2
+  - @ironworksai/db@0.2.2
+  - @ironworksai/adapter-claude-local@0.2.2
+  - @ironworksai/adapter-codex-local@0.2.2
+  - @ironworksai/adapter-openclaw@0.2.2
+  - @ironworksai/server@0.2.2
 
 ## 0.2.1
 
@@ -129,10 +129,10 @@
 
 - Version bump (patch)
 - Updated dependencies
-  - @paperclipai/shared@0.2.1
-  - @paperclipai/adapter-utils@0.2.1
-  - @paperclipai/db@0.2.1
-  - @paperclipai/adapter-claude-local@0.2.1
-  - @paperclipai/adapter-codex-local@0.2.1
-  - @paperclipai/adapter-openclaw@0.2.1
-  - @paperclipai/server@0.2.1
+  - @ironworksai/shared@0.2.1
+  - @ironworksai/adapter-utils@0.2.1
+  - @ironworksai/db@0.2.1
+  - @ironworksai/adapter-claude-local@0.2.1
+  - @ironworksai/adapter-codex-local@0.2.1
+  - @ironworksai/adapter-openclaw@0.2.1
+  - @ironworksai/server@0.2.1

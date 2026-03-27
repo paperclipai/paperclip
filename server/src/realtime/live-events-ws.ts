@@ -3,9 +3,9 @@ import type { IncomingMessage, Server as HttpServer } from "node:http";
 import { createRequire } from "node:module";
 import type { Duplex } from "node:stream";
 import { and, eq, isNull } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agentApiKeys, companyMemberships, instanceUserRoles } from "@paperclipai/db";
-import type { DeploymentMode } from "@paperclipai/shared";
+import type { Db } from "@ironworksai/db";
+import { agentApiKeys, companyMemberships, instanceUserRoles } from "@ironworksai/db";
+import type { DeploymentMode } from "@ironworksai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "../middleware/logger.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
@@ -47,7 +47,7 @@ interface UpgradeContext {
 }
 
 interface IncomingMessageWithContext extends IncomingMessage {
-  paperclipUpgradeContext?: UpgradeContext;
+  ironworksUpgradeContext?: UpgradeContext;
 }
 
 function hashToken(token: string) {
@@ -199,7 +199,7 @@ export function setupLiveEventsWebSocketServer(
   }, 30000);
 
   wss.on("connection", (socket: WsSocket, req: IncomingMessage) => {
-    const context = (req as IncomingMessageWithContext).paperclipUpgradeContext;
+    const context = (req as IncomingMessageWithContext).ironworksUpgradeContext;
     if (!context) {
       socket.close(1008, "missing context");
       return;
@@ -257,7 +257,7 @@ export function setupLiveEventsWebSocketServer(
         }
 
         const reqWithContext = req as IncomingMessageWithContext;
-        reqWithContext.paperclipUpgradeContext = context;
+        reqWithContext.ironworksUpgradeContext = context;
 
         wss.handleUpgrade(req, socket, head, (ws: WsSocket) => {
           wss.emit("connection", ws, reqWithContext);

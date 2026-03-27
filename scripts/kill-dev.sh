@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# Kill all local Paperclip dev server processes (across all worktrees).
+# Kill all local Ironworks dev server processes (across all worktrees).
 #
 # Usage:
-#   scripts/kill-dev.sh        # kill all paperclip dev processes
+#   scripts/kill-dev.sh        # kill all ironworks dev processes
 #   scripts/kill-dev.sh --dry  # preview what would be killed
 #
 
@@ -14,8 +14,8 @@ if [[ "${1:-}" == "--dry" || "${1:-}" == "--dry-run" || "${1:-}" == "-n" ]]; the
   DRY_RUN=true
 fi
 
-# Collect PIDs of node processes running from any paperclip directory.
-# Matches paths like /Users/*/paperclip/... or /Users/*/paperclip-*/...
+# Collect PIDs of node processes running from any ironworks directory.
+# Matches paths like /Users/*/ironworks/... or /Users/*/ironworks-*/...
 # Excludes postgres-related processes.
 pids=()
 lines=()
@@ -27,14 +27,14 @@ while IFS= read -r line; do
   pid=$(echo "$line" | awk '{print $2}')
   pids+=("$pid")
   lines+=("$line")
-done < <(ps aux | grep -E '/paperclip(-[^/]+)?/' | grep node | grep -v grep || true)
+done < <(ps aux | grep -E '/ironworks(-[^/]+)?/' | grep node | grep -v grep || true)
 
 if [[ ${#pids[@]} -eq 0 ]]; then
-  echo "No Paperclip dev processes found."
+  echo "No Ironworks dev processes found."
   exit 0
 fi
 
-echo "Found ${#pids[@]} Paperclip dev process(es):"
+echo "Found ${#pids[@]} Ironworks dev process(es):"
 echo ""
 
 for i in "${!pids[@]}"; do

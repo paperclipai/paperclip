@@ -6,7 +6,7 @@ Date: 2026-02-20
 
 ## Goal
 
-Add a single storage subsystem for Paperclip that supports:
+Add a single storage subsystem for Ironworks that supports:
 
 - local disk storage for single-user local deployment
 - S3-compatible object storage for cloud deployment
@@ -17,7 +17,7 @@ Add a single storage subsystem for Paperclip that supports:
 - First consumer: issue attachments/images.
 - Storage adapters: `local_disk` and `s3`.
 - Files are always company-scoped and access-controlled.
-- API serves attachment bytes through authenticated Paperclip endpoints.
+- API serves attachment bytes through authenticated Ironworks endpoints.
 
 ## Out of Scope (This Draft)
 
@@ -28,7 +28,7 @@ Add a single storage subsystem for Paperclip that supports:
 
 ## Key Decisions
 
-- Default local path is under instance root: `~/.paperclip/instances/<instanceId>/data/storage`.
+- Default local path is under instance root: `~/.ironworks/instances/<instanceId>/data/storage`.
 - Object bytes live in storage provider; metadata lives in Postgres.
 - `assets` is generic metadata table; `issue_attachments` links assets to issues/comments.
 - S3 credentials come from runtime environment/default AWS provider chain, not DB rows.
@@ -56,8 +56,8 @@ Add a single storage subsystem for Paperclip that supports:
 
 ### Acceptance Criteria
 
-- `paperclipai onboard` writes a valid `storage` config block by default.
-- `paperclipai configure --section storage` can switch between local and s3 modes.
+- `ironworksai onboard` writes a valid `storage` config block by default.
+- `ironworksai configure --section storage` can switch between local and s3 modes.
 - Server startup reads storage config without env-only hacks.
 
 ## Phase 2: Server Storage Subsystem + Providers
@@ -161,7 +161,7 @@ Add a single storage subsystem for Paperclip that supports:
 
 ### Acceptance Criteria
 
-- `paperclipai doctor` reports actionable storage status.
+- `ironworksai doctor` reports actionable storage status.
 - Local single-user install works without extra cloud credentials.
 - Cloud config supports S3-compatible endpoint without code changes.
 

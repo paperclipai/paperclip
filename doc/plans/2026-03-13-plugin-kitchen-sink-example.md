@@ -2,7 +2,7 @@
 
 ## Goal
 
-Add a new first-party example plugin, `Kitchen Sink (Example)`, that demonstrates every currently implemented Paperclip plugin API surface in one place.
+Add a new first-party example plugin, `Kitchen Sink (Example)`, that demonstrates every currently implemented Ironworks plugin API surface in one place.
 
 This plugin is meant to be:
 
@@ -32,7 +32,7 @@ The kitchen-sink plugin should answer those questions by example.
 
 ## Success Criteria
 
-The plugin is successful if a contributor can install it and, without reading the SDK first, discover and exercise the current plugin runtime surface area from inside Paperclip.
+The plugin is successful if a contributor can install it and, without reading the SDK first, discover and exercise the current plugin runtime surface area from inside Ironworks.
 
 Concretely:
 
@@ -135,10 +135,10 @@ The implementation should keep a small validation checklist for these before we 
 The plugin should be named:
 
 - display name: `Kitchen Sink (Example)`
-- package: `@paperclipai/plugin-kitchen-sink-example`
-- plugin id: `paperclip.kitchen-sink-example` or `paperclip-kitchen-sink-example`
+- package: `@ironworksai/plugin-kitchen-sink-example`
+- plugin id: `ironworks.kitchen-sink-example` or `ironworks-kitchen-sink-example`
 
-Recommendation: use `paperclip-kitchen-sink-example` to match current in-repo example naming style.
+Recommendation: use `ironworks-kitchen-sink-example` to match current in-repo example naming style.
 
 Category mix:
 
@@ -171,7 +171,7 @@ Recommended page sections:
   - emit event
   - watch event log
   - stream demo output
-- `Paperclip Domain APIs`
+- `Ironworks Domain APIs`
   - companies
   - projects/workspaces
   - issues
@@ -265,7 +265,7 @@ Demos:
 
 - emit a plugin event
 - subscribe to plugin events
-- subscribe to a core Paperclip event such as `issue.created`
+- subscribe to a core Ironworks event such as `issue.created`
 - show recent received events in a timeline
 
 ### `ctx.jobs`
@@ -291,7 +291,7 @@ Demo:
 - make a simple outbound GET request to a safe endpoint
 - show status code, latency, and JSON result
 
-Recommendation: default to a Paperclip-local endpoint or a stable public echo endpoint to avoid flaky docs.
+Recommendation: default to a Ironworks-local endpoint or a stable public echo endpoint to avoid flaky docs.
 
 ### `ctx.secrets`
 

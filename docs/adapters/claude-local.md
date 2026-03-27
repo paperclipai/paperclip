@@ -45,15 +45,15 @@ If resume fails with an unknown session error, the adapter automatically retries
 
 ## Skills Injection
 
-The adapter creates a temporary directory with symlinks to Paperclip skills and passes it via `--add-dir`. This makes skills discoverable without polluting the agent's working directory.
+The adapter creates a temporary directory with symlinks to Ironworks skills and passes it via `--add-dir`. This makes skills discoverable without polluting the agent's working directory.
 
 For manual local CLI usage outside heartbeat runs (for example running as `claudecoder` directly), use:
 
 ```sh
-pnpm paperclipai agent local-cli claudecoder --company-id <company-id>
+pnpm ironworksai agent local-cli claudecoder --company-id <company-id>
 ```
 
-This installs Paperclip skills in `~/.claude/skills`, creates an agent API key, and prints shell exports to run as that agent.
+This installs Ironworks skills in `~/.claude/skills`, creates an agent API key, and prints shell exports to run as that agent.
 
 ## Environment Test
 

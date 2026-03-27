@@ -19,7 +19,7 @@ import {
   routineRuns,
   routines,
   routineTriggers,
-} from "@paperclipai/db";
+} from "@ironworksai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -31,7 +31,7 @@ vi.mock("../services/index.js", async () => {
   const actual = await vi.importActual<typeof import("../services/index.js")>("../services/index.js");
   const { randomUUID } = await import("node:crypto");
   const { eq } = await import("drizzle-orm");
-  const { heartbeatRuns, issues } = await import("@paperclipai/db");
+  const { heartbeatRuns, issues } = await import("@ironworksai/db");
 
   return {
     ...actual,
@@ -90,7 +90,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-routines-e2e-");
+    tempDb = await startEmbeddedPostgresTestDatabase("ironworks-routines-e2e-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
 
@@ -137,7 +137,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
 
     await db.insert(companies).values({
       id: companyId,
-      name: "Paperclip",
+      name: "Ironworks",
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
     });

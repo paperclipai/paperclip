@@ -32,7 +32,7 @@ async function main() {
   });
 
   // eslint-disable-next-line no-console
-  console.log(`Paperclip plugin dev server listening at ${server.url}`);
+  console.log(`Ironworks plugin dev server listening at ${server.url}`);
 
   const shutdown = async () => {
     await server.close();

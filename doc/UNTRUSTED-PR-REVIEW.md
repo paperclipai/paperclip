@@ -2,7 +2,7 @@
 
 Use this workflow when you want Codex or Claude to inspect a pull request that you do not want touching your host machine directly.
 
-This is intentionally separate from the normal Paperclip dev image.
+This is intentionally separate from the normal Ironworks dev image.
 
 ## What this container isolates
 
@@ -55,8 +55,8 @@ OPENAI_API_KEY=... ANTHROPIC_API_KEY=... docker compose -f docker-compose.untrus
 Inside the container:
 
 ```sh
-review-checkout-pr paperclipai/paperclip 432
-cd /work/checkouts/paperclipai-paperclip/pr-432
+review-checkout-pr ironworksai/ironworks 432
+cd /work/checkouts/ironworksai-ironworks/pr-432
 ```
 
 What this does:
@@ -87,7 +87,7 @@ Or with Claude:
 claude
 ```
 
-## Preview the Paperclip app from the PR
+## Preview the Ironworks app from the PR
 
 Only do this when you intentionally want to execute the PR's code inside the container.
 
@@ -110,7 +110,7 @@ Notes:
 
 - `pnpm install` can run untrusted lifecycle scripts from the PR. That is why this happens inside the isolated container instead of on your host.
 - If you only want static inspection, do not run install/dev commands.
-- Paperclip's embedded PostgreSQL and local storage stay inside the container home volume via `PAPERCLIP_HOME=/home/reviewer/.paperclip-review`.
+- Ironworks's embedded PostgreSQL and local storage stay inside the container home volume via `IRONWORKS_HOME=/home/reviewer/.ironworks-review`.
 
 ## Reset state
 

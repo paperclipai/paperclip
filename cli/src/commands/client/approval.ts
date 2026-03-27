@@ -6,7 +6,7 @@ import {
   resubmitApprovalSchema,
   type Approval,
   type ApprovalComment,
-} from "@paperclipai/shared";
+} from "@ironworksai/shared";
 import {
   addCommonClientOptions,
   formatInlineRecord,

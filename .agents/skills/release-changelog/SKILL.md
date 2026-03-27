@@ -1,17 +1,17 @@
 ---
 name: release-changelog
 description: >
-  Generate the stable Paperclip release changelog at releases/vYYYY.MDD.P.md by
+  Generate the stable Ironworks release changelog at releases/vYYYY.MDD.P.md by
   reading commits, changesets, and merged PR context since the last stable tag.
 ---
 
 # Release Changelog Skill
 
-Generate the user-facing changelog for the **stable** Paperclip release.
+Generate the user-facing changelog for the **stable** Ironworks release.
 
 ## Versioning Model
 
-Paperclip uses **calendar versioning (calver)**:
+Ironworks uses **calendar versioning (calver)**:
 
 - Stable releases: `YYYY.MDD.P` (e.g. `2026.318.0`)
 - Canary releases: `YYYY.MDD.P-canary.N` (e.g. `2026.318.1-canary.0`)
@@ -126,7 +126,7 @@ When a bullet item clearly maps to a merged pull request, add inline attribution
 end of the entry in this format:
 
 ```
-- **Feature name** — Description. ([#123](https://github.com/paperclipai/paperclip/pull/123), @contributor1, @contributor2)
+- **Feature name** — Description. ([#123](https://github.com/ironworksai/ironworks/pull/123), @contributor1, @contributor2)
 ```
 
 Rules:
