@@ -29,6 +29,10 @@ function createTempConfig(): string {
         retentionDays: 30,
         dir: path.join(runtimeRoot, "backups"),
       },
+      heartbeatCleanup: {
+        enabled: true,
+        pruneAfterHours: 48,
+      },
     },
     logging: {
       mode: "file",

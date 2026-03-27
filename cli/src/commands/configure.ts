@@ -46,6 +46,10 @@ function defaultConfig(): PaperclipConfig {
         retentionDays: 30,
         dir: resolveDefaultBackupDir(instanceId),
       },
+      heartbeatCleanup: {
+        enabled: true,
+        pruneAfterHours: 48,
+      },
     },
     logging: {
       mode: "file",
