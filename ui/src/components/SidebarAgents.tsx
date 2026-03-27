@@ -10,6 +10,7 @@ import { heartbeatsApi } from "../api/heartbeats";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, agentRouteRef, agentSwitchUrl } from "../lib/utils";
 import { AgentIcon } from "./AgentIconPicker";
+import { StatusDot } from "./StatusDot";
 import {
   Collapsible,
   CollapsibleContent,
@@ -132,10 +133,7 @@ export function SidebarAgents() {
                 <span className="flex-1 truncate">{agent.name}</span>
                 {runCount > 0 && (
                   <span className="ml-auto flex items-center gap-1.5 shrink-0">
-                    <span className="relative flex h-2 w-2">
-                      <span className="animate-pulse-amber absolute inline-flex h-full w-full rounded-full bg-primary opacity-75" />
-                      <span className="relative inline-flex rounded-full h-2 w-2 bg-primary" />
-                    </span>
+                    <StatusDot status="running" size="sm" />
                     <span className="text-[11px] font-medium text-primary">
                       {runCount} live
                     </span>
