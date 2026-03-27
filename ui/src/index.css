@@ -297,6 +297,22 @@
   animation: pulse-amber 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
+/* Typing-indicator bounce for running status dots */
+@keyframes status-bounce {
+  0%, 60%, 100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-3px);
+    opacity: 1;
+  }
+}
+
+.animate-status-bounce {
+  animation: status-bounce 1.4s ease-in-out infinite;
+}
+
 /* Org chart canvas background */
 .org-chart-canvas {
   background-color: color-mix(in oklab, var(--muted) 30%, var(--background));
@@ -316,7 +332,8 @@
   .animate-page-enter,
   .animate-stagger-in,
   .animate-shimmer-amber,
-  .animate-pulse-amber {
+  .animate-pulse-amber,
+  .animate-status-bounce {
     animation: none;
   }
   .org-chart-canvas path {

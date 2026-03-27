@@ -22,6 +22,7 @@ import { useInboxBadge } from "../hooks/useInboxBadge";
 import { cn, agentRouteRef, relativeTime } from "../lib/utils";
 import { agentStatusDot, agentStatusDotDefault } from "../lib/status-colors";
 import { AgentIcon } from "../components/AgentIconPicker";
+import { StatusDot } from "../components/StatusDot";
 import { AgentChatSessionTab } from "../components/AgentChatSessionTab";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -147,12 +148,20 @@ function AgentListPanel({
                   icon={agent.icon}
                   className="h-5 w-5 text-muted-foreground"
                 />
-                <span
-                  className={cn(
-                    "absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-background",
-                    dotColor,
-                  )}
-                />
+                {agent.status === "running" ? (
+                  <StatusDot
+                    status="running"
+                    size="sm"
+                    className="absolute -bottom-1 -right-1.5 border border-background rounded-full bg-background"
+                  />
+                ) : (
+                  <span
+                    className={cn(
+                      "absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-background",
+                      dotColor,
+                    )}
+                  />
+                )}
                 {collapsed && unreadCount > 0 && (
                   <span className="absolute -top-1 -right-1 flex h-3 w-3 items-center justify-center rounded-full bg-primary text-[7px] font-bold leading-none text-primary-foreground">
                     {unreadCount > 9 ? "9+" : unreadCount}

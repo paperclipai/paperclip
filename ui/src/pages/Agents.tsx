@@ -9,6 +9,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
 import { queryKeys } from "../lib/queryKeys";
 import { StatusBadge } from "../components/StatusBadge";
+import { StatusDot } from "../components/StatusDot";
 import { agentStatusDot, agentStatusDotDefault } from "../lib/status-colors";
 import { EntityRow } from "../components/EntityRow";
 import { EmptyState } from "../components/EmptyState";
@@ -232,11 +233,7 @@ export function Agents() {
                 subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
                 to={switchAgentUrl(agent)}
                 leading={
-                  <span className="relative flex h-2.5 w-2.5">
-                    <span
-                      className={`absolute inline-flex h-full w-full rounded-full ${agentStatusDot[agent.status] ?? agentStatusDotDefault}`}
-                    />
-                  </span>
+                  <StatusDot status={agent.status} size="md" />
                 }
                 trailing={
                   <div className="flex items-center gap-3">
@@ -329,17 +326,13 @@ function OrgTreeNode({
 }) {
   const agent = agentMap.get(node.id);
 
-  const statusColor = agentStatusDot[node.status] ?? agentStatusDotDefault;
-
   return (
     <div style={{ paddingLeft: depth * 24 }}>
       <Link
         to={agent ? agentSwitchUrl(currentPath, agent) : `/agents/${node.id}/dashboard`}
         className="flex items-center gap-3 px-3 py-2 hover:bg-accent/30 transition-colors w-full text-left no-underline text-inherit"
       >
-        <span className="relative flex h-2.5 w-2.5 shrink-0">
-          <span className={`absolute inline-flex h-full w-full rounded-full ${statusColor}`} />
-        </span>
+        <StatusDot status={node.status} size="md" className="shrink-0" />
         <div className="flex-1 min-w-0">
           <span className="text-sm font-medium">{node.name}</span>
           <span className="text-xs text-muted-foreground ml-2">

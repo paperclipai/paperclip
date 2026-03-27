@@ -1,6 +1,7 @@
 import { NavLink } from "@/lib/router";
 import { cn } from "../lib/utils";
 import { useSidebar } from "../context/SidebarContext";
+import { StatusDot } from "./StatusDot";
 import type { LucideIcon } from "lucide-react";
 
 interface SidebarNavItemProps {
@@ -52,10 +53,7 @@ export function SidebarNavItem({
       <span className="flex-1 truncate">{label}</span>
       {liveCount != null && liveCount > 0 && (
         <span className="ml-auto flex items-center gap-1.5">
-          <span className="relative flex h-2 w-2">
-            <span className="animate-pulse-amber absolute inline-flex h-full w-full rounded-full bg-primary opacity-75" />
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-primary" />
-          </span>
+          <StatusDot status="running" size="sm" />
           <span className="text-[11px] font-medium text-primary">{liveCount} live</span>
         </span>
       )}

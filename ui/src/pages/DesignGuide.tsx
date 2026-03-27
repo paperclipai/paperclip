@@ -116,6 +116,7 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { StatusIcon } from "@/components/StatusIcon";
 import { PriorityIcon } from "@/components/PriorityIcon";
 import { agentStatusDot, agentStatusDotDefault } from "@/lib/status-colors";
+import { StatusDot } from "@/components/StatusDot";
 import { EntityRow } from "@/components/EntityRow";
 import { EmptyState } from "@/components/EmptyState";
 import { MetricCard } from "@/components/MetricCard";
@@ -470,9 +471,7 @@ export function DesignGuide() {
           <div className="flex items-center gap-4 flex-wrap">
             {(["running", "active", "paused", "error", "archived"] as const).map((label) => (
               <div key={label} className="flex items-center gap-2">
-                <span className="relative flex h-2.5 w-2.5">
-                  <span className={`inline-flex h-full w-full rounded-full ${agentStatusDot[label] ?? agentStatusDotDefault}`} />
-                </span>
+                <StatusDot status={label} size="md" />
                 <span className="text-xs text-muted-foreground">{label}</span>
               </div>
             ))}
