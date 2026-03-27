@@ -1,4 +1,4 @@
-# Fear & Greed Alpha
+# Deepwater Capital
 
 Mixture of Expert agents that identify extreme fear opportunities across crypto, equities, and commodities.
 

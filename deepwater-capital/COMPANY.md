@@ -1,7 +1,7 @@
 ---
-name: Fear & Greed Alpha
+name: Deepwater Capital
 description: Mixture of Expert agents that identify extreme fear opportunities across crypto, equities, and commodities using the Fear & Greed Index and multi-factor analysis
-slug: fear-greed-alpha
+slug: deepwater-capital
 schema: agentcompanies/v1
 version: 1.0.0
 license: MIT
@@ -12,7 +12,7 @@ goals:
   - Maintain a watchlist of fear-driven opportunities ranked by conviction
 ---
 
-Fear & Greed Alpha is a Mixture of Experts trading intelligence company. Three specialist analysts — Sentiment, Technical, and Macro — independently evaluate assets showing extreme fear readings. Their signals are aggregated by the Portfolio Manager, who weighs each expert's conviction and produces final trade signals.
+Deepwater Capital is a Mixture of Experts trading intelligence company. Three specialist analysts — Sentiment, Technical, and Macro — independently evaluate assets showing extreme fear readings. Their signals are aggregated by the Portfolio Manager, who weighs each expert's conviction and produces final trade signals.
 
 ## How the Mixture of Experts Works
 
