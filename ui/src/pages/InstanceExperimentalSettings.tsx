@@ -84,6 +84,7 @@ export function InstanceExperimentalSettings() {
           </div>
           <button
             type="button"
+            data-slot="toggle"
             aria-label="Toggle isolated workspaces experimental setting"
             disabled={toggleMutation.isPending}
             className={cn(
@@ -113,6 +114,7 @@ export function InstanceExperimentalSettings() {
           </div>
           <button
             type="button"
+            data-slot="toggle"
             aria-label="Toggle guarded dev-server auto-restart"
             disabled={toggleMutation.isPending}
             className={cn(

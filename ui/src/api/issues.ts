@@ -18,8 +18,10 @@ export const issuesApi = {
       status?: string;
       projectId?: string;
       assigneeAgentId?: string;
+      participantAgentId?: string;
       assigneeUserId?: string;
       touchedByUserId?: string;
+      inboxArchivedByUserId?: string;
       unreadForUserId?: string;
       labelId?: string;
       originKind?: string;
@@ -32,8 +34,10 @@ export const issuesApi = {
     if (filters?.status) params.set("status", filters.status);
     if (filters?.projectId) params.set("projectId", filters.projectId);
     if (filters?.assigneeAgentId) params.set("assigneeAgentId", filters.assigneeAgentId);
+    if (filters?.participantAgentId) params.set("participantAgentId", filters.participantAgentId);
     if (filters?.assigneeUserId) params.set("assigneeUserId", filters.assigneeUserId);
     if (filters?.touchedByUserId) params.set("touchedByUserId", filters.touchedByUserId);
+    if (filters?.inboxArchivedByUserId) params.set("inboxArchivedByUserId", filters.inboxArchivedByUserId);
     if (filters?.unreadForUserId) params.set("unreadForUserId", filters.unreadForUserId);
     if (filters?.labelId) params.set("labelId", filters.labelId);
     if (filters?.originKind) params.set("originKind", filters.originKind);
@@ -49,6 +53,10 @@ export const issuesApi = {
   deleteLabel: (id: string) => api.delete<IssueLabel>(`/labels/${id}`),
   get: (id: string) => api.get<Issue>(`/issues/${id}`),
   markRead: (id: string) => api.post<{ id: string; lastReadAt: Date }>(`/issues/${id}/read`, {}),
+  archiveFromInbox: (id: string) =>
+    api.post<{ id: string; archivedAt: Date }>(`/issues/${id}/inbox-archive`, {}),
+  unarchiveFromInbox: (id: string) =>
+    api.delete<{ id: string; archivedAt: Date } | { ok: true }>(`/issues/${id}/inbox-archive`),
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<Issue>(`/companies/${companyId}/issues`, data),
   update: (id: string, data: Record<string, unknown>) => api.patch<Issue>(`/issues/${id}`, data),

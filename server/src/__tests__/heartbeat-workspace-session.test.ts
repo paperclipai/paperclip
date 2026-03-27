@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { agents } from "@paperclipai/db";
+import { sessionCodec as codexSessionCodec } from "@paperclipai/adapter-codex-local/server";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
+  buildExplicitResumeSessionOverride,
   formatRuntimeWorkspaceWarningLog,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
@@ -179,6 +181,57 @@ describe("shouldResetTaskSessionForWake", () => {
         wakeTriggerDetail: "callback",
       }),
     ).toBe(false);
+  });
+});
+
+describe("buildExplicitResumeSessionOverride", () => {
+  it("reuses saved task session params when they belong to the selected failed run", () => {
+    const result = buildExplicitResumeSessionOverride({
+      resumeFromRunId: "run-1",
+      resumeRunSessionIdBefore: "session-before",
+      resumeRunSessionIdAfter: "session-after",
+      taskSession: {
+        sessionParamsJson: {
+          sessionId: "session-after",
+          cwd: "/tmp/project",
+        },
+        sessionDisplayId: "session-after",
+        lastRunId: "run-1",
+      },
+      sessionCodec: codexSessionCodec,
+    });
+
+    expect(result).toEqual({
+      sessionDisplayId: "session-after",
+      sessionParams: {
+        sessionId: "session-after",
+        cwd: "/tmp/project",
+      },
+    });
+  });
+
+  it("falls back to the selected run session id when no matching task session params are available", () => {
+    const result = buildExplicitResumeSessionOverride({
+      resumeFromRunId: "run-1",
+      resumeRunSessionIdBefore: "session-before",
+      resumeRunSessionIdAfter: "session-after",
+      taskSession: {
+        sessionParamsJson: {
+          sessionId: "other-session",
+          cwd: "/tmp/project",
+        },
+        sessionDisplayId: "other-session",
+        lastRunId: "run-2",
+      },
+      sessionCodec: codexSessionCodec,
+    });
+
+    expect(result).toEqual({
+      sessionDisplayId: "session-after",
+      sessionParams: {
+        sessionId: "session-after",
+      },
+    });
   });
 });
 

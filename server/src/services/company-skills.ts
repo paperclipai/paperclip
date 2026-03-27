@@ -99,6 +99,8 @@ type RuntimeSkillEntryOptions = {
   materializeMissing?: boolean;
 };
 
+const skillInventoryRefreshPromises = new Map<string, Promise<void>>();
+
 const PROJECT_SCAN_DIRECTORY_ROOTS = [
   "skills",
   "skills/.curated",
@@ -186,6 +188,18 @@ function normalizeSkillKey(value: string | null | undefined) {
     .map((segment) => normalizeSkillSlug(segment))
     .filter((segment): segment is string => Boolean(segment));
   return segments.length > 0 ? segments.join("/") : null;
+}
+
+export function normalizeGitHubSkillDirectory(
+  value: string | null | undefined,
+  fallback: string,
+) {
+  const normalized = normalizePortablePath(value ?? "");
+  if (!normalized) return normalizePortablePath(fallback);
+  if (path.posix.basename(normalized).toLowerCase() === "skill.md") {
+    return normalizePortablePath(path.posix.dirname(normalized));
+  }
+  return normalized;
 }
 
 function hashSkillValue(value: string) {
@@ -1017,7 +1031,10 @@ async function readUrlSkillImports(
         repo: parsed.repo,
         ref: ref,
         trackingRef,
-        repoSkillDir: basePrefix ? `${basePrefix}${skillDir}` : skillDir,
+        repoSkillDir: normalizeGitHubSkillDirectory(
+          basePrefix ? `${basePrefix}${skillDir}` : skillDir,
+          slug,
+        ),
       };
       const inventory = filteredPaths
         .filter((entry) => entry === relativeSkillPath || entry.startsWith(`${skillDir}/`))
@@ -1474,8 +1491,25 @@ export function companySkillService(db: Db) {
   }
 
   async function ensureSkillInventoryCurrent(companyId: string) {
-    await ensureBundledSkills(companyId);
-    await pruneMissingLocalPathSkills(companyId);
+    const existingRefresh = skillInventoryRefreshPromises.get(companyId);
+    if (existingRefresh) {
+      await existingRefresh;
+      return;
+    }
+
+    const refreshPromise = (async () => {
+      await ensureBundledSkills(companyId);
+      await pruneMissingLocalPathSkills(companyId);
+    })();
+
+    skillInventoryRefreshPromises.set(companyId, refreshPromise);
+    try {
+      await refreshPromise;
+    } finally {
+      if (skillInventoryRefreshPromises.get(companyId) === refreshPromise) {
+        skillInventoryRefreshPromises.delete(companyId);
+      }
+    }
   }
 
   async function list(companyId: string): Promise<CompanySkillListItem[]> {
@@ -1646,7 +1680,7 @@ export function companySkillService(db: Db) {
       const owner = asString(metadata.owner);
       const repo = asString(metadata.repo);
       const ref = skill.sourceRef ?? asString(metadata.ref) ?? "main";
-      const repoSkillDir = normalizePortablePath(asString(metadata.repoSkillDir) ?? skill.slug);
+      const repoSkillDir = normalizeGitHubSkillDirectory(asString(metadata.repoSkillDir), skill.slug);
       if (!owner || !repo) {
         throw unprocessable("Skill source metadata is incomplete.");
       }

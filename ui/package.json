@@ -1,26 +1,44 @@
 {
   "name": "@paperclipai/ui",
-  "version": "0.0.1",
-  "private": true,
+  "version": "0.3.1",
+  "description": "Prebuilt Paperclip board UI assets.",
+  "license": "MIT",
+  "homepage": "https://github.com/paperclipai/paperclip",
+  "bugs": {
+    "url": "https://github.com/paperclipai/paperclip/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/paperclipai/paperclip",
+    "directory": "ui"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc -b"
+    "typecheck": "tsc -b",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo",
+    "prepack": "rm -f package.dev.json && cp package.json package.dev.json && node ../scripts/generate-ui-package-json.mjs",
+    "postpack": "if [ -f package.dev.json ]; then mv package.dev.json package.json; fi"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
+    "@lexical/link": "0.35.0",
+    "lexical": "0.35.0",
     "@mdxeditor/editor": "^3.52.4",
     "@paperclipai/adapter-claude-local": "workspace:*",
     "@paperclipai/adapter-codex-local": "workspace:*",
     "@paperclipai/adapter-cursor-local": "workspace:*",
     "@paperclipai/adapter-gemini-local": "workspace:*",
+    "@paperclipai/adapter-openclaw-gateway": "workspace:*",
     "@paperclipai/adapter-opencode-local": "workspace:*",
     "@paperclipai/adapter-pi-local": "workspace:*",
-    "@paperclipai/adapter-openclaw-gateway": "workspace:*",
     "@paperclipai/adapter-utils": "workspace:*",
     "@paperclipai/shared": "workspace:*",
     "@radix-ui/react-slot": "^1.2.4",

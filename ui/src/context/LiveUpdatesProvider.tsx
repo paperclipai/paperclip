@@ -1,11 +1,15 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { Agent, Issue, LiveEvent } from "@paperclipai/shared";
+import type { RunForIssue } from "../api/activity";
+import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { authApi } from "../api/auth";
 import { useCompany } from "./CompanyContext";
 import type { ToastInput } from "./ToastContext";
 import { useToast } from "./ToastContext";
 import { queryKeys } from "../lib/queryKeys";
+import { toCompanyRelativePath } from "../lib/company-routes";
+import { useLocation } from "../lib/router";
 
 const TOAST_COOLDOWN_WINDOW_MS = 10_000;
 const TOAST_COOLDOWN_MAX = 3;
@@ -61,6 +65,16 @@ interface IssueToastContext {
   title: string | null;
   label: string;
   href: string;
+}
+
+interface VisibleRouteOptions {
+  isForegrounded?: boolean;
+}
+
+interface VisibleIssueRouteContext {
+  issueRefs: Set<string>;
+  assigneeAgentId: string | null;
+  runIds: Set<string>;
 }
 
 function resolveIssueQueryRefs(
@@ -123,6 +137,110 @@ function resolveIssueToastContext(
     label: title ? `${ref} - ${truncate(title, 72)}` : ref,
     href: `/issues/${cachedIssue?.identifier ?? issueId}`,
   };
+}
+
+function isPageForegrounded(): boolean {
+  if (typeof document === "undefined") return false;
+  if (document.visibilityState !== "visible") return false;
+  if (typeof document.hasFocus === "function" && !document.hasFocus()) return false;
+  return true;
+}
+
+function resolveVisibleIssueRouteContext(
+  queryClient: QueryClient,
+  pathname: string,
+  options?: VisibleRouteOptions,
+): VisibleIssueRouteContext | null {
+  const isForegrounded = options?.isForegrounded ?? isPageForegrounded();
+  if (!isForegrounded) return null;
+
+  const relativePath = toCompanyRelativePath(pathname);
+  const segments = relativePath.split("/").filter(Boolean);
+  if (segments[0] !== "issues" || !segments[1]) return null;
+
+  const issueRef = decodeURIComponent(segments[1]);
+  const issue = queryClient.getQueryData<Issue>(queryKeys.issues.detail(issueRef)) ?? null;
+  const issueRefs = new Set<string>([issueRef]);
+  if (issue?.id) issueRefs.add(issue.id);
+  if (issue?.identifier) issueRefs.add(issue.identifier);
+
+  const runIds = new Set<string>();
+  const activeRun = queryClient.getQueryData<ActiveRunForIssue | null>(queryKeys.issues.activeRun(issueRef));
+  const liveRuns = queryClient.getQueryData<LiveRunForIssue[]>(queryKeys.issues.liveRuns(issueRef)) ?? [];
+  const linkedRuns = queryClient.getQueryData<RunForIssue[]>(queryKeys.issues.runs(issueRef)) ?? [];
+
+  if (activeRun?.id) runIds.add(activeRun.id);
+  for (const run of liveRuns) {
+    if (run.id) runIds.add(run.id);
+  }
+  for (const run of linkedRuns) {
+    if (run.runId) runIds.add(run.runId);
+  }
+
+  return {
+    issueRefs,
+    assigneeAgentId: issue?.assigneeAgentId ?? null,
+    runIds,
+  };
+}
+
+function buildIssueRefsForPayload(entityId: string, details: Record<string, unknown> | null): Set<string> {
+  const refs = new Set<string>([entityId]);
+  const identifier = readString(details?.identifier) ?? readString(details?.issueIdentifier);
+  if (identifier) refs.add(identifier);
+  return refs;
+}
+
+function overlaps(a: Set<string>, b: Set<string>): boolean {
+  for (const value of a) {
+    if (b.has(value)) return true;
+  }
+  return false;
+}
+
+function shouldSuppressActivityToastForVisibleIssue(
+  queryClient: QueryClient,
+  pathname: string,
+  payload: Record<string, unknown>,
+  options?: VisibleRouteOptions,
+): boolean {
+  const entityType = readString(payload.entityType);
+  const entityId = readString(payload.entityId);
+  if (entityType !== "issue" || !entityId) return false;
+
+  const context = resolveVisibleIssueRouteContext(queryClient, pathname, options);
+  if (!context) return false;
+
+  return overlaps(context.issueRefs, buildIssueRefsForPayload(entityId, readRecord(payload.details)));
+}
+
+function shouldSuppressRunStatusToastForVisibleIssue(
+  queryClient: QueryClient,
+  pathname: string,
+  payload: Record<string, unknown>,
+  options?: VisibleRouteOptions,
+): boolean {
+  const context = resolveVisibleIssueRouteContext(queryClient, pathname, options);
+  if (!context) return false;
+
+  const runId = readString(payload.runId);
+  if (runId && context.runIds.has(runId)) return true;
+
+  const agentId = readString(payload.agentId);
+  return !!agentId && !!context.assigneeAgentId && agentId === context.assigneeAgentId;
+}
+
+function shouldSuppressAgentStatusToastForVisibleIssue(
+  queryClient: QueryClient,
+  pathname: string,
+  payload: Record<string, unknown>,
+  options?: VisibleRouteOptions,
+): boolean {
+  const context = resolveVisibleIssueRouteContext(queryClient, pathname, options);
+  if (!context?.assigneeAgentId) return false;
+
+  const agentId = readString(payload.agentId);
+  return !!agentId && agentId === context.assigneeAgentId;
 }
 
 const ISSUE_TOAST_ACTIONS = new Set(["issue.created", "issue.updated", "issue.comment_added"]);
@@ -256,7 +374,7 @@ function buildJoinRequestToast(
     title: `${label} wants to join`,
     body: "A new join request is waiting for approval.",
     tone: "info",
-    action: { label: "View inbox", href: "/inbox/unread" },
+    action: { label: "View inbox", href: "/inbox/mine" },
     dedupeKey: `join-request:${entityId}`,
   };
 }
@@ -361,6 +479,7 @@ function invalidateActivityQueries(
 
   if (entityType === "issue") {
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(companyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId) });
     if (entityId) {
@@ -470,6 +589,7 @@ function gatedPushToast(
 function handleLiveEvent(
   queryClient: QueryClient,
   expectedCompanyId: string,
+  pathname: string,
   event: LiveEvent,
   pushToast: (toast: ToastInput) => string | null,
   gate: ToastGate,
@@ -487,7 +607,12 @@ function handleLiveEvent(
     invalidateHeartbeatQueries(queryClient, expectedCompanyId, payload);
     if (event.type === "heartbeat.run.status") {
       const toast = buildRunStatusToast(payload, nameOf);
-      if (toast) gatedPushToast(gate, pushToast, "run-status", toast);
+      if (
+        toast &&
+        !shouldSuppressRunStatusToastForVisibleIssue(queryClient, pathname, payload)
+      ) {
+        gatedPushToast(gate, pushToast, "run-status", toast);
+      }
     }
     return;
   }
@@ -503,7 +628,12 @@ function handleLiveEvent(
     const agentId = readString(payload.agentId);
     if (agentId) queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
     const toast = buildAgentStatusToast(payload, nameOf, queryClient, expectedCompanyId);
-    if (toast) gatedPushToast(gate, pushToast, "agent-status", toast);
+    if (
+      toast &&
+      !shouldSuppressAgentStatusToastForVisibleIssue(queryClient, pathname, payload)
+    ) {
+      gatedPushToast(gate, pushToast, "agent-status", toast);
+    }
     return;
   }
 
@@ -513,25 +643,39 @@ function handleLiveEvent(
     const toast =
       buildActivityToast(queryClient, expectedCompanyId, payload, currentActor) ??
       buildJoinRequestToast(payload);
-    if (toast) gatedPushToast(gate, pushToast, `activity:${action ?? "unknown"}`, toast);
+    if (
+      toast &&
+      !shouldSuppressActivityToastForVisibleIssue(queryClient, pathname, payload)
+    ) {
+      gatedPushToast(gate, pushToast, `activity:${action ?? "unknown"}`, toast);
+    }
   }
 }
 
 export const __liveUpdatesTestUtils = {
   invalidateActivityQueries,
+  shouldSuppressActivityToastForVisibleIssue,
+  shouldSuppressRunStatusToastForVisibleIssue,
+  shouldSuppressAgentStatusToastForVisibleIssue,
 };
 
 export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
+  const location = useLocation();
   const gateRef = useRef<ToastGate>({ cooldownHits: new Map(), suppressUntil: 0 });
+  const pathnameRef = useRef(location.pathname);
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
     retry: false,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+
+  useEffect(() => {
+    pathnameRef.current = location.pathname;
+  }, [location.pathname]);
 
   useEffect(() => {
     if (!selectedCompanyId) return;
@@ -577,7 +721,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
 
         try {
           const parsed = JSON.parse(raw) as LiveEvent;
-          handleLiveEvent(queryClient, selectedCompanyId, parsed, pushToast, gateRef.current, {
+          handleLiveEvent(queryClient, selectedCompanyId, pathnameRef.current, parsed, pushToast, gateRef.current, {
             userId: currentUserId,
             agentId: null,
           });

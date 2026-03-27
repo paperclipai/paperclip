@@ -153,6 +153,10 @@
   [data-slot="select-trigger"] {
     min-height: 44px;
   }
+
+  [data-slot="toggle"] {
+    min-height: 0;
+  }
 }
 
 /* Dark mode scrollbars */
@@ -339,6 +343,7 @@
   margin-top: 1.1em;
 }
 
+.paperclip-mdxeditor-content a.paperclip-mention-chip,
 .paperclip-mdxeditor-content a.paperclip-project-mention-chip {
   display: inline-flex;
   align-items: center;
@@ -350,9 +355,38 @@
   font-size: 0.75rem;
   line-height: 1.3;
   text-decoration: none;
-  vertical-align: baseline;
+  vertical-align: middle;
   white-space: nowrap;
   user-select: none;
+}
+
+.paperclip-mdxeditor-content a.paperclip-mention-chip::before,
+a.paperclip-mention-chip::before {
+  content: "";
+  flex: none;
+}
+
+.paperclip-mdxeditor-content a.paperclip-mention-chip[data-mention-kind="project"]::before,
+a.paperclip-mention-chip[data-mention-kind="project"]::before {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 999px;
+  background-color: var(--paperclip-mention-project-color, currentColor);
+}
+
+.paperclip-mdxeditor-content a.paperclip-mention-chip[data-mention-kind="agent"]::before,
+a.paperclip-mention-chip[data-mention-kind="agent"]::before {
+  width: 0.75rem;
+  height: 0.75rem;
+  background-color: currentColor;
+  -webkit-mask-image: var(--paperclip-mention-icon-mask);
+  mask-image: var(--paperclip-mention-icon-mask);
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+  mask-size: contain;
 }
 
 .paperclip-mdxeditor-content ul,
@@ -415,7 +449,7 @@
 
 .paperclip-mdxeditor-content code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-  font-size: 0.78em;
+  font-size: 1em;
 }
 
 .paperclip-mdxeditor-content pre {
@@ -433,7 +467,7 @@
 .paperclip-mdxeditor .cm-editor {
   background-color: #1e1e2e !important;
   color: #cdd6f4 !important;
-  font-size: 0.78em;
+  font-size: 1em;
 }
 
 .paperclip-mdxeditor .cm-gutters {
@@ -513,14 +547,14 @@
   color: #cdd6f4 !important;
   padding: 0.5rem 0.65rem !important;
   margin: 0.4rem 0 !important;
-  font-size: 0.78em !important;
+  font-size: 1em !important;
   overflow-x: auto;
   white-space: pre;
 }
 
 .paperclip-markdown code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-  font-size: 0.78em;
+  font-size: 1em;
 }
 
 .paperclip-markdown pre code {
@@ -541,6 +575,10 @@
   padding: 0.15em 0.35em;
   border-radius: 3px;
   font-weight: 500;
+}
+
+.dark .prose :not(pre) > code {
+  background-color: #ffffff0f;
 }
 
 .paperclip-markdown {
@@ -696,6 +734,7 @@
 }
 
 /* Project mention chips rendered inside MarkdownBody */
+a.paperclip-mention-chip,
 a.paperclip-project-mention-chip {
   display: inline-flex;
   align-items: center;
@@ -707,7 +746,7 @@ a.paperclip-project-mention-chip {
   font-size: 0.75rem;
   line-height: 1.3;
   text-decoration: none;
-  vertical-align: baseline;
+  vertical-align: middle;
   white-space: nowrap;
 }
 

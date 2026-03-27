@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useCallback, useRef } from "react";
+import { useEffect, useMemo, useCallback } from "react";
 import { useLocation, useSearchParams } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
+import { projectsApi } from "../api/projects";
 import { heartbeatsApi } from "../api/heartbeats";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -20,33 +21,32 @@ export function Issues() {
   const queryClient = useQueryClient();
 
   const initialSearch = searchParams.get("q") ?? "";
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const participantAgentId = searchParams.get("participantAgentId") ?? undefined;
   const handleSearchChange = useCallback((search: string) => {
-    clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      const trimmedSearch = search.trim();
-      const currentSearch = new URLSearchParams(window.location.search).get("q") ?? "";
-      if (currentSearch === trimmedSearch) return;
+    const trimmedSearch = search.trim();
+    const currentSearch = new URLSearchParams(window.location.search).get("q") ?? "";
+    if (currentSearch === trimmedSearch) return;
 
-      const url = new URL(window.location.href);
-      if (trimmedSearch) {
-        url.searchParams.set("q", trimmedSearch);
-      } else {
-        url.searchParams.delete("q");
-      }
+    const url = new URL(window.location.href);
+    if (trimmedSearch) {
+      url.searchParams.set("q", trimmedSearch);
+    } else {
+      url.searchParams.delete("q");
+    }
 
-      const nextUrl = `${url.pathname}${url.search}${url.hash}`;
-      window.history.replaceState(window.history.state, "", nextUrl);
-    }, 300);
-  }, []);
-
-  useEffect(() => {
-    return () => clearTimeout(debounceRef.current);
+    const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+    window.history.replaceState(window.history.state, "", nextUrl);
   }, []);
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const { data: projects } = useQuery({
+    queryKey: queryKeys.projects.list(selectedCompanyId!),
+    queryFn: () => projectsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
 
@@ -79,8 +79,8 @@ export function Issues() {
   }, [setBreadcrumbs]);
 
   const { data: issues, isLoading, error } = useQuery({
-    queryKey: queryKeys.issues.list(selectedCompanyId!),
-    queryFn: () => issuesApi.list(selectedCompanyId!),
+    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "participant-agent", participantAgentId ?? "__all__"],
+    queryFn: () => issuesApi.list(selectedCompanyId!, { participantAgentId }),
     enabled: !!selectedCompanyId,
   });
 
@@ -102,6 +102,7 @@ export function Issues() {
       isLoading={isLoading}
       error={error as Error | null}
       agents={agents}
+      projects={projects}
       liveIssueIds={liveIssueIds}
       viewStateKey="paperclip:issues-view"
       issueLinkState={issueLinkState}
@@ -109,6 +110,7 @@ export function Issues() {
       initialSearch={initialSearch}
       onSearchChange={handleSearchChange}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
+      searchFilters={participantAgentId ? { participantAgentId } : undefined}
     />
   );
 }

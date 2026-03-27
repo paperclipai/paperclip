@@ -519,21 +519,23 @@ export function IssueDocumentsSection({
   return (
     <div className="space-y-3">
       {isEmpty && !draft?.isNew ? (
-        <div className="flex items-center justify-end gap-2">
+        <div className="flex items-center justify-end gap-2 min-w-0">
           {extraActions}
-          <Button variant="outline" size="sm" onClick={beginNewDocument}>
+          <Button variant="outline" size="sm" onClick={beginNewDocument} className="shrink-0">
             <Plus className="mr-1.5 h-3.5 w-3.5" />
-            New document
+            <span className="hidden sm:inline">New document</span>
+            <span className="sm:hidden">New</span>
           </Button>
         </div>
       ) : (
-        <div className="flex items-center justify-between gap-2">
-          <h3 className="text-sm font-medium text-muted-foreground">Documents</h3>
-          <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between gap-2 min-w-0">
+          <h3 className="text-sm font-medium text-muted-foreground shrink-0">Documents</h3>
+          <div className="flex items-center gap-2 min-w-0">
             {extraActions}
-            <Button variant="outline" size="sm" onClick={beginNewDocument}>
+            <Button variant="outline" size="sm" onClick={beginNewDocument} className="shrink-0">
               <Plus className="mr-1.5 h-3.5 w-3.5" />
-              New document
+              <span className="hidden sm:inline">New document</span>
+              <span className="sm:hidden">New</span>
             </Button>
           </div>
         </div>
@@ -634,29 +636,29 @@ export function IssueDocumentsSection({
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
                     <button
                       type="button"
-                      className="inline-flex h-5 w-5 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+                      className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
                       onClick={() => toggleFoldedDocument(doc.key)}
                       aria-label={isFolded ? `Expand ${doc.key} document` : `Collapse ${doc.key} document`}
                       aria-expanded={!isFolded}
                     >
                       {isFolded ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
                     </button>
-                    <span className="rounded-full border border-border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+                    <span className="shrink-0 rounded-full border border-border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
                       {doc.key}
                     </span>
                     <a
                       href={`#document-${encodeURIComponent(doc.key)}`}
-                      className="text-[11px] text-muted-foreground transition-colors hover:text-foreground hover:underline"
+                      className="truncate text-[11px] text-muted-foreground transition-colors hover:text-foreground hover:underline"
                     >
                       rev {doc.latestRevisionNumber} • updated {relativeTime(doc.updatedAt)}
                     </a>
                   </div>
                   {showTitle && <p className="mt-2 text-sm font-medium">{doc.title}</p>}
                 </div>
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-1 shrink-0">
                   <Button
                     variant="ghost"
                     size="icon-xs"

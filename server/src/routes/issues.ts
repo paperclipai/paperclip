@@ -171,6 +171,33 @@ export function issueRoutes(db: Db, storage: StorageService) {
     return rawId;
   }
 
+  async function resolveIssueProjectAndGoal(issue: {
+    companyId: string;
+    projectId: string | null;
+    goalId: string | null;
+  }) {
+    const projectPromise = issue.projectId ? projectsSvc.getById(issue.projectId) : Promise.resolve(null);
+    const directGoalPromise = issue.goalId ? goalsSvc.getById(issue.goalId) : Promise.resolve(null);
+    const [project, directGoal] = await Promise.all([projectPromise, directGoalPromise]);
+
+    if (directGoal) {
+      return { project, goal: directGoal };
+    }
+
+    const projectGoalId = project?.goalId ?? project?.goalIds[0] ?? null;
+    if (projectGoalId) {
+      const projectGoal = await goalsSvc.getById(projectGoalId);
+      return { project, goal: projectGoal };
+    }
+
+    if (!issue.projectId) {
+      const defaultGoal = await goalsSvc.getDefaultCompanyGoal(issue.companyId);
+      return { project, goal: defaultGoal };
+    }
+
+    return { project, goal: null };
+  }
+
   // Resolve issue identifiers (e.g. "PAP-39") to UUIDs for all /issues/:id routes
   router.param("id", async (req, res, next, rawId) => {
     try {
@@ -203,6 +230,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     assertCompanyAccess(req, companyId);
     const assigneeUserFilterRaw = req.query.assigneeUserId as string | undefined;
     const touchedByUserFilterRaw = req.query.touchedByUserId as string | undefined;
+    const inboxArchivedByUserFilterRaw = req.query.inboxArchivedByUserId as string | undefined;
     const unreadForUserFilterRaw = req.query.unreadForUserId as string | undefined;
     const assigneeUserId =
       assigneeUserFilterRaw === "me" && req.actor.type === "board"
@@ -212,6 +240,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
       touchedByUserFilterRaw === "me" && req.actor.type === "board"
         ? req.actor.userId
         : touchedByUserFilterRaw;
+    const inboxArchivedByUserId =
+      inboxArchivedByUserFilterRaw === "me" && req.actor.type === "board"
+        ? req.actor.userId
+        : inboxArchivedByUserFilterRaw;
     const unreadForUserId =
       unreadForUserFilterRaw === "me" && req.actor.type === "board"
         ? req.actor.userId
@@ -225,6 +257,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
       res.status(403).json({ error: "touchedByUserId=me requires board authentication" });
       return;
     }
+    if (inboxArchivedByUserFilterRaw === "me" && (!inboxArchivedByUserId || req.actor.type !== "board")) {
+      res.status(403).json({ error: "inboxArchivedByUserId=me requires board authentication" });
+      return;
+    }
     if (unreadForUserFilterRaw === "me" && (!unreadForUserId || req.actor.type !== "board")) {
       res.status(403).json({ error: "unreadForUserId=me requires board authentication" });
       return;
@@ -233,8 +269,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const result = await svc.list(companyId, {
       status: req.query.status as string | undefined,
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
+      participantAgentId: req.query.participantAgentId as string | undefined,
       assigneeUserId,
       touchedByUserId,
+      inboxArchivedByUserId,
       unreadForUserId,
       projectId: req.query.projectId as string | undefined,
       parentId: req.query.parentId as string | undefined,
@@ -310,14 +348,9 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    const [ancestors, project, goal, mentionedProjectIds, documentPayload] = await Promise.all([
+    const [{ project, goal }, ancestors, mentionedProjectIds, documentPayload] = await Promise.all([
+      resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
-      issue.projectId ? projectsSvc.getById(issue.projectId) : null,
-      issue.goalId
-        ? goalsSvc.getById(issue.goalId)
-        : !issue.projectId
-          ? goalsSvc.getDefaultCompanyGoal(issue.companyId)
-          : null,
       svc.findMentionedProjectIds(issue.id),
       documentsSvc.getIssueDocumentPayload(issue),
     ]);
@@ -355,14 +388,9 @@ export function issueRoutes(db: Db, storage: StorageService) {
         ? req.query.wakeCommentId.trim()
         : null;
 
-    const [ancestors, project, goal, commentCursor, wakeComment] = await Promise.all([
+    const [{ project, goal }, ancestors, commentCursor, wakeComment] = await Promise.all([
+      resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
-      issue.projectId ? projectsSvc.getById(issue.projectId) : null,
-      issue.goalId
-        ? goalsSvc.getById(issue.goalId)
-        : !issue.projectId
-          ? goalsSvc.getDefaultCompanyGoal(issue.companyId)
-          : null,
       svc.getCommentCursor(issue.id),
       wakeCommentId ? svc.getComment(wakeCommentId) : null,
     ]);
@@ -683,6 +711,70 @@ export function issueRoutes(db: Db, storage: StorageService) {
       details: { userId: req.actor.userId, lastReadAt: readState.lastReadAt },
     });
     res.json(readState);
+  });
+
+  router.post("/issues/:id/inbox-archive", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Board authentication required" });
+      return;
+    }
+    if (!req.actor.userId) {
+      res.status(403).json({ error: "Board user context required" });
+      return;
+    }
+    const archiveState = await svc.archiveInbox(issue.companyId, issue.id, req.actor.userId, new Date());
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.inbox_archived",
+      entityType: "issue",
+      entityId: issue.id,
+      details: { userId: req.actor.userId, archivedAt: archiveState.archivedAt },
+    });
+    res.json(archiveState);
+  });
+
+  router.delete("/issues/:id/inbox-archive", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Board authentication required" });
+      return;
+    }
+    if (!req.actor.userId) {
+      res.status(403).json({ error: "Board user context required" });
+      return;
+    }
+    const removed = await svc.unarchiveInbox(issue.companyId, issue.id, req.actor.userId);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.inbox_unarchived",
+      entityType: "issue",
+      entityId: issue.id,
+      details: { userId: req.actor.userId },
+    });
+    res.json(removed ?? { ok: true });
   });
 
   router.get("/issues/:id/approvals", async (req, res) => {

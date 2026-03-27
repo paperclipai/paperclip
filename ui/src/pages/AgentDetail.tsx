@@ -18,6 +18,7 @@ import { issuesApi } from "../api/issues";
 import { usePanel } from "../context/PanelContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useCompany } from "../context/CompanyContext";
+import { useToast } from "../context/ToastContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -68,6 +69,7 @@ import {
   ChevronDown,
   ArrowLeft,
   HelpCircle,
+  FolderOpen,
 } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -571,9 +573,9 @@ export function AgentDetail() {
   });
 
   const { data: allIssues } = useQuery({
-    queryKey: queryKeys.issues.list(resolvedCompanyId!),
-    queryFn: () => issuesApi.list(resolvedCompanyId!),
-    enabled: !!resolvedCompanyId && needsDashboardData,
+    queryKey: [...queryKeys.issues.list(resolvedCompanyId!), "participant-agent", resolvedAgentId ?? "__none__"],
+    queryFn: () => issuesApi.list(resolvedCompanyId!, { participantAgentId: resolvedAgentId! }),
+    enabled: !!resolvedCompanyId && !!resolvedAgentId && needsDashboardData,
   });
 
   const { data: allAgents } = useQuery({
@@ -591,7 +593,6 @@ export function AgentDetail() {
   });
 
   const assignedIssues = (allIssues ?? [])
-    .filter((i) => i.assigneeAgentId === agent?.id)
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
   const reportsToAgent = (allAgents ?? []).find((a) => a.id === agent?.reportsTo);
   const directReports = (allAgents ?? []).filter((a) => a.reportsTo === agent?.id && a.status !== "terminated");
@@ -1173,12 +1174,15 @@ function AgentOverview({
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-medium">Recent Issues</h3>
-          <Link to={`/issues?assignee=${agentId}`} className="text-xs text-muted-foreground hover:text-foreground transition-colors">
+          <Link
+            to={`/issues?participantAgentId=${agentId}`}
+            className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+          >
             See All &rarr;
           </Link>
         </div>
         {assignedIssues.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No assigned issues.</p>
+          <p className="text-sm text-muted-foreground">No recent issues.</p>
         ) : (
           <div className="border border-border rounded-lg">
             {assignedIssues.slice(0, 10).map((issue) => (
@@ -1420,6 +1424,7 @@ function ConfigurationTab({
   hideInstructionsFile?: boolean;
 }) {
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
   const [awaitingRefreshAfterSave, setAwaitingRefreshAfterSave] = useState(false);
   const lastAgentRef = useRef(agent);
 
@@ -1441,9 +1446,17 @@ function ConfigurationTab({
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.configRevisions(agent.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(agent.companyId) });
     },
-    onError: () => {
+    onError: (err) => {
       setAwaitingRefreshAfterSave(false);
+      const message =
+        err instanceof ApiError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : "Could not save agent";
+      pushToast({ title: "Save failed", body: message, tone: "error" });
     },
   });
 
@@ -1502,6 +1515,7 @@ function ConfigurationTab({
             <button
               type="button"
               role="switch"
+              data-slot="toggle"
               aria-checked={canCreateAgents}
               className={cn(
                 "relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0 disabled:cursor-not-allowed disabled:opacity-50",
@@ -1533,6 +1547,7 @@ function ConfigurationTab({
             <button
               type="button"
               role="switch"
+              data-slot="toggle"
               aria-checked={canAssignTasks}
               className={cn(
                 "relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0 disabled:cursor-not-allowed disabled:opacity-50",
@@ -1579,7 +1594,9 @@ function PromptsTab({
 }) {
   const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
+  const { isMobile } = useSidebar();
   const [selectedFile, setSelectedFile] = useState<string>("AGENTS.md");
+  const [showFilePanel, setShowFilePanel] = useState(false);
   const [draft, setDraft] = useState<string | null>(null);
   const [bundleDraft, setBundleDraft] = useState<{
     mode: "managed" | "external";
@@ -1599,6 +1616,20 @@ function PromptsTab({
     entryFile: string;
     selectedFile: string;
   } | null>(null);
+
+  useEffect(() => {
+    setSelectedFile("AGENTS.md");
+    setShowFilePanel(false);
+    setDraft(null);
+    setBundleDraft(null);
+    setNewFilePath("");
+    setShowNewFileInput(false);
+    setPendingFiles([]);
+    setExpandedDirs(new Set());
+    setAwaitingRefresh(false);
+    lastFileVersionRef.current = null;
+    externalBundleRef.current = null;
+  }, [agent.id]);
 
   const isLocal =
     agent.adapterType === "claude_local" ||
@@ -2032,21 +2063,38 @@ function PromptsTab({
         </CollapsibleContent>
       </Collapsible>
 
-      <div ref={containerRef} className="flex gap-0">
-        <div className="border border-border rounded-lg p-3 space-y-3 shrink-0" style={{ width: filePanelWidth }}>
+      <div ref={containerRef} className={cn("flex gap-0", isMobile && "flex-col gap-3")}>
+        <div className={cn(
+          "border border-border rounded-lg p-3 space-y-3 shrink-0",
+          isMobile && showFilePanel && "block",
+          isMobile && !showFilePanel && "hidden",
+        )} style={isMobile ? undefined : { width: filePanelWidth }}>
           <div className="flex items-center justify-between">
             <h4 className="text-sm font-medium">Files</h4>
-            {!showNewFileInput && (
-              <Button
-                type="button"
-                size="icon"
-                variant="outline"
-                className="h-7 w-7"
-                onClick={() => setShowNewFileInput(true)}
-              >
-                +
-              </Button>
-            )}
+            <div className="flex items-center gap-1">
+              {!showNewFileInput && (
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="outline"
+                  className="h-7 w-7"
+                  onClick={() => setShowNewFileInput(true)}
+                >
+                  +
+                </Button>
+              )}
+              {isMobile && (
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  className="h-7 w-7"
+                  onClick={() => setShowFilePanel(false)}
+                >
+                  ✕
+                </Button>
+              )}
+            </div>
           </div>
           {showNewFileInput && (
             <div className="space-y-2">
@@ -2111,6 +2159,7 @@ function PromptsTab({
             onSelectFile={(filePath) => {
               setSelectedFile(filePath);
               if (!fileOptions.includes(filePath)) setDraft("");
+              if (isMobile) setShowFilePanel(false);
             }}
             onToggleCheck={() => {}}
             showCheckboxes={false}
@@ -2141,22 +2190,37 @@ function PromptsTab({
         </div>
 
         {/* Draggable separator */}
-        <div
-          className="w-1 shrink-0 cursor-col-resize hover:bg-border active:bg-primary/50 rounded transition-colors mx-1"
-          onMouseDown={handleSeparatorDrag}
-        />
+        {!isMobile && (
+          <div
+            className="w-1 shrink-0 cursor-col-resize hover:bg-border active:bg-primary/50 rounded transition-colors mx-1"
+            onMouseDown={handleSeparatorDrag}
+          />
+        )}
 
-        <div className="border border-border rounded-lg p-4 space-y-3 min-w-0 flex-1">
+        <div className={cn("border border-border rounded-lg p-4 space-y-3 min-w-0 flex-1", isMobile && showFilePanel && "hidden")}>
           <div className="flex items-center justify-between gap-3">
-            <div>
-              <h4 className="text-sm font-medium font-mono">{selectedOrEntryFile}</h4>
-              <p className="text-xs text-muted-foreground">
-                {selectedFileExists
-                  ? selectedFileSummary?.deprecated
-                    ? "Deprecated virtual file"
-                    : `${selectedFileDetail?.language ?? "text"} file`
-                  : "New file in this bundle"}
-              </p>
+            <div className="flex items-center gap-2 min-w-0">
+              {isMobile && (
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="outline"
+                  className="h-7 w-7 shrink-0"
+                  onClick={() => setShowFilePanel(true)}
+                >
+                  <FolderOpen className="h-3.5 w-3.5" />
+                </Button>
+              )}
+              <div className="min-w-0">
+                <h4 className="text-sm font-medium font-mono truncate">{selectedOrEntryFile}</h4>
+                <p className="text-xs text-muted-foreground">
+                  {selectedFileExists
+                    ? selectedFileSummary?.deprecated
+                      ? "Deprecated virtual file"
+                      : `${selectedFileDetail?.language ?? "text"} file`
+                    : "New file in this bundle"}
+                </p>
+              </div>
             </div>
             {selectedFileExists && !selectedFileSummary?.deprecated && selectedOrEntryFile !== currentEntryFile && (
               <Button

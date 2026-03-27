@@ -107,8 +107,8 @@ function parsePlanAndEmailFromToken(idToken: string | null, accessToken: string 
   return { email: null, planType: null };
 }
 
-export async function readCodexAuthInfo(): Promise<CodexAuthInfo | null> {
-  const authPath = path.join(codexHomeDir(), "auth.json");
+export async function readCodexAuthInfo(codexHome?: string): Promise<CodexAuthInfo | null> {
+  const authPath = path.join(codexHome ?? codexHomeDir(), "auth.json");
   let raw: string;
   try {
     raw = await fs.readFile(authPath, "utf8");

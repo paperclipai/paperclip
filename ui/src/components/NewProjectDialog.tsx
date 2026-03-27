@@ -1,8 +1,9 @@
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { projectsApi } from "../api/projects";
+import { agentsApi } from "../api/agents";
 import { goalsApi } from "../api/goals";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
@@ -32,7 +33,7 @@ import {
 } from "@/components/ui/tooltip";
 import { PROJECT_COLORS } from "@paperclipai/shared";
 import { cn } from "../lib/utils";
-import { MarkdownEditor, type MarkdownEditorRef } from "./MarkdownEditor";
+import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { StatusBadge } from "./StatusBadge";
 import { ChoosePathButton } from "./PathInstructionsModal";
 
@@ -67,6 +68,29 @@ export function NewProjectDialog() {
     queryFn: () => goalsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId && newProjectOpen,
   });
+
+  const { data: agents } = useQuery({
+    queryKey: queryKeys.agents.list(selectedCompanyId!),
+    queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId && newProjectOpen,
+  });
+
+  const mentionOptions = useMemo<MentionOption[]>(() => {
+    const options: MentionOption[] = [];
+    const activeAgents = [...(agents ?? [])]
+      .filter((agent) => agent.status !== "terminated")
+      .sort((a, b) => a.name.localeCompare(b.name));
+    for (const agent of activeAgents) {
+      options.push({
+        id: `agent:${agent.id}`,
+        name: agent.name,
+        kind: "agent",
+        agentId: agent.id,
+        agentIcon: agent.icon,
+      });
+    }
+    return options;
+  }, [agents]);
 
   const createProject = useMutation({
     mutationFn: (data: Record<string, unknown>) =>
@@ -250,6 +274,7 @@ export function NewProjectDialog() {
             onChange={setDescription}
             placeholder="Add description..."
             bordered={false}
+            mentions={mentionOptions}
             contentClassName={cn("text-sm text-muted-foreground", expanded ? "min-h-[220px]" : "min-h-[120px]")}
             imageUploadHandler={async (file) => {
               const asset = await uploadDescriptionImage.mutateAsync(file);
