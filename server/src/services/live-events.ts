@@ -5,7 +5,7 @@ type LiveEventPayload = Record<string, unknown>;
 type LiveEventListener = (event: LiveEvent) => void;
 
 const emitter = new EventEmitter();
-emitter.setMaxListeners(0);
+emitter.setMaxListeners(50);
 
 let nextEventId = 0;
 

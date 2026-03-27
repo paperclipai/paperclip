@@ -434,7 +434,7 @@ if (_logFlushInterval.unref) _logFlushInterval.unref();
  * @returns An object implementing the HostServices interface for the plugin SDK.
  */
 /** Maximum time (ms) to keep a session event subscription alive before forcing cleanup. */
-const SESSION_EVENT_SUBSCRIPTION_TIMEOUT_MS = 30 * 60 * 1_000; // 30 minutes
+const SESSION_EVENT_SUBSCRIPTION_TIMEOUT_MS = 5 * 60 * 1_000; // 5 minutes
 
 export function buildHostServices(
   db: Db,

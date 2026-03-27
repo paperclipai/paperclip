@@ -25,7 +25,7 @@ services:
     ports:
       - "${PAPERCLIP_PORT:-3100}:3100"
     environment:
-      NODE_OPTIONS: "--max-old-space-size=4608"
+      NODE_OPTIONS: "--max-old-space-size=2048"
       DATABASE_URL: postgres://paperclip:paperclip@db:5432/paperclip
       PORT: "3100"
       SERVE_UI: "true"
