@@ -6,6 +6,7 @@ import { projectsApi } from "../api/projects";
 import { assetsApi } from "../api/assets";
 import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
+import { useToast } from "../context/ToastContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -24,6 +25,7 @@ import type { Goal, Project } from "@paperclipai/shared";
 export function GoalDetail() {
   const { goalId } = useParams<{ goalId: string }>();
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();
+  const { pushToast } = useToast();
   const { openNewGoal } = useDialog();
   const { openPanel, closePanel } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -122,6 +124,17 @@ export function GoalDetail() {
             {goal.level}
           </span>
           <StatusBadge status={goal.status} />
+          <button
+            type="button"
+            className="text-xs font-mono text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+            title="Click to copy goal ID"
+            onClick={() => {
+              navigator.clipboard.writeText(goal.id);
+              pushToast({ title: "Goal ID copied", tone: "success" });
+            }}
+          >
+            {goal.id.slice(0, 8)}
+          </button>
         </div>
 
         <InlineEditor
