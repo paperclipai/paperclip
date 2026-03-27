@@ -34,3 +34,33 @@ export interface CostByAgent {
   subscriptionInputTokens: number;
   subscriptionOutputTokens: number;
 }
+
+export interface CostTrendPoint {
+  date: string;
+  spendCents: number;
+  cumulativeCents: number;
+}
+
+export interface CostTrend {
+  points: CostTrendPoint[];
+  budgetCents: number;
+}
+
+export interface CostForecast {
+  projectedMonthEndCents: number;
+  daysUntilExhaustion: number | null;
+  dailyAvgCents: number;
+  pacingStatus: "on_track" | "over_pacing" | "critical";
+}
+
+export interface CostEfficiencyAgent {
+  agentId: string;
+  agentName: string | null;
+  costPerTaskCompleted: number | null;
+  costPerTaskAttempted: number | null;
+  avgCostPerRun: number | null;
+  tasksCompleted: number;
+  tasksAttempted: number;
+  totalRuns: number;
+  totalCostCents: number;
+}

@@ -165,6 +165,10 @@ export type {
   InboxDismissalItemType,
   AgentTelegramConfig,
   AgentTelegramTestResult,
+  CostTrendPoint,
+  CostTrend,
+  CostForecast,
+  CostEfficiencyAgent,
 } from "./types/index.js";
 
 export {

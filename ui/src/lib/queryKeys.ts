@@ -70,6 +70,12 @@ export const queryKeys = {
   activity: (companyId: string) => ["activity", companyId] as const,
   costs: (companyId: string, from?: string, to?: string) =>
     ["costs", companyId, from, to] as const,
+  costsTrend: (companyId: string, from?: string, to?: string) =>
+    ["costs-trend", companyId, from, to] as const,
+  costsForecast: (companyId: string) =>
+    ["costs-forecast", companyId] as const,
+  costsEfficiency: (companyId: string, from?: string, to?: string) =>
+    ["costs-efficiency", companyId, from, to] as const,
   heartbeats: (companyId: string, agentId?: string) =>
     ["heartbeats", companyId, agentId] as const,
   runDetail: (runId: string) => ["heartbeat-run", runId] as const,

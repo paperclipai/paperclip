@@ -154,6 +154,182 @@ export function costService(db: Db) {
       });
     },
 
+    trend: async (companyId: string, range?: CostDateRange) => {
+      const company = await db
+        .select()
+        .from(companies)
+        .where(eq(companies.id, companyId))
+        .then((rows) => rows[0] ?? null);
+
+      if (!company) throw notFound("Company not found");
+
+      const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
+      if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
+      if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
+
+      const rows = await db
+        .select({
+          date: sql<string>`date(${costEvents.occurredAt} at time zone 'UTC')`,
+          spendCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+        })
+        .from(costEvents)
+        .where(and(...conditions))
+        .groupBy(sql`date(${costEvents.occurredAt} at time zone 'UTC')`)
+        .orderBy(sql`date(${costEvents.occurredAt} at time zone 'UTC')`);
+
+      let cumulative = 0;
+      const points = rows.map((row) => {
+        cumulative += Number(row.spendCents);
+        return {
+          date: String(row.date),
+          spendCents: Number(row.spendCents),
+          cumulativeCents: cumulative,
+        };
+      });
+
+      return {
+        points,
+        budgetCents: company.budgetMonthlyCents,
+      };
+    },
+
+    forecast: async (companyId: string) => {
+      const company = await db
+        .select()
+        .from(companies)
+        .where(eq(companies.id, companyId))
+        .then((rows) => rows[0] ?? null);
+
+      if (!company) throw notFound("Company not found");
+
+      const now = new Date();
+      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+      const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+      const dayOfMonth = now.getDate();
+
+      const totalRows = await db
+        .select({
+          total: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+        })
+        .from(costEvents)
+        .where(
+          and(
+            eq(costEvents.companyId, companyId),
+            gte(costEvents.occurredAt, monthStart),
+            lte(costEvents.occurredAt, now),
+          ),
+        );
+
+      const spentSoFar = Number(totalRows[0]?.total ?? 0);
+      const dailyAvgCents = dayOfMonth > 0 ? Math.round(spentSoFar / dayOfMonth) : 0;
+      const projectedMonthEndCents = dailyAvgCents * daysInMonth;
+
+      const budgetCents = company.budgetMonthlyCents;
+      const remaining = budgetCents - spentSoFar;
+      const daysUntilExhaustion =
+        dailyAvgCents > 0 && budgetCents > 0
+          ? Math.max(0, Math.round(remaining / dailyAvgCents))
+          : null;
+
+      let pacingStatus: "on_track" | "over_pacing" | "critical";
+      if (budgetCents <= 0) {
+        pacingStatus = "on_track";
+      } else if (projectedMonthEndCents > budgetCents) {
+        pacingStatus = "critical";
+      } else if (projectedMonthEndCents > budgetCents * 0.8) {
+        pacingStatus = "over_pacing";
+      } else {
+        pacingStatus = "on_track";
+      }
+
+      return {
+        projectedMonthEndCents,
+        daysUntilExhaustion,
+        dailyAvgCents,
+        pacingStatus,
+      };
+    },
+
+    efficiency: async (companyId: string, range?: CostDateRange) => {
+      const costConditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
+      if (range?.from) costConditions.push(gte(costEvents.occurredAt, range.from));
+      if (range?.to) costConditions.push(lte(costEvents.occurredAt, range.to));
+
+      const costRows = await db
+        .select({
+          agentId: costEvents.agentId,
+          agentName: agents.name,
+          totalCostCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+        })
+        .from(costEvents)
+        .leftJoin(agents, eq(costEvents.agentId, agents.id))
+        .where(and(...costConditions))
+        .groupBy(costEvents.agentId, agents.name);
+
+      const agentIds = costRows.map((r) => r.agentId);
+      if (agentIds.length === 0) return [];
+
+      // Count tasks completed & attempted per agent
+      const taskRows = await db
+        .select({
+          agentId: issues.assigneeAgentId,
+          tasksCompleted: sql<number>`coalesce(sum(case when ${issues.status} = 'done' then 1 else 0 end), 0)::int`,
+          tasksAttempted: sql<number>`coalesce(sum(case when ${issues.status} in ('done', 'cancelled', 'blocked') then 1 else 0 end), 0)::int`,
+        })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            sql`${issues.assigneeAgentId} = ANY(${agentIds})`,
+          ),
+        )
+        .groupBy(issues.assigneeAgentId);
+
+      const taskMap = new Map(taskRows.map((r) => [r.agentId, r]));
+
+      // Count runs per agent
+      const runConditions: ReturnType<typeof eq>[] = [eq(heartbeatRuns.companyId, companyId)];
+      if (range?.from) runConditions.push(gte(heartbeatRuns.finishedAt, range.from));
+      if (range?.to) runConditions.push(lte(heartbeatRuns.finishedAt, range.to));
+
+      const runRows = await db
+        .select({
+          agentId: heartbeatRuns.agentId,
+          totalRuns: sql<number>`count(*)::int`,
+        })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            ...runConditions,
+            sql`${heartbeatRuns.agentId} = ANY(${agentIds})`,
+          ),
+        )
+        .groupBy(heartbeatRuns.agentId);
+
+      const runMap = new Map(runRows.map((r) => [r.agentId, r]));
+
+      return costRows.map((row) => {
+        const tasks = taskMap.get(row.agentId);
+        const runs = runMap.get(row.agentId);
+        const cost = Number(row.totalCostCents);
+        const completed = Number(tasks?.tasksCompleted ?? 0);
+        const attempted = Number(tasks?.tasksAttempted ?? 0);
+        const totalRuns = Number(runs?.totalRuns ?? 0);
+
+        return {
+          agentId: row.agentId,
+          agentName: row.agentName,
+          costPerTaskCompleted: completed > 0 ? Math.round(cost / completed) : null,
+          costPerTaskAttempted: attempted > 0 ? Math.round(cost / attempted) : null,
+          avgCostPerRun: totalRuns > 0 ? Math.round(cost / totalRuns) : null,
+          tasksCompleted: completed,
+          tasksAttempted: attempted,
+          totalRuns,
+          totalCostCents: cost,
+        };
+      });
+    },
+
     byProject: async (companyId: string, range?: CostDateRange) => {
       const issueIdAsText = sql<string>`${issues.id}::text`;
       const runProjectLinks = db
