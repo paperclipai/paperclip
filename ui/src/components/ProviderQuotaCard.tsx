@@ -138,16 +138,16 @@ export function ProviderQuotaCard({
               {providerDisplayName(provider)}
             </CardTitle>
             <CardDescription className="text-xs mt-0.5">
-              <span className="font-mono">{formatTokens(totalInputTokens)}</span> in
+              <span className="font-mono">{formatTokens(totalInputTokens)}</span> 输入
               {" · "}
-              <span className="font-mono">{formatTokens(totalOutputTokens)}</span> out
+              <span className="font-mono">{formatTokens(totalOutputTokens)}</span> 输出
               {(totalApiRuns > 0 || totalSubRuns > 0) && (
                 <span className="ml-1.5">
                   ·{" "}
-                  {totalApiRuns > 0 && `~${totalApiRuns} api`}
+                  {totalApiRuns > 0 && `~${totalApiRuns} API`}
                   {totalApiRuns > 0 && totalSubRuns > 0 && " / "}
-                  {totalSubRuns > 0 && `~${totalSubRuns} sub`}
-                  {" runs"}
+                  {totalSubRuns > 0 && `~${totalSubRuns} 订阅`}
+                  {" 次运行"}
                 </span>
               )}
             </CardDescription>

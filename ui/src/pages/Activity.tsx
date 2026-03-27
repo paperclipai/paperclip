@@ -27,7 +27,7 @@ export function Activity() {
   const [filter, setFilter] = useState("all");
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Activity" }]);
+    setBreadcrumbs([{ label: "活动" }]);
   }, [setBreadcrumbs]);
 
   const { data, isLoading, error } = useQuery({
@@ -82,7 +82,7 @@ export function Activity() {
   }, [issues]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={History} message="Select a company to view activity." />;
+    return <EmptyState icon={History} message="请选择一个公司以查看活动。" />;
   }
 
   if (isLoading) {

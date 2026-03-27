@@ -1083,7 +1083,7 @@ export function OnboardingWizard() {
                               : `${effectiveAdapterCommand} --print - --output-format stream-json --verbose`}
                           </p>
                           <p className="text-muted-foreground">
-                            Prompt:{" "}
+                            提示词：{" "}
                             <span className="font-mono">Respond with hello.</span>
                           </p>
                           {adapterType === "cursor" ||
@@ -1091,7 +1091,7 @@ export function OnboardingWizard() {
                           adapterType === "gemini_local" ||
                           adapterType === "opencode_local" ? (
                             <p className="text-muted-foreground">
-                              If auth fails, set{" "}
+                              如果认证失败，请在环境变量中设置{" "}
                               <span className="font-mono">
                                 {adapterType === "cursor"
                                   ? "CURSOR_API_KEY"

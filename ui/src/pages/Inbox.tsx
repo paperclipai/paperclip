@@ -328,8 +328,8 @@ function ApprovalInboxRow({
             </span>
             <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
               <span className="capitalize">{approvalStatusLabel(approval.status)}</span>
-              {requesterName ? <span>requested by {requesterName}</span> : null}
-              <span>updated {timeAgo(approval.updatedAt)}</span>
+              {requesterName ? <span>由 {requesterName} 请求</span> : null}
+              <span>更新于 {timeAgo(approval.updatedAt)}</span>
             </span>
           </span>
         </Link>
@@ -341,7 +341,7 @@ function ApprovalInboxRow({
               onClick={onApprove}
               disabled={isPending}
             >
-              Approve
+              批准
             </Button>
             <Button
               variant="destructive"
@@ -363,7 +363,7 @@ function ApprovalInboxRow({
             onClick={onApprove}
             disabled={isPending}
           >
-            Approve
+            批准
           </Button>
           <Button
             variant="destructive"
@@ -466,7 +466,7 @@ function JoinRequestInboxRow({
             onClick={onApprove}
             disabled={isPending}
           >
-            Approve
+            批准
           </Button>
           <Button
             variant="destructive"
