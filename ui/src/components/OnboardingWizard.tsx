@@ -1237,14 +1237,14 @@ export function OnboardingWizard() {
                 </div>
               )}
 
-              {/* Error */}
+              {/* 错误 */}
               {error && (
                 <div className="mt-3">
                   <p className="text-xs text-destructive">{error}</p>
                 </div>
               )}
 
-              {/* Footer navigation */}
+              {/* 底部导航 */}
               <div className="flex items-center justify-between mt-8">
                 <div>
                   {step > 1 && step > (onboardingOptions.initialStep ?? 1) && (

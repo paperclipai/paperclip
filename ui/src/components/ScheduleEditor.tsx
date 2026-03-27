@@ -161,7 +161,7 @@ export function ScheduleEditor({
   const [dayOfMonth, setDayOfMonth] = useState(parsed.dayOfMonth);
   const [customCron, setCustomCron] = useState(preset === "custom" ? value : "");
 
-  // Sync from external value changes
+  // 从外部值变化同步
   useEffect(() => {
     const p = parseCronToPreset(value);
     setPreset(p.preset);
