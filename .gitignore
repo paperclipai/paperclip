@@ -8,6 +8,7 @@ coverage/
 .DS_Store
 data/
 .paperclip/
+.paperclip-home/
 .pnpm-store/
 tmp-*
 cli/tmp/
@@ -50,3 +51,4 @@ tests/release-smoke/test-results/
 tests/release-smoke/playwright-report/
 .superset/
 .claude/worktrees/
+.gstack/
