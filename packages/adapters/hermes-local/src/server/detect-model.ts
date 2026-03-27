@@ -64,7 +64,7 @@ export function parseModelFromConfig(content: string): DetectedModel | null {
       const match = trimmed.match(/^\s*(\w+)\s*:\s*(.+)$/);
       if (match) {
         const key = match[1];
-        const val = match[2].trim().replace(/^['"]|['"]$/g, "");
+        const val = match[2].trim().replace(/#.*$/, "").trim().replace(/^['"]|['"]$/g, "");
         if (key === "default") model = val;
         if (key === "provider") provider = val;
       }

@@ -128,16 +128,31 @@ function checkModel(
   };
 }
 
-function checkApiKeys(): AdapterEnvironmentCheck | null {
-  const hasAnthropic = !!process.env.ANTHROPIC_API_KEY;
-  const hasOpenRouter = !!process.env.OPENROUTER_API_KEY;
-  const hasOpenAI = !!process.env.OPENAI_API_KEY;
+function checkApiKeys(
+  config: Record<string, unknown>,
+): AdapterEnvironmentCheck | null {
+  // The server resolves secret refs into config.env before calling testEnvironment,
+  // so we check config.env first (adapter-configured secrets), then fall back to
+  // process.env (server/host environment). This mirrors how the Claude adapter does it.
+  const envConfig = (config.env ?? {}) as Record<string, unknown>;
+  const resolvedEnv: Record<string, string> = {};
+  for (const [key, value] of Object.entries(envConfig)) {
+    if (typeof value === "string" && value.length > 0) resolvedEnv[key] = value;
+  }
 
-  if (!hasAnthropic && !hasOpenRouter && !hasOpenAI) {
+  const has = (key: string): boolean =>
+    !!(resolvedEnv[key] ?? process.env[key]);
+
+  const hasAnthropic = has("ANTHROPIC_API_KEY");
+  const hasOpenRouter = has("OPENROUTER_API_KEY");
+  const hasOpenAI = has("OPENAI_API_KEY");
+  const hasZai = has("ZAI_API_KEY");
+
+  if (!hasAnthropic && !hasOpenRouter && !hasOpenAI && !hasZai) {
     return {
       level: "warn",
       message: "No LLM API keys found in environment",
-      hint: "Set ANTHROPIC_API_KEY, OPENROUTER_API_KEY, or OPENAI_API_KEY. Hermes may also have keys configured in ~/.hermes/.env",
+      hint: "Set ANTHROPIC_API_KEY, OPENROUTER_API_KEY, OPENAI_API_KEY, or ZAI_API_KEY in the agent's env secrets. Hermes may also have keys configured in ~/.hermes/.env",
       code: "hermes_no_api_keys",
     };
   }
@@ -146,6 +161,7 @@ function checkApiKeys(): AdapterEnvironmentCheck | null {
   if (hasAnthropic) providers.push("Anthropic");
   if (hasOpenRouter) providers.push("OpenRouter");
   if (hasOpenAI) providers.push("OpenAI");
+  if (hasZai) providers.push("Z.AI");
 
   return {
     level: "info",
@@ -191,8 +207,8 @@ export async function testEnvironment(
   const modelCheck = checkModel(config);
   if (modelCheck) checks.push(modelCheck);
 
-  // 5. API keys
-  const apiKeyCheck = checkApiKeys();
+  // 5. API keys (check config.env — server resolves secrets before calling us)
+  const apiKeyCheck = checkApiKeys(config);
   if (apiKeyCheck) checks.push(apiKeyCheck);
 
   // Determine overall status
