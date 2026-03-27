@@ -61,6 +61,10 @@ import {
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
+const HEARTBEAT_GLOBAL_MAX_CONCURRENT_RUNS = Math.max(
+  1,
+  Number(process.env.HEARTBEAT_GLOBAL_MAX_CONCURRENT_RUNS) || 3,
+);
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 const startLocksByAgent = new Map<string, Promise<void>>();
@@ -1944,6 +1948,17 @@ export function heartbeatService(db: Db) {
         return;
       }
       run = claimed;
+    }
+
+    // Global concurrency gate — prevents OOM when many agents heartbeat
+    // simultaneously.  Excess runs stay queued and are picked up once a
+    // slot opens (the queue promotion in finalizeRun handles this).
+    if (activeRunExecutions.size >= HEARTBEAT_GLOBAL_MAX_CONCURRENT_RUNS) {
+      logger.info(
+        { runId: run.id, active: activeRunExecutions.size, limit: HEARTBEAT_GLOBAL_MAX_CONCURRENT_RUNS },
+        "global concurrent run limit reached — deferring run",
+      );
+      return;
     }
 
     activeRunExecutions.add(run.id);
