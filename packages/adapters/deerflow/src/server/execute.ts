@@ -68,6 +68,87 @@ async function completeIssue(
 }
 
 // ---------------------------------------------------------------------------
+// Retry helpers for non-substantive task pickups
+// ---------------------------------------------------------------------------
+
+/**
+ * Retrieve the number of DeerFlow retry attempts for an issue by counting
+ * comments that contain the `[deerflow-retry]` marker.
+ */
+async function getDeerflowRetryCount(
+  issueId: string,
+  authToken: string,
+): Promise<number> {
+  try {
+    const res = await fetch(`${PAPERCLIP_BASE_URL}/api/issues/${issueId}/comments`, {
+      headers: { authorization: `Bearer ${authToken}` },
+    });
+    if (!res.ok) return 0;
+    const comments = (await res.json()) as Array<{ body?: string }>;
+    return comments.filter((c) => typeof c.body === "string" && c.body.includes("[deerflow-retry]")).length;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Reset an issue back to "todo" for a retry attempt.  Adds a comment with
+ * the `[deerflow-retry]` marker so retries can be counted.
+ */
+async function resetIssueForRetry(
+  issueId: string,
+  authToken: string,
+  reason: string,
+): Promise<boolean> {
+  try {
+    const res = await fetch(`${PAPERCLIP_BASE_URL}/api/issues/${issueId}/comments`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${authToken}`,
+      },
+      body: JSON.stringify({
+        body: `[deerflow-retry] Non-substantive response detected — resetting for retry.\nReason: ${reason}`,
+        reopen: true, // transitions issue back to "todo"
+      }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Block an issue that has exhausted its retry budget.  Adds a comment
+ * explaining why the issue was blocked so a human can intervene.
+ */
+async function blockIssue(
+  issueId: string,
+  runId: string,
+  authToken: string,
+  reason: string,
+): Promise<void> {
+  try {
+    await fetch(`${PAPERCLIP_BASE_URL}/api/issues/${issueId}`, {
+      method: "PATCH",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${authToken}`,
+        "x-paperclip-run-id": runId,
+      },
+      body: JSON.stringify({
+        status: "blocked",
+        comment: `[deerflow-retry] Blocked after exhausting retry budget.\nReason: ${reason}`,
+      }),
+    });
+  } catch {
+    // Best-effort
+  }
+}
+
+const MAX_DEERFLOW_RETRIES = 2;
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -230,6 +311,8 @@ export async function execute(
   const contextObj = parseObject(ctx.context);
   const issueId = asString(contextObj.issueId as unknown, "");
   const authToken = ctx.authToken ?? "";
+  const taskType = asString(contextObj.taskType as unknown, "");
+  const issueLabels = Array.isArray(contextObj.labelNames) ? contextObj.labelNames as string[] : [];
 
   // Ensure DeerFlow containers are running before any API calls
   try {
@@ -309,6 +392,8 @@ export async function execute(
         paperclip_api_url: PAPERCLIP_BASE_URL,
         paperclip_company_id: ctx.agent.companyId,
         ...(authToken ? { paperclip_auth_token: authToken } : {}),
+        ...(taskType ? { task_type: taskType } : {}),
+        ...(issueLabels.length > 0 ? { issue_labels: issueLabels } : {}),
       },
       stream_mode: ["messages-tuple", "values"],
     };
@@ -503,6 +588,26 @@ export async function execute(
     if (!errorMessage && toolCallCount === 0 && strippedStdout.length < 200) {
       await onLog("stderr", `[deerflow] No tool calls and only ${strippedStdout.length} chars of output — not marking issue as done\n`);
       errorMessage = "LLM produced insufficient output with no tool usage";
+    }
+
+    // -----------------------------------------------------------------------
+    // Retry logic for non-substantive responses
+    // If the LLM produced insufficient output we retry up to MAX_DEERFLOW_RETRIES
+    // times before blocking the issue for human review.
+    // -----------------------------------------------------------------------
+    if (errorMessage && issueId && authToken) {
+      const retryCount = await getDeerflowRetryCount(issueId, authToken);
+      if (retryCount < MAX_DEERFLOW_RETRIES) {
+        const reset = await resetIssueForRetry(issueId, authToken, errorMessage);
+        if (reset) {
+          await onLog("stderr", `[deerflow] Non-substantive response (attempt ${retryCount + 1}/${MAX_DEERFLOW_RETRIES}) — issue reset for retry\n`);
+        } else {
+          await onLog("stderr", `[deerflow] Failed to reset issue for retry\n`);
+        }
+      } else {
+        await blockIssue(issueId, ctx.runId, authToken, errorMessage);
+        await onLog("stderr", `[deerflow] Retry budget exhausted (${retryCount}/${MAX_DEERFLOW_RETRIES}) — issue blocked\n`);
+      }
     }
 
     // Mark issue as done on successful execution
