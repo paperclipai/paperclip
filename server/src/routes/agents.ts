@@ -1764,6 +1764,11 @@ export function agentRoutes(db: Db) {
             ...existingAdapterConfig,
             ...adapterConfig,
           };
+    } else if (adapterTypeChanged) {
+      // Adapter type changed but no adapterConfig supplied — strip adapter-specific
+      // fields from the existing config so stale values don't bleed into the new adapter.
+      const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
+      patchData.adapterConfig = preserveCrossAdapterConfig(existingAdapterConfig);
     }
     if (Object.prototype.hasOwnProperty.call(patchData, "runtimeConfig")) {
       const runtimeConfig = asRecord(patchData.runtimeConfig);

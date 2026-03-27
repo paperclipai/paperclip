@@ -304,4 +304,27 @@ describe("agent update routes", () => {
     const env = cfg.env as Record<string, unknown>;
     expect(env.OPENCODE_PERMISSION).toBe(customPerms);
   });
+
+  it("strips adapter-specific fields when only adapterType is patched without adapterConfig", async () => {
+    const app = createApp();
+
+    const res = await request(app)
+      .patch(`/api/agents/${agentId}`)
+      .send({
+        adapterType: "codex_local",
+        // No adapterConfig — only changing adapter type
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const [, patch] = mockAgentService.update.mock.calls[0]!;
+    const cfg = patch.adapterConfig as Record<string, unknown>;
+    // Cross-adapter fields preserved
+    expect(cfg.cwd).toBe("/workspace/app");
+    expect(cfg.maxTurnsPerRun).toBe(40);
+    expect(cfg.instructionsFilePath).toBe("/tmp/agent/instructions/AGENTS.md");
+    // Adapter-specific fields from claude_local stripped
+    expect(cfg.chrome).toBeUndefined();
+    // Model gets codex default from applyCreateDefaultsByAdapterType
+    expect(cfg.model).toBe("gpt-5.3-codex");
+  });
 });
