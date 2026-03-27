@@ -131,7 +131,11 @@ export function agentRoutes(db: Db) {
       };
     }
 
-    if (hasExplicitTaskAssignGrant) {
+    const hasPermissionFlag = Boolean(
+      agent.permissions && (agent.permissions as Record<string, unknown>).canAssignTasks,
+    );
+
+    if (hasExplicitTaskAssignGrant || hasPermissionFlag) {
       return {
         canAssignTasks: true,
         taskAssignSource: "explicit_grant" as const,
@@ -1419,7 +1423,7 @@ export function agentRoutes(db: Db) {
     }
 
     const effectiveCanAssignTasks =
-      agent.role === "ceo" || Boolean(agent.permissions?.canCreateAgents) || req.body.canAssignTasks;
+      agent.role === "ceo" || Boolean(agent.permissions?.canAssignTasks);
     await access.ensureMembership(agent.companyId, "agent", agent.id, "member", "active");
     await access.setPrincipalPermission(
       agent.companyId,
