@@ -174,9 +174,7 @@ const piLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: piAgentConfigurationDoc,
 };
 
-const hermesLocalAdapter: ServerAdapterModule & {
-  detectModel?: () => Promise<{ model: string; provider: string; source: string } | null>;
-} = {
+const hermesLocalAdapter: ServerAdapterModule = {
   type: "hermes_local",
   execute: hermesExecute,
   testEnvironment: hermesTestEnvironment,
@@ -189,7 +187,7 @@ const hermesLocalAdapter: ServerAdapterModule & {
   detectModel: () => detectModelFromHermes(),
 };
 
-const adaptersByType = new Map<string, ServerAdapterModule & { detectModel?: () => Promise<{ model: string; provider: string; source: string } | null> }>(
+const adaptersByType = new Map<string, ServerAdapterModule>(
   [
     claudeLocalAdapter,
     codexLocalAdapter,
