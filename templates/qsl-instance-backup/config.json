@@ -1,0 +1,53 @@
+{
+  "$meta": {
+    "version": 1,
+    "updatedAt": "2026-03-27T16:15:41.827Z",
+    "source": "onboard"
+  },
+  "database": {
+    "mode": "embedded-postgres",
+    "embeddedPostgresDataDir": "C:\\Users\\mikeb\\.paperclip\\instances\\default\\db",
+    "embeddedPostgresPort": 54329,
+    "backup": {
+      "enabled": true,
+      "intervalMinutes": 60,
+      "retentionDays": 30,
+      "dir": "C:\\Users\\mikeb\\.paperclip\\instances\\default\\data\\backups"
+    }
+  },
+  "logging": {
+    "mode": "file",
+    "logDir": "C:\\Users\\mikeb\\.paperclip\\instances\\default\\logs"
+  },
+  "server": {
+    "deploymentMode": "local_trusted",
+    "exposure": "private",
+    "host": "127.0.0.1",
+    "port": 3100,
+    "allowedHostnames": [],
+    "serveUi": true
+  },
+  "auth": {
+    "baseUrlMode": "auto",
+    "disableSignUp": false
+  },
+  "storage": {
+    "provider": "local_disk",
+    "localDisk": {
+      "baseDir": "C:\\Users\\mikeb\\.paperclip\\instances\\default\\data\\storage"
+    },
+    "s3": {
+      "bucket": "paperclip",
+      "region": "us-east-1",
+      "prefix": "",
+      "forcePathStyle": false
+    }
+  },
+  "secrets": {
+    "provider": "local_encrypted",
+    "strictMode": false,
+    "localEncrypted": {
+      "keyFilePath": "C:\\Users\\mikeb\\.paperclip\\instances\\default\\secrets\\master.key"
+    }
+  }
+}

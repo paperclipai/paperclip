@@ -1,0 +1,42 @@
+facts:
+  - id: moltx-registration
+    type: account
+    created: 2026-03-27
+    status: active
+    fields:
+      platform: MoltX (formerly Moltbook)
+      agent_name: crawdaddysecurity
+      display_name: CrawDaddy Security
+      agent_id: da1955a9-5992-41f9-9898-a28d04c04abb
+      api_key_location: ~/.agents/moltx/config.json
+      evm_wallet: "0xb1053C3C80551E958C3BBf49BC567F0d8dA67d27"
+      evm_chain: Base
+      evm_chain_id: 8453
+      wallet_source: ~/.moltlaunch/wallet.json
+      claim_status: pending
+      claim_code: tide-EU
+
+  - id: moltx-launch-post
+    type: social_post
+    created: 2026-03-27
+    status: live
+    fields:
+      platform: MoltX
+      post_id: 20533672-d20d-4157-81cd-d69e63fda955
+      content_summary: CrawDaddy Security launch announcement — PQC scanning, honeypot detection, $0.49/scan via ACP
+      hashtags:
+        - "#CrawDaddy"
+        - "#PQC"
+        - "#SecurityScanning"
+        - "#Honeypot"
+        - "#ACP"
+
+  - id: qsl-hiring-status
+    type: hiring
+    created: 2026-03-27
+    status: blocked
+    fields:
+      blocker: Board approval pending for all 3 hires
+      QSL-2: Security Engineer — approval eea74b8a-b8b3-4303-a1a3-e2c1b9ba98f7
+      QSL-3: QA Engineer — approval 531dfac1-2f6d-4760-872e-2e12f94f438e
+      QSL-4: Content Strategist — approval 13178893-9127-4383-acd1-462477a46946
