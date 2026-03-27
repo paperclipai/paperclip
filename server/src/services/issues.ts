@@ -69,7 +69,7 @@ export interface IssueFilters {
   touchedByUserId?: string;
   inboxArchivedByUserId?: string;
   unreadForUserId?: string;
-  projectId?: string;
+  projectId?: string | null;
   parentId?: string;
   labelId?: string;
   originKind?: string;
@@ -646,7 +646,13 @@ export function issueService(db: Db) {
       if (unreadForUserId) {
         conditions.push(unreadForUserCondition(companyId, unreadForUserId));
       }
-      if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
+      if (filters && "projectId" in filters) {
+        if (filters.projectId === null) {
+          conditions.push(isNull(issues.projectId));
+        } else if (filters.projectId) {
+          conditions.push(eq(issues.projectId, filters.projectId));
+        }
+      }
       if (filters?.parentId) conditions.push(eq(issues.parentId, filters.parentId));
       if (filters?.originKind) conditions.push(eq(issues.originKind, filters.originKind));
       if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
