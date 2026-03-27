@@ -88,7 +88,7 @@ export function InviteLandingPage() {
 
   const acceptMutation = useMutation({
     mutationFn: async () => {
-      if (!invite) throw new Error("Invite not found");
+      if (!invite) throw new Error("未找到邀请");
       if (invite.inviteType === "bootstrap_ceo") {
         return accessApi.acceptInvite(token, { requestType: "human" });
       }

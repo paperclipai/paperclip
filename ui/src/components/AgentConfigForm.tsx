@@ -773,7 +773,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 <ClaudeLocalAdvancedFields {...adapterFieldProps} />
               )}
 
-              <Field label="Extra args (comma-separated)" hint={help.extraArgs}>
+              <Field label="额外参数（逗号分隔）" hint={help.extraArgs}>
                 <DraftInput
                   value={
                     isCreate
@@ -791,7 +791,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 />
               </Field>
 
-              <Field label="Environment variables" hint={help.envVars}>
+              <Field label="环境变量" hint={help.envVars}>
                 <EnvVarEditor
                   value={
                     isCreate
@@ -815,7 +815,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               {/* 仅编辑模式：超时和优雅终止时间 */}
               {!isCreate && (
                 <>
-                  <Field label="Timeout (sec)" hint={help.timeoutSec}>
+                  <Field label="超时时间（秒）" hint={help.timeoutSec}>
                     <DraftNumberInput
                       value={eff(
                         "adapterConfig",
@@ -827,7 +827,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       className={inputClass}
                     />
                   </Field>
-                  <Field label="Interrupt grace period (sec)" hint={help.graceSec}>
+                  <Field label="中断宽限期（秒）" hint={help.graceSec}>
                     <DraftNumberInput
                       value={eff(
                         "adapterConfig",
