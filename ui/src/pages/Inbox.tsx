@@ -230,14 +230,14 @@ function FailedRunInboxRow({
           disabled={isRetrying}
         >
           <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
-          {isRetrying ? "Retrying…" : "Retry"}
+          {isRetrying ? "重试中…" : "重试"}
         </Button>
         {!showUnreadSlot && (
           <button
             type="button"
             onClick={onDismiss}
             className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
-            aria-label="Dismiss"
+            aria-label="关闭"
           >
             <X className="h-4 w-4" />
           </button>
@@ -350,7 +350,7 @@ function ApprovalInboxRow({
               onClick={onReject}
               disabled={isPending}
             >
-              Reject
+              拒绝
             </Button>
           </div>
         ) : null}
@@ -372,7 +372,7 @@ function ApprovalInboxRow({
             onClick={onReject}
             disabled={isPending}
           >
-            Reject
+            拒绝
           </Button>
         </div>
       ) : null}
@@ -403,8 +403,8 @@ function JoinRequestInboxRow({
 }) {
   const label =
     joinRequest.requestType === "human"
-      ? "Human join request"
-      : `Agent join request${joinRequest.agentName ? `: ${joinRequest.agentName}` : ""}`;
+      ? "人类加入请求"
+      : `智能体加入请求${joinRequest.agentName ? `：${joinRequest.agentName}` : ""}`;
   const showUnreadSlot = unreadState !== null;
   const showUnreadDot = unreadState === "visible" || unreadState === "fading";
 
@@ -454,8 +454,8 @@ function JoinRequestInboxRow({
               {label}
             </span>
             <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-              <span>requested {timeAgo(joinRequest.createdAt)} from IP {joinRequest.requestIp}</span>
-              {joinRequest.adapterType && <span>adapter: {joinRequest.adapterType}</span>}
+              <span>{timeAgo(joinRequest.createdAt)} 从 IP {joinRequest.requestIp} 请求</span>
+              {joinRequest.adapterType && <span>适配器：{joinRequest.adapterType}</span>}
             </span>
           </span>
         </div>
@@ -475,7 +475,7 @@ function JoinRequestInboxRow({
             onClick={onReject}
             disabled={isPending}
           >
-            Reject
+            拒绝
           </Button>
         </div>
       </div>
@@ -486,7 +486,7 @@ function JoinRequestInboxRow({
           onClick={onApprove}
           disabled={isPending}
         >
-          Approve
+          批准
         </Button>
         <Button
           variant="destructive"
@@ -495,7 +495,7 @@ function JoinRequestInboxRow({
           onClick={onReject}
           disabled={isPending}
         >
-          Reject
+          拒绝
         </Button>
       </div>
     </div>
@@ -535,7 +535,7 @@ export function Inbox() {
   });
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Inbox" }]);
+    setBreadcrumbs([{ label: "收件箱" }]);
   }, [setBreadcrumbs]);
 
   useEffect(() => {
@@ -706,7 +706,7 @@ export function Inbox() {
       navigate(`/approvals/${id}?resolved=approved`);
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to approve");
+      setActionError(err instanceof Error ? err.message : "批准失败");
     },
   });
 
@@ -717,7 +717,7 @@ export function Inbox() {
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to reject");
+      setActionError(err instanceof Error ? err.message : "拒绝失败");
     },
   });
 
@@ -732,7 +732,7 @@ export function Inbox() {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to approve join request");
+      setActionError(err instanceof Error ? err.message : "批准加入请求失败");
     },
   });
 
@@ -745,7 +745,7 @@ export function Inbox() {
       queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId!) });
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to reject join request");
+      setActionError(err instanceof Error ? err.message : "拒绝加入请求失败");
     },
   });
 

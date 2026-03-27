@@ -1,8 +1,8 @@
-# Docker Quickstart
+# Docker 快速入门
 
-Run Paperclip in Docker without installing Node or pnpm locally.
+在 Docker 中运行 Paperclip，无需在本地安装 Node 或 pnpm。
 
-## One-liner (build + run)
+## 一行命令（构建 + 运行）
 
 ```sh
 docker build -t paperclip-local . && \
@@ -14,39 +14,39 @@ docker run --name paperclip \
   paperclip-local
 ```
 
-Open: `http://localhost:3100`
+打开：`http://localhost:3100`
 
-Data persistence:
+数据持久化：
 
-- Embedded PostgreSQL data
-- uploaded assets
-- local secrets key
-- local agent workspace data
+- 内嵌 PostgreSQL 数据
+- 已上传的资源
+- 本地密钥
+- 本地代理工作区数据
 
-All persisted under your bind mount (`./data/docker-paperclip` in the example above).
+所有数据都持久化在你的绑定挂载目录下（上面示例中的 `./data/docker-paperclip`）。
 
-## Compose Quickstart
+## Compose 快速入门
 
 ```sh
 docker compose -f docker-compose.quickstart.yml up --build
 ```
 
-Defaults:
+默认值：
 
-- host port: `3100`
-- persistent data dir: `./data/docker-paperclip`
+- 主机端口：`3100`
+- 持久化数据目录：`./data/docker-paperclip`
 
-Optional overrides:
+可选覆盖：
 
 ```sh
 PAPERCLIP_PORT=3200 PAPERCLIP_DATA_DIR=./data/pc docker compose -f docker-compose.quickstart.yml up --build
 ```
 
-If you change host port or use a non-local domain, set `PAPERCLIP_PUBLIC_URL` to the external URL you will use in browser/auth flows.
+如果你更改了主机端口或使用非本地域名，请将 `PAPERCLIP_PUBLIC_URL` 设置为你将在浏览器/认证流程中使用的外部 URL。
 
-## Authenticated Compose (Single Public URL)
+## 认证模式 Compose（单一公共 URL）
 
-For authenticated deployments, set one canonical public URL and let Paperclip derive auth/callback defaults:
+对于认证部署，设置一个规范的公共 URL，让 Paperclip 自动推导认证/回调默认值：
 
 ```yaml
 services:
@@ -57,25 +57,25 @@ services:
       PAPERCLIP_PUBLIC_URL: https://desk.koker.net
 ```
 
-`PAPERCLIP_PUBLIC_URL` is used as the primary source for:
+`PAPERCLIP_PUBLIC_URL` 被用作以下内容的主要来源：
 
-- auth public base URL
-- Better Auth base URL defaults
-- bootstrap invite URL defaults
-- hostname allowlist defaults (hostname extracted from URL)
+- 认证公共基础 URL
+- Better Auth 基础 URL 默认值
+- 引导邀请 URL 默认值
+- 主机名允许列表默认值（从 URL 中提取主机名）
 
-Granular overrides remain available if needed (`PAPERCLIP_AUTH_PUBLIC_BASE_URL`, `BETTER_AUTH_URL`, `BETTER_AUTH_TRUSTED_ORIGINS`, `PAPERCLIP_ALLOWED_HOSTNAMES`).
+如果需要，仍可使用细粒度覆盖（`PAPERCLIP_AUTH_PUBLIC_BASE_URL`、`BETTER_AUTH_URL`、`BETTER_AUTH_TRUSTED_ORIGINS`、`PAPERCLIP_ALLOWED_HOSTNAMES`）。
 
-Set `PAPERCLIP_ALLOWED_HOSTNAMES` explicitly only when you need additional hostnames beyond the public URL host (for example Tailscale/LAN aliases or multiple private hostnames).
+仅当你需要公共 URL 主机之外的额外主机名时（例如 Tailscale/LAN 别名或多个私有主机名），才需要显式设置 `PAPERCLIP_ALLOWED_HOSTNAMES`。
 
-## Claude + Codex Local Adapters in Docker
+## Docker 中的 Claude 和 Codex 本地适配器
 
-The image pre-installs:
+镜像预装了：
 
-- `claude` (Anthropic Claude Code CLI)
-- `codex` (OpenAI Codex CLI)
+- `claude`（Anthropic Claude Code CLI）
+- `codex`（OpenAI Codex CLI）
 
-If you want local adapter runs inside the container, pass API keys when starting the container:
+如果你想在容器内运行本地适配器，启动容器时传入 API 密钥：
 
 ```sh
 docker run --name paperclip \
@@ -88,34 +88,34 @@ docker run --name paperclip \
   paperclip-local
 ```
 
-Notes:
+注意：
 
-- Without API keys, the app still runs normally.
-- Adapter environment checks in Paperclip will surface missing auth/CLI prerequisites.
+- 不提供 API 密钥，应用仍然可以正常运行。
+- Paperclip 中的适配器环境检查会提示缺少的认证/CLI 前置条件。
 
-## Untrusted PR Review Container
+## 不可信 PR 审查容器
 
-If you want a separate Docker environment for reviewing untrusted pull requests with `codex` or `claude`, use the dedicated review workflow in `doc/UNTRUSTED-PR-REVIEW.md`.
+如果你想要一个独立的 Docker 环境，使用 `codex` 或 `claude` 审查不可信的拉取请求，请使用 `doc/UNTRUSTED-PR-REVIEW.md` 中的专用审查工作流。
 
-That setup keeps CLI auth state in Docker volumes instead of your host home directory and uses a separate scratch workspace for PR checkouts and preview runs.
+该设置将 CLI 认证状态保存在 Docker 卷中，而非你的主机 home 目录，并使用独立的临时工作区进行 PR 检出和预览运行。
 
-## Onboard Smoke Test (Ubuntu + npm only)
+## 入门冒烟测试（Ubuntu + npm 环境）
 
-Use this when you want to mimic a fresh machine that only has Ubuntu + npm and verify:
+当你想模拟一台只有 Ubuntu + npm 的全新机器并验证以下内容时使用：
 
-- `npx paperclipai onboard --yes` completes
-- the server binds to `0.0.0.0:3100` so host access works
-- onboard/run banners and startup logs are visible in your terminal
+- `npx paperclipai onboard --yes` 能顺利完成
+- 服务器绑定到 `0.0.0.0:3100`，使主机可以访问
+- 入门/运行横幅和启动日志在终端中可见
 
-Build + run:
+构建 + 运行：
 
 ```sh
 ./scripts/docker-onboard-smoke.sh
 ```
 
-Open: `http://localhost:3131` (default smoke host port)
+打开：`http://localhost:3131`（默认冒烟测试主机端口）
 
-Useful overrides:
+有用的覆盖参数：
 
 ```sh
 HOST_PORT=3200 PAPERCLIPAI_VERSION=latest ./scripts/docker-onboard-smoke.sh
@@ -123,14 +123,14 @@ PAPERCLIP_DEPLOYMENT_MODE=authenticated PAPERCLIP_DEPLOYMENT_EXPOSURE=private ./
 SMOKE_DETACH=true SMOKE_METADATA_FILE=/tmp/paperclip-smoke.env PAPERCLIPAI_VERSION=latest ./scripts/docker-onboard-smoke.sh
 ```
 
-Notes:
+注意：
 
-- Persistent data is mounted at `./data/docker-onboard-smoke` by default.
-- Container runtime user id defaults to your local `id -u` so the mounted data dir stays writable while avoiding root runtime.
-- Smoke script defaults to `authenticated/private` mode so `HOST=0.0.0.0` can be exposed to the host.
-- Smoke script defaults host port to `3131` to avoid conflicts with local Paperclip on `3100`.
-- Smoke script also defaults `PAPERCLIP_PUBLIC_URL` to `http://localhost:<HOST_PORT>` so bootstrap invite URLs and auth callbacks use the reachable host port instead of the container's internal `3100`.
-- In authenticated mode, the smoke script defaults `SMOKE_AUTO_BOOTSTRAP=true` and drives the real bootstrap path automatically: it signs up a real user, runs `paperclipai auth bootstrap-ceo` inside the container to mint a real bootstrap invite, accepts that invite over HTTP, and verifies board session access.
-- Run the script in the foreground to watch the onboarding flow; stop with `Ctrl+C` after validation.
-- Set `SMOKE_DETACH=true` to leave the container running for automation and optionally write shell-ready metadata to `SMOKE_METADATA_FILE`.
-- The image definition is in `Dockerfile.onboard-smoke`.
+- 持久化数据默认挂载在 `./data/docker-onboard-smoke`。
+- 容器运行时用户 ID 默认使用你本地的 `id -u`，这样挂载的数据目录保持可写，同时避免以 root 身份运行。
+- 冒烟测试脚本默认使用 `authenticated/private` 模式，这样 `HOST=0.0.0.0` 可以暴露给主机。
+- 冒烟测试脚本默认主机端口为 `3131`，以避免与本地 Paperclip 的 `3100` 端口冲突。
+- 冒烟测试脚本还默认将 `PAPERCLIP_PUBLIC_URL` 设置为 `http://localhost:<HOST_PORT>`，这样引导邀请 URL 和认证回调使用可达的主机端口，而非容器内部的 `3100`。
+- 在认证模式下，冒烟测试脚本默认设置 `SMOKE_AUTO_BOOTSTRAP=true`，并自动执行真实的引导流程：注册一个真实用户，在容器内运行 `paperclipai auth bootstrap-ceo` 生成真实的引导邀请，通过 HTTP 接受该邀请，并验证董事会会话访问。
+- 在前台运行脚本以观察入门流程；验证后按 `Ctrl+C` 停止。
+- 设置 `SMOKE_DETACH=true` 以保持容器运行用于自动化，并可选将 shell 可读的元数据写入 `SMOKE_METADATA_FILE`。
+- 镜像定义在 `Dockerfile.onboard-smoke` 中。
