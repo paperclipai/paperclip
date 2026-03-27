@@ -605,6 +605,21 @@ export async function startServer(): Promise<StartedServer> {
         .catch((err) => {
           logger.error({ err }, "periodic heartbeat recovery failed");
         });
+
+      // Clean up execution locks whose associated run has already reached a
+      // terminal state. These orphaned locks block future checkouts; the normal
+      // release / reap paths clear them reactively, but this sweep handles any
+      // that slip through (e.g. crashes before the release path could run).
+      void heartbeat
+        .cleanupOrphanedExecutionLocks()
+        .then((result) => {
+          if (result.cleaned > 0) {
+            logger.warn({ ...result }, "orphaned execution locks cleaned up");
+          }
+        })
+        .catch((err) => {
+          logger.error({ err }, "orphaned execution lock cleanup failed");
+        });
     }, config.heartbeatSchedulerIntervalMs);
   }
   

@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BillingType } from "@paperclipai/shared";
 import {
@@ -1839,6 +1839,67 @@ export function heartbeatService(db: Db) {
     for (const agentId of agentIds) {
       await startNextQueuedRunForAgent(agentId);
     }
+  }
+
+  /**
+   * Periodically scan for issues whose execution lock references a run that has
+   * already reached a terminal state (succeeded / failed / cancelled / timed_out).
+   * These "orphaned" locks prevent future checkouts and should be cleared
+   * automatically so agents can pick up the issue again without manual
+   * intervention.
+   *
+   * The normal release / reap paths clean up locks as a side-effect, but they
+   * only trigger when an active process is involved or when a checkout is
+   * attempted. This sweep catches any that slip through.
+   */
+  async function cleanupOrphanedExecutionLocks() {
+    const TERMINAL_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
+
+    const orphaned = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        runId: issues.executionRunId,
+        runStatus: heartbeatRuns.status,
+      })
+      .from(issues)
+      .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, issues.executionRunId))
+      .where(
+        and(
+          isNotNull(issues.executionRunId),
+          inArray(heartbeatRuns.status, [...TERMINAL_STATUSES]),
+        ),
+      );
+
+    if (orphaned.length === 0) return { cleaned: 0 };
+
+    const issueIds = orphaned.map((o) => o.id);
+    const now = new Date();
+
+    await db
+      .update(issues)
+      .set({
+        executionRunId: null,
+        executionLockedAt: null,
+        executionAgentNameKey: null,
+        updatedAt: now,
+      })
+      .where(inArray(issues.id, issueIds));
+
+    logger.warn(
+      {
+        cleanedCount: orphaned.length,
+        issues: orphaned.map((o) => ({
+          id: o.id,
+          identifier: o.identifier,
+          runId: o.runId,
+          runStatus: o.runStatus,
+        })),
+      },
+      "cleaned up orphaned execution locks",
+    );
+
+    return { cleaned: orphaned.length };
   }
 
   async function updateRuntimeState(
@@ -3802,6 +3863,8 @@ export function heartbeatService(db: Db) {
     reapOrphanedRuns,
 
     resumeQueuedRuns,
+
+    cleanupOrphanedExecutionLocks,
 
     tickTimers: async (now = new Date()) => {
       const allAgents = await db.select().from(agents);
