@@ -168,7 +168,8 @@ describe("opencode execute", () => {
         ]),
       );
       expect(capture.xdgConfigHome).not.toBe(sourceConfigHome);
-      await expect(fs.access(capture.xdgConfigHome ?? "")).rejects.toThrow();
+      expect(capture.xdgConfigHome).not.toBeNull();
+      await expect(fs.access(capture.xdgConfigHome!)).rejects.toThrow();
     } finally {
       if (previousHome === undefined) {
         delete process.env.HOME;
