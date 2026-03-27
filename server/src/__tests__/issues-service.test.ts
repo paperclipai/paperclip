@@ -8,6 +8,7 @@ import {
   issueComments,
   issueInboxArchives,
   issues,
+  projects,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -312,5 +313,107 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       archivedIssueId,
       resurfacedIssueId,
     ]));
+  });
+});
+
+describeEmbeddedPostgres("issueService.list projectId filtering", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-projectid-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(projects);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("filters issues by a specific projectId", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const otherProjectId = randomUUID();
+    const matchedIssueId = randomUUID();
+    const otherProjectIssueId = randomUUID();
+    const nullProjectIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "TestCo",
+      issuePrefix: "TST",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values([
+      { id: projectId, companyId, name: "Project A", status: "active" },
+      { id: otherProjectId, companyId, name: "Project B", status: "active" },
+    ]);
+    await db.insert(issues).values([
+      { id: matchedIssueId, companyId, title: "In project", status: "todo", priority: "medium", projectId },
+      { id: otherProjectIssueId, companyId, title: "Other project", status: "todo", priority: "medium", projectId: otherProjectId },
+      { id: nullProjectIssueId, companyId, title: "No project", status: "todo", priority: "medium" },
+    ]);
+
+    const result = await svc.list(companyId, { projectId });
+    expect(result.map((i) => i.id)).toEqual([matchedIssueId]);
+  });
+
+  it("filters issues where projectId IS NULL when filter value is null", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const withProjectIssueId = randomUUID();
+    const noProjectIssueId1 = randomUUID();
+    const noProjectIssueId2 = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "TestCo",
+      issuePrefix: "TST",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Project A", status: "active" });
+    await db.insert(issues).values([
+      { id: withProjectIssueId, companyId, title: "Has project", status: "todo", priority: "medium", projectId },
+      { id: noProjectIssueId1, companyId, title: "No project 1", status: "todo", priority: "medium" },
+      { id: noProjectIssueId2, companyId, title: "No project 2", status: "todo", priority: "medium" },
+    ]);
+
+    const result = await svc.list(companyId, { projectId: null });
+    const resultIds = new Set(result.map((i) => i.id));
+    expect(resultIds).toEqual(new Set([noProjectIssueId1, noProjectIssueId2]));
+    expect(resultIds.has(withProjectIssueId)).toBe(false);
+  });
+
+  it("returns all issues when projectId key is absent from filters", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const issueWithProject = randomUUID();
+    const issueWithoutProject = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "TestCo",
+      issuePrefix: "TST",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Project A", status: "active" });
+    await db.insert(issues).values([
+      { id: issueWithProject, companyId, title: "Has project", status: "todo", priority: "medium", projectId },
+      { id: issueWithoutProject, companyId, title: "No project", status: "todo", priority: "medium" },
+    ]);
+
+    const result = await svc.list(companyId, {});
+    const resultIds = new Set(result.map((i) => i.id));
+    expect(resultIds).toEqual(new Set([issueWithProject, issueWithoutProject]));
   });
 });
