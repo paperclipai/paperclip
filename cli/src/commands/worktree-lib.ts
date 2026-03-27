@@ -206,6 +206,10 @@ export function buildWorktreeConfig(input: {
         retentionDays: source?.database.backup.retentionDays ?? 30,
         dir: paths.backupDir,
       },
+      heartbeatCleanup: source?.database.heartbeatCleanup ?? {
+        enabled: true,
+        pruneAfterHours: 48,
+      },
     },
     logging: {
       mode: source?.logging.mode ?? "file",

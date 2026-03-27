@@ -170,6 +170,10 @@ function quickstartDefaultsFromEnv(): {
         retentionDays: databaseBackupRetentionDays,
         dir: resolvePathFromEnv(process.env.PAPERCLIP_DB_BACKUP_DIR) ?? resolveDefaultBackupDir(instanceId),
       },
+      heartbeatCleanup: {
+        enabled: true,
+        pruneAfterHours: 48,
+      },
     },
     logging: {
       mode: "file",
