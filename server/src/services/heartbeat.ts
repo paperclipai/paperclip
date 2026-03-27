@@ -1830,15 +1830,183 @@ export function heartbeatService(db: Db) {
   }
 
   async function resumeQueuedRuns() {
+    const repairedRuns = await repairQueuedIssueWakeupsWithoutRuns();
     const queuedRuns = await db
       .select({ agentId: heartbeatRuns.agentId })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.status, "queued"));
 
-    const agentIds = [...new Set(queuedRuns.map((r) => r.agentId))];
+    const agentIds = [...new Set([
+      ...repairedRuns.map((run) => run.agentId),
+      ...queuedRuns.map((r) => r.agentId),
+    ])];
     for (const agentId of agentIds) {
       await startNextQueuedRunForAgent(agentId);
     }
+  }
+
+  async function repairQueuedIssueWakeupsWithoutRuns() {
+    const orphanedWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.status, "queued"),
+          sql`${agentWakeupRequests.runId} is null`,
+          sql`${agentWakeupRequests.payload} ->> 'issueId' is not null`,
+        ),
+      )
+      .orderBy(asc(agentWakeupRequests.requestedAt), asc(agentWakeupRequests.id));
+
+    const repairedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
+
+    for (const orphanedWakeup of orphanedWakeups) {
+      const payload = parseObject(orphanedWakeup.payload);
+      const issueId = readNonEmptyString(payload.issueId);
+      if (!issueId) continue;
+
+      const agent = await getAgent(orphanedWakeup.agentId);
+      if (!agent) {
+        await setWakeupStatus(orphanedWakeup.id, "failed", {
+          finishedAt: new Date(),
+          error: "Queued wakeup could not be repaired because the agent no longer exists",
+        });
+        continue;
+      }
+
+      const source =
+        (readNonEmptyString(orphanedWakeup.source) as WakeupOptions["source"]) ?? "on_demand";
+      const triggerDetail =
+        (readNonEmptyString(orphanedWakeup.triggerDetail) as WakeupOptions["triggerDetail"]) ?? null;
+      const reason = readNonEmptyString(orphanedWakeup.reason) ?? null;
+      const {
+        contextSnapshot,
+        taskKey,
+      } = enrichWakeContextSnapshot({
+        contextSnapshot: {},
+        reason,
+        source,
+        triggerDetail,
+        payload,
+      });
+      const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
+      const agentNameKey = normalizeAgentNameKey(agent.name);
+
+      const repaired = await db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select id from ${agentWakeupRequests} where id = ${orphanedWakeup.id} for update`,
+        );
+
+        const current = await tx
+          .select()
+          .from(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.id, orphanedWakeup.id))
+          .then((rows) => rows[0] ?? null);
+        if (!current || current.status !== "queued" || current.runId) return null;
+
+        const existingRun = await tx
+          .select()
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.agentId, current.agentId),
+              inArray(heartbeatRuns.status, ["queued", "running"]),
+              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+            ),
+          )
+          .orderBy(
+            sql`case when ${heartbeatRuns.status} = 'running' then 0 else 1 end`,
+            asc(heartbeatRuns.createdAt),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+
+        const now = new Date();
+        if (existingRun) {
+          const mergedRun = await tx
+            .update(heartbeatRuns)
+            .set({
+              contextSnapshot: mergeCoalescedContextSnapshot(existingRun.contextSnapshot, contextSnapshot),
+              updatedAt: now,
+            })
+            .where(eq(heartbeatRuns.id, existingRun.id))
+            .returning()
+            .then((rows) => rows[0] ?? existingRun);
+
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "coalesced",
+              coalescedCount: (current.coalescedCount ?? 0) + 1,
+              runId: mergedRun.id,
+              finishedAt: now,
+              updatedAt: now,
+            })
+            .where(eq(agentWakeupRequests.id, current.id));
+
+          return null;
+        }
+
+        // Repair issue-scoped orphaned wakeups so trading-org assignments/comments
+        // are converted back into runnable heartbeats instead of waiting on timer drift.
+        const newRun = await tx
+          .insert(heartbeatRuns)
+          .values({
+            companyId: agent.companyId,
+            agentId: agent.id,
+            invocationSource: source,
+            triggerDetail,
+            status: "queued",
+            wakeupRequestId: current.id,
+            contextSnapshot,
+            sessionIdBefore: sessionBefore,
+          })
+          .returning()
+          .then((rows) => rows[0]);
+
+        await tx
+          .update(agentWakeupRequests)
+          .set({
+            runId: newRun.id,
+            updatedAt: now,
+          })
+          .where(eq(agentWakeupRequests.id, current.id));
+
+        await tx
+          .update(issues)
+          .set({
+            executionRunId: newRun.id,
+            executionAgentNameKey: agentNameKey,
+            executionLockedAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(issues.id, issueId),
+              eq(issues.companyId, agent.companyId),
+            ),
+          );
+
+        return newRun;
+      });
+
+      if (!repaired) continue;
+
+      publishLiveEvent({
+        companyId: repaired.companyId,
+        type: "heartbeat.run.queued",
+        payload: {
+          runId: repaired.id,
+          agentId: repaired.agentId,
+          invocationSource: repaired.invocationSource,
+          triggerDetail: repaired.triggerDetail,
+          wakeupRequestId: repaired.wakeupRequestId,
+        },
+      });
+      repairedRuns.push(repaired);
+    }
+
+    return repairedRuns;
   }
 
   async function updateRuntimeState(
@@ -3408,45 +3576,49 @@ export function heartbeatService(db: Db) {
       return mergedRun;
     }
 
-    const wakeupRequest = await db
-      .insert(agentWakeupRequests)
-      .values({
-        companyId: agent.companyId,
-        agentId,
-        source,
-        triggerDetail,
-        reason,
-        payload,
-        status: "queued",
-        requestedByActorType: opts.requestedByActorType ?? null,
-        requestedByActorId: opts.requestedByActorId ?? null,
-        idempotencyKey: opts.idempotencyKey ?? null,
-      })
-      .returning()
-      .then((rows) => rows[0]);
+    const newRun = await db.transaction(async (tx) => {
+      const wakeupRequest = await tx
+        .insert(agentWakeupRequests)
+        .values({
+          companyId: agent.companyId,
+          agentId,
+          source,
+          triggerDetail,
+          reason,
+          payload,
+          status: "queued",
+          requestedByActorType: opts.requestedByActorType ?? null,
+          requestedByActorId: opts.requestedByActorId ?? null,
+          idempotencyKey: opts.idempotencyKey ?? null,
+        })
+        .returning()
+        .then((rows) => rows[0]);
 
-    const newRun = await db
-      .insert(heartbeatRuns)
-      .values({
-        companyId: agent.companyId,
-        agentId,
-        invocationSource: source,
-        triggerDetail,
-        status: "queued",
-        wakeupRequestId: wakeupRequest.id,
-        contextSnapshot: enrichedContextSnapshot,
-        sessionIdBefore: sessionBefore,
-      })
-      .returning()
-      .then((rows) => rows[0]);
+      const createdRun = await tx
+        .insert(heartbeatRuns)
+        .values({
+          companyId: agent.companyId,
+          agentId,
+          invocationSource: source,
+          triggerDetail,
+          status: "queued",
+          wakeupRequestId: wakeupRequest.id,
+          contextSnapshot: enrichedContextSnapshot,
+          sessionIdBefore: sessionBefore,
+        })
+        .returning()
+        .then((rows) => rows[0]);
 
-    await db
-      .update(agentWakeupRequests)
-      .set({
-        runId: newRun.id,
-        updatedAt: new Date(),
-      })
-      .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+      await tx
+        .update(agentWakeupRequests)
+        .set({
+          runId: createdRun.id,
+          updatedAt: new Date(),
+        })
+        .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+
+      return createdRun;
+    });
 
     publishLiveEvent({
       companyId: newRun.companyId,

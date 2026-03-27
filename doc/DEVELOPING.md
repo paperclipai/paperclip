@@ -162,6 +162,21 @@ Seed modes:
 
 After `worktree init`, both the server and the CLI auto-load the repo-local `.paperclip/.env` when run inside that worktree, so normal commands like `pnpm dev`, `paperclipai doctor`, and `paperclipai db:backup` stay scoped to the worktree instance.
 
+Git remote configuration is different: linked git worktrees share one common git dir, so `remote.*` config is shared across the base checkout and every linked worktree. Keep `origin` pointed at the canonical hosted repo URL. If you need a local-path remote for ad hoc fetches, add it under a different name such as `base-local`; do not repoint `origin` at another local clone path because that changes push/fetch behavior for every sibling worktree that shares the same common git dir.
+
+Audit a workspace tree when needed:
+
+```sh
+./scripts/audit-git-remote-urls.sh /var/lib/paperclip/instances/nl-vps/workspaces
+```
+
+Batch-correct local-path `origin` remotes to the canonical hosted URL when needed:
+
+```sh
+./scripts/fix-git-remote-urls.sh /var/lib/paperclip/instances/nl-vps/workspaces \
+  https://github.com/paperclipai/paperclip.git
+```
+
 That repo-local env also sets:
 
 - `PAPERCLIP_IN_WORKTREE=true`

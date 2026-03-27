@@ -302,6 +302,88 @@ describe("heartbeat orphaned process recovery", () => {
     expect(issue?.checkoutRunId).toBe(runId);
   });
 
+  it("repairs issue-scoped queued wakeups that were persisted without a heartbeat run", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const wakeupRequestId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "QueuedWakeAgent",
+      role: "engineer",
+      status: "paused",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Repair orphaned wakeup",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId,
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId, mutation: "create" },
+      status: "queued",
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+
+    const repairedWakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(repairedWakeup?.runId).toBeTruthy();
+    expect(repairedWakeup?.status).toBe("queued");
+
+    const repairedRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, repairedWakeup!.runId!))
+      .then((rows) => rows[0] ?? null);
+    expect(repairedRun?.status).toBe("queued");
+    expect(repairedRun?.wakeupRequestId).toBe(wakeupRequestId);
+    expect(repairedRun?.contextSnapshot).toMatchObject({
+      issueId,
+      taskId: issueId,
+      wakeReason: "issue_assigned",
+      wakeSource: "assignment",
+      wakeTriggerDetail: "system",
+    });
+
+    const repairedIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(repairedIssue?.executionRunId).toBe(repairedRun?.id ?? null);
+  });
+
   it("clears the detached warning when the run reports activity again", async () => {
     const { runId } = await seedRunFixture({
       includeIssue: false,
