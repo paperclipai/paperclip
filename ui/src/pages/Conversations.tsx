@@ -22,6 +22,7 @@ import { useNavigate, useParams } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
+import { projectsApi } from "../api/projects";
 import { activityApi } from "../api/activity";
 import { heartbeatsApi } from "../api/heartbeats";
 import {
@@ -41,11 +42,18 @@ import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { CommentThread, type CommentWithRunMeta } from "../components/CommentThread";
+import type { MentionOption } from "../components/MarkdownEditor";
 import { LiveRunWidget } from "../components/LiveRunWidget";
+import { WorkspaceFileBrowser } from "../components/WorkspaceFileEditor";
 import { Identity } from "../components/Identity";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import {
   MessageSquare,
   Plus,
@@ -53,6 +61,9 @@ import {
   ArrowLeft,
   Loader2,
   Pencil,
+  Cpu,
+  FolderOpen,
+  Check,
 } from "lucide-react";
 import type { Agent, Issue } from "@paperclipai/shared";
 
@@ -520,6 +531,13 @@ function ConversationView({ issueId, companyId, agents, onClose }: ConversationV
   const [topicDraft, setTopicDraft] = useState("");
   const headerRenameCommitted = useRef(false);
 
+  // ── Model selector state ─────────────────────────────────────────────────
+  const [modelPopoverOpen, setModelPopoverOpen] = useState(false);
+
+  // ── File editor state ────────────────────────────────────────────────────
+  const [browsingFiles, setBrowsingFiles] = useState(false);
+  const [editingFile, setEditingFile] = useState<string | null>(null);
+
   // Mark conversation as read when viewing it
   useEffect(() => {
     issuesApi.markRead(issueId).then(() => {
@@ -532,6 +550,78 @@ function ConversationView({ issueId, companyId, agents, onClose }: ConversationV
     queryFn: () => issuesApi.get(issueId),
     enabled: !!issueId,
   });
+
+  // ── Model selector queries ──────────────────────────────────────────────
+  const assignedAgent = issue?.assigneeAgentId
+    ? agents.find((a) => a.id === issue.assigneeAgentId)
+    : undefined;
+  const adapterType = assignedAgent?.adapterType ?? undefined;
+
+  const { data: adapterModels } = useQuery({
+    queryKey: queryKeys.agents.adapterModels(companyId, adapterType ?? ""),
+    queryFn: () => agentsApi.adapterModels(companyId, adapterType!),
+    enabled: !!adapterType,
+  });
+
+  const currentModelOverride = (
+    issue?.assigneeAdapterOverrides as
+      | { adapterConfig?: { model?: string } }
+      | null
+      | undefined
+  )?.adapterConfig?.model as string | undefined;
+
+  const defaultModel = (
+    assignedAgent?.adapterConfig as { model?: string } | null | undefined
+  )?.model as string | undefined;
+
+  const modelMutation = useMutation({
+    mutationFn: async (selectedModel: string | null) => {
+      if (selectedModel === null) {
+        // Clear override → revert to default
+        return issuesApi.update(issueId, { assigneeAdapterOverrides: null });
+      }
+      return issuesApi.update(issueId, {
+        assigneeAdapterOverrides: { adapterConfig: { model: selectedModel } },
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId) });
+      setModelPopoverOpen(false);
+    },
+    onError: () => {
+      pushToast({ title: "Failed to update model", tone: "error" });
+    },
+  });
+
+  // ── Workspace query for file browser ────────────────────────────────────
+  const { data: workspaceId } = useQuery({
+    queryKey: queryKeys.projects.workspaces(issue?.projectId ?? ""),
+    queryFn: async () => {
+      if (!issue?.projectId) return null;
+      const workspaces = await projectsApi.listWorkspaces(issue.projectId);
+      const primary = workspaces.find((w) => w.isPrimary) ?? workspaces[0];
+      return primary?.id ?? null;
+    },
+    enabled: !!issue?.projectId,
+  });
+
+  // ── Mentions (agents + projects) ──────────────────────────────────────
+  const { data: companyProjects } = useQuery({
+    queryKey: queryKeys.projects.list(companyId),
+    queryFn: () => projectsApi.list(companyId),
+    enabled: !!companyId,
+  });
+
+  const mentionOptions = useMemo<MentionOption[]>(() => {
+    const options: MentionOption[] = [];
+    for (const agent of agents.filter((a) => a.status !== "terminated").sort((a, b) => a.name.localeCompare(b.name))) {
+      options.push({ id: `agent:${agent.id}`, name: agent.name, kind: "agent", agentId: agent.id, agentIcon: agent.icon });
+    }
+    for (const project of companyProjects ?? []) {
+      options.push({ id: `project:${project.id}`, name: project.name, kind: "project", projectId: project.id });
+    }
+    return options;
+  }, [agents, companyProjects]);
 
   const { data: comments, isLoading: commentsLoading } = useQuery({
     queryKey: queryKeys.issues.comments(issueId),
@@ -612,6 +702,14 @@ function ConversationView({ issueId, companyId, agents, onClose }: ConversationV
       return attachment.contentPath;
     },
     [companyId, issueId],
+  );
+
+  const handleFilePathClick = useCallback(
+    (path: string) => {
+      if (!workspaceId) return;
+      setEditingFile(path);
+    },
+    [workspaceId],
   );
 
   const agentName = issue?.assigneeAgentId
@@ -717,6 +815,123 @@ function ConversationView({ issueId, companyId, agents, onClose }: ConversationV
             </div>
           )}
         </div>
+
+        {/* ── Model selector ──────────────────────────────────────────── */}
+        {adapterType && (
+          <Popover open={modelPopoverOpen} onOpenChange={setModelPopoverOpen}>
+            <Tooltip delayDuration={300}>
+              <TooltipTrigger asChild>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="shrink-0 text-muted-foreground hover:text-foreground gap-1.5 text-xs font-normal h-7 px-2"
+                  >
+                    <Cpu className="h-3.5 w-3.5" />
+                    <span className="hidden sm:inline max-w-30 truncate">
+                      {currentModelOverride
+                        ? currentModelOverride.split("/").pop()
+                        : "Default"}
+                    </span>
+                  </Button>
+                </PopoverTrigger>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="text-xs">
+                {currentModelOverride
+                  ? `Model: ${currentModelOverride}`
+                  : `Model: Default (${defaultModel ?? "agent config"})`}
+              </TooltipContent>
+            </Tooltip>
+            <PopoverContent
+              align="end"
+              className="w-72 p-0 max-h-80 flex flex-col"
+            >
+              <div className="px-3 py-2 border-b border-border">
+                <p className="text-xs font-medium">Select Model</p>
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  Override which model this agent uses for this conversation.
+                </p>
+              </div>
+              <ScrollArea className="flex-1 max-h-65">
+                <div className="p-1">
+                  {/* Default option — clears override */}
+                  <button
+                    type="button"
+                    className={cn(
+                      "flex items-center gap-2 w-full px-2 py-1.5 rounded-sm text-left text-xs hover:bg-accent/50 transition-colors",
+                      !currentModelOverride && "bg-accent",
+                    )}
+                    onClick={() => modelMutation.mutate(null)}
+                    disabled={modelMutation.isPending}
+                  >
+                    <Check
+                      className={cn(
+                        "h-3 w-3 shrink-0",
+                        currentModelOverride
+                          ? "text-transparent"
+                          : "text-foreground",
+                      )}
+                    />
+                    <span className="truncate">
+                      Default{defaultModel ? ` (${defaultModel})` : ""}
+                    </span>
+                  </button>
+
+                  {/* Available models */}
+                  {(adapterModels ?? []).map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      className={cn(
+                        "flex items-center gap-2 w-full px-2 py-1.5 rounded-sm text-left text-xs hover:bg-accent/50 transition-colors",
+                        currentModelOverride === m.id && "bg-accent",
+                      )}
+                      onClick={() => modelMutation.mutate(m.id)}
+                      disabled={modelMutation.isPending}
+                    >
+                      <Check
+                        className={cn(
+                          "h-3 w-3 shrink-0",
+                          currentModelOverride === m.id
+                            ? "text-foreground"
+                            : "text-transparent",
+                        )}
+                      />
+                      <span className="truncate">{m.label || m.id}</span>
+                    </button>
+                  ))}
+
+                  {adapterModels && adapterModels.length === 0 && (
+                    <p className="px-2 py-3 text-xs text-muted-foreground text-center">
+                      No models available for this adapter.
+                    </p>
+                  )}
+                </div>
+              </ScrollArea>
+            </PopoverContent>
+          </Popover>
+        )}
+
+        {/* ── Browse Files button ─────────────────────────────────────── */}
+        {workspaceId && (
+          <Tooltip delayDuration={300}>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="shrink-0 text-muted-foreground hover:text-foreground"
+                onClick={() => setBrowsingFiles(true)}
+              >
+                <FolderOpen className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="text-xs">
+              Browse workspace files
+            </TooltipContent>
+          </Tooltip>
+        )}
+
+        {/* ── Close conversation button ───────────────────────────────── */}
         <Tooltip delayDuration={300}>
           <TooltipTrigger asChild>
             <Button
@@ -746,6 +961,7 @@ function ConversationView({ issueId, companyId, agents, onClose }: ConversationV
           submitLabel="Send"
           placeholder="Type your message here..."
           imageUploadHandler={imageUploadHandler}
+          mentions={mentionOptions}
           stickyInput
           hideReopen
           hideHeader
@@ -760,12 +976,38 @@ function ConversationView({ issueId, companyId, agents, onClose }: ConversationV
           onAdd={async (body) => {
             await addComment.mutateAsync({ body });
           }}
+          onFilePathClick={workspaceId ? handleFilePathClick : undefined}
           liveRunSlot={
             <LiveRunWidget issueId={issueId} companyId={companyId} />
           }
         />
         <div ref={scrollEndRef} />
       </ScrollArea>
+
+      {/* ── File browser modal ──────────────────────────────────────────── */}
+      {browsingFiles && workspaceId && (
+        <WorkspaceFileBrowser
+          companyId={companyId}
+          workspaceId={workspaceId}
+          onClose={() => setBrowsingFiles(false)}
+          onSaved={() => {
+            pushToast({ title: "File saved", tone: "success" });
+          }}
+        />
+      )}
+
+      {/* ── Direct file editor (from clicking a file path in a comment) ── */}
+      {editingFile && workspaceId && (
+        <WorkspaceFileBrowser
+          companyId={companyId}
+          workspaceId={workspaceId}
+          initialFile={editingFile}
+          onClose={() => setEditingFile(null)}
+          onSaved={() => {
+            pushToast({ title: "File saved", tone: "success" });
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -56,6 +56,8 @@ interface CommentThreadProps {
   hideHeader?: boolean;
   /** Content shown when the timeline is empty. Pass null to suppress. Defaults to a text message. */
   emptyState?: React.ReactNode;
+  /** When provided, inline code that looks like a file path becomes clickable in rendered comments. */
+  onFilePathClick?: (path: string) => void;
 }
 
 const DRAFT_DEBOUNCE_MS = 800;
@@ -137,6 +139,7 @@ const TimelineList = memo(function TimelineList({
   projectId,
   highlightCommentId,
   emptyState = DEFAULT_EMPTY_STATE,
+  onFilePathClick,
 }: {
   timeline: TimelineItem[];
   agentMap?: Map<string, Agent>;
@@ -144,6 +147,7 @@ const TimelineList = memo(function TimelineList({
   projectId?: string | null;
   highlightCommentId?: string | null;
   emptyState?: React.ReactNode;
+  onFilePathClick?: (path: string) => void;
 }) {
   if (timeline.length === 0) {
     return emptyState ? <>{emptyState}</> : null;
@@ -233,7 +237,7 @@ const TimelineList = memo(function TimelineList({
                 <CopyMarkdownButton text={comment.body} />
               </span>
             </div>
-            <MarkdownBody className="text-sm">{comment.body}</MarkdownBody>
+            <MarkdownBody className="text-sm" onFilePathClick={onFilePathClick}>{comment.body}</MarkdownBody>
             {companyId ? (
               <div className="mt-2 space-y-2">
                 <PluginSlotOutlet
@@ -297,6 +301,7 @@ export function CommentThread({
   hideReopen = false,
   hideHeader = false,
   emptyState,
+  onFilePathClick,
 }: CommentThreadProps) {
   const [body, setBody] = useState("");
   const [reopen, setReopen] = useState(true);
@@ -437,6 +442,7 @@ export function CommentThread({
         projectId={projectId}
         highlightCommentId={highlightCommentId}
         emptyState={emptyState}
+        onFilePathClick={onFilePathClick}
       />
 
       {liveRunSlot}
@@ -450,7 +456,7 @@ export function CommentThread({
           mentions={mentions}
           onSubmit={handleSubmit}
           imageUploadHandler={imageUploadHandler}
-          contentClassName="min-h-[60px] text-sm"
+          contentClassName={stickyInput ? "min-h-[60px] max-h-[25vh] overflow-y-auto text-sm" : "min-h-[60px] text-sm"}
         />
         <div className="flex items-center justify-end gap-3">
           {(imageUploadHandler || onAttachImage) && (
