@@ -2798,7 +2798,12 @@ function RunsTab({
   const { isMobile } = useSidebar();
 
   if (runs.length === 0) {
-    return <p className="text-sm text-muted-foreground">No runs yet.</p>;
+    return (
+      <div className="rounded-lg border border-dashed border-border p-8 text-center">
+        <p className="text-sm text-muted-foreground">No runs yet</p>
+        <p className="text-xs text-muted-foreground/60 mt-1">Runs will appear here when the agent is invoked via issues, routines, or manual trigger</p>
+      </div>
+    );
   }
 
   // Sort by created descending
