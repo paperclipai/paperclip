@@ -1,0 +1,122 @@
+schema: paperclip/v1
+
+agents:
+  ceo:
+    runtime:
+      heartbeat:
+        enabled: true
+        intervalSec: 300
+        wakeOnDemand: true
+  ciso:
+    runtime:
+      heartbeat:
+        enabled: true
+        intervalSec: 300
+        wakeOnDemand: true
+    inputs:
+      env:
+        SLACK_WEBHOOK_URL:
+          kind: secret
+          requirement: optional
+        PAGERDUTY_API_KEY:
+          kind: secret
+          requirement: optional
+  threat-analyst:
+    runtime:
+      heartbeat:
+        enabled: true
+        intervalSec: 300
+        wakeOnDemand: true
+    inputs:
+      env:
+        SHODAN_API_KEY:
+          kind: secret
+          requirement: required
+        VIRUSTOTAL_API_KEY:
+          kind: secret
+          requirement: optional
+        SPLUNK_HEC_TOKEN:
+          kind: secret
+          requirement: optional
+  vulnerability-scanner:
+    runtime:
+      heartbeat:
+        enabled: true
+        intervalSec: 300
+        wakeOnDemand: true
+    inputs:
+      env:
+        NVD_API_KEY:
+          kind: secret
+          requirement: required
+        JIRA_API_KEY:
+          kind: secret
+          requirement: optional
+  incident-responder:
+    runtime:
+      heartbeat:
+        enabled: true
+        intervalSec: 300
+        wakeOnDemand: true
+    inputs:
+      env:
+        SLACK_WEBHOOK_URL:
+          kind: secret
+          requirement: optional
+        PAGERDUTY_API_KEY:
+          kind: secret
+          requirement: optional
+        JIRA_API_KEY:
+          kind: secret
+          requirement: optional
+  compliance-officer:
+    runtime:
+      heartbeat:
+        enabled: true
+        intervalSec: 300
+        wakeOnDemand: true
+  pen-test-engineer:
+    runtime:
+      heartbeat:
+        enabled: true
+        intervalSec: 300
+        wakeOnDemand: true
+    inputs:
+      env:
+        METASPLOIT_API_KEY:
+          kind: secret
+          requirement: optional
+  security-awareness-coach:
+    runtime:
+      heartbeat:
+        enabled: true
+        intervalSec: 300
+        wakeOnDemand: true
+  risk-orchestrator:
+    runtime:
+      heartbeat:
+        enabled: true
+        intervalSec: 300
+        wakeOnDemand: true
+    inputs:
+      env:
+        SLACK_WEBHOOK_URL:
+          kind: secret
+          requirement: optional
+
+routines:
+  daily-threat-brief:
+    task: tasks/daily-threat-brief/TASK.md
+    schedule:
+      timezone: UTC
+      cron: "0 7 * * *"
+  weekly-vuln-scan:
+    task: tasks/weekly-vuln-scan/TASK.md
+    schedule:
+      timezone: UTC
+      cron: "0 6 * * 1"
+  monthly-compliance-check:
+    task: tasks/monthly-compliance-check/TASK.md
+    schedule:
+      timezone: UTC
+      cron: "0 8 1 * *"
