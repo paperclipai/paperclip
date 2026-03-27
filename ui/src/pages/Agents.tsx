@@ -131,13 +131,15 @@ export function Agents() {
 
   const filtered = filterAgents(agents ?? [], tab, showTerminated);
   const filteredOrg = filterOrgTree(orgTree ?? [], tab, showTerminated);
-  const allAgents = agents ?? [];
-  const counts = {
-    all: allAgents.filter((a) => a.status !== "terminated").length,
-    active: allAgents.filter((a) => a.status === "active" || a.status === "running" || a.status === "idle").length,
-    paused: allAgents.filter((a) => a.status === "paused").length,
-    error: allAgents.filter((a) => a.status === "error").length,
-  };
+  const counts = useMemo(() => {
+    const all = agents ?? [];
+    return {
+      all: all.filter((a) => matchesFilter(a.status, "all", showTerminated)).length,
+      active: all.filter((a) => matchesFilter(a.status, "active", showTerminated)).length,
+      paused: all.filter((a) => matchesFilter(a.status, "paused", showTerminated)).length,
+      error: all.filter((a) => matchesFilter(a.status, "error", showTerminated)).length,
+    };
+  }, [agents, showTerminated]);
 
   return (
     <div className="space-y-4">
