@@ -128,9 +128,13 @@ export function GoalDetail() {
             type="button"
             className="text-xs font-mono text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
             title="Click to copy goal ID"
-            onClick={() => {
-              navigator.clipboard.writeText(goal.id);
-              pushToast({ title: "Goal ID copied", tone: "success" });
+            onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(goal.id);
+                pushToast({ title: "Goal ID copied", tone: "success" });
+              } catch {
+                pushToast({ title: "Failed to copy goal ID", tone: "error" });
+              }
             }}
           >
             {goal.id.slice(0, 8)}
