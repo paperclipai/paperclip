@@ -5,7 +5,9 @@ import {
   agents,
   companies,
   createDb,
+  agentWakeupRequests,
   executionWorkspaces,
+  heartbeatRuns,
   instanceSettings,
   issueComments,
   issueInboxArchives,
@@ -676,5 +678,109 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(followUp.executionWorkspaceSettings).toEqual({
       mode: "operator_branch",
     });
+  });
+});
+
+describeEmbeddedPostgres("issueService.release", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-release-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("clears executionRunId, executionAgentNameKey and executionLockedAt on release", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const wakeupRequestId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const lockedAt = new Date("2026-03-20T10:00:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "TestAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId,
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      status: "claimed",
+      runId,
+      claimedAt: lockedAt,
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "failed",
+      wakeupRequestId,
+      contextSnapshot: { issueId },
+      startedAt: lockedAt,
+      updatedAt: lockedAt,
+    });
+
+    // Simula estado de lock órfão: issue em todo sem assignee, mas com executionRunId populado
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Issue com lock órfão",
+      status: "todo",
+      priority: "medium",
+      executionRunId: runId,
+      executionAgentNameKey: "testagent",
+      executionLockedAt: lockedAt,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const released = await svc.release(issueId);
+    expect(released).not.toBeNull();
+    expect(released!.executionRunId).toBeNull();
+    expect(released!.executionAgentNameKey).toBeNull();
+    expect(released!.executionLockedAt).toBeNull();
+    expect(released!.status).toBe("todo");
+    expect(released!.assigneeAgentId).toBeNull();
+    expect(released!.checkoutRunId).toBeNull();
   });
 });
