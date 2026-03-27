@@ -2150,11 +2150,6 @@ export function heartbeatService(db: Db) {
     const resetTaskSession = shouldResetTaskSessionForWake(context);
     const sessionResetReason = describeSessionResetReason(context);
     const taskSessionForRun = resetTaskSession ? null : taskSession;
-    const runtimeSessionSnapshot = await resolveRuntimeStateSessionSnapshotForRun({
-      agent,
-      runtime,
-      codec: sessionCodec,
-    });
     const explicitResumeSessionParams = normalizeSessionParams(
       sessionCodec.deserialize(parseObject(context.resumeSessionParams)),
     );
@@ -2167,7 +2162,13 @@ export function heartbeatService(db: Db) {
       explicitResumeSessionParams ??
       (explicitResumeSessionDisplayId ? { sessionId: explicitResumeSessionDisplayId } : null) ??
       normalizeSessionParams(sessionCodec.deserialize(taskSessionForRun?.sessionParamsJson ?? null)) ??
-      runtimeSessionSnapshot.params;
+      (!resetTaskSession
+        ? (await resolveRuntimeStateSessionSnapshotForRun({
+            agent,
+            runtime,
+            codec: sessionCodec,
+          })).params
+        : null);
     const config = parseObject(agent.adapterConfig);
     const executionWorkspaceMode = resolveExecutionWorkspaceMode({
       projectPolicy: projectExecutionWorkspacePolicy,
