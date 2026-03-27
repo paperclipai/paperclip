@@ -9,7 +9,7 @@ export { activityService, type ActivityFilters } from "./activity.js";
 export { approvalService } from "./approvals.js";
 export { secretService } from "./secrets.js";
 export { costService } from "./costs.js";
-export { heartbeatService } from "./heartbeat.js";
+export { heartbeatService, DEFAULT_ORPHANED_RUN_STALE_THRESHOLD_MS } from "./heartbeat.js";
 export { dashboardService } from "./dashboard.js";
 export { sidebarBadgeService } from "./sidebar-badges.js";
 export { accessService } from "./access.js";

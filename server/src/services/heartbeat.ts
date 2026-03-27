@@ -30,6 +30,8 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
+export const RUN_LIVENESS_TOUCH_INTERVAL_MS = 30 * 1000;
+export const DEFAULT_ORPHANED_RUN_STALE_THRESHOLD_MS = 2 * 60 * 1000;
 
 function appendExcerpt(prev: string, chunk: string) {
   return appendWithCap(prev, chunk, MAX_EXCERPT_BYTES);
@@ -206,6 +208,44 @@ export function shouldResetTaskSessionForWake(
 
   const wakeTriggerDetail = readNonEmptyString(contextSnapshot?.wakeTriggerDetail);
   return wakeSource === "on_demand" && wakeTriggerDetail === "manual";
+}
+
+export function shouldReapOrphanedRun(input: {
+  now: Date;
+  updatedAt: Date | null | undefined;
+  staleThresholdMs: number;
+}) {
+  if (input.staleThresholdMs <= 0) return true;
+  const refTime = input.updatedAt ? new Date(input.updatedAt).getTime() : 0;
+  if (!Number.isFinite(refTime) || refTime <= 0) return true;
+  return input.now.getTime() - refTime >= input.staleThresholdMs;
+}
+
+export function createRunLivenessRefresher(
+  touch: () => Promise<void>,
+  opts?: {
+    intervalMs?: number;
+    onError?: (err: unknown) => void;
+  },
+) {
+  const intervalMs = Math.max(1, opts?.intervalMs ?? RUN_LIVENESS_TOUCH_INTERVAL_MS);
+  let inFlight = false;
+  const timer = setInterval(() => {
+    if (inFlight) return;
+    inFlight = true;
+    void touch()
+      .catch((err) => opts?.onError?.(err))
+      .finally(() => {
+        inFlight = false;
+      });
+  }, intervalMs);
+  timer.unref?.();
+
+  return {
+    stop() {
+      clearInterval(timer);
+    },
+  };
 }
 
 function describeSessionResetReason(
@@ -895,25 +935,20 @@ export function heartbeatService(db: Db) {
   }
 
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
-    const staleThresholdMs = opts?.staleThresholdMs ?? 0;
+    const staleThresholdMs = opts?.staleThresholdMs ?? DEFAULT_ORPHANED_RUN_STALE_THRESHOLD_MS;
     const now = new Date();
 
-    // Find all runs in "queued" or "running" state
+    // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
     const activeRuns = await db
       .select()
       .from(heartbeatRuns)
-      .where(inArray(heartbeatRuns.status, ["queued", "running"]));
+      .where(inArray(heartbeatRuns.status, ["running"]));
 
     const reaped: string[] = [];
 
     for (const run of activeRuns) {
       if (runningProcesses.has(run.id)) continue;
-
-      // Apply staleness threshold to avoid false positives
-      if (staleThresholdMs > 0) {
-        const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
-        if (now.getTime() - refTime < staleThresholdMs) continue;
-      }
+      if (!shouldReapOrphanedRun({ now, updatedAt: run.updatedAt, staleThresholdMs })) continue;
 
       await setRunStatus(run.id, "failed", {
         error: "Process lost -- server may have restarted",
@@ -1146,6 +1181,20 @@ export function heartbeatService(db: Db) {
     let handle: RunLogHandle | null = null;
     let stdoutExcerpt = "";
     let stderrExcerpt = "";
+
+    const runLiveness = createRunLivenessRefresher(
+      async () => {
+        await db
+          .update(heartbeatRuns)
+          .set({ updatedAt: new Date() })
+          .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "running")));
+      },
+      {
+        onError: (err) => {
+          logger.warn({ err, runId }, "failed to refresh heartbeat run liveness");
+        },
+      },
+    );
 
     try {
       const startedAt = run.startedAt ?? new Date();
@@ -1455,6 +1504,7 @@ export function heartbeatService(db: Db) {
 
       await finalizeAgentStatus(agent.id, "failed");
     } finally {
+      runLiveness.stop();
       await startNextQueuedRunForAgent(agent.id);
     }
   }

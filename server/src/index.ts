@@ -24,7 +24,7 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
-import { heartbeatService } from "./services/index.js";
+import { DEFAULT_ORPHANED_RUN_STALE_THRESHOLD_MS, heartbeatService } from "./services/index.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
@@ -487,10 +487,13 @@ setupLiveEventsWebSocketServer(server, db as any, {
 if (config.heartbeatSchedulerEnabled) {
   const heartbeat = heartbeatService(db as any);
 
-  // Reap orphaned runs at startup (no threshold -- runningProcesses is empty)
-  void heartbeat.reapOrphanedRuns().catch((err) => {
-    logger.error({ err }, "startup reap of orphaned heartbeat runs failed");
-  });
+  // Only reap runs after a staleness window. This avoids a second server process
+  // instantly killing healthy runs that are being tracked by another process.
+  void heartbeat
+    .reapOrphanedRuns({ staleThresholdMs: DEFAULT_ORPHANED_RUN_STALE_THRESHOLD_MS })
+    .catch((err) => {
+      logger.error({ err }, "startup heartbeat recovery failed");
+    });
 
   setInterval(() => {
     void heartbeat
@@ -504,9 +507,9 @@ if (config.heartbeatSchedulerEnabled) {
         logger.error({ err }, "heartbeat timer tick failed");
       });
 
-    // Periodically reap orphaned runs (5-min staleness threshold)
+    // Periodically reap runs whose liveness has gone stale
     void heartbeat
-      .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
+      .reapOrphanedRuns({ staleThresholdMs: DEFAULT_ORPHANED_RUN_STALE_THRESHOLD_MS })
       .catch((err) => {
         logger.error({ err }, "periodic reap of orphaned heartbeat runs failed");
       });
