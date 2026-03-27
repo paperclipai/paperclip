@@ -396,7 +396,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const canResumeSession =
     runtimeSessionId.length > 0 &&
     (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
-  const sessionId = canResumeSession ? runtimeSessionId : null;
+  // Only resume a session when the run was triggered by an actual task assignment.
+  // Idle heartbeat runs always start fresh to prevent unbounded session growth and
+  // the associated cache-miss cost (~400K–900K fresh tokens per idle run).
+  const isTaskRun = !!wakeTaskId;
+  const sessionId = (canResumeSession && isTaskRun) ? runtimeSessionId : null;
   if (runtimeSessionId && !canResumeSession) {
     await onLog(
       "stdout",

@@ -356,14 +356,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
   const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
-  const canResumeSession =
-    runtimeSessionId.length > 0 &&
-    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
+  const cwdMatchesPrevious = runtimeSessionCwd.length > 0 && path.resolve(runtimeSessionCwd) === path.resolve(cwd);
+  const cwdUnknown = runtimeSessionCwd.length === 0;
+  const canResumeSession = runtimeSessionId.length > 0 && (cwdUnknown || cwdMatchesPrevious);
   const sessionId = canResumeSession ? runtimeSessionId : null;
   if (runtimeSessionId && !canResumeSession) {
     await onLog(
       "stdout",
       `[paperclip] Claude session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
+    );
+  }
+  if (canResumeSession && cwdUnknown && runtimeSessionId) {
+    await onLog(
+      "stdout",
+      `[paperclip] Resuming session "${runtimeSessionId}" without cwd validation (no cwd recorded in previous session).\n`,
     );
   }
   const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
@@ -575,6 +581,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
   } finally {
-    fs.rm(skillsDir, { recursive: true, force: true }).catch(() => {});
+    await fs.rm(skillsDir, { recursive: true, force: true }).catch(() => {});
   }
 }

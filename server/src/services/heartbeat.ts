@@ -2683,11 +2683,19 @@ export function heartbeatService(db: Db) {
           }
           // Ensure the agent is not left stuck in "running" if the inner catch handler's
           // DB calls threw (e.g. a transient DB error in finalizeAgentStatus).
-          await finalizeAgentStatus(run.agentId, "failed").catch(() => undefined);
+          await finalizeAgentStatus(run.agentId, "failed").catch((cleanupErr) => {
+            logger.error({ err: cleanupErr, runId, agentId: run.agentId }, "finalizeAgentStatus failed in outer catch — agent may be stuck in running state");
+          });
         } finally {
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
           activeRunExecutions.delete(run.id);
-          await startNextQueuedRunForAgent(run.agentId);
+          // Use setImmediate to break the call stack and prevent unbounded recursion
+          // when many runs are queued for the same agent.
+          setImmediate(() => {
+            startNextQueuedRunForAgent(run.agentId).catch((err) => {
+              logger.error({ err, agentId: run.agentId }, "failed to promote next queued run after completion");
+            });
+          });
         }
   }
 
