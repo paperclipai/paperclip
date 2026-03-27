@@ -151,6 +151,7 @@ function CustomCronInput({ value, onChange }: { value: string; onChange: (v: str
   const trimmed = value.trim();
   const fieldCount = trimmed.length > 0 ? trimmed.split(/\s+/).length : 0;
   const isInvalid = trimmed.length > 0 && fieldCount !== 5;
+  const errorId = "custom-cron-error";
   return (
     <div className="space-y-1.5">
       <Input
@@ -159,9 +160,10 @@ function CustomCronInput({ value, onChange }: { value: string; onChange: (v: str
         placeholder="0 10 * * *"
         className={cn("font-mono text-sm", isInvalid && "border-destructive")}
         aria-invalid={isInvalid}
+        aria-describedby={isInvalid ? errorId : undefined}
       />
       {isInvalid ? (
-        <p className="text-xs text-destructive">Expected 5 fields but got {fieldCount}. Format: minute hour day-of-month month day-of-week</p>
+        <p id={errorId} className="text-xs text-destructive">Expected 5 fields but got {fieldCount}. Format: minute hour day-of-month month day-of-week</p>
       ) : (
         <p className="text-xs text-muted-foreground">Five fields: minute hour day-of-month month day-of-week</p>
       )}
@@ -231,7 +233,7 @@ export function ScheduleEditor({
       </Select>
 
       {preset === "custom" ? (
-        <CustomCronInput value={customCron} onChange={(v) => { setCustomCron(v); emitChange("custom", hour, minute, dayOfWeek, dayOfMonth, v); }} />
+        <CustomCronInput value={customCron} onChange={(v) => { setCustomCron(v); const f = v.trim(); if (f.length === 0 || f.split(/\s+/).length === 5) { emitChange("custom", hour, minute, dayOfWeek, dayOfMonth, v); } }} />
       ) : (
         <div className="flex flex-wrap items-center gap-2">
           {preset !== "every_minute" && preset !== "every_hour" && (
