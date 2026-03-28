@@ -797,10 +797,12 @@ export function issueService(db: Db) {
     },
 
     getByIdentifier: async (identifier: string) => {
+      const normalizedIdentifier = asNonEmptyString(identifier);
+      if (!normalizedIdentifier) return null;
       const row = await db
         .select()
         .from(issues)
-        .where(eq(issues.identifier, identifier.toUpperCase()))
+        .where(eq(issues.identifier, normalizedIdentifier.toUpperCase()))
         .then((rows) => rows[0] ?? null);
       if (!row) return null;
       const [enriched] = await withIssueLabels(db, [row]);

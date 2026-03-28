@@ -763,6 +763,10 @@ describe("issueService.list participantAgentId", () => {
     await expect(svc.getById("not-a-uuid")).resolves.toBeNull();
   });
 
+  it("returns null for malformed non-string issue identifiers on getByIdentifier", async () => {
+    await expect(svc.getByIdentifier({ bad: true } as any)).resolves.toBeNull();
+  });
+
   it("returns null for malformed issue ids on update", async () => {
     await expect(
       svc.update("not-a-uuid", { title: "ignored" }),
