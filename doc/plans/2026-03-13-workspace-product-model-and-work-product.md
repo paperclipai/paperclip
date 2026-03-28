@@ -314,23 +314,23 @@ issue 如何执行的项目级默认值。
   - `keepWhilePreviewHealthy`
   - `keepWhileOpenPrExists`
 
-## 4. Issue Workspace Binding
+## 4. Issue 工作区绑定（Issue Workspace Binding）
 
-Issue-level selection of execution behavior.
+issue 级别的执行行为选择。
 
-This should remain lightweight in the normal case and only surface richer controls when relevant.
+在正常情况下应保持轻量，仅在相关时才呈现更丰富的控件。
 
-### Motivation
+### 动机
 
-Not every issue in a code project should create a new derived workspace.
+代码项目中并非每个 issue 都应创建新的派生工作区。
 
-Examples:
+示例：
 
-- a tiny fix can run in the shared workspace
-- three related issues may intentionally share one integration branch
-- a solo operator may be working directly on `master`
+- 微小修复可以在共享工作区中运行
+- 三个相关 issue 可以有意共享一个集成分支
+- 独立运营者可能直接在 `master` 上工作
 
-### Proposed fields on `issues`
+### `issues` 上的提议字段
 
 - `projectWorkspaceId: uuid | null`
 - `executionWorkspacePreference`

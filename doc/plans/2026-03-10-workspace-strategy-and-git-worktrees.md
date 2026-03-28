@@ -198,14 +198,14 @@ Paperclip 应建模**执行工作区（execution workspaces）**，而非 **work
 
 因此 Paperclip 应区分：
 
-- **isolated issue checkout workflows**: optimized for agent parallelism and issue-scoped isolation
-- **personal branch workflows**: optimized for a human or operator making multiple related changes on a long-lived branch and creating PRs back to the main branch when convenient
+- **独立问题检出工作流（isolated issue checkout workflows）**：针对代理并行性和问题范围隔离进行优化
+- **个人分支工作流（personal branch workflows）**：针对人工或运营者在长期分支上进行多项相关更改，并在方便时向主分支创建 PR 进行优化
 
-This implies:
+这意味着：
 
-- isolated issue checkouts should be optional even when available
-- project workflow settings should support a "use base branch directly" or "use preferred operator branch" path
-- PR policy should not assume that every unit of work maps 1:1 to a new branch or PR
+- 即使独立问题检出可用，它也应是可选的
+- 项目工作流设置应支持"直接使用基础分支"或"使用首选运营者分支"的路径
+- PR 策略不应假设每个工作单元都与新分支或 PR 一一对应
 
 ## Recommended UX Model
 

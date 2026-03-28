@@ -177,7 +177,7 @@ interface ModuleAPI {
 }
 ```
 
-Modules get a scoped logger, access to the shared database, and read access to core services. They register their own routes and hook handlers. They do NOT monkey-patch core — they extend through defined interfaces.
+模块拥有作用域隔离的日志记录器、共享数据库访问权限以及对核心服务的只读访问。模块注册自己的路由和钩子处理器，不允许对核心进行猴子补丁——它们通过定义的接口进行扩展。
 
 ---
 

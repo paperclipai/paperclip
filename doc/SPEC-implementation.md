@@ -359,42 +359,42 @@ V1 不需要独立的队列基础设施。
   - `document_id` uuid fk not null
   - `key` text not null（`plan`、`design`、`notes` 等）
 
-## 8. State Machines
+## 8. 状态机
 
-## 8.1 Agent Status
+## 8.1 智能体状态
 
-Allowed transitions:
+允许的转换：
 
 - `idle -> running`
 - `running -> idle`
 - `running -> error`
 - `error -> idle`
 - `idle -> paused`
-- `running -> paused` (requires cancel flow)
+- `running -> paused`（需要取消流程）
 - `paused -> idle`
-- `* -> terminated` (board only, irreversible)
+- `* -> terminated`（仅董事会，不可逆）
 
-## 8.2 Issue Status
+## 8.2 问题状态
 
-Allowed transitions:
+允许的转换：
 
 - `backlog -> todo | cancelled`
 - `todo -> in_progress | blocked | cancelled`
 - `in_progress -> in_review | blocked | done | cancelled`
 - `in_review -> in_progress | done | cancelled`
 - `blocked -> todo | in_progress | cancelled`
-- terminal: `done`, `cancelled`
+- 终止状态：`done`、`cancelled`
 
-Side effects:
+副作用：
 
-- entering `in_progress` sets `started_at` if null
-- entering `done` sets `completed_at`
-- entering `cancelled` sets `cancelled_at`
+- 进入 `in_progress` 时若 `started_at` 为 null 则设置该字段
+- 进入 `done` 时设置 `completed_at`
+- 进入 `cancelled` 时设置 `cancelled_at`
 
-## 8.3 Approval Status
+## 8.3 审批状态
 
 - `pending -> approved | rejected | cancelled`
-- terminal after decision
+- 决策后进入终止状态
 
 ## 9. Auth and Permissions
 

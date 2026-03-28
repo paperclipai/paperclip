@@ -318,29 +318,29 @@ Bedrock 支持将使用：
 - `billingType` = 推理行的请求范围模式
 - `finance_events` 用于预留、训练、导入和存储费用
 
-## Write Path Changes
+## 写入路径变更
 
-### Heartbeat-created events
+### 心跳创建的事件
 
-When a heartbeat run produces usage or spend:
+当心跳运行产生用量或费用时：
 
-1. normalize adapter billing metadata
-2. write a ledger row to `cost_events`
-3. attach `heartbeat_run_id`
-4. set `provider`, `biller`, `billing_type`, token fields, and `cost_cents`
+1. 规范化适配器计费元数据
+2. 向 `cost_events` 写入一条账本记录
+3. 附加 `heartbeat_run_id`
+4. 设置 `provider`、`biller`、`billing_type`、token 字段和 `cost_cents`
 
-The write path should no longer depend on later inference from `heartbeat_runs`.
+写入路径不应再依赖后续从 `heartbeat_runs` 推断数据。
 
-### Manual API-created events
+### 手动 API 创建的事件
 
-Manual cost event creation remains supported.
-These events may have `heartbeatRunId = null`.
+手动创建 cost 事件的功能仍然受支持。
+这些事件的 `heartbeatRunId` 可以为 `null`。
 
-Rules:
+规则：
 
-- `provider` remains required
-- `biller` defaults to `provider`
-- `billingType` defaults to `unknown`
+- `provider` 仍为必填项
+- `biller` 默认为 `provider`
+- `billingType` 默认为 `unknown`
 
 ## Reporting Changes
 

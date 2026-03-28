@@ -264,22 +264,22 @@ Paperclip 应添加以下 CLI 命令：
 
 对于当前实现，此安装流程应理解为单主机工作流。成功安装后包会写入本地主机，除非未来添加了共享分发机制，否则其他应用节点不会自动获得该插件。
 
-## 9. Load Order And Precedence
+## 9. 加载顺序与优先级
 
-Load order must be deterministic.
+加载顺序必须是确定性的。
 
-1. core platform modules
-2. built-in first-party plugins
-3. installed plugins sorted by:
-   - explicit operator-configured order if present
-   - otherwise manifest `id`
+1. 核心平台模块
+2. 内置第一方插件
+3. 已安装插件，排序方式为：
+   - 如有运营者显式配置的顺序，则优先使用
+   - 否则按清单 `id` 排序
 
-Rules:
+规则：
 
-- plugin contributions are additive by default
-- plugins may not override core routes or core actions by name collision
-- UI slot IDs are automatically namespaced by plugin ID (e.g. `@paperclip/plugin-linear:sync-health-widget`), so cross-plugin collisions are structurally impossible
-- if a single plugin declares duplicate slot IDs within its own manifest, the host must reject at install time
+- 插件贡献默认是附加式的
+- 插件不得通过名称冲突覆盖核心路由或核心动作
+- UI 槽 ID 会自动以插件 ID 命名空间化（例如 `@paperclip/plugin-linear:sync-health-widget`），因此跨插件冲突在结构上是不可能发生的
+- 如果单个插件在其清单中声明了重复的槽 ID，主机必须在安装时拒绝
 
 ## 10. Package Contract
 
