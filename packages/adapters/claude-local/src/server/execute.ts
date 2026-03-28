@@ -530,121 +530,10 @@ async function injectSharedMemories(
   }
 }
 
-async function extractAndStoreMemories(
-  summary: string,
-  taskContext: string,
-  env: Record<string, string>,
-): Promise<void> {
-  const vllmUrl = process.env.VLLM_API_URL;
-  const apiUrl = env.PAPERCLIP_API_URL;
-  const apiKey = env.PAPERCLIP_API_KEY;
-  const companyId = env.PAPERCLIP_COMPANY_ID;
-  if (!vllmUrl || !apiUrl || !apiKey || !companyId) return;
-  if (!summary || summary.length < 100) return; // Skip trivial runs
-
-  // Fetch existing memories to avoid duplicates
-  let existingFacts = "";
-  try {
-    const existingRes = await fetch(
-      `${apiUrl}/api/companies/${companyId}/memories?limit=50`,
-      {
-        headers: { authorization: `Bearer ${apiKey}` },
-        signal: AbortSignal.timeout(3000),
-      },
-    );
-    if (existingRes.ok) {
-      const existing = (await existingRes.json()) as Array<{ content: string }>;
-      if (Array.isArray(existing) && existing.length > 0) {
-        existingFacts =
-          "\n\nExisting memories (do NOT duplicate these):\n" +
-          existing.map((f) => `- ${f.content}`).join("\n");
-      }
-    }
-  } catch {
-    /* non-fatal */
-  }
-
-  // Build extraction prompt
-  const userPrompt = [
-    "Extract reusable factual information from this agent work session.",
-    "",
-    `Task: ${taskContext}`,
-    "",
-    `Result:\n${summary.slice(0, 3000)}`,
-    existingFacts,
-    "",
-    'Return a JSON object: {"facts": [{"content": "...", "category": "preference|knowledge|context|behavior|goal", "confidence": 0.0-1.0}]}',
-    "",
-    "Rules:",
-    "- Only extract clear, specific, reusable facts that benefit other agents",
-    "- Skip session-specific details (file paths, line numbers, temporary state)",
-    "- Focus on: project patterns, architecture decisions, tool preferences, conventions",
-    "- Confidence 0.9+ for confirmed facts, 0.7-0.8 for inferred",
-    "- Do NOT duplicate any existing memories listed above",
-    '- If nothing worth storing, return {"facts": []}',
-    "- Return ONLY valid JSON, no explanation",
-  ].join("\n");
-
-  // Call vLLM for extraction
-  const llmRes = await fetch(`${vllmUrl}/chat/completions`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: process.env.VLLM_MODEL || "Qwen/Qwen3.5-9B",
-      messages: [
-        { role: "system", content: "You are a fact extraction assistant. Return ONLY valid JSON, no explanation." },
-        { role: "user", content: userPrompt },
-      ],
-      max_tokens: 1024,
-      temperature: 0.1,
-      chat_template_kwargs: { enable_thinking: false },
-    }),
-    signal: AbortSignal.timeout(30000),
-  });
-  if (!llmRes.ok) return;
-
-  const llmResult = (await llmRes.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
-  };
-  const text = llmResult.choices?.[0]?.message?.content?.trim();
-  if (!text) return;
-
-  // Parse — handle markdown-wrapped JSON
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) return;
-  let parsed: {
-    facts?: Array<{ content: string; category?: string; confidence?: number }>;
-  };
-  try {
-    parsed = JSON.parse(jsonMatch[0]);
-  } catch {
-    return;
-  }
-  if (!Array.isArray(parsed.facts) || parsed.facts.length === 0) return;
-
-  // Store each fact in Paperclip
-  for (const fact of parsed.facts) {
-    if (!fact.content || fact.content.length < 10) continue;
-    try {
-      await fetch(`${apiUrl}/api/companies/${companyId}/memories`, {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          content: fact.content.slice(0, 4000),
-          category: fact.category || "knowledge",
-          confidence: fact.confidence ?? 0.9,
-          scopeType: "company",
-        }),
-        signal: AbortSignal.timeout(3000),
-      });
-    } catch {
-      /* best-effort, continue */
-    }
-  }
-}
+// Memory extraction for claude-local runs is handled by DeerFlow's
+// MemoryMiddleware which uses its own LLM context.  Cloud adapters should
+// never make local inference calls (vLLM, etc.) — that responsibility
+// belongs to the Vibe-Stack inference layer.
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, authToken } = ctx;
@@ -948,22 +837,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const retry = await runAttempt(null);
       const retryResult = toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
 
-      // Fire-and-forget: extract memories from successful runs
-      if (!retryResult.timedOut && (retryResult.exitCode ?? 0) === 0 && retryResult.summary) {
-        const taskDesc = env.PAPERCLIP_WAKE_REASON ?? "";
-        extractAndStoreMemories(retryResult.summary, taskDesc, env).catch(() => {});
-      }
-
       return retryResult;
     }
 
     const result = toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
-
-    // Fire-and-forget: extract memories from successful runs
-    if (!result.timedOut && (result.exitCode ?? 0) === 0 && result.summary) {
-      const taskDesc = env.PAPERCLIP_WAKE_REASON ?? "";
-      extractAndStoreMemories(result.summary, taskDesc, env).catch(() => {});
-    }
 
     return result;
   } finally {

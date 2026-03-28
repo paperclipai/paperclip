@@ -76,6 +76,8 @@ services:
     environment:
       CI: "true"
       VLLM_API_URL: ${VLLM_API_URL:-http://host.docker.internal:8000/v1}
+      VIBE_BACKEND_HOST: ${VIBE_BACKEND_HOST:-}
+      VIBE_FALLBACK_URLS: ${VIBE_FALLBACK_URLS:-}
     env_file:
       - path: .env
         required: false
@@ -105,6 +107,8 @@ services:
     environment:
       CI: "true"
       VLLM_API_URL: ${VLLM_API_URL:-http://host.docker.internal:8000/v1}
+      VIBE_BACKEND_HOST: ${VIBE_BACKEND_HOST:-}
+      VIBE_FALLBACK_URLS: ${VIBE_FALLBACK_URLS:-}
     env_file:
       - path: .env
         required: false

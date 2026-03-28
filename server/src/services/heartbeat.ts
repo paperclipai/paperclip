@@ -12,7 +12,9 @@ import {
   heartbeatRuns,
   costEvents,
   issueComments,
+  issueLabels,
   issues,
+  labels,
   projectWorkspaces,
 } from "@paperclipai/db";
 import { conflict, notFound } from "../errors.js";
@@ -1343,6 +1345,24 @@ export function heartbeatService(db: Db) {
     }
     if (issueAssigneeConfig.description && !context.issueBody) {
       context.issueBody = issueAssigneeConfig.description;
+    }
+
+    // Enrich context with issue label names and derive taskType so adapters
+    // (e.g. DeerFlow) can route to specialised subagents like self-upgrade.
+    if (issueId && !context.labelNames) {
+      const labelRows = await db
+        .select({ name: labels.name })
+        .from(issueLabels)
+        .innerJoin(labels, eq(issueLabels.labelId, labels.id))
+        .where(eq(issueLabels.issueId, issueId));
+      const labelNames = labelRows.map((r) => r.name);
+      if (labelNames.length > 0) {
+        context.labelNames = labelNames;
+        // Derive taskType from well-known labels when not already set
+        if (!context.taskType && labelNames.includes("self-upgrade")) {
+          context.taskType = "self_upgrade";
+        }
+      }
     }
 
     const issueAssigneeOverrides =
