@@ -4,10 +4,11 @@ import { createRequire } from "node:module";
 import type { Duplex } from "node:stream";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentApiKeys, companyMemberships, instanceUserRoles } from "@paperclipai/db";
-import type { DeploymentMode } from "@paperclipai/shared";
+import { agentApiKeys, agents, companyMemberships, instanceUserRoles } from "@paperclipai/db";
+import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "../middleware/logger.js";
+import { resolvePrivateHostnameAllowSet } from "../middleware/private-hostname-guard.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 
 interface WsSocket {
@@ -92,22 +93,92 @@ function headersFromIncomingMessage(req: IncomingMessage): Headers {
   return headers;
 }
 
-async function authorizeUpgrade(
+function extractUpgradeHost(req: IncomingMessage) {
+  const forwardedHost = req.headers["x-forwarded-host"];
+  const raw = Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost;
+  const host = raw?.split(",")[0]?.trim() || req.headers.host?.trim() || "";
+  return host.length > 0 ? host.toLowerCase() : null;
+}
+
+function extractUpgradeHostname(req: IncomingMessage) {
+  const host = extractUpgradeHost(req);
+  if (!host) return null;
+  try {
+    return new URL(`http://${host}`).hostname.trim().toLowerCase();
+  } catch {
+    return host.trim().toLowerCase();
+  }
+}
+
+function parseOrigin(rawOrigin: string | string[] | undefined) {
+  const origin = Array.isArray(rawOrigin) ? rawOrigin[0] : rawOrigin;
+  if (!origin) return null;
+  try {
+    return new URL(origin);
+  } catch {
+    return null;
+  }
+}
+
+function isUpgradeHostAllowed(
+  req: IncomingMessage,
+  opts: {
+    deploymentMode: DeploymentMode;
+    deploymentExposure: DeploymentExposure;
+    allowedHostnames: string[];
+    bindHost: string;
+  },
+) {
+  if (opts.deploymentMode !== "authenticated" || opts.deploymentExposure !== "private") {
+    return true;
+  }
+
+  const hostname = extractUpgradeHostname(req);
+  if (!hostname) return false;
+
+  const allowSet = resolvePrivateHostnameAllowSet({
+    allowedHostnames: opts.allowedHostnames,
+    bindHost: opts.bindHost,
+  });
+  return allowSet.has(hostname);
+}
+
+function isTrustedBoardUpgradeOrigin(req: IncomingMessage) {
+  const host = extractUpgradeHost(req);
+  const origin = parseOrigin(req.headers.origin);
+  if (!host || !origin) return false;
+
+  const trustedOrigins = new Set([`http://${host}`.toLowerCase(), `https://${host}`.toLowerCase()]);
+  return trustedOrigins.has(origin.origin.toLowerCase());
+}
+
+export async function authorizeUpgrade(
   db: Db,
   req: IncomingMessage,
   companyId: string,
   url: URL,
   opts: {
     deploymentMode: DeploymentMode;
+    deploymentExposure: DeploymentExposure;
+    allowedHostnames: string[];
+    bindHost: string;
     resolveSessionFromHeaders?: (headers: Headers) => Promise<BetterAuthSessionResult | null>;
   },
 ): Promise<UpgradeContext | null> {
+  if (!isUpgradeHostAllowed(req, opts)) {
+    return null;
+  }
+
   const queryToken = url.searchParams.get("token")?.trim() ?? "";
   const authToken = parseBearerToken(req.headers.authorization);
   const token = authToken ?? (queryToken.length > 0 ? queryToken : null);
 
   // Browser board context has no bearer token in local_trusted and authenticated modes.
   if (!token) {
+    if (!isTrustedBoardUpgradeOrigin(req)) {
+      return null;
+    }
+
     if (opts.deploymentMode === "local_trusted") {
       return {
         companyId,
@@ -168,6 +239,21 @@ async function authorizeUpgrade(
     .set({ lastUsedAt: new Date() })
     .where(eq(agentApiKeys.id, key.id));
 
+  const agentRecord = await db
+    .select()
+    .from(agents)
+    .where(eq(agents.id, key.agentId))
+    .then((rows) => rows[0] ?? null);
+
+  if (
+    !agentRecord ||
+    agentRecord.companyId !== companyId ||
+    agentRecord.status === "terminated" ||
+    agentRecord.status === "pending_approval"
+  ) {
+    return null;
+  }
+
   return {
     companyId,
     actorType: "agent",
@@ -180,6 +266,9 @@ export function setupLiveEventsWebSocketServer(
   db: Db,
   opts: {
     deploymentMode: DeploymentMode;
+    deploymentExposure: DeploymentExposure;
+    allowedHostnames: string[];
+    bindHost: string;
     resolveSessionFromHeaders?: (headers: Headers) => Promise<BetterAuthSessionResult | null>;
   },
 ) {
@@ -248,6 +337,9 @@ export function setupLiveEventsWebSocketServer(
 
     void authorizeUpgrade(db, req, companyId, url, {
       deploymentMode: opts.deploymentMode,
+      deploymentExposure: opts.deploymentExposure,
+      allowedHostnames: opts.allowedHostnames,
+      bindHost: opts.bindHost,
       resolveSessionFromHeaders: opts.resolveSessionFromHeaders,
     })
       .then((context) => {

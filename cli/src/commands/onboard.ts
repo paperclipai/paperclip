@@ -233,6 +233,10 @@ function canCreateBootstrapInviteImmediately(config: Pick<PaperclipConfig, "data
   return config.server.deploymentMode === "authenticated" && config.database.mode !== "embedded-postgres";
 }
 
+export function resolveOpenOnListenValueForOnboardRun(existingValue: string | undefined) {
+  return existingValue?.trim().length ? existingValue : "true";
+}
+
 export async function onboard(opts: OnboardOptions): Promise<void> {
   printPaperclipCliBanner();
   p.intro(pc.bgCyan(pc.black(" paperclipai onboard ")));
@@ -471,7 +475,9 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
   }
 
   if (shouldRunNow && !opts.invokedByRun) {
-    process.env.PAPERCLIP_OPEN_ON_LISTEN = "true";
+    process.env.PAPERCLIP_OPEN_ON_LISTEN = resolveOpenOnListenValueForOnboardRun(
+      process.env.PAPERCLIP_OPEN_ON_LISTEN,
+    );
     const { runCommand } = await import("./run.js");
     await runCommand({ config: configPath, repair: true, yes: true });
     return;

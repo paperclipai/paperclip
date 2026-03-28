@@ -4,6 +4,7 @@ import type { LiveEvent } from "@paperclipai/shared";
 import { instanceSettingsApi } from "../../api/instanceSettings";
 import { heartbeatsApi, type LiveRunForIssue } from "../../api/heartbeats";
 import { buildTranscript, getUIAdapter, type RunLogChunk, type TranscriptEntry } from "../../adapters";
+import { subscribeToCompanyLiveEvents } from "../../lib/live-events-socket";
 import { queryKeys } from "../../lib/queryKeys";
 
 const LOG_POLL_INTERVAL_MS = 2000;
@@ -174,32 +175,8 @@ export function useLiveRunTranscripts({
   useEffect(() => {
     if (!companyId || activeRunIds.size === 0) return;
 
-    let closed = false;
-    let reconnectTimer: number | null = null;
-    let socket: WebSocket | null = null;
-
-    const scheduleReconnect = () => {
-      if (closed) return;
-      reconnectTimer = window.setTimeout(connect, 1500);
-    };
-
-    const connect = () => {
-      if (closed) return;
-      const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-      const url = `${protocol}://${window.location.host}/api/companies/${encodeURIComponent(companyId)}/events/ws`;
-      socket = new WebSocket(url);
-
-      socket.onmessage = (message) => {
-        const raw = typeof message.data === "string" ? message.data : "";
-        if (!raw) return;
-
-        let event: LiveEvent;
-        try {
-          event = JSON.parse(raw) as LiveEvent;
-        } catch {
-          return;
-        }
-
+    const unsubscribe = subscribeToCompanyLiveEvents(companyId, {
+      onEvent: (event: LiveEvent) => {
         if (event.companyId !== companyId) return;
         const payload = event.payload ?? {};
         const runId = readString(payload["runId"]);
@@ -247,28 +224,11 @@ export function useLiveRunTranscripts({
             dedupeKey: `socket:status:${runId}:${status}:${readString(payload["finishedAt"]) ?? ""}`,
           }]);
         }
-      };
-
-      socket.onerror = () => {
-        socket?.close();
-      };
-
-      socket.onclose = () => {
-        scheduleReconnect();
-      };
-    };
-
-    connect();
+      },
+    });
 
     return () => {
-      closed = true;
-      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
-      if (socket) {
-        socket.onmessage = null;
-        socket.onerror = null;
-        socket.onclose = null;
-        socket.close(1000, "live_run_transcripts_unmount");
-      }
+      unsubscribe();
     };
   }, [activeRunIds, companyId, runById]);
 

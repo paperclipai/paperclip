@@ -4,6 +4,7 @@ import type { Agent, Issue, LiveEvent } from "@paperclipai/shared";
 import type { RunForIssue } from "../api/activity";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { authApi } from "../api/auth";
+import { subscribeToCompanyLiveEvents } from "../lib/live-events-socket";
 import { useCompany } from "./CompanyContext";
 import type { ToastInput } from "./ToastContext";
 import { useToast } from "./ToastContext";
@@ -680,78 +681,22 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!selectedCompanyId) return;
 
-    let closed = false;
-    let reconnectAttempt = 0;
-    let reconnectTimer: number | null = null;
-    let socket: WebSocket | null = null;
-
-    const clearReconnect = () => {
-      if (reconnectTimer !== null) {
-        window.clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-      }
-    };
-
-    const scheduleReconnect = () => {
-      if (closed) return;
-      reconnectAttempt += 1;
-      const delayMs = Math.min(15000, 1000 * 2 ** Math.min(reconnectAttempt - 1, 4));
-      reconnectTimer = window.setTimeout(() => {
-        reconnectTimer = null;
-        connect();
-      }, delayMs);
-    };
-
-    const connect = () => {
-      if (closed) return;
-      const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-      const url = `${protocol}://${window.location.host}/api/companies/${encodeURIComponent(selectedCompanyId)}/events/ws`;
-      socket = new WebSocket(url);
-
-      socket.onopen = () => {
-        if (reconnectAttempt > 0) {
+    const unsubscribe = subscribeToCompanyLiveEvents(selectedCompanyId, {
+      onOpen: ({ isReconnect }) => {
+        if (isReconnect) {
           gateRef.current.suppressUntil = Date.now() + RECONNECT_SUPPRESS_MS;
         }
-        reconnectAttempt = 0;
-      };
-
-      socket.onmessage = (message) => {
-        const raw = typeof message.data === "string" ? message.data : "";
-        if (!raw) return;
-
-        try {
-          const parsed = JSON.parse(raw) as LiveEvent;
-          handleLiveEvent(queryClient, selectedCompanyId, pathnameRef.current, parsed, pushToast, gateRef.current, {
-            userId: currentUserId,
-            agentId: null,
-          });
-        } catch {
-          // Ignore non-JSON payloads.
-        }
-      };
-
-      socket.onerror = () => {
-        socket?.close();
-      };
-
-      socket.onclose = () => {
-        if (closed) return;
-        scheduleReconnect();
-      };
-    };
-
-    connect();
+      },
+      onEvent: (parsed) => {
+        handleLiveEvent(queryClient, selectedCompanyId, pathnameRef.current, parsed, pushToast, gateRef.current, {
+          userId: currentUserId,
+          agentId: null,
+        });
+      },
+    });
 
     return () => {
-      closed = true;
-      clearReconnect();
-      if (socket) {
-        socket.onopen = null;
-        socket.onmessage = null;
-        socket.onerror = null;
-        socket.onclose = null;
-        socket.close(1000, "provider_unmount");
-      }
+      unsubscribe();
     };
   }, [queryClient, selectedCompanyId, pushToast, currentUserId]);
 

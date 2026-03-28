@@ -16,12 +16,13 @@ import { ThemeProvider } from "./context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { initPluginBridge } from "./plugins/bridge-init";
 import { PluginLauncherProvider } from "./plugins/launchers";
+import { shouldRegisterServiceWorker } from "./lib/service-worker";
 import "@mdxeditor/editor/style.css";
 import "./index.css";
 
 initPluginBridge(React, ReactDOM);
 
-if ("serviceWorker" in navigator) {
+if (shouldRegisterServiceWorker({ isProduction: import.meta.env.PROD, hasServiceWorkerApi: "serviceWorker" in navigator })) {
   window.addEventListener("load", () => {
     navigator.serviceWorker.register("/sw.js");
   });

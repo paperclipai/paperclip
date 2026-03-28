@@ -546,6 +546,9 @@ export async function startServer(): Promise<StartedServer> {
   
   setupLiveEventsWebSocketServer(server, db as any, {
     deploymentMode: config.deploymentMode,
+    deploymentExposure: config.deploymentExposure,
+    allowedHostnames: config.allowedHostnames,
+    bindHost: config.host,
     resolveSessionFromHeaders,
   });
 
