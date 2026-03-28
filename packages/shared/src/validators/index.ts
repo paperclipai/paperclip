@@ -117,6 +117,18 @@ export {
 } from "./project.js";
 
 export {
+  projectPortfolioStateSchema,
+  projectPhaseSchema,
+  projectConstraintLaneSchema,
+  projectControlPlaneLastOutputSchema,
+  projectControlPlaneStateSchema,
+  updateProjectControlPlaneSchema,
+  projectPortfolioSummarySchema,
+  type ProjectControlPlaneStateInput,
+  type UpdateProjectControlPlane,
+} from "./control-plane.js";
+
+export {
   createIssueSchema,
   createIssueLabelSchema,
   updateIssueSchema,
