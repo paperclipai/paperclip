@@ -233,7 +233,7 @@ interface ParsedIssueAssigneeAdapterOverrides {
 
 export type ResolvedWorkspaceForRun = {
   cwd: string;
-  source: "project_primary" | "task_session" | "agent_home";
+  source: "project_primary" | "task_session" | "agent_config" | "agent_home";
   projectId: string | null;
   workspaceId: string | null;
   repoUrl: string | null;
@@ -1249,9 +1249,43 @@ export function heartbeatService(db: Db) {
       }
     }
 
+    // Fix #952: before falling back to the empty agent-home dir, try the agent's
+    // own adapterConfig.cwd. We verify it is (a) a valid directory and (b) inside
+    // a git work-tree so that git_worktree agents don't crash on the next step.
+    const agentConfigCwd = readNonEmptyString(parseObject(agent.adapterConfig).cwd);
+    if (agentConfigCwd) {
+      const agentConfigCwdIsGitRepo = await fs
+        .stat(agentConfigCwd)
+        .then((s) => s.isDirectory())
+        .catch(() => false)
+        .then((isDir) => {
+          if (!isDir) return false;
+          return execFile("git", ["-C", agentConfigCwd, "rev-parse", "--is-inside-work-tree"], { timeout: 5000 })
+            .then(() => true)
+            .catch(() => false);
+        });
+      if (agentConfigCwdIsGitRepo) {
+        return {
+          cwd: agentConfigCwd,
+          source: "agent_config" as const,
+          projectId: resolvedProjectId,
+          workspaceId: null,
+          repoUrl: null,
+          repoRef: null,
+          workspaceHints,
+          warnings: [],
+        };
+      }
+    }
+
     const cwd = resolveDefaultAgentWorkspaceDir(agent.id);
     await fs.mkdir(cwd, { recursive: true });
     const warnings: string[] = [];
+    if (agentConfigCwd) {
+      warnings.push(
+        `Configured agent workspace path "${agentConfigCwd}" is not a git repository. Using fallback workspace "${cwd}" for this run.`,
+      );
+    }
     if (sessionCwd) {
       warnings.push(
         `Saved session workspace "${sessionCwd}" is not available. Using fallback workspace "${cwd}" for this run.`,
@@ -1260,7 +1294,7 @@ export function heartbeatService(db: Db) {
       warnings.push(
         `No project workspace directory is currently available for this issue. Using fallback workspace "${cwd}" for this run.`,
       );
-    } else {
+    } else if (!agentConfigCwd) {
       warnings.push(
         `No project or prior session workspace was available. Using fallback workspace "${cwd}" for this run.`,
       );
