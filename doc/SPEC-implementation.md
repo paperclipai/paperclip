@@ -432,11 +432,11 @@ V1 不需要独立的队列基础设施。
 | 设置公司预算 | 是 | 否 |
 | 设置下属预算 | 是 | 是（仅限管理子树） |
 
-## 10. API Contract (REST)
+## 10. API 契约（REST）
 
-All endpoints are under `/api` and return JSON.
+所有端点均位于 `/api` 下，返回 JSON。
 
-## 10.1 Companies
+## 10.1 公司
 
 - `GET /companies`
 - `POST /companies`
@@ -445,15 +445,15 @@ All endpoints are under `/api` and return JSON.
 - `PATCH /companies/:companyId/branding`
 - `POST /companies/:companyId/archive`
 
-## 10.2 Goals
+## 10.2 目标
 
 - `GET /companies/:companyId/goals`
 - `POST /companies/:companyId/goals`
 - `GET /goals/:goalId`
 - `PATCH /goals/:goalId`
-- `DELETE /goals/:goalId` (soft delete optional, hard delete board-only)
+- `DELETE /goals/:goalId`（软删除可选，硬删除仅限董事会）
 
-## 10.3 Agents
+## 10.3 智能体
 
 - `GET /companies/:companyId/agents`
 - `POST /companies/:companyId/agents`
@@ -462,10 +462,10 @@ All endpoints are under `/api` and return JSON.
 - `POST /agents/:agentId/pause`
 - `POST /agents/:agentId/resume`
 - `POST /agents/:agentId/terminate`
-- `POST /agents/:agentId/keys` (create API key)
+- `POST /agents/:agentId/keys`（创建 API 密钥）
 - `POST /agents/:agentId/heartbeat/invoke`
 
-## 10.4 Tasks (Issues)
+## 10.4 任务（Issues）
 
 - `GET /companies/:companyId/issues`
 - `POST /companies/:companyId/issues`
@@ -480,14 +480,14 @@ All endpoints are under `/api` and return JSON.
 - `POST /issues/:issueId/release`
 - `POST /issues/:issueId/comments`
 - `GET /issues/:issueId/comments`
-- `POST /companies/:companyId/issues/:issueId/attachments` (multipart upload)
+- `POST /companies/:companyId/issues/:issueId/attachments`（multipart 上传）
 - `GET /issues/:issueId/attachments`
 - `GET /attachments/:attachmentId/content`
 - `DELETE /attachments/:attachmentId`
 
-### 10.4.1 Atomic Checkout Contract
+### 10.4.1 原子检出契约
 
-`POST /issues/:issueId/checkout` request:
+`POST /issues/:issueId/checkout` 请求：
 
 ```json
 {
@@ -496,27 +496,27 @@ All endpoints are under `/api` and return JSON.
 }
 ```
 
-Server behavior:
+服务端行为：
 
-1. single SQL update with `WHERE id = ? AND status IN (?) AND (assignee_agent_id IS NULL OR assignee_agent_id = :agentId)`
-2. if updated row count is 0, return `409` with current owner/status
-3. successful checkout sets `assignee_agent_id`, `status = in_progress`, and `started_at`
+1. 单条 SQL 更新，条件为 `WHERE id = ? AND status IN (?) AND (assignee_agent_id IS NULL OR assignee_agent_id = :agentId)`
+2. 若更新行数为 0，返回 `409` 并附带当前归属人/状态
+3. 检出成功后设置 `assignee_agent_id`、`status = in_progress` 及 `started_at`
 
-## 10.5 Projects
+## 10.5 项目
 
 - `GET /companies/:companyId/projects`
 - `POST /companies/:companyId/projects`
 - `GET /projects/:projectId`
 - `PATCH /projects/:projectId`
 
-## 10.6 Approvals
+## 10.6 审批
 
 - `GET /companies/:companyId/approvals?status=pending`
 - `POST /companies/:companyId/approvals`
 - `POST /approvals/:approvalId/approve`
 - `POST /approvals/:approvalId/reject`
 
-## 10.7 Cost and Budgets
+## 10.7 成本与预算
 
 - `POST /companies/:companyId/cost-events`
 - `GET /companies/:companyId/costs/summary`

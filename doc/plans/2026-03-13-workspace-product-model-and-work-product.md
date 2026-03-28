@@ -414,27 +414,27 @@ issue 级别的执行行为选择。
 - `createdAt`
 - `updatedAt`
 
-### Notes
+### 说明
 
-- `sourceIssueId` is the issue that originally caused the workspace to be created, not necessarily the only issue linked to it later.
-- multiple issues may link to the same execution workspace in a long-lived branch workflow.
-- `cwd` may be null for remote execution workspaces; provider identity and work product links still make the object useful.
+- `sourceIssueId` 是最初导致工作区被创建的 issue，不一定是后来链接到它的唯一 issue。
+- 在长期存在的分支工作流中，多个 issue 可以链接到同一执行工作区。
+- 对于远程执行工作区，`cwd` 可以为 null；提供商身份和工作成果链接仍然使该对象有用。
 
-## 6. Issue-to-Execution Workspace Link
+## 6. Issue 到执行工作区的链接（Issue-to-Execution Workspace Link）
 
-An issue may need to link to one or more execution workspaces over time.
+随着时间推移，一个 issue 可能需要链接到一个或多个执行工作区。
 
-Examples:
+示例：
 
-- an issue begins in a shared workspace and later moves to an isolated one
-- a failed attempt is archived and a new workspace is created
-- several issues intentionally share one operator branch workspace
+- issue 开始于共享工作区，后来移至隔离的工作区
+- 失败的尝试被归档，并创建了新的工作区
+- 多个 issue 有意共享一个运营者分支工作区
 
-### Proposed object
+### 提议的对象
 
 `issue_execution_workspaces`
 
-### Proposed fields
+### 提议字段
 
 - `issueId`
 - `executionWorkspaceId`
@@ -445,31 +445,31 @@ Examples:
 - `createdAt`
 - `updatedAt`
 
-### UI simplification
+### UI 简化
 
-Most issues should only show one current workspace in the main UI. Historical links belong in advanced/history views.
+大多数 issue 在主 UI 中只应显示一个当前工作区。历史链接属于高级/历史视图。
 
-## 7. Work Product
+## 7. 工作成果（Work Product）
 
-User-facing umbrella concept for outputs of work.
+面向用户的工作输出统一概念。
 
-### Motivation
+### 动机
 
-Paperclip needs a single place to show:
+Paperclip 需要一个统一的地方来显示：
 
-- "here is the preview"
-- "here is the PR"
-- "here is the branch"
-- "here is the commit"
-- "here is the artifact/report/doc"
+- "这是预览"
+- "这是 PR"
+- "这是分支"
+- "这是提交"
+- "这是制品/报告/文档"
 
-without turning issues into a raw dump of adapter details.
+而不是将 issue 变成适配器详细信息的原始转储。
 
-### Proposed new object
+### 提议的新对象
 
 `issue_work_products`
 
-### Proposed fields
+### 提议字段
 
 - `id`
 - `companyId`
@@ -518,25 +518,25 @@ without turning issues into a raw dump of adapter details.
 - `createdAt`
 - `updatedAt`
 
-### Behavior
+### 行为
 
-- PRs are stored here as `type=pull_request`
-- previews are stored here as `type=preview_url` or `runtime_service`
-- Paperclip-owned processes should update health/status automatically
-- external providers should at least store link, provider, external id, and latest known state
-- cloud agents should be able to create work product records without Paperclip owning the execution host
+- PR 以 `type=pull_request` 存储在此处
+- 预览以 `type=preview_url` 或 `runtime_service` 存储在此处
+- Paperclip 拥有的进程应自动更新健康状态/状态
+- 外部提供商至少应存储链接、提供商、外部 ID 和最新已知状态
+- 云代理应能够在 Paperclip 不拥有执行主机的情况下创建工作成果记录
 
-## Page and UI Model
+## 页面和 UI 模型
 
-## 1. Global Navigation
+## 1. 全局导航
 
-Do not add `Workspaces` as a top-level sidebar item in V1.
+不要在 V1 中将 `Workspaces` 添加为顶级侧边栏项。
 
-### Motivation
+### 动机
 
-That would make the whole product feel infra-heavy, even for companies that do not use code automation.
+这会让整个产品感觉基础设施繁重，即使对于不使用代码自动化的公司也是如此。
 
-### Global nav remains
+### 全局导航保持不变
 
 - Dashboard
 - Inbox
@@ -547,55 +547,55 @@ That would make the whole product feel infra-heavy, even for companies that do n
 - Issues
 - Approvals
 
-Workspaces and work product should be surfaced through project and issue detail views.
+工作区和工作成果应通过项目和 issue 详情视图呈现。
 
-## 2. Project Detail
+## 2. 项目详情
 
-Add a project sub-navigation that keeps planning first and code second.
+添加项目子导航，将规划置于首位，代码置于其次。
 
-### Tabs
+### 标签页
 
 - `Overview`
 - `Issues`
 - `Code`
 - `Activity`
 
-Optional future:
+可选的未来扩展：
 
 - `Outputs`
 
-### `Overview` tab
+### `Overview` 标签页
 
-Planning-first summary:
+以规划为主的摘要：
 
-- project status
-- goals
-- lead
-- issue counts
-- top-level progress
-- latest major work product summaries
+- 项目状态
+- 目标
+- 负责人
+- issue 数量
+- 顶层进度
+- 最新主要工作成果摘要
 
-### `Issues` tab
+### `Issues` 标签页
 
-- default to top-level issues only
-- show parent issue rollups:
-  - child count
-  - `x/y` done
-  - active preview/PR badges
-- optional toggle: `Show subissues`
+- 默认只显示顶层 issue
+- 显示父 issue 汇总：
+  - 子 issue 数量
+  - `x/y` 已完成
+  - 活跃预览/PR 标记
+- 可选切换：`Show subissues`
 
-### `Code` tab
+### `Code` 标签页
 
-This is the main workspace configuration and visibility surface.
+这是主要的工作区配置和可见性界面。
 
-#### Section: `Project Workspaces`
+#### 区域：`Project Workspaces`
 
-List durable project workspaces for the project.
+列出项目的持久化项目工作区。
 
-Card/list columns:
+卡片/列表列：
 
-- workspace name
-- source type
+- 工作区名称
+- 来源类型
 - path or repo
 - default ref
 - primary/default badge

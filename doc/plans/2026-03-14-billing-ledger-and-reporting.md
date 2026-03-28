@@ -378,91 +378,91 @@ Bedrock 支持将使用：
 
 暂时保留当前的项目归因逻辑，但尽可能优先使用 `cost_events.heartbeat_run_id` 作为联接锚点。
 
-## UI Changes
+## UI 变更
 
-### Principles
+### 原则
 
-- Spend, usage, and quota are related but distinct
-- a missing quota fetch is not the same as “no quota”
-- provider and biller are different dimensions
+- 消费、用量和配额相互关联，但各有区别
+- 配额获取失败不等同于”无配额”
+- 提供商和计费方是不同的维度
 
-### Immediate UI changes
+### 即时 UI 变更
 
-1. Keep the current costs page structure.
-2. Make the provider cards accurate by reading only ledger-backed values.
-3. Show provider quota fetch errors explicitly instead of dropping them.
+1. 保留当前费用页面结构。
+2. 通过仅读取账本支撑的值，使提供商卡片显示准确数据。
+3. 明确显示提供商配额获取错误，而不是直接丢弃。
 
-### Follow-up UI direction
+### 后续 UI 方向
 
-The long-term board UI should expose:
+长期的 board UI 应展示：
 
-- Spend
-  Dollars by biller, provider, model, agent, project
-- Usage
-  Tokens by provider, model, agent, project
-- Quotas
-  Live provider or biller limits, credits, and reset windows
-- Financial events
-  Credit purchases, top-ups, fees, refunds, commitments, storage, and other non-inference charges
+- 消费
+  按计费方、提供商、模型、代理、项目划分的金额
+- 用量
+  按提供商、模型、代理、项目划分的 token 数量
+- 配额
+  实时提供商或计费方限额、积分和重置窗口
+- 财务事件
+  积分购买、充值、手续费、退款、承诺、存储及其他非推理费用
 
-## Migration Plan
+## 迁移计划
 
-Migration behavior:
+迁移行为：
 
-- add new non-destructive columns with defaults
-- backfill existing rows:
+- 添加带有默认值的新非破坏性字段
+- 回填现有记录：
   - `biller = provider`
   - `billing_type = 'unknown'`
   - `cached_input_tokens = 0`
   - `heartbeat_run_id = null`
 
-Do **not** attempt to backfill historical provider-level subscription attribution from `heartbeat_runs`.
-That data was never stored with the required dimensions.
+**不要**尝试从 `heartbeat_runs` 回填历史提供商级订阅归因数据。
+这些数据从未以所需的维度存储过。
 
-## Testing Plan
+## 测试计划
 
-Add or update tests for:
+添加或更新以下测试：
 
-1. heartbeat-created ledger rows persist `heartbeatRunId`, `biller`, `billingType`, and cached tokens
-2. legacy adapter billing values map correctly
-3. provider reporting uses ledger data only
-4. mixed-provider companies do not cross-attribute subscription usage
-5. zero-dollar subscription usage still appears in token reporting
-6. quota fetch failures render explicit UI state
-7. manual cost events still validate and write correctly
-8. biller reporting keeps upstream provider breakdowns separate
-9. OpenRouter-style rows can show `biller=openrouter` with non-OpenRouter upstream providers
-10. Cloudflare-style rows can show `biller=cloudflare` with preserved upstream provider identity
-11. future `finance_events` aggregation handles non-request charges without requiring a model or run id
+1. 心跳创建的账本行持久化 `heartbeatRunId`、`biller`、`billingType` 和缓存 token
+2. 遗留适配器计费值正确映射
+3. 提供商报告仅使用账本数据
+4. 混合提供商的公司不发生订阅用量的交叉归因
+5. 零美元订阅用量仍显示在 token 报告中
+6. 配额获取失败渲染明确的 UI 状态
+7. 手动 cost 事件仍能正确验证和写入
+8. 计费方报告保持上游提供商分解独立
+9. OpenRouter 风格的记录能够在非 OpenRouter 上游提供商下显示 `biller=openrouter`
+10. Cloudflare 风格的记录能够在保留上游提供商身份的情况下显示 `biller=cloudflare`
+11. 未来的 `finance_events` 聚合能够处理无需模型或运行 ID 的非请求费用
 
-## Delivery Plan
+## 交付计划
 
-### Step 1
+### 第一步
 
-- land the ledger contract and query rewrite
-- make the current costs page correct
+- 落地账本契约和查询重写
+- 使当前费用页面数据准确
 
-### Step 2
+### 第二步
 
-- add biller-oriented reporting endpoints and UI
+- 添加以计费方为导向的报告端点和 UI
 
-### Step 3
+### 第三步
 
-- wire OpenRouter and any future aggregator adapters to the same contract
+- 将 OpenRouter 及未来的聚合商适配器接入同一契约
 
-### Step 4
+### 第四步
 
-- add `executionAdapterType` to persisted cost reporting if adapter-level grouping becomes a product requirement
+- 如果适配器级分组成为产品需求，则将 `executionAdapterType` 添加到持久化的费用报告中
 
-### Step 5
+### 第五步
 
-- introduce `finance_events`
-- add non-inference accounting endpoints
-- add UI for platform/account charges alongside inference spend and usage
+- 引入 `finance_events`
+- 添加非推理会计端点
+- 在推理消费和用量旁边添加平台/账户费用的 UI
 
-## Non-Goals For This Change
+## 本次变更的非目标
 
-- multi-currency support
-- invoice reconciliation
-- provider-specific cost estimation beyond persisted billed cost
-- replacing `heartbeat_runs` as the operational run record
+- 多币种支持
+- 发票对账
+- 超出持久化计费成本范围的提供商特定成本估算
+- 替换 `heartbeat_runs` 作为运行操作记录

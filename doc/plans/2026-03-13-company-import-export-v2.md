@@ -356,13 +356,13 @@ Paperclip 应围绕 skill 定义新的适配器接口范围：
 - 如果适配器支持同步，Paperclip 应计算期望状态与实际状态之间的差异并提供协调操作
 - 如果适配器不支持这些能力，界面仍应展示包级别的期望 skill，但标记为未托管
 
-## 9. Export Behavior
+## 9. 导出行为
 
-### 9.1 Default Export Target
+### 9.1 默认导出目标
 
-Default export target should become a markdown-first folder structure.
+默认导出目标应改为 markdown 优先的文件夹结构。
 
-Example:
+示例：
 
 ```text
 my-company/
@@ -372,69 +372,69 @@ my-company/
 └── skills/
 ```
 
-### 9.2 Export Rules
+### 9.2 导出规则
 
-Exports should:
+导出应：
 
-- omit machine-local ids
-- omit timestamps and counters unless explicitly needed
-- omit secret values
-- omit local absolute paths
-- omit duplicated inline prompt content from `.paperclip.yaml` when `AGENTS.md` already carries the instructions
-- preserve references and attribution
-- emit `.paperclip.yaml` alongside the base package
-- express adapter env/secrets as portable env input declarations rather than exported secret binding ids
-- preserve compatible `SKILL.md` content as-is
+- 省略机器本地 ID
+- 省略时间戳和计数器，除非明确需要
+- 省略密钥值
+- 省略本地绝对路径
+- 当 `AGENTS.md` 已包含指令时，省略 `.paperclip.yaml` 中重复的内联提示内容
+- 保留引用和归因信息
+- 在基础包旁生成 `.paperclip.yaml`
+- 将适配器环境变量/密钥表达为可移植的环境变量输入声明，而非导出的密钥绑定 ID
+- 原样保留兼容的 `SKILL.md` 内容
 
-Projects and issues should not be exported by default.
+项目和议题默认不应导出。
 
-They should be opt-in through selectors such as:
+应通过如下选择器将其设为可选项：
 
 - `--projects project-shortname-1,project-shortname-2`
 - `--issues PAP-1,PAP-3`
 - `--project-issues project-shortname-1,project-shortname-2`
 
-This supports “clean public company package” workflows where a maintainer exports a follower-facing company package without bundling active work items every time.
+这支持”干净的公开公司包”工作流，维护者可以在每次导出面向关注者的公司包时不捆绑当前活跃的工作项。
 
-### 9.3 Export Units
+### 9.3 导出单元
 
-Initial export units:
+初始导出单元：
 
-- company package
-- team package
-- single agent package
+- 公司包
+- 团队包
+- 单个 agent 包
 
-Later optional units:
+后续可选单元：
 
-- skill pack export
-- seed projects/tasks bundle
+- skill 包导出
+- 种子项目/任务包
 
-## 10. Storage Model Inside Paperclip
+## 10. Paperclip 内部存储模型
 
-### 10.1 Short-Term
+### 10.1 短期方案
 
-In the first phase, imported entities can continue mapping onto current runtime tables:
+在第一阶段，导入的实体可以继续映射到当前运行时表：
 
 - company -> companies
 - agent -> agents
-- team -> imported agent subtree attachment plus package provenance grouping
-- skill -> company-scoped reusable package metadata plus agent-scoped desired-skill attachment state where supported
+- team -> 导入的 agent 子树挂载加包来源分组
+- skill -> 公司级可复用包元数据，加上在支持的情况下的 agent 级期望 skill 挂载状态
 
-### 10.2 Medium-Term
+### 10.2 中期方案
 
-Paperclip should add managed package/provenance records so imports are not anonymous one-off copies.
+Paperclip 应添加托管的包/来源记录，使导入不再是匿名的一次性副本。
 
-Needed capabilities:
+所需能力：
 
-- remember install origin
-- support re-import / upgrade
-- distinguish local edits from upstream package state
-- preserve external refs and package-level metadata
-- preserve imported team grouping without requiring a runtime `teams` table immediately
-- preserve desired-skill state separately from adapter runtime state
-- support both company-scoped reusable skills and agent-scoped skill attachments
+- 记住安装来源
+- 支持重新导入/升级
+- 区分本地编辑与上游包状态
+- 保留外部引用和包级元数据
+- 在无需立即建立运行时 `teams` 表的情况下保留导入团队分组
+- 将期望 skill 状态与适配器运行时状态分开保存
+- 同时支持公司级可复用 skill 和 agent 级 skill 挂载
 
-Suggested future tables:
+建议的未来数据表：
 
 - package_installs
 - package_install_entities
@@ -442,55 +442,55 @@ Suggested future tables:
 - agent_skill_desires
 - adapter_skill_snapshots
 
-This is not required for phase 1 UI, but it is required for a robust long-term system.
+这不是第一阶段界面的必要条件，但对于健壮的长期系统是必需的。
 
-## 11. API Plan
+## 11. API 计划
 
-### 11.1 Keep Existing Endpoints Initially
+### 11.1 初期保留现有端点
 
-Retain:
+保留：
 
 - `POST /api/companies/:companyId/export`
 - `POST /api/companies/import/preview`
 - `POST /api/companies/import`
 
-But evolve payloads toward the markdown-first graph model.
+但将请求载荷逐步演进为 markdown 优先的图谱模型。
 
-### 11.2 New API Capabilities
+### 11.2 新 API 能力
 
-Add support for:
+新增对以下功能的支持：
 
-- package root resolution from local/GitHub inputs
-- graph resolution preview
-- source pin and hash verification results
-- entity-level selection
-- team attach target selection
-- provenance-aware collision planning
+- 从本地/GitHub 输入进行包根解析
+- 图谱解析预览
+- 来源固定版本和哈希验证结果
+- 实体级选择
+- 团队挂载目标选择
+- 来源感知的冲突规划
 
-### 11.3 Parsing Changes
+### 11.3 解析变更
 
-Replace the current ad hoc markdown frontmatter parser with a real parser that can handle:
+将当前的临时 markdown frontmatter 解析器替换为能处理以下内容的真正解析器：
 
-- nested YAML
-- arrays/objects reliably
-- consistent round-tripping
+- 嵌套 YAML
+- 可靠的数组/对象处理
+- 一致的往返转换
 
-This is a prerequisite for the new package model.
+这是新包模型的前置条件。
 
-## 12. CLI Plan
+## 12. CLI 计划
 
-The CLI should continue to support direct import/export without a registry.
+CLI 应继续支持无需注册中心的直接导入/导出。
 
-Target commands:
+目标命令：
 
 - `paperclipai company export <company-id> --out <path>`
 - `paperclipai company import <path-or-url> --dry-run`
 - `paperclipai company import <path-or-url> --target existing -C <company-id>`
 
-Planned additions:
+规划中的新增参数：
 
 - `--package-kind company|team|agent`
-- `--attach-under <agent-id-or-slug>` for team imports
+- `--attach-under <agent-id-or-slug>`，用于团队导入
 - `--strict-pins`
 - `--allow-unpinned`
 - `--materialize-references`

@@ -355,22 +355,22 @@ enqueueWakeup({
 })
 ```
 
-No source invokes adapters directly.
+所有来源均不直接调用适配器。
 
-## 8.3 Queue semantics
+## 8.3 队列语义
 
-1. Max active run per agent remains `1`.
-2. If agent already has `queued`/`running` run:
-   - coalesce duplicate wakeups
-   - increment `coalescedCount`
-   - preserve latest reason/source metadata
-3. Queue is DB-backed for restart safety.
-4. Coordinator uses FIFO by `requested_at`, with optional priority:
+1. 每个 agent 的最大活跃运行数保持为 `1`。
+2. 若 agent 已有 `queued`/`running` 运行：
+   - 合并重复唤醒
+   - 递增 `coalescedCount`
+   - 保留最新的 reason/source 元数据
+3. 队列有 DB 支撑以保证重启安全性。
+4. 协调器按 `requested_at` 使用 FIFO，带可选优先级：
    - `on_demand` > `assignment` > `timer`/`automation`
 
-## 8.4 Agent heartbeat policy fields
+## 8.4 Agent heartbeat 策略字段
 
-Agent-level control-plane settings (not adapter-specific):
+Agent 级控制平面设置（非适配器专属）：
 
 ```json
 {
@@ -385,43 +385,43 @@ Agent-level control-plane settings (not adapter-specific):
 }
 ```
 
-Defaults:
+默认值：
 
 - `enabled: true`
-- `intervalSec: null` (no timer until explicitly set) or product default `300` if desired globally
+- `intervalSec: null`（显式设置前无定时器），若全局需要则产品默认为 `300`
 - `wakeOnAssignment: true`
 - `wakeOnOnDemand: true`
 - `wakeOnAutomation: true`
 
-## 8.5 Trigger integration rules
+## 8.5 触发器集成规则
 
-1. Timer checks run on server worker interval and enqueue due agents.
-2. Issue assignment mutation enqueues wakeup when assignee changes and target agent has `wakeOnAssignment=true`.
-3. On-demand endpoint enqueues wakeup with `source=on_demand` and `triggerDetail=manual|ping` when `wakeOnOnDemand=true`.
-4. Callback/system automations enqueue wakeup with `source=automation` and `triggerDetail=callback|system` when `wakeOnAutomation=true`.
-5. Paused/terminated agents do not receive new wakeups.
-6. Hard budget-stopped agents do not receive new wakeups.
+1. 定时器检查在服务端 worker 间隔运行，并将到期的 agents 加入队列。
+2. Issue 分配变更时，若目标 agent 的 `wakeOnAssignment=true`，则将唤醒入队。
+3. 按需端点在 `wakeOnOnDemand=true` 时，以 `source=on_demand` 和 `triggerDetail=manual|ping` 将唤醒入队。
+4. 回调/系统自动化在 `wakeOnAutomation=true` 时，以 `source=automation` 和 `triggerDetail=callback|system` 将唤醒入队。
+5. 已暂停/已终止的 agents 不接收新唤醒。
+6. 已因预算强制停止的 agents 不接收新唤醒。
 
-## 9. Persistence Model
+## 9. 持久化模型
 
-All tables remain company-scoped.
+所有表均保持公司作用域。
 
-## 9.0 Changes to `agents`
+## 9.0 对 `agents` 的变更
 
-1. Extend `adapter_type` domain to include `claude_local` and `codex_local` (alongside existing `process`, `http`).
-2. Keep `adapter_config` as adapter-owned config (CLI flags, cwd, prompt templates, env overrides).
-3. Add `runtime_config` jsonb for control-plane scheduling policy:
-   - heartbeat enable/interval
+1. 将 `adapter_type` 域扩展为包含 `claude_local` 和 `codex_local`（与现有的 `process`、`http` 并列）。
+2. 保持 `adapter_config` 作为适配器自有配置（CLI 标志、cwd、提示词模板、env 覆盖）。
+3. 为控制平面调度策略添加 `runtime_config` jsonb：
+   - heartbeat 启用/间隔
    - wake-on-assignment
    - wake-on-on-demand
    - wake-on-automation
-   - cooldown
+   - 冷却时间
 
-This separation keeps adapter config runtime-agnostic while allowing the heartbeat service to apply consistent scheduling logic.
+此分离使适配器配置保持运行时无关性，同时允许 heartbeat 服务应用一致的调度逻辑。
 
-## 9.1 New table: `agent_runtime_state`
+## 9.1 新表：`agent_runtime_state`
 
-One row per agent for aggregate runtime counters and legacy compatibility.
+每个 agent 一行，用于聚合运行时计数器和向后兼容。
 
 - `agent_id` uuid pk fk `agents.id`
 - `company_id` uuid fk not null
@@ -437,40 +437,40 @@ One row per agent for aggregate runtime counters and legacy compatibility.
 - `last_error` text null
 - `updated_at` timestamptz not null
 
-Invariant: exactly one runtime state row per agent.
+不变量：每个 agent 恰好一行运行时状态。
 
-## 9.1.1 New table: `agent_task_sessions`
+## 9.1.1 新表：`agent_task_sessions`
 
-One row per `(company_id, agent_id, adapter_type, task_key)` for resumable session state.
+每个 `(company_id, agent_id, adapter_type, task_key)` 一行，用于可恢复的 session 状态。
 
 - `id` uuid pk
 - `company_id` uuid fk not null
 - `agent_id` uuid fk not null
 - `adapter_type` text not null
 - `task_key` text not null
-- `session_params_json` jsonb null (adapter-defined shape)
-- `session_display_id` text null (for UI/debug)
+- `session_params_json` jsonb null（适配器定义的结构）
+- `session_display_id` text null（用于 UI/调试）
 - `last_run_id` uuid fk `heartbeat_runs.id` null
 - `last_error` text null
 - `created_at` timestamptz not null
 - `updated_at` timestamptz not null
 
-Invariant: unique `(company_id, agent_id, adapter_type, task_key)`.
+不变量：`(company_id, agent_id, adapter_type, task_key)` 唯一。
 
-## 9.2 New table: `agent_wakeup_requests`
+## 9.2 新表：`agent_wakeup_requests`
 
-Queue + audit for wakeups.
+唤醒的队列 + 审计。
 
 - `id` uuid pk
 - `company_id` uuid fk not null
 - `agent_id` uuid fk not null
-- `source` text not null (`timer|assignment|on_demand|automation`)
-- `trigger_detail` text null (`manual|ping|callback|system`)
+- `source` text not null（`timer|assignment|on_demand|automation`）
+- `trigger_detail` text null（`manual|ping|callback|system`）
 - `reason` text null
 - `payload` jsonb null
-- `status` text not null (`queued|claimed|coalesced|skipped|completed|failed|cancelled`)
+- `status` text not null（`queued|claimed|coalesced|skipped|completed|failed|cancelled`）
 - `coalesced_count` int not null default `0`
-- `requested_by_actor_type` text null (`user|agent|system`)
+- `requested_by_actor_type` text null（`user|agent|system`）
 - `requested_by_actor_id` text null
 - `idempotency_key` text null
 - `run_id` uuid fk `heartbeat_runs.id` null

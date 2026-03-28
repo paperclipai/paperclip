@@ -226,15 +226,15 @@ class HookBus {
 }
 ```
 
-Design rules:
-- **Hooks are fire-and-forget.** A failing hook handler never crashes or blocks the core operation.
-- **Hooks are concurrent.** All handlers for an event run in parallel via `Promise.allSettled`.
-- **Hooks are post-commit.** They fire after the database write succeeds, not before. No vetoing.
-- **Hooks receive immutable snapshots.** Handlers get a copy of the data, not a mutable reference.
+设计规则：
+- **钩子是即发即忘的。** 失败的钩子处理器绝不会导致核心操作崩溃或阻塞。
+- **钩子是并发的。** 同一事件的所有处理器通过 `Promise.allSettled` 并行运行。
+- **钩子在提交后触发。** 在数据库写入成功之后触发，而非之前。不支持否决。
+- **钩子接收不可变快照。** 处理器获得数据的副本，而非可变引用。
 
-This keeps the core fast and resilient. If you need pre-commit validation (e.g., "reject this budget change"), that's a different mechanism (middleware/interceptor) we can add later if needed.
+这使核心保持快速且健壮。如果需要提交前验证（如"拒绝此预算变更"），那是另一种机制（中间件/拦截器），可在需要时再添加。
 
-### Observability Hook Example
+### 可观测性钩子示例
 
 ```typescript
 // modules/observability/src/hooks.ts
@@ -262,15 +262,15 @@ export function createHeartbeatHandler(db: Db) {
 }
 ```
 
-Every heartbeat, the observability module records token usage into its own `mod_observability_token_metrics` table. The core doesn't know or care about this table — it just emits the hook.
+每次心跳时，可观测性模块将 token 使用情况记录到其自有的 `mod_observability_token_metrics` 表中。核心并不知道也不关心这张表——它只是触发钩子。
 
 ---
 
-## Database Strategy for Modules
+## 模块数据库策略
 
-### Table Namespacing
+### 表命名空间
 
-Module tables are prefixed with `mod_<moduleId>_` to avoid collisions with core tables and other modules:
+模块表以 `mod_<moduleId>_` 为前缀，以避免与核心表和其他模块发生冲突：
 
 ```typescript
 // modules/observability/src/schema.ts
@@ -295,45 +295,45 @@ export const alertRules = pgTable("mod_observability_alert_rules", {
 });
 ```
 
-### Migration Strategy
+### 迁移策略
 
-Each module manages its own migrations in `src/migrations/`. The core migration runner discovers and applies them:
+每个模块在 `src/migrations/` 中管理自己的迁移。核心迁移运行器负责发现并应用它们：
 
-1. Core migrations run first (always)
-2. Module migrations run in dependency order
-3. Each module's migrations are tracked in a `mod_migrations` table with the module ID
-4. `pnpm db:migrate` runs everything. `pnpm db:migrate --module observability` runs one.
+1. 核心迁移优先运行（始终如此）
+2. 模块迁移按依赖顺序运行
+3. 每个模块的迁移以模块 ID 为键记录在 `mod_migrations` 表中
+4. `pnpm db:migrate` 运行所有迁移。`pnpm db:migrate --module observability` 只运行指定模块的迁移。
 
-Modules can reference core tables via foreign keys (e.g., `agent_id → agents.id`) but core tables never reference module tables. This is a strict one-way dependency.
+模块可以通过外键引用核心表（如 `agent_id → agents.id`），但核心表绝不引用模块表。这是严格的单向依赖关系。
 
 ---
 
-## Module Loading & Lifecycle
+## 模块加载与生命周期
 
-### Discovery
+### 发现
 
-On server startup:
+服务器启动时：
 
 ```
-1. Scan modules/ directory for paperclip.module.json manifests
-2. Validate each manifest (JSON Schema check on configSchema, required fields)
-3. Check slot conflicts (error if two active modules claim the same slot)
-4. Topological sort by dependencies (if module A requires module B)
-5. For each module in order:
-   a. Validate module config against configSchema
-   b. Run pending migrations
-   c. Import entry point and call register(api)
-   d. Mount routes at /api/modules/<prefix>
-   e. Start background services
-6. Emit server:started hook
+1. 扫描 modules/ 目录中的 paperclip.module.json 清单
+2. 验证每个清单（对 configSchema 和必填字段进行 JSON Schema 检查）
+3. 检查插槽冲突（若两个活跃模块声明同一插槽则报错）
+4. 按依赖关系拓扑排序（若模块 A 依赖模块 B）
+5. 按顺序处理每个模块：
+   a. 根据 configSchema 验证模块配置
+   b. 运行待执行的迁移
+   c. 导入入口点并调用 register(api)
+   d. 在 /api/modules/<prefix> 挂载路由
+   e. 启动后台服务
+6. 触发 server:started 钩子
 ```
 
-### Configuration
+### 配置
 
-Module config lives in the server's environment or a config file:
+模块配置存储在服务器环境变量或配置文件中：
 
 ```jsonc
-// paperclip.config.json (or env vars)
+// paperclip.config.json（或环境变量）
 {
   "modules": {
     "enabled": ["observability", "revenue", "notifications"],
@@ -350,28 +350,28 @@ Module config lives in the server's environment or a config file:
 }
 ```
 
-`$ENV_VAR` references are resolved at load time. Secrets never go in the config file directly.
+`$ENV_VAR` 引用在加载时解析。密钥不应直接写入配置文件。
 
-### Disabling a Module
+### 禁用模块
 
-Setting a module's enabled state to false:
-1. Stops its background services
-2. Unmounts its routes (returns 404)
-3. Unsubscribes its hook handlers
-4. Does NOT drop its database tables (data is preserved)
+将模块的启用状态设为 false 时：
+1. 停止其后台服务
+2. 卸载其路由（返回 404）
+3. 取消订阅其钩子处理器
+4. 不会删除其数据库表（数据得以保留）
 
 ---
 
-## UI Integration
+## UI 集成
 
-### How Module UI Works
+### 模块 UI 的工作方式
 
-The core UI shell provides:
-- A sidebar with slots for module-contributed nav items
-- A dashboard with widget mount points
-- A module settings page
+核心 UI 外壳提供：
+- 带有模块贡献导航条目插槽的侧边栏
+- 带有 widget 挂载点的仪表盘
+- 模块设置页面
 
-Modules declare pages and widgets in the manifest. The shell lazy-loads them:
+模块在清单中声明页面和 widget，外壳进行懒加载：
 
 ```typescript
 // ui/src/modules/loader.ts

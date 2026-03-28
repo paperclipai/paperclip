@@ -346,23 +346,23 @@ export interface PaperclipPluginManifestV1 {
 }
 ```
 
-Rules:
+规则：
 
-- `id` must be globally unique
-- `id` should normally equal the npm package name
-- `apiVersion` must match the host-supported plugin API version
-- `capabilities` must be static and install-time visible
-- config schema must be JSON Schema compatible
-- `entrypoints.ui` points to the directory containing the built UI bundle
-- `ui.slots` declares which extension slots the plugin fills, so the host knows what to mount without loading the bundle eagerly; each slot references an `exportName` from the UI bundle
+- `id` 必须全局唯一
+- `id` 通常应等于 npm 包名
+- `apiVersion` 必须与主机支持的插件 API 版本匹配
+- `capabilities` 必须是静态的，并在安装时可见
+- 配置 schema 必须与 JSON Schema 兼容
+- `entrypoints.ui` 指向包含构建后 UI 包的目录
+- `ui.slots` 声明插件填充哪些扩展槽，使主机无需急于加载包即可知道挂载什么；每个槽引用 UI 包中的一个 `exportName`
 
-## 11. Agent Tools
+## 11. Agent 工具
 
-Plugins may contribute tools that Paperclip agents can use during runs.
+插件可以贡献 Paperclip Agent 在运行期间可使用的工具。
 
-### 11.1 Tool Declaration
+### 11.1 工具声明
 
-Plugins declare tools in their manifest:
+插件在其清单中声明工具：
 
 ```ts
 tools?: Array<{
@@ -373,96 +373,96 @@ tools?: Array<{
 }>;
 ```
 
-Tool names are automatically namespaced by plugin ID at runtime (e.g. `linear:search-issues`), so plugins cannot shadow core tools or each other's tools.
+工具名称在运行时会自动以插件 ID 命名空间化（例如 `linear:search-issues`），因此插件无法遮蔽核心工具或彼此的工具。
 
-### 11.2 Tool Execution
+### 11.2 工具执行
 
-When an agent invokes a plugin tool during a run, the host routes the call to the plugin worker via a `executeTool` RPC method:
+当 Agent 在运行期间调用插件工具时，主机通过 `executeTool` RPC 方法将调用路由到插件 worker：
 
-- `executeTool(input)` — receives tool name, parsed parameters, and run context (agent ID, run ID, company ID, project ID)
+- `executeTool(input)` — 接收工具名称、已解析的参数以及运行上下文（Agent ID、运行 ID、公司 ID、项目 ID）
 
-The worker executes the tool logic and returns a typed result. The host enforces capability gates — a plugin must declare `agent.tools.register` to contribute tools, and individual tools may require additional capabilities (e.g. `http.outbound` for tools that call external APIs).
+worker 执行工具逻辑并返回类型化结果。主机强制执行能力管控——插件必须声明 `agent.tools.register` 才能贡献工具，单个工具可能还需要额外的能力（例如调用外部 API 的工具需要 `http.outbound`）。
 
-### 11.3 Tool Availability
+### 11.3 工具可用性
 
-By default, plugin tools are available to all agents. The operator may restrict tool availability per agent or per project through plugin configuration.
+默认情况下，插件工具对所有 Agent 可用。运营者可以通过插件配置按 Agent 或按项目限制工具可用性。
 
-Plugin tools appear in the agent's tool list alongside core tools but are visually distinguished in the UI as plugin-contributed.
+插件工具与核心工具一同出现在 Agent 的工具列表中，但在 UI 中会被视觉上区分为插件贡献的工具。
 
-### 11.4 Constraints
+### 11.4 约束
 
-- Plugin tools must not override or shadow core tools by name.
-- Plugin tools must be idempotent where possible.
-- Tool execution is subject to the same timeout and resource limits as other plugin worker calls.
-- Tool results are included in run logs.
+- 插件工具不得通过名称覆盖或遮蔽核心工具。
+- 插件工具应尽可能保持幂等性。
+- 工具执行受到与其他插件 worker 调用相同的超时和资源限制。
+- 工具结果会包含在运行日志中。
 
-## 12. Runtime Model
+## 12. 运行时模型
 
-## 12.1 Process Model
+## 12.1 进程模型
 
-Third-party plugins run out-of-process by default.
+第三方插件默认以进程外方式运行。
 
-Default runtime:
+默认运行时：
 
-- Paperclip server starts one worker process per installed plugin
-- the worker process is a Node process
-- host and worker communicate over JSON-RPC on stdio
+- Paperclip 服务器为每个已安装的插件启动一个 worker 进程
+- worker 进程是 Node 进程
+- 主机和 worker 通过 stdio 上的 JSON-RPC 进行通信
 
-This design provides:
+该设计提供了：
 
-- failure isolation
-- clearer logging boundaries
-- easier resource limits
-- a cleaner trust boundary than arbitrary in-process execution
+- 故障隔离
+- 更清晰的日志边界
+- 更容易的资源限制
+- 比任意进程内执行更清晰的信任边界
 
-## 12.2 Host Responsibilities
+## 12.2 主机职责
 
-The host is responsible for:
+主机负责：
 
-- package install
-- manifest validation
-- capability enforcement
-- process supervision
-- job scheduling
-- webhook routing
-- activity log writes
-- secret resolution
-- UI route registration
+- 包安装
+- 清单验证
+- 能力执行
+- 进程监督
+- 作业调度
+- Webhook 路由
+- 活动日志写入
+- 密钥解析
+- UI 路由注册
 
-## 12.3 Worker Responsibilities
+## 12.3 Worker 职责
 
-The plugin worker is responsible for:
+插件 worker 负责：
 
-- validating its own config
-- handling domain events
-- handling scheduled jobs
-- handling webhooks
-- serving data and handling actions for the plugin's own UI via `getData` and `performAction`
-- invoking host services through the SDK
-- reporting health information
+- 验证其自身配置
+- 处理领域事件
+- 处理计划作业
+- 处理 Webhook
+- 通过 `getData` 和 `performAction` 为插件自身的 UI 提供数据并处理动作
+- 通过 SDK 调用主机服务
+- 报告健康信息
 
-## 12.4 Failure Policy
+## 12.4 故障策略
 
-If a worker fails:
+如果 worker 失败：
 
-- mark plugin status `error`
-- surface error in plugin health UI
-- keep the rest of the instance running
-- retry start with bounded backoff
-- do not drop other plugins or core services
+- 将插件状态标记为 `error`
+- 在插件健康 UI 中显示错误
+- 保持实例其余部分继续运行
+- 以有界退避重试启动
+- 不丢弃其他插件或核心服务
 
-## 12.5 Graceful Shutdown Policy
+## 12.5 优雅关闭策略
 
-When the host needs to stop a plugin worker (for upgrade, uninstall, or instance shutdown):
+当主机需要停止插件 worker 时（用于升级、卸载或实例关闭）：
 
-1. The host sends `shutdown()` to the worker.
-2. The worker has 10 seconds to finish in-flight work and exit cleanly.
-3. If the worker does not exit within the deadline, the host sends SIGTERM.
-4. If the worker does not exit within 5 seconds after SIGTERM, the host sends SIGKILL.
-5. Any in-flight job runs are marked `cancelled` with a note indicating forced shutdown.
-6. Any in-flight `getData` or `performAction` calls return an error to the bridge.
+1. 主机向 worker 发送 `shutdown()`。
+2. worker 有 10 秒时间完成进行中的工作并干净退出。
+3. 如果 worker 在截止时间内未退出，主机发送 SIGTERM。
+4. 如果 worker 在 SIGTERM 后 5 秒内仍未退出，主机发送 SIGKILL。
+5. 所有进行中的作业运行将被标记为 `cancelled`，并附注说明是强制关闭。
+6. 所有进行中的 `getData` 或 `performAction` 调用向 bridge 返回错误。
 
-The shutdown deadline should be configurable per-plugin in plugin config for plugins that need longer drain periods.
+对于需要更长排空时间的插件，关闭截止时间应可在插件配置中按插件进行配置。
 
 ## 13. Host-Worker Protocol
 

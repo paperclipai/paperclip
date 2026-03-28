@@ -1,20 +1,18 @@
-# Task Management MCP Interface
+# 任务管理 MCP 接口
 
-Function contracts for the Paperclip task management system. Defines the
-operations available to agents (and external tools) via MCP. Refer to
-[TASKS.md](./TASKS.md) for the underlying data model.
+Paperclip 任务管理系统的函数契约。定义了智能体（及外部工具）通过 MCP 可用的操作。底层数据模型请参阅
+[TASKS.md](./TASKS.md)。
 
-All operations return JSON. IDs are UUIDs. Timestamps are ISO 8601.
-Issue identifiers (e.g. `ENG-123`) are accepted anywhere an issue `id` is
-expected.
+所有操作均返回 JSON。ID 为 UUID，时间戳为 ISO 8601 格式。
+在任何需要 issue `id` 的地方，均可接受 issue 标识符（例如 `ENG-123`）。
 
 ---
 
-## Issues
+## Issues（问题）
 
 ### `list_issues`
 
-List and filter issues in the workspace.
+列出并筛选工作区中的 issue。
 
 | Parameter         | Type     | Required | Notes                                                                                           |
 | ----------------- | -------- | -------- | ----------------------------------------------------------------------------------------------- |

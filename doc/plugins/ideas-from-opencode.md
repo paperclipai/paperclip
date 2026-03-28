@@ -355,93 +355,93 @@ Paperclip 不应允许插件静默替换：
 
 Paperclip 应要求一个明确的运营商安装步骤。
 
-## Why Paperclip Needs A Different Shape
+## 为什么 Paperclip 需要不同的架构形态
 
-The products are solving different problems.
+两个产品解决的是不同的问题。
 
-| Topic | OpenCode | Paperclip |
+| 主题 | OpenCode | Paperclip |
 |---|---|---|
-| Primary unit | local project/worktree | single-tenant operator instance with company objects |
-| Trust assumption | local power user on own machine | operator managing one trusted Paperclip instance |
-| Failure blast radius | local session/runtime | entire company control plane |
-| Extension style | mutate runtime behavior freely | preserve governance and auditability |
-| UI model | local app can load local behavior | board UI must stay coherent and safe |
-| Security model | host-trusted local plugins | needs capability boundaries and auditability |
+| 主要单元 | 本地项目/worktree | 带有 company 对象的单租户运营商实例 |
+| 信任假设 | 本机上的本地高级用户 | 管理一个受信任 Paperclip 实例的运营商 |
+| 故障影响范围 | 本地会话/运行时 | 整个公司控制面 |
+| 扩展风格 | 自由修改运行时行为 | 保持治理性和可审计性 |
+| UI 模型 | 本地应用可加载本地行为 | board UI 必须保持连贯和安全 |
+| 安全模型 | 宿主信任的本地插件 | 需要能力边界和可审计性 |
 
-That means Paperclip should borrow the good ideas from `opencode` but use a stricter architecture.
+这意味着 Paperclip 应借鉴 `opencode` 的好想法，但采用更严格的架构。
 
-## Paperclip Already Has Useful Pre-Plugin Seams
+## Paperclip 已有有用的预插件接缝
 
-Paperclip has several extension-like seams already:
+Paperclip 已经拥有多个类扩展的接缝：
 
-- server adapter registry: [server/src/adapters/registry.ts](../../server/src/adapters/registry.ts)
-- UI adapter registry: [ui/src/adapters/registry.ts](../../ui/src/adapters/registry.ts)
-- storage provider registry: [server/src/storage/provider-registry.ts](../../server/src/storage/provider-registry.ts)
-- secret provider registry: [server/src/secrets/provider-registry.ts](../../server/src/secrets/provider-registry.ts)
-- pluggable run-log store seam: [server/src/services/run-log-store.ts](../../server/src/services/run-log-store.ts)
-- activity log and live event emission: [server/src/services/activity-log.ts](../../server/src/services/activity-log.ts)
+- 服务端适配器注册表：[server/src/adapters/registry.ts](../../server/src/adapters/registry.ts)
+- UI 适配器注册表：[ui/src/adapters/registry.ts](../../ui/src/adapters/registry.ts)
+- 存储提供商注册表：[server/src/storage/provider-registry.ts](../../server/src/storage/provider-registry.ts)
+- 密钥提供商注册表：[server/src/secrets/provider-registry.ts](../../server/src/secrets/provider-registry.ts)
+- 可插拔的运行日志存储接缝：[server/src/services/run-log-store.ts](../../server/src/services/run-log-store.ts)
+- 活动日志和实时事件发射：[server/src/services/activity-log.ts](../../server/src/services/activity-log.ts)
 
-This is good news.
-Paperclip does not need to invent extensibility from scratch.
-It needs to unify and harden existing seams.
+这是个好消息。
+Paperclip 不需要从零发明可扩展性。
+它需要统一并加固现有的接缝。
 
-## Recommended Paperclip Plugin Model
+## 推荐的 Paperclip 插件模型
 
-## 1. Use multiple extension classes
+## 1. 使用多种扩展类别
 
-Do not create one giant `hooks` object for everything.
+不要为所有事物创建一个庞大的 `hooks` 对象。
 
-Use distinct plugin classes with different trust models.
+使用具有不同信任模型的独立插件类别。
 
-| Extension class | Examples | Runtime model | Trust level | Why |
+| 扩展类别 | 示例 | 运行时模型 | 信任级别 | 原因 |
 |---|---|---|---|---|
-| Platform module | agent adapters, storage providers, secret providers, run-log backends | in-process | highly trusted | tight integration, performance, low-level APIs |
-| Connector plugin | Linear, GitHub Issues, Grafana, Stripe | out-of-process worker or sidecar | medium | external sync, safer isolation, clearer failure boundary |
-| Workspace plugin | file browser, terminal, git workflow, child process/server tracking | out-of-process, direct OS access | medium | resolves workspace paths from host, owns filesystem/git/PTY/process logic directly |
-| UI contribution | dashboard widgets, settings forms, company panels | plugin-shipped React bundles in host extension slots via bridge | medium | plugins own their rendering; host controls slot placement and bridge access |
-| Automation plugin | alerts, schedulers, sync jobs, webhook processors | out-of-process | medium | event-driven automation is a natural plugin fit |
+| 平台模块 | agent 适配器、存储提供商、密钥提供商、运行日志后端 | 进程内 | 高度信任 | 紧密集成、性能、底层 API |
+| 连接器插件 | Linear、GitHub Issues、Grafana、Stripe | 进程外工作进程或 sidecar | 中等 | 外部同步、更安全的隔离、更清晰的故障边界 |
+| 工作区插件 | 文件浏览器、终端、git 工作流、子进程/服务器追踪 | 进程外，直接操作系统访问 | 中等 | 从宿主解析工作区路径，直接拥有文件系统/git/PTY/进程逻辑 |
+| UI 贡献 | 仪表板小部件、设置表单、company 面板 | 插件提供的 React bundle，通过 bridge 挂载到宿主扩展槽中 | 中等 | 插件拥有其渲染；宿主控制槽位和 bridge 访问 |
+| 自动化插件 | 告警、调度器、同步任务、webhook 处理器 | 进程外 | 中等 | 事件驱动的自动化是插件的天然场景 |
 
-This split is the most important design recommendation in this report.
+这种划分是本报告中最重要的设计建议。
 
-## 2. Keep low-level modules separate from third-party plugins
+## 2. 将底层模块与第三方插件分开
 
-Paperclip already has this pattern implicitly:
+Paperclip 已隐式具备这种模式：
 
-- adapters are one thing
-- storage providers are another
-- secret providers are another
+- 适配器是一类
+- 存储提供商是另一类
+- 密钥提供商是再另一类
 
-Keep that separation.
+保持这种分离。
 
-I would formalize it like this:
+我建议将其正式化如下：
 
-- `module` means trusted code loaded by the host for low-level runtime services
-- `plugin` means integration code that talks to Paperclip through a typed plugin protocol and capability model
+- `module` 指由宿主为底层运行时服务加载的受信任代码
+- `plugin` 指通过类型化插件协议和能力模型与 Paperclip 通信的集成代码
 
-This avoids trying to force Stripe, a PTY terminal, and a new agent adapter into the same abstraction.
+这避免了将 Stripe、PTY 终端和新的 agent 适配器强行放入同一抽象的尴尬。
 
-## 3. Prefer event-driven extensions over core-logic mutation
+## 3. 优先使用事件驱动扩展，而非核心逻辑变更
 
-For third-party plugins, the primary API should be:
+对于第三方插件，主要 API 应为：
 
-- subscribe to typed domain events (with optional server-side filtering)
-- emit plugin-namespaced events for cross-plugin communication
-- read instance state, including company-bound business records when relevant
-- register webhooks
-- run scheduled jobs
-- contribute tools that agents can use during runs
-- write plugin-owned state
-- add additive UI surfaces
-- invoke explicit Paperclip actions through the API
+- 订阅类型化领域事件（可选服务端过滤）
+- 发射插件命名空间事件以实现跨插件通信
+- 读取实例状态，包括相关时的 company 绑定业务记录
+- 注册 webhook
+- 运行定时任务
+- 贡献 agent 在运行期间可使用的工具
+- 写入插件自有状态
+- 添加附加的 UI 界面
+- 通过 API 调用明确的 Paperclip 操作
 
-Do not make third-party plugins responsible for:
+不要让第三方插件负责：
 
-- deciding whether an approval passes
-- intercepting issue checkout semantics
-- rewriting activity log behavior
-- overriding budget hard-stops
+- 决定审批是否通过
+- 拦截 issue 检出语义
+- 重写活动日志行为
+- 覆盖预算硬限制
 
-Those are core invariants.
+这些是核心不变量。
 
 ## 4. Plugins ship their own UI
 

@@ -287,129 +287,129 @@ HOST_PORT=3233 DATA_DIR=./data/release-smoke-stable PAPERCLIPAI_VERSION=latest .
 
 否则，测试将变成一个不稳定的黑盒，大家最终会失去对它的信任。
 
-## Implementation Plan
+## 实施计划
 
-## Phase 1: Harness refactor
+## 第一阶段：框架重构
 
-Files:
+涉及文件：
 
 - `scripts/docker-onboard-smoke.sh`
-- optionally `scripts/lib/docker-onboard-smoke.sh` or similar helper
+- 可选：`scripts/lib/docker-onboard-smoke.sh` 或类似辅助文件
 - `doc/DOCKER.md`
 - `doc/RELEASING.md`
 
-Tasks:
+任务：
 
-1. Add detached/CI mode to the Docker smoke script.
-2. Make the script emit machine-readable connection metadata.
-3. Keep the current interactive manual mode intact.
-4. Add reliable cleanup commands for CI.
+1. 为 Docker 冒烟脚本添加分离/CI 模式。
+2. 让脚本输出机器可读的连接元数据。
+3. 保留当前的交互式手动模式不变。
+4. 为 CI 添加可靠的清理命令。
 
-Acceptance:
+验收标准：
 
-- a script invocation can start the published Docker app, auto-bootstrap it, and return control to the caller with enough metadata for browser automation
+- 一次脚本调用能够启动已发布的 Docker 应用、自动引导它，并将控制权返回给调用者，同时附带足够的浏览器自动化元数据
 
-## Phase 2: Browser release-smoke suite
+## 第二阶段：浏览器发布冒烟测试套件
 
-Files:
+涉及文件：
 
 - `tests/release-smoke/playwright.config.ts`
 - `tests/release-smoke/docker-auth-onboarding.spec.ts`
-- root `package.json`
+- 根目录 `package.json`
 
-Tasks:
+任务：
 
-1. Add a dedicated Playwright config for external server testing.
-2. Implement login + onboarding + CEO creation flow.
-3. Assert a CEO run was created or completed.
-4. Add a root script such as:
+1. 为外部服务器测试添加专用的 Playwright 配置。
+2. 实现登录 + 引导流程 + CEO 创建流程。
+3. 断言 CEO 运行已被创建或完成。
+4. 添加根级脚本，例如：
    - `test:release-smoke`
 
-Acceptance:
+验收标准：
 
-- the suite passes locally against both:
+- 测试套件在本地针对以下两种情况均能通过：
   - `PAPERCLIPAI_VERSION=canary`
   - `PAPERCLIPAI_VERSION=latest`
 
-## Phase 3: GitHub Actions workflow
+## 第三阶段：GitHub Actions 工作流
 
-Files:
+涉及文件：
 
 - `.github/workflows/release-smoke.yml`
 
-Tasks:
+任务：
 
-1. Add manual and reusable workflow entry points.
-2. Install Chromium and runner dependencies.
-3. Start Docker smoke in detached mode.
-4. Run the release-smoke Playwright suite.
-5. Upload diagnostics artifacts.
+1. 添加手动和可复用的工作流入口点。
+2. 安装 Chromium 和 runner 依赖项。
+3. 以分离模式启动 Docker 冒烟测试。
+4. 运行发布冒烟 Playwright 测试套件。
+5. 上传诊断产物。
 
-Acceptance:
+验收标准：
 
-- a maintainer can run the workflow manually for either `canary` or `latest`
+- 维护者可以针对 `canary` 或 `latest` 手动运行工作流
 
-## Phase 4: Release workflow integration
+## 第四阶段：发布工作流集成
 
-Files:
+涉及文件：
 
 - `.github/workflows/release.yml`
 - `doc/RELEASING.md`
 
-Tasks:
+任务：
 
-1. Trigger release smoke automatically after canary publish.
-2. Trigger release smoke automatically after stable publish.
-3. Document expected behavior and failure handling.
+1. 在 canary 发布后自动触发发布冒烟测试。
+2. 在稳定版发布后自动触发发布冒烟测试。
+3. 记录预期行为和失败处理方式。
 
-Acceptance:
+验收标准：
 
-- canary releases automatically produce a published-package browser smoke result
-- stable releases automatically produce a `latest` browser smoke result
+- canary 发布后自动产生已发布包的浏览器冒烟结果
+- 稳定版发布后自动产生 `latest` 浏览器冒烟结果
 
-## Phase 5: Future extension for real model-backed agent validation
+## 第五阶段：未来扩展——真实模型驱动的智能体验证
 
-Not part of the first implementation, but this should be the next layer after the deterministic lane is stable.
+不属于第一版实现，但这应该是确定性通道稳定后的下一层。
 
-Possible additions:
+可能的扩展：
 
-- a second Playwright project gated on repo secrets
-- real `claude_local` or `codex_local` adapter validation in Docker-capable environments
-- assertion that the CEO posts a real task/comment artifact
-- stable release holdback until the credentialed lane passes
+- 第二个 Playwright 项目，以仓库 secrets 为门禁
+- 在支持 Docker 的环境中对真实 `claude_local` 或 `codex_local` 适配器进行验证
+- 断言 CEO 发布了真实的任务/评论产物
+- 稳定版发布需等待凭据通道通过才能放行
 
-This should stay optional until the token-free lane is trustworthy.
+在无 token 通道可信赖之前，此部分应保持可选状态。
 
-## Acceptance Criteria
+## 验收标准
 
-The plan is complete when the implemented system can demonstrate all of the following:
+当已实现的系统能够证明以下所有内容时，本计划即告完成：
 
-1. A published `paperclipai@canary` Docker install can be smoke-tested by Playwright in CI.
-2. A published `paperclipai@latest` Docker install can be smoke-tested by Playwright in CI.
-3. The test logs into authenticated mode with the smoke credentials.
-4. The test sees onboarding for a fresh instance.
-5. The test completes onboarding in the browser.
-6. The test verifies the initial CEO agent was created.
-7. The test verifies at least one CEO heartbeat run was triggered.
-8. Failures produce actionable artifacts rather than just a red job.
+1. 已发布的 `paperclipai@canary` Docker 安装可以在 CI 中由 Playwright 进行冒烟测试。
+2. 已发布的 `paperclipai@latest` Docker 安装可以在 CI 中由 Playwright 进行冒烟测试。
+3. 测试使用冒烟凭据登录已认证模式。
+4. 测试在全新实例中看到引导流程。
+5. 测试在浏览器中完成引导流程。
+6. 测试验证初始 CEO 智能体已被创建。
+7. 测试验证至少一次 CEO 心跳运行已触发。
+8. 失败时产生可操作的产物，而不仅仅是一个红色的作业状态。
 
-## Risks And Decisions To Make
+## 风险与待决策事项
 
-### 1. Fast process runs may finish before the UI visibly updates
+### 1. 快速运行的进程可能在 UI 更新前已完成
 
-That is expected. The assertions should prefer API polling for run existence/status rather than only visual indicators.
+这是预期行为。断言应优先通过 API 轮询运行的存在性/状态，而非仅依赖视觉指示器。
 
-### 2. `latest` smoke is post-publish, not preventive
+### 2. `latest` 冒烟是发布后验证，而非预防性措施
 
-This is a real limitation of testing the published dist-tag itself. It is still valuable, but it should not be confused with a pre-publish gate.
+这是测试已发布 dist-tag 本身的真实局限性。它仍然有价值，但不应与发布前门禁混淆。
 
-### 3. We should not overcouple the test to cosmetic onboarding text
+### 3. 不应将测试过度耦合到引导流程的界面文本上
 
-The important contract is flow success, created entities, and run creation. Use visible labels sparingly and prefer stable semantic selectors where possible.
+重要的契约是流程成功、已创建的实体以及运行的创建。尽量少使用可见标签，尽可能优先选用稳定的语义选择器。
 
-### 4. Keep the smoke adapter path boring
+### 4. 保持冒烟适配器路径简单无趣
 
-For release safety, the first test should use the most boring runnable adapter possible. This is not the place to validate every adapter.
+为了发布安全，第一个测试应使用尽可能简单的可运行适配器。这里不是验证每个适配器的地方。
 
 ## Recommended First Slice
 

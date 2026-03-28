@@ -249,24 +249,24 @@ Paperclip 不能假设它与代码运行在同一台机器上。
 - 对于单体仓库，多个项目工作区可以指向同一仓库下的不同根目录或包。
 - `sourceType=remote_managed` 对于云部署很重要，其中持久代码库由提供商/仓库元数据定义，而非本地检出路径。
 
-## 3. Project Execution Workspace Policy
+## 3. 项目执行工作区策略
 
-Project-level defaults for how issues execute.
+issue 执行方式的项目级默认配置。
 
-This is the main operator-facing configuration surface.
+这是面向运营者的主要配置界面。
 
-### Motivation
+### 动机
 
-This lets Paperclip support:
+这让 Paperclip 支持：
 
-- direct editing in a shared workspace
-- isolated workspaces for issue parallelism
-- long-lived integration branch workflows
-- remote cloud-agent execution that returns a branch or PR
+- 在共享工作区中直接编辑
+- 用于 issue 并行的隔离工作区
+- 长期存活的集成分支工作流
+- 返回分支或 PR 的远程云代理执行
 
-without forcing every issue or agent to expose low-level runtime configuration.
+无需强制每个 issue 或代理暴露低级运行时配置。
 
-### Proposed fields
+### 建议字段
 
 - `enabled: boolean`
 - `defaultMode`
@@ -314,23 +314,23 @@ without forcing every issue or agent to expose low-level runtime configuration.
   - `keepWhilePreviewHealthy`
   - `keepWhileOpenPrExists`
 
-## 4. Issue Workspace Binding
+## 4. Issue 工作区绑定
 
-Issue-level selection of execution behavior.
+issue 级别的执行行为选择。
 
-This should remain lightweight in the normal case and only surface richer controls when relevant.
+正常情况下应保持轻量，仅在相关时展示更丰富的控件。
 
-### Motivation
+### 动机
 
-Not every issue in a code project should create a new derived workspace.
+代码项目中的每个 issue 不必都创建新的派生工作区。
 
-Examples:
+示例：
 
-- a tiny fix can run in the shared workspace
-- three related issues may intentionally share one integration branch
-- a solo operator may be working directly on `master`
+- 小修复可以在共享工作区中运行
+- 三个相关 issue 可以故意共享一个集成分支
+- 单人运营者可能直接在 `master` 上工作
 
-### Proposed fields on `issues`
+### `issues` 上的建议字段
 
 - `projectWorkspaceId: uuid | null`
 - `executionWorkspacePreference`
@@ -341,37 +341,37 @@ Examples:
   - `reuse_existing`
 - `preferredExecutionWorkspaceId: uuid | null`
 - `executionWorkspaceSettings`
-  - keep advanced per-issue override fields here
+  - 在此保留高级的每个 issue 覆盖字段
 
-### Rules
+### 规则
 
-- if the project has no workspace automation, these fields may all be null
-- if the project has one primary workspace, issue creation should default to it silently
-- `reuse_existing` is advanced-only and should target active execution workspaces, not the whole workspace universe
-- existing issues without these fields should behave as `inherit` during migration
+- 如果项目没有工作区自动化，这些字段可以全部为 null
+- 如果项目有一个主工作区，issue 创建时应默认选择它而不提示用户
+- `reuse_existing` 仅供高级使用，应针对活跃的执行工作区，而非整个工作区集合
+- 迁移期间，没有这些字段的现有 issue 应表现为 `inherit`
 
-## 5. Execution Workspace
+## 5. 执行工作区
 
-A durable record for a shared or derived runtime workspace.
+共享或派生运行时工作区的持久记录。
 
-This is the missing object that makes cleanup, previews, PRs, and branch reuse tractable.
+这是使清理、预览、PR 和分支重用变得可行的缺失对象。
 
-### Motivation
+### 动机
 
-Without an explicit `execution workspace` record, Paperclip has nowhere stable to attach:
+没有明确的 `execution workspace` 记录，Paperclip 没有稳定的地方来绑定：
 
-- derived branch/worktree identity
-- active preview ownership
-- PR linkage
-- cleanup state
-- "reuse this existing integration branch" behavior
-- remote provider session identity
+- 派生分支/worktree 身份
+- 活跃预览的所有权
+- PR 关联
+- 清理状态
+- "重用此现有集成分支"的行为
+- 远程提供商会话身份
 
-### Proposed new object
+### 建议的新对象
 
 `execution_workspaces`
 
-### Proposed fields
+### 建议字段
 
 - `id`
 - `companyId`
@@ -414,27 +414,27 @@ Without an explicit `execution workspace` record, Paperclip has nowhere stable t
 - `createdAt`
 - `updatedAt`
 
-### Notes
+### 注意事项
 
-- `sourceIssueId` is the issue that originally caused the workspace to be created, not necessarily the only issue linked to it later.
-- multiple issues may link to the same execution workspace in a long-lived branch workflow.
-- `cwd` may be null for remote execution workspaces; provider identity and work product links still make the object useful.
+- `sourceIssueId` 是最初导致工作区创建的 issue，不一定是后来唯一关联到它的 issue。
+- 在长期存活的分支工作流中，多个 issue 可能关联到同一个执行工作区。
+- 对于远程执行工作区，`cwd` 可以为 null；提供商身份和工作成果链接仍然使该对象有用。
 
-## 6. Issue-to-Execution Workspace Link
+## 6. Issue 到执行工作区的链接
 
-An issue may need to link to one or more execution workspaces over time.
+随着时间推移，一个 issue 可能需要关联到一个或多个执行工作区。
 
-Examples:
+示例：
 
-- an issue begins in a shared workspace and later moves to an isolated one
-- a failed attempt is archived and a new workspace is created
-- several issues intentionally share one operator branch workspace
+- 一个 issue 从共享工作区开始，后来移到隔离工作区
+- 一次失败的尝试被归档，新的工作区被创建
+- 多个 issue 故意共享一个运营者分支工作区
 
-### Proposed object
+### 建议对象
 
 `issue_execution_workspaces`
 
-### Proposed fields
+### 建议字段
 
 - `issueId`
 - `executionWorkspaceId`
@@ -445,9 +445,9 @@ Examples:
 - `createdAt`
 - `updatedAt`
 
-### UI simplification
+### UI 简化
 
-Most issues should only show one current workspace in the main UI. Historical links belong in advanced/history views.
+大多数 issue 在主 UI 中应只显示一个当前工作区。历史链接属于高级/历史视图。
 
 ## 7. Work Product
 

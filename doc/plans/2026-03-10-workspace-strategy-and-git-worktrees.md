@@ -207,99 +207,99 @@ Paperclip 应建模**执行工作区（execution workspaces）**，而非 **work
 - 项目工作流设置应支持"直接使用基础分支"或"使用首选运营者分支"的路径
 - PR 策略不应假设每个工作单元都与新分支或 PR 一一对应
 
-## Recommended UX Model
+## 推荐的用户体验模型
 
-### 1. Project-level "Execution Workspace" settings
+### 1. 项目级"执行工作区"设置
 
-Projects should have a dedicated settings area for workspace automation.
+项目应拥有专门的工作区自动化设置区域。
 
-Suggested structure:
+建议结构：
 
-- `Execution Workspaces`
-  - `Enable isolated issue checkouts`
-  - `Default for new issues`
-  - `Checkout implementation`
-  - `Branch and PR behavior`
-  - `Runtime services`
-  - `Cleanup behavior`
+- `执行工作区（Execution Workspaces）`
+  - `启用独立问题检出（Enable isolated issue checkouts）`
+  - `新问题的默认值（Default for new issues）`
+  - `检出实现方式（Checkout implementation）`
+  - `分支与 PR 行为（Branch and PR behavior）`
+  - `运行时服务（Runtime services）`
+  - `清理行为（Cleanup behavior）`
 
-For a local git-backed project, the visible language can be more concrete:
+对于本地 git 支持的项目，可见语言可以更具体：
 
-- `Enable isolated issue checkouts`
-- `Implementation: Git worktree`
+- `启用独立问题检出（Enable isolated issue checkouts）`
+- `实现方式：Git worktree（Implementation: Git worktree）`
 
-For remote or adapter-managed projects, the same section can instead say:
+对于远程或适配器管理的项目，同一部分可改为：
 
-- `Implementation: Adapter-managed workspace`
+- `实现方式：适配器管理的工作区（Implementation: Adapter-managed workspace）`
 
-### 2. Issue creation should expose a simple opt-in
+### 2. 问题创建应暴露简单的选择加入选项
 
-When creating an issue inside a project with execution workspace support enabled:
+在启用了执行工作区支持的项目中创建问题时：
 
-- show a checkbox or toggle such as `Use isolated issue checkout`
-- default it from the project setting
-- hide advanced workspace controls unless the operator has expanded an advanced section
+- 显示一个复选框或开关，例如 `使用独立问题检出（Use isolated issue checkout）`
+- 从项目设置中获取默认值
+- 除非运营者展开了高级部分，否则隐藏高级工作区控件
 
-If the project does not support execution workspaces, do not show the control at all.
+如果项目不支持执行工作区，则完全不显示该控件。
 
-This keeps the default UI light while preserving control.
+这在保持控制的同时保持了默认 UI 的简洁。
 
-### 3. Agent configuration should be mostly inheritance-based
+### 3. 代理配置应主要基于继承
 
-The agent form should not be the primary place where operators assemble worktree/runtime policy for common local agents.
+代理表单不应是运营者为常见本地代理组装 worktree/运行时策略的主要位置。
 
-Instead:
+取而代之：
 
-- local coding agents inherit the project's execution workspace policy
-- the agent form only exposes an override when truly necessary
-- raw JSON config is advanced-only
+- 本地编码代理继承项目的执行工作区策略
+- 代理表单仅在真正必要时暴露覆盖项
+- 原始 JSON 配置仅限高级用户
 
-That means the common case becomes:
+这意味着常见情况变为：
 
-- configure the project once
-- assign a local coding agent
-- create issues with optional isolated checkout behavior
+- 一次性配置项目
+- 分配本地编码代理
+- 创建具有可选独立检出行为的问题
 
-### 4. Advanced implementation detail can still exist
+### 4. 高级实现细节仍然可以存在
 
-There should still be an advanced view for power users that shows:
+仍应为高级用户提供高级视图，显示：
 
-- execution workspace strategy payload
-- runtime service intent payload
-- adapter-specific overrides
+- 执行工作区策略载荷
+- 运行时服务意图载荷
+- 适配器特定覆盖项
 
-But that should be treated like an expert/debugging surface, not the default mental model.
+但这应被视为专家/调试界面，而非默认的思维模型。
 
-## Recommended Workflow Policy Model
+## 推荐的工作流策略模型
 
-### Workspace realization policy
+### 工作区实现策略
 
-Suggested policy values:
+建议的策略值：
 
 - `shared_project_workspace`
 - `isolated_issue_checkout`
 - `adapter_managed_isolated_workspace`
 
-For local git projects, `isolated_issue_checkout` may map to `git_worktree`.
+对于本地 git 项目，`isolated_issue_checkout` 可以映射到 `git_worktree`。
 
-### Branch policy
+### 分支策略
 
-Suggested project-level branch policy fields:
+建议的项目级分支策略字段：
 
 - `baseBranch`
 - `branchMode`: `issue_scoped | operator_branch | project_primary`
-- `branchTemplate` for issue-scoped branches
-- `operatorPreferredBranch` for human/operator workflows
+- `branchTemplate` 用于问题范围的分支
+- `operatorPreferredBranch` 用于人工/运营者工作流
 
-This allows:
+这允许：
 
-- strict issue branches for agents
-- long-lived personal branches for humans
-- direct use of the project primary workspace when desired
+- 代理使用严格的问题分支
+- 人工使用长期个人分支
+- 在需要时直接使用项目主工作区
 
-### Pull request policy
+### Pull request 策略
 
-Suggested project-level PR policy fields:
+建议的项目级 PR 策略字段：
 
 - `prMode`: `none | agent_may_open | agent_auto_open | approval_required`
 - `autoPushOnDone`: boolean
@@ -307,11 +307,11 @@ Suggested project-level PR policy fields:
 - `requireApprovalBeforeReady`: boolean
 - `defaultBaseBranch`
 
-This keeps PR behavior explicit and governable.
+这使 PR 行为明确且可治理。
 
-### Cleanup policy
+### 清理策略
 
-Suggested project-level cleanup fields:
+建议的项目级清理字段：
 
 - `stopRuntimeServicesOnDone`
 - `removeIsolatedCheckoutOnDone`
@@ -319,31 +319,31 @@ Suggested project-level cleanup fields:
 - `deleteIssueBranchOnMerged`
 - `retainFailedWorkspaceForInspection`
 
-These matter because workspace automation is not just setup. The cleanup path is part of the product.
+这些很重要，因为工作区自动化不仅仅是设置。清理路径也是产品的一部分。
 
-## Design Recommendations for the Current UI Problem
+## 当前 UI 问题的设计建议
 
-Based on the concerns above, the UI should change in these ways:
+基于上述考虑，UI 应进行以下更改：
 
-### Agent UI
+### 代理 UI
 
-- remove generic runtime service JSON from the default local-agent configuration surface
-- keep raw workspace/runtime JSON behind advanced settings only
-- prefer inheritance from project settings for `claude_local` and `codex_local`
-- only add adapter-specific runtime UI when an adapter truly needs settings that Paperclip cannot infer
+- 从默认本地代理配置界面移除通用运行时服务 JSON
+- 将原始工作区/运行时 JSON 置于高级设置之后
+- 对于 `claude_local` 和 `codex_local`，优先从项目设置继承
+- 仅在适配器真正需要 Paperclip 无法推断的设置时添加适配器特定运行时 UI
 
-### Project UI
+### 项目 UI
 
-- add a project-level execution workspace settings section
-- allow enabling isolated issue checkouts for that project
-- store default issue behavior there
-- expose branch, PR, runtime service, and cleanup defaults there
+- 添加项目级执行工作区设置部分
+- 允许为该项目启用独立问题检出
+- 在那里存储问题默认行为
+- 在那里暴露分支、PR、运行时服务和清理默认值
 
-### Issue creation UI
+### 问题创建 UI
 
-- only show `Use isolated issue checkout` when the project has execution workspace support enabled
-- keep it as an issue-level opt-in/out, defaulted from the project
-- hide advanced execution workspace details unless requested
+- 仅在项目启用了执行工作区支持时显示 `使用独立问题检出（Use isolated issue checkout）`
+- 将其保持为问题级的选择加入/退出，从项目继承默认值
+- 除非被请求，否则隐藏高级执行工作区详情
 
 ## Consequences for the Spec
 

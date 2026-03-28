@@ -192,33 +192,33 @@ ctx.jobs.register("heartbeat", async (job) => {
 });
 ```
 
-## UI slots and launchers
+## UI 插槽与启动器
 
-Slots are mount points for plugin React components. Launchers are host-rendered entry points (buttons, menu items) that open plugin UI. Declare slots in `manifest.ui.slots` with `type`, `id`, `displayName`, `exportName`; for context-sensitive slots add `entityTypes`. Declare launchers in `manifest.ui.launchers` (or legacy `manifest.launchers`).
+插槽是插件 React 组件的挂载点。启动器是宿主渲染的入口点（按钮、菜单项），用于打开插件 UI。在 `manifest.ui.slots` 中声明插槽，包含 `type`、`id`、`displayName`、`exportName`；对于上下文敏感的插槽，需添加 `entityTypes`。在 `manifest.ui.launchers`（或旧版 `manifest.launchers`）中声明启动器。
 
-### Slot types / launcher placement zones
+### 插槽类型 / 启动器放置区域
 
-The same set of values is used as **slot types** (where a component mounts) and **launcher placement zones** (where a launcher can appear). Hierarchy:
+相同的值集合同时用作**插槽类型**（组件挂载位置）和**启动器放置区域**（启动器可出现的位置）。层级关系：
 
-| Slot type / placement zone | Scope | Entity types (when context-sensitive) |
+| 插槽类型 / 放置区域 | 作用域 | 实体类型（上下文敏感时） |
 |----------------------------|-------|---------------------------------------|
-| `page` | Global | — |
-| `sidebar` | Global | — |
-| `sidebarPanel` | Global | — |
-| `settingsPage` | Global | — |
-| `dashboardWidget` | Global | — |
-| `globalToolbarButton` | Global | — |
-| `detailTab` | Entity | `project`, `issue`, `agent`, `goal`, `run` |
-| `taskDetailView` | Entity | (task/issue context) |
-| `commentAnnotation` | Entity | `comment` |
-| `commentContextMenuItem` | Entity | `comment` |
-| `projectSidebarItem` | Entity | `project` |
-| `toolbarButton` | Entity | varies by host surface |
-| `contextMenuItem` | Entity | varies by host surface |
+| `page` | 全局 | — |
+| `sidebar` | 全局 | — |
+| `sidebarPanel` | 全局 | — |
+| `settingsPage` | 全局 | — |
+| `dashboardWidget` | 全局 | — |
+| `globalToolbarButton` | 全局 | — |
+| `detailTab` | 实体 | `project`, `issue`, `agent`, `goal`, `run` |
+| `taskDetailView` | 实体 | （任务/问题上下文） |
+| `commentAnnotation` | 实体 | `comment` |
+| `commentContextMenuItem` | 实体 | `comment` |
+| `projectSidebarItem` | 实体 | `project` |
+| `toolbarButton` | 实体 | 因宿主界面而异 |
+| `contextMenuItem` | 实体 | 因宿主界面而异 |
 
-**Scope** describes whether the slot requires an entity to render. **Global** slots render without a specific entity but still receive the active `companyId` through `PluginHostContext` — use it to scope data fetches to the current company. **Entity** slots additionally require `entityId` and `entityType` (e.g. a detail tab on a specific issue).
+**作用域**描述插槽是否需要实体才能渲染。**全局**插槽无需特定实体即可渲染，但仍通过 `PluginHostContext` 接收当前活跃的 `companyId`——使用它将数据获取限定在当前公司范围内。**实体**插槽还需要 `entityId` 和 `entityType`（例如特定问题上的详情标签页）。
 
-**Entity types** (for `entityTypes` on slots): `project` \| `issue` \| `agent` \| `goal` \| `run` \| `comment`. Full list: import `PLUGIN_UI_SLOT_TYPES` and `PLUGIN_UI_SLOT_ENTITY_TYPES` from `@paperclipai/plugin-sdk`.
+**实体类型**（用于插槽的 `entityTypes`）：`project` \| `issue` \| `agent` \| `goal` \| `run` \| `comment`。完整列表：从 `@paperclipai/plugin-sdk` 导入 `PLUGIN_UI_SLOT_TYPES` 和 `PLUGIN_UI_SLOT_ENTITY_TYPES`。
 
 ### Slot component descriptions
 
