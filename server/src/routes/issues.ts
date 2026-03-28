@@ -1270,16 +1270,26 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     const orderRaw = readQueryString(req.query.order);
-    const order = orderRaw && orderRaw.trim().toLowerCase() === "asc"
-      ? "asc"
-      : "desc";
+    const normalizedOrder = orderRaw?.trim().toLowerCase();
+    if (normalizedOrder && normalizedOrder !== "asc" && normalizedOrder !== "desc") {
+      res.status(400).json({ error: "Invalid comment order. Use 'asc' or 'desc'." });
+      return;
+    }
+    const order = normalizedOrder === "asc" ? "asc" : "desc";
     const limitRawString = readQueryString(req.query.limit);
-    const limitRaw = limitRawString && limitRawString.trim().length > 0
+    const parsedLimit = limitRawString && limitRawString.trim().length > 0
       ? Number(limitRawString)
       : null;
+    if (
+      parsedLimit !== null &&
+      (!Number.isFinite(parsedLimit) || !Number.isInteger(parsedLimit) || parsedLimit <= 0)
+    ) {
+      res.status(400).json({ error: "Invalid comment limit. Use a positive integer." });
+      return;
+    }
     const limit =
-      limitRaw && Number.isFinite(limitRaw) && limitRaw > 0
-        ? Math.min(Math.floor(limitRaw), MAX_ISSUE_COMMENT_LIMIT)
+      parsedLimit !== null && Number.isFinite(parsedLimit) && parsedLimit > 0
+        ? Math.min(Math.floor(parsedLimit), MAX_ISSUE_COMMENT_LIMIT)
         : null;
     const comments = await svc.listComments(id, {
       afterCommentId,

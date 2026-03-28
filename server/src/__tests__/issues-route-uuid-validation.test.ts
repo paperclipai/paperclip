@@ -112,6 +112,26 @@ describe("issues routes UUID validation", () => {
     expect(mockIssueService.listComments).not.toHaveBeenCalled();
   });
 
+  it("returns 400 for invalid comment order query values", async () => {
+    const res = await request(createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/comments?order=sideways",
+    );
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("Invalid comment order");
+    expect(mockIssueService.listComments).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 for invalid comment limit query values", async () => {
+    const res = await request(createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/comments?limit=0",
+    );
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("Invalid comment limit");
+    expect(mockIssueService.listComments).not.toHaveBeenCalled();
+  });
+
   it("returns 400 for invalid attachment ids before attachment lookup", async () => {
     const res = await request(createApp()).get("/api/attachments/not-a-uuid/content");
     expect(res.status).toBe(400);
