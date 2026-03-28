@@ -430,6 +430,14 @@ describe("issueService.list participantAgentId", () => {
     await expect(svc.getComment("not-a-uuid")).resolves.toBeNull();
   });
 
+  it("returns an empty cursor payload for malformed non-uuid issue ids", async () => {
+    await expect(svc.getCommentCursor("not-a-uuid")).resolves.toEqual({
+      totalComments: 0,
+      latestCommentId: null,
+      latestCommentAt: null,
+    });
+  });
+
   it("ignores malformed non-string list filters instead of throwing", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();

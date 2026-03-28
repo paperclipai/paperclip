@@ -1368,6 +1368,13 @@ export function issueService(db: Db) {
     },
 
     getCommentCursor: async (issueId: string) => {
+      if (!isUuidLike(issueId)) {
+        return {
+          totalComments: 0,
+          latestCommentId: null,
+          latestCommentAt: null,
+        };
+      }
       const [latest, countRow] = await Promise.all([
         db
           .select({
