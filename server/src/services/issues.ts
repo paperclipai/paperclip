@@ -406,6 +406,7 @@ export function issueService(db: Db) {
   }
 
   async function assertAssignableAgent(companyId: string, agentId: string) {
+    if (!isUuidLike(agentId)) throw unprocessable("Invalid assigneeAgentId");
     const assignee = await db
       .select({
         id: agents.id,
@@ -447,6 +448,8 @@ export function issueService(db: Db) {
   }
 
   async function assertValidProjectWorkspace(companyId: string, projectId: string | null | undefined, projectWorkspaceId: string) {
+    if (!isUuidLike(projectWorkspaceId)) throw unprocessable("Invalid projectWorkspaceId");
+    if (projectId && !isUuidLike(projectId)) throw unprocessable("Invalid projectId");
     const workspace = await db
       .select({
         id: projectWorkspaces.id,
@@ -464,6 +467,8 @@ export function issueService(db: Db) {
   }
 
   async function assertValidExecutionWorkspace(companyId: string, projectId: string | null | undefined, executionWorkspaceId: string) {
+    if (!isUuidLike(executionWorkspaceId)) throw unprocessable("Invalid executionWorkspaceId");
+    if (projectId && !isUuidLike(projectId)) throw unprocessable("Invalid projectId");
     const workspace = await db
       .select({
         id: executionWorkspaces.id,
@@ -482,6 +487,9 @@ export function issueService(db: Db) {
 
   async function assertValidLabelIds(companyId: string, labelIds: string[], dbOrTx: any = db) {
     if (labelIds.length === 0) return;
+    if (labelIds.some((id) => !isUuidLike(id))) {
+      throw unprocessable("One or more labels must be valid UUIDs");
+    }
     const existing = await dbOrTx
       .select({ id: labels.id })
       .from(labels)

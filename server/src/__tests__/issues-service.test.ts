@@ -761,4 +761,58 @@ describe("issueService.list participantAgentId", () => {
   it("returns null for malformed issue ids on release", async () => {
     await expect(svc.release("not-a-uuid")).resolves.toBeNull();
   });
+
+  it("returns unprocessable for malformed assigneeAgentId on create", async () => {
+    await expect(
+      svc.create(randomUUID(), {
+        title: "Invalid assignee guard",
+        assigneeAgentId: "not-a-uuid",
+      } as any),
+    ).rejects.toMatchObject({
+      status: 422,
+      message: "Invalid assigneeAgentId",
+    });
+  });
+
+  it("returns unprocessable for malformed workspace ids on create", async () => {
+    await expect(
+      svc.create(randomUUID(), {
+        title: "Invalid workspace guard",
+        projectWorkspaceId: "not-a-uuid",
+      } as any),
+    ).rejects.toMatchObject({
+      status: 422,
+      message: "Invalid projectWorkspaceId",
+    });
+
+    await expect(
+      svc.create(randomUUID(), {
+        title: "Invalid execution workspace guard",
+        executionWorkspaceId: "not-a-uuid",
+      } as any),
+    ).rejects.toMatchObject({
+      status: 422,
+      message: "Invalid executionWorkspaceId",
+    });
+  });
+
+  it("returns unprocessable for malformed label ids on create", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await expect(
+      svc.create(companyId, {
+        title: "Malformed labels guard",
+        labelIds: ["not-a-uuid"],
+      } as any),
+    ).rejects.toMatchObject({
+      status: 422,
+      message: "One or more labels must be valid UUIDs",
+    });
+  });
 });
