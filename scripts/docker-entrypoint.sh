@@ -25,4 +25,12 @@ fi
 ln -sf "$opencode_bin" "${paperclip_bin_dir}/opencode"
 ln -sf "$gh_wrapper" "${paperclip_bin_dir}/gh"
 
+# QA-gate self-healing: run on startup and every 15 min in background
+QA_GATE_SCRIPT="/paperclip/.paperclip/plugins/ensure-qa-gate.sh"
+QA_GATE_LOG="/paperclip/.paperclip/plugins/ensure-qa-gate.log"
+if [ -x "$QA_GATE_SCRIPT" ]; then
+  "$QA_GATE_SCRIPT" >> "$QA_GATE_LOG" 2>&1 || true
+  (while true; do sleep 900; "$QA_GATE_SCRIPT" >> "$QA_GATE_LOG" 2>&1 || true; done) &
+fi
+
 exec "$@"
