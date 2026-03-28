@@ -451,6 +451,12 @@ describe("routine service live-execution coalescing", () => {
     expect(routineIssues).toHaveLength(0);
   });
 
+  it("falls back to a safe default when listRuns receives a malformed limit", async () => {
+    const { routine, svc } = await seedFixture();
+
+    await expect(svc.listRuns(routine.id, Number.NaN as any)).resolves.toEqual([]);
+  });
+
   it("accepts standard second-precision webhook timestamps for HMAC triggers", async () => {
     const { routine, svc } = await seedFixture();
     const { trigger, secretMaterial } = await svc.createTrigger(

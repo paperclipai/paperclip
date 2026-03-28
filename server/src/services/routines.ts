@@ -1102,7 +1102,8 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     },
 
     listRuns: async (routineId: string, limit = 50): Promise<RoutineRunSummary[]> => {
-      const cappedLimit = Math.max(1, Math.min(limit, 200));
+      const normalizedLimit = Number.isFinite(limit) ? Math.floor(limit) : 50;
+      const cappedLimit = Math.max(1, Math.min(normalizedLimit, 200));
       const rows = await db
         .select({
           id: routineRuns.id,
