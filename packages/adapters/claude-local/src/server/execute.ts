@@ -365,7 +365,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     extraArgs,
   } = runtimeConfig;
   const billingType = resolveClaudeBillingType(env);
-  const customSkillsDirs = asStringArray(config.customSkillsDirs, []);
+  const customSkillsDirs = asStringArray(config.customSkillsDirs);
   const skillsDir = await buildSkillsDir(customSkillsDirs);
 
   // When instructionsFilePath is configured, create a combined temp file that

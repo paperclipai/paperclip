@@ -170,7 +170,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
 
   // Inject built-in + custom external skills into Cursor's skill discovery path
-  const customSkillsDirs = asStringArray(config.customSkillsDirs, []);
+  const customSkillsDirs = asStringArray(config.customSkillsDirs);
   const customSkillEntries: Array<{ name: string; source: string }> = [];
   for (const customDir of customSkillsDirs) {
     const resolved = path.resolve(customDir);
