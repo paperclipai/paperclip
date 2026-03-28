@@ -139,6 +139,14 @@ const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
     localPath: "packages/plugins/examples/plugin-kitchen-sink-example",
     tag: "example",
   },
+  {
+    packageName: "@paperclipai/plugin-chat",
+    pluginKey: "paperclip.chat",
+    displayName: "Paperclip Chat",
+    description: "Slide-out chatbot panel — talk directly to an OpenClaw agent from anywhere in Paperclip.",
+    localPath: "packages/plugins/examples/plugin-chat",
+    tag: "example",
+  },
 ];
 
 function listBundledPluginExamples(): AvailablePluginExample[] {
