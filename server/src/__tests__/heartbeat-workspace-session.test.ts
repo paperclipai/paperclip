@@ -7,6 +7,7 @@ import {
   formatRuntimeWorkspaceWarningLog,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
+  readRuntimeStateSessionSnapshot,
   resolveRuntimeSessionParamsForWorkspace,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
@@ -117,6 +118,51 @@ describe("resolveRuntimeSessionParamsForWorkspace", () => {
       workspaceId: "workspace-1",
     });
     expect(result.warning).toBeNull();
+  });
+});
+
+describe("readRuntimeStateSessionSnapshot", () => {
+  it("restores session params and display id from runtime state json", () => {
+    const snapshot = readRuntimeStateSessionSnapshot(
+      {
+        sessionParams: {
+          sessionId: "session-1",
+          cwd: "/tmp/project",
+          workspaceId: "workspace-1",
+        },
+        sessionDisplayId: "session-1",
+      },
+      codexSessionCodec,
+    );
+
+    expect(snapshot).toEqual({
+      params: {
+        sessionId: "session-1",
+        cwd: "/tmp/project",
+        workspaceId: "workspace-1",
+      },
+      displayId: "session-1",
+    });
+  });
+
+  it("falls back to deriving display id from session params", () => {
+    const snapshot = readRuntimeStateSessionSnapshot(
+      {
+        sessionParams: {
+          sessionId: "session-2",
+          cwd: "/tmp/project",
+        },
+      },
+      codexSessionCodec,
+    );
+
+    expect(snapshot).toEqual({
+      params: {
+        sessionId: "session-2",
+        cwd: "/tmp/project",
+      },
+      displayId: "session-2",
+    });
   });
 });
 
