@@ -803,7 +803,7 @@ async function ensureEmbeddedPostgres(dataDir: string, preferredPort: number): P
     return {
       port: readPidFilePort(postmasterPidFile) ?? preferredPort,
       startedByThisProcess: false,
-      stop: async () => {},
+      stop: async () => { },
     };
   }
 
@@ -963,19 +963,21 @@ async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
   const preferredServerPort = opts.serverPort ?? ((sourceConfig?.server.port ?? 3100) + 1);
   const serverPort = await findAvailablePort(preferredServerPort, claimedPorts.serverPorts);
   const preferredDbPort = opts.dbPort ?? ((sourceConfig?.database.embeddedPostgresPort ?? 54329) + 1);
+
   const databasePort = await findAvailablePort(
     preferredDbPort,
     new Set([...claimedPorts.databasePorts, serverPort]),
   );
+  const sourceEnvEntries = readPaperclipEnvEntries(resolvePaperclipEnvFile(sourceConfigPath));
   const targetConfig = buildWorktreeConfig({
     sourceConfig,
+    sourceEnvEntries,
     paths,
     serverPort,
     databasePort,
   });
 
   writeConfig(targetConfig, paths.configPath);
-  const sourceEnvEntries = readPaperclipEnvEntries(resolvePaperclipEnvFile(sourceConfigPath));
   const existingAgentJwtSecret =
     nonEmpty(sourceEnvEntries.PAPERCLIP_AGENT_JWT_SECRET) ??
     nonEmpty(process.env.PAPERCLIP_AGENT_JWT_SECRET);
@@ -1288,7 +1290,7 @@ export async function worktreeCleanupCommand(nameArg: string, opts: WorktreeClea
     } else {
       problems.push(
         `Branch "${name}" has commits not found on any other branch or remote. ` +
-          `Deleting it will lose work. Push it first, or use --force.`,
+        `Deleting it will lose work. Push it first, or use --force.`,
       );
     }
   }
@@ -1591,7 +1593,7 @@ function renderMergePlan(plan: Awaited<ReturnType<typeof collectMergePlan>>["pla
     for (const issue of issueInserts) {
       const projectNote =
         (issue.projectResolution === "mapped" || issue.projectResolution === "imported")
-        && issue.mappedProjectName
+          && issue.mappedProjectName
           ? ` project->${issue.projectResolution === "imported" ? "import:" : ""}${issue.mappedProjectName}`
           : "";
       const adjustments = issue.adjustments.length > 0 ? ` [${issue.adjustments.join(", ")}]` : "";
@@ -1953,10 +1955,10 @@ async function promptForProjectMappings(input: {
         },
         ...(nameMatch
           ? [{
-              value: nameMatch.id,
-              label: `Map to ${nameMatch.name}`,
-              hint: "Recommended: exact name match",
-            }]
+            value: nameMatch.id,
+            label: `Map to ${nameMatch.name}`,
+            hint: "Recommended: exact name match",
+          }]
           : []),
         {
           value: null,

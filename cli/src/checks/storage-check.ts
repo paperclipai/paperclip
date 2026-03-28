@@ -28,6 +28,30 @@ export function storageCheck(config: PaperclipConfig, configPath?: string): Chec
     }
   }
 
+  if (config.storage.provider === "vercel_blob") {
+    const token =
+      config.storage.vercelBlob?.token?.trim() ||
+      process.env.PAPERCLIP_STORAGE_VERCEL_BLOB_TOKEN?.trim() ||
+      "";
+    if (!token) {
+      return {
+        name: "Storage",
+        status: "fail",
+        message: "Vercel Blob storage requires storage.vercelBlob.token or PAPERCLIP_STORAGE_VERCEL_BLOB_TOKEN",
+        canRepair: false,
+        repairHint: "Set storage.vercelBlob.token in config or PAPERCLIP_STORAGE_VERCEL_BLOB_TOKEN in .env",
+      };
+    }
+
+    return {
+      name: "Storage",
+      status: "warn",
+      message: "Vercel Blob configured (token present). Reachability check is skipped in doctor.",
+      canRepair: false,
+      repairHint: "Verify storage.vercelBlob.token or PAPERCLIP_STORAGE_VERCEL_BLOB_TOKEN in the deployment environment",
+    };
+  }
+
   const bucket = config.storage.s3.bucket.trim();
   const region = config.storage.s3.region.trim();
   if (!bucket || !region) {
@@ -48,4 +72,3 @@ export function storageCheck(config: PaperclipConfig, configPath?: string): Chec
     repairHint: "Verify credentials and endpoint in deployment environment",
   };
 }
-

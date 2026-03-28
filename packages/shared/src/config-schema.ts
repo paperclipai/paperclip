@@ -70,6 +70,10 @@ export const storageS3ConfigSchema = z.object({
   forcePathStyle: z.boolean().default(false),
 });
 
+export const storageVercelBlobConfigSchema = z.object({
+  token: z.string().default(""),
+});
+
 export const storageConfigSchema = z.object({
   provider: z.enum(STORAGE_PROVIDERS).default("local_disk"),
   localDisk: storageLocalDiskConfigSchema.default({
@@ -81,6 +85,7 @@ export const storageConfigSchema = z.object({
     prefix: "",
     forcePathStyle: false,
   }),
+  vercelBlob: storageVercelBlobConfigSchema.optional(),
 });
 
 export const secretsLocalEncryptedConfigSchema = z.object({
@@ -171,6 +176,7 @@ export type ServerConfig = z.infer<typeof serverConfigSchema>;
 export type StorageConfig = z.infer<typeof storageConfigSchema>;
 export type StorageLocalDiskConfig = z.infer<typeof storageLocalDiskConfigSchema>;
 export type StorageS3Config = z.infer<typeof storageS3ConfigSchema>;
+export type StorageVercelBlobConfig = z.infer<typeof storageVercelBlobConfigSchema>;
 export type SecretsConfig = z.infer<typeof secretsConfigSchema>;
 export type SecretsLocalEncryptedConfig = z.infer<typeof secretsLocalEncryptedConfigSchema>;
 export type AuthConfig = z.infer<typeof authConfigSchema>;

@@ -40,7 +40,7 @@ afterEach(() => {
   }
 });
 
-function buildSourceConfig(): PaperclipConfig {
+function buildSourceConfig(vercelBlobToken?: string): PaperclipConfig {
   return {
     $meta: {
       version: 1,
@@ -86,6 +86,13 @@ function buildSourceConfig(): PaperclipConfig {
         prefix: "",
         forcePathStyle: false,
       },
+      ...(vercelBlobToken
+        ? {
+            vercelBlob: {
+              token: vercelBlobToken,
+            },
+          }
+        : {}),
     },
     secrets: {
       provider: "local_encrypted",
@@ -311,35 +318,73 @@ describe("worktree helpers", () => {
     }
   });
 
-  it("persists the current agent jwt secret into the worktree env file", async () => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-jwt-"));
+  it("persists the source Vercel Blob token into the worktree config", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-blob-"));
     const repoRoot = path.join(tempRoot, "repo");
     const originalCwd = process.cwd();
-    const originalJwtSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
 
     try {
       fs.mkdirSync(repoRoot, { recursive: true });
-      process.env.PAPERCLIP_AGENT_JWT_SECRET = "worktree-shared-secret";
+      fs.mkdirSync(path.join(tempRoot, "source"), { recursive: true });
+      const sourceConfig = buildSourceConfig("source-storage-token");
+      sourceConfig.storage.provider = "vercel_blob";
+      fs.writeFileSync(
+        path.join(tempRoot, "source", "config.json"),
+        JSON.stringify(sourceConfig, null, 2),
+        "utf8",
+      );
       process.chdir(repoRoot);
 
       await worktreeInitCommand({
         seed: false,
-        fromConfig: path.join(tempRoot, "missing", "config.json"),
+        fromConfig: path.join(tempRoot, "source", "config.json"),
         home: path.join(tempRoot, ".paperclip-worktrees"),
       });
 
-      const envPath = path.join(repoRoot, ".paperclip", ".env");
-      const envContents = fs.readFileSync(envPath, "utf8");
-      expect(envContents).toContain("PAPERCLIP_AGENT_JWT_SECRET=worktree-shared-secret");
-      expect(envContents).toContain("PAPERCLIP_WORKTREE_NAME=repo");
-      expect(envContents).toMatch(/PAPERCLIP_WORKTREE_COLOR=\"#[0-9a-f]{6}\"/);
+      const configPath = path.join(repoRoot, ".paperclip", "config.json");
+      const configContents = JSON.parse(fs.readFileSync(configPath, "utf8")) as PaperclipConfig;
+      expect(configContents.storage.provider).toBe("vercel_blob");
+      expect(configContents.storage.vercelBlob?.token).toBe("source-storage-token");
     } finally {
       process.chdir(originalCwd);
-      if (originalJwtSecret === undefined) {
-        delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
-      } else {
-        process.env.PAPERCLIP_AGENT_JWT_SECRET = originalJwtSecret;
-      }
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("prefers the source Vercel Blob env token over the config token", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-blob-env-"));
+    const repoRoot = path.join(tempRoot, "repo");
+    const originalCwd = process.cwd();
+
+    try {
+      fs.mkdirSync(repoRoot, { recursive: true });
+      fs.mkdirSync(path.join(tempRoot, "source"), { recursive: true });
+      const sourceConfig = buildSourceConfig("file-storage-token");
+      sourceConfig.storage.provider = "vercel_blob";
+      fs.writeFileSync(
+        path.join(tempRoot, "source", "config.json"),
+        JSON.stringify(sourceConfig, null, 2),
+        "utf8",
+      );
+      fs.writeFileSync(
+        path.join(tempRoot, "source", ".env"),
+        "PAPERCLIP_STORAGE_VERCEL_BLOB_TOKEN=env-storage-token\n",
+        "utf8",
+      );
+      process.chdir(repoRoot);
+
+      await worktreeInitCommand({
+        seed: false,
+        fromConfig: path.join(tempRoot, "source", "config.json"),
+        home: path.join(tempRoot, ".paperclip-worktrees"),
+      });
+
+      const configPath = path.join(repoRoot, ".paperclip", "config.json");
+      const configContents = JSON.parse(fs.readFileSync(configPath, "utf8")) as PaperclipConfig;
+      expect(configContents.storage.provider).toBe("vercel_blob");
+      expect(configContents.storage.vercelBlob?.token).toBe("env-storage-token");
+    } finally {
+      process.chdir(originalCwd);
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
   });

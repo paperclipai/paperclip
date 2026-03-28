@@ -193,3 +193,4 @@ Supported providers:
 
 - `local_disk` (default; local single-user installs)
 - `s3` (S3-compatible object storage)
+- `vercel_blob` (Vercel Blob; token stored in `storage.vercelBlob.token`)

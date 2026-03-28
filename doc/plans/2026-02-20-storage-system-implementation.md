@@ -15,7 +15,7 @@ Add a single storage subsystem for Paperclip that supports:
 ## V1 Scope
 
 - First consumer: issue attachments/images.
-- Storage adapters: `local_disk` and `s3`.
+- Storage adapters: `local_disk`, `s3`, and `vercel_blob`.
 - Files are always company-scoped and access-controlled.
 - API serves attachment bytes through authenticated Paperclip endpoints.
 
@@ -40,14 +40,14 @@ Add a single storage subsystem for Paperclip that supports:
 
 - [ ] `packages/shared/src/constants.ts`: add `STORAGE_PROVIDERS` and `StorageProvider` type.
 - [ ] `packages/shared/src/config-schema.ts`: add `storageConfigSchema` with:
-  - provider: `local_disk | s3`
+  - provider: `local_disk | s3 | vercel_blob`
   - localDisk.baseDir
   - s3.bucket, s3.region, s3.endpoint?, s3.prefix?, s3.forcePathStyle?
 - [ ] `packages/shared/src/index.ts`: export new storage config/types.
 - [ ] `cli/src/config/schema.ts`: ensure re-export includes new storage schema/types.
 - [ ] `cli/src/commands/configure.ts`: add `storage` section support.
 - [ ] `cli/src/commands/onboard.ts`: initialize default storage config.
-- [ ] `cli/src/prompts/storage.ts`: new prompt flow for local disk vs s3 settings.
+- [ ] `cli/src/prompts/storage.ts`: new prompt flow for local disk vs cloud settings.
 - [ ] `cli/src/prompts/index` (if present) or direct imports: wire new storage prompt.
 - [ ] `server/src/config.ts`: load storage config and resolve home-aware local path.
 - [ ] `server/src/home-paths.ts`: add `resolveDefaultStorageDir()`.
@@ -57,7 +57,7 @@ Add a single storage subsystem for Paperclip that supports:
 ### Acceptance Criteria
 
 - `paperclipai onboard` writes a valid `storage` config block by default.
-- `paperclipai configure --section storage` can switch between local and s3 modes.
+- `paperclipai configure --section storage` can switch between local and cloud modes.
 - Server startup reads storage config without env-only hacks.
 
 ## Phase 2: Server Storage Subsystem + Providers
@@ -68,6 +68,7 @@ Add a single storage subsystem for Paperclip that supports:
 - [ ] `server/src/storage/service.ts`: provider-agnostic service (key generation, validation, stream APIs).
 - [ ] `server/src/storage/local-disk-provider.ts`: implement local disk provider with safe path resolution.
 - [ ] `server/src/storage/s3-provider.ts`: implement S3-compatible provider (`@aws-sdk/client-s3`).
+- [ ] `server/src/storage/vercel-blob-provider.ts`: implement Vercel Blob provider (`@vercel/blob`).
 - [ ] `server/src/storage/provider-registry.ts`: provider lookup by configured id.
 - [ ] `server/src/storage/index.ts`: export storage factory helpers.
 - [ ] `server/src/services/index.ts`: export `storageService` factory.
@@ -78,6 +79,7 @@ Add a single storage subsystem for Paperclip that supports:
 
 - In `local_disk` mode, uploading + reading a file round-trips bytes on disk.
 - In `s3` mode, service can `put/get/delete` against S3-compatible endpoint.
+- In `vercel_blob` mode, service can `put/get/delete` against Vercel Blob.
 - Invalid provider config yields clear startup/config errors.
 
 ## Phase 3: Database Metadata Model
@@ -173,6 +175,7 @@ Add a single storage subsystem for Paperclip that supports:
 - [ ] `server/src/__tests__/issue-attachments.lifecycle.test.ts`: upload/list/read/delete flow.
 - [ ] `server/src/__tests__/storage-local-provider.test.ts`: local provider path safety and round-trip.
 - [ ] `server/src/__tests__/storage-s3-provider.test.ts`: s3 provider contract (mocked client).
+- [ ] `server/src/__tests__/storage-vercel-blob-provider.test.ts`: Vercel Blob provider contract (mocked client).
 - [ ] `server/src/__tests__/activity-log.attachments.test.ts`: mutation logging assertions.
 
 ### CLI Tests
@@ -203,4 +206,3 @@ If any command is skipped, document exactly what was skipped and why.
 3. Phase 4 (API)
 4. Phase 5 (UI consumer)
 5. Phase 6 (doctor/docs hardening)
-

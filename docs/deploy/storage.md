@@ -31,6 +31,12 @@ pnpm paperclipai configure --section storage
 |----------|----------|
 | `local_disk` | Local development, single-machine deployments |
 | `s3` | Production, multi-node, cloud deployments |
+| `vercel_blob` | Vercel deployments using private Blob storage |
+
+## Vercel Blob
+
+Vercel Blob stores its token in the storage config block as `storage.vercelBlob.token`.
+If you need an environment override for a deployment, `PAPERCLIP_STORAGE_VERCEL_BLOB_TOKEN` is still honored.
 
 Storage configuration is stored in the instance config file:
 

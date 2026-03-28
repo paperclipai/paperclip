@@ -15,6 +15,8 @@ function signatureForConfig(config: Config): string {
     s3Endpoint: config.storageS3Endpoint,
     s3Prefix: config.storageS3Prefix,
     s3ForcePathStyle: config.storageS3ForcePathStyle,
+    vercelBlobToken:
+      config.storageProvider === "vercel_blob" ? config.storageVercelBlobToken : "",
   });
 }
 

@@ -21,7 +21,7 @@ import { promptDatabase } from "../prompts/database.js";
 import { promptLlm } from "../prompts/llm.js";
 import { promptLogging } from "../prompts/logging.js";
 import { defaultSecretsConfig } from "../prompts/secrets.js";
-import { defaultStorageConfig, promptStorage } from "../prompts/storage.js";
+import { defaultStorageConfig, promptStorage, promptVercelBlobToken } from "../prompts/storage.js";
 import { promptServer } from "../prompts/server.js";
 import {
   describeLocalInstancePaths,
@@ -69,6 +69,7 @@ const ONBOARD_ENV_KEYS = [
   "PAPERCLIP_STORAGE_S3_ENDPOINT",
   "PAPERCLIP_STORAGE_S3_PREFIX",
   "PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE",
+  "PAPERCLIP_STORAGE_VERCEL_BLOB_TOKEN",
   "PAPERCLIP_SECRETS_PROVIDER",
   "PAPERCLIP_SECRETS_STRICT_MODE",
   "PAPERCLIP_SECRETS_MASTER_KEY_FILE",
@@ -158,6 +159,7 @@ function quickstartDefaultsFromEnv(): {
     1,
     parseNumberFromEnv(process.env.PAPERCLIP_DB_BACKUP_RETENTION_DAYS) ?? 30,
   );
+  const storageVercelBlobToken = process.env.PAPERCLIP_STORAGE_VERCEL_BLOB_TOKEN?.trim() || "";
   const defaults: OnboardDefaults = {
     database: {
       mode: databaseUrl ? "postgres" : "embedded-postgres",
@@ -203,6 +205,13 @@ function quickstartDefaultsFromEnv(): {
           parseBooleanFromEnv(process.env.PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE) ??
           defaultStorage.s3.forcePathStyle,
       },
+      ...(storageProvider === "vercel_blob" && storageVercelBlobToken
+        ? {
+            vercelBlob: {
+              token: storageVercelBlobToken,
+            },
+          }
+        : {}),
     },
     secrets: {
       provider: secretsProvider,
@@ -219,6 +228,12 @@ function quickstartDefaultsFromEnv(): {
     ignoredEnvKeys.push({
       key: "PAPERCLIP_DEPLOYMENT_EXPOSURE",
       reason: "Ignored because deployment mode local_trusted always forces private exposure",
+    });
+  }
+  if (storageProvider !== "vercel_blob" && process.env.PAPERCLIP_STORAGE_VERCEL_BLOB_TOKEN !== undefined) {
+    ignoredEnvKeys.push({
+      key: "PAPERCLIP_STORAGE_VERCEL_BLOB_TOKEN",
+      reason: "Ignored because storage provider is not vercel_blob",
     });
   }
 
@@ -394,6 +409,23 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     for (const ignored of ignoredEnvKeys) {
       p.log.message(pc.dim(`Ignored ${ignored.key}: ${ignored.reason}`));
     }
+  }
+
+  if (storage.provider === "vercel_blob" && !storage.vercelBlob?.token?.trim()) {
+    if (opts.yes) {
+      throw new Error(
+        "Vercel Blob storage requires storage.vercelBlob.token or PAPERCLIP_STORAGE_VERCEL_BLOB_TOKEN",
+      );
+    }
+
+    p.log.step(pc.bold("Storage"));
+    const token = await promptVercelBlobToken();
+    storage = {
+      ...storage,
+      vercelBlob: {
+        token,
+      },
+    };
   }
 
   const jwtSecret = ensureAgentJwtSecret(configPath);

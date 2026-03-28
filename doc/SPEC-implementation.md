@@ -97,7 +97,7 @@ V1 implementation extends this baseline into a company-centric, governance-aware
 - Optional hosted: Supabase/Postgres-compatible
 - File/object storage:
   - local default: `~/.paperclip/instances/default/data/storage` (`local_disk`)
-  - cloud: S3-compatible object storage (`s3`)
+  - cloud: S3-compatible object storage (`s3`) or Vercel Blob (`vercel_blob`)
 
 ## 6.3 Background Processing
 
@@ -315,7 +315,7 @@ Operational policy:
 - `assets` stores provider-backed object metadata (not inline bytes):
   - `id` uuid pk
   - `company_id` uuid fk not null
-  - `provider` enum/text (`local_disk | s3`)
+  - `provider` enum/text (`local_disk | s3 | vercel_blob`)
   - `object_key` text not null
   - `content_type` text not null
   - `byte_size` int not null

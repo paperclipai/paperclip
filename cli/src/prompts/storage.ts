@@ -22,6 +22,28 @@ export function defaultStorageConfig(): StorageConfig {
   };
 }
 
+export async function promptVercelBlobToken(existingToken?: string): Promise<string> {
+  const envToken = process.env.PAPERCLIP_STORAGE_VERCEL_BLOB_TOKEN?.trim() || "";
+  const tokenValue = existingToken?.trim() || envToken;
+  if (tokenValue) {
+    return tokenValue;
+  }
+
+  const token = await p.password({
+    message: "Vercel Blob access token",
+    validate: (value) => {
+      if (!value || value.trim().length === 0) return "Access token is required";
+    },
+  });
+
+  if (p.isCancel(token)) {
+    p.cancel("Setup cancelled.");
+    process.exit(0);
+  }
+
+  return token.trim();
+}
+
 export async function promptStorage(current?: StorageConfig): Promise<StorageConfig> {
   const base = current ?? defaultStorageConfig();
 
@@ -32,6 +54,11 @@ export async function promptStorage(current?: StorageConfig): Promise<StorageCon
         value: "local_disk" as const,
         label: "Local disk (recommended)",
         hint: "best for single-user local deployments",
+      },
+      {
+        value: "vercel_blob" as const,
+        label: "Vercel Blob",
+        hint: "for Vercel-hosted private blob storage",
       },
       {
         value: "s3" as const,
@@ -68,6 +95,32 @@ export async function promptStorage(current?: StorageConfig): Promise<StorageCon
         baseDir: baseDir.trim(),
       },
       s3: base.s3,
+    };
+  }
+
+  if (provider === "vercel_blob") {
+    const envToken = process.env.PAPERCLIP_STORAGE_VERCEL_BLOB_TOKEN?.trim() || "";
+    const existingToken = base.vercelBlob?.token?.trim() || envToken;
+    if (existingToken) {
+      p.note("Using the existing Vercel Blob token from config or environment.", "Vercel Blob");
+      return {
+        provider: "vercel_blob",
+        localDisk: base.localDisk,
+        s3: base.s3,
+        vercelBlob: {
+          token: existingToken,
+        },
+      };
+    }
+
+    const token = await promptVercelBlobToken();
+    return {
+      provider: "vercel_blob",
+      localDisk: base.localDisk,
+      s3: base.s3,
+      vercelBlob: {
+        token,
+      },
     };
   }
 
@@ -143,4 +196,3 @@ export async function promptStorage(current?: StorageConfig): Promise<StorageCon
     },
   };
 }
-

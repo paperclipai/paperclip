@@ -182,6 +182,8 @@ function collectDeploymentEnvRows(config: PaperclipConfig | null, configPath: st
   const storageS3ForcePathStyle =
     process.env.PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE ??
     String(config?.storage?.s3?.forcePathStyle ?? false);
+  const storageBlobTokenFromEnv = process.env.PAPERCLIP_STORAGE_VERCEL_BLOB_TOKEN?.trim() || "";
+  const storageBlobToken = storageBlobTokenFromEnv || config?.storage?.vercelBlob?.token?.trim() || "";
 
   const rows: EnvVarRow[] = [
     {
@@ -310,7 +312,7 @@ function collectDeploymentEnvRows(config: PaperclipConfig | null, configPath: st
           ? "config"
           : "default",
       required: false,
-      note: "Storage provider (local_disk or s3)",
+      note: "Storage provider (local_disk, s3, or vercel_blob)",
     },
     {
       key: "PAPERCLIP_STORAGE_LOCAL_DIR",
@@ -377,6 +379,17 @@ function collectDeploymentEnvRows(config: PaperclipConfig | null, configPath: st
           : "default",
       required: false,
       note: "Set true for path-style access on compatible providers",
+    },
+    {
+      key: "PAPERCLIP_STORAGE_VERCEL_BLOB_TOKEN",
+      value: storageBlobToken,
+      source: storageBlobTokenFromEnv
+        ? "env"
+        : config?.storage?.vercelBlob?.token
+          ? "config"
+          : "missing",
+      required: storageProvider === "vercel_blob",
+      note: "Read-write token for Vercel Blob storage",
     },
   ];
 

@@ -178,16 +178,23 @@ export function rewriteLocalUrlPort(rawUrl: string | undefined, port: number): s
 
 export function buildWorktreeConfig(input: {
   sourceConfig: PaperclipConfig | null;
+  sourceEnvEntries?: Record<string, string>;
   paths: WorktreeLocalPaths;
   serverPort: number;
   databasePort: number;
   now?: Date;
 }): PaperclipConfig {
-  const { sourceConfig, paths, serverPort, databasePort } = input;
+  const { sourceConfig, sourceEnvEntries, paths, serverPort, databasePort } = input;
   const nowIso = (input.now ?? new Date()).toISOString();
 
   const source = sourceConfig;
   const authPublicBaseUrl = rewriteLocalUrlPort(source?.auth.publicBaseUrl, serverPort);
+  const storageProvider = source?.storage.provider ?? "local_disk";
+  const vercelBlobToken =
+    storageProvider === "vercel_blob"
+      ? nonEmpty(sourceEnvEntries?.PAPERCLIP_STORAGE_VERCEL_BLOB_TOKEN) ??
+        nonEmpty(source?.storage.vercelBlob?.token)
+      : null;
 
   return {
     $meta: {
@@ -225,7 +232,7 @@ export function buildWorktreeConfig(input: {
       disableSignUp: source?.auth.disableSignUp ?? false,
     },
     storage: {
-      provider: source?.storage.provider ?? "local_disk",
+      provider: storageProvider,
       localDisk: {
         baseDir: paths.storageDir,
       },
@@ -236,6 +243,13 @@ export function buildWorktreeConfig(input: {
         prefix: source?.storage.s3.prefix ?? "",
         forcePathStyle: source?.storage.s3.forcePathStyle ?? false,
       },
+      ...(vercelBlobToken
+        ? {
+            vercelBlob: {
+              token: vercelBlobToken,
+            },
+          }
+        : {}),
     },
     secrets: {
       provider: source?.secrets.provider ?? "local_encrypted",
