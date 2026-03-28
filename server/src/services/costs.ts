@@ -360,5 +360,31 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .groupBy(effectiveProjectId, projects.name)
         .orderBy(desc(costCentsExpr));
     },
+
+    byIssue: async (companyId: string, range?: CostDateRange) => {
+      const conditions = [eq(costEvents.companyId, companyId), isNotNull(costEvents.issueId)];
+      if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
+      if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
+
+      const shadowCostCentsExpr = sql<number>`coalesce(sum(${costEvents.shadowCostCents}), 0)::int`;
+
+      return db
+        .select({
+          issueId: costEvents.issueId,
+          issueIdentifier: issues.identifier,
+          issueTitle: issues.title,
+          costCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+          shadowCostCents: shadowCostCentsExpr,
+          inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::int`,
+          cachedInputTokens: sql<number>`coalesce(sum(${costEvents.cachedInputTokens}), 0)::int`,
+          outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::int`,
+          runCount: sql<number>`count(distinct ${costEvents.heartbeatRunId})::int`,
+        })
+        .from(costEvents)
+        .innerJoin(issues, eq(issues.id, costEvents.issueId))
+        .where(and(...conditions))
+        .groupBy(costEvents.issueId, issues.identifier, issues.title)
+        .orderBy(desc(shadowCostCentsExpr));
+    },
   };
 }
