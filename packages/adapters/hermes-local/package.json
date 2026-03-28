@@ -23,7 +23,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "hermes-paperclip-adapter": "0.1.1",
+    "hermes-paperclip-adapter": "^0.2.0",
     "@paperclipai/adapter-utils": "workspace:*"
   },
   "devDependencies": {

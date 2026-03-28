@@ -1,5 +1,5 @@
 import type { AdapterConfigFieldsProps } from "../types";
-import { Field, ToggleField, DraftInput, help } from "../../components/agent-config-primitives";
+import { Field, ToggleField, DraftInput } from "../../components/agent-config-primitives";
 import { ChoosePathButton } from "../../components/PathInstructionsModal";
 
 const inputClass =
@@ -24,6 +24,10 @@ const worktreeModeHint =
 const checkpointsHint =
   "Enable filesystem checkpoints. Hermes will snapshot the working directory " +
   "before each tool call, allowing rollback on errors.";
+
+const createModeAdvancedSettingsHint =
+  "These settings use Hermes defaults when creating a new agent. " +
+  "You can customize them immediately after creation from the agent settings page.";
 
 export function HermesLocalConfigFields({
   isCreate,
@@ -62,67 +66,60 @@ export function HermesLocalConfigFields({
         <DraftInput
           value={
             isCreate
-              ? (values!.extraArgs ?? "")
+              ? ""
               : eff("adapterConfig", "toolsets", String(config.toolsets ?? ""))
           }
           onCommit={(v) =>
             isCreate
-              ? set!({ extraArgs: v })
+              ? undefined
               : mark("adapterConfig", "toolsets", v || undefined)
           }
           immediate
           className={inputClass}
-          placeholder="terminal,file,web  (leave blank for defaults)"
+          disabled={isCreate}
+          placeholder={
+            isCreate
+              ? "Uses Hermes defaults at create-time"
+              : "terminal,file,web  (leave blank for defaults)"
+          }
         />
       </Field>
 
-      {/* Persist session */}
-      <ToggleField
-        label="Persist session"
-        hint={persistSessionHint}
-        checked={
-          isCreate
-            ? (values!.dangerouslyBypassSandbox ?? true)
-            : eff("adapterConfig", "persistSession", config.persistSession !== false)
-        }
-        onChange={(v) =>
-          isCreate
-            ? set!({ dangerouslyBypassSandbox: v })
-            : mark("adapterConfig", "persistSession", v)
-        }
-      />
+      {isCreate && (
+        <Field label="Advanced Hermes settings" hint={createModeAdvancedSettingsHint}>
+          <p className="text-xs text-muted-foreground">
+            Persist session, worktree mode, and checkpoints can be tuned after agent creation.
+          </p>
+        </Field>
+      )}
 
-      {/* Worktree mode */}
-      <ToggleField
-        label="Worktree mode"
-        hint={worktreeModeHint}
-        checked={
-          isCreate
-            ? false
-            : eff("adapterConfig", "worktreeMode", Boolean(config.worktreeMode))
-        }
-        onChange={(v) =>
-          isCreate
-            ? undefined
-            : mark("adapterConfig", "worktreeMode", v)
-        }
-      />
+      {!isCreate && (
+        <>
+          {/* Persist session */}
+          <ToggleField
+            label="Persist session"
+            hint={persistSessionHint}
+            checked={eff("adapterConfig", "persistSession", config.persistSession !== false)}
+            onChange={(v) => mark("adapterConfig", "persistSession", v)}
+          />
 
-      {/* Checkpoints */}
-      <ToggleField
-        label="Checkpoints"
-        hint={checkpointsHint}
-        checked={
-          isCreate
-            ? false
-            : eff("adapterConfig", "checkpoints", Boolean(config.checkpoints))
-        }
-        onChange={(v) =>
-          isCreate
-            ? undefined
-            : mark("adapterConfig", "checkpoints", v)
-        }
-      />
+          {/* Worktree mode */}
+          <ToggleField
+            label="Worktree mode"
+            hint={worktreeModeHint}
+            checked={eff("adapterConfig", "worktreeMode", Boolean(config.worktreeMode))}
+            onChange={(v) => mark("adapterConfig", "worktreeMode", v)}
+          />
+
+          {/* Checkpoints */}
+          <ToggleField
+            label="Checkpoints"
+            hint={checkpointsHint}
+            checked={eff("adapterConfig", "checkpoints", Boolean(config.checkpoints))}
+            onChange={(v) => mark("adapterConfig", "checkpoints", v)}
+          />
+        </>
+      )}
     </>
   );
 }

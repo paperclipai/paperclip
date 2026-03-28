@@ -166,6 +166,19 @@ importers:
         specifier: ^5.7.3
         version: 5.9.3
 
+  packages/adapters/hermes-local:
+    dependencies:
+      '@paperclipai/adapter-utils':
+        specifier: workspace:*
+        version: link:../../adapter-utils
+      hermes-paperclip-adapter:
+        specifier: ^0.2.0
+        version: 0.2.0
+    devDependencies:
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
   packages/adapters/openclaw-gateway:
     dependencies:
       '@paperclipai/adapter-utils':

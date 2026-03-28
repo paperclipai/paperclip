@@ -40,7 +40,7 @@
     "@paperclipai/adapter-opencode-local": "workspace:*",
     "@paperclipai/adapter-pi-local": "workspace:*",
     "@paperclipai/adapter-utils": "workspace:*",
-    "hermes-paperclip-adapter": "0.1.1",
+    "hermes-paperclip-adapter": "^0.2.0",
     "@paperclipai/shared": "workspace:*",
     "@radix-ui/react-slot": "^1.2.4",
     "@tailwindcss/typography": "^0.5.19",
