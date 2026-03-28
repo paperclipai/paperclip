@@ -705,6 +705,15 @@ describe("issueService.list participantAgentId", () => {
     });
   });
 
+  it("returns unprocessable for malformed non-string comment bodies on addComment", async () => {
+    await expect(
+      svc.addComment(randomUUID(), { bad: true } as any, {}),
+    ).rejects.toMatchObject({
+      status: 422,
+      message: "Invalid comment body",
+    });
+  });
+
   it("returns not found for malformed issue ids on markRead", async () => {
     await expect(
       svc.markRead(randomUUID(), "not-a-uuid", "user-1", new Date()),
