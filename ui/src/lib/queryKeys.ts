@@ -116,5 +116,6 @@ export const queryKeys = {
   mcpInstructions: (agentId: string, serverName: string) =>
     ["mcp-instructions", agentId, serverName] as const,
   inboxDismissals: (companyId: string) => ["inbox-dismissals", companyId] as const,
+  inboxFeed: (companyId: string) => ["inbox-feed", companyId] as const,
   org: (companyId: string) => ["org", companyId] as const,
 };

@@ -39,7 +39,8 @@ import {
 } from "lucide-react";
 import { Identity } from "../components/Identity";
 import { PageTabBar } from "../components/PageTabBar";
-import type { HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
+import type { HeartbeatRun, InboxFeedItem, Issue, JoinRequest } from "@paperclipai/shared";
+import { inboxFeedApi } from "../api/inbox-feed";
 import {
   ACTIONABLE_APPROVAL_STATUSES,
   getLatestFailedRunsByAgent,
@@ -330,10 +331,23 @@ export function Inbox() {
   });
   const heartbeatRuns = heartbeatRunsResult?.runs;
 
+  const {
+    data: feedItems = [],
+    isLoading: isFeedLoading,
+  } = useQuery({
+    queryKey: queryKeys.inboxFeed(selectedCompanyId!),
+    queryFn: () => inboxFeedApi.feed(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
   const touchedIssues = useMemo(() => getRecentTouchedIssues(touchedIssuesRaw), [touchedIssuesRaw]);
   const unreadTouchedIssues = useMemo(
     () => touchedIssues.filter((issue) => issue.isUnreadForMe),
     [touchedIssues],
+  );
+  const unreadFeedItems = useMemo(
+    () => feedItems.filter((item) => item.unreadCount > 0),
+    [feedItems],
   );
 
   const agentById = useMemo(() => {
@@ -440,6 +454,7 @@ export function Inbox() {
     if (!selectedCompanyId) return;
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.inboxFeed(selectedCompanyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
   };
 
@@ -500,7 +515,7 @@ export function Inbox() {
     !dismissed.has("alert:budget");
   const hasAlerts = showAggregateAgentError || showBudgetAlert;
   const hasJoinRequests = joinRequests.length > 0;
-  const hasTouchedIssues = touchedIssues.length > 0;
+  const hasTouchedIssues = feedItems.length > 0;
 
   const showJoinRequestsCategory =
     allCategoryFilter === "everything" || allCategoryFilter === "join_requests";
@@ -516,7 +531,7 @@ export function Inbox() {
     tab === "all"
       ? showTouchedCategory && hasTouchedIssues
       : tab === "unread"
-        ? unreadTouchedIssues.length > 0
+        ? unreadFeedItems.length > 0
         : hasTouchedIssues;
   const showJoinRequestsSection =
     tab === "all" ? showJoinRequestsCategory && hasJoinRequests : tab === "unread" && hasJoinRequests;
@@ -541,6 +556,7 @@ export function Inbox() {
     !isDashboardLoading &&
     !isIssuesLoading &&
     !isTouchedIssuesLoading &&
+    !isFeedLoading &&
     !isRunsLoading;
 
   const showSeparatorBefore = (key: SectionKey) => visibleSections.indexOf(key) > 0;
@@ -809,17 +825,19 @@ export function Inbox() {
           {showSeparatorBefore("issues_i_touched") && <Separator />}
           <div>
             <div className="divide-y divide-border border border-border">
-              {(tab === "unread" ? unreadTouchedIssues : touchedIssues).map((issue) => {
-                const isUnread = issue.isUnreadForMe && !fadingOutIssues.has(issue.id);
+              {(tab === "unread" ? unreadFeedItems : feedItems).map((item) => {
+                const issue = item.issue;
+                const isUnread = (issue.isUnreadForMe || item.unreadCount > 0) && !fadingOutIssues.has(issue.id);
                 const isFading = fadingOutIssues.has(issue.id);
+                const activity = item.latestActivity;
                 return (
                   <Link
                     key={issue.id}
                     to={`/issues/${issue.identifier ?? issue.id}`}
                     state={issueLinkState}
-                    className="flex min-w-0 cursor-pointer items-start gap-2 px-3 py-3 no-underline text-inherit transition-colors hover:bg-accent/50 sm:items-center sm:gap-3 sm:px-4"
+                    className="flex min-w-0 cursor-pointer items-start gap-2 px-3 py-2.5 no-underline text-inherit transition-colors hover:bg-accent/50 sm:gap-3 sm:px-4"
                   >
-                    <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center self-center">
+                    <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center mt-1">
                       {(isUnread || isFading) ? (
                         <span
                           role="button"
@@ -850,21 +868,46 @@ export function Inbox() {
                       )}
                     </span>
 
-                    <span className="inline-flex shrink-0 self-center"><PriorityIcon priority={issue.priority} /></span>
-                    <span className="inline-flex shrink-0 self-center"><StatusIcon status={issue.status} /></span>
-                    <span className="shrink-0 self-center text-xs font-mono text-muted-foreground">
-                      {issue.identifier ?? issue.id.slice(0, 8)}
-                    </span>
-                    <span className="min-w-0 flex-1 text-sm">
-                      <span className="line-clamp-2 min-w-0 sm:line-clamp-1 sm:block sm:truncate">
-                        {issue.title}
-                      </span>
-                    </span>
-                    <span className="hidden shrink-0 self-center text-xs text-muted-foreground sm:block">
-                      {issue.lastExternalCommentAt
-                        ? `commented ${timeAgo(issue.lastExternalCommentAt)}`
-                        : `updated ${timeAgo(issue.updatedAt)}`}
-                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="inline-flex shrink-0"><PriorityIcon priority={issue.priority} /></span>
+                        <span className="inline-flex shrink-0"><StatusIcon status={issue.status} /></span>
+                        <span className="shrink-0 text-xs font-mono text-muted-foreground">
+                          {issue.identifier ?? issue.id.slice(0, 8)}
+                        </span>
+                        <span className="min-w-0 flex-1 text-sm truncate">
+                          {issue.title}
+                        </span>
+                        <span className="hidden shrink-0 text-xs text-muted-foreground sm:block">
+                          {activity
+                            ? timeAgo(activity.timestamp)
+                            : issue.lastExternalCommentAt
+                              ? timeAgo(issue.lastExternalCommentAt)
+                              : timeAgo(issue.updatedAt)}
+                        </span>
+                      </div>
+                      {activity && (
+                        <div className="mt-1 flex items-baseline gap-1.5 text-xs text-muted-foreground pl-[calc(1rem+0.5rem+1rem+0.5rem)]">
+                          <span className="shrink-0 font-medium text-foreground/70">
+                            {activity.actorName ?? activity.actorId}
+                          </span>
+                          {activity.action === "comment.created" ? (
+                            <span className="min-w-0 truncate italic">
+                              &ldquo;{activity.summary}&rdquo;
+                            </span>
+                          ) : (
+                            <span className="min-w-0 truncate">
+                              {activity.summary}
+                            </span>
+                          )}
+                          {item.unreadCount > 1 && (
+                            <span className="shrink-0 rounded-full bg-blue-500/15 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:text-blue-400">
+                              {item.unreadCount} new
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </Link>
                 );
               })}
