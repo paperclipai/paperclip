@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BillingType } from "@paperclipai/shared";
 import {
@@ -75,6 +75,41 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "opencode_local",
   "pi_local",
 ]);
+
+export interface StartupIssueWakeupCandidate {
+  id: string;
+  assigneeAgentId: string | null;
+  status: string;
+  updatedAt?: Date | null;
+  createdAt?: Date | null;
+}
+
+export function pickAssignedIssueWakeupCandidates<T extends StartupIssueWakeupCandidate>(
+  assignedIssues: T[],
+): T[] {
+  const firstIssueByAgent = new Map<string, T>();
+  const sorted = [...assignedIssues].sort((a, b) => {
+    const rankA = a.status === "in_progress" ? 0 : 1;
+    const rankB = b.status === "in_progress" ? 0 : 1;
+    if (rankA !== rankB) return rankA - rankB;
+
+    const updatedA = a.updatedAt ? new Date(a.updatedAt).getTime() : Number.POSITIVE_INFINITY;
+    const updatedB = b.updatedAt ? new Date(b.updatedAt).getTime() : Number.POSITIVE_INFINITY;
+    if (updatedA !== updatedB) return updatedA - updatedB;
+
+    const createdA = a.createdAt ? new Date(a.createdAt).getTime() : Number.POSITIVE_INFINITY;
+    const createdB = b.createdAt ? new Date(b.createdAt).getTime() : Number.POSITIVE_INFINITY;
+    return createdA - createdB;
+  });
+
+  for (const issue of sorted) {
+    const agentId = issue.assigneeAgentId;
+    if (!agentId || firstIssueByAgent.has(agentId)) continue;
+    firstIssueByAgent.set(agentId, issue);
+  }
+
+  return [...firstIssueByAgent.values()];
+}
 
 function deriveRepoNameFromRepoUrl(repoUrl: string | null): string | null {
   const trimmed = repoUrl?.trim() ?? "";
@@ -3834,6 +3869,61 @@ export function heartbeatService(db: Db) {
         if (run) enqueued += 1;
         else skipped += 1;
       }
+
+      return { checked, enqueued, skipped };
+    },
+
+    reconcileAssignedIssueWakeups: async (opts?: { requestedByActorId?: string | null }) => {
+      const assignedIssues = await db
+        .select({
+          id: issues.id,
+          assigneeAgentId: issues.assigneeAgentId,
+          status: issues.status,
+          updatedAt: issues.updatedAt,
+          createdAt: issues.createdAt,
+        })
+        .from(issues)
+        .where(
+          and(
+            isNotNull(issues.assigneeAgentId),
+            inArray(issues.status, ["in_progress", "todo"]),
+          ),
+        );
+
+      const startupCandidates = pickAssignedIssueWakeupCandidates(assignedIssues);
+
+      let checked = 0;
+      let enqueued = 0;
+      let skipped = 0;
+
+      for (const issue of startupCandidates) {
+        const agentId = issue.assigneeAgentId;
+        if (!agentId) continue;
+        checked += 1;
+        const run = await enqueueWakeup(agentId, {
+          source: "assignment",
+          triggerDetail: "system",
+          reason: "startup_issue_reconciliation",
+          payload: {
+            issueId: issue.id,
+            mutation: "startup_reconciliation",
+          },
+          requestedByActorType: "system",
+          requestedByActorId: opts?.requestedByActorId ?? "server_startup",
+          contextSnapshot: {
+            issueId: issue.id,
+            source: "startup_reconciliation",
+            issueStatus: issue.status,
+          },
+        });
+        if (run) enqueued += 1;
+        else skipped += 1;
+      }
+
+      logger.info(
+        { checked, enqueued, skipped },
+        "startup issue assignment reconciliation complete",
+      );
 
       return { checked, enqueued, skipped };
     },

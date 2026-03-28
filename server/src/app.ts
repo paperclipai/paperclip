@@ -45,6 +45,7 @@ import { setPluginEventBus } from "./services/activity-log.js";
 import { createPluginDevWatcher } from "./services/plugin-dev-watcher.js";
 import { createPluginHostServiceCleanup } from "./services/plugin-host-service-cleanup.js";
 import { pluginRegistryService } from "./services/plugin-registry.js";
+import { heartbeatService } from "./services/heartbeat.js";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 
@@ -77,6 +78,7 @@ export async function createApp(
   },
 ) {
   const app = express();
+  const heartbeat = heartbeatService(db);
 
   app.use(express.json({
     // Company import/export payloads can inline full portable packages.
@@ -288,6 +290,9 @@ export async function createApp(
 
   jobCoordinator.start();
   scheduler.start();
+  void heartbeat.reconcileAssignedIssueWakeups({ requestedByActorId: "server_startup" }).catch((err) => {
+    logger.error({ err }, "Failed to reconcile assigned issue wakeups on startup");
+  });
   void toolDispatcher.initialize().catch((err) => {
     logger.error({ err }, "Failed to initialize plugin tool dispatcher");
   });
