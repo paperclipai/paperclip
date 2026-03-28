@@ -4,9 +4,34 @@ import path from "node:path";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 
 const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
-const COPIED_SHARED_FILES = ["config.json", "config.toml", "instructions.md"] as const;
+const COPIED_SHARED_FILES = ["config.json", "instructions.md"] as const;
+const SANITIZED_COPIED_FILES = ["config.toml"] as const;
 const SYMLINKED_SHARED_FILES = ["auth.json"] as const;
 const DEFAULT_PAPERCLIP_INSTANCE_ID = "default";
+
+/**
+ * Remove `sandbox = "elevated"` (or `'elevated'` / bare `elevated`) from a
+ * Codex config.toml.  The elevated sandbox requires admin privileges which
+ * Paperclip-spawned processes don't have, causing "Access is denied.
+ * (os error 5)" on Windows.
+ *
+ * If removing the key leaves an empty `[windows]` section, the section
+ * header is removed as well.
+ */
+export function sanitizeConfigToml(content: string): string {
+  // In practice this key only appears under [windows] in Codex config; a
+  // full TOML-section-aware match would require a parser we don't carry.
+  const sandboxRe = /^[ \t]*sandbox\s*=\s*(?:"elevated"|'elevated'|elevated)[ \t]*\r?\n?/gm;
+  let result = content.replace(sandboxRe, "");
+
+  // Remove [windows] header only if it's now empty
+  result = result.replace(
+    /^([ \t]*\[windows\][ \t]*\r?\n)((?:[ \t]*\r?\n)*)(?=\[|$)/gm,
+    (_match, _header, blanks) => blanks,
+  );
+
+  return result.replace(/\n{3,}/g, "\n\n");
+}
 
 function nonEmpty(value: string | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -93,6 +118,26 @@ export async function prepareManagedCodexHome(
     const source = path.join(sourceHome, name);
     if (!(await pathExists(source))) continue;
     await ensureCopiedFile(path.join(targetHome, name), source);
+  }
+
+  for (const name of SANITIZED_COPIED_FILES) {
+    const target = path.join(targetHome, name);
+    const source = path.join(sourceHome, name);
+    const targetExists = await pathExists(target);
+    const sourceExists = await pathExists(source);
+
+    if (targetExists) {
+      // Re-sanitize existing file (fixes managed homes created before this patch)
+      const existing = await fs.readFile(target, "utf-8");
+      const sanitized = sanitizeConfigToml(existing);
+      if (sanitized !== existing) {
+        await fs.writeFile(target, sanitized, "utf-8");
+      }
+    } else if (sourceExists) {
+      const raw = await fs.readFile(source, "utf-8");
+      await ensureParentDir(target);
+      await fs.writeFile(target, sanitizeConfigToml(raw), "utf-8");
+    }
   }
 
   await onLog(
