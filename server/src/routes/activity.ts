@@ -23,6 +23,15 @@ export function activityRoutes(db: Db) {
   const svc = activityService(db);
   const issueSvc = issueService(db);
 
+  function readQueryString(value: unknown): string | undefined {
+    if (typeof value === "string") return value;
+    if (Array.isArray(value)) {
+      const first = value.find((entry): entry is string => typeof entry === "string");
+      return first;
+    }
+    return undefined;
+  }
+
   async function resolveIssueByRef(rawId: string) {
     if (/^[A-Z]+-\d+$/i.test(rawId)) {
       return { issue: await issueSvc.getByIdentifier(rawId), invalidRef: false };
@@ -36,12 +45,17 @@ export function activityRoutes(db: Db) {
   router.get("/companies/:companyId/activity", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    const agentId = readQueryString(req.query.agentId);
+    if (agentId && !isUuidLike(agentId)) {
+      res.status(400).json({ error: "Invalid agentId filter" });
+      return;
+    }
 
     const filters = {
       companyId,
-      agentId: req.query.agentId as string | undefined,
-      entityType: req.query.entityType as string | undefined,
-      entityId: req.query.entityId as string | undefined,
+      agentId,
+      entityType: readQueryString(req.query.entityType),
+      entityId: readQueryString(req.query.entityId),
     };
     const result = await svc.list(filters);
     res.json(result);

@@ -46,6 +46,7 @@ function createApp() {
 describe("activity routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockActivityService.list.mockResolvedValue([]);
   });
 
   it("resolves issue identifiers before loading runs", async () => {
@@ -86,5 +87,27 @@ describe("activity routes", () => {
     expect(mockIssueService.getById).not.toHaveBeenCalled();
     expect(mockIssueService.getByIdentifier).not.toHaveBeenCalled();
     expect(mockActivityService.forIssue).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 for invalid agentId filter on company activity list", async () => {
+    const res = await request(createApp()).get("/api/companies/company-1/activity?agentId=not-a-uuid");
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("Invalid agentId filter");
+    expect(mockActivityService.list).not.toHaveBeenCalled();
+  });
+
+  it("ignores malformed object query values for activity filters instead of forwarding them", async () => {
+    const res = await request(createApp()).get(
+      "/api/companies/company-1/activity?agentId[bad]=1&entityType[bad]=issue&entityId[bad]=abc",
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockActivityService.list).toHaveBeenCalledWith({
+      companyId: "company-1",
+      agentId: undefined,
+      entityType: undefined,
+      entityId: undefined,
+    });
   });
 });
