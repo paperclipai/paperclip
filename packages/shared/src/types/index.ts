@@ -38,6 +38,11 @@ export type {
   IssueAttachment,
   IssueLabel,
 } from "./issue.js";
+export type {
+  IssueLink,
+  IssueLinkWithDetails,
+  IssueLinksByDirection,
+} from "./issue-link.js";
 export type { Goal } from "./goal.js";
 export type { Approval, ApprovalComment, LearnedSkillApprovalPayload } from "./approval.js";
 export type {

@@ -15,4 +15,5 @@ export { inboxDismissalRoutes } from "./inbox-dismissals.js";
 export { llmRoutes } from "./llms.js";
 export { accessRoutes } from "./access.js";
 export { webhookRoutes } from "./webhooks.js";
+export { issueLinkRoutes } from "./issue-links.js";
 export { taskCronRoutes } from "./task-crons.js";

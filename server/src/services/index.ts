@@ -4,6 +4,7 @@ export { assetService } from "./assets.js";
 export { projectService } from "./projects.js";
 export { issueService, type IssueFilters } from "./issues.js";
 export { issueApprovalService } from "./issue-approvals.js";
+export { issueLinkService } from "./issue-links.js";
 export { reviewBundleService } from "./review-bundles.js";
 export {
   parseProjectReviewBundlePolicy,

@@ -254,6 +254,9 @@ export type JoinRequestType = (typeof JOIN_REQUEST_TYPES)[number];
 export const JOIN_REQUEST_STATUSES = ["pending_approval", "approved", "rejected"] as const;
 export type JoinRequestStatus = (typeof JOIN_REQUEST_STATUSES)[number];
 
+export const ISSUE_LINK_TYPES = ["triggers"] as const;
+export type IssueLinkType = (typeof ISSUE_LINK_TYPES)[number];
+
 export const PERMISSION_KEYS = [
   "agents:create",
   "users:invite",

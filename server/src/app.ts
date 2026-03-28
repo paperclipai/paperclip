@@ -14,6 +14,7 @@ import { companyRoutes } from "./routes/companies.js";
 import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
+import { issueLinkRoutes } from "./routes/issue-links.js";
 import { reviewBundleRoutes } from "./routes/review-bundles.js";
 import { goalRoutes } from "./routes/goals.js";
 import { approvalRoutes } from "./routes/approvals.js";
@@ -126,6 +127,7 @@ export async function createApp(
   api.use(assetRoutes(db, opts.storageService));
   api.use(projectRoutes(db));
   api.use(issueRoutes(db, opts.storageService));
+  api.use(issueLinkRoutes(db));
   api.use(reviewBundleRoutes(db));
   api.use(goalRoutes(db));
   api.use(approvalRoutes(db));

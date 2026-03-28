@@ -224,6 +224,11 @@ export {
 } from "./mcp.js";
 
 export {
+  createIssueLinkSchema,
+  type CreateIssueLink,
+} from "./issue-link.js";
+
+export {
   upsertTelegramConfigSchema,
   updateTelegramConfigSchema,
   sendTelegramMessageSchema,
