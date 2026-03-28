@@ -76,9 +76,9 @@ describe("isConversationIssue", () => {
     expect(isConversationIssue(issue)).toBe(true);
   });
 
-  it("returns true for legacy issues with the conversation prefix (backward compat)", () => {
+  it("returns false for task issues even with conversation prefix", () => {
     const issue = makeIssue({ kind: "task", title: "Conversation: Shadow" });
-    expect(isConversationIssue(issue)).toBe(true);
+    expect(isConversationIssue(issue)).toBe(false);
   });
 
   it("returns true for titled conversations with a topic", () => {
@@ -106,12 +106,12 @@ describe("isConversationIssue", () => {
 
 describe("conversationAgentLabel", () => {
   it("extracts the agent name from a conversation title", () => {
-    const issue = makeIssue({ title: "Conversation: Shadow" });
+    const issue = makeIssue({ kind: "conversation", title: "Conversation: Shadow" });
     expect(conversationAgentLabel(issue)).toBe("Shadow");
   });
 
   it("extracts full label including topic suffix", () => {
-    const issue = makeIssue({ title: "Conversation: Shadow — Deploy Plan" });
+    const issue = makeIssue({ kind: "conversation", title: "Conversation: Shadow — Deploy Plan" });
     expect(conversationAgentLabel(issue)).toBe("Shadow — Deploy Plan");
   });
 

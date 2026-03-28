@@ -99,6 +99,38 @@ own comments or no comments at all), the board has not sent a message yet.
    Get agent IDs from `GET /api/companies/{companyId}/agents`. This triggers
    their heartbeat so they join the conversation as a guest.
 
+## Task completion reporting
+
+When you create a task from a conversation and assign it to another agent, that
+agent will NOT automatically notify you when it completes. To maintain continuity:
+
+1. After creating a task, note the issue ID in the conversation thread.
+2. When you are woken for any reason, check the status of tasks you created from
+   this conversation:
+   ```
+   GET /api/issues/{taskIssueId}
+   ```
+3. If a task has moved to `done`, post an update in the conversation:
+   ```
+   POST /api/issues/{conversationIssueId}/comments
+   Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+   { "body": "Update: [FAN-10 — Task title](issue://taskIssueId) has been completed by @AgentName." }
+   ```
+
+This ensures the board sees task progress directly in the conversation thread
+without having to check the Issues page separately.
+
+## Linking issues in conversation
+
+When creating or referencing issues in conversation comments, use the structured
+link format so they render as clickable links:
+
+```
+[FAN-10 — Task title](issue://issue-uuid-here)
+```
+
+Get the issue ID from the API response when creating the issue.
+
 ## Rules
 
 - Do NOT run any part of the standard heartbeat procedure

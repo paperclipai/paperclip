@@ -20,7 +20,12 @@ export function workspaceFileRoutes(db: Db) {
     cwd: string,
     relativePath: string,
   ): Promise<string | null> {
-    const realCwd = await fs.realpath(cwd);
+    let realCwd: string;
+    try {
+      realCwd = await fs.realpath(cwd);
+    } catch {
+      return null;
+    }
     const resolved = path.resolve(realCwd, relativePath);
     try {
       const realResolved = await fs.realpath(resolved);
@@ -53,7 +58,12 @@ export function workspaceFileRoutes(db: Db) {
     cwd: string,
     relativePath: string,
   ): Promise<string | null> {
-    const realCwd = await fs.realpath(cwd);
+    let realCwd: string;
+    try {
+      realCwd = await fs.realpath(cwd);
+    } catch {
+      return null;
+    }
     const resolved = path.resolve(realCwd, relativePath);
     if (
       resolved !== realCwd &&

@@ -64,6 +64,8 @@ import {
   Cpu,
   FolderOpen,
   Check,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from "lucide-react";
 import type { Agent, Issue } from "@paperclipai/shared";
 
@@ -163,8 +165,8 @@ function ConversationList({
   return (
     <div className="flex flex-col h-full border-r border-border bg-background overflow-hidden">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 h-12 border-b border-border shrink-0">
-        <span className="text-sm font-semibold text-foreground">Conversations</span>
+      <div className="flex items-center justify-between px-3 h-10 border-b border-border shrink-0">
+        <span className="text-xs font-semibold text-foreground">Conversations</span>
         <Button variant="ghost" size="icon-sm" onClick={onNew} title="New conversation">
           <Plus className="h-4 w-4" />
         </Button>
@@ -523,9 +525,12 @@ interface ConversationViewProps {
   companyId: string;
   agents: Agent[];
   onClose: () => void;
+  sidebarCollapsed?: boolean;
+  onToggleSidebar?: () => void;
+  onNew?: () => void;
 }
 
-function ConversationView({ issueId, companyId, agents, onClose }: ConversationViewProps) {
+function ConversationView({ issueId, companyId, agents, onClose, sidebarCollapsed, onToggleSidebar, onNew }: ConversationViewProps) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const scrollEndRef = useRef<HTMLDivElement>(null);
@@ -552,7 +557,7 @@ function ConversationView({ issueId, companyId, agents, onClose }: ConversationV
     issuesApi.markRead(issueId).then(() => {
       queryClient.invalidateQueries({ queryKey: queryKeys.conversations.unread(companyId) });
     }).catch(() => {});
-  }, [issueId, queryClient]);
+  }, [issueId, companyId, queryClient]);
 
   const { data: issue, isLoading: issueLoading } = useQuery({
     queryKey: queryKeys.issues.detail(issueId),
@@ -749,8 +754,8 @@ function ConversationView({ issueId, companyId, agents, onClose }: ConversationV
 
   if (issueLoading || commentsLoading) {
     return (
-      <div className="flex flex-col h-full">
-        <div className="flex items-center gap-3 px-4 h-12 border-b border-border shrink-0">
+      <div className="flex flex-col h-full min-w-0">
+        <div className="flex items-center gap-2 px-3 h-10 border-b border-border shrink-0">
           <div className="h-6 w-6 rounded-full bg-muted animate-pulse" />
           <div className="h-4 w-32 rounded bg-muted animate-pulse" />
         </div>
@@ -764,9 +769,43 @@ function ConversationView({ issueId, companyId, agents, onClose }: ConversationV
   }
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full min-w-0">
       {/* Conversation header */}
-      <div className="flex items-center gap-3 px-4 h-12 border-b border-border shrink-0">
+      <div className="flex items-center gap-2 px-3 h-10 border-b border-border shrink-0">
+        {onToggleSidebar && (
+          <Tooltip delayDuration={300}>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="shrink-0 text-muted-foreground hover:text-foreground hidden md:flex"
+                onClick={onToggleSidebar}
+              >
+                {sidebarCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="text-xs">
+              {sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
+            </TooltipContent>
+          </Tooltip>
+        )}
+        {sidebarCollapsed && onNew && (
+          <Tooltip delayDuration={300}>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="shrink-0 text-muted-foreground hover:text-foreground"
+                onClick={onNew}
+              >
+                <Plus className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="text-xs">
+              New conversation
+            </TooltipContent>
+          </Tooltip>
+        )}
         <Identity name={agentName} size="sm" />
         <div className="flex-1 min-w-0">
           {editingTopic ? (
@@ -972,7 +1011,7 @@ function ConversationView({ issueId, companyId, agents, onClose }: ConversationV
       </div>
 
       {/* Chat timeline */}
-      <ScrollArea className="flex-1 px-4 py-4">
+      <ScrollArea className="flex-1 px-4 py-4 [&>[data-slot=scroll-area-viewport]>div]:!block [&>[data-slot=scroll-area-viewport]>div]:!w-full [&>[data-slot=scroll-area-viewport]>div]:!min-w-0">
         <CommentThread
           comments={visibleComments}
           linkedRuns={timelineRuns}
@@ -1049,6 +1088,7 @@ export function Conversations() {
   const [viewMode, setViewMode] = useState<ViewMode>(
     routeIssueId ? "chat" : "list",
   );
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [activeIssueId, setActiveIssueId] = useState<string | null>(
     routeIssueId ?? null,
   );
@@ -1175,40 +1215,42 @@ export function Conversations() {
 
   // Render
   return (
-    <div className="flex h-[calc(100vh-3rem)] -m-4 md:-m-6">
-      {/* Left panel — conversation list (fixed 260px, hidden on mobile when chatting) */}
-      <div
-        className={cn(
-          "w-[260px] max-w-[260px] shrink-0 hidden md:flex flex-col overflow-hidden",
-          viewMode !== "chat" && "flex",
-        )}
-      >
-        <ConversationList
-          conversations={activeConversations}
-          archivedConversations={archivedConversations}
-          agents={agents}
-          activeIssueId={activeIssueId}
-          unreadIds={unreadConvoIds}
-          liveIds={liveConvoIds}
-          companyId={selectedCompanyId}
-          onSelect={handleSelect}
-          onNew={handleNew}
-          onArchive={handleArchive}
-          onRename={async (issueId, agentLabel, topic) => {
-            try {
-              await renameConversation(issueId, agentLabel, topic);
-              queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId) });
-              queryClient.invalidateQueries({ queryKey: queryKeys.conversations.list(selectedCompanyId!) });
-            } catch {
-              pushToast({ title: "Failed to rename conversation", tone: "error" });
-              throw new Error("rename failed");
-            }
-          }}
-        />
-      </div>
+    <div className="flex h-[calc(100dvh-3rem)] -m-4 md:-m-6 overflow-hidden">
+      {/* Left panel — conversation list (collapsible, hidden on mobile when chatting) */}
+      {!sidebarCollapsed && (
+        <div
+          className={cn(
+            "w-[260px] max-w-[260px] shrink-0 hidden md:flex flex-col overflow-hidden",
+            viewMode !== "chat" && "flex",
+          )}
+        >
+          <ConversationList
+            conversations={activeConversations}
+            archivedConversations={archivedConversations}
+            agents={agents}
+            activeIssueId={activeIssueId}
+            unreadIds={unreadConvoIds}
+            liveIds={liveConvoIds}
+            companyId={selectedCompanyId}
+            onSelect={handleSelect}
+            onNew={handleNew}
+            onArchive={handleArchive}
+            onRename={async (issueId, agentLabel, topic) => {
+              try {
+                await renameConversation(issueId, agentLabel, topic);
+                queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId) });
+                queryClient.invalidateQueries({ queryKey: queryKeys.conversations.list(selectedCompanyId!) });
+              } catch {
+                pushToast({ title: "Failed to rename conversation", tone: "error" });
+                throw new Error("rename failed");
+              }
+            }}
+          />
+        </div>
+      )}
 
       {/* Right panel — conversation view or picker */}
-      <div className="flex-1 min-w-0">
+      <div className="w-0 flex-1 min-w-0">
         {viewMode === "picking" || creating ? (
           <AgentPicker
             agents={agents}
@@ -1222,6 +1264,9 @@ export function Conversations() {
             companyId={selectedCompanyId}
             agents={agents}
             onClose={() => handleArchive(activeIssueId)}
+            sidebarCollapsed={sidebarCollapsed}
+            onToggleSidebar={() => setSidebarCollapsed((prev) => !prev)}
+            onNew={handleNew}
           />
         ) : (
           <EmptyConversation onNew={handleNew} />

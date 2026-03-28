@@ -131,7 +131,10 @@ export function MarkdownBody({ children, className, resolveImageSrc, onFilePathC
       if (mermaidSource) {
         return <MermaidDiagramBlock source={mermaidSource} darkMode={theme === "dark"} />;
       }
-      return <pre {...preProps}>{preChildren}</pre>;
+      return <div className="overflow-x-auto"><pre {...preProps}>{preChildren}</pre></div>;
+    },
+    table: ({ node: _node, children: tableChildren, ...tableProps }) => {
+      return <div className="overflow-x-auto"><table {...tableProps}>{tableChildren}</table></div>;
     },
     a: ({ href, children: linkChildren }) => {
       const parsed = href ? parseMentionChipHref(href) : null;
@@ -149,6 +152,17 @@ export function MarkdownBody({ children, className, resolveImageSrc, onFilePathC
             )}
             data-mention-kind={parsed.kind}
             style={mentionChipInlineStyle(parsed)}
+          >
+            {linkChildren}
+          </a>
+        );
+      }
+      if (href?.startsWith("issue://")) {
+        const issueId = href.slice("issue://".length);
+        return (
+          <a
+            href={`/issues/${issueId}`}
+            className="text-primary underline underline-offset-2 hover:text-primary/80 transition-colors"
           >
             {linkChildren}
           </a>

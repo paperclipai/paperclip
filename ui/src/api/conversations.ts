@@ -1,8 +1,8 @@
 /**
  * @fileoverview Conversation helpers built on top of existing issue + agent APIs.
  *
- * A "conversation" is a regular Paperclip issue whose title starts with a known
- * prefix. No new backend endpoints are needed — this module provides helpers to
+ * A "conversation" is a regular Paperclip issue with kind "conversation".
+ * No new backend endpoints are needed — this module provides helpers to
  * create, list, and interact with conversation-flavored issues.
  */
 import type { Issue } from "@paperclipai/shared";
@@ -14,7 +14,7 @@ export const CONVERSATION_PREFIX = "Conversation: ";
 
 /** Returns true when the issue represents a board↔agent conversation. */
 export function isConversationIssue(issue: Issue): boolean {
-  return issue.kind === "conversation" || (typeof issue.title === "string" && issue.title.startsWith(CONVERSATION_PREFIX));
+  return issue.kind === "conversation";
 }
 
 /** Extract the agent display name from a conversation issue title. */
