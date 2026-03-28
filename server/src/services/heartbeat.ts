@@ -66,6 +66,8 @@ const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
+const MID_RUN_BUDGET_POLL_INTERVAL_MS =
+  parseInt(process.env.PAPERCLIP_MID_RUN_BUDGET_POLL_MS ?? "", 10) || 30_000;
 const execFile = promisify(execFileCallback);
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
@@ -2545,6 +2547,35 @@ export function heartbeatService(db: Db) {
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
       }
+      // Poll budget while the process is running so a hard-stop triggered by a
+      // *previous* cost event (e.g. another run that just finished) also cancels
+      // this in-flight run. HTTP adapters are fire-and-forget and cannot be killed,
+      // so the poll is limited to local process adapters.
+      let budgetPollInterval: ReturnType<typeof setInterval> | null = null;
+      if (adapter.type !== "http") {
+        budgetPollInterval = setInterval(() => {
+          void budgets
+            .getInvocationBlock(agent.companyId, agent.id, {
+              issueId: issueRef?.id ?? null,
+              projectId: resolvedProjectId,
+            })
+            .then((block) => {
+              if (block) {
+                logger.warn(
+                  { runId: run.id, agentId: agent.id, scopeType: block.scopeType },
+                  "mid-run budget enforcement: cancelling in-flight run",
+                );
+                void cancelRunInternal(run.id, block.reason).catch((err) =>
+                  logger.warn({ err, runId: run.id }, "mid-run budget cancel failed"),
+                );
+              }
+            })
+            .catch((err) => {
+              logger.warn({ err, runId: run.id }, "mid-run budget poll error");
+            });
+        }, MID_RUN_BUDGET_POLL_INTERVAL_MS);
+      }
+
       const adapterResult = await adapter.execute({
         runId: run.id,
         agent,
@@ -2558,6 +2589,11 @@ export function heartbeatService(db: Db) {
         },
         authToken: authToken ?? undefined,
       });
+
+      if (budgetPollInterval !== null) {
+        clearInterval(budgetPollInterval);
+        budgetPollInterval = null;
+      }
       const adapterManagedRuntimeServices = adapterResult.runtimeServices
         ? await persistAdapterManagedRuntimeServices({
             db,
@@ -2749,6 +2785,10 @@ export function heartbeatService(db: Db) {
       }
       await finalizeAgentStatus(agent.id, outcome);
     } catch (err) {
+      if (budgetPollInterval !== null) {
+        clearInterval(budgetPollInterval);
+        budgetPollInterval = null;
+      }
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
         await getCurrentUserRedactionOptions(),
