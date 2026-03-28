@@ -23,6 +23,7 @@ Core fields:
 - maxTurnsPerRun (number, optional): max turns for one run
 - dangerouslySkipPermissions (boolean, optional): pass --dangerously-skip-permissions to claude
 - command (string, optional): defaults to "claude"
+- customSkillsDirs (string[], optional): additional directories containing skill subdirectories to inject alongside built-in skills
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables
 - workspaceStrategy (object, optional): execution workspace strategy; currently supports { type: "git_worktree", baseRef?, branchTemplate?, worktreeParentDir? }

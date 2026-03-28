@@ -46,22 +46,46 @@ async function resolvePaperclipSkillsDir(): Promise<string | null> {
  * Create a tmpdir with `.claude/skills/` containing symlinks to skills from
  * the repo's `skills/` directory, so `--add-dir` makes Claude Code discover
  * them as proper registered skills.
+ *
+ * When `customSkillsDirs` is provided, skills from those directories are also
+ * symlinked in.  If a custom skill has the same directory name as a built-in
+ * skill the custom one wins (symlink is overwritten).
  */
-async function buildSkillsDir(): Promise<string> {
+async function buildSkillsDir(customSkillsDirs: string[] = []): Promise<string> {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skills-"));
   const target = path.join(tmp, ".claude", "skills");
   await fs.mkdir(target, { recursive: true });
+
+  // 1. Built-in skills
   const skillsDir = await resolvePaperclipSkillsDir();
-  if (!skillsDir) return tmp;
-  const entries = await fs.readdir(skillsDir, { withFileTypes: true });
-  for (const entry of entries) {
-    if (entry.isDirectory()) {
-      await fs.symlink(
-        path.join(skillsDir, entry.name),
-        path.join(target, entry.name),
-      );
+  if (skillsDir) {
+    const entries = await fs.readdir(skillsDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        await fs.symlink(
+          path.join(skillsDir, entry.name),
+          path.join(target, entry.name),
+        );
+      }
     }
   }
+
+  // 2. Custom / external skills (e.g. MiniMax-skills)
+  for (const customDir of customSkillsDirs) {
+    const resolved = path.resolve(customDir);
+    const isDir = await fs.stat(resolved).then((s) => s.isDirectory()).catch(() => false);
+    if (!isDir) continue;
+    const entries = await fs.readdir(resolved, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const linkTarget = path.join(target, entry.name);
+      // Remove existing symlink if present so custom skills can override built-in
+      const existing = await fs.lstat(linkTarget).catch(() => null);
+      if (existing) await fs.unlink(linkTarget);
+      await fs.symlink(path.join(resolved, entry.name), linkTarget);
+    }
+  }
+
   return tmp;
 }
 
@@ -341,7 +365,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     extraArgs,
   } = runtimeConfig;
   const billingType = resolveClaudeBillingType(env);
-  const skillsDir = await buildSkillsDir();
+  const customSkillsDirs = asStringArray(config.customSkillsDirs, []);
+  const skillsDir = await buildSkillsDir(customSkillsDirs);
 
   // When instructionsFilePath is configured, create a combined temp file that
   // includes both the file content and the path directive, so we only need

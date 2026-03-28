@@ -67,6 +67,7 @@ Core fields:
 - model (string, optional): Cursor model id (for example auto or gpt-5.3-codex)
 - mode (string, optional): Cursor execution mode passed as --mode (plan|ask). Leave unset for normal autonomous runs.
 - command (string, optional): defaults to "agent"
+- customSkillsDirs (string[], optional): additional directories containing skill subdirectories to inject alongside built-in skills
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables
 

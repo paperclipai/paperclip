@@ -168,7 +168,29 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
-  await ensureCursorSkillsInjected(onLog);
+
+  // Inject built-in + custom external skills into Cursor's skill discovery path
+  const customSkillsDirs = asStringArray(config.customSkillsDirs, []);
+  const customSkillEntries: Array<{ name: string; source: string }> = [];
+  for (const customDir of customSkillsDirs) {
+    const resolved = path.resolve(customDir);
+    const isDir = await fs.stat(resolved).then((s) => s.isDirectory()).catch(() => false);
+    if (!isDir) continue;
+    const dirEntries = await fs.readdir(resolved, { withFileTypes: true });
+    for (const entry of dirEntries) {
+      if (entry.isDirectory()) {
+        customSkillEntries.push({ name: entry.name, source: path.join(resolved, entry.name) });
+      }
+    }
+  }
+
+  if (customSkillEntries.length > 0) {
+    // Merge: first inject built-in, then custom (custom can override)
+    const builtInEntries = await listPaperclipSkillEntries(__moduleDir);
+    await ensureCursorSkillsInjected(onLog, { skillsEntries: [...builtInEntries, ...customSkillEntries] });
+  } else {
+    await ensureCursorSkillsInjected(onLog);
+  }
 
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
