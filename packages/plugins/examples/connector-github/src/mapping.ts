@@ -2,15 +2,25 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { STATE_NS } from "./constants.js";
 
 type IssueMapping = { paperclipIssueId: string };
+export type IssueMappingReverse = { owner: string; repo: string; ghNumber: number };
 type PrMapping = { paperclipIssueId: string };
+type MilestoneMapping = { paperclipGoalId: string };
 type OutboundEchoRecord = { ts: number };
 
 function issueKey(owner: string, repo: string, ghNumber: number): string {
   return `${STATE_NS}:issue:${owner}/${repo}:${ghNumber}`;
 }
 
+function issueReverseKey(paperclipIssueId: string): string {
+  return `${STATE_NS}:issue-reverse:${paperclipIssueId}`;
+}
+
 function prKey(owner: string, repo: string, prNumber: number): string {
   return `${STATE_NS}:pr:${owner}/${repo}:${prNumber}`;
+}
+
+function milestoneKey(owner: string, repo: string, milestoneNumber: number): string {
+  return `${STATE_NS}:milestone:${owner}/${repo}:${milestoneNumber}`;
 }
 
 function outboundEchoKey(owner: string, repo: string, ghNumber: number): string {
@@ -40,6 +50,21 @@ export async function setIssueMapping(
     { scopeKind: "instance", stateKey: issueKey(owner, repo, ghNumber) },
     { paperclipIssueId },
   );
+  // Reverse index: paperclipId → {owner, repo, ghNumber} for outbound updates
+  await ctx.state.set(
+    { scopeKind: "instance", stateKey: issueReverseKey(paperclipIssueId) },
+    { owner, repo, ghNumber } satisfies IssueMappingReverse,
+  );
+}
+
+export async function getIssueMappingReverse(
+  ctx: PluginContext,
+  paperclipIssueId: string,
+): Promise<IssueMappingReverse | null> {
+  return await ctx.state.get({
+    scopeKind: "instance",
+    stateKey: issueReverseKey(paperclipIssueId),
+  }) as IssueMappingReverse | null;
 }
 
 export async function getPrMapping(
@@ -64,6 +89,31 @@ export async function setPrMapping(
   await ctx.state.set(
     { scopeKind: "instance", stateKey: prKey(owner, repo, prNumber) },
     { paperclipIssueId },
+  );
+}
+
+export async function getMilestoneMapping(
+  ctx: PluginContext,
+  owner: string,
+  repo: string,
+  milestoneNumber: number,
+): Promise<MilestoneMapping | null> {
+  return await ctx.state.get({
+    scopeKind: "instance",
+    stateKey: milestoneKey(owner, repo, milestoneNumber),
+  }) as MilestoneMapping | null;
+}
+
+export async function setMilestoneMapping(
+  ctx: PluginContext,
+  owner: string,
+  repo: string,
+  milestoneNumber: number,
+  paperclipGoalId: string,
+): Promise<void> {
+  await ctx.state.set(
+    { scopeKind: "instance", stateKey: milestoneKey(owner, repo, milestoneNumber) },
+    { paperclipGoalId } satisfies MilestoneMapping,
   );
 }
 

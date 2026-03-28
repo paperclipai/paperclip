@@ -18,10 +18,31 @@ export const GH_CLOSED_STATUSES = new Set(["closed", "deleted"]);
 export const GH_EVENTS = {
   issues: "issues",
   issueComment: "issue_comment",
+  milestone: "milestone",
   pullRequest: "pull_request",
   pullRequestReview: "pull_request_review",
   push: "push",
 } as const;
+
+// Label prefix used to encode Paperclip priority on GitHub issues.
+// e.g. "priority:high" maps to IssuePriority "high".
+export const PRIORITY_LABEL_PREFIX = "priority:";
+
+// Map from Paperclip IssuePriority → GitHub label name
+export const PRIORITY_TO_LABEL: Record<string, string> = {
+  critical: "priority:critical",
+  high: "priority:high",
+  medium: "priority:medium",
+  low: "priority:low",
+};
+
+// Map from GitHub label name → Paperclip IssuePriority
+export const LABEL_TO_PRIORITY: Record<string, string> = {
+  "priority:critical": "critical",
+  "priority:high": "high",
+  "priority:medium": "medium",
+  "priority:low": "low",
+};
 
 export const SLOT_IDS = {
   settingsPage: "connector-github-settings",

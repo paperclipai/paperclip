@@ -7,18 +7,21 @@ import {
   type PluginWebhookInput,
 } from "@paperclipai/plugin-sdk";
 import type { Issue } from "@paperclipai/shared";
-import { GH_CLOSED_STATUSES, GH_EVENTS, WEBHOOK_KEYS } from "./constants.js";
+import { GH_CLOSED_STATUSES, GH_EVENTS, LABEL_TO_PRIORITY, PRIORITY_TO_LABEL, WEBHOOK_KEYS } from "./constants.js";
 import { verifyGitHubSignature } from "./verify.js";
-import { isDuplicateDelivery } from "./echo.js";
+import { isDuplicateDelivery, markOutboundEcho } from "./echo.js";
 import {
   getIssueMapping,
+  getIssueMappingReverse,
   setIssueMapping,
   getPrMapping,
   setPrMapping,
+  getMilestoneMapping,
+  setMilestoneMapping,
   markOutboundIssueEcho,
   consumeOutboundIssueEcho,
 } from "./mapping.js";
-import { createGitHubIssue, updateGitHubIssue, createGitHubComment } from "./github-api.js";
+import { createGitHubIssue, updateGitHubIssue, createGitHubComment, syncGitHubPriorityLabels } from "./github-api.js";
 
 type GitHubConfig = {
   webhookSecret: string;
@@ -28,6 +31,7 @@ type GitHubConfig = {
   defaultProjectId?: string;
   triggerAgentIds?: string[];
   watchedRepos?: string[];
+  prCreatesIssue?: boolean;
 };
 
 let currentContext: PluginContext | null = null;
@@ -76,8 +80,7 @@ async function handleIssuesEvent(
     // The outbound handler writes a marker keyed by owner/repo/ghNumber after a
     // successful createGitHubIssue call; we consume it here (single-use).
     if (await consumeOutboundIssueEcho(ctx, owner, repo, ghNumber)) {
-      // Still store the mapping — the reverse lookup already wrote it outbound,
-      // but calling setIssueMapping here is idempotent and keeps both paths consistent.
+      // Mapping was already stored by the outbound handler; nothing more to do.
       return;
     }
     const issue = await ctx.issues.create({
@@ -86,6 +89,9 @@ async function handleIssuesEvent(
       title: readString(ghIssue.title),
       description: readString(ghIssue.body),
     });
+    // Mark the new Paperclip issue ID so the outbound issue.created handler
+    // skips pushing it back to GitHub (preventing a duplicate issue loop).
+    await markOutboundEcho(ctx, issue.id);
     await setIssueMapping(ctx, owner, repo, ghNumber, issue.id);
     return;
   }
@@ -103,6 +109,16 @@ async function handleIssuesEvent(
     if (ghIssue.title !== undefined) patch.title = readString(ghIssue.title);
     if (ghIssue.body !== undefined) patch.description = readString(ghIssue.body);
     await ctx.issues.update(mapping.paperclipIssueId, patch, companyId);
+    return;
+  }
+
+  if (action === "labeled" || action === "unlabeled") {
+    // Re-derive priority from the full label set on the issue (not just the event label)
+    // to handle rapid label changes correctly.
+    const labels = ghIssue.labels as Array<Record<string, unknown>> | undefined ?? [];
+    const priorityLabel = labels.map(l => readString(l.name)).find(n => n in LABEL_TO_PRIORITY);
+    const priority = priorityLabel ? LABEL_TO_PRIORITY[priorityLabel] as Issue["priority"] : null;
+    await ctx.issues.update(mapping.paperclipIssueId, { priority }, companyId);
   }
 }
 
@@ -138,7 +154,64 @@ async function handleIssueCommentEvent(
   const companyId = companies[0]?.id;
   if (!companyId) return;
 
-  await ctx.issues.createComment(mapping.paperclipIssueId, body, companyId);
+  const comment = await ctx.issues.createComment(mapping.paperclipIssueId, body, companyId);
+  // Mark the new comment ID so the outbound issue.comment.created handler
+  // suppresses it and avoids an infinite comment loop.
+  if (comment?.id) {
+    await markOutboundEcho(ctx, `outbound:${comment.id}`);
+  }
+}
+
+async function handleMilestoneEvent(
+  ctx: PluginContext,
+  config: GitHubConfig,
+  payload: Record<string, unknown>,
+  deliveryId: string,
+): Promise<void> {
+  const action = readString(payload.action);
+  if (action !== "created" && action !== "edited" && action !== "closed" && action !== "deleted") return;
+
+  const milestone = payload.milestone as Record<string, unknown> | undefined;
+  if (!milestone) return;
+
+  const milestoneNumber = readNumber(milestone.number);
+  if (milestoneNumber === null) return;
+
+  const repository = payload.repository as Record<string, unknown> | undefined;
+  const owner = readString((repository?.owner as Record<string, unknown> | undefined)?.login ?? config.owner);
+  const repo = readString(repository?.name ?? config.repo);
+
+  if (await isDuplicateDelivery(ctx, deliveryId)) return;
+
+  const companies = await ctx.companies.list({ limit: 1, offset: 0 });
+  const companyId = companies[0]?.id;
+  if (!companyId) return;
+
+  const title = readString(milestone.title);
+  const description = readString(milestone.description);
+
+  if (action === "created") {
+    const goal = await ctx.goals.create({ companyId, title, description: description || undefined, level: "task" });
+    await setMilestoneMapping(ctx, owner, repo, milestoneNumber, goal.id);
+    return;
+  }
+
+  const mapping = await getMilestoneMapping(ctx, owner, repo, milestoneNumber);
+  if (!mapping) return;
+
+  if (action === "edited") {
+    await ctx.goals.update(mapping.paperclipGoalId, { title, description: description || undefined }, companyId);
+    return;
+  }
+
+  if (action === "closed") {
+    await ctx.goals.update(mapping.paperclipGoalId, { status: "achieved" }, companyId);
+    return;
+  }
+
+  if (action === "deleted") {
+    await ctx.goals.update(mapping.paperclipGoalId, { status: "cancelled" }, companyId);
+  }
 }
 
 async function handlePullRequestEvent(
@@ -165,6 +238,7 @@ async function handlePullRequestEvent(
   if (!companyId) return;
 
   if (action === "opened") {
+    if (!config.prCreatesIssue) return;
     const issue = await ctx.issues.create({
       companyId,
       projectId: config.defaultProjectId,
@@ -282,15 +356,14 @@ async function registerOutboundHandlers(ctx: PluginContext): Promise<void> {
     const issueId = typeof payload.issueId === "string" ? payload.issueId : null;
     if (!issueId) return;
 
-    if (await isDuplicateDelivery(ctx, issueId)) return;
+    if (await isDuplicateDelivery(ctx, `outbound:${issueId}`)) return;
 
     const issue = await ctx.issues.get(issueId, event.companyId);
     if (!issue) return;
 
-    // Find the GH issue number by scanning state — we need a reverse lookup.
-    // We stored mapping as github:issue:{owner}/{repo}:{ghNumber} → { paperclipIssueId }
-    // but we don't have a reverse index. For now, skip outbound updates without a known GH number.
-    // Full reverse index can be added as a follow-up.
+    const reverse = await getIssueMappingReverse(ctx, issueId);
+    if (!reverse) return; // Issue not synced to GitHub — skip silently.
+
     const token = await ctx.secrets.resolve(config.githubTokenRef);
     const patch: { title?: string; body?: string; state?: "open" | "closed" } = {
       title: issue.title,
@@ -298,9 +371,11 @@ async function registerOutboundHandlers(ctx: PluginContext): Promise<void> {
     };
     if (issue.status === "done") patch.state = "closed";
 
-    // We don't know the GH number here without a reverse index; log and skip.
-    ctx.logger.info("issue.updated outbound: reverse GH number lookup not yet implemented — skipping sync", { issueId });
-    void token; void patch; // suppress unused-variable warnings until reverse index is implemented
+    await updateGitHubIssue(ctx, token, reverse.owner, reverse.repo, reverse.ghNumber, patch);
+
+    // Sync priority label if present
+    const priorityLabel = issue.priority ? PRIORITY_TO_LABEL[issue.priority] ?? null : null;
+    await syncGitHubPriorityLabels(ctx, token, reverse.owner, reverse.repo, reverse.ghNumber, priorityLabel);
   });
 
   ctx.events.on("issue.comment.created", async (event: PluginEvent) => {
@@ -313,11 +388,13 @@ async function registerOutboundHandlers(ctx: PluginContext): Promise<void> {
     const body = typeof payload.body === "string" ? payload.body : null;
     if (!commentId || !issueId || !body) return;
 
-    if (await isDuplicateDelivery(ctx, commentId)) return;
+    if (await isDuplicateDelivery(ctx, `outbound:${commentId}`)) return;
+
+    const reverse = await getIssueMappingReverse(ctx, issueId);
+    if (!reverse) return; // Issue not synced to GitHub — skip silently.
 
     const token = await ctx.secrets.resolve(config.githubTokenRef);
-    ctx.logger.info("issue.comment.created outbound: reverse GH number lookup not yet implemented — skipping sync", { issueId });
-    void token; // suppress unused-variable warning until reverse index is implemented
+    await createGitHubComment(ctx, token, reverse.owner, reverse.repo, reverse.ghNumber, body);
   });
 }
 
@@ -388,6 +465,9 @@ const plugin: PaperclipPlugin = definePlugin({
         break;
       case GH_EVENTS.issueComment:
         await handleIssueCommentEvent(ctx, config, payload, deliveryId);
+        break;
+      case GH_EVENTS.milestone:
+        await handleMilestoneEvent(ctx, config, payload, deliveryId);
         break;
       case GH_EVENTS.pullRequest:
         await handlePullRequestEvent(ctx, config, payload, deliveryId);
