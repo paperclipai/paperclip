@@ -1885,35 +1885,26 @@ export function heartbeatService(db: Db) {
       return { cleaned: 0, issueIds: [] };
     }
 
-    const issueIds = candidates.map((c) => c.issueId);
-
-    await db
-      .update(issues)
-      .set({
-        executionRunId: null,
-        executionAgentNameKey: null,
-        executionLockedAt: null,
-        updatedAt: new Date(),
-      })
-      .where(inArray(issues.id, issueIds));
-
-    logger.warn(
-      {
-        cleanedCount: candidates.length,
-        issueIds,
-        staleCutoff: staleCutoff.toISOString(),
-        details: candidates.map((c) => ({
-          issueId: c.issueId,
-          companyId: c.companyId,
-          executionRunId: c.executionRunId,
-          runStatus: c.runStatus ?? "missing",
-          lockedAt: c.executionLockedAt?.toISOString() ?? null,
-        })),
-      },
-      "swept orphaned execution locks",
+    // Update per-row, verifying executionRunId still matches the candidate snapshot
+    // to avoid a TOCTOU race where a new run acquires the lock between SELECT and UPDATE.
+    const updateResults = await Promise.all(
+      candidates.map((c) =>
+        db
+          .update(issues)
+          .set({
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(issues.id, c.issueId), eq(issues.executionRunId, c.executionRunId!)))
+          .returning({ id: issues.id }),
+      ),
     );
 
-    return { cleaned: candidates.length, issueIds };
+    const clearedIssueIds = updateResults.flatMap((r) => r.map((row) => row.id));
+
+    return { cleaned: clearedIssueIds.length, issueIds: clearedIssueIds };
   }
 
   async function updateRuntimeState(
