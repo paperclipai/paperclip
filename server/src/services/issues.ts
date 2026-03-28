@@ -884,6 +884,7 @@ export function issueService(db: Db) {
           .set({ issueCounter: sql`${companies.issueCounter} + 1` })
           .where(eq(companies.id, companyId))
           .returning({ issueCounter: companies.issueCounter, issuePrefix: companies.issuePrefix });
+        if (!company) throw notFound("Company not found");
 
         const issueNumber = company.issueCounter;
         const identifier = `${company.issuePrefix}-${issueNumber}`;

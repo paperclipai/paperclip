@@ -839,6 +839,17 @@ describe("issueService.list participantAgentId", () => {
     });
   });
 
+  it("returns not found for non-existent company ids on create", async () => {
+    await expect(
+      svc.create(randomUUID(), {
+        title: "Missing company guard",
+      } as any),
+    ).rejects.toMatchObject({
+      status: 404,
+      message: "Company not found",
+    });
+  });
+
   it("returns unprocessable for malformed workspace ids on create", async () => {
     await expect(
       svc.create(randomUUID(), {
