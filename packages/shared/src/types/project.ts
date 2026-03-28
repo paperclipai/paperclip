@@ -1,5 +1,6 @@
 import type { PauseReason, ProjectStatus } from "../constants.js";
 import type { ProjectExecutionWorkspacePolicy, WorkspaceRuntimeService } from "./workspace-runtime.js";
+import type { ProjectControlPlaneState } from "./control-plane.js";
 
 export type ProjectWorkspaceSourceType = "local_path" | "git_repo" | "remote_managed" | "non_git_path";
 export type ProjectWorkspaceVisibility = "default" | "advanced";
@@ -69,4 +70,6 @@ export interface Project {
   archivedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
+  controlPlaneState: ProjectControlPlaneState | null;
+  controlPlaneUpdatedAt: Date | null;
 }

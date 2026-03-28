@@ -49,6 +49,18 @@ export type {
 export type { AssetImage } from "./asset.js";
 export type { Project, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectWorkspace } from "./project.js";
 export type {
+  ProjectPortfolioState,
+  ProjectPhase,
+  ProjectConstraintLane,
+  ProjectStaleStatus,
+  ProjectControlPlaneLastOutput,
+  ProjectControlPlaneState,
+  ProjectControlPlaneTelemetry,
+  ProjectControlPlaneResponse,
+  ProjectPortfolioSummary,
+  PortfolioResponse,
+} from "./control-plane.js";
+export type {
   ExecutionWorkspace,
   WorkspaceRuntimeService,
   ExecutionWorkspaceStrategyType,
