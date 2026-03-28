@@ -539,6 +539,28 @@ function deriveTaskKey(
   );
 }
 
+/**
+ * Returns true when the agent's runtimeConfig explicitly enables the timer-skip
+ * optimization. Intentionally strict: only a literal `true` boolean enables it,
+ * so absent or string-truthy values keep the default (disabled) behavior.
+ */
+export function isTimerSkipEnabled(runtimeConfig: unknown): boolean {
+  if (runtimeConfig === null || typeof runtimeConfig !== "object") return false;
+  const heartbeat = (runtimeConfig as Record<string, unknown>).heartbeat;
+  if (heartbeat === null || typeof heartbeat !== "object") return false;
+  return (heartbeat as Record<string, unknown>).skipTimerWhenNoAssignedOpenIssue === true;
+}
+
+/**
+ * Returns true when a timer wake should be skipped for an agent.
+ * The flag must be enabled AND the agent must have zero open assigned issues.
+ * Callers are responsible for querying the issue count.
+ */
+export function shouldSkipTimerWake(runtimeConfig: unknown, openIssueCount: number): boolean {
+  if (!isTimerSkipEnabled(runtimeConfig)) return false;
+  return openIssueCount === 0;
+}
+
 export function shouldResetTaskSessionForWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
@@ -1617,6 +1639,7 @@ export function heartbeatService(db: Db) {
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
+      skipTimerWhenNoAssignedOpenIssue: heartbeat.skipTimerWhenNoAssignedOpenIssue === true,
     };
   }
 
@@ -3818,6 +3841,23 @@ export function heartbeatService(db: Db) {
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
+
+        if (policy.skipTimerWhenNoAssignedOpenIssue) {
+          const [{ count }] = await db
+            .select({ count: sql<number>`count(*)` })
+            .from(issues)
+            .where(
+              and(
+                eq(issues.companyId, agent.companyId),
+                eq(issues.assigneeAgentId, agent.id),
+                inArray(issues.status, ["todo", "in_progress", "blocked", "in_review"]),
+              ),
+            );
+          if (shouldSkipTimerWake(agent.runtimeConfig, Number(count ?? 0))) {
+            skipped += 1;
+            continue;
+          }
+        }
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",

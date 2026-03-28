@@ -975,6 +975,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   className={inputClass}
                 />
               </Field>
+              <ToggleField
+                label="Skip timer when no assigned open task"
+                hint={help.skipTimerWhenNoAssignedOpenIssue}
+                checked={eff(
+                  "heartbeat",
+                  "skipTimerWhenNoAssignedOpenIssue",
+                  heartbeat.skipTimerWhenNoAssignedOpenIssue === true,
+                )}
+                onChange={(v) => mark("heartbeat", "skipTimerWhenNoAssignedOpenIssue", v)}
+              />
             </div>
           </CollapsibleSection>
           </div>
