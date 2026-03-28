@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ISSUE_PRIORITIES, ISSUE_STATUSES } from "../constants.js";
+import { ISSUE_PRIORITIES, ISSUE_RELATION_TYPES, ISSUE_STATUSES } from "../constants.js";
 
 const executionWorkspaceStrategySchema = z
   .object({
@@ -120,3 +120,16 @@ export const upsertIssueDocumentSchema = z.object({
 
 export type IssueDocumentFormat = z.infer<typeof issueDocumentFormatSchema>;
 export type UpsertIssueDocument = z.infer<typeof upsertIssueDocumentSchema>;
+
+export const createIssueRelationSchema = z.object({
+  relatedIssueId: z.string().uuid(),
+  type: z.enum(ISSUE_RELATION_TYPES),
+});
+
+export type CreateIssueRelation = z.infer<typeof createIssueRelationSchema>;
+
+export const resolveBlockerSchema = z.object({
+  comment: z.string().min(1).optional(),
+});
+
+export type ResolveBlocker = z.infer<typeof resolveBlockerSchema>;

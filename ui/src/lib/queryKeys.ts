@@ -50,6 +50,7 @@ export const queryKeys = {
     liveRuns: (issueId: string) => ["issues", "live-runs", issueId] as const,
     activeRun: (issueId: string) => ["issues", "active-run", issueId] as const,
     workProducts: (issueId: string) => ["issues", "work-products", issueId] as const,
+    relations: (issueId: string) => ["issues", "relations", issueId] as const,
   },
   routines: {
     list: (companyId: string) => ["routines", companyId] as const,

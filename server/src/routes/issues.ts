@@ -8,8 +8,10 @@ import {
   createIssueLabelSchema,
   checkoutIssueSchema,
   createIssueSchema,
+  createIssueRelationSchema,
   linkIssueApprovalSchema,
   issueDocumentKeySchema,
+  resolveBlockerSchema,
   updateIssueWorkProductSchema,
   upsertIssueDocumentSchema,
   updateIssueSchema,
@@ -36,6 +38,7 @@ import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import { blockerEscalationService } from "../services/blocker-escalation.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 
@@ -52,6 +55,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
   const routinesSvc = routineService(db);
+  const blockerSvc = blockerEscalationService(db);
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
@@ -1095,6 +1099,38 @@ export function issueRoutes(db: Db, storage: StorageService) {
       }
     })();
 
+    // Auto-create a blocker issue when an agent marks an issue as blocked
+    const becameBlocked =
+      existing.status !== "blocked" && issue.status === "blocked";
+    if (becameBlocked) {
+      void (async () => {
+        try {
+          await blockerSvc.createBlockerIssue({
+            blockedIssue: issue,
+            commentBody: commentBody ?? undefined,
+            actorAgentId: actor.agentId ?? undefined,
+          });
+        } catch (err) {
+          logger.warn({ err, issueId: issue.id }, "failed to create blocker escalation issue");
+        }
+      })();
+    }
+
+    // Auto-unblock when a blocker issue is resolved
+    const becameResolved =
+      existing.status !== "done" &&
+      existing.status !== "cancelled" &&
+      (issue.status === "done" || issue.status === "cancelled");
+    if (becameResolved) {
+      void (async () => {
+        try {
+          await blockerSvc.handleBlockerResolved(issue, heartbeat);
+        } catch (err) {
+          logger.warn({ err, issueId: issue.id }, "failed to handle blocker resolution");
+        }
+      })();
+    }
+
     res.json({ ...issue, comment });
   });
 
@@ -1673,6 +1709,104 @@ export function issueRoutes(db: Db, storage: StorageService) {
     });
 
     res.json({ ok: true });
+  });
+
+  // ── Issue Relations ──
+
+  router.get("/issues/:id/relations", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    const relations = await blockerSvc.listRelations(id);
+    res.json(relations);
+  });
+
+  router.post("/issues/:id/relations", validate(createIssueRelationSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    const { relatedIssueId, type } = req.body;
+    if (relatedIssueId === id) {
+      res.status(422).json({ error: "Cannot relate an issue to itself" });
+      return;
+    }
+    const related = await svc.getById(relatedIssueId);
+    if (!related || related.companyId !== existing.companyId) {
+      res.status(404).json({ error: "Related issue not found" });
+      return;
+    }
+    const relation = await blockerSvc.createRelation(existing.companyId, id, relatedIssueId, type);
+    res.status(201).json(relation);
+  });
+
+  router.delete("/issue-relations/:relationId", async (req, res) => {
+    const relationId = req.params.relationId as string;
+    const deleted = await blockerSvc.deleteRelation(relationId);
+    if (!deleted) {
+      res.status(404).json({ error: "Relation not found" });
+      return;
+    }
+    assertCompanyAccess(req, deleted.companyId);
+    res.json({ ok: true });
+  });
+
+  // ── Resolve Blocker ──
+
+  router.post("/issues/:id/resolve-blocker", validate(resolveBlockerSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+
+    const { comment: resolverComment } = req.body;
+    const actor = getActorInfo(req);
+
+    // Post the resolver's comment on the blocker issue if provided
+    if (resolverComment) {
+      await svc.addComment(id, resolverComment, {
+        userId: actor.actorType === "user" ? actor.actorId : undefined,
+      });
+    }
+
+    // Mark the blocker issue as done
+    await svc.update(id, { status: "done" });
+
+    // Handle unblocking of related issues
+    const result = await blockerSvc.handleBlockerResolved(
+      existing,
+      heartbeat,
+      resolverComment,
+    );
+
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: id,
+      details: {
+        status: "done",
+        identifier: existing.identifier,
+        blockerResolved: true,
+        unblockedCount: result.unblockedCount,
+      },
+    });
+
+    res.json({ ok: true, unblockedCount: result.unblockedCount });
   });
 
   return router;

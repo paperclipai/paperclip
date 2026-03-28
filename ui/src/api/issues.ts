@@ -6,6 +6,7 @@ import type {
   IssueComment,
   IssueDocument,
   IssueLabel,
+  IssueRelation,
   IssueWorkProduct,
   UpsertIssueDocument,
 } from "@paperclipai/shared";
@@ -111,4 +112,10 @@ export const issuesApi = {
   updateWorkProduct: (id: string, data: Record<string, unknown>) =>
     api.patch<IssueWorkProduct>(`/work-products/${id}`, data),
   deleteWorkProduct: (id: string) => api.delete<IssueWorkProduct>(`/work-products/${id}`),
+  listRelations: (id: string) => api.get<IssueRelation[]>(`/issues/${id}/relations`),
+  createRelation: (id: string, data: { relatedIssueId: string; type: string }) =>
+    api.post<IssueRelation>(`/issues/${id}/relations`, data),
+  deleteRelation: (relationId: string) => api.delete<{ ok: true }>(`/issue-relations/${relationId}`),
+  resolveBlocker: (id: string, data: { comment?: string }) =>
+    api.post<{ ok: true; unblockedCount: number }>(`/issues/${id}/resolve-blocker`, data),
 };

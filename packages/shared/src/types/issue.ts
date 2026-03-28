@@ -1,4 +1,4 @@
-import type { IssueOriginKind, IssuePriority, IssueStatus } from "../constants.js";
+import type { IssueOriginKind, IssuePriority, IssueRelationType, IssueStatus } from "../constants.js";
 import type { Goal } from "./goal.js";
 import type { Project, ProjectWorkspace } from "./project.js";
 import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
@@ -155,6 +155,23 @@ export interface IssueComment {
   body: string;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface IssueRelation {
+  id: string;
+  companyId: string;
+  issueId: string;
+  relatedIssueId: string;
+  type: IssueRelationType;
+  createdAt: Date;
+  relatedIssue?: {
+    id: string;
+    identifier: string | null;
+    title: string;
+    status: IssueStatus;
+    assigneeAgentId: string | null;
+    assigneeUserId: string | null;
+  };
 }
 
 export interface IssueAttachment {

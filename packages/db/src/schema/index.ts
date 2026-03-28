@@ -30,6 +30,7 @@ export { issueWorkProducts } from "./issue_work_products.js";
 export { labels } from "./labels.js";
 export { issueLabels } from "./issue_labels.js";
 export { issueApprovals } from "./issue_approvals.js";
+export { issueRelations } from "./issue_relations.js";
 export { issueComments } from "./issue_comments.js";
 export { issueInboxArchives } from "./issue_inbox_archives.js";
 export { issueReadStates } from "./issue_read_states.js";

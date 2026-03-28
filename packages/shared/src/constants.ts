@@ -122,7 +122,10 @@ export type IssueStatus = (typeof ISSUE_STATUSES)[number];
 export const ISSUE_PRIORITIES = ["critical", "high", "medium", "low"] as const;
 export type IssuePriority = (typeof ISSUE_PRIORITIES)[number];
 
-export const ISSUE_ORIGIN_KINDS = ["manual", "routine_execution"] as const;
+export const ISSUE_ORIGIN_KINDS = ["manual", "routine_execution", "blocker_escalation"] as const;
+
+export const ISSUE_RELATION_TYPES = ["blocks", "blocked_by", "related", "duplicate"] as const;
+export type IssueRelationType = (typeof ISSUE_RELATION_TYPES)[number];
 export type IssueOriginKind = (typeof ISSUE_ORIGIN_KINDS)[number];
 
 export const GOAL_LEVELS = ["company", "team", "agent", "task"] as const;
