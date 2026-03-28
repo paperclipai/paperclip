@@ -58,6 +58,8 @@ function createApp() {
 }
 
 describe("approval routes idempotent retries", () => {
+  const approvalId = "11111111-1111-4111-8111-111111111111";
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockHeartbeatService.wakeup.mockResolvedValue({ id: "wake-1" });
@@ -79,7 +81,7 @@ describe("approval routes idempotent retries", () => {
     });
 
     const res = await request(createApp())
-      .post("/api/approvals/approval-1/approve")
+      .post(`/api/approvals/${approvalId}/approve`)
       .send({});
 
     expect(res.status).toBe(200);
@@ -101,7 +103,7 @@ describe("approval routes idempotent retries", () => {
     });
 
     const res = await request(createApp())
-      .post("/api/approvals/approval-1/reject")
+      .post(`/api/approvals/${approvalId}/reject`)
       .send({});
 
     expect(res.status).toBe(200);
@@ -115,5 +117,13 @@ describe("approval routes idempotent retries", () => {
     expect(res.body.error).toContain("Invalid approval id");
     expect(mockApprovalService.getById).not.toHaveBeenCalled();
     expect(mockIssueApprovalService.listIssuesForApproval).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 for malformed approval ids on approve route", async () => {
+    const res = await request(createApp()).post("/api/approvals/not-a-valid-id/approve").send({});
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("Invalid approval id");
+    expect(mockApprovalService.approve).not.toHaveBeenCalled();
   });
 });

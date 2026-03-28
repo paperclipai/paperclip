@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Response } from "express";
 import type { Db } from "@paperclipai/db";
 import {
   addApprovalCommentSchema,
@@ -35,6 +35,14 @@ export function approvalRoutes(db: Db) {
   const secretsSvc = secretService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
 
+  function parseApprovalId(rawId: string, res: Response) {
+    if (!isUuidLike(rawId)) {
+      res.status(400).json({ error: "Invalid approval id" });
+      return null;
+    }
+    return rawId;
+  }
+
   router.get("/companies/:companyId/approvals", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -44,7 +52,8 @@ export function approvalRoutes(db: Db) {
   });
 
   router.get("/approvals/:id", async (req, res) => {
-    const id = req.params.id as string;
+    const id = parseApprovalId(req.params.id as string, res);
+    if (!id) return;
     const approval = await svc.getById(id);
     if (!approval) {
       res.status(404).json({ error: "Approval not found" });
@@ -108,11 +117,8 @@ export function approvalRoutes(db: Db) {
   });
 
   router.get("/approvals/:id/issues", async (req, res) => {
-    const id = req.params.id as string;
-    if (!isUuidLike(id)) {
-      res.status(400).json({ error: "Invalid approval id" });
-      return;
-    }
+    const id = parseApprovalId(req.params.id as string, res);
+    if (!id) return;
     const approval = await svc.getById(id);
     if (!approval) {
       res.status(404).json({ error: "Approval not found" });
@@ -125,7 +131,8 @@ export function approvalRoutes(db: Db) {
 
   router.post("/approvals/:id/approve", validate(resolveApprovalSchema), async (req, res) => {
     assertBoard(req);
-    const id = req.params.id as string;
+    const id = parseApprovalId(req.params.id as string, res);
+    if (!id) return;
     const { approval, applied } = await svc.approve(
       id,
       req.body.decidedByUserId ?? "board",
@@ -220,7 +227,8 @@ export function approvalRoutes(db: Db) {
 
   router.post("/approvals/:id/reject", validate(resolveApprovalSchema), async (req, res) => {
     assertBoard(req);
-    const id = req.params.id as string;
+    const id = parseApprovalId(req.params.id as string, res);
+    if (!id) return;
     const { approval, applied } = await svc.reject(
       id,
       req.body.decidedByUserId ?? "board",
@@ -247,7 +255,8 @@ export function approvalRoutes(db: Db) {
     validate(requestApprovalRevisionSchema),
     async (req, res) => {
       assertBoard(req);
-      const id = req.params.id as string;
+      const id = parseApprovalId(req.params.id as string, res);
+      if (!id) return;
       const approval = await svc.requestRevision(
         id,
         req.body.decidedByUserId ?? "board",
@@ -269,7 +278,8 @@ export function approvalRoutes(db: Db) {
   );
 
   router.post("/approvals/:id/resubmit", validate(resubmitApprovalSchema), async (req, res) => {
-    const id = req.params.id as string;
+    const id = parseApprovalId(req.params.id as string, res);
+    if (!id) return;
     const existing = await svc.getById(id);
     if (!existing) {
       res.status(404).json({ error: "Approval not found" });
@@ -307,7 +317,8 @@ export function approvalRoutes(db: Db) {
   });
 
   router.get("/approvals/:id/comments", async (req, res) => {
-    const id = req.params.id as string;
+    const id = parseApprovalId(req.params.id as string, res);
+    if (!id) return;
     const approval = await svc.getById(id);
     if (!approval) {
       res.status(404).json({ error: "Approval not found" });
@@ -319,7 +330,8 @@ export function approvalRoutes(db: Db) {
   });
 
   router.post("/approvals/:id/comments", validate(addApprovalCommentSchema), async (req, res) => {
-    const id = req.params.id as string;
+    const id = parseApprovalId(req.params.id as string, res);
+    if (!id) return;
     const approval = await svc.getById(id);
     if (!approval) {
       res.status(404).json({ error: "Approval not found" });
