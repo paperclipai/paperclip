@@ -219,7 +219,7 @@ describe("prepareManagedCodexHome", () => {
 
   const itWindows = process.platform === "win32" ? it : it.skip;
 
-  itWindows("converts auth.json symlink to copy on Windows", async () => {
+  itWindows("creates auth.json as a hard link (not symlink) on Windows", async () => {
     const sourceHome = path.join(root, "source-codex");
     await fs.mkdir(sourceHome, { recursive: true });
     await fs.writeFile(
@@ -247,11 +247,13 @@ describe("prepareManagedCodexHome", () => {
     );
 
     const authPath = path.join(resultHome, "auth.json");
-    const stat = await fs.lstat(authPath);
+    const targetStat = await fs.stat(authPath);
+    const sourceStat = await fs.stat(path.join(sourceHome, "auth.json"));
 
-    // On Windows, auth.json should be a regular file (copy), not a symlink
-    expect(stat.isSymbolicLink()).toBe(false);
-    expect(stat.isFile()).toBe(true);
+    // On Windows, auth.json should be a hard link (same inode), not a symlink
+    expect(targetStat.isSymbolicLink?.() ?? false).toBe(false);
+    expect(targetStat.isFile()).toBe(true);
+    expect(targetStat.ino).toBe(sourceStat.ino);
 
     const content = JSON.parse(await fs.readFile(authPath, "utf-8"));
     expect(content.accessToken).toBe("test-token");

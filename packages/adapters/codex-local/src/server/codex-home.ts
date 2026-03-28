@@ -7,10 +7,11 @@ const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
 const COPIED_SHARED_FILES = ["config.json", "instructions.md"] as const;
 const SANITIZED_COPIED_FILES = ["config.toml"] as const;
 // On Windows, symlinks require elevated privileges both to create and to
-// follow (native APIs used by the Codex Rust binary).  Use copies instead
-// so the managed home works from non-elevated Paperclip processes.
+// follow (native APIs used by the Codex Rust binary).  Use hard links
+// instead — they share the same file data, don't need elevation, and
+// keep auth in sync without copying.
 const SYMLINKED_SHARED_FILES = process.platform === "win32" ? ([] as const) : (["auth.json"] as const);
-const REFRESHED_COPIED_FILES = process.platform === "win32" ? (["auth.json"] as const) : ([] as const);
+const HARDLINKED_SHARED_FILES = process.platform === "win32" ? (["auth.json"] as const) : ([] as const);
 
 /**
  * Remove `sandbox = "elevated"` (or `'elevated'` / bare `elevated`) from the
@@ -122,17 +123,30 @@ export async function prepareManagedCodexHome(
     await ensureSymlink(path.join(targetHome, name), source);
   }
 
-  // On Windows, convert any leftover symlinks to copies (fixes managed homes
-  // created before the symlink-to-copy migration).
-  for (const name of REFRESHED_COPIED_FILES) {
+  // On Windows, use hard links instead of symlinks.  Hard links share the
+  // same file data, don't require elevation, and keep auth in sync.
+  // Convert any leftover symlinks or stale hard links from prior runs.
+  for (const name of HARDLINKED_SHARED_FILES) {
     const target = path.join(targetHome, name);
     const source = path.join(sourceHome, name);
     if (!(await pathExists(source))) continue;
     const stat = await fs.lstat(target).catch(() => null);
-    if (stat?.isSymbolicLink()) {
-      await fs.unlink(target);
+    if (stat) {
+      if (stat.isSymbolicLink()) {
+        // Migrate: replace symlink with hard link
+        await fs.unlink(target);
+      } else {
+        // Already a regular file — check if it's the same inode (hard link intact)
+        const sourceStat = await fs.stat(source).catch(() => null);
+        if (sourceStat && stat.ino === sourceStat.ino && stat.dev === sourceStat.dev) {
+          continue; // Hard link already points to the right file
+        }
+        // Stale copy or broken hard link — replace it
+        await fs.unlink(target);
+      }
     }
-    await fs.copyFile(source, target);
+    await ensureParentDir(target);
+    await fs.link(source, target);
   }
 
   for (const name of COPIED_SHARED_FILES) {
