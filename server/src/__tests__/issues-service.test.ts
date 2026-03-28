@@ -418,6 +418,18 @@ describe("issueService.list participantAgentId", () => {
     expect(comments).toEqual([]);
   });
 
+  it("returns an empty comment page when issueId is malformed", async () => {
+    const comments = await svc.listComments("not-a-uuid", {
+      order: "asc",
+      limit: 10,
+    });
+    expect(comments).toEqual([]);
+  });
+
+  it("returns null for malformed non-uuid comment ids", async () => {
+    await expect(svc.getComment("not-a-uuid")).resolves.toBeNull();
+  });
+
   it("ignores malformed non-string list filters instead of throwing", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();

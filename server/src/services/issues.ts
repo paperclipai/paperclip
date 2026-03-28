@@ -1320,6 +1320,7 @@ export function issueService(db: Db) {
       },
     ) => {
       const order = opts?.order === "asc" ? "asc" : "desc";
+      if (!isUuidLike(issueId)) return [];
       const afterCommentId = opts?.afterCommentId?.trim() || null;
       const limit =
         opts?.limit && opts.limit > 0
@@ -1394,16 +1395,18 @@ export function issueService(db: Db) {
       };
     },
 
-    getComment: (commentId: string) =>
-      instanceSettings.getGeneral().then(({ censorUsernameInLogs }) =>
+    getComment: (commentId: string) => {
+      if (!isUuidLike(commentId)) return Promise.resolve(null);
+      return instanceSettings.getGeneral().then(({ censorUsernameInLogs }) =>
         db
-        .select()
-        .from(issueComments)
-        .where(eq(issueComments.id, commentId))
-        .then((rows) => {
-          const comment = rows[0] ?? null;
-          return comment ? redactIssueComment(comment, censorUsernameInLogs) : null;
-        })),
+          .select()
+          .from(issueComments)
+          .where(eq(issueComments.id, commentId))
+          .then((rows) => {
+            const comment = rows[0] ?? null;
+            return comment ? redactIssueComment(comment, censorUsernameInLogs) : null;
+          }));
+    },
 
     addComment: async (issueId: string, body: string, actor: { agentId?: string; userId?: string }) => {
       const issue = await db
