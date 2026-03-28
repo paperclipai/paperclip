@@ -143,7 +143,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
   function requireAgentRunId(req: Request, res: Response) {
     if (req.actor.type !== "agent") return null;
-    const runId = req.actor.runId?.trim();
+    const runId = typeof req.actor.runId === "string" ? req.actor.runId.trim() : "";
     if (runId) return runId;
     res.status(401).json({ error: "Agent run id required" });
     return null;

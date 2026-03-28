@@ -9,6 +9,7 @@ const COMPANY_ID = "11111111-1111-4111-8111-111111111111";
 const mockIssueService = vi.hoisted(() => ({
   list: vi.fn(),
   getById: vi.fn(),
+  checkout: vi.fn(),
   listComments: vi.fn(),
   getByIdentifier: vi.fn(),
   getAttachmentById: vi.fn(),
@@ -47,7 +48,7 @@ vi.mock("../services/index.js", () => ({
   workProductService: () => mockWorkProductService,
 }));
 
-function createApp() {
+function createApp(actorOverride?: Record<string, unknown>) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -57,6 +58,7 @@ function createApp() {
       companyIds: [COMPANY_ID],
       source: "local_implicit",
       isInstanceAdmin: false,
+      ...actorOverride,
     };
     next();
   });
@@ -75,6 +77,7 @@ describe("issues routes UUID validation", () => {
       companyId: COMPANY_ID,
       status: "todo",
     });
+    mockIssueService.checkout.mockResolvedValue(null);
     mockIssueService.listComments.mockResolvedValue([]);
     mockIssueService.getAttachmentById.mockResolvedValue(null);
     mockWorkProductService.getById.mockResolvedValue(null);
@@ -139,6 +142,23 @@ describe("issues routes UUID validation", () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toContain("Invalid comment limit");
     expect(mockIssueService.listComments).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 for agent checkout when runId is malformed non-string", async () => {
+    const agentId = "33333333-3333-4333-8333-333333333333";
+    const app = createApp({
+      type: "agent",
+      companyId: COMPANY_ID,
+      agentId,
+      runId: { bad: true },
+    });
+    const res = await request(app)
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/checkout")
+      .send({ agentId, expectedStatuses: ["todo"] });
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toContain("run id");
+    expect(mockIssueService.checkout).not.toHaveBeenCalled();
   });
 
   it("returns 400 for invalid attachment ids before attachment lookup", async () => {
