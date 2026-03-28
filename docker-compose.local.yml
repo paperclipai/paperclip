@@ -1,4 +1,20 @@
 services:
+  db:
+    image: postgres:17
+    container_name: paperclip-db
+    environment:
+      POSTGRES_USER: paperclip
+      POSTGRES_PASSWORD: paperclip
+      POSTGRES_DB: paperclip
+    volumes:
+      - /Volumes/Dom-Cache/paperclip-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paperclip"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
   paperclip:
     build:
       context: .
@@ -9,5 +25,8 @@ services:
     env_file:
       - .env
     volumes:
-      - ./data/docker-paperclip:/paperclip
+      - /Volumes/docker/DeeM1/paperclip:/paperclip
+    depends_on:
+      db:
+        condition: service_healthy
     restart: unless-stopped
