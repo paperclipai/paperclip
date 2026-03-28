@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { projects } from "@paperclipai/db";
 import type {
@@ -156,20 +156,24 @@ export function controlPlaneService(db: Db) {
       const nextState: ProjectControlPlaneState = { ...currentState, ...patch };
       const now = new Date();
 
-      await db
+      const updated = await db
         .update(projects)
         .set({
           controlPlaneState: nextState as unknown as Record<string, unknown>,
           controlPlaneUpdatedAt: now,
           updatedAt: now,
         })
-        .where(eq(projects.id, projectId));
+        .where(eq(projects.id, projectId))
+        .returning({ id: projects.id, companyId: projects.companyId });
+
+      const confirmedRow = updated[0];
+      if (!confirmedRow) return null;
 
       const warnings = computeWarnings(nextState);
 
       return {
-        projectId: row.id,
-        companyId: row.companyId,
+        projectId: confirmedRow.id,
+        companyId: confirmedRow.companyId,
         controlPlaneState: nextState,
         telemetry: null,
         warnings,
@@ -252,7 +256,7 @@ export function controlPlaneService(db: Db) {
         (r) => r.state?.portfolioState === "active",
       ).length;
       const staleCount = withDerived.filter(
-        (r) => r.staleStatus === "stale",
+        (r) => r.staleStatus === "stale" || r.staleStatus === "critical",
       ).length;
       const blockedCount = withDerived.filter(
         (r) => r.state?.portfolioState === "blocked",
