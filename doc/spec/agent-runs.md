@@ -479,26 +479,26 @@ Agent 级控制平面设置（非适配器专属）：
 - `finished_at` timestamptz null
 - `error` text null
 
-## 9.3 New table: `heartbeat_run_events`
+## 9.3 新表：`heartbeat_run_events`
 
-Append-only per-run lightweight event timeline (no full raw log chunks).
+按运行追加的轻量事件时间线（不含完整原始日志块）。
 
 - `id` bigserial pk
 - `company_id` uuid fk not null
 - `run_id` uuid fk `heartbeat_runs.id` not null
 - `agent_id` uuid fk `agents.id` not null
 - `seq` int not null
-- `event_type` text not null (`lifecycle|status|usage|error|structured`)
-- `stream` text null (`system|stdout|stderr`) (summarized events only, not full stream chunks)
-- `level` text null (`info|warn|error`)
+- `event_type` text not null（`lifecycle|status|usage|error|structured`）
+- `stream` text null（`system|stdout|stderr`）（仅摘要事件，非完整流块）
+- `level` text null（`info|warn|error`）
 - `color` text null
 - `message` text null
 - `payload` jsonb null
 - `created_at` timestamptz not null
 
-## 9.4 Changes to `heartbeat_runs`
+## 9.4 对 `heartbeat_runs` 的变更
 
-Add fields required for result and diagnostics:
+添加结果与诊断所需的字段：
 
 - `wakeup_request_id` uuid fk `agent_wakeup_requests.id` null
 - `exit_code` int null
@@ -507,8 +507,8 @@ Add fields required for result and diagnostics:
 - `result_json` jsonb null
 - `session_id_before` text null
 - `session_id_after` text null
-- `log_store` text null (`local_file|object_store|postgres`)
-- `log_ref` text null (opaque provider reference; path/key/uri/row id)
+- `log_store` text null（`local_file|object_store|postgres`）
+- `log_ref` text null（不透明 provider 引用；path/key/uri/row id）
 - `log_bytes` bigint null
 - `log_sha256` text null
 - `log_compressed` boolean not null default false
@@ -516,11 +516,11 @@ Add fields required for result and diagnostics:
 - `stdout_excerpt` text null
 - `error_code` text null
 
-This keeps per-run diagnostics queryable without storing full logs in Postgres.
+这使得按运行的诊断信息可查询，同时无需在 Postgres 中存储完整日志。
 
-## 9.5 Log storage adapter configuration
+## 9.5 日志存储适配器配置
 
-Runtime log storage is deployment-configured (not per-agent by default).
+运行时日志存储由部署配置（默认非按 agent）。
 
 ```json
 {

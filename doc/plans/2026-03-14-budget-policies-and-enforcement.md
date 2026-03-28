@@ -1,48 +1,48 @@
-# Budget Policies and Enforcement
+# 预算策略与执行
 
-## Context
+## 背景
 
-Paperclip already treats budgets as a core control-plane responsibility:
+Paperclip 已将预算视为核心控制面职责：
 
-- `doc/SPEC.md` gives the Board authority to set budgets, pause agents, pause work, and override any budget.
-- `doc/SPEC-implementation.md` says V1 must support monthly UTC budget windows, soft alerts, and hard auto-pause.
-- the current code only partially implements that intent.
+- `doc/SPEC.md` 授权 Board 设置预算、暂停代理、暂停工作并覆盖任何预算。
+- `doc/SPEC-implementation.md` 规定 V1 必须支持 UTC 月度预算窗口、软警告和硬自动暂停。
+- 当前代码仅部分实现了上述意图。
 
-Today the system has narrow money-budget behavior:
+目前系统仅具备有限的金额预算行为：
 
-- companies track `budgetMonthlyCents` and `spentMonthlyCents`
-- agents track `budgetMonthlyCents` and `spentMonthlyCents`
-- `cost_events` ingestion increments those counters
-- when an agent exceeds its monthly budget, the agent is paused
+- 公司跟踪 `budgetMonthlyCents` 和 `spentMonthlyCents`
+- 代理跟踪 `budgetMonthlyCents` 和 `spentMonthlyCents`
+- `cost_events` 摄入时递增上述计数器
+- 当代理超出月度预算时，代理被暂停
 
-That leaves major product gaps:
+这留下了重大的产品空白：
 
-- no project budget model
-- no approval generated when budget is hit
-- no generic budget policy system
-- no project pause semantics tied to budget
-- no durable incident tracking to prevent duplicate alerts
-- no separation between enforceable spend budgets and advisory usage quotas
+- 没有项目预算模型
+- 触及预算时不生成审批
+- 没有通用预算策略系统
+- 没有与预算挂钩的项目暂停语义
+- 没有持久化事件跟踪以防止重复警告
+- 没有将可执行消费预算与咨询性用量配额区分开来
 
-This plan defines the concrete budgeting model Paperclip should implement next.
+本计划定义了 Paperclip 接下来应实现的具体预算模型。
 
-## Product Goals
+## 产品目标
 
-Paperclip should let operators:
+Paperclip 应允许运营人员：
 
-1. Set budgets on agents and projects.
-2. Understand whether a budget is based on money or usage.
-3. Be warned before a budget is exhausted.
-4. Automatically pause work when a hard budget is hit.
-5. Approve, raise, or resume from a budget stop using obvious UI.
-6. See budget state on the dashboard, `/costs`, and scope detail pages.
+1. 为代理和项目设置预算。
+2. 了解预算是基于金额还是用量。
+3. 在预算耗尽前收到警告。
+4. 触及硬预算时自动暂停工作。
+5. 通过清晰的 UI 批准、提高或从预算停止中恢复。
+6. 在仪表盘、`/costs` 和范围详情页查看预算状态。
 
-The system should make one thing very clear:
+系统应将一件事说清楚：
 
-- budgets are policy controls
-- quotas are usage visibility
+- 预算是策略控制
+- 配额是用量可见性
 
-They are related, but they are not the same concept.
+两者相关，但不是同一概念。
 
 ## Product Decisions
 

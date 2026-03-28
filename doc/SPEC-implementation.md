@@ -525,31 +525,31 @@ V1 不需要独立的队列基础设施。
 - `PATCH /companies/:companyId/budgets`
 - `PATCH /agents/:agentId/budgets`
 
-## 10.8 Activity and Dashboard
+## 10.8 活动与仪表盘
 
 - `GET /companies/:companyId/activity`
 - `GET /companies/:companyId/dashboard`
 
-Dashboard payload must include:
+仪表盘负载必须包含：
 
-- active/running/paused/error agent counts
-- open/in-progress/blocked/done issue counts
-- month-to-date spend and budget utilization
-- pending approvals count
+- 活跃/运行中/已暂停/错误状态的智能体数量
+- 开放/进行中/已阻塞/已完成的问题数量
+- 本月累计支出和预算使用率
+- 待处理审批数量
 
-## 10.9 Error Semantics
+## 10.9 错误语义
 
-- `400` validation error
-- `401` unauthenticated
-- `403` unauthorized
-- `404` not found
-- `409` state conflict (checkout conflict, invalid transition)
-- `422` semantic rule violation
-- `500` server error
+- `400` 验证错误
+- `401` 未认证
+- `403` 未授权
+- `404` 未找到
+- `409` 状态冲突（检出冲突、无效转换）
+- `422` 语义规则违反
+- `500` 服务器错误
 
-## 11. Heartbeat and Adapter Contract
+## 11. 心跳与适配器契约
 
-## 11.1 Adapter Interface
+## 11.1 适配器接口
 
 ```ts
 interface AgentAdapter {
@@ -559,9 +559,9 @@ interface AgentAdapter {
 }
 ```
 
-## 11.2 Process Adapter
+## 11.2 进程适配器
 
-Config shape:
+配置结构：
 
 ```json
 {

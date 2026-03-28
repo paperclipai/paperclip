@@ -398,9 +398,9 @@ export const dashboardWidgets = [
 ];
 ```
 
-### Module UI Contract
+### 模块 UI 契约
 
-A module's UI entry exports named components:
+模块的 UI 入口导出具名组件：
 
 ```typescript
 // modules/observability/src/ui/index.ts
@@ -408,7 +408,7 @@ export { default } from "./ObservabilityPage";
 export { TokenBurnRateWidget } from "./TokenBurnRateWidget";
 ```
 
-Module UI components receive a standard props interface:
+模块 UI 组件接收标准的 props 接口：
 
 ```typescript
 interface ModulePageProps {
@@ -423,7 +423,7 @@ interface ModuleWidgetProps {
 }
 ```
 
-Module UI hits the module's own API routes (`/api/modules/observability/*`) for data.
+模块 UI 通过模块自有 API 路由（`/api/modules/observability/*`）获取数据。
 
 ---
 

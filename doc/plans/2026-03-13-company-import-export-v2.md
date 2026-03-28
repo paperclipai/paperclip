@@ -496,59 +496,59 @@ CLI 应继续支持无需注册中心的直接导入/导出。
 - `--materialize-references`
 - `--sync-skills`
 
-## 13. UI Plan
+## 13. 界面计划
 
-### 13.1 Company Settings Import / Export
+### 13.1 公司设置的导入/导出
 
-Add a real import/export section to Company Settings.
+在公司设置中添加完整的导入/导出区块。
 
-Export UI:
+导出界面：
 
-- export package kind selector
-- include options
-- local download/export destination guidance
-- attribution/reference summary
+- 导出包类型选择器
+- 包含选项
+- 本地下载/导出目标位置说明
+- 归因/引用摘要
 
-Import UI:
+导入界面：
 
-- source entry:
-  - upload/folder where supported
+- 来源输入：
+  - 在支持的情况下上传/选择文件夹
   - GitHub URL
-  - generic URL
-- preview pane with:
-  - resolved package root
-  - dependency tree
-  - checkboxes by entity
-  - trust/licensing warnings
-  - secrets requirements
-  - collision plan
+  - 通用 URL
+- 预览面板，包含：
+  - 已解析的包根
+  - 依赖树
+  - 按实体的复选框
+  - 信任/许可证警告
+  - 密钥要求
+  - 冲突规划
 
-### 13.2 Team Import UX
+### 13.2 团队导入体验
 
-If importing a team into an existing company:
+将团队导入已有公司时：
 
-- show the subtree structure
-- require the user to choose where to attach it
-- preview manager/reporting updates before apply
-- preserve imported-team provenance so the UI can later say “these agents came from team package X”
+- 展示子树结构
+- 要求用户选择挂载位置
+- 在应用前预览管理者/汇报关系变更
+- 保留导入团队的来源信息，以便界面后续可以显示”这些 agent 来自团队包 X”
 
-### 13.3 Skills UX
+### 13.3 Skill 体验
 
-See also:
+另请参见：
 
 - `doc/plans/2026-03-14-skills-ui-product-plan.md`
 
-If importing skills:
+导入 skill 时：
 
-- show whether each skill is local, vendored, or referenced
-- show whether it contains scripts/assets
-- preserve Agent Skills compatibility in presentation and export
-- preserve `skills.sh` compatibility in both import and install flows
-- show agent skill attachments by shortname/slug rather than noisy file paths
-- treat agent skills as a dedicated agent tab, not just another subsection of configuration
-- show current adapter-reported skills when supported
-- show desired package skills separately from actual adapter state
-- offer reconcile actions when the adapter supports sync
+- 展示每个 skill 是本地的、已内嵌的还是已引用的
+- 展示是否包含脚本/资源文件
+- 在展示和导出中保持 Agent Skills 兼容性
+- 在导入和安装流程中均保持 `skills.sh` 兼容性
+- 以短名称/slug 而非冗长文件路径展示 agent skill 挂载情况
+- 将 agent skill 视为专属的 agent 标签页，而非配置中的一个子章节
+- 在支持的情况下展示适配器当前报告的 skill
+- 将期望的包 skill 与实际适配器状态分开展示
+- 在适配器支持同步时提供协调操作
 
 ## 14. Rollout Phases
 

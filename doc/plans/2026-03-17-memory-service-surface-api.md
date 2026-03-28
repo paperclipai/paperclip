@@ -1,25 +1,25 @@
-# Paperclip Memory Service Plan
+# Paperclip 记忆服务计划
 
-## Goal
+## 目标
 
-Define a Paperclip memory service and surface API that can sit above multiple memory backends, while preserving Paperclip's control-plane requirements:
+定义一套 Paperclip 记忆服务及其表层 API，使其能够位于多个记忆后端之上，同时保留 Paperclip 控制平面的核心要求：
 
-- company scoping
-- auditability
-- provenance back to Paperclip work objects
-- budget / cost visibility
-- plugin-first extensibility
+- 公司级隔离范围
+- 可审计性
+- 溯源至 Paperclip 工作对象
+- 预算 / 成本可见性
+- 插件优先的可扩展性
 
-This plan is based on the external landscape summarized in `doc/memory-landscape.md` and on the current Paperclip architecture in:
+本计划基于 `doc/memory-landscape.md` 中总结的外部技术全景，以及以下文件中描述的当前 Paperclip 架构：
 
 - `doc/SPEC-implementation.md`
 - `doc/plugins/PLUGIN_SPEC.md`
 - `doc/plugins/PLUGIN_AUTHORING_GUIDE.md`
 - `packages/plugins/sdk/src/types.ts`
 
-## Recommendation In One Sentence
+## 一句话建议
 
-Paperclip should not embed one opinionated memory engine into core. It should add a company-scoped memory control plane with a small normalized adapter contract, then let built-ins and plugins implement the provider-specific behavior.
+Paperclip 不应将某一特定记忆引擎嵌入核心。它应添加一个公司级范围的记忆控制平面，并附带一套小型规范化适配器契约，然后由内置实现和插件负责提供商特定的行为。
 
 ## Product Decisions
 

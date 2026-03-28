@@ -345,37 +345,37 @@ Paperclip 应建模**执行工作区（execution workspaces）**，而非 **work
 - 将其保持为问题级的选择加入/退出，从项目继承默认值
 - 除非被请求，否则隐藏高级执行工作区详情
 
-## Consequences for the Spec
+## 对规范的影响
 
-This changes the emphasis of the plan in a useful way:
+这以有益的方式改变了计划的重点：
 
-- the project becomes the main workflow configuration owner
-- the issue becomes the unit of opt-in/out for isolated checkout behavior
-- the agent becomes an executor that usually inherits the workflow policy
-- raw runtime JSON becomes an advanced/internal representation, not the main UX
+- 项目成为主要的工作流配置所有者
+- 问题成为独立检出行为选择加入/退出的单元
+- 代理成为通常继承工作流策略的执行者
+- 原始运行时 JSON 成为高级/内部表示，而非主要的用户体验
 
-It also clarifies that PR creation and cleanup are not optional side notes. They are core parts of the workspace automation product surface.
+这也明确了 PR 创建和清理不是可选的附注，它们是工作区自动化产品界面的核心部分。
 
-## Concrete Integration Checklist
+## 具体集成清单
 
-This section turns the product requirements above into a concrete implementation plan for the current codebase.
+本部分将上述产品要求转化为当前代码库的具体实现计划。
 
-### Guiding precedence rule
+### 指导优先级规则
 
-The runtime decision order should become:
+运行时决策顺序应变为：
 
-1. issue-level execution workspace override
-2. project-level execution workspace policy
-3. agent-level adapter override
-4. current default behavior
+1. 问题级执行工作区覆盖
+2. 项目级执行工作区策略
+3. 代理级适配器覆盖
+4. 当前默认行为
 
-That is the key architectural change. Today the implementation is too agent-config-centered for the desired UX.
+这是关键的架构变更。目前的实现对于所期望的用户体验来说过于以代理配置为中心。
 
-## Proposed Field Names
+## 建议的字段名称
 
-### Project-level fields
+### 项目级字段
 
-Add a project-owned execution workspace policy object. Suggested shared shape:
+添加项目拥有的执行工作区策略对象。建议的共享形态：
 
 ```ts
 type ProjectExecutionWorkspacePolicy = {

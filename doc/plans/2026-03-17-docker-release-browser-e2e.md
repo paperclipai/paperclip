@@ -411,14 +411,14 @@ HOST_PORT=3233 DATA_DIR=./data/release-smoke-stable PAPERCLIPAI_VERSION=latest .
 
 为了发布安全，第一个测试应使用尽可能简单的可运行适配器。这里不是验证每个适配器的地方。
 
-## Recommended First Slice
+## 推荐首个切片
 
-If we want the fastest path to value, ship this in order:
+如果希望以最快路径创造价值，请按以下顺序交付：
 
-1. add detached mode to `scripts/docker-onboard-smoke.sh`
-2. add one Playwright spec for authenticated login + onboarding + CEO run verification
-3. add manual `release-smoke.yml`
-4. once stable, wire canary into `release.yml`
-5. after that, wire stable `latest` smoke into `release.yml`
+1. 为 `scripts/docker-onboard-smoke.sh` 添加分离模式
+2. 添加一个 Playwright 规范，覆盖已认证登录 + 引导流程 + CEO 运行验证
+3. 添加手动 `release-smoke.yml`
+4. 稳定后，将 canary 接入 `release.yml`
+5. 之后，将稳定版 `latest` 冒烟接入 `release.yml`
 
-That gives release confidence quickly without turning the first version into a large CI redesign.
+这能在不将第一版变成大规模 CI 重设计的前提下，快速建立发布信心。

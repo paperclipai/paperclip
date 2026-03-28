@@ -1,41 +1,41 @@
-# Token Optimization Plan
+# Token 优化计划
 
-Date: 2026-03-13  
-Related discussion: https://github.com/paperclipai/paperclip/discussions/449
+日期：2026-03-13
+相关讨论：https://github.com/paperclipai/paperclip/discussions/449
 
-## Goal
+## 目标
 
-Reduce token consumption materially without reducing agent capability, control-plane visibility, or task completion quality.
+在不降低 agent 能力、控制平面可见性或任务完成质量的前提下，实质性地减少 token 消耗。
 
-This plan is based on:
+本计划基于：
 
-- the current V1 control-plane design
-- the current adapter and heartbeat implementation
-- the linked user discussion
-- local runtime data from the default Paperclip instance on 2026-03-13
+- 当前 V1 控制平面设计
+- 当前 adapter 和心跳（heartbeat）实现
+- 上述关联的用户讨论
+- 2026-03-13 默认 Paperclip 实例的本地运行时数据
 
-## Executive Summary
+## 执行摘要
 
-The discussion is directionally right about two things:
+该讨论在两个方向上是正确的：
 
-1. We should preserve session and prompt-cache locality more aggressively.
-2. We should separate stable startup instructions from per-heartbeat dynamic context.
+1. 我们应该更积极地保持 session 和提示缓存的局部性。
+2. 我们应该将稳定的启动指令与每次心跳的动态上下文分离。
 
-But that is not enough on its own.
+但仅靠这两点还不够。
 
-After reviewing the code and local run data, the token problem appears to have four distinct causes:
+在审查代码和本地运行数据之后，token 问题似乎有四个不同的原因：
 
-1. **Measurement inflation on sessioned adapters.** Some token counters, especially for `codex_local`, appear to be recorded as cumulative session totals instead of per-heartbeat deltas.
-2. **Avoidable session resets.** Task sessions are intentionally reset on timer wakes and manual wakes, which destroys cache locality for common heartbeat paths.
-3. **Repeated context reacquisition.** The `paperclip` skill tells agents to re-fetch assignments, issue details, ancestors, and full comment threads on every heartbeat. The API does not currently offer efficient delta-oriented alternatives.
-4. **Large static instruction surfaces.** Agent instruction files and globally injected skills are reintroduced at startup even when most of that content is unchanged and not needed for the current task.
+1. **有 session 的 adapter 上的计量虚高。** 部分 token 计数器，尤其是 `codex_local`，似乎记录的是累计 session 总量而非每次心跳的增量。
+2. **可避免的 session 重置。** 任务 session 在定时器唤醒和手动唤醒时被有意重置，这破坏了常见心跳路径的缓存局部性。
+3. **重复获取上下文。** `paperclip` skill 要求 agent 在每次心跳时重新获取任务分配、issue 详情、祖先链和完整评论线程。当前 API 尚未提供高效的增量替代方案。
+4. **庞大的静态指令面。** Agent 指令文件和全局注入的 skill 在启动时被重新引入，即使其中大部分内容未变且当前任务并不需要。
 
-The correct approach is:
+正确的做法是：
 
-1. fix telemetry so we can trust the numbers
-2. preserve reuse where it is safe
-3. make context retrieval incremental
-4. add session compaction/rotation so long-lived sessions do not become progressively more expensive
+1. 修复遥测数据，使数字可信
+2. 在安全的地方保持复用
+3. 使上下文检索增量化
+4. 添加 session 压缩/轮换，防止长期 session 变得越来越昂贵
 
 ## Validated Findings
 

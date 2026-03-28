@@ -1,18 +1,18 @@
-# Paperclip UI Spec
+# Paperclip UI 规范
 
-Status: Draft
-Date: 2026-02-17
+状态：草稿
+日期：2026-02-17
 
-## 1. Design Philosophy
+## 1. 设计理念
 
-Paperclip's UI is a professional-grade control plane, not a toy dashboard. It should feel like the kind of tool you live in all day — fast, keyboard-driven, information-dense without being cluttered, dark-themed by default. Every pixel should earn its place.
+Paperclip 的 UI 是专业级控制平面，而非玩具式仪表板。它应该像一种整天都在使用的工具——快速、以键盘驱动、信息密集却不杂乱，默认深色主题。每一个像素都应物尽其用。
 
-Design principles:
+设计原则：
 
-- **Dense but scannable.** Show maximum information without requiring clicks to reveal it. Use whitespace to separate, not to pad.
-- **Keyboard-first.** Global shortcuts for search (Cmd+K), new issue (C), navigation. Power users should rarely touch the mouse.
-- **Contextual, not modal.** Inline editing over dialog boxes. Dropdowns over page navigations. The user's mental context should never be broken unnecessarily.
-- **Dark theme default.** Neutral grays, not pure black. Accent colors used sparingly for status and priority. Text is the primary visual element.
+- **密集但易于扫读。** 无需点击即可展示最多信息。使用留白来分隔，而非填充。
+- **键盘优先。** 全局快捷键用于搜索（Cmd+K）、新建 issue（C）、导航。高级用户应极少需要使用鼠标。
+- **情境化，非模态化。** 内联编辑优先于对话框，下拉菜单优先于页面跳转。用户的操作上下文不应被无谓地打断。
+- **默认深色主题。** 中性灰色，而非纯黑色。强调色仅用于状态和优先级。文本是主要视觉元素。
 
 ### Color System
 

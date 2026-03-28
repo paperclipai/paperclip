@@ -596,24 +596,24 @@ Paperclip 需要一个统一的地方来显示：
 
 - 工作区名称
 - 来源类型
-- path or repo
-- default ref
-- primary/default badge
-- active execution workspaces count
-- active issue count
-- active preview count
-- hosting type / provider when remote-managed
+- 路径或仓库
+- 默认引用
+- 主要/默认标记
+- 活跃执行工作区数量
+- 活跃 issue 数量
+- 活跃预览数量
+- 远程管理时的托管类型/提供商
 
-Actions:
+操作：
 
 - `Add workspace`
 - `Edit`
 - `Set default`
 - `Archive`
 
-#### Section: `Execution Defaults`
+#### 区域：`Execution Defaults`
 
-Fields:
+字段：
 
 - `Enable workspace automation`
 - `Default issue execution mode`
@@ -624,9 +624,9 @@ Fields:
 - `Default codebase`
 - `Allow issue override`
 
-#### Section: `Provisioning`
+#### 区域：`Provisioning`
 
-Fields:
+字段：
 
 - `Setup command`
 - `Cleanup command`
@@ -638,12 +638,12 @@ Fields:
 - `Branch naming template`
 - `Derived workspace parent directory`
 
-Hide git-specific fields when the selected workspace is not git-backed.
-Hide local-path-specific fields when the selected workspace is remote-managed.
+当所选工作区不是 git 支持时，隐藏特定于 git 的字段。
+当所选工作区是远程管理时，隐藏特定于本地路径的字段。
 
-#### Section: `Pull Requests`
+#### 区域：`Pull Requests`
 
-Fields:
+字段：
 
 - `PR workflow`
   - `Disabled`
@@ -655,18 +655,18 @@ Fields:
 - `PR title template`
 - `PR body template`
 
-#### Section: `Previews and Runtime`
+#### 区域：`Previews and Runtime`
 
-Fields:
+字段：
 
 - `Allow workspace runtime services`
 - `Default services profile`
 - `Harvest owned preview URLs`
 - `Track external preview URLs`
 
-#### Section: `Cleanup`
+#### 区域：`Cleanup`
 
-Fields:
+字段：
 
 - `Cleanup mode`
   - `Manual`
@@ -677,11 +677,11 @@ Fields:
 - `Keep while preview is active`
 - `Keep while PR is open`
 
-## 3. Add Project Workspace Flow
+## 3. 添加项目工作区流程
 
-Entry point: `Project > Code > Add workspace`
+入口点：`Project > Code > Add workspace`
 
-### Form fields
+### 表单字段
 
 - `Name`
 - `Source type`
@@ -698,12 +698,12 @@ Entry point: `Project > Code > Add workspace`
 - `Setup command`
 - `Cleanup command`
 
-### Behavior
+### 行为
 
-- if source type is non-git, hide branch/PR-specific setup
-- if source type is git, show ref and optional advanced branch fields
-- if source type is remote-managed, show provider/reference fields and hide local-path-only configuration
-- for simple solo users, this can be one path field and one save button
+- 如果来源类型是非 git，隐藏特定于分支/PR 的设置
+- 如果来源类型是 git，显示引用和可选的高级分支字段
+- 如果来源类型是远程管理，显示提供商/引用字段并隐藏仅限本地路径的配置
+- 对于简单的独立用户，这可以是一个路径字段和一个保存按钮
 
 ## 4. Issue Create Flow
 
