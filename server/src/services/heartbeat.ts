@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BillingType } from "@paperclipai/shared";
 import {
@@ -3281,6 +3281,65 @@ export function heartbeatService(db: Db) {
           });
 
           return { kind: "deferred" as const };
+        }
+
+        // Agent-level coalescing: if the agent already has a queued run that hasn't
+        // launched yet (no processStartedAt), coalesce this wake into it rather than
+        // spinning up a redundant run. The agent reads its full inbox at startup and
+        // will pick up all assigned tasks in a single heartbeat.
+        const existingQueuedRun = await tx
+          .select()
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.agentId, agentId),
+              eq(heartbeatRuns.status, "queued"),
+              isNull(heartbeatRuns.processStartedAt),
+            ),
+          )
+          .orderBy(asc(heartbeatRuns.createdAt))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+
+        if (existingQueuedRun) {
+          const mergedContextSnapshot = mergeCoalescedContextSnapshot(
+            existingQueuedRun.contextSnapshot,
+            enrichedContextSnapshot,
+          );
+          const mergedRun = await tx
+            .update(heartbeatRuns)
+            .set({ contextSnapshot: mergedContextSnapshot, updatedAt: new Date() })
+            .where(eq(heartbeatRuns.id, existingQueuedRun.id))
+            .returning()
+            .then((rows) => rows[0] ?? existingQueuedRun);
+
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason,
+            payload,
+            status: "coalesced",
+            coalescedCount: 1,
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            runId: mergedRun.id,
+            finishedAt: new Date(),
+          });
+
+          await tx
+            .update(issues)
+            .set({
+              executionRunId: mergedRun.id,
+              executionAgentNameKey: agentNameKey,
+              executionLockedAt: new Date(),
+              updatedAt: new Date(),
+            })
+            .where(eq(issues.id, issue.id));
+
+          return { kind: "coalesced" as const, run: mergedRun };
         }
 
         const wakeupRequest = await tx
