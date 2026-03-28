@@ -642,4 +642,22 @@ describe("issueService.list participantAgentId", () => {
   it("returns null for malformed attachment ids on removeAttachment", async () => {
     await expect(svc.removeAttachment("not-a-uuid")).resolves.toBeNull();
   });
+
+  it("returns not found for malformed issue ids on addComment", async () => {
+    await expect(
+      svc.addComment("not-a-uuid", "hello", {}),
+    ).rejects.toMatchObject({
+      status: 404,
+      message: "Issue not found",
+    });
+  });
+
+  it("returns not found for malformed issue ids on markRead", async () => {
+    await expect(
+      svc.markRead(randomUUID(), "not-a-uuid", "user-1", new Date()),
+    ).rejects.toMatchObject({
+      status: 404,
+      message: "Issue not found",
+    });
+  });
 });

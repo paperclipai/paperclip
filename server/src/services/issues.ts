@@ -738,6 +738,7 @@ export function issueService(db: Db) {
     },
 
     markRead: async (companyId: string, issueId: string, userId: string, readAt: Date = new Date()) => {
+      if (!isUuidLike(issueId)) throw notFound("Issue not found");
       const now = new Date();
       const [row] = await db
         .insert(issueReadStates)
@@ -1421,6 +1422,7 @@ export function issueService(db: Db) {
     },
 
     addComment: async (issueId: string, body: string, actor: { agentId?: string; userId?: string }) => {
+      if (!isUuidLike(issueId)) throw notFound("Issue not found");
       const issue = await db
         .select({ companyId: issues.companyId })
         .from(issues)
