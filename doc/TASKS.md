@@ -169,37 +169,35 @@ Project 内的 issue 可选择性地分配到某个 milestone。
 
 ---
 
-## Labels / Tags
+## 标签
 
-Labels provide categorical tagging. They exist at two scopes:
+标签提供分类打标功能，存在于两个范围：
 
-- **Workspace labels** -- available across all teams
-- **Team labels** -- restricted to a specific team
+- **工作区标签** -- 在所有团队中可用
+- **团队标签** -- 仅限于特定团队
 
-| Field         | Type           | Notes                           |
+| 字段          | 类型           | 说明                            |
 | ------------- | -------------- | ------------------------------- |
 | `id`          | uuid           |                                 |
 | `name`        | string         |                                 |
-| `color`       | string         | Hex color                       |
-| `description` | string         | Contextual guidance             |
-| `teamId`      | uuid FK        | Null for workspace-level labels |
-| `groupId`     | uuid FK (self) | Parent label for grouping       |
+| `color`       | string         | 十六进制颜色值                  |
+| `description` | string         | 上下文说明                      |
+| `teamId`      | uuid FK        | 工作区级标签时为 null           |
+| `groupId`     | uuid FK (self) | 用于分组的父标签                |
 
-### Label Groups
+### 标签组
 
-Labels can be organized into one level of nesting (group -> labels):
+标签可组织成一级嵌套结构（组 -> 标签）：
 
-- Labels within a group are **mutually exclusive** on an issue (only one can be
-  applied from each group)
-- Groups cannot contain other groups (single nesting level only)
-- Example: group "Type" contains labels "Bug", "Feature", "Chore" -- an issue
-  gets at most one
+- 同一组内的标签在一个 issue 上**互斥**（每组只能应用一个）
+- 组不能包含其他组（仅支持单层嵌套）
+- 示例：组 "Type" 包含标签 "Bug"、"Feature"、"Chore"——一个 issue 最多获得其中一个
 
-### Issue-Label Junction
+### Issue-标签关联
 
-Many-to-many via `issue_labels` join table:
+通过 `issue_labels` 关联表实现多对多关系：
 
-| Field     | Type    |
+| 字段      | 类型    |
 | --------- | ------- |
 | `issueId` | uuid FK |
 | `labelId` | uuid FK |

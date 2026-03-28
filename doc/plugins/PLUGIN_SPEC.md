@@ -98,55 +98,55 @@ Paperclip 插件设计基于以下假设：
 4. 依赖项目本地插件文件夹（如 `.paperclip/plugins`）。
 5. 依赖服务器启动时从任意配置文件自动安装并执行的行为。
 
-## 5. Terminology
+## 5. 术语
 
-### 5.1 Instance
+### 5.1 实例（Instance）
 
-The single Paperclip deployment an operator installs and controls.
+运营者安装并管理的单个 Paperclip 部署。
 
-### 5.2 Company
+### 5.2 公司（Company）
 
-A first-class Paperclip business object inside the instance.
+实例内的 Paperclip 一等业务对象。
 
-### 5.3 Project Workspace
+### 5.3 项目工作区（Project Workspace）
 
-A workspace attached to a project through `project_workspaces`.
-Plugins resolve workspace paths from this model to locate local directories for file, terminal, git, and process operations.
+通过 `project_workspaces` 关联到项目的工作区。
+插件从该模型中解析工作区路径，以定位用于文件、终端、git 和进程操作的本地目录。
 
-### 5.4 Platform Module
+### 5.4 平台模块（Platform Module）
 
-A trusted in-process extension loaded directly by Paperclip core.
+由 Paperclip 核心直接加载的受信任进程内扩展。
 
-Examples:
+示例：
 
-- agent adapters
-- storage providers
-- secret providers
-- run-log backends
+- Agent 适配器
+- 存储提供者
+- 密钥提供者
+- 运行日志后端
 
-### 5.5 Plugin
+### 5.5 插件（Plugin）
 
-An installable instance-wide extension package loaded through the Paperclip plugin runtime.
+通过 Paperclip 插件运行时加载的、可安装的实例范围扩展包。
 
-Examples:
+示例：
 
-- Linear sync
-- GitHub Issues sync
-- Grafana widgets
-- Stripe revenue sync
-- file browser
-- terminal
-- git workflow
+- Linear 同步
+- GitHub Issues 同步
+- Grafana 小部件
+- Stripe 收入同步
+- 文件浏览器
+- 终端
+- git 工作流
 
-### 5.6 Plugin Worker
+### 5.6 插件 Worker（Plugin Worker）
 
-The runtime process used for a plugin.
-In this spec, third-party plugins run out-of-process by default.
+插件使用的运行时进程。
+在本规范中，第三方插件默认以进程外方式运行。
 
-### 5.7 Capability
+### 5.7 能力（Capability）
 
-A named permission the host grants to a plugin.
-Plugins may only call host APIs that are covered by granted capabilities.
+主机授予插件的命名权限。
+插件只能调用其获得授权的能力所覆盖的主机 API。
 
 ## 6. Extension Classes
 

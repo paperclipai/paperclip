@@ -108,11 +108,11 @@ Paperclip 代码库中已具备可移植性基础原语：
 4. 导入/导出在归因、固定验证和可执行包警告方面仍需更强的覆盖。
 5. 当前的 markdown frontmatter 解析器有意保持轻量级，应限制在已记录的结构内。
 
-## 5. Canonical Package Direction
+## 5. 规范包方向
 
-### 5.1 Canonical Authoring Format
+### 5.1 规范编写格式
 
-The canonical authoring format becomes a markdown-first package rooted in one of:
+规范编写格式采用以下文件之一为根的 markdown 优先包：
 
 - `COMPANY.md`
 - `TEAM.md`
@@ -121,59 +121,59 @@ The canonical authoring format becomes a markdown-first package rooted in one of
 - `TASK.md`
 - `SKILL.md`
 
-The normative draft is:
+规范性草案位于：
 
 - `docs/companies/companies-spec.md`
 
-### 5.2 Relationship To Agent Skills
+### 5.2 与 Agent Skills 的关系
 
-Paperclip must not redefine `SKILL.md`.
+Paperclip 不得重新定义 `SKILL.md`。
 
-Rules:
+规则：
 
-- `SKILL.md` stays Agent Skills compatible
-- the company package model is an extension of Agent Skills
-- the base package is vendor-neutral and intended for any agent-company runtime
-- Paperclip-specific fidelity lives in `.paperclip.yaml`
-- Paperclip may resolve and install `SKILL.md` packages, but it must not require a Paperclip-only skill format
-- `skills.sh` compatibility is a V1 requirement, not a future nice-to-have
+- `SKILL.md` 保持与 Agent Skills 兼容
+- 公司包模型是 Agent Skills 的扩展
+- 基础包为厂商中立，面向任何 agent-company 运行时
+- Paperclip 专有的高保真内容位于 `.paperclip.yaml`
+- Paperclip 可以解析并安装 `SKILL.md` 包，但不得要求 Paperclip 专有的 skill 格式
+- `skills.sh` 兼容性是 V1 阶段的硬性要求，而非未来可选项
 
-### 5.3 Agent-To-Skill Association
+### 5.3 Agent 与 Skill 的关联
 
-`AGENTS.md` should associate skills by skill shortname or slug, not by verbose path in the common case.
+`AGENTS.md` 应通过 skill 短名称或 slug 关联 skill，而非在常见场景中使用冗长路径。
 
-Preferred example:
+首选示例：
 
 - `skills: [review, react-best-practices]`
 
-Resolution model:
+解析模型：
 
-- `review` resolves to `skills/review/SKILL.md` by package convention
-- if the skill is external or referenced, the skill package owns that complexity
-- exporters should prefer shortname-based associations in `AGENTS.md`
-- importers should resolve the shortname against local package skills first, then referenced or installed company skills
-### 5.4 Base Package Vs Paperclip Extension
+- `review` 按包约定解析为 `skills/review/SKILL.md`
+- 如果 skill 是外部引用的，由 skill 包自行处理该复杂性
+- 导出器应在 `AGENTS.md` 中优先使用基于短名称的关联
+- 导入器应优先将短名称解析为本地包中的 skill，然后再解析为已引用或已安装的公司 skill
+### 5.4 基础包与 Paperclip 扩展
 
-The repo format should have two layers:
+仓库格式应分为两层：
 
-- base package:
-  - minimal, readable, social, vendor-neutral
-  - implicit folder discovery by convention
-  - no Paperclip-only runtime fields by default
-- Paperclip extension:
+- 基础包：
+  - 最小化、可读、社交友好、厂商中立
+  - 按约定进行隐式文件夹发现
+  - 默认不含 Paperclip 专有的运行时字段
+- Paperclip 扩展：
   - `.paperclip.yaml`
-  - adapter/runtime/permissions/budget/workspace fidelity
-  - emitted by Paperclip tools as a sidecar while the base package stays readable
+  - 适配器/运行时/权限/预算/工作空间高保真信息
+  - 由 Paperclip 工具以附加文件形式生成，同时保持基础包可读
 
-### 5.5 Relationship To Current V1 Manifest
+### 5.5 与当前 V1 清单的关系
 
-`paperclip.manifest.json` is not part of the future package direction.
+`paperclip.manifest.json` 不属于未来包方向的一部分。
 
-This should be treated as a hard cutover in product direction.
+这应被视为产品方向上的硬性切换。
 
-- markdown-first repo layout is the target
-- no new work should deepen investment in the old manifest model
-- future portability APIs and UI should target the markdown-first model only
+- markdown 优先的仓库结构是目标
+- 不应再对旧清单模型进行新的投入
+- 未来的可移植性 API 和界面应仅面向 markdown 优先模型
 
 ## 6. Package Graph Model
 

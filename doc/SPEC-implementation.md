@@ -205,12 +205,12 @@ V1 不需要独立的队列基础设施。
 - `completed_at` timestamptz null
 - `cancelled_at` timestamptz null
 
-Invariants:
+不变量：
 
-- single assignee only
-- task must trace to company goal chain via `goal_id`, `parent_id`, or project-goal linkage
-- `in_progress` requires assignee
-- terminal states: `done | cancelled`
+- 仅允许单一受理人
+- 任务必须通过 `goal_id`、`parent_id` 或项目-目标关联追溯到公司目标链
+- `in_progress` 状态需要受理人
+- 终止状态：`done | cancelled`
 
 ## 7.7 `issue_comments`
 
@@ -235,6 +235,7 @@ Invariants:
 - `context_snapshot` jsonb null
 
 ## 7.9 `cost_events`
+
 
 - `id` uuid pk
 - `company_id` uuid fk not null

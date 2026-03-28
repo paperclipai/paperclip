@@ -112,9 +112,9 @@
 6. 进程退出，输出解析器更新运行结果 + 运行时状态。
 7. Agent 返回 `idle` 或 `error`；UI 实时更新。
 
-## 6. Agent Run Protocol (Version `agent-run/v1`)
+## 6. Agent 运行协议（版本 `agent-run/v1`）
 
-This protocol is runtime-agnostic and implemented by all adapters.
+本协议与运行时无关，由所有适配器实现。
 
 ```ts
 type RunOutcome = "succeeded" | "failed" | "cancelled" | "timed_out";

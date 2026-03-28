@@ -37,85 +37,85 @@
 
 3. 保持本地模式简便可信，但防止不安全的云姿态。
 
-## Deployment modes
+## 部署模式
 
-## Mode A: `local_trusted`
+## 模式 A：`local_trusted`
 
-Behavior:
+行为：
 
-- no login UI
-- browser opens directly into board context
-- embedded DB and local storage defaults remain
-- a local implicit human actor exists for attribution
-- local implicit actor has effective `instance_admin` authority for that instance
-- full invite/approval/permission settings flows remain available in local mode (including agent enrollment)
+- 无登录 UI
+- 浏览器直接进入看板上下文
+- 保持嵌入式数据库和本地存储默认值
+- 存在本地隐式人类角色用于归因
+- 本地隐式角色对该实例具有有效的 `instance_admin` 权限
+- 本地模式下完整的邀请/审批/权限设置流程仍然可用（包括智能体入职）
 
-Guardrails:
+安全护栏：
 
-- server binds to loopback by default
-- fail startup if mode is `local_trusted` with non-loopback bind
-- UI shows a persistent "Local trusted mode" badge
+- 服务器默认绑定回环地址
+- 如模式为 `local_trusted` 但绑定非回环地址，则启动失败
+- UI 显示持久的"本地受信模式"标识
 
-## Mode B: `cloud_hosted`
+## 模式 B：`cloud_hosted`
 
-Behavior:
+行为：
 
-- login required for all human endpoints
-- Better Auth for human auth
-- initial auth method: email + password
-- email verification is not required for initial release
-- hosted DB and remote deployment supported
-- multi-user sessions and role/permission enforcement
+- 所有人类端点均需登录
+- 使用 Better Auth 进行人类身份验证
+- 初始验证方式：邮箱 + 密码
+- 初始版本不要求邮箱验证
+- 支持托管数据库和远程部署
+- 多用户会话及角色/权限强制执行
 
-Guardrails:
+安全护栏：
 
-- fail startup if auth provider/session config is missing
-- fail startup if insecure auth bypass flag is set
-- health payload includes mode and auth readiness
+- 如缺少 auth provider/会话配置，则启动失败
+- 如设置了不安全的 auth 绕过标志，则启动失败
+- 健康检查载荷包含模式和 auth 就绪状态
 
-## Authentication choice
+## 身份验证选择
 
-- use Better Auth for human users
-- start with email/password login only
-- no email confirmation requirement in V1
-- keep implementation structured so social/SSO providers can be added later without changing membership/permission semantics
+- 人类用户使用 Better Auth
+- 初始仅支持邮箱/密码登录
+- V1 不要求邮箱确认
+- 保持实现结构化，以便后续添加社交/SSO 提供商时无需更改成员资格/权限语义
 
-## Auth and actor model
+## Auth 与角色模型
 
-Unify request actors into a single model:
+将请求角色统一为单一模型：
 
-- `user` (authenticated human)
-- `agent` (API key)
-- `local_board_implicit` (local trusted mode only)
+- `user`（已认证人类）
+- `agent`（API 密钥）
+- `local_board_implicit`（仅限本地受信模式）
 
-Rules:
+规则：
 
-- in `cloud_hosted`, only `user` and `agent` are valid actors
-- in `local_trusted`, unauthenticated browser/API requests resolve to `local_board_implicit`
-- `local_board_implicit` is authorized as an instance admin principal for local operations
-- all mutating actions continue writing `activity_log` with actor type/id
+- 在 `cloud_hosted` 中，仅 `user` 和 `agent` 是合法角色
+- 在 `local_trusted` 中，未认证的浏览器/API 请求解析为 `local_board_implicit`
+- `local_board_implicit` 被授权为本地操作的实例管理员主体
+- 所有变更操作继续将角色类型/ID 写入 `activity_log`
 
-## First admin bootstrap
+## 首位管理员引导
 
-Problem:
+问题：
 
-- new cloud deployments need a safe, explicit first human admin path
-- app cannot assume a pre-existing admin account
-- `local_trusted` does not use bootstrap flow because implicit local instance admin already exists
+- 新云部署需要一条安全、显式的首位人类管理员路径
+- 应用不能假设预先存在管理员账户
+- `local_trusted` 不使用引导流程，因为隐式本地实例管理员已存在
 
-Bootstrap flow:
+引导流程：
 
-1. If no `instance_admin` user exists for the deployment, instance is in `bootstrap_pending` state.
-2. CLI command `pnpm paperclipai auth bootstrap-ceo` creates a one-time CEO onboarding invite URL for that instance.
-3. `pnpm paperclipai onboard` runs this bootstrap check and prints the invite URL automatically when `bootstrap_pending`.
-4. Visiting the app while `bootstrap_pending` shows a blocking setup page with the exact CLI command to run (`pnpm paperclipai onboard`).
-5. Accepting that CEO invite creates the first admin user and exits bootstrap mode.
+1. 若该部署不存在 `instance_admin` 用户，实例处于 `bootstrap_pending` 状态。
+2. CLI 命令 `pnpm paperclipai auth bootstrap-ceo` 为该实例创建一次性 CEO 入职邀请 URL。
+3. `pnpm paperclipai onboard` 运行此引导检查，并在 `bootstrap_pending` 时自动打印邀请 URL。
+4. 在 `bootstrap_pending` 状态下访问应用，将显示一个阻塞式设置页面，提示需运行的确切 CLI 命令（`pnpm paperclipai onboard`）。
+5. 接受 CEO 邀请后创建首位管理员用户并退出引导模式。
 
-Security rules:
+安全规则：
 
-- bootstrap invite is single-use, short-lived, and token-hash stored at rest
-- only one active bootstrap invite at a time per instance (regeneration revokes prior token)
-- bootstrap actions are audited in `activity_log`
+- 引导邀请为一次性、短时效，令牌哈希存储
+- 每个实例同时只能有一个活跃的引导邀请（重新生成会吊销前一个令牌）
+- 引导操作记录在 `activity_log` 中
 
 ## Data model additions
 

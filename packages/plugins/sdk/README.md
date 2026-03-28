@@ -37,22 +37,22 @@
 pnpm add @paperclipai/plugin-sdk
 ```
 
-## Current deployment caveats
+## 当前部署注意事项
 
-The SDK is stable enough for local development and first-party examples, but the runtime deployment model is still early.
+该 SDK 已足够稳定，可用于本地开发和内部示例，但运行时部署模型仍处于早期阶段。
 
-- Plugin workers and plugin UI should both be treated as trusted code today.
-- Plugin UI bundles run as same-origin JavaScript inside the main Paperclip app. They can call ordinary Paperclip HTTP APIs with the board session, so manifest capabilities are not a frontend sandbox.
-- Local-path installs and the repo example plugins are development workflows. They assume the plugin source checkout exists on disk.
-- For deployed plugins, publish an npm package and install that package into the Paperclip instance at runtime.
-- The current host runtime expects a writable filesystem, `npm` available at runtime, and network access to the package registry used for plugin installation.
-- Dynamic plugin install is currently best suited to single-node persistent deployments. Multi-instance cloud deployments still need a shared artifact/distribution model before runtime installs are reliable across nodes.
-- The host does not currently ship a real shared React component kit for plugins. Build your plugin UI with ordinary React components and CSS.
-- `ctx.assets` is not part of the supported runtime in this build. Do not depend on asset upload/read APIs yet.
+- 插件 Worker 和插件 UI 目前都应被视为可信代码。
+- 插件 UI bundle 以同源 JavaScript 的形式运行在 Paperclip 主应用内部，可使用 board 会话调用普通的 Paperclip HTTP API，因此 manifest 中声明的能力并不构成前端沙箱。
+- 本地路径安装和仓库示例插件属于开发工作流，假定插件源码检出存在于磁盘上。
+- 对于需要部署的插件，请发布为 npm 包，并在运行时将其安装到 Paperclip 实例中。
+- 当前宿主运行时要求可写文件系统、运行时可用的 `npm` 以及访问用于安装插件的包注册表的网络。
+- 动态插件安装目前最适合单节点持久化部署。多实例云部署在各节点上的运行时安装可靠性仍需要共享的产物/分发模型。
+- 宿主目前不为插件提供真正的共享 React 组件库。请使用普通 React 组件和 CSS 构建插件 UI。
+- `ctx.assets` 在本构建的支持运行时中不可用，请勿依赖资源上传/读取 API。
 
-If you are authoring a plugin for others to deploy, treat npm-packaged installation as the supported path and treat repo-local example installs as a development convenience.
+如果您正在为他人部署编写插件，请将 npm 包安装作为受支持的路径，将仓库本地示例安装视为开发便利。
 
-## Worker quick start
+## Worker 快速入门
 
 ```ts
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
